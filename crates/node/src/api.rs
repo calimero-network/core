@@ -4635,6 +4635,37 @@ async fn app_abi(
     Ok(Json(json!({ "bundle": app.bundle, "abi": abi })))
 }
 
+/// A compute run's record without its arguments or keys, and its progress when the app's leader
+/// answers: whoever reaches the app may read it, the plaintext sizes and hashes of its files only
+/// those who may list the files.
+async fn app_run(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, run)): Path<(String, String)>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::not_found("no such run"));
+    }
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let files = require_file_access(&node, &app, &p).is_ok();
+    let answer = node
+        .view(&ViewRequest {
+            app_id,
+            method: crate::node::RUN_VIEW.to_owned(),
+            args: json!({ "run": run, "files": files }),
+            caller: p.caller,
+            strong: true,
+            min_index: 0,
+        })
+        .await?;
+    if answer.result.is_null() {
+        return Err(ApiError::not_found("no such run"));
+    }
+    Ok(Json(answer.result))
+}
+
 /// What the caller's account uses, against the cluster's quotas.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
@@ -6178,6 +6209,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/abi", get(app_abi))
+        .route("/apps/{app}/runs/{run}", get(app_run))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
         .route("/apps/{app}/presence/stream", get(presence_stream))
         .route("/apps/{app}/intents", post(intents))

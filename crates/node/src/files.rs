@@ -8,7 +8,9 @@ mod seal;
 mod wrap;
 
 pub use seal::{FileOpener, FileSealer, Sealed, CHUNK_BYTES, TAG_BYTES};
-pub use wrap::{unwrap_for_job, unwrap_key, wrap_for_job, wrap_key, JobWrap, WrapKind};
+pub use wrap::{
+    unwrap_for_job, unwrap_key, wrap_for_job, wrap_for_job_derived, wrap_key, JobWrap, WrapKind,
+};
 
 /// The stored size of a file of `size` plaintext bytes: a tag per chunk, one for an empty file.
 #[must_use]

@@ -69,6 +69,10 @@ pub(super) struct Stored {
     pub ids: Vec<String>,
     /// Plaintext bytes charged for them.
     pub charged: u64,
+    /// The ids are a compute run's outputs: content hashes of what a job node made, which
+    /// another leader may have stored under the same ids, so they are only deleted once the
+    /// app's marks are known ([`Node::delete_unmarked_outputs`]).
+    pub outputs: bool,
 }
 
 /// The node's own command that forgets a file, run on the app's leader
@@ -89,9 +93,15 @@ pub(crate) struct Probes {
     pub file_pushes: std::sync::atomic::AtomicU64,
     pub blob_puts_seen: std::sync::atomic::AtomicU64,
     pub conflict_next_call: std::sync::atomic::AtomicBool,
+    /// While set, every run final this node logs conflicts.
+    pub conflict_finals: std::sync::atomic::AtomicBool,
     pub run_open_cap: std::sync::atomic::AtomicUsize,
     /// Fails the next mark commit: 1 before it is proposed, 2 after it applied.
     pub commit_fault: std::sync::atomic::AtomicU8,
+    /// The waits of the leader's run driving, shortened by tests.
+    pub limits: std::sync::Mutex<crate::node::ComputeLimits>,
+    /// While set, this node's system reads fail.
+    pub system_outage: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "testing")]
@@ -102,8 +112,11 @@ impl Default for Probes {
             file_pushes: std::sync::atomic::AtomicU64::new(0),
             blob_puts_seen: std::sync::atomic::AtomicU64::new(0),
             conflict_next_call: std::sync::atomic::AtomicBool::new(false),
+            conflict_finals: std::sync::atomic::AtomicBool::new(false),
             run_open_cap: std::sync::atomic::AtomicUsize::new(MAX_RUN_OPEN_BYTES),
             commit_fault: std::sync::atomic::AtomicU8::new(0),
+            limits: std::sync::Mutex::new(crate::node::ComputeLimits::default()),
+            system_outage: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -395,11 +408,16 @@ impl Node {
         let Ok(runtime) = Handle::try_current() else {
             return Err(files_unavailable());
         };
-        off_workers(|| block_on(&runtime, self.push_files(app_id, blobs)))
+        off_workers(|| block_on(&runtime, self.push_files(app_id, blobs, false)))
             .unwrap_or_else(|| Err(files_unavailable()))
     }
 
-    async fn push_files(&self, app_id: &str, blobs: &[Blob]) -> Result<(), ApiError> {
+    pub(super) async fn push_files(
+        &self,
+        app_id: &str,
+        blobs: &[Blob],
+        outputs: bool,
+    ) -> Result<(), ApiError> {
         #[cfg(feature = "testing")]
         let _n = self
             .probes
@@ -425,7 +443,11 @@ impl Node {
             Ok(Ok(_)) => Ok(()),
             _ => {
                 // No mark names these files, so no other run can need them.
-                self.delete_files_later(app_id, blobs.iter().map(|(id, _)| id.clone()).collect());
+                self.discard_bytes(
+                    app_id,
+                    blobs.iter().map(|(id, _)| id.clone()).collect(),
+                    outputs,
+                );
                 Err(files_unavailable())
             }
         }
@@ -485,6 +507,55 @@ impl Node {
         }
     }
 
+    /// [`Self::delete_files_later`] for ids no mark names; a compute run's outputs only after the
+    /// app's marks were read through its leader.
+    fn discard_bytes(&self, app_id: &str, ids: Vec<String>, outputs: bool) {
+        if !outputs {
+            self.delete_files_later(app_id, ids);
+            return;
+        }
+        let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let app_id = app_id.to_owned();
+        drop(tokio::spawn(async move {
+            node.delete_unmarked_outputs(&app_id, ids).await;
+        }));
+    }
+
+    /// Deletes the ids of compute outputs that no mark names, judged after a barrier committed as
+    /// the app's leader and a strong read: until then a final of another leader may be about to
+    /// mark them. Without the barrier (not the leader, no quorum) the bytes stay: an over-count
+    /// and some orphaned bytes, never a mark without its bytes.
+    pub(super) async fn delete_unmarked_outputs(&self, app_id: &str, ids: Vec<String>) {
+        let Some(g) = self.hosted(app_id) else {
+            return;
+        };
+        let barrier = serde_json::to_vec(&ComponentCmd::Barrier).unwrap_or_default();
+        if g.write(barrier).await.is_err() {
+            return;
+        }
+        let unmarked = g
+            .read_strong(|m, _| {
+                ids.iter()
+                    .filter(|id| !m.state.component.files.contains_key(*id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        if let Ok(unmarked) = unmarked {
+            self.delete_files(app_id, &unmarked).await;
+        }
+    }
+
+    /// Whether a component app hosted here marks `id` as one of its files.
+    pub(crate) fn marks_file(&self, id: &str) -> bool {
+        self.apps.read().is_ok_and(|apps| {
+            apps.values()
+                .any(|g| g.read_local(|m, _| m.state.component.files.contains_key(id)))
+        })
+    }
+
     /// Removes the bytes of `ids` on this node and the app's other replicas, in a task of
     /// its own: nobody waits for it. A replica that misses it keeps unreachable bytes.
     pub(super) fn delete_files_later(&self, app_id: &str, ids: Vec<String>) {
@@ -515,7 +586,7 @@ impl Node {
     }
 
     async fn delete_file(&self, id: &str, peers: &[String]) {
-        if self.is_code_blob(id) {
+        if self.is_code_blob(id) || self.marks_file(id) {
             return;
         }
         if let Err(e) = self.engine.delete_blob(id) {
@@ -534,7 +605,7 @@ impl Node {
 impl Node {
     /// Counts `delta` plaintext bytes of files (negative: a refund) against the app's payer in the
     /// system log; `429 QUOTA_EXCEEDED` when a charge would pass the quota.
-    async fn count_file_bytes(&self, app_id: &str, delta: i64) -> Result<(), ApiError> {
+    pub(super) async fn count_file_bytes(&self, app_id: &str, delta: i64) -> Result<(), ApiError> {
         let cmd = SystemCmd::ChargeFileBytes {
             app_id: app_id.to_owned(),
             delta,
@@ -605,7 +676,7 @@ impl Node {
     /// Undoes what a logged entry that did not commit stored and counted.
     pub(super) fn discard(&self, app_id: &str, stored: Stored) {
         if !stored.ids.is_empty() {
-            self.delete_files_later(app_id, stored.ids);
+            self.discard_bytes(app_id, stored.ids, stored.outputs);
         }
         if stored.charged > 0 {
             self.refund_files_later(app_id, stored.charged);
@@ -752,7 +823,7 @@ impl Node {
             .await
             .map_err(Upload::Refused)?;
         let blob = (file.id.clone(), std::mem::take(&mut file.ciphertext));
-        if let Err(e) = self.push_files(app_id, &[blob]).await {
+        if let Err(e) = self.push_files(app_id, &[blob], false).await {
             self.refund_files(app_id, size).await;
             return Err(Upload::Refused(e));
         }
@@ -932,6 +1003,14 @@ fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
         mark: serde_json::from_value(answer.result["mark"].clone()).ok()?,
         index: answer.index,
     })
+}
+
+impl Node {
+    /// Runs the cleanup of compute outputs `ids` as a losing leader would. Tests only.
+    #[cfg(feature = "testing")]
+    pub async fn clean_up_outputs(&self, app_id: &str, ids: Vec<String>) {
+        self.delete_unmarked_outputs(app_id, ids).await;
+    }
 }
 
 #[cfg(test)]

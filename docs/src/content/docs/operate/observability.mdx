@@ -93,9 +93,12 @@ Code: `crates/node/src/usage.rs`.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `calimero_app_calls_total` | counter | `app`, `org`, `kind` | WASM calls this node ran for the app whose answer stood. `kind` is `mutation` (a call through `/intents`, the app's `init`, an upgrade's migration), `view` (a view, strong or stale, and a declared `#[app::view]` called through `/intents`) or `followup` (an event handler, a timer, an xcall, counted on the app it called). |
+| `calimero_app_calls_total` | counter | `app`, `org`, `kind` | WASM calls this node ran for the app whose answer stood. `kind` is `mutation` (a call through `/intents`, the app's `init`, an upgrade's migration), `view` (a view, strong or stale, and a declared `#[app::view]` called through `/intents`) `followup` (an event handler, a timer, an xcall, counted on the app it called) or `compute` (a compute run that ended with a job node's signed report). |
 | `calimero_app_wasm_cpu_seconds_total` | counter | `app`, `org` | CPU seconds the app's WASM runs took on this node: the run's **thread CPU time** (`CLOCK_THREAD_CPUTIME_ID` around the run, which runs on one thread) on Linux and other Unix systems; wall time elsewhere (the metric's `# HELP` says which). Includes the host functions the run called (state reads, sealing), not the time an outbound request waits (that runs on a thread of its own). |
 | `calimero_app_wasm_memory_byte_seconds_total` | counter | `app`, `org` | Linear memory bytes × wall seconds of the app's runs on this node. The bytes are the linear memory the module declares at instantiation, a floor of the run's peak: the runtime does not report how far an instance grew yet. |
+| `calimero_app_compute_cpu_seconds_total` | counter | `app`, `org` | CPU seconds the compute runs this node ended for the app took on job nodes, as the job node's signed report states. Counted by the node that committed the run's final entry; a lost attempt is not charged. Calls that ended with a report also count in `calimero_app_calls_total{kind="compute"}`. |
+| `calimero_app_compute_gib_seconds_total` | counter | `app`, `org` | GiB-seconds of memory (peak memory times wall time) of those runs. |
+| `calimero_app_compute_fuel_total` | counter | `app`, `org` | Fuel those runs used. |
 | `calimero_app_outbound_requests_total` | counter | `app`, `org` | Outbound HTTPS requests the app's runs on this node sent. A request the gate refused, or a malformed one, never left the node and is not counted; one that failed on the network is. |
 | `calimero_app_state_bytes` | gauge | `app`, `org` | Key and value bytes of the app's state on this replica (blob marks excluded), sampled every 5 minutes. Logical bytes: the store's sealing and indexes are not counted. |
 | `calimero_app_blob_bytes` | gauge | `app`, `org` | Bytes of the blobs the app holds, on this replica, sampled with the state. |
@@ -124,8 +127,8 @@ not sum them).
 **Series per app.** A counter's series appears once it counts something, and
 `calimero_app_blob_bytes` once the app holds a blob, so an app that takes
 mutations and views costs 5 series on each node that runs or hosts it
-(`mutation`, `view`, CPU, memory, state bytes) and up to 8 with blobs,
-follow-ups and outbound requests. An app's series leave the node's output once
+(`mutation`, `view`, CPU, memory, state bytes) and up to 12 with blobs,
+follow-ups, outbound requests and compute runs. An app's series leave the node's output once
 it is deleted or its replica moves off the node.
 
 **Restarts.** The counters are in memory and start from zero when merod

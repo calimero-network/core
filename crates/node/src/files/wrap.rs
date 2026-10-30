@@ -14,6 +14,8 @@ const FILE_WRAP_LABEL: &str = "calimero.file-wrap.v1"; // HMAC label of a wrap s
 const JOB_WRAP_SALT: &[u8] = b"calimero.job-wrap.v1"; // HKDF salt of a job wrap
 const PUBLIC_LEN: usize = 32; // an X25519 public key
 const SALT_LEN: usize = 16; // the per-wrap salt of a file-key wrap
+const DERIVED_EPHEMERAL_LABEL: &[u8] = b"calimero.job-wrap.ephemeral.v1|"; // HMAC label of a derived wrap's ephemeral key
+const DERIVED_NONCE_LABEL: &[u8] = b"calimero.job-wrap.nonce.v1|"; // HMAC label of a derived wrap's nonce
 
 /// What a job wrap carries; part of its key, so one kind never opens as another.
 #[derive(Clone, Copy)]
@@ -148,6 +150,30 @@ pub fn wrap_for_job(
     )
 }
 
+/// [`wrap_for_job`] with the ephemeral key and nonce derived from `file_key`: the same run,
+/// attempt, secret and job node always wrap to the same bytes, so a new leader rebuilds the
+/// assignment its predecessor signed. What is wrapped is fixed by `wrap`, so a nonce is never
+/// used for two secrets.
+pub fn wrap_for_job_derived(
+    file_key: &[u8; 32],
+    job_public: &[u8; 32],
+    wrap: &JobWrap,
+    secret: &[u8; 32],
+) -> EyreResult<Vec<u8>> {
+    let context = wrap.info(&[0; PUBLIC_LEN], job_public)?;
+    let derive = |label: &[u8]| tag(file_key, [label, &context].concat());
+    let nonce = derive(DERIVED_NONCE_LABEL)[..NONCE_LEN]
+        .try_into()
+        .map_err(|_| eyre!("a nonce is {NONCE_LEN} bytes"))?;
+    wrap_for_job_with(
+        job_public,
+        wrap,
+        secret,
+        Zeroizing::new(derive(DERIVED_EPHEMERAL_LABEL)),
+        nonce,
+    )
+}
+
 fn wrap_for_job_with(
     job_public: &[u8; 32],
     wrap: &JobWrap,
@@ -245,6 +271,44 @@ mod tests {
         kind: WrapKind::FileKey,
         index: 3,
     };
+
+    #[test]
+    fn a_derived_wrap_is_the_same_every_time_and_opens_at_the_job_node() {
+        let job = job();
+        let wrapped = wrap_for_job_derived(&FILE_KEY, &job.public_key(), &WRAP, &DATA_KEY).unwrap();
+        assert_eq!(
+            wrapped,
+            wrap_for_job_derived(&FILE_KEY, &job.public_key(), &WRAP, &DATA_KEY).unwrap()
+        );
+        assert_eq!(*unwrap_for_job(&job, &WRAP, &wrapped).unwrap(), DATA_KEY);
+        assert!(unwrap_for_job(&self::job(), &WRAP, &wrapped).is_err());
+    }
+
+    #[test]
+    fn a_derived_wrap_differs_by_key_node_attempt_index_and_kind() {
+        let (job, other) = (job(), job());
+        let wrap = |wrap: &JobWrap| {
+            wrap_for_job_derived(&FILE_KEY, &job.public_key(), wrap, &DATA_KEY).unwrap()
+        };
+        let base = wrap(&WRAP);
+        assert_ne!(
+            base,
+            wrap_for_job_derived(&[2; 32], &job.public_key(), &WRAP, &DATA_KEY).unwrap()
+        );
+        assert_ne!(
+            base,
+            wrap_for_job_derived(&FILE_KEY, &other.public_key(), &WRAP, &DATA_KEY).unwrap()
+        );
+        assert_ne!(base, wrap(&JobWrap { attempt: 3, ..WRAP }));
+        assert_ne!(base, wrap(&JobWrap { index: 4, ..WRAP }));
+        assert_ne!(
+            base,
+            wrap(&JobWrap {
+                kind: WrapKind::NoiseSeed,
+                ..WRAP
+            })
+        );
+    }
 
     #[test]
     fn a_job_node_unwraps_a_key_wrapped_to_it() {

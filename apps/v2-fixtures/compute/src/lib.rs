@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 
 use calimero_app_sdk::files::FileId;
-use calimero_app_sdk::compute::{self, RunId};
+use calimero_app_sdk::compute::{self, ComputeOutcome, ComputeStatus, RunId};
 use calimero_app_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
@@ -16,6 +16,8 @@ const PIECE: usize = 64 * 1024;
 #[app::state(version = 1)]
 pub struct Compute {
     done: Counter,
+    /// What each run's outcome said, by run id: JSON text.
+    outcomes: UnorderedMap<String, String>,
 }
 
 #[app::logic]
@@ -80,6 +82,12 @@ impl Compute {
         }
     }
 
+    /// Returns more bytes than a run may hand back.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn big() -> app::Result<Vec<u8>> {
+        Ok(vec![7u8; 70_000])
+    }
+
     /// Opens the file `id`, which a test names outside the run's inputs.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
     pub fn peek(id: FileId) -> app::Result<u64> {
@@ -92,16 +100,43 @@ impl Compute {
         compute::start("digest", &(), &inputs)
     }
 
+    /// Starts the argument-less compute method `method` with no input.
+    pub fn start_run(&mut self, method: String) -> app::Result<RunId> {
+        compute::start(&method, &(), &[])
+    }
+
     /// Asks for the active run `run` to end.
     pub fn cancel(&mut self, run: RunId) -> app::Result<()> {
         compute::cancel(&run)
     }
 
-    /// Receives the outcome of `digest`.
+    /// Receives the outcome of a run and records what it said.
     #[app::compute_result]
-    pub fn on_done(&mut self) -> app::Result<()> {
+    pub fn on_done(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
         self.done.add(1)?;
+        let status = match outcome.status {
+            ComputeStatus::Done => "done",
+            ComputeStatus::Failed => "failed",
+            ComputeStatus::Cancelled => "cancelled",
+        };
+        let text = serde_json::json!({
+            "run": outcome.run,
+            "status": status,
+            "reason": outcome.reason,
+            "attempt": outcome.attempt,
+            "sha256": outcome.outputs.first().map(|o| o.sha256.clone()),
+            "outputs": outcome.outputs.len(),
+            "fuel": outcome.usage.fuel.to_string(),
+            "cpuSeconds": outcome.usage.cpu_seconds,
+        });
+        self.outcomes.insert(&outcome.run.to_string(), &text.to_string())?;
         Ok(())
+    }
+
+    /// The outcome recorded for `run`, as JSON text, if its result method ran.
+    #[app::view]
+    pub fn outcome(&self, run: RunId) -> app::Result<Option<String>> {
+        Ok(self.outcomes.get(&run.to_string())?)
     }
 
     /// How many outcomes `onDone` has received.
