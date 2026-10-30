@@ -603,10 +603,10 @@ impl Node {
             .ok_or_else(|| ApiError::bad_request("BAD_RUN", "name the run"))?;
         let (record, applied) = g.read_local(|m, applied| (m.run_record(run), applied));
         let status = g.status();
-        let progress = status
-            .is_leader
-            .then(|| self.compute.progress(&req.app_id, run, status.term))
-            .flatten();
+        let progress = record
+            .as_ref()
+            .filter(|r| status.is_leader && r.state.is_active())
+            .and_then(|_| self.compute.progress(&req.app_id, run, status.term));
         Ok(ViewAnswer {
             index: applied,
             status: Status::Ok,

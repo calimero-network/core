@@ -549,6 +549,14 @@ async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_CURSOR"));
+    let e = rig.alice.get(&format!("{path}?before=")).await.unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"), "an empty cursor");
+    let colon = rig
+        .alice
+        .get(&format!("{path}?before=99999999999999:x:y"))
+        .await
+        .unwrap();
+    assert_eq!(colon["runs"].as_array().unwrap().len(), 2, "{colon}");
 
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
     let shown = bob.get(&path).await.unwrap();
