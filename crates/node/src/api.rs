@@ -4673,7 +4673,7 @@ async fn app_usage(
     }
     let book = node.app_usage(&app).await?;
     let today = crate::component::utc_day(node.app_clock().now_ms());
-    let day = |d: u64| usage_day(d, &book.get(&d).copied().unwrap_or_default());
+    let day = |d: u64| usage_day(d, &book.on(d));
     let first = today.saturating_sub(crate::component::USAGE_DAYS - 1);
     Ok(Json(json!({
         "today": day(today),
@@ -4681,19 +4681,36 @@ async fn app_usage(
     })))
 }
 
-/// An app's usage book on this replica, for a peer ([`Node::app_usage`]).
+/// An app's usage book on this replica, for a peer ([`Node::app_usage`]): only
+/// from a node that is one of the app's replicas, never from a group it still has
+/// after the app moved away.
 async fn internal_usage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> ApiResult {
     peer_only(&node, &headers)?;
-    let app = body["app"].as_str().unwrap_or_default();
+    let app_id = body["app"].as_str().unwrap_or_default();
     let g = node
-        .hosted(app)
-        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+        .sys(|s| s.apps.get(app_id).cloned())
+        .and_then(|app| node.replica_group(&app))
+        .ok_or_else(|| ApiError::unavailable("not a replica of the app"))?;
     let book = g.read_local(|m, _| m.state.component.head.usage.clone());
     Ok(Json(json!({ "usage": book })))
+}
+
+/// What every component app this node replicates used on `{ day }`, by app id, for
+/// a peer's fuel-cap refresh ([`Node::refresh_usage`]).
+async fn internal_usage_today(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let day = body["day"]
+        .as_u64()
+        .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "day is a number"))?;
+    Ok(Json(json!(node.replicas_usage_on(day))))
 }
 
 async fn internal_storage(
@@ -5562,6 +5579,10 @@ async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Ap
 
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
+/// `409`: a quota only this release knows (`maxFuelPerPayerPerDay`), set while a node
+/// on an older release, or one not attested, is registered.
+pub const QUOTA_NEEDS_UPGRADE: &str = "QUOTA_NEEDS_UPGRADE";
+
 async fn ops_quotas_set(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5585,6 +5606,23 @@ async fn ops_quotas_set(
     }
     let quotas: crate::system::Quotas = serde_json::from_value(merged)
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // A fuel cap is written only once every node runs a release that knows it: an
+    // older node drops the field, and its snapshots would bring the cap back to 0.
+    if quotas.max_fuel_per_payer_per_day != 0 {
+        let behind = node.nodes_behind_release().await;
+        if !behind.is_empty() {
+            let nodes: Vec<Value> = behind
+                .iter()
+                .map(|(id, release)| json!({ "node": id, "release": release }))
+                .collect();
+            return Err(ApiError::new(
+                409,
+                QUOTA_NEEDS_UPGRADE,
+                "a fuel cap needs every node on this node's release or newer",
+            )
+            .with_details(json!({ "release": node.own_release(), "nodes": nodes })));
+        }
+    }
     let _ok = node.sys_write(&SystemCmd::SetQuotas { quotas }).await?;
     Ok(Json(json!({})))
 }
@@ -6159,6 +6197,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob/delete", post(internal_blob_delete))
         .route("/internal/storage", post(internal_storage))
         .route("/internal/usage", post(internal_usage))
+        .route("/internal/usage/today", post(internal_usage_today))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))

@@ -20,7 +20,7 @@
 //!
 //! Usage (Q20): every logged `init`, call and tick carries what its run cost
 //! ([`RunUsage`]), measured by the leader. A replica adds the entry's figures to the
-//! app's usage book ([`ComponentHead::usage`], per UTC day of the entry's timestamp)
+//! app's usage book ([`ComponentHead::usage`], a [`UsageBook`], per UTC day of the entry's timestamp)
 //! as it applies the entry and never measures anything itself, so every replica holds
 //! the same totals, wall-clock time included.
 
@@ -464,28 +464,55 @@ pub struct ComponentHead {
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
     /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
-    /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]), the
-    /// newest [`USAGE_DAYS`] days. Outside the app's keyspace (D39); a snapshot
-    /// carries it with the rest of the head.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub usage: BTreeMap<u64, DayUsage>,
+    /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
+    /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
+    /// head.
+    #[serde(default, skip_serializing_if = "UsageBook::is_empty")]
+    pub usage: UsageBook,
 }
 
-impl ComponentHead {
-    /// Adds a run's usage to the day of its entry timestamp, and lets go of the days
-    /// more than [`USAGE_DAYS`] before it. Every replica does this from the entry
-    /// alone, so their books are the same.
-    pub fn note_usage(&mut self, ts_ms: u64, usage: &RunUsage) {
-        let day = utc_day(ts_ms);
-        self.usage.entry(day).or_default().add_run(usage);
-        let oldest = day.saturating_sub(USAGE_DAYS - 1);
-        self.usage.retain(|d, _| *d >= oldest);
-    }
+/// An app's usage per UTC day ([`utc_day`]): what the head keeps, what a replica
+/// answers a peer, and what the API reads. On the wire, a map from the day number
+/// to its [`DayUsage`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UsageBook(BTreeMap<u64, DayUsage>);
 
+impl UsageBook {
     /// The usage of UTC day `day` (zero if nothing ran).
     #[must_use]
-    pub fn usage_on(&self, day: u64) -> DayUsage {
-        self.usage.get(&day).copied().unwrap_or_default()
+    pub fn on(&self, day: u64) -> DayUsage {
+        self.0.get(&day).copied().unwrap_or_default()
+    }
+
+    /// Whether no day has any usage.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Adds a run's usage to the day of its entry timestamp, then lets go of the
+    /// days more than [`USAGE_DAYS`] before the earlier of that day and the day
+    /// after the newest one the book held. One entry stamped far ahead (a leader
+    /// with a wrong app-time offset) so never erases the real days; after a real
+    /// gap, the next entry finishes pruning. Every replica does this from the
+    /// entries alone, so their books are the same.
+    pub fn note(&mut self, ts_ms: u64, usage: &RunUsage) {
+        let day = utc_day(ts_ms);
+        let anchor = self
+            .0
+            .keys()
+            .next_back()
+            .map_or(day, |newest| day.min(newest.saturating_add(1)));
+        self.0.entry(day).or_default().add_run(usage);
+        let oldest = anchor.saturating_sub(USAGE_DAYS - 1);
+        self.0.retain(|d, _| *d >= oldest);
+    }
+
+    /// How many days the book holds.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -701,7 +728,8 @@ impl AppMachine {
             self.state
                 .component
                 .head
-                .note_usage(tick.ts_ms, &tick.outcome.usage);
+                .usage
+                .note(tick.ts_ms, &tick.outcome.usage);
             let _prev = self
                 .state
                 .component
@@ -763,7 +791,7 @@ impl AppMachine {
                     let a =
                         self.apply_component_outcome(tx, index, base_index, ts_ms, &outcome, None);
                     if !a.conflict {
-                        self.state.component.head.note_usage(ts_ms, &outcome.usage);
+                        self.state.component.head.usage.note(ts_ms, &outcome.usage);
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
                         self.state.component.head.install_ts_ms = ts_ms;
@@ -807,7 +835,8 @@ impl AppMachine {
                     self.state
                         .component
                         .head
-                        .note_usage(call.ts_ms, &call.outcome.usage);
+                        .usage
+                        .note(call.ts_ms, &call.outcome.usage);
                 }
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
@@ -1459,7 +1488,7 @@ mod tests {
         feed(&mut two);
         let head = &one.machine.state.component.head;
         assert_eq!(head.usage, two.machine.state.component.head.usage);
-        let first = head.usage_on(utc_day(day0));
+        let first = head.usage.on(utc_day(day0));
         assert_eq!(
             first,
             DayUsage {
@@ -1471,20 +1500,24 @@ mod tests {
                 events: 3,
             }
         );
-        assert_eq!(head.usage_on(utc_day(day0) + 1).fuel, 11);
+        assert_eq!(head.usage.on(utc_day(day0) + 1).fuel, 11);
 
-        // 31 days on, the first day is let go; the day after it stays.
-        let _l = one.apply(
-            6,
-            &with_usage(
-                &call(5, None, vec![]),
-                day0 + USAGE_DAYS * DAY_MS,
-                cost(1, 1),
-            ),
-        );
+        // 31 days on, the first day is let go and the day after it stays. The first
+        // entry after a gap prunes back from the day after the newest one it found
+        // (a far-future stamp can't erase real days); the next one finishes.
+        for (index, ts) in [(6, 0), (7, 1)] {
+            let _l = one.apply(
+                index,
+                &with_usage(
+                    &call(index - 1, None, vec![]),
+                    day0 + USAGE_DAYS * DAY_MS + ts,
+                    cost(1, 1),
+                ),
+            );
+        }
         let head = &one.machine.state.component.head;
-        assert_eq!(head.usage_on(utc_day(day0)), DayUsage::default());
-        assert_eq!(head.usage_on(utc_day(day0) + 1).fuel, 11);
+        assert_eq!(head.usage.on(utc_day(day0)), DayUsage::default());
+        assert_eq!(head.usage.on(utc_day(day0) + 1).fuel, 11);
         assert_eq!(head.usage.len(), 2);
 
         // A replica that starts again reads the same book.
@@ -1494,13 +1527,38 @@ mod tests {
         assert_eq!(fresh.state.component.head.usage, head.usage);
     }
 
+    /// One entry stamped far in the future (a leader with a wrong app-time offset)
+    /// does not erase the real days: pruning never reaches further back than the
+    /// window before the day the book had already reached.
+    #[test]
+    fn a_far_future_entry_does_not_erase_the_real_days() {
+        let mut r = Rig::new();
+        let day0 = 20_000 * DAY_MS;
+        let _i = r.apply(1, &with_usage(&init(0), day0, cost(1, 1)));
+        let _a = r.apply(
+            2,
+            &with_usage(&call(1, None, vec![]), day0 + DAY_MS, cost(2, 1)),
+        );
+        let far = day0 + 10_000 * DAY_MS;
+        let _f = r.apply(3, &with_usage(&call(2, None, vec![]), far, cost(5, 1)));
+        // The clock is fixed: entries are stamped on the real day again.
+        let _b = r.apply(
+            4,
+            &with_usage(&call(3, None, vec![]), day0 + DAY_MS + 7, cost(3, 1)),
+        );
+        let head = &r.machine.state.component.head;
+        assert_eq!(head.usage.on(utc_day(day0)).fuel, 1, "{:?}", head.usage);
+        assert_eq!(head.usage.on(utc_day(day0) + 1).fuel, 5, "{:?}", head.usage);
+        assert_eq!(head.usage.on(utc_day(far)).fuel, 5, "{:?}", head.usage);
+    }
+
     #[test]
     fn an_entry_written_before_usage_counts_a_run_of_nothing() {
         let mut r = Rig::new();
         let mut old: Value = serde_json::from_slice(&init(0)).unwrap();
         let _gone = old["outcome"].as_object_mut().unwrap().remove("usage");
         assert!(!r.apply(1, &serde_json::to_vec(&old).unwrap()).conflict);
-        let day = r.machine.state.component.head.usage_on(utc_day(1));
+        let day = r.machine.state.component.head.usage.on(utc_day(1));
         assert_eq!(
             day,
             DayUsage {

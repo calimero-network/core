@@ -502,8 +502,11 @@ is its command line.
   member, read-only) and capabilities (`caps`, `MemberCapabilities` bits;
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
-  runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
-  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
+  runs only a component app's views, any other call refused before it runs, so no
+  run burns the payer's fuel uncounted (regression:
+  `a_read_only_members_call_is_refused_before_it_runs`); on a wasmer app they run
+  calls, but one that would write is refused (`403`, `node::READ_ONLY`; v1
+  discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
   whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
@@ -576,20 +579,33 @@ is its command line.
   `a_removed_nodes_sessions_are_refused`.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
-  The exception is `maxFuelPerPayerPerDay` (Q20, D76, D78; 0, the default, is no
-  limit). It is charged to the app's payer, #4739's `usage::payer` (D78): an org app's
+  The exception is `maxFuelPerPayerPerDay` (Q20, D76, D78; `"0"`, the default, is no
+  limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It is
+  charged to the app's payer, #4739's `usage::payer` (D78): an org app's
   organization, a personal app's owner (`account:{owner}`). The fuel lives in the app
-  groups' usage books, so it is checked where a client's call runs
-  (`Node::fuel_quota_refusal`, from `call_local_component` and the wasmer `call_local`,
-  after the idempotent replay, before the run), against the payer's fuel today summed
-  over its component apps (`Node::payer_usage_today`; a replica here, else a peer's
-  answer at most `USAGE_CACHE`, 1 s, old; an app no replica answers for counts as
-  nothing). Over it, calls to every app of that payer are refused, wasmer apps
-  included, though only components are metered (D76); an organization over its cap
-  leaves its owner's personal apps running (D78). The refusal is not logged, so the
-  key is not spent; `init`, timer ticks and follow-ups are never refused, and a
-  component's still count toward the payer's day. The quota is fuel; wall time is
-  information only (D76).
+  groups' usage books, so it is checked where a client's call or an xcall delivery
+  runs (`Node::fuel_quota_refusal`, from `call_local_component` and the wasmer
+  `call_local`, after the idempotent replay, before the run). The check asks no peer
+  (`Node::payer_fuel_cached`): apps this node replicates are read from the replica,
+  the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s) while a
+  cap is set asks all peers at once (`internal/usage/today`) and keeps a silent
+  peer's last figures; so the cap is approximate by one interval and an app no peer
+  ever reported counts as nothing (fails open). Over it, calls to every app of that
+  payer are refused, wasmer apps included, though only components are metered (D76);
+  an xcall delivery refused so is dropped by `drive` with the `QUOTA_EXCEEDED` code
+  logged; an organization over its cap leaves its owner's personal apps running
+  (D78). The refusal is not logged, so the key is not spent; `init`, timer ticks and
+  event handlers are never refused, and a component's still count toward the
+  payer's day. The quota is fuel; wall time is information only (D76). A non-zero
+  cap is written only once every registered node's attested release is this node's
+  or newer (`Node::nodes_behind_release`, as D71 gates `base_seq`), else
+  `409 QUOTA_NEEDS_UPGRADE`: an older node would drop the field and its snapshots
+  would reset the cap. Usage reads (`app_usage`, `internal/usage`,
+  `replicas_usage_on`) use `replica_group()`, never a group the node keeps after the
+  app moved away. Regressions: `the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs`,
+  `an_over_cap_payer_is_refused_within_one_refresh_while_a_peer_hangs`,
+  `an_xcall_into_an_over_cap_payers_wasmer_app_is_refused`,
+  `the_fuel_cap_is_a_decimal_string`, `a_fuel_cap_waits_until_every_node_runs_this_release`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
   elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
@@ -683,8 +699,10 @@ API and system group. What differs from the wasmer path:
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
   replacement keeps fuel, wall time and writes). Applying a non-conflicting entry adds
-  it to `ComponentHead::usage`, per UTC day of the entry's `ts_ms`, the newest
-  `USAGE_DAYS` (31) days; followers never measure, so every replica's book is the same
+  it to `ComponentHead::usage` (a `UsageBook`), per UTC day of the entry's `ts_ms`,
+  pruning `USAGE_DAYS` (31) back from the earlier of that day and the day after the
+  newest one held, so a far-future stamp never erases the real days
+  (`a_far_future_entry_does_not_erase_the_real_days`); followers never measure, so every replica's book is the same
   (a snapshot carries it in `Head`). Timeouts are not logged, so not counted (#4736);
   views are not counted (Q9). The API gives every figure as a decimal string (D20):
   `/apps/{app}/usage`, `bundleBytes`, `fuelToday`, `writesToday` in `/auth/usage`

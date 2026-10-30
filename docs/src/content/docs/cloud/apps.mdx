@@ -53,7 +53,7 @@ it sees once it runs on a cluster.
   each member's row has a role — lead, member or read-only — and
   capability bits. Deploy an app to a team with
   `access: { kind: "team", team }`: its members reach it, and a read-only
-  member's calls run but one that would write is refused (`403`). A team they
+  member reaches its views only, other calls being refused (`403`). A team they
   neither reach nor manage is invisible to them. Deleting a team deletes the
   teams and apps below it.
 - **Devices are passkeys.** `env::account_id()` is the person; each passkey on

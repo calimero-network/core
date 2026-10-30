@@ -148,7 +148,7 @@ but its answer would have been handed back unconfirmed.
 | The app returned | `200 { index, result, events, receipt }` |
 | The app returned an error | `422 APP_ERROR` with `details.error` |
 | The run trapped (panic, out of gas, unknown method) | `422 TRAP` |
-| A read-only team member's call would write | `403` |
+| A read-only team member calls a method that is not a view (component apps), or a call that would write (wasmer apps) | `403` |
 | The call kept racing leader changes | `503`; retry with the same idempotency key |
 | No leader could be reached | `503 UNAVAILABLE` |
 | The caller does not reach the app | `404` (or `401` without a credential) |

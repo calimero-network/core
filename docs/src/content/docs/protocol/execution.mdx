@@ -116,9 +116,10 @@ rules:
   is written beside the cell, in the same entry.
 - **Blobs the run wrote** are kept by the leader, marked as the app's in the
   diff, and spread to the other nodes after the entry commits.
-- **Read-only team members**: a call by a member whose row in the app's team is
-  read-only still runs, but if it would write anything (a diff or a blob) the
-  node answers `403` instead of appending it.
+- **Read-only team members**: a member whose row in the app's team is read-only
+  reaches a component app's views only: a call to any other method is refused with
+  `403` before it runs. On a wasmer app the call still runs, but if it would write
+  anything (a diff or a blob) the node answers `403` instead of appending it.
 
 ## Outbound HTTPS
 

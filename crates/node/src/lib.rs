@@ -233,6 +233,21 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // What the peers' replicas used today, for the fuel cap (D76, D78), every
+    // `USAGE_REFRESH` while a cap is set: the cap never asks a peer during a call.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::USAGE_REFRESH) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.refresh_usage().await;
+        }
+    }));
+
     // Presence entries nobody refreshed leave.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

@@ -15,7 +15,7 @@
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +32,7 @@ use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::{
     utc_day, Applied, CallEntry, ComponentCmd, DayUsage, Outcome, SysDirectory, TickEntry,
+    UsageBook,
 };
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
@@ -80,12 +81,37 @@ pub const MAX_ARGS_BYTES: usize = 512 * 1024;
 /// How often an app group's leader looks for due timer ticks (D34).
 pub const TIMER_POLL: Duration = Duration::from_millis(100);
 
-/// An app's usage book: [`DayUsage`] per UTC day ([`crate::component::ComponentHead::usage`]).
-pub type UsageBook = BTreeMap<u64, DayUsage>;
+/// How often a node asks every peer, at once, what the apps it replicates used today,
+/// for the fuel cap (D76, D78). The cap reads that answer and never asks a peer
+/// during a call, so it is approximate by at most this long: a payer can run past
+/// its cap for one interval. 5 s keeps that overshoot a small part of a daily cap
+/// and costs each node one small request per peer per interval, however many apps
+/// there are. The refresh runs only while a cap is set.
+pub const USAGE_REFRESH: Duration = Duration::from_secs(5);
 
-/// How long the fuel quota reuses a peer's answer about an app this node does not
-/// host. Apps hosted here are read from the replica every time.
-pub const USAGE_CACHE: Duration = Duration::from_secs(1);
+/// What each peer's replicas said its apps used on `day` ([`Node::refresh_usage`]).
+/// A peer that does not answer keeps its last figures; a new day starts empty.
+#[derive(Debug, Default)]
+pub struct PeerUsage {
+    day: u64,
+    peers: HashMap<u64, HashMap<String, DayUsage>>,
+}
+
+impl PeerUsage {
+    /// The largest figure any peer reported for `app` on `day` (replicas that lag
+    /// report less; usage only grows within a day).
+    fn of(&self, app: &str, day: u64) -> DayUsage {
+        if self.day != day {
+            return DayUsage::default();
+        }
+        self.peers
+            .values()
+            .filter_map(|apps| apps.get(app))
+            .copied()
+            .max_by_key(|u| u.fuel)
+            .unwrap_or_default()
+    }
+}
 
 /// `413 ARGS_TOO_LARGE`: arguments over [`MAX_ARGS_BYTES`], refused before running.
 #[must_use]
@@ -690,7 +716,7 @@ impl Node {
         // An owner over its daily fuel is refused before the run (Q20); a retry of a
         // call that committed still replays, below.
         let over_quota = match &app {
-            Some(app) => self.fuel_quota_refusal(app).await,
+            Some(app) => self.fuel_quota_refusal(app),
             None => None,
         };
         let args = args_bytes(&req.args);
@@ -731,6 +757,18 @@ impl Node {
                     refused = Some(e);
                     return Proposal::Reply(Vec::new());
                 }
+                // A read-only member reaches views only: any other method is refused
+                // before it runs, so no run burns the payer's fuel uncounted.
+                let view = prepared
+                    .abi
+                    .methods
+                    .get(&req.method)
+                    .is_some_and(|m| m.kind == MethodKind::View);
+                if read_only && !view {
+                    return Proposal::Reply(
+                        serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
+                    );
+                }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
@@ -758,18 +796,14 @@ impl Node {
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
                 answered = true;
-                // Events are logged side effects too (Ruling 41): an emit-only call
-                // is refused like one that writes keys.
+                // A view reached through a call (an API node that read an older ABI)
+                // still may not write for a read-only member. Events are logged side
+                // effects too (Ruling 41): an emit-only run is refused like one that
+                // writes keys.
                 if read_only && (!outcome.diff.is_empty() || !outcome.events.is_empty()) {
-                    let refused = Applied::unlogged(
-                        applied,
-                        Outcome {
-                            status: Status::AppError,
-                            error: Value::String(super::READ_ONLY.into()),
-                            ..Outcome::default()
-                        },
+                    return Proposal::Reply(
+                        serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
                     );
-                    return Proposal::Reply(serde_json::to_vec(&refused).unwrap_or_default());
                 }
                 Proposal::Append(entry_bytes(ComponentCmd::Call(Box::new(CallEntry {
                     method: req.method.clone(),
@@ -801,13 +835,13 @@ impl Node {
         Ok(a)
     }
 
-    /// `app`'s usage book (Q20), from a replica: this node's if it hosts the app,
-    /// else one that does. A wasmer app has none.
+    /// `app`'s usage book (Q20), from a replica: this node's if it is one of the app's
+    /// replicas, else one that is. A wasmer app has none.
     pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
         if app.executor != Executor::Component {
-            return Ok(UsageBook::new());
+            return Ok(UsageBook::default());
         }
-        if let Some(g) = self.hosted(&app.app_id) {
+        if let Some(g) = self.replica_group(app) {
             return Ok(g.read_local(|m, _| m.state.component.head.usage.clone()));
         }
         let body = json!({ "app": app.app_id });
@@ -824,68 +858,141 @@ impl Node {
         Err(ApiError::unavailable("no replica answered"))
     }
 
-    /// Today's usage (UTC, on app time) of `app`: this node's replica if it hosts the
-    /// app, else a replica's answer at most [`USAGE_CACHE`] old. An app no replica
-    /// answers for counts as nothing.
-    async fn app_usage_today(&self, app: &AppRecord, today: u64) -> DayUsage {
-        if let Some(g) = self.hosted(&app.app_id) {
-            return g.read_local(|m, _| m.state.component.head.usage_on(today));
-        }
-        let cached = self.usage_cache.lock().ok().and_then(|c| {
-            c.get(&app.app_id)
-                .filter(|(at, _)| at.elapsed() < USAGE_CACHE)
-                .map(|(_, book)| book.get(&today).copied().unwrap_or_default())
+    /// What each component app this node replicates used on `day`, by app id: what a
+    /// peer asks for in [`Self::refresh_usage`].
+    #[must_use]
+    pub fn replicas_usage_on(&self, day: u64) -> HashMap<String, DayUsage> {
+        let apps: Vec<AppRecord> = self.sys(|s| {
+            s.apps
+                .values()
+                .filter(|a| a.executor == Executor::Component)
+                .cloned()
+                .collect()
         });
-        if let Some(day) = cached {
-            return day;
+        apps.iter()
+            .filter_map(|a| {
+                let g = self.replica_group(a)?;
+                let used = g.read_local(|m, _| m.state.component.head.usage.on(day));
+                Some((a.app_id.clone(), used))
+            })
+            .collect()
+    }
+
+    /// One round of [`USAGE_REFRESH`]: ask every peer at once what the apps it
+    /// replicates used today, and keep the answers. A peer that does not answer
+    /// within the interval keeps its last figures. Nothing is asked while no fuel
+    /// cap is set.
+    pub async fn refresh_usage(&self) {
+        if self.sys(|s| s.quotas.max_fuel_per_payer_per_day) == 0 {
+            return;
         }
-        match self.app_usage(app).await {
-            Ok(book) => {
-                let day = book.get(&today).copied().unwrap_or_default();
-                if let Ok(mut c) = self.usage_cache.lock() {
-                    // Apps that left this account (deleted, moved) leave the cache too.
-                    c.retain(|_, (at, _)| at.elapsed() < USAGE_CACHE);
-                    let _prev = c.insert(app.app_id.clone(), (std::time::Instant::now(), book));
-                }
-                day
+        let day = utc_day(self.clock.now_ms());
+        let peers: Vec<(u64, String)> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id && !s.removed_nodes.contains(&n.id))
+                .map(|n| (n.id, n.addr.clone()))
+                .collect()
+        });
+        let body = json!({ "day": day });
+        let answers = futures_util::future::join_all(peers.into_iter().map(|(id, addr)| {
+            let body = &body;
+            async move {
+                let asked = self.peer_post(&addr, "internal/usage/today", body);
+                let answer = match tokio::time::timeout(USAGE_REFRESH, asked).await {
+                    Ok(Ok(v)) => serde_json::from_value::<HashMap<String, DayUsage>>(v).ok(),
+                    Ok(Err(e)) => {
+                        debug!(peer = id, error = %e, "usage not refreshed; keeping the last");
+                        None
+                    }
+                    Err(_) => {
+                        debug!(peer = id, "usage not refreshed in time; keeping the last");
+                        None
+                    }
+                };
+                (id, answer)
             }
-            Err(e) => {
-                debug!(app = %app.app_id, error = %e, "usage not known; counted as none");
-                DayUsage::default()
+        }))
+        .await;
+        let Ok(mut known) = self.peer_usage.lock() else {
+            return;
+        };
+        if known.day != day {
+            *known = PeerUsage {
+                day,
+                peers: HashMap::new(),
+            };
+        }
+        for (id, answer) in answers {
+            if let Some(apps) = answer {
+                let _prev = known.peers.insert(id, apps);
             }
         }
     }
 
-    /// What `payer`'s apps used today (UTC, on app time), summed over its component
-    /// apps (Q20, D78). The payer is `usage::payer`'s: an organization's id for its
-    /// apps, `account:{owner}` (`usage::account_payer`) for an account's personal ones.
+    /// What `payer`'s component apps used today (UTC, on app time), for the API: each
+    /// app's book read from a replica, all apps at once (Q20, D78). The payer is
+    /// `usage::payer`'s: an organization's id for its apps, `account:{owner}`
+    /// (`usage::account_payer`) for an account's personal ones. An app no replica
+    /// answers for counts as nothing.
     pub async fn payer_usage_today(&self, payer: &str) -> DayUsage {
         let today = utc_day(self.clock.now_ms());
-        let apps: Vec<AppRecord> = self.sys(|s| {
+        let apps = self.payer_apps(payer);
+        let days = futures_util::future::join_all(apps.iter().map(|app| async move {
+            match self.app_usage(app).await {
+                Ok(book) => book.on(today),
+                Err(e) => {
+                    debug!(app = %app.app_id, error = %e, "usage not known; counted as none");
+                    DayUsage::default()
+                }
+            }
+        }))
+        .await;
+        let mut total = DayUsage::default();
+        for day in &days {
+            total.add(day);
+        }
+        total
+    }
+
+    /// The component apps `payer` pays for.
+    fn payer_apps(&self, payer: &str) -> Vec<AppRecord> {
+        self.sys(|s| {
             s.apps
                 .values()
                 .filter(|a| a.executor == Executor::Component && crate::usage::payer(a) == payer)
                 .cloned()
                 .collect()
-        });
-        let mut total = DayUsage::default();
-        for app in &apps {
-            total.add(&self.app_usage_today(app, today).await);
-        }
-        total
+        })
+    }
+
+    /// `payer`'s fuel today as the cap sees it, without asking any peer: the apps this
+    /// node replicates read from the replica, the others from the last
+    /// [`Self::refresh_usage`] (so up to [`USAGE_REFRESH`] old).
+    fn payer_fuel_cached(&self, payer: &str) -> u64 {
+        let today = utc_day(self.clock.now_ms());
+        let apps = self.payer_apps(payer);
+        let known = self.peer_usage.lock().ok();
+        apps.iter()
+            .map(|app| match self.replica_group(app) {
+                Some(g) => g.read_local(|m, _| m.state.component.head.usage.on(today).fuel),
+                None => known.as_ref().map_or(0, |k| k.of(&app.app_id, today).fuel),
+            })
+            .fold(0, u64::saturating_add)
     }
 
     /// The refusal of a new call to `app`, of either executor, when its payer (its
     /// organization, or for a personal app its owner; D78) is at or over
-    /// `max_fuel_per_payer_per_day` (D76; 0: no limit, nothing is read). Only a
-    /// client's call is refused: `init`, timer ticks and follow-ups still run, and
-    /// the component runs among them still count toward the payer's day.
-    pub(super) async fn fuel_quota_refusal(&self, app: &AppRecord) -> Option<ApiError> {
+    /// `max_fuel_per_payer_per_day` (D76; 0: no limit, nothing is read). Reads no
+    /// peer ([`Self::payer_fuel_cached`]). Only a client's call or an xcall
+    /// delivery is refused: `init`, timer ticks and event handlers still run, and the
+    /// component runs among them still count toward the payer's day.
+    pub(super) fn fuel_quota_refusal(&self, app: &AppRecord) -> Option<ApiError> {
         let limit = self.sys(|s| s.quotas.max_fuel_per_payer_per_day);
         if limit == 0 {
             return None;
         }
-        let used = self.payer_usage_today(&crate::usage::payer(app)).await.fuel;
+        let used = self.payer_fuel_cached(&crate::usage::payer(app));
         (used >= limit).then(|| {
             super::rejected(&format!(
                 "{}: fuel per payer per day ({used} of {limit})",
@@ -1139,6 +1246,19 @@ impl Node {
         self.count_conflict(&a);
         Ok(a)
     }
+}
+
+/// The answer to a read-only member's call that is refused (`403 FORBIDDEN`): not
+/// logged, nothing applied.
+fn read_only_refusal(applied: u64) -> Applied {
+    Applied::unlogged(
+        applied,
+        Outcome {
+            status: Status::AppError,
+            error: Value::String(super::READ_ONLY.into()),
+            ..Outcome::default()
+        },
+    )
 }
 
 /// A component's answer in the shape the node's own commands (`init`, upgrades)

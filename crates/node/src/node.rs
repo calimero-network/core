@@ -33,8 +33,8 @@ mod component;
 use component::LocalError;
 
 pub use component::{
-    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, UsageBook, BAD_BUNDLE,
-    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_CACHE,
+    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
+    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 
 /// The system group's id.
@@ -375,9 +375,9 @@ pub struct Node {
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
-    /// The usage books of apps not hosted here, as a replica last answered, for the
-    /// fuel quota (`component::USAGE_CACHE`).
-    usage_cache: Mutex<HashMap<String, (std::time::Instant, component::UsageBook)>>,
+    /// What each peer's replicas last said its apps used today, for the fuel cap
+    /// (`component::USAGE_REFRESH`).
+    peer_usage: Mutex<component::PeerUsage>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns and the sessions it
     /// issues. Made on the node's first start and kept in its data directory
@@ -591,7 +591,7 @@ impl Node {
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
-            usage_cache: Mutex::new(HashMap::new()),
+            peer_usage: Mutex::default(),
             transport: sealed,
             receipt_key,
             peers: Mutex::new(HashMap::new()),
@@ -793,7 +793,7 @@ impl Node {
     /// The app's group, if this node is one of its replicas. A node the app
     /// moved off may still hold the group until reconcile drops it; it must
     /// forward instead of answering from a group it no longer belongs to.
-    fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
+    pub(crate) fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
         if !app.replicas.contains(&self.config.node_id) {
             return None;
         }
@@ -860,6 +860,35 @@ impl Node {
                 .and_then(|v| v["index"].as_u64()),
             Err(_) => None,
         }
+    }
+
+    /// The registered nodes whose attested release is older than this node's own,
+    /// or that could not be attested, with what each named (`None`): until there are
+    /// none, a setting only this release knows is not written, as D71 gates
+    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// from what it applies, and its snapshots would bring it back to its default.
+    pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
+        let own = self.own_release();
+        let ids: Vec<NodeId> = self.sys(|s| {
+            s.nodes
+                .keys()
+                .filter(|id| !s.removed_nodes.contains(id))
+                .copied()
+                .collect()
+        });
+        let releases = futures_util::future::join_all(
+            ids.iter()
+                .map(|id| async move { (*id, self.release_of_node(*id).await) }),
+        )
+        .await;
+        releases
+            .into_iter()
+            .filter(|(_, r)| {
+                r.as_deref().is_none_or(|r| {
+                    crate::system::compare_versions(r, &own) == std::cmp::Ordering::Less
+                })
+            })
+            .collect()
     }
 
     /// The release node `id` runs, as its verified attestation names it (this
@@ -2219,11 +2248,15 @@ impl Node {
                 )
             });
         }
-        // An owner over its daily fuel (D76) is refused before a client's call
-        // runs, as on the component path; a retry of a call that committed still
-        // replays, below. Timers, follow-ups and the node's own commands still run.
+        // A payer over its daily fuel (D76, D78) is refused before a client's call or
+        // an xcall delivery runs, as on the component path; a retry of a call that
+        // committed still replays, below. Timers, event handlers and the node's own
+        // commands still run. A refused xcall is dropped by `drive` with the refusal
+        // logged (`QUOTA_EXCEEDED`).
         let over_quota = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
-            Some(app) if req.trigger.is_none() && !req.host => self.fuel_quota_refusal(&app).await,
+            Some(app) if !req.host && matches!(req.trigger, None | Some(Trigger::XCall { .. })) => {
+                self.fuel_quota_refusal(&app)
+            }
             _ => None,
         };
         let mut quota_refused = None;
@@ -2606,7 +2639,11 @@ impl Node {
                                 debug!(to = %target, error = %e.message, "xcall waits for its target");
                                 return;
                             }
-                            Err(e) => warn!(to = %target, error = %e.message, "xcall failed"),
+                            // A dead letter: the target's payer is over its fuel cap
+                            // (D76), or the target refused it otherwise.
+                            Err(e) => {
+                                warn!(to = %target, code = %e.code, error = %e.message, "xcall failed");
+                            }
                         }
                     } else {
                         warn!(from = %app.app_id, to = %context, "xcall to an unknown app dropped");
