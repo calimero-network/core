@@ -70,11 +70,22 @@ That stays true. Instead, the app asks the **node** to ask the person.
    A release request approves by default; `"withdraw": true` asks to withdraw
    the release's approval instead (a console's *Withdraw*). Unknown fields are
    refused. The node checks the caller could make this
-   approval at all (the governance holder, upgrade authority, organization
-   membership, a package-bound session only about its own package and apps),
+   approval at all, with the route's own rules, before any page exists: the
+   governance holder; for an organization's release, `APPROVE_RELEASES`
+   there (`403`); for an upgrade, whoever the package names
+   (`SystemState::may_upgrade`: a package that declares `upgrades:
+   publisher` is its publisher organization's, `409` while no organization
+   has bound its key, and an owner-upgraded app is never moved to a
+   publisher release, `403`), and a release deadline that stops the
+   upgrade (`409 RELEASE_DEADLINE`); organization membership; a
+   package-bound session only about its own package and apps. `/approve`
+   asks again, before the passkey, so a capability revoked while the page
+   is open is refused there. It
    resolves the subject from its own state and the releases' verified `.mpk`
    files, and freezes what the page will show. It answers
-   `{ "requestId", "url", "expiresAt" }`. The request lives in that node's
+   `{ "requestId", "url", "expiresAt", "code" }`; `code` is the request's
+   [confirmation code](#the-confirmation-code), which the app or console shows
+   before it sends the person to `url`. The request lives in that node's
    memory, bound to the account, for 10 minutes (`CONSENT_REQUEST_TTL`), and
    can be decided once.
 2. **Page.** The app sends the person to `url`, `GET /consent/{id}` on the
@@ -111,20 +122,91 @@ and at most 2 KiB. Otherwise `400 RETURN_TO_NOT_ALLOWED`.
 
 ## What the page shows
 
-Every page leads with a headline, then two plain sentences: what holds **until**
-the person approves, and what changes **once** they do. For example: "Until you
-approve, nodes running mero-tee 1.4.0 receive none of the data of your own
-apps: the nodes that hold it refuse to send them any." Then who is approving
-(the account), for whom (the account's own apps, an organization, or one app),
-which app asked and where it returns to, and when the request expires.
-Warnings the person should not miss come next, in their own boxes.
+The page is written for the person who approves, not for an engineer. From
+top to bottom:
 
-| Kind | Shown, from node-side data only |
+1. **Trust strip.** "Secure approval page from your Calimero cluster", with
+   the page's own host and "Check that your browser's address bar shows
+   *host*".
+2. **Who is asking.** The app and its publisher in plain words ("Team notes
+   by Acme Inc.": the signed manifest's `metadata.name` and `author`), and the
+   account approving ("Signed in as …").
+3. **The headline**, the model's `title`: "Update Team notes to version
+   1.5.0", "Allow a new secure server version (2.3.131) to hold Acme's data",
+   "Stop server version 2.3.128 from receiving Acme's data", "Allow Team notes
+   to send data to api.openai.com".
+4. **What this means**: the model's `points`, two to five plain sentences
+   (what approving allows, that nothing changes until they approve, what a
+   withdrawal stops and that nothing is deleted), then `attention`, the things
+   not to miss. For an upgrade that is the "Needs your attention" list, each
+   entry present only when it applies: sends data to new addresses (hosts
+   only), adds a new sign-in address, can now delete data (methods added or
+   newly destructive), rewrites stored data once (a migration), removes
+   features (methods removed), a refused plan, another publisher key; with
+   none, "No new permissions." A withdrawal of the last approved release is
+   flagged too.
+5. **How you know this is legit**: checks a person can make. The page is
+   served by their node at *host*, not by the app; the passkey will ask to
+   sign in to `rpId`, and any other site means cancel; for an upgrade or
+   outbound request, published and signed by the publisher (the
+   organization its key is bound to on the cluster, when there is one), with whether the
+   key is the one the running version (or every release of the package) was
+   signed with; for a release, built by Calimero's public release process and
+   its signature verified by the node, or, on mock attestation, "Test
+   cluster: no hardware checks". Last, the confirmation code, large.
+6. **Approve with passkey** (*Withdraw approval* for a withdrawal) and
+   **Decline**, right after these, with the status line below.
+7. **Technical details**, collapsed: everything below, long values cut to one
+   line with the full value as their title and selectable, and every empty
+   list left out.
+
+| Kind | Technical details, from node-side data only |
 | --- | --- |
 | **Release** | The version; whether it is already approved and what is approved now; which of the cluster's nodes attest it; this node's profile if it runs it; the release's signed measurements per profile and their digest (on mock attestation it says there are none); links to the signed release and its Sigstore-signed `published-mrtds.json`, with how to verify them independently; the deadline, if any |
-| **Release withdrawal** | The version; whether it is approved now (if not, that withdrawing changes nothing) and what else is; whether it is the only approved release, which the node refuses to withdraw; which of the cluster's nodes attest it; this node's profile if it runs it. No measurements: a withdrawal lets nothing in, so it never waits on fetching them. The page says what changes: the nodes that hold the data send nodes on that release no more Raft entries or snapshots, and no app is placed or moved onto them; and what does not: nothing is deleted or moved, a replica already there keeps what it holds until the operator moves it, and one that leads an app keeps leading it until leadership moves. Its button reads *Withdraw approval* |
-| **Upgrade** | The app, current and target version, the publisher's key and author, and a **capability sheet** computed from the two signed manifests and the ABIs their WASM embeds: outbound prefixes added and removed; frontend origin and aliases, with every **new sign-in origin** highlighted (a page there could act in the app as the person); interfaces used and exported; public methods added, removed or changed (view or write, xcall entry point, event handler, destructive); events; timers; whether a migration runs and between which state versions, or why the upgrade would be refused; SDK and build information; the `.mpk`, WASM and manifest hashes |
-| **Outbound** | The package and its publisher, the release whose declarations are listed, the prefixes being approved, which of them are new, which are already approved |
+| **Release withdrawal** | The version; whether it is approved now (if not, that withdrawing changes nothing) and what else is; whether it is the only approved release, which the node refuses to withdraw; which of the cluster's nodes attest it; this node's profile if it runs it. No measurements: a withdrawal lets nothing in, so it never waits on fetching them. The page says what changes: the nodes that hold the data send nodes on that release no more Raft entries or snapshots, and no app is placed or moved onto them; and what does not: nothing is deleted or moved, a replica already there keeps what it holds until the operator moves it, and one that leads an app keeps leading it until leadership moves |
+| **Upgrade** | The app, current and target version, the publisher's key and author, and a **capability sheet** computed from the two signed manifests and the ABIs their WASM embeds: outbound prefixes added and removed; frontend origin and aliases, with every **new sign-in origin** listed (a page there could act in the app as the person); interfaces used and exported; public methods added, removed or changed (view or write, xcall entry point, event handler, destructive); events; timers; whether a migration runs and between which state versions, or why the upgrade would be refused; SDK and build information; the `.mpk`, WASM and manifest hashes |
+| **Outbound** | The package and its publisher key, the release whose declarations are listed, the prefixes being approved, which of them are new, which are already approved |
+
+Each kind's model also keeps the engineer's wording: `headline`, `before`
+(what holds until the person approves), `after` (what changes once they do)
+and `notes`, shown under *Technical details*.
+
+### The model's plain-language fields
+
+| Field | Kinds | What it is |
+| --- | --- | --- |
+| `title` | all | The headline in plain words |
+| `points` | all | Two to five plain sentences: what approving means |
+| `attention` | all | `[{ "flag", "text", "items" }]`, what not to miss; `items` are hosts, origins or method names. Flags: `refused`, `sendsData`, `newSignIn`, `deletesData`, `migration`, `removesFeatures`, `newPublisherKey` (upgrade), `lastApproved` (withdrawal). Empty: no new permissions |
+| `app` | upgrade, outbound | `{ "name", "package" }`: the manifest's display name and the package id |
+| `publisher` | upgrade, outbound | `{ "name", "signer", "keyChanged", "org" }`: the manifest's author (`null` when it names none), the verified signing key (`did:key`), whether it differs from the running version's, and the organization the key is bound to on this cluster (`{ "id", "name" }`, from `BindPublisher`; `null` while unbound). The page names that organization as the publisher when there is one |
+| `release.deadline` | release | `{ "after", "afterSecs", "passed" }` when the operator set an end-of-new-work deadline for the version (`SetReleaseDeadline`, `GET /releases`), else `null`; `points` then say it in plain words ("After Nov 15, 2026 (UTC), new apps, installs and updates for Acme's apps pause until this version (or a newer one) is approved") |
+| `requestedBy` | all | `{ "package", "name", "publisher", "returnOrigin" }`: the asking package (a package-bound session's, else `null`), its newest release's display name and author |
+| `rpId` | all | The relying party ID the passkey prompt will name |
+| `code` | all | The [confirmation code](#the-confirmation-code) |
+
+The author and display name are what the publisher wrote in the signed
+manifest; the node verifies the signature and the key, not that the name is
+true. The page says which key signed.
+
+### The confirmation code
+
+A short code that ties the page to the request the person's own app or
+console made, so a link to another request (on the same node) shows a
+different code. The create answer and the model both carry it as `code`; a
+client can also compute it:
+
+1. Take `SHA-256` of the request id's UTF-8 bytes.
+2. Read the first 4 bytes as a big-endian unsigned 32-bit integer and keep
+   its top 30 bits.
+3. Write them as six 5-bit groups, most significant first, each as a
+   character of Crockford's base32 alphabet `0123456789ABCDEFGHJKMNPQRSTVWXYZ`.
+4. Put a `-` after the third: `XXX-XXX`.
+
+For example, `1.AAAAAAAAAAAAAAAAAAAAAA` is `R02-9P2` and
+`2.q7Xb3kR0fLzM8nW1yVt5cA` is `54E-429`
+(`consent_page::confirmation_code`). The code is not a secret and proves
+nothing on its own: the passkey's challenge is what binds the approval.
 
 The model is what the app can neither write nor alter: it is frozen when the
 request is made, from the node's state and the releases' verified manifests.

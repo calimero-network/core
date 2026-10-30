@@ -27,6 +27,8 @@ struct Declares<'a> {
     outbound: &'a [&'a str],
     frontend: Option<&'a str>,
     aliases: &'a [&'a str],
+    /// `upgrades: publisher`.
+    publisher_upgrades: bool,
 }
 
 /// A signed single-service `.mpk` of `PACKAGE`, and its manifest's hash.
@@ -72,7 +74,9 @@ fn release(
         frontend: None,
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
-        upgrades: None,
+        upgrades: d
+            .publisher_upgrades
+            .then_some(calimero_bundle::UpgradeAuthority::Publisher),
         services: None,
         signature: None,
     };
@@ -230,6 +234,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             outbound: &["https://api.example/v1/", "https://metrics.example/"],
             frontend: Some("https://notes.example"),
             aliases: &["https://share.example/notes"],
+            ..Declares::default()
         },
     );
     let _ = alice.upload_package(v1).await.unwrap();
@@ -360,7 +365,16 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "/upgrade/to/mpk",
             "/upgrade/to/signer",
             "/upgrade/publisher/signer",
+            "/publisher/signer",
+            "/code",
         ],
+    );
+    // The confirmation code: the same in the create answer and the model,
+    // and the documented derivation from the request id.
+    assert_eq!(model["code"], made["code"], "{made}");
+    assert_eq!(
+        model["code"],
+        json!(calimero_node::consent_page::confirmation_code(&id))
     );
     let expected = json!({
         "kind": "upgrade",
@@ -370,9 +384,31 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "requestId": "<redacted>",
         "expiresAt": "<redacted>",
         "approver": { "account": "<redacted>" },
-        "requestedBy": { "package": PACKAGE, "returnOrigin": app_origin },
+        "code": "<redacted>",
+        "requestedBy": {
+            "package": PACKAGE, "name": "Notes", "publisher": "Example", "returnOrigin": app_origin,
+        },
         "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": null },
         "headline": "Upgrade Notes from 1.0.0 to 2.0.0",
+        "title": "Update notes to version 2.0.0",
+        "points": [
+            "notes moves from version 1.0.0 to 2.0.0, for everyone who uses it.",
+            "Until you approve, nothing changes: it keeps running 1.0.0.",
+        ],
+        "attention": [
+            {
+                "flag": "sendsData",
+                "text": "Can send data to new addresses (each still needs your separate approval):",
+                "items": ["metrics.example"],
+            },
+            {
+                "flag": "newSignIn",
+                "text": "Adds a new sign-in address. Pages there could act in this app as you:",
+                "items": ["https://share.example"],
+            },
+        ],
+        "app": { "name": "Notes", "package": PACKAGE },
+        "publisher": { "name": "Example", "signer": "<redacted>", "keyChanged": false, "org": null },
         "before": "Until you approve, the app keeps running 1.0.0: only that code reads and changes its data.",
         "after": "<redacted>",
         "notes": [
@@ -603,6 +639,12 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         "{model}"
     );
     assert_eq!(model["release"]["alreadyApproved"], false);
+    assert_eq!(
+        model["title"],
+        "Allow a new secure server version (2.0.0) to hold your data"
+    );
+    assert_eq!(model["points"][0], "Cluster servers running version 2.0.0 will be allowed to receive, store and run your apps.");
+    assert_eq!(model["attention"], json!([]));
     // Mock attestation: no node checks measurements; the digest is over none.
     let measurements = &model["release"]["measurements"];
     assert_eq!(measurements["profiles"], json!({}));
@@ -646,6 +688,9 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(model["outbound"]["new"], json!(["https://api.example/"]));
+    assert_eq!(model["title"], "Allow Notes to send data to api.example");
+    assert_eq!(model["app"], json!({ "name": "Notes", "package": PACKAGE }));
+    assert_eq!(model["publisher"]["name"], "Example");
     let ((code, done), args) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["prefixes"], json!(["https://api.example/"]));
@@ -758,6 +803,11 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     let model = page.model().await;
     assert_eq!(model["kind"], "release");
     assert_eq!(model["release"]["change"], "withdraw", "{model}");
+    assert_eq!(
+        model["title"],
+        "Stop server version 2.0.0 from receiving your data"
+    );
+    assert_eq!(model["attention"], json!([]), "not the last approved");
     assert!(
         model["headline"]
             .as_str()
@@ -804,6 +854,7 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(model["release"]["lastApproved"], true, "{model}");
+    assert_eq!(model["attention"][0]["flag"], "lastApproved", "{model}");
     let ((code, refused), _) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 400, "{refused}");
     assert_eq!(refused["error"], "REJECTED");
@@ -820,4 +871,175 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     unknown["subject"]["approved"] = json!(false);
     let e = alice.post("consent/requests", unknown).await.unwrap_err();
     assert_eq!(status(&e), 400, "{e}");
+}
+
+/// An organization's release on the page: approving is `APPROVE_RELEASES`,
+/// judged when the request is made (a member without it is refused before
+/// any page exists) and again on the page (a capability revoked meanwhile is
+/// refused before the passkey); the owner approves; the operator's deadline
+/// for the release is in the model and its plain words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_releases() {
+    const APPROVE_RELEASES: u32 = 1 << 10;
+    let c = Cluster::start(3).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, _) = signed_up(&c, 0, "bob").await;
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops
+        .post(
+            "ops/releases/3.0.0/deadline",
+            json!({ "after": "2999-01-01T00:00:00Z" }),
+        )
+        .await
+        .unwrap();
+    let ask = json!({
+        "kind": "release",
+        "scope": { "org": org },
+        "subject": { "version": "3.0.0" },
+        "returnTo": format!("{ORIGIN}/settings"),
+    });
+
+    // A member without the capability: no page at all.
+    let e = bob.post("consent/requests", ask.clone()).await.unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert!(e.to_string().contains("APPROVE_RELEASES"), "{e}");
+
+    // Granted, then revoked while the page is open: refused before the passkey.
+    let caps = format!("orgs/{org}/capabilities");
+    let _ok = alice
+        .post(
+            &caps,
+            json!({ "account": bob_id, "capabilities": APPROVE_RELEASES }),
+        )
+        .await
+        .unwrap();
+    let made = bob.post("consent/requests", ask.clone()).await.unwrap();
+    let _ok = alice
+        .post(&caps, json!({ "account": bob_id, "capabilities": 0 }))
+        .await
+        .unwrap();
+    let (code, refused) = Page::new(made["url"].as_str().unwrap())
+        .post("approve", json!({}))
+        .await;
+    assert_eq!(code, 403, "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("APPROVE_RELEASES"),
+        "{refused}"
+    );
+
+    // The owner: the deadline in the model and in plain words; approved.
+    let made = alice.post("consent/requests", ask).await.unwrap();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let model = page.model().await;
+    assert_eq!(
+        model["title"],
+        "Allow a new secure server version (3.0.0) to hold Acme's data"
+    );
+    assert_eq!(
+        model["release"]["deadline"],
+        json!({ "after": "2999-01-01T00:00:00Z", "afterSecs": 32_472_144_000_u64, "passed": false }),
+        "{model}"
+    );
+    let points: Vec<&str> = model["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        points.iter().any(|p| p.starts_with(
+            "After Jan 1, 2999 (UTC), new apps, installs and updates for Acme's apps pause"
+        )),
+        "{points:?}"
+    );
+    let mut page_key = SoftAuthenticator::with_key(&alice_key, "localhost", &origin(&c.urls[0]));
+    let ((code, done), args) = page.approve(&c, &mut page_key).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["version"], "3.0.0");
+    let view = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert!(
+        view["approvedReleases"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("3.0.0")),
+        "{view}"
+    );
+}
+
+/// A package its publisher upgrades is not the instance owner's to upgrade,
+/// on the page as on the route, and the request is refused before any page
+/// exists: while no organization has bound the key, nobody upgrades it
+/// (409); an owner-upgraded app is never moved back to a publisher release
+/// (403).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
+    let c = Cluster::start(3).await;
+    let (alice, _) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+    let (v1, _) = release(
+        "1.0.0",
+        &kv_wasm(),
+        &publisher,
+        &Declares {
+            publisher_upgrades: true,
+            ..Declares::default()
+        },
+    );
+    let (v2, _) = release(
+        "2.0.0",
+        &variant(&kv_wasm(), "v2"),
+        &publisher,
+        &Declares::default(),
+    );
+    let _ = alice.upload_package(v1).await.unwrap();
+    let _ = alice.upload_package(v2).await.unwrap();
+    let create =
+        |name: &str, version: &str| json!({ "name": name, "package": PACKAGE, "version": version });
+    let app_of = |v: Value| v["appId"].as_str().unwrap().to_owned();
+    let held = app_of(alice.post("apps", create("held", "1.0.0")).await.unwrap());
+    let owned = app_of(alice.post("apps", create("owned", "2.0.0")).await.unwrap());
+    let ask = |app: &str, to: &str| {
+        json!({
+            "kind": "upgrade",
+            "subject": { "app": app, "toVersion": to },
+            "returnTo": format!("{ORIGIN}/settings"),
+        })
+    };
+
+    let e = alice
+        .post("consent/requests", ask(&held, "2.0.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 409, "the key is bound to no organization: {e}");
+    assert!(e.to_string().contains("upgraded by its publisher"), "{e}");
+
+    let e = alice
+        .post("consent/requests", ask(&owned, "1.0.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert!(e.to_string().contains("its publisher upgrades"), "{e}");
 }

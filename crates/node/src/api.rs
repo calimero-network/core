@@ -2807,7 +2807,7 @@ async fn run_upgrade(
 
 /// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
 /// no new work at `now` ([`crate::system::SystemState::stalled_for_bundle`]).
-fn refuse_stalled(
+pub(crate) fn refuse_stalled(
     node: &Node,
     app: &crate::types::AppRecord,
     bundle: &str,
