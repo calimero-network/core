@@ -458,6 +458,15 @@ impl Client {
         self.json(Method::DELETE, path, None).await
     }
 
+    /// DELETE `path` with a JSON body: a proof the caller made itself
+    /// (`{confirm}`, `{operatorProof}`).
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn delete_with_body(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::DELETE, path, Some(body)).await
+    }
+
     // ------------------------------------------------------------ identity
 
     /// Create an account with a new passkey and sign in.
