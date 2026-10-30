@@ -486,7 +486,6 @@ mod tests {
             no_logo: false,
             print_output_path: false,
             frontend_dir: None,
-            upgrades: None,
             check_frontend: None,
             format: crate::OutputFormat::Human,
             bump: None,
