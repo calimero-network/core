@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
 use tracing::warn;
 use zeroize::Zeroizing;
 
@@ -398,6 +399,30 @@ impl FileRead for SealedReader {
     }
 }
 
+/// The `members` that pass `check`, asked all at once; one that has not answered by `deadline`
+/// is refused.
+async fn allowed_by<F, Fut>(
+    members: Vec<(NodeId, String)>,
+    deadline: Instant,
+    check: F,
+) -> HashMap<NodeId, String>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let answers = futures_util::future::join_all(members.into_iter().map(|(id, addr)| {
+        let asked = check(addr.clone());
+        async move {
+            let ok = tokio::time::timeout_at(deadline, asked)
+                .await
+                .unwrap_or(false);
+            ok.then_some((id, addr))
+        }
+    }))
+    .await;
+    answers.into_iter().flatten().collect()
+}
+
 impl Node {
     /// Stores a run's new files here and on the app's replicas; `503 FILES_UNAVAILABLE` unless
     /// a majority of the voters hold every one, and then what was stored is removed.
@@ -423,10 +448,12 @@ impl Node {
             .probes
             .file_pushes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let targets = (self.push_targets(app_id).await).ok_or_else(files_unavailable)?;
+        let deadline = Instant::now() + PUSH_WAIT;
         let held: usize = blobs.iter().map(|(_, bytes)| bytes.len()).sum();
         let held = u32::try_from(held).map_err(|_| files_unavailable())?;
         let push = async {
+            let targets =
+                (self.push_targets(app_id, deadline).await).ok_or_else(files_unavailable)?;
             let _budget = Arc::clone(&self.push_bytes)
                 .acquire_many_owned(held)
                 .await
@@ -439,7 +466,7 @@ impl Node {
             .await;
             pushed.into_iter().collect::<Result<Vec<()>, ApiError>>()
         };
-        match tokio::time::timeout(PUSH_WAIT, push).await {
+        match tokio::time::timeout_at(deadline, push).await {
             Ok(Ok(_)) => Ok(()),
             _ => {
                 // No mark names these files, so no other run can need them.
@@ -454,8 +481,9 @@ impl Node {
     }
 
     /// The app group's other voters and learners, as its own Raft membership names them, but
-    /// none whose release may not hold the app's data ([`Node::may_send`]).
-    async fn push_targets(&self, app_id: &str) -> Option<Targets> {
+    /// none whose release may not hold the app's data ([`Node::may_send`]); one whose release
+    /// is not learnt by `deadline` is left out.
+    async fn push_targets(&self, app_id: &str, deadline: Instant) -> Option<Targets> {
         let status = self.hosted(app_id)?.status();
         let group = self.sys(|s| s.apps.get(app_id).map(|a| a.group))?;
         let members: Vec<(NodeId, String)> = self.sys(|s| {
@@ -463,12 +491,10 @@ impl Node {
                 .filter_map(|id| s.nodes.get(id).map(|n| (*id, n.addr.clone())))
                 .collect()
         });
-        let mut allowed = HashMap::new();
-        for (id, addr) in members {
-            if self.may_send(&addr, group).await {
-                let _prev = allowed.insert(id, addr);
-            }
-        }
+        let allowed = allowed_by(members, deadline, |addr| async move {
+            self.may_send(&addr, group).await
+        })
+        .await;
         Some(Targets::of(
             self.config.node_id,
             &status.voters,
@@ -574,7 +600,7 @@ impl Node {
     async fn delete_files(&self, app_id: &str, ids: &[String]) {
         // The nodes a push went to: the group's voters and learners.
         let peers: Vec<String> = self
-            .push_targets(app_id)
+            .push_targets(app_id, Instant::now() + PUSH_WAIT)
             .await
             .map(|t| [t.voters, t.learners].concat())
             .unwrap_or_default();
@@ -1016,6 +1042,25 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_member_that_does_not_answer_by_the_deadline_is_refused() {
+        let members = vec![
+            (1, "a".to_owned()),
+            (2, "b".to_owned()),
+            (3, "c".to_owned()),
+        ];
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        let allowed = allowed_by(members, deadline, |addr| async move {
+            if addr == "b" {
+                std::future::pending::<()>().await;
+            }
+            addr != "c"
+        })
+        .await;
+        assert_eq!(allowed.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert!(tokio::time::Instant::now() < deadline + Duration::from_millis(500));
+    }
 
     fn addr(id: NodeId) -> Option<String> {
         (id != 9).then(|| format!("http://node{id}/"))

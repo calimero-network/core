@@ -1,0 +1,226 @@
+---
+title: Compute actions
+description: Long, private work outside the log - when to use a compute run instead of a call, sealed files for component apps, the job node, one run's life from start to result method, restarts and cancel, caps, usage, and the decisions behind them.
+sidebar:
+  order: 22
+---
+
+A **compute action** is an app method that runs outside the log, on a **job node**, over sealed input files, and writes sealed output files.
+A call cannot do this work: it stops at 2 s, its whole log entry stays under 1 MiB, and its result is copied to every replica.
+A compute run may take up to 15 minutes and 4 GiB, reads up to 64 input files (2 GiB in all), writes up to 2 GiB across its output files (each file at most 47 MiB), and leaves only a small result in the log.
+
+Raw data never leaves the attested machines.
+Files are sealed at rest and in transit.
+A job node is an attested TDX node that holds no cluster key, so it sees an input's plaintext only while the run reads it (the ciphertext is kept for up to `JOB_RESULT_TTL`, 1 hour).
+
+## A call or a compute run
+
+| | Call | Compute run |
+| --- | --- | --- |
+| Runs on | The app's leader | A job node |
+| Time | 2 s | Up to 15 minutes, declared per method |
+| Entry in the log | The call and its diff, under 1 MiB | An attempt per try and one final entry (the start rides in the starting call's entry) |
+| State access | Reads and writes the app's state | None: inputs in, outputs and a small result out |
+| Network | None (components have no outbound HTTPS) | None |
+| Repeatable | Linearized once | Deterministic: a restart gives the same output |
+
+Use a call for anything that must read or write state, and a compute run for work that only turns files into files.
+A compute run reaches state in one place, its **result method**, which the node runs as an ordinary logged call when the run ends.
+
+## Files for component apps
+
+A component app (the wasmtime runtime) has no blob store of its own.
+It has **files**: sealed, content-addressed, and readable only by the app's code.
+
+- **Sealing.** Each file has a random 256-bit data key.
+  Its content is cut into 64 KiB chunks, each sealed with AES-256-GCM under that key, with the chunk index in the nonce and a last-chunk flag in the authenticated data, so chunks cannot be reordered, dropped or truncated.
+  The blob id is `hex(SHA-256(ciphertext))`.
+- **The mark.** The app's state records, per file, its plaintext size, its plaintext SHA-256 and the data key **wrapped** under the app's file key.
+  The file key is `HMAC-SHA256(K_c, "calimero.files.v1|" || app)`, derived from the cluster key and separate from the app's TEE key.
+  Opening a file checks the plaintext size and hash against the mark, because GCM alone does not commit to the key.
+  Plaintext exists only in the memory of an attested node.
+- **Where they live.** On the app's replicas, not on every node: a file is stored locally and pushed to the other replicas over the node-to-node blob route, and a write succeeds once a majority of the app group's Raft voters hold it.
+  A replica move hands the marked files over with the rest of the app.
+- **Uploads.** `POST /apps/{app}/blobs` with the raw bytes (through the sealed channel, like any request) is the upload route for a component app too.
+  The receiving node passes the body to the app's leader, which seals it, charges the quota, stores it on a majority of the group's voters and commits the mark.
+  An upload is at most 47 MiB (`MAX_FILE_BYTES`).
+  The answer carries the file's id, size and `sha256`.
+  Only the app's owner and members of its organization (role `member` or above) may upload or list files, even on a public app, because the organization pays for the bytes.
+- **No download.** A component's files are read by its own code through the `files` interface (`create`, `open`, `info`, `delete`), never through the API: `GET /apps/{app}/blobs/{id}` answers `409 NOT_SUPPORTED`.
+- **Quota.** Stored plaintext bytes are counted per organization in the [system group](/protocol/system-group/) (a personal account for an app outside one).
+  A write is charged before its mark commits and refunded when the file is deleted; one past `maxFileBytesPerOrg` is refused with `429 QUOTA_EXCEEDED`.
+
+Writes to files (`create`, `delete`) belong to logged writes; reads also work in views.
+An old component that does not import `calimero:app/files` keeps linking, because the WIT package moves additively to `calimero:app@0.5.1`.
+
+## The job node
+
+A job node is started with `merod run --job-node --cluster-identity <key>` and registered in the system state's node directory with `role: job` (`POST /ops/nodes`).
+It is deliberately **not** a replica.
+
+- It is never a Raft member, not even a learner: a member keeps its log sealed under the cluster key, and a job node must never hold that key.
+- It has no KMS key, no store and no cluster key, and serves only `/health`, `/attestation` and `/job/*`.
+  Run files live in a scratch directory under its data directory, as ciphertext only.
+- It is excluded from admission and promotion, app placement and replica moves, blob pushes and majorities, key delivery and the placement counts.
+- A node's role is fixed at registration; to change it, remove the node first.
+  A job node can be registered only once every replica node, voter and learner, runs at least the release of the node being registered (else `409 CLUSTER_NOT_UPGRADED`), so no older node ever applies a job record.
+
+**Attestation, `purpose=jobs`.**
+A job node answers `GET /attestation?purpose=jobs` and nothing else: one TDX quote binds the nonce, the cluster identity, the node id, its X25519 transport key, an Ed25519 **job key** and its release.
+A replica answers `404` to the same request.
+The leader verifies the quote with the same code clients use (`verify_job_key`, sharing `verify_report` and the peer policy), then checks that the attested release is approved for the app's organization (for a personal app, its owner's account), as `Node::may_send` does for replicas.
+Because a job node attests only for jobs, no channel that carries the cluster secret, the cluster key, Raft or blob traffic can open to it.
+
+**Admission.** Every assignment and bundle upload carries a signature by the **cluster identity key**, an Ed25519 key every cluster node derives from the cluster key.
+The job node is configured with the public half (`--cluster-identity`, read with `GET /ops/cluster`) and refuses anything else.
+Only an attested TD of this cluster holds the cluster key, so a valid signature proves the sender is a node of the cluster, and a job node runs only its own cluster's work.
+
+## One run's life
+
+<ol>
+<li>**Start.** A call, timer or init (a logged write) calls `compute::start(method, args, inputs)`.
+The start is part of the call's outcome and is dropped if the call fails.
+An active run with the same method, arguments and inputs is answered instead of a second one.
+The run is **queued**.</li>
+<li>**Queue and caps.** The leader asks the system group for a place (`AcquireRun`).
+The system group grants it while the organization is under `maxConcurrentRunsPerOrg` (4), its reserved fuel plus this run's fuel is within `computeFuelPerOrg` (10 times the fuel cap), and fewer than job nodes times 2 runs are granted in all.
+Otherwise the run waits, the organization whose oldest waiting run is oldest first.</li>
+<li>**Attempt.** The leader picks the least-loaded job node (fewest runs, then lowest id; a node that lost an attempt of this run is chosen only if no other is free) and attests it.
+It delivers the component, the assignment (wrapped input keys, the wrapped noise seed, a capability token and the budget, signed with the cluster identity) and the inputs as ciphertext.
+Only after the node accepts them does the leader commit `computeAttempt` (run, attempt, node, job key, assignment digest) in the app's log, so a busy or unreachable node costs no attempt.</li>
+<li>**Per-run key re-wrap.** For each input the leader unwraps the data key with the app's file key and re-wraps it to the job node's attested transport key: an ephemeral X25519 key, HKDF-SHA256 over the key pair, the app, run, attempt and index, then AES-256-GCM.
+The job node opens it only through its sealed transport, never as a raw Diffie-Hellman oracle.
+The noise seed (`HMAC-SHA256(file key, "calimero.compute.seed.v1|" || run)`) is wrapped the same way.
+Wrapped keys travel only in the assignment, never in the log, and each wrap's ephemeral key and nonce derive from the file key and the app, run, attempt, kind, index and job key, so any leader can rebuild the exact assignment an attempt's digest names.</li>
+<li>**The run.** The job node runs the method deterministically, with no network, and writes its outputs as new sealed files.</li>
+<li>**Heartbeats by polling.** The leader polls `GET /job/runs/{app}/{run}/{attempt}` every `JOB_POLL` (2 s) with a token any replica can derive.
+The answer is the heartbeat and carries progress (percent and step), which the leader keeps in memory and serves from `GET /apps/{app}/runs/{run}`.</li>
+<li>**Signed report.** When the run ends, the job node signs a report with its job key over the app, run, attempt, status, result hash, every output (id, size, hash), usage and the digest of the assignment it ran.
+The leader checks the signature, then charges the outputs to the file quota (a refusal ends the run as failed with reason `quota`).
+It then fetches each output's ciphertext and key, checks the ciphertext hash against the report, opens the file against the reported size and hash, wraps the key under the app's file key and stores the file on the replicas.</li>
+<li>**Final entry.** The leader runs the result method inside the final entry, as `kind = call` with the system as caller, and proposes `computeFinal` carrying the report, the signature, the outputs, the usage and the result method's outcome in one atomic entry.
+Every replica verifies the signature against the job key and assignment digest of that attempt, and applies only the first final entry of a run's current attempt.
+Then the leader releases the system slot and counts the usage.</li>
+</ol>
+
+The result method receives one typed `ComputeOutcome`: the run, the method, the attempt, a `status` (`done`, `failed` or `cancelled`), a `reason`, the compute method's return bytes, the outputs and the usage.
+A cancel is `status: cancelled` with `reason: null`.
+`reason` is set only for failed runs and is one of `fuel`, `memory`, `time`, `trap`, `app-error`, `integrity`, `lost`, `timeout`, `refused` or `quota`.
+`result` is standard base64 and present only for done.
+If the result method itself fails, the run keeps its outcome and its outputs stay marked.
+Neither `/intents` nor `/views` reaches a result method, for any caller, and the SDK macro refuses `compute_result` on a public method, so no client can forge an outcome.
+
+`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, and `progress` while it runs.
+Plaintext sizes and SHA-256 hashes of inputs and outputs are shown only to callers who may list the app's files; others get ids.
+It never returns arguments or keys.
+
+## Restarts, cancel and caps
+
+- **A lost attempt.** No answer from the job node for `JOB_LOST_AFTER` (20 s) marks the attempt lost, as does a `lost` state from the job node or a report that does not hold up.
+  On `UNKNOWN_RUN` (404), or while the job node awaits its inputs, the leader first re-sends the attempt, unless it already sent it in this leadership; only then is the attempt lost.
+  The leader commits attempt + 1 on another job node when one is free (the node that lost it is reused only if no other is free), up to `MAX_ATTEMPTS` (3), then ends the run as failed with reason `lost`.
+  A new leader starts every running attempt's clock at its takeover and keeps polling the same attempt.
+  The leader counts only healthy time toward this clock, the deadline and the queue timeout: time in which its own read of the system group succeeded.
+  An outage of the system group therefore never loses or times out an attempt.
+  A valid report the job node gave is held, so the leader's own failing writes (charge, push to the replicas, propose) never count as silence.
+  A job node that reports but will not hand its outputs over gets no such credit: the attempt is lost.
+  Outage time is forgiven for at most `MAX_OUTAGE_CREDIT` (equal to `QUEUED_RUN_TIMEOUT`), and the lost and cancel clocks also end in wall time at ten times their limit.
+  Whatever the leader sees or holds, a running run with no final by its attempt's timestamp plus its wall cap plus `DEADLINE_GRACE` plus `MAX_OUTAGE_CREDIT` ends as failed with reason `timeout`.
+  That ceiling is measured on the app clock from the attempt's timestamp, so it survives leader changes.
+  The unplaced and cancel clocks start when the current leader first sees the run in that state, and restart with each leader term.
+  A granted run no job node takes ends `refused` after `QUEUED_RUN_TIMEOUT` of healthy time, and at most `QUEUED_RUN_TIMEOUT` plus `MAX_OUTAGE_CREDIT` of app time.
+  A held report also stands when the job node restarts or forgets the attempt, while the final waits on the leader's own writes.
+  Before an attempt is declared lost or timed out, the leader looks for a committed final, a held report and one fresh poll, and ends the run from any of them.
+  A lost attempt is not charged.
+- **Same output on any node.** The noise seed is the same for every attempt of a run, the clock is the start entry's timestamp, and the engine is configured for determinism (see Decisions), so a restart produces byte-identical output and a run never yields two results.
+  Node-local failures (instance pool, allocation, disk) end an attempt as lost, never as the app's failure.
+- **Deadline.** A run with no report by its attempt's timestamp plus its wall cap plus `DEADLINE_GRACE` (60 s), less the leader's outages (at most `MAX_OUTAGE_CREDIT`), ends as failed with reason `timeout`.
+- **Cancel.** `compute::cancel(run)` in a logged write marks the run; the leader stops the job and commits a cancelled final entry, which may carry the job node's signed cancelled report and its usage.
+  A cancel whose job node does not answer has no usage, and a run that already finished keeps its report and outputs (done stays done).
+  A job node that keeps answering that the run still runs cannot hold the run open: `CANCEL_DEADLINE` (20 s of healthy time, at most ten times that in wall time) after the current leader first sees the cancel, the run ends from the signed report the leader already holds for the attempt, else cancelled with no usage, and the job node is sent a last delete.
+  Later reports for the attempt change nothing, as the first final wins.
+  The result method sees `cancelled`.
+  Refused and quota finals are leader entries too.
+- **Caps.** A method declares `fuel`, `memoryMib`, `wallSecs` and its result method in the ABI.
+  Hitting one ends the run failed with `fuel`, `memory` or `time`; nothing is recorded as done and no output is marked.
+
+## Usage and billing
+
+The job node measures CPU seconds, peak memory times wall time (GiB-seconds) and fuel used, and signs them in its report.
+The node that commits the final entry adds `calimero_app_compute_cpu_seconds_total`, `calimero_app_compute_gib_seconds_total` and `calimero_app_compute_fuel_total` (labels `app`, `org`) and counts the call in `calimero_app_calls_total{kind="compute"}`, only for runs that ended with a job node's signed report.
+See [Observability](/operate/observability/).
+A job node exposes no usage series.
+
+## Limits
+
+| Limit | Value | Constant |
+| --- | --- | --- |
+| Wall time of a run | 900 s (15 minutes) | `MAX_COMPUTE_WALL_SECS` |
+| Memory of a run | 4096 MiB | `MAX_COMPUTE_MEMORY_MIB` |
+| Fuel of a run | 10^12 | `MAX_COMPUTE_FUEL` |
+| Arguments of a start | 64 KiB | `MAX_COMPUTE_ARGS_BYTES` |
+| Inputs of a run | 64 files, 2 GiB in all | `MAX_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
+| One file (input or output) | 47 MiB | `MAX_FILE_BYTES` |
+| All files written by one compute run | 2 GiB | `MAX_COMPUTE_FILE_BYTES` |
+| All files written by one call | 64 MiB | `MAX_RUN_FILE_BYTES` |
+| Open files in one run | 16 | `MAX_OPEN_FILES` |
+| Files created or deleted in one call | 1000 each | `MAX_NEW_FILES`, `MAX_DELETES` |
+| Result of a compute method | 64 KiB | `MAX_COMPUTE_RESULT_BYTES` |
+| Progress step | 128 bytes | `MAX_PROGRESS_STEP_BYTES` |
+| Runs started by one call | 16 | `MAX_STARTS_PER_RUN` |
+| Active runs of one app | 64 | `MAX_ACTIVE_RUNS` |
+| Finished runs kept per app | 256 | `FINISHED_RUNS_KEPT` |
+| Attempts per run | 3 | `MAX_ATTEMPTS` |
+| Heartbeat poll | 2 s | `JOB_POLL` |
+| A status, delete, load or output-key request to a job node, in a pool apart from transfers | 5 s | `JOB_CONTROL_TIMEOUT` |
+| An attestation fetch from a job node | 10 s | `JOB_ATTEST_TIMEOUT` |
+| Attempt declared lost | 20 s without an answer | `JOB_LOST_AFTER` |
+| Leader deadline past the wall cap | 60 s | `DEADLINE_GRACE` |
+| A cancel the job node does not confirm | 20 s healthy time (at most 200 s wall time), from the current leader's first sight, then the run ends | `CANCEL_DEADLINE` |
+| A granted run no job node takes | 10 minutes healthy time (at most 10 minutes plus `MAX_OUTAGE_CREDIT`), from the current leader's first sight, then failed `refused` | `QUEUED_RUN_TIMEOUT` |
+| Runs one job node takes at once | 2 | `RUNS_PER_JOB_NODE` |
+| Concurrent job operations per node | 8 | `MAX_INFLIGHT_JOB_OPS` |
+| Concurrent runs per organization | 4 | `Quotas.maxConcurrentRunsPerOrg` |
+| Reserved fuel per organization | 10 times the fuel cap | `Quotas.computeFuelPerOrg` |
+| Stored file bytes per organization | 50 GB | `Quotas.maxFileBytesPerOrg` |
+| One assignment request | 1 MiB | `MAX_ASSIGNMENT_BYTES` |
+| A finished run kept for its leader | 1 hour | `JOB_RESULT_TTL` |
+| A run waiting for its inputs | 10 minutes | `AWAITING_INPUTS_TTL` |
+| Sealed bytes a job node holds | 8 GiB | `MAX_FINISHED_BYTES` |
+| File chunk | 64 KiB plus a 16-byte tag | `CHUNK_BYTES`, `TAG_BYTES` |
+
+## Decisions
+
+Each row is one decision and the reason for it.
+
+| # | Decision | Why |
+| --- | --- | --- |
+| CA1 | The WIT package stays one package and moves additively to `calimero:app@0.5.1`, with new `files` and `compute` interfaces and no change to any existing type. The import check accepts `calimero:app/*@0.5.z` for `z` up to 1. | Components built against 0.5.0 keep linking, as wasmtime's semver matching within 0.5.z allows. |
+| CA2 | A compute run is invoked through the existing `action` kind. Its profile is fixed per method in the ABI: `compute: { fuel, memoryMib, wallSecs, result }`. The result method is marked `computeResult`, runs as `kind = call` with the system as caller, and `/intents` refuses it. Host caps are 900 s, 4096 MiB and `MAX_COMPUTE_FUEL`. | One action kind with two profiles keeps the model small, and a result method no client can call means no client can forge an outcome. |
+| CA3 | Files use a random 256-bit data key per file, 64 KiB AES-256-GCM chunks with the index in the nonce and a last-chunk flag in the authenticated data, and a per-app file key `HMAC-SHA256(K_c, "calimero.files.v1\|" \|\| app)` that wraps data keys with a fresh subkey per wrap. Opening checks the plaintext size and SHA-256 against the mark. The blob id is the SHA-256 of the ciphertext. | The file key is separate from the app's TEE key, which is also a curve private key. A fresh subkey per wrap removes any random-nonce bound per key, and GCM does not commit to its key, so the mark's hash does. |
+| CA4 | Component files live on the app's replicas, pushed over the existing blob route and successful at a majority of those replicas. | A cluster-wide majority multiplies disk for large uploads. Replicas already survive a node loss and move with the app. |
+| CA5 | Uploads go through the sealed channel to `POST /apps/{app}/blobs`. The receiving node passes the body to the app's leader, which seals, charges, stores on a majority of the voters and commits the mark; an upload is at most 47 MiB. Component files cannot be downloaded through the API. | Core publishes no app public key to seal to, and a per-file key is what a run's re-wrap needs. |
+| CA6 | A per-organization stored-file quota, `maxFileBytesPerOrg` (50 GB), is counted in the system group, charged before a mark commits and refunded on delete. | The organization pays for the bytes. The charge is not atomic with the app log, so a crash between them can leave a small over-count. |
+| CA7 | Job nodes are registered with `role: job` but are never Raft members. They are excluded from admission, placement, blob pushes, key delivery and placement counts, and run `merod run --job-node` with no KMS key, no cluster key and no store. | A member keeps its log sealed under the cluster key, which a job node must never hold. "No vote" then holds structurally rather than by policy. |
+| CA8 | **Q-P1, how the leader checks a job node's release.** The existing attestation machinery, with a job variant: `GET /attestation?purpose=jobs` returns a quote binding the transport key and an Ed25519 job key, verified by `verify_job_key` with the shared peer policy. The attested release must then be approved for the app's organization. | One verification path, one policy. The leader learns the job node's keys and its release from a single quote, before it re-wraps anything to it. |
+| CA9 | For each input the leader unwraps the data key and re-wraps it to the job node's attested transport key (ephemeral X25519, HKDF over the key pair, app, run, attempt and index, AES-256-GCM). The noise seed is wrapped the same way. The run token is `HMAC-SHA256(file key, "calimero.compute.token.v1\|" \|\| run \|\| "\|" \|\| attempt` with the attempt in decimal`. | Wrapped keys travel only in the assignment, never in the log. The job node opens them through its sealed transport, and any replica can derive the token, so a new leader can keep polling. |
+| CA10 | Replaced by CA26. An earlier design had the job node accept an assignment only from a leader whose receipt key it attested and whose URL it listed. | Attesting the leader cost the job node a fetch, a cache and an amplification path for every sender. |
+| CA11 | **Q-P4, heartbeats and progress.** They are polls, not log entries. The leader polls the job node every `JOB_POLL`; the answer is the heartbeat and carries progress, kept in memory and served from `GET /apps/{app}/runs/{run}`. No answer for `JOB_LOST_AFTER`, or `UNKNOWN_RUN`, marks the attempt lost and a new attempt starts elsewhere, at most `MAX_ATTEMPTS`. A new leader starts the clock at takeover. A run with no report by its wall cap plus 60 s fails with `timeout`. | A heartbeat in the log would put a write on every replica every few seconds for work that produces no state. Polling keeps the log to one entry per attempt and one final entry, and the token is derivable by any replica. |
+| CA12 | The job node signs its final report with its job key over the app, run, attempt, status, result hash, outputs and usage. The final entry carries the report and signature. Every replica verifies it against the job key recorded for that attempt and applies only the first final entry for a non-final run's current attempt. Cancel, lost and timeout finals are leader entries with no job signature. | Otherwise anything that reaches the leader could post a result. Verification at apply is deterministic, so every replica reaches the same verdict. |
+| CA13 | The component log gets two lifecycle entries, `computeAttempt` and `computeFinal`; a start rides in the starting call's outcome (`computeStarts`) and is dropped if the call fails. The result method runs inside the final entry on the leader. Run records are host records the guest cannot reach through its own storage. | One atomic entry means a result is recorded exactly when the run is. A failing result method leaves the run done, because the work itself succeeded. |
+| CA14 | `compute::start` is idempotent: an active run with the same method, argument hash and inputs is returned. `compute::cancel` marks the run, and the leader aborts the job and commits a cancelled final entry with the usage so far. The app decides who may cancel. | A retried call cannot start the same expensive work twice. |
+| CA15 | The queue and caps live in the system group: `AcquireRun` grants while the organization's running count, reserved fuel and the job nodes' total capacity allow, else queues, and `ReleaseRun` frees and grants the next, oldest waiting organization first. The fuel reservation is the fuel declared and is released at the final entry. | Quotas are enforced at apply, where every replica agrees, and one organization's backlog cannot starve another's. |
+| CA16 | Compute runs use a dedicated engine configuration: on-demand allocation instead of pooling, canonicalized NaNs, no threads, memory sized from the budget, a fixed clock equal to the start entry's timestamp, randomness from ChaCha20 over the noise seed, and no network. | A restart on another job node must produce byte-identical output, so nothing that varies by machine or by moment may reach the guest. |
+| CA17 | The job node measures CPU seconds, peak memory times wall time and fuel used, and signs them. The leader that commits the final entry adds the compute usage series and counts the call. A lost attempt is not charged. | Billing follows the signed report, so it matches what ran, and a node's failure is not the customer's cost. |
+| CA18 | A node on a release without files refuses to prepare a bundle that imports `calimero:app/files`, so it never runs, leads or answers for such an app. No release floor is needed. | Mixed-release replicas exist only while an upgrade moves apps, and the older ones are then retired. Run records follow the same rule. |
+| CA19 | The majority for a file push is over the app group's Raft voters, read from the group's status, not the system directory's replica list. | During a move the directory holds a union of old and new replicas, and a majority over it would be wrong. |
+| CA20 | A file whose mark failed to commit is deleted, and its charge refunded, only after a no-op barrier entry of the current leader commits and a strong read shows the mark absent. | Raft then guarantees the failed entry can never commit. Without the barrier a late commit would leave a mark pointing at deleted bytes. |
+| CA21 | Uploading to a component app needs its owner or an organization role of `member` or above, even when the app is public. | The organization pays for stored bytes, so strangers and guests cannot fill its quota. |
+| CA22 | The file quota is counted per app in the system state with payer totals kept in step. A refund is taken from what apply actually removed, never from what a run saw when it was built. | A stale view cannot refund more than was charged. |
+| CA23 | A job node attests only for `purpose=jobs`, bound to its transport key, job key and release, and answers no plain attestation. Every peer request carrying the cluster secret goes through one gate to replicas only. A node's role is fixed at registration. A job node runs from a narrow `JobConfig` with no storage key. | No channel that carries the cluster secret, the cluster key, Raft or blob traffic can ever open to a job node. |
+| CA24 | Peers are gated by node id, never by an address string, and addresses are compared normalized. A job node can be registered only once every replica node, voter and learner, runs at least the registering node's release (else `409 CLUSTER_NOT_UPGRADED`). The jobs attestation binds the cluster, node id, transport key, job key and release. | An address is spoofable, an id is not. No older node can apply or snapshot a record it does not understand. |
+| CA25 | A run's outcome never depends on the node it ran on. Node-local failures (instance pool, allocation, OS memory, file I/O) are `Unavailable`, retried elsewhere and never reported as the app's failure. A cancel is `cancelled`, the wall cap is `time` (`timeout` is the leader's deadline), reads fill to the requested size, a compute run sees a constant context, and `wasi:random` is capped per call. Accepted: stack depth may differ by CPU, so a run at the recursion limit can end differently on two job nodes. | A customer must never pay for, or be told about, a fault of someone else's hardware. The recursion-limit case is a known gap. |
+| CA26 | Job-node admission is a cluster identity key: every cluster node derives one Ed25519 key from the cluster key, the job node is started with its public half, and every assignment and bundle upload carries a signature. Runs are keyed by app, run and attempt, and a report also binds the digest of the exact assignment it ran. | Only an attested TD of this cluster can hold the cluster key, so a signature proves the sender is a node of the cluster, with no attestation fetch or cache on the job node. This replaces CA10. |
+| CA27 | A job node decides input integrity once, from the uploaded bytes in memory, so its own disk can never turn a correct input into a signed failure. A `computeAttempt` entry records the job key and the assignment digest, and every replica verifies a final report against both. Later read failures are lost attempts. | The disk of a job node is outside the trust boundary, and a report must be checkable by a replica that never talked to the job node. |
+| CA28 | A run that can never be granted (its fuel alone exceeds the quota, or it was released), or that is granted but taken by no job node within `QUEUED_RUN_TIMEOUT` (10 minutes of healthy time, at most that plus `MAX_OUTAGE_CREDIT`), ends as failed with reason `refused`. Every value a job node signs is bounded at apply: output sizes and count, fuel within the declared cap, CPU and memory within the run's caps. An input of an active run cannot be deleted by app code or an admin. | No run may occupy an app's active set forever, and a compromised job node cannot make a replica apply an absurd value. |
+| CA29 | Assignments are deterministic: each wrap's ephemeral key and nonce derive from the file key and the run, attempt, kind, index and job key. The leader delivers an assignment before committing its attempt. A cancel bills the usage the job node signed when it stopped, and has none when the job node does not answer. | Any leader can rebuild the exact assignment an attempt's digest names, and a busy or unreachable job node costs no attempt. |

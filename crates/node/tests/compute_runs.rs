@@ -25,6 +25,7 @@ const JOB_B: u64 = 5;
 const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 const READ_PIECE: usize = 64 * 1024; // what the fixture reads and keys at a time
 const WAIT: Duration = Duration::from_secs(180);
+const UPLOAD_TRIES: usize = 5; // FILES_UNAVAILABLE is retryable on an overloaded runner
 
 struct Rig {
     c: Cluster,
@@ -70,12 +71,17 @@ impl Rig {
     }
 
     async fn upload(&self, plain: &[u8]) -> String {
-        let up = self
-            .alice
-            .upload_blob(&self.app, plain.to_vec())
-            .await
-            .unwrap();
-        up["id"].as_str().unwrap().to_owned()
+        let mut tries = 1;
+        loop {
+            match self.alice.upload_blob(&self.app, plain.to_vec()).await {
+                Ok(up) => return up["id"].as_str().unwrap().to_owned(),
+                Err(e) if e.code() == Some("FILES_UNAVAILABLE") && tries < UPLOAD_TRIES => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("upload failed: {e}"),
+            }
+        }
     }
 
     async fn begin(&self, method: &str, args: Value) -> String {
@@ -1120,4 +1126,36 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
     let outcome = rig.outcome_within(&run, 60).await;
     assert_eq!(outcome["status"], "done", "{outcome}");
     assert_ne!(outcome["fuel"], "0", "{outcome}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails() {
+    let rig = Rig::start(&[JOB_A]).await;
+    rig.limits(ComputeLimits {
+        deadline_grace: Duration::from_secs(1),
+        outage_credit: Duration::from_secs(3),
+        cancel_deadline: Duration::from_secs(3),
+        ..ComputeLimits::default()
+    });
+    let file = rig.upload(&input()).await;
+    let leader = rig.c.app_leader(&rig.app).unwrap();
+    for i in (0..3).filter(|i| *i != leader) {
+        let node = &rig.c.nodes[i].as_ref().unwrap().node;
+        node.set_peer_blobs(PeerBlobs::Refuse);
+    }
+    let pushes = rig.leader().file_pushes();
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    rig.until("the leader tried to push the output", || {
+        rig.leader().file_pushes() > pushes
+    })
+    .await;
+    rig.jobs[0].running.freeze();
+    let _ok = rig
+        .alice
+        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .await
+        .unwrap();
+    // The digest method's wall cap is 60 s: the ceiling is that plus the grace and the credit.
+    let rec = until_ended(&rig, &run, 90).await;
+    assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);
 }

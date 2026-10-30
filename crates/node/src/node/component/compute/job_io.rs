@@ -18,7 +18,9 @@ use crate::job_wire::{
     assignment_digest, hash_bytes, verify_report, Assignment, Report, RunBudget, RunInput,
     BUNDLE_SIGNATURE_HEADER,
 };
-use crate::node::job::{busy_here, AnswerTooLarge, JobAnswer, MAX_JOB_STATUS_BYTES};
+use crate::node::job::{
+    busy_here, timed_out, AnswerTooLarge, JobAnswer, JOB_DELETE_TIMEOUT, MAX_JOB_STATUS_BYTES,
+};
 use crate::node::{JobPeer, Node};
 use crate::types::AppRecord;
 
@@ -67,9 +69,9 @@ pub enum Polled {
 
 /// What a job node said when its run was deleted.
 pub enum Deleted {
-    /// No answer, or no such run.
+    /// No such run, or the node is unreachable.
     Gone,
-    /// The run did not stop in time and still runs.
+    /// The run did not stop in time, or the delete did not answer in time: ask again.
     Running,
     /// The run ended: its last status was a signed report.
     Ended(Box<Report>, String),
@@ -375,7 +377,8 @@ impl Drive<'_> {
         let token = self.token(attempt);
         let answer = self
             .node
-            .job_call(
+            .job_call_within(
+                JOB_DELETE_TIMEOUT,
                 peer,
                 Method::DELETE,
                 &self.path(attempt),
@@ -384,7 +387,7 @@ impl Drive<'_> {
                 MAX_JOB_STATUS_BYTES,
             )
             .await;
-        if answer.as_ref().is_err_and(busy_here) {
+        if answer.as_ref().is_err_and(|e| busy_here(e) || timed_out(e)) {
             return Deleted::Running;
         }
         match answer.ok().filter(|a| a.status == 200).map(|a| a.json()) {

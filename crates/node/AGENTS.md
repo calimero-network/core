@@ -841,6 +841,8 @@ cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario
 # workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
+# compute actions end to end: 3 replicas and 2 job nodes as processes (same binaries, ports 7650-7655)
+python3 -I crates/node/tests/fault/compute_e2e.py
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help

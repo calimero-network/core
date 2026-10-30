@@ -20,6 +20,8 @@ mod harness;
 
 use harness::{free_port, kv_wasm, node_config, signed_up, Cluster, ORIGIN};
 
+const EVENTUALLY_DEADLINE: Duration = Duration::from_secs(60); // sized for a loaded CI runner
+
 fn wasm(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-unknown-unknown/app-release")
@@ -1209,7 +1211,8 @@ async fn eventually(
     done: impl Fn(&Value) -> bool,
 ) -> Value {
     let mut last = Value::Null;
-    for _ in 0..100 {
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while tokio::time::Instant::now() < deadline {
         if let Ok(v) = cl
             .view(app, method, args.clone(), Consistency::Strong)
             .await

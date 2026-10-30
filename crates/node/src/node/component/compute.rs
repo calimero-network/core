@@ -38,6 +38,8 @@ pub const JOB_POLL: Duration = Duration::from_secs(2);
 pub const JOB_LOST_AFTER: Duration = Duration::from_secs(20);
 /// How long a cancel keeps trying to stop the job before the run ends cancelled anyway: well past `CANCEL_WAIT`.
 pub const CANCEL_DEADLINE: Duration = Duration::from_secs(20);
+/// How many times a final that conflicted is rebuilt and proposed again within one round.
+const FINAL_CONFLICT_TRIES: usize = 5;
 /// Unconfirmed finals remembered per run.
 const MAX_PROPOSED_KEPT: usize = 8;
 /// How long a granted run may wait for a job node that can take it before it ends refused.
@@ -316,6 +318,8 @@ enum Landed {
     Committed,
     /// Nothing was decided: try again next round.
     Retry,
+    /// The entry was built on state that moved: nothing applied, a rebuilt one may land.
+    Conflict,
     /// The run moved on without this entry (another final, another attempt).
     Superseded,
     /// The entry was refused for good.
@@ -806,12 +810,12 @@ impl Drive<'_> {
             return;
         };
         if self.past_ceiling(attempt) {
-            self.end_timeout(attempt, watch).await;
+            self.end_timeout(watch).await;
             return;
         }
         if self.timed_out(attempt, watch) {
             if !self.rescue(attempt, watch).await {
-                self.end_timeout(attempt, watch).await;
+                self.end_timeout(watch).await;
             }
             return;
         }
@@ -927,8 +931,7 @@ impl Drive<'_> {
         passed > wall + limits.deadline_grace + limits.outage_credit
     }
 
-    async fn end_timeout(&self, attempt: &Attempt, watch: &mut Watch) {
-        let _answer = self.delete_job_run(attempt).await;
+    async fn end_timeout(&self, watch: &mut Watch) {
         let plan = FinalPlan::failed(self.rec, FailedReason::Timeout);
         self.end(&plan, watch).await;
     }
@@ -974,13 +977,17 @@ impl Drive<'_> {
     /// The job node does not say it stopped: the run ends as the report held for the attempt
     /// says, else cancelled with no usage. The job run is deleted once the final stands.
     async fn force_cancel(&self, attempt: &Attempt, watch: &mut Watch) {
+        if self.past_ceiling(attempt) {
+            self.end_cancelled(watch).await;
+            return;
+        }
         if let Some((report, signature)) = watch.held_for(attempt.attempt) {
             let _job_side = self.finish(attempt, report, signature, watch).await;
             if watch.finished || watch.attempt != attempt.attempt {
                 return;
             }
             // Only the leader's own writes keep the held report from ending the run.
-            if watch.leader_wait && !self.past_ceiling(attempt) {
+            if watch.leader_wait {
                 return;
             }
         }
@@ -1009,13 +1016,12 @@ impl Drive<'_> {
         }
         match landed {
             Landed::Committed => self.after_final(plan, watch).await,
-            Landed::Retry if plan.report.is_some() => {
+            Landed::Retry | Landed::Conflict if plan.report.is_some() => {
                 watch.leader_wait = true;
                 watch.saw();
             }
-            Landed::Retry => {}
+            Landed::Retry | Landed::Conflict => {}
             Landed::Superseded => {
-                watch.proposed.clear();
                 self.discard_staged(watch);
             }
             Landed::Refused => {
@@ -1071,6 +1077,16 @@ impl Drive<'_> {
     /// Proposes the end of the run: the result method runs inside the entry, on the state it is
     /// built on, and its effects apply with the final or not at all.
     async fn commit_final(&self, plan: &FinalPlan, built: &mut Option<(u64, u64)>) -> Landed {
+        for _ in 0..FINAL_CONFLICT_TRIES {
+            match self.propose_final(plan, built).await {
+                Landed::Conflict => {}
+                landed => return landed,
+            }
+        }
+        Landed::Retry
+    }
+
+    async fn propose_final(&self, plan: &FinalPlan, built: &mut Option<(u64, u64)>) -> Landed {
         let (node, rec) = (self.node, self.rec);
         let app_id = &self.app.app_id;
         let Some(bundle) = self.g.read_local(|m, _| m.component_bundle()) else {
@@ -1207,7 +1223,7 @@ impl Drive<'_> {
         if answer.conflict {
             let _prev = node.conflicts.fetch_add(1, Ordering::Relaxed);
             node.discard(app_id, persisted);
-            return Landed::Retry;
+            return Landed::Conflict;
         }
         let ended = self
             .g
