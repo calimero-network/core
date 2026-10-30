@@ -59,6 +59,10 @@ pub struct AttestationDoc {
     /// transport key ([`kms_report_data`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kms: Option<KmsKeys>,
+    /// A job node's signing key (Ed25519, hex), when the attestation was asked
+    /// for it (`purpose=jobs`): then the quote binds it with the transport key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_key: Option<String>,
 }
 
 /// What a node verified of the mero-kms replicas it took its keys from, one
@@ -187,6 +191,29 @@ pub fn receipt_key_binding(receipt_key: &[u8; 32], governance: &Governance) -> [
     h.update(b"calimero.tee-attest.receipt-key.v2");
     h.update(receipt_key);
     h.update(sha2::Sha256::digest(governance.canonical()));
+    h.finalize().into()
+}
+
+/// What a job-node attestation's report data binds after the nonce: both keys, the
+/// release, cluster and node id (text u32-BE length-prefixed).
+#[must_use]
+pub fn job_key_binding(
+    transport_key: &[u8; 32],
+    job_key: &[u8; 32],
+    release: &str,
+    cluster: &str,
+    node: u64,
+) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"calimero.tee-attest.job-key.v1");
+    h.update(transport_key);
+    h.update(job_key);
+    for text in [release, cluster] {
+        h.update((text.len() as u32).to_be_bytes());
+        h.update(text.as_bytes());
+    }
+    h.update(node.to_be_bytes());
     h.finalize().into()
 }
 
@@ -417,6 +444,32 @@ pub async fn verify_receipt_key(
     Ok((key, governance))
 }
 
+/// Verify a job-node attestation (`purpose=jobs`): [`verify`]'s checks over a
+/// quote binding see [`job_key_binding`]. Answers `(transport_key, job_key)`.
+pub async fn verify_job_key(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    policy: &Policy,
+) -> eyre::Result<([u8; 32], [u8; 32])> {
+    let transport_key = hex32(&doc.transport_key)?;
+    let job_key = hex32(
+        doc.job_key
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("the attestation names no job key"))?,
+    )?;
+    let mut expected = [0; 64];
+    expected[..32].copy_from_slice(nonce);
+    expected[32..].copy_from_slice(&job_key_binding(
+        &transport_key,
+        &job_key,
+        &doc.release.version,
+        &doc.cluster,
+        doc.node,
+    ));
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok((transport_key, job_key))
+}
+
 /// The quote is genuine (or an allowed mock), from a trusted image, and its
 /// report data is `expected`.
 async fn verify_report(
@@ -638,7 +691,85 @@ mod tests {
             receipt_key: None,
             governance: None,
             kms: None,
+            job_key: None,
         }
+    }
+
+    fn mock_job_doc(transport: [u8; 32], job: [u8; 32], nonce: [u8; 32]) -> AttestationDoc {
+        let mut report = [0; 64];
+        report[..32].copy_from_slice(&nonce);
+        report[32..].copy_from_slice(&job_key_binding(&transport, &job, "2.4.0", "c", 1));
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        AttestationDoc {
+            quote: STANDARD.encode(quote),
+            transport_key: hex::encode(transport),
+            job_key: Some(hex::encode(job)),
+            mock: true,
+            nonce: hex::encode(nonce),
+            ..doc("2.4.0")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_job_key_attestation_binds_both_keys() {
+        let mock = Policy {
+            allow_mock: true,
+            ..Policy::default()
+        };
+        let nonce = [7; 32];
+        let good = mock_job_doc([1; 32], [2; 32], nonce);
+        let (t, j) = verify_job_key(&good, &nonce, &mock).await.unwrap();
+        assert_eq!((t, j), ([1; 32], [2; 32]));
+        let swapped_job = AttestationDoc {
+            job_key: Some(hex::encode([3; 32])),
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_job, &nonce, &mock).await.is_err());
+        let swapped_release = AttestationDoc {
+            release: Release {
+                version: "2.9.0".into(),
+                ..good.release.clone()
+            },
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_release, &nonce, &mock)
+            .await
+            .is_err());
+        let swapped_cluster = AttestationDoc {
+            cluster: "other".into(),
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_cluster, &nonce, &mock)
+            .await
+            .is_err());
+        let swapped_node = AttestationDoc {
+            node: 2,
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_node, &nonce, &mock).await.is_err());
+        let swapped_transport = AttestationDoc {
+            transport_key: hex::encode([4; 32]),
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_transport, &nonce, &mock)
+            .await
+            .is_err());
+        assert!(verify_job_key(&good, &[8; 32], &mock).await.is_err());
+        let none = AttestationDoc {
+            job_key: None,
+            ..good.clone()
+        };
+        let err = verify_job_key(&none, &nonce, &mock).await.unwrap_err();
+        assert!(err.to_string().contains("no job key"), "{err}");
+        assert!(verify_job_key(&good, &nonce, &Policy::default())
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn a_document_without_a_job_key_serializes_as_before() {
+        let v = serde_json::to_value(doc("2.4.0")).unwrap();
+        assert!(v.get("jobKey").is_none());
     }
 
     /// A receipt holds for its result and key only.

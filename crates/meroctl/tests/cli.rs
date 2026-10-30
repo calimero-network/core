@@ -580,6 +580,35 @@ fn scenario(root: &Path, url: &str) {
         .unwrap_err();
     assert!(refused.contains("owner"), "{refused}");
     assert!(ops(&["quotas"]).is_object());
+    // A job node is registered as one; the role is a closed set.
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--role",
+            "gpu",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("invalid value"), "{refused}");
+    let _ = ops(&["add-node", "9", "http://127.0.0.1:1/", "--role", "job"]);
+    let placement = ops(&["placement"]);
+    let job = placement["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == 9)
+        .unwrap_or_else(|| panic!("{placement}"));
+    assert_eq!(job["role"], "job", "{placement}");
+    assert!(placement["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["id"] != 9)
+        .all(|n| n["role"] == "replica"));
     // A node no context lives on, and one that does not exist.
     let unknown = alice
         .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])

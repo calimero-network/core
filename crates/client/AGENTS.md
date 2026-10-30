@@ -22,6 +22,12 @@ transport_binding | SHA-256(JCS(kms)))`. Opt in: a document without `kms` is che
 exactly as before. mero-js does not ask for it yet; the attestation verifier
 (mero-tee) recomputes it, pinned by `the_kms_binding_matches_the_published_vector`.
 
+`verify_job_key` (`purpose=jobs`, a job node's attestation, `AttestationDoc::job_key`,
+absent from every other document) shares `verify_report`: report data =
+`nonce || SHA-256("calimero.tee-attest.job-key.v1" || x25519 transport key || ed25519 job key || release || cluster || node id)`
+(text length-prefixed), so swapping any of them breaks it. It answers `(transport_key, job_key)`; only nodes use it
+(the leader checking a job node), mero-js needs nothing.
+
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data
 `nonce || SHA-256("calimero.tee-attest.release.v1" || u32-BE-length-prefixed merodVersion,

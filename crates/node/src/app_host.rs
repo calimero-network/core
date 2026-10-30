@@ -183,8 +183,7 @@ impl Node {
     /// Every node's API origin, for the page's `connect-src`.
     pub(crate) fn api_origins(&self) -> Vec<String> {
         let mut out: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter_map(|n| origin_of(&n.addr))
                 .collect()
         });
