@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use calimero_client::Measurements;
 use calimero_node::attest::Mode;
 use calimero_node::system::{Authority, Governance};
-use calimero_node::{kms, run, Config};
+use calimero_node::{kms, run, run_job, Config};
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -317,28 +317,13 @@ fn authority(a: Option<Authority>) -> Authority {
     a.unwrap_or(Authority::Owner)
 }
 
-async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
-    let node_id = args.node_id.ok_or_else(|| {
-        eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")
-    })?;
-    let public_url = args
-        .public_url
-        .clone()
-        .ok_or_else(|| eyre::eyre!("the node's public URL is not set: --public-url URL"))?;
-    let data_dir = args
-        .data_dir
-        .clone()
-        .or_else(|| home.map(|h| h.join("data")))
-        .ok_or_else(|| eyre::eyre!("no data directory: --data-dir DIR (or --node NAME)"))?;
-    let dev = args.dev.unwrap_or(false);
-    let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
-    let mut peers = BTreeMap::new();
-    for p in &args.peers {
-        let (id, url) = p
-            .split_once('=')
-            .ok_or_else(|| eyre::eyre!("peer must be id=url: {p}"))?;
-        let _prev = peers.insert(id.parse()?, url.to_owned());
-    }
+/// The storage key from the flags (mero-kms, a key file, a raw key, or the
+/// development key), and what the node verified of the KMS behind its keys.
+async fn storage_key(
+    args: &NodeArgs,
+    dev: bool,
+    cluster: &str,
+) -> eyre::Result<([u8; 32], calimero_client::attest::KmsKeys)> {
     if args.kms_url.is_some() != args.kms_identity.is_some() {
         eyre::bail!("mero-kms needs both --kms-url and --kms-identity");
     }
@@ -353,11 +338,11 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         kms::KeySource::Raw(hex_key) => hex::decode(hex_key)?
             .try_into()
             .map_err(|_| eyre::eyre!("storage key must be 32 bytes"))?,
-        kms::KeySource::File(path) => kms::derive_storage_key(&kms::read_key_file(path)?, &cluster),
+        kms::KeySource::File(path) => kms::derive_storage_key(&kms::read_key_file(path)?, cluster),
         kms::KeySource::Kms { url, identity } => {
             let (material, evidence) = kms::fetch(url, identity).await?;
             kms_keys.storage = Some(evidence);
-            kms::derive_storage_key(&material, &cluster)
+            kms::derive_storage_key(&material, cluster)
         }
         kms::KeySource::Dev => {
             calimero_identity::sha256(format!("calimero-dev-storage-key|{cluster}").as_bytes())
@@ -374,7 +359,24 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             }
         }
     }
-    let peer_measurements = if dev {
+    Ok((storage_key, kms_keys))
+}
+
+fn parse_peers(args: &NodeArgs) -> eyre::Result<BTreeMap<u64, String>> {
+    let mut peers = BTreeMap::new();
+    for p in &args.peers {
+        let (id, url) = p
+            .split_once('=')
+            .ok_or_else(|| eyre::eyre!("peer must be id=url: {p}"))?;
+        let _prev = peers.insert(id.parse()?, url.to_owned());
+    }
+    Ok(peers)
+}
+
+/// How this node judges a peer's quote: nothing real in `--dev`, else the
+/// profiles and floor it is given (a TDX node needs them).
+fn peer_measurements(args: &NodeArgs, dev: bool) -> eyre::Result<Measurements> {
+    Ok(if dev {
         Measurements::None
     } else {
         let profiles = if args.peer_profiles.is_empty() {
@@ -392,7 +394,64 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             allowed_profiles: profiles,
             min_version: args.peer_min_release.clone(),
         }
+    })
+}
+
+/// `run --job-node`: a node that runs compute and holds nothing of the cluster.
+async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
+    if let Some(flag) = args.job_node_conflicts() {
+        eyre::bail!("{flag} makes no sense with --job-node: a job node holds no cluster");
+    }
+    let node_id = args.node_id.ok_or_else(|| {
+        eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")
+    })?;
+    let data_dir = args
+        .data_dir
+        .clone()
+        .or_else(|| home.map(|h| h.join("data")))
+        .ok_or_else(|| eyre::eyre!("no data directory: --data-dir DIR (or --node NAME)"))?;
+    let dev = args.dev.unwrap_or(false);
+    let config = calimero_node::JobConfig {
+        node_id,
+        listen: args.listen.unwrap_or_else(|| ([0, 0, 0, 0], 2528).into()),
+        data_dir,
+        cluster: args.cluster.clone().unwrap_or_else(|| "dev".to_owned()),
+        attestation: if dev { Mode::Mock } else { Mode::Tdx },
+        sealed_required: !dev,
+        release: calimero_node::RELEASE_VERSION.to_owned(),
+        tee_release: args.tee_release.clone(),
+        tee_profile: args.tee_profile.clone(),
+        peers: parse_peers(&args)?,
+        allow_mock_peers: dev,
+        peer_measurements: peer_measurements(&args, dev)?,
     };
+    let running = run_job(config).await?;
+    tokio::signal::ctrl_c().await?;
+    running.stop().await;
+    Ok(())
+}
+
+async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
+    if args.job_node.unwrap_or(false) {
+        return start_job(home, args).await;
+    }
+    let node_id = args.node_id.ok_or_else(|| {
+        eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")
+    })?;
+    let public_url = args
+        .public_url
+        .clone()
+        .ok_or_else(|| eyre::eyre!("the node's public URL is not set: --public-url URL"))?;
+    let data_dir = args
+        .data_dir
+        .clone()
+        .or_else(|| home.map(|h| h.join("data")))
+        .ok_or_else(|| eyre::eyre!("no data directory: --data-dir DIR (or --node NAME)"))?;
+    let dev = args.dev.unwrap_or(false);
+    let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
+    let peers = parse_peers(&args)?;
+    let (storage_key, kms_keys) = storage_key(&args, dev, &cluster).await?;
+    let peer_measurements = peer_measurements(&args, dev)?;
     let outbound = match (&args.settings, &args.outbound) {
         (Some(path), _) => Some(read_settings(path)?),
         (None, o) => o.clone(),
