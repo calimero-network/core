@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A system write (sign-up, passkey, org, node registration) that the system
+  group cannot commit answers `503 UNAVAILABLE` within 10 s, naming the leader,
+  voters, learners and the members behind the leader, instead of waiting until
+  a proxy cuts the connection.
+
 ## [1.0.0-rc.4] - 2026-10-30
 
 ### Security
