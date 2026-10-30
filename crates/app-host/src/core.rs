@@ -9,13 +9,13 @@ use ciborium::Value;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
-use crate::files::{Files, NoFiles};
+use crate::files::{Files, NoFiles, FILE_UNAVAILABLE};
 use crate::overlay::{Cursor, Overlay};
 use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
-    InvocationKind, OrgRole, Outcome, Status, Usage,
+    InvocationKind, OrgRole, Outcome, Status, TrapKind, Usage,
 };
 
 mod file_ops;
@@ -504,6 +504,14 @@ impl HostCore {
     /// result and the app log are kept. `usage.writes` is the core's own count.
     #[must_use]
     pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+        let status = if self.files.unavailable() {
+            Status::Trap {
+                kind: TrapKind::Timeout,
+                detail: FILE_UNAVAILABLE.to_owned(),
+            }
+        } else {
+            status
+        };
         let ok = status == Status::Ok;
         let (new_files, deleted_files) = if ok {
             self.files.into_changes()

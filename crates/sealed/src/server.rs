@@ -86,6 +86,7 @@ use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use rand::Rng;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
+use ring::hkdf;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -96,7 +97,8 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use crate::session::SESSION_LIFETIME;
 use crate::session::{
-    SessionId, SessionKeys, Sessions, IDENTIFIED_MESSAGE_1_LEN, MESSAGE_1_LEN, SESSION_ID_LEN,
+    is_zero, SessionId, SessionKeys, Sessions, IDENTIFIED_MESSAGE_1_LEN, MESSAGE_1_LEN,
+    SESSION_ID_LEN,
 };
 
 /// Where a session is opened, under the node's mount (see [`SealedOptions`]).
@@ -167,6 +169,43 @@ pub struct SealedOptions {
     pub unsealed_paths: Vec<String>,
 }
 
+/// The peer's X25519 public key is a low-order point: every secret with it is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LowOrder;
+
+impl core::fmt::Display for LowOrder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("the peer key is a low-order point")
+    }
+}
+
+impl std::error::Error for LowOrder {}
+
+/// Keeps a derived key apart from every Noise step that uses the same key and HKDF.
+const DERIVE_LABEL: &[u8] = b"calimero.sealed.derive.v1\0";
+
+/// HKDF-SHA256 of an X25519 shared secret, `info` under [`DERIVE_LABEL`]; the
+/// one derivation both ends of a wrap use. Refuses the all-zero secret of a
+/// low-order point, in constant time.
+pub fn derive_shared(
+    shared: &[u8; 32],
+    salt: &[u8],
+    info: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, LowOrder> {
+    if is_zero(shared) {
+        return Err(LowOrder);
+    }
+    let mut key = Zeroizing::new([0u8; 32]);
+    hkdf::Salt::new(hkdf::HKDF_SHA256, salt)
+        .extract(shared.as_slice())
+        .expand(&[DERIVE_LABEL, info], hkdf::HKDF_SHA256)
+        // SAFETY: 32 bytes is far below HKDF-SHA256's output limit.
+        .expect("a 32-byte HKDF output")
+        .fill(key.as_mut_slice())
+        .expect("the output is 32 bytes");
+    Ok(key)
+}
+
 /// This process's transport key, and the sessions opened to it.
 pub struct SealedTransport {
     secret: Zeroizing<[u8; 32]>,
@@ -223,6 +262,18 @@ impl SealedTransport {
     #[must_use]
     pub const fn public_key(&self) -> [u8; 32] {
         self.public
+    }
+
+    /// A 32-byte key from X25519 between this transport key and `peer`, run
+    /// through [`derive_shared`]. Never returns the raw shared secret.
+    pub fn derive(
+        &self,
+        peer: &[u8; 32],
+        salt: &[u8],
+        info: &[u8],
+    ) -> Result<Zeroizing<[u8; 32]>, LowOrder> {
+        let shared = Zeroizing::new(MontgomeryPoint(*peer).mul_clamped(*self.secret).0);
+        derive_shared(&shared, salt, info)
     }
 
     /// This transport key as the static key this process identifies itself

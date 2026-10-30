@@ -15,22 +15,29 @@
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
 
+mod files;
+
+#[cfg(feature = "testing")]
+pub(super) use self::files::Probes;
+pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PUSH_BYTES};
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_app_host::{
-    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, TimerCtx,
-    TrapKind,
+    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, StateView,
+    TimerCtx, TrapKind,
 };
 use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
+use self::files::{Blob, NodeFiles};
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
-use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
+use crate::component::{Applied, CallEntry, ComponentCmd, Marks, Outcome, SysDirectory, TickEntry};
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
@@ -139,14 +146,7 @@ impl From<WriteError> for LocalError {
 /// K_r over a fixed label, so it changes with the storage key and nothing else.
 #[must_use]
 pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
-    use ring::hmac;
-    let tag = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
-        b"calimero.components.v1",
-    );
-    let mut key = [0; 32];
-    key.copy_from_slice(tag.as_ref());
-    key
+    crate::backup::tag(storage_key, "calimero.components.v1")
 }
 
 /// The latest slot of a timer with interval `every`, installed at `install_ms`,
@@ -192,12 +192,12 @@ fn abi_check(
     }
 }
 
-/// The entry of a call as bytes; one over `MAX_ENTRY_BYTES` becomes the same call
-/// trapped `HostDenied` with nothing in it, decided before proposing (D50).
-fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
+/// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the
+/// same call trapped `HostDenied` with nothing in it (D50).
+fn entry_bytes(mut cmd: ComponentCmd) -> (Vec<u8>, bool) {
     let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
-        return bytes;
+        return (bytes, false);
     }
     let denied = Outcome::trap(TrapKind::HostDenied, "entry too large");
     match &mut cmd {
@@ -206,7 +206,29 @@ fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
         ComponentCmd::Init { outcome, .. } => **outcome = denied,
         ComponentCmd::Upgrade { .. } => {}
     }
-    serde_json::to_vec(&cmd).unwrap_or_default()
+    (serde_json::to_vec(&cmd).unwrap_or_default(), true)
+}
+
+/// What a run reads: the app's keys and files as of the entry it runs on.
+struct Reads {
+    keys: Arc<dyn StateView>,
+    files: Marks,
+}
+
+impl Reads {
+    fn of(m: &AppMachine) -> Self {
+        Self {
+            keys: m.view(),
+            files: m.file_marks(),
+        }
+    }
+}
+
+/// A finished run: its outcome, and the ciphertext of the files it made, which stays
+/// out of the outcome (the log carries marks only).
+struct Ran {
+    outcome: Outcome,
+    blobs: Vec<Blob>,
 }
 
 impl Node {
@@ -220,6 +242,91 @@ impl Node {
     #[cfg(feature = "testing")]
     pub fn advance_clock(&self, ms: i64) {
         self.clock.advance(ms);
+    }
+
+    /// The key `app`'s file data keys are wrapped under. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn app_file_key(&self, app: &str) -> [u8; 32] {
+        crate::backup::file_key(&self.cluster_key, app)
+    }
+
+    /// Makes this node answer peers' blob requests as `mode` says. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_peer_blobs(&self, mode: super::PeerBlobs) {
+        *self
+            .probes
+            .peer_blobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn peer_blobs_mode(&self) -> super::PeerBlobs {
+        *self
+            .probes
+            .peer_blobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Counts a blob put a peer sent here. Tests only.
+    #[cfg(feature = "testing")]
+    pub(crate) fn note_blob_put(&self) {
+        let _n = self.probes.blob_puts_seen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many times this node pushed new files to its replicas. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn file_pushes(&self) -> u64 {
+        self.probes.file_pushes.load(Ordering::Relaxed)
+    }
+
+    /// How many blob puts peers sent this node. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn blob_puts_seen(&self) -> u64 {
+        self.probes.blob_puts_seen.load(Ordering::Relaxed)
+    }
+
+    /// Makes the next call this node logs conflict with the state it was built on. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn conflict_next_call(&self) {
+        self.probes
+            .conflict_next_call
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Leaves only `leave` bytes for open file readers to take, node-wide. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_open_file_bytes(&self, leave: usize) {
+        let held = self
+            .open_file_bytes
+            .available_permits()
+            .saturating_sub(leave);
+        let _forgotten = self.open_file_bytes.forget_permits(held);
+    }
+
+    /// Leaves only `leave` bytes for the pushes of new files. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_push_bytes(&self, leave: usize) {
+        let held = self.push_bytes.available_permits().saturating_sub(leave);
+        let _forgotten = self.push_bytes.forget_permits(held);
+    }
+
+    /// Caps the bytes the readers of one run hold at `cap` (new runs). Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_run_open_bytes(&self, cap: usize) {
+        self.probes.run_open_cap.store(cap, Ordering::Relaxed);
+    }
+
+    /// The bytes the readers of one run may hold.
+    fn run_open_cap(&self) -> usize {
+        #[cfg(feature = "testing")]
+        return self.probes.run_open_cap.load(Ordering::Relaxed);
+        #[cfg(not(feature = "testing"))]
+        files::MAX_RUN_OPEN_BYTES
     }
 
     /// The engine every component app runs on.
@@ -337,20 +444,37 @@ impl Node {
         self.config.budget.unwrap_or_else(Budget::call)
     }
 
-    /// Run one invocation of `app_id` against `state` at `applied`.
+    /// Run one invocation of `app_id` against `reads` at `applied`.
     fn run_component(
         &self,
         prepared: &Prepared,
         app_id: &str,
-        state: Arc<dyn calimero_app_host::StateView>,
+        reads: Reads,
         applied: u64,
         invocation: Invocation,
-    ) -> Outcome {
+    ) -> Ran {
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
-        match HostCore::new(app_id, state, applied, invocation, directory) {
-            Ok(host) => Outcome::from_host(self.wasm.invoke(prepared, host, self.budget())),
-            Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
+        let files = NodeFiles::new(self, app_id, reads.files, invocation.kind);
+        match HostCore::new(app_id, reads.keys, applied, invocation, directory) {
+            Ok(host) => {
+                let mut out =
+                    self.wasm
+                        .invoke(prepared, host.with_files(Arc::new(files)), self.budget());
+                let blobs = out
+                    .new_files
+                    .iter_mut()
+                    .map(|f| (f.id.clone(), std::mem::take(&mut f.ciphertext)))
+                    .collect();
+                Ran {
+                    outcome: Outcome::from_host(out),
+                    blobs,
+                }
+            }
+            Err(e) => Ran {
+                outcome: Outcome::trap(TrapKind::Fault, &e.to_string()),
+                blobs: Vec::new(),
+            },
         }
     }
 
@@ -363,13 +487,57 @@ impl Node {
         meter: &Meter,
         prepared: &Prepared,
         app_id: &str,
-        state: Arc<dyn calimero_app_host::StateView>,
+        reads: Reads,
         applied: u64,
         invocation: Invocation,
-    ) -> Outcome {
+    ) -> Ran {
         self.metered(meter, || {
-            self.run_component(prepared, app_id, state, applied, invocation)
+            self.run_component(prepared, app_id, reads, applied, invocation)
         })
+    }
+
+    /// The entry that logs `cmd`, once the files it marks are on a majority of the voters, and
+    /// the ids of the files stored for it. An entry replaced as too large marks none.
+    fn logged_entry(
+        &self,
+        app_id: &str,
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))] mut cmd: ComponentCmd,
+        blobs: &[Blob],
+    ) -> Result<(Vec<u8>, Vec<String>), ApiError> {
+        #[cfg(feature = "testing")]
+        if let ComponentCmd::Call(call) = &mut cmd {
+            if self
+                .probes
+                .conflict_next_call
+                .swap(false, Ordering::Relaxed)
+            {
+                call.base_index += 1;
+            }
+        }
+        let (bytes, replaced) = entry_bytes(cmd);
+        if replaced {
+            return Ok((bytes, Vec::new()));
+        }
+        self.persist_files(app_id, blobs)?;
+        Ok((bytes, blobs.iter().map(|(id, _)| id.clone()).collect()))
+    }
+
+    /// Removes the bytes of files persisted for an entry that did not commit (best effort).
+    fn discard_files(&self, app_id: &str, persisted: Vec<String>) {
+        if !persisted.is_empty() {
+            self.delete_files_later(app_id, persisted);
+        }
+    }
+
+    /// [`Self::discard_files`] after a failed proposal, unless the entry may still commit
+    /// (a new leader can append it): only `NotLeader` and `TooLarge` mean it never will.
+    fn discard_failed(&self, app_id: &str, persisted: Vec<String>, error: &WriteError) {
+        if matches!(
+            error,
+            WriteError::NotLeader { .. } | WriteError::TooLarge { .. }
+        ) {
+            self.discard_files(app_id, persisted);
+        }
     }
 
     /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
@@ -430,21 +598,24 @@ impl Node {
             return Err(args_too_large());
         }
         let mut timed_out = false;
+        let mut not_stored = None;
+        let mut persisted = Vec::new();
         let meter = self.meter(&app.app_id, &bundle);
         let p = g
             .propose_led(|m, applied, leadership| {
+                not_stored = None;
                 if m.state.initialized || m.state.init_error.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = match &prepared {
+                let ran = match &prepared {
                     Ok(prepared) => self.run_logged(
                         &meter,
                         prepared,
                         &app.app_id,
-                        m.view(),
+                        Reads::of(m),
                         applied,
                         Invocation {
                             kind: InvocationKind::Init,
@@ -458,33 +629,56 @@ impl Node {
                             timer: None,
                         },
                     ),
-                    Err(why) => Outcome::trap(TrapKind::Fault, why),
+                    Err(why) => Ran {
+                        outcome: Outcome::trap(TrapKind::Fault, why),
+                        blobs: Vec::new(),
+                    },
                 };
+                let outcome = ran.outcome;
                 if outcome.is_timeout() {
                     // Not logged (D23): reconcile runs init again.
                     timed_out = true;
                     return Proposal::Reply(Vec::new());
                 }
                 timed_out = false;
-                Proposal::Append(entry_bytes(ComponentCmd::Init {
+                let cmd = ComponentCmd::Init {
                     bundle: bundle.clone(),
                     base_index: m.state.last_index,
                     ts_ms,
                     id_term,
                     id_seq,
                     outcome: Box::new(outcome),
-                }))
+                };
+                match self.logged_entry(&app.app_id, cmd, &ran.blobs) {
+                    Ok((entry, stored)) => {
+                        persisted = stored;
+                        Proposal::Append(entry)
+                    }
+                    Err(e) => {
+                        not_stored = Some(e);
+                        Proposal::Reply(Vec::new())
+                    }
+                }
             })
             .await
-            .map_err(|e| status_of(&e))?;
+            .map_err(|e| {
+                self.discard_failed(&app.app_id, std::mem::take(&mut persisted), &e);
+                status_of(&e)
+            })?;
         if timed_out {
             return Err(timeout_error());
+        }
+        if let Some(e) = not_stored {
+            return Err(e);
         }
         if !p.appended {
             return Err(ApiError::conflict("already initialized"));
         }
         let a: Applied =
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
+        if a.conflict {
+            self.discard_files(&app.app_id, persisted);
+        }
         let a = to_wasmer_applied(a);
         self.count_conflict(&a);
         if prepared.is_ok() && !a.conflict {
@@ -575,6 +769,7 @@ impl Node {
         slot: u64,
     ) -> Result<(), WriteError> {
         let meter = self.meter(app_id, &prepared.hash);
+        let mut persisted = Vec::new();
         let p = g
             .propose_led(|m, applied, leadership| {
                 // An upgrade applied since the round read the ABI: the next poll
@@ -588,11 +783,11 @@ impl Node {
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = self.run_logged(
+                let ran = self.run_logged(
                     &meter,
                     prepared,
                     app_id,
-                    m.view(),
+                    Reads::of(m),
                     applied,
                     Invocation {
                         kind: InvocationKind::Timer,
@@ -609,11 +804,12 @@ impl Node {
                         }),
                     },
                 );
+                let outcome = ran.outcome;
                 if outcome.is_timeout() {
                     debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
                     return Proposal::Reply(Vec::new());
                 }
-                Proposal::Append(entry_bytes(ComponentCmd::Tick(Box::new(TickEntry {
+                let cmd = ComponentCmd::Tick(Box::new(TickEntry {
                     timer: timer.to_owned(),
                     scheduled_ms: slot,
                     previous_ms,
@@ -622,12 +818,28 @@ impl Node {
                     id_term,
                     id_seq,
                     outcome,
-                }))))
+                }));
+                match self.logged_entry(app_id, cmd, &ran.blobs) {
+                    Ok((entry, stored)) => {
+                        persisted = stored;
+                        Proposal::Append(entry)
+                    }
+                    Err(e) => {
+                        debug!(app = %app_id, timer, slot, error = %e, "tick files not stored; proposed again");
+                        Proposal::Reply(Vec::new())
+                    }
+                }
             })
-            .await?;
+            .await
+            .inspect_err(|e| self.discard_failed(app_id, std::mem::take(&mut persisted), e))?;
         // A tick that timed out was not logged and runs again.
         if p.appended {
             self.usage.called(&meter, RunKind::FollowUp);
+            let applied: Applied = serde_json::from_slice(&p.output)
+                .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+            if applied.conflict {
+                self.discard_files(app_id, persisted);
+            }
         }
         Ok(())
     }
@@ -672,6 +884,7 @@ impl Node {
         let mut refused = None;
         let meter = self.meter(&req.app_id, &bundle);
         let mut answered = false;
+        let mut persisted = Vec::new();
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
@@ -705,11 +918,11 @@ impl Node {
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = self.run_logged(
+                let ran = self.run_logged(
                     &meter,
                     &prepared,
                     &req.app_id,
-                    m.view(),
+                    Reads::of(m),
                     applied,
                     Invocation {
                         kind: InvocationKind::Call,
@@ -723,6 +936,7 @@ impl Node {
                         timer: None,
                     },
                 );
+                let outcome = ran.outcome;
                 // A timeout is not logged and does not spend the key (D23).
                 if outcome.is_timeout() {
                     let a = Applied::unlogged(applied, outcome);
@@ -731,7 +945,12 @@ impl Node {
                 answered = true;
                 // Events are logged side effects too (Ruling 41): an emit-only call
                 // is refused like one that writes keys.
-                if read_only && (!outcome.diff.is_empty() || !outcome.events.is_empty()) {
+                if read_only
+                    && (!outcome.diff.is_empty()
+                        || !outcome.events.is_empty()
+                        || !outcome.files.is_empty()
+                        || !outcome.deleted_files.is_empty())
+                {
                     let refused = Applied::unlogged(
                         applied,
                         Outcome {
@@ -742,7 +961,7 @@ impl Node {
                     );
                     return Proposal::Reply(serde_json::to_vec(&refused).unwrap_or_default());
                 }
-                Proposal::Append(entry_bytes(ComponentCmd::Call(Box::new(CallEntry {
+                let cmd = ComponentCmd::Call(Box::new(CallEntry {
                     method: req.method.clone(),
                     args: req.args.clone(),
                     caller: req.caller.clone(),
@@ -753,9 +972,23 @@ impl Node {
                     id_term,
                     id_seq,
                     outcome,
-                }))))
+                }));
+                // The files are on a majority of the replicas before the entry that marks
+                // them is proposed; if not, nothing is logged and the key is not spent.
+                match self.logged_entry(&req.app_id, cmd, &ran.blobs) {
+                    Ok((entry, stored)) => {
+                        persisted = stored;
+                        Proposal::Append(entry)
+                    }
+                    Err(e) => {
+                        answered = false;
+                        refused = Some(e);
+                        Proposal::Reply(Vec::new())
+                    }
+                }
             })
-            .await?;
+            .await
+            .inspect_err(|e| self.discard_failed(&req.app_id, std::mem::take(&mut persisted), e))?;
         if let Some(e) = refused {
             return Err(LocalError::Refused(e));
         }
@@ -765,6 +998,9 @@ impl Node {
             let _prev = self
                 .conflicts
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if p.appended && a.conflict {
+            self.discard_files(&req.app_id, persisted);
         }
         if answered && !a.conflict {
             self.usage.called(&meter, RunKind::Mutation);
@@ -904,7 +1140,10 @@ impl Node {
                 let v = self
                     .peer_forward(&addr, "internal/call", &body)
                     .await
-                    .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+                    .map_err(|e| {
+                        e.downcast::<ApiError>()
+                            .unwrap_or_else(|e| ApiError::unavailable(&e.to_string()))
+                    })?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
             Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => Err(entry_refused(&e)),
@@ -921,10 +1160,10 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
-        let (bundle, state, applied, ts_ms) = g.read_local(|m, applied| {
+        let (bundle, reads, applied, ts_ms) = g.read_local(|m, applied| {
             (
                 m.component_bundle(),
-                m.view(),
+                Reads::of(m),
                 applied,
                 m.state.component.head.last_ts_ms,
             )
@@ -957,7 +1196,8 @@ impl Node {
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
-                node.run_component(&prepared, &app_id, state, applied, invocation)
+                node.run_component(&prepared, &app_id, reads, applied, invocation)
+                    .outcome
             })
         })
         .await
@@ -1005,10 +1245,11 @@ impl Node {
         }
         let p = g
             .propose_led(|m, _, _| {
-                Proposal::Append(entry_bytes(ComponentCmd::Upgrade {
+                let (entry, _replaced) = entry_bytes(ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
                     base_index: m.state.last_index,
-                }))
+                });
+                Proposal::Append(entry)
             })
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
@@ -1035,6 +1276,14 @@ fn to_wasmer_applied(a: Applied) -> crate::app::Applied {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_component_cache_key_matches_its_known_answer() {
+        assert_eq!(
+            hex::encode(component_cache_key(&[7; 32])),
+            "76c96b3cbf04b23fd1e753c6b064af2c6825aca228d1be3897621b9d4714e8af"
+        );
+    }
 
     #[test]
     fn the_due_slot_is_the_latest_one_aligned_to_the_install_time() {

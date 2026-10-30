@@ -57,6 +57,11 @@ pub(crate) struct SessionKeys {
     pub response: Zeroizing<[u8; 32]>,
 }
 
+/// Whether `bytes` is all zero, without branching on its content.
+pub(crate) fn is_zero(bytes: &[u8; 32]) -> bool {
+    bytes.iter().fold(0, |acc, byte| acc | byte) == 0
+}
+
 /// Answer Noise message 1 with message 2, whose payload hands the client its
 /// session id and lifetime, and return the session's keys.
 pub(crate) fn respond(
@@ -73,7 +78,7 @@ pub(crate) fn respond(
             .mul_clamped(*transport_secret)
             .0,
     );
-    if shared.iter().all(|byte| *byte == 0) {
+    if is_zero(&shared) {
         return Err(malformed());
     }
     let handshake = builder()
@@ -124,7 +129,7 @@ pub(crate) fn respond_identified(
 
 fn low_order(public: &[u8; 32], secret: &[u8; 32]) -> bool {
     let shared = Zeroizing::new(MontgomeryPoint(*public).mul_clamped(*secret).0);
-    shared.iter().all(|byte| *byte == 0)
+    is_zero(&shared)
 }
 
 pub(crate) fn builder() -> snow::Builder<'static> {

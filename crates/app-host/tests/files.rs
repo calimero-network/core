@@ -5,11 +5,12 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use calimero_app_host::{
-    Caller, Directory, FileInfo, FileRead, FileWrite, Files, HostCore, HostDenied, Invocation,
-    InvocationKind, MemoryFiles, NewFile, OrgRole, Outcome, ReaderId, Status, TimerCtx, TrapKind,
-    Usage, WriterId, FILES_DISABLED, FILE_CREATED_IN_RUN, FILE_DELETED_TWICE, FILE_FAILED,
-    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_DELETES, FILE_TOO_MANY_OPEN, MAX_DELETES,
-    MAX_FILE_BYTES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE,
+    Caller, Directory, FileError, FileInfo, FileRead, FileWrite, Files, HostCore, HostDenied,
+    Invocation, InvocationKind, MemoryFiles, NewFile, OrgRole, Outcome, ReadError, ReaderId,
+    Status, TimerCtx, TrapKind, Usage, WriterId, FILES_DISABLED, FILE_CORRUPT, FILE_CREATED_IN_RUN,
+    FILE_DELETED_TWICE, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_DELETES,
+    FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_DELETES, MAX_FILE_BYTES,
+    MAX_NEW_FILES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE,
     RUN_WROTE_TOO_MUCH,
 };
 
@@ -58,14 +59,41 @@ impl FileWrite for CountingWriter {
 }
 
 impl Files for CountingFiles {
-    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, String> {
-        Err(NO_SUCH_FILE.to_owned())
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Err(FileError::Failed(NO_SUCH_FILE.to_owned()))
     }
     fn info(&self, _id: &str) -> Option<FileInfo> {
         None
     }
-    fn create(&self) -> Result<Box<dyn FileWrite>, String> {
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         Ok(Box::new(CountingWriter(0)))
+    }
+}
+
+/// A provider whose one file reads two bytes and then fails as the given error.
+struct FailingFiles(ReadError);
+
+struct FailingReader(Option<ReadError>, bool);
+
+impl FileRead for FailingReader {
+    fn read(&mut self, _max: usize) -> Result<Vec<u8>, ReadError> {
+        if !self.1 {
+            self.1 = true;
+            return Ok(b"ab".to_vec());
+        }
+        Err(self.0.take().unwrap())
+    }
+}
+
+impl Files for FailingFiles {
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Ok(Box::new(FailingReader(Some(self.0.clone()), false)))
+    }
+    fn info(&self, _id: &str) -> Option<FileInfo> {
+        None
+    }
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Err(FileError::Failed(FILES_DISABLED.to_owned()))
     }
 }
 
@@ -456,7 +484,7 @@ fn a_deleted_file_is_gone_for_the_rest_of_the_run() {
 struct OverReturning(Vec<u8>);
 
 impl FileRead for OverReturning {
-    fn read(&mut self, _max: usize) -> Result<Vec<u8>, String> {
+    fn read(&mut self, _max: usize) -> Result<Vec<u8>, ReadError> {
         Ok(std::mem::take(&mut self.0))
     }
 }
@@ -464,14 +492,14 @@ impl FileRead for OverReturning {
 struct OverReturningFiles(Vec<u8>);
 
 impl Files for OverReturningFiles {
-    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, String> {
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
         Ok(Box::new(OverReturning(self.0.clone())))
     }
     fn info(&self, _id: &str) -> Option<FileInfo> {
         None
     }
-    fn create(&self) -> Result<Box<dyn FileWrite>, String> {
-        Err(FILES_DISABLED.to_owned())
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Err(FileError::Failed(FILES_DISABLED.to_owned()))
     }
 }
 
@@ -535,13 +563,13 @@ impl FileWrite for FailingWriter {
 }
 
 impl Files for Failing {
-    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, String> {
-        Err(NO_SUCH_FILE.to_owned())
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Err(FileError::Failed(NO_SUCH_FILE.to_owned()))
     }
     fn info(&self, _id: &str) -> Option<FileInfo> {
         None
     }
-    fn create(&self) -> Result<Box<dyn FileWrite>, String> {
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         Ok(Box::new(FailingWriter(self.on_write)))
     }
 }
@@ -573,4 +601,80 @@ fn a_provider_failure_in_finish_does_not_read_as_finished() {
     assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_FAILED);
     assert_eq!(h.writer_write(w, b"x").unwrap().unwrap_err(), FILE_FAILED);
     assert!(finish(h, Status::Ok).new_files.is_empty());
+}
+
+#[test]
+fn a_corrupt_file_traps_the_run_and_other_read_failures_are_soft() {
+    let mut h = host(
+        inv(InvocationKind::View),
+        Arc::new(FailingFiles(ReadError::Corrupt)),
+    );
+    let r = h.files_open("f").unwrap().unwrap();
+    assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
+    let denied = h.reader_read(r, 10).unwrap_err();
+    assert_eq!(denied, HostDenied(FILE_CORRUPT.to_owned()));
+
+    let mut h = host(
+        inv(InvocationKind::View),
+        Arc::new(FailingFiles(ReadError::Failed("flaky".to_owned()))),
+    );
+    let r = h.files_open("f").unwrap().unwrap();
+    assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
+    assert_eq!(h.reader_read(r, 10).unwrap().unwrap_err(), "flaky");
+}
+
+/// A provider that cannot get the bytes of any file now.
+struct UnavailableFiles;
+
+impl Files for UnavailableFiles {
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Err(FileError::Unavailable)
+    }
+    fn info(&self, _id: &str) -> Option<FileInfo> {
+        None
+    }
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Err(FileError::Unavailable)
+    }
+}
+
+#[test]
+fn an_unavailable_file_aborts_a_logged_run_as_a_timeout_and_is_soft_in_a_view() {
+    for kind in [InvocationKind::Call, InvocationKind::Init] {
+        let mut h = host(inv(kind), Arc::new(UnavailableFiles));
+        denied(h.files_open("f"));
+        denied(h.files_create());
+        let trapped = Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail: String::new(),
+        };
+        let out = finish(h, trapped);
+        assert!(
+            matches!(
+                out.status,
+                Status::Trap {
+                    kind: TrapKind::Timeout,
+                    ..
+                }
+            ),
+            "{kind:?}: {:?}",
+            out.status
+        );
+    }
+    let mut h = host(inv(InvocationKind::View), Arc::new(UnavailableFiles));
+    assert_eq!(h.files_open("f").unwrap().unwrap_err(), FILE_UNAVAILABLE);
+    assert_eq!(finish(h, Status::Ok).status, Status::Ok);
+}
+
+#[test]
+fn new_files_are_capped_per_run() {
+    let files = CountingFiles;
+    let mut h = host(inv(InvocationKind::Call), Arc::new(files));
+    for _ in 0..MAX_NEW_FILES {
+        let w = h.files_create().unwrap().unwrap();
+        h.writer_finish(w).unwrap().unwrap();
+        h.writer_close(w);
+    }
+    let w = h.files_create().unwrap().unwrap();
+    assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_TOO_MANY_NEW);
 }
