@@ -59,6 +59,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | You see | Cause | Fix |
 | --- | --- | --- |
 | `503 UNAVAILABLE` "no leader yet; retry" | An election is under way, or a group lost its majority | Retry after a few seconds; if it persists, check that a majority of the group's replicas (or the system voters) is up. |
+| Every node is up but the system group keeps electing (the term climbs; the leader logs `timeout after 200ms when AppendEntries` to a peer, and `Quote parsed successfully` repeats without `Overall verification: PASSED`) | merod before this fix attested a peer inside each Raft RPC and dropped the attestation with the RPC, so on TDX (about a second per attestation) the channel never opened | Run a merod with the fix; nothing on disk needs changing. |
 | `503 UNAVAILABLE` "the system group did not commit this write in 10 s (leader …, voters […], learners […], behind the leader: […])" | The system group has a leader but cannot commit: too few voters answer, or a voter change waits on members that do not | The members listed behind the leader are the ones not answering: check they run and reach the leader on the cluster port. The write may still apply once the group commits, so look before repeating it. |
 | `503 NOT_CAUGHT_UP` | A stale read with `minIndex` the replica has not reached in 2 s | Retry, lower `minIndex`, or read from the leader. |
 | `421 NOT_LEADER` on `ops move` | Sent to a follower | Send it to `details.leaderUrl`; `meroctl ops move` does this itself. |
