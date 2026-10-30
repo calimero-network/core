@@ -70,8 +70,17 @@ That stays true. Instead, the app asks the **node** to ask the person.
    A release request approves by default; `"withdraw": true` asks to withdraw
    the release's approval instead (a console's *Withdraw*). Unknown fields are
    refused. The node checks the caller could make this
-   approval at all (the governance holder, upgrade authority, organization
-   membership, a package-bound session only about its own package and apps),
+   approval at all, with the route's own rules, before any page exists: the
+   governance holder; for an organization's release, `APPROVE_RELEASES`
+   there (`403`); for an upgrade, whoever the package names
+   (`SystemState::may_upgrade`: a package that declares `upgrades:
+   publisher` is its publisher organization's, `409` while no organization
+   has bound its key, and an owner-upgraded app is never moved to a
+   publisher release, `403`), and a release deadline that stops the
+   upgrade (`409 RELEASE_DEADLINE`); organization membership; a
+   package-bound session only about its own package and apps. `/approve`
+   asks again, before the passkey, so a capability revoked while the page
+   is open is refused there. It
    resolves the subject from its own state and the releases' verified `.mpk`
    files, and freezes what the page will show. It answers
    `{ "requestId", "url", "expiresAt", "code" }`; `code` is the request's
@@ -139,7 +148,8 @@ top to bottom:
 5. **How you know this is legit**: checks a person can make. The page is
    served by their node at *host*, not by the app; the passkey will ask to
    sign in to `rpId`, and any other site means cancel; for an upgrade or
-   outbound request, published and signed by the publisher, with whether the
+   outbound request, published and signed by the publisher (the
+   organization its key is bound to on the cluster, when there is one), with whether the
    key is the one the running version (or every release of the package) was
    signed with; for a release, built by Calimero's public release process and
    its signature verified by the node, or, on mock attestation, "Test
@@ -169,7 +179,8 @@ and `notes`, shown under *Technical details*.
 | `points` | all | Two to five plain sentences: what approving means |
 | `attention` | all | `[{ "flag", "text", "items" }]`, what not to miss; `items` are hosts, origins or method names. Flags: `refused`, `sendsData`, `newSignIn`, `deletesData`, `migration`, `removesFeatures`, `newPublisherKey` (upgrade), `lastApproved` (withdrawal). Empty: no new permissions |
 | `app` | upgrade, outbound | `{ "name", "package" }`: the manifest's display name and the package id |
-| `publisher` | upgrade, outbound | `{ "name", "signer", "keyChanged" }`: the manifest's author (`null` when it names none), the verified signing key (`did:key`), whether it differs from the running version's |
+| `publisher` | upgrade, outbound | `{ "name", "signer", "keyChanged", "org" }`: the manifest's author (`null` when it names none), the verified signing key (`did:key`), whether it differs from the running version's, and the organization the key is bound to on this cluster (`{ "id", "name" }`, from `BindPublisher`; `null` while unbound). The page names that organization as the publisher when there is one |
+| `release.deadline` | release | `{ "after", "afterSecs", "passed" }` when the operator set an end-of-new-work deadline for the version (`SetReleaseDeadline`, `GET /releases`), else `null`; `points` then say it in plain words ("After Nov 15, 2026 (UTC), new apps, installs and updates for Acme's apps pause until this version (or a newer one) is approved") |
 | `requestedBy` | all | `{ "package", "name", "publisher", "returnOrigin" }`: the asking package (a package-bound session's, else `null`), its newest release's display name and author |
 | `rpId` | all | The relying party ID the passkey prompt will name |
 | `code` | all | The [confirmation code](#the-confirmation-code) |

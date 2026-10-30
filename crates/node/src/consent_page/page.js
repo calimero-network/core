@@ -89,10 +89,6 @@
     k = String(k || "");
     return k.length > 24 ? k.slice(0, 14) + "…" + k.slice(-6) : k;
   }
-  function plainDate(s) {
-    var d = new Date(s);
-    return isNaN(d.getTime()) ? String(s) : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  }
 
   function render(m) {
     var host = location.host;
@@ -132,9 +128,6 @@
     var points = m.points || [m.before, m.after];
     var ul = $("points");
     points.forEach(function (p) { if (p) ul.appendChild(el("li", p)); });
-    if (m.kind === "release" && m.release.deadline) {
-      ul.appendChild(el("li", "After " + plainDate(m.release.deadline) + ", new apps and updates pause until this is approved."));
-    }
     var box = $("attention"), attn = m.attention || [];
     if (attn.length) {
       var w = add(box, el("div", null, "attn"));
@@ -162,7 +155,10 @@
     check(ul, "Served by your node at " + host + ",", " not by the app.", "Your browser's address bar should show " + host + ".");
     check(ul, "Your passkey will ask to sign in to " + m.rpId + ".", "", "If it shows any other site, cancel.");
     var p = m.publisher;
-    if (p && m.kind === "upgrade") {
+    if (p && p.org && (m.kind === "upgrade" || m.kind === "outbound")) {
+      check(ul, end("Published by " + p.org.name), "", "Its signing key is bound to the organization " + p.org.name +
+        " on your cluster, and your node verified the signature" + (p.keyChanged ? ", though the key differs from the version you run now." : "."), p.keyChanged);
+    } else if (p && m.kind === "upgrade") {
       if (p.keyChanged) {
         check(ul, "Published by " + (p.name || "an unnamed publisher") + ", signed with a new key.", "", "Your node verified the signature, but the key differs from the version you run now (" + shortKey(p.signer) + ").", true);
       } else {
@@ -221,7 +217,7 @@
       ["Measurements", r.measurements.mock, true],
       ["Signed release", link(r.links.release)],
       ["Published measurements", link(r.links.measurements)],
-      ["Deadline", r.deadline],
+      ["Deadline", r.deadline && (r.deadline.after + (r.deadline.passed ? " (passed)" : ""))],
     ]));
     if (r.verify) {
       t.appendChild(el("h3", "Verify it yourself"));

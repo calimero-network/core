@@ -805,6 +805,17 @@ fn scope_words(scope: &Value) -> String {
     }
 }
 
+/// A date as a person reads it, in UTC: `Nov 15, 2026`.
+fn plain_date(secs: u64) -> String {
+    i64::try_from(secs)
+        .ok()
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .map_or_else(
+            || crate::system::rfc3339(secs),
+            |t| t.format("%b %-d, %Y (UTC)").to_string(),
+        )
+}
+
 /// Whose data, as a person reads it: "Acme's", "your".
 fn possessive(scope: &Value) -> String {
     match scope["name"].as_str() {
@@ -847,6 +858,16 @@ fn phrase(items: &[String]) -> String {
 /// sentence, and the items it names (hosts, origins, methods).
 fn attention(flag: &str, text: String, items: Vec<String>) -> Value {
     json!({ "flag": flag, "text": text, "items": items })
+}
+
+/// The organization `signer` is bound to on this cluster (`BindPublisher`,
+/// approved there with a passkey), as `{ id, name }`; `null` while unbound.
+fn publisher_org(node: &Node, signer: &str) -> Value {
+    node.sys(|s| {
+        let org = s.publisher_of_signer(signer)?;
+        Some(json!({ "id": org, "name": s.orgs.get(org)?.name }))
+    })
+    .unwrap_or(Value::Null)
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -959,6 +980,16 @@ async fn release_request(
         ));
     }
     let (scope, scope_json) = scope_of(node, account, scope)?;
+    // The route's rule, asked before anything is shown: an organization's
+    // releases are approved (and withdrawn) by `APPROVE_RELEASES` holders.
+    if let ReleaseScope::Org { org } = &scope {
+        if !node.sys(|s| s.approves_releases(org, account)) {
+            return Err(ApiError::forbidden(
+                "approving releases needs APPROVE_RELEASES in the organization",
+            ));
+        }
+    }
+    let deadline = node.sys(|s| s.release_deadlines.get(&version).copied());
     let approved: Vec<String> = node.sys(|s| {
         let set = match &scope {
             ReleaseScope::Org { org } => s.orgs.get(org).map(|o| o.approved_releases.clone()),
@@ -1018,6 +1049,20 @@ async fn release_request(
         ));
     }
     points.push("Nothing changes until you approve.".to_owned());
+    if let (Some(after), false) = (deadline, already) {
+        let when = plain_date(after);
+        points.push(if after <= now_secs() {
+            format!(
+                "Since {when}, new apps, installs and updates for {poss} apps are paused until \
+                 this version (or a newer one) is approved. Apps already running keep running."
+            )
+        } else {
+            format!(
+                "After {when}, new apps, installs and updates for {poss} apps pause until this \
+                 version (or a newer one) is approved. Apps already running keep running."
+            )
+        });
+    }
     points.push(
         "You can withdraw this approval later, as long as another version stays approved."
             .to_owned(),
@@ -1066,7 +1111,11 @@ async fn release_request(
             },
             "verify": "published-mrtds.json is signed with Sigstore by the mero-tee release workflow; \
                        verify it with cosign, then compare its registers with the ones shown here",
-            "deadline": null,
+            "deadline": deadline.map(|after| json!({
+                "after": crate::system::rfc3339(after),
+                "afterSecs": after,
+                "passed": after <= now_secs(),
+            })),
         },
     });
     Ok((
@@ -1177,9 +1226,22 @@ async fn upgrade_request(
     let app_id = node.canonical_app_id(&subject.app);
     let app = node.app(&app_id).await?;
     p.within(node, &app)?;
-    if !node.sys(|s| s.may_upgrade(&app, account)) {
+    // The route's own authority rules, asked before anything is shown: a
+    // package its publisher upgrades is not the instance owner's to approve.
+    let (may, unbound) = node.sys(|s| {
+        (
+            s.may_upgrade(&app, account),
+            !s.upgrades_of(&app.bundle).is_owner() && s.publisher_of(&app.bundle).is_none(),
+        )
+    });
+    if unbound {
+        return Err(ApiError::conflict(
+            "this app's package is upgraded by its publisher, and no organization has bound its key yet",
+        ));
+    }
+    if !may {
         return Err(ApiError::forbidden(
-            "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
+            "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
         ));
     }
     let current = node.release_of(&app.bundle).ok_or_else(|| {
@@ -1199,6 +1261,12 @@ async fn upgrade_request(
             p.bound_app() == Some(package.as_str()),
         )
         .await?;
+    if !node.sys(|s| s.upgrade_keeps_authority(&app.bundle, &bundle)) {
+        return Err(ApiError::forbidden(
+            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+        ));
+    }
+    crate::api::refuse_stalled(node, &app, &bundle, now_secs())?;
     let target = node
         .sys(|s| {
             s.packages
@@ -1302,6 +1370,7 @@ async fn upgrade_request(
             "name": author,
             "signer": to.signer,
             "keyChanged": from.signer != to.signer,
+            "org": publisher_org(node, &to.signer),
         },
         "before": format!(
             "Until you approve, the app keeps running {old}: only that code reads and changes its data."
@@ -1434,6 +1503,7 @@ async fn outbound_request(
             "name": meta.and_then(|m| m.author.clone()),
             "signer": facts.signer,
             "keyChanged": false,
+            "org": publisher_org(node, &facts.signer),
         },
         "before": format!(
             "Until you approve, apps of {package} in {whose} cannot send anything to these addresses."
