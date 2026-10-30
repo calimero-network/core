@@ -536,6 +536,10 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
             .ok_or_else(|| ApiError::bad_request("BAD_HASH", "appHash must be 32 bytes hex"))?,
         (None, None) => [0; 32],
     };
+    #[cfg(feature = "testing")]
+    if let Some(delay) = crate::testing::attestation_delay(&node.config.public_url) {
+        tokio::time::sleep(delay).await;
+    }
     let transport_key = node.transport.public_key();
     let receipts = q.purpose.as_deref() == Some("receipts");
     // Only when asked: a client that does not know the KMS binding keeps the

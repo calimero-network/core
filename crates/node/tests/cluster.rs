@@ -6184,6 +6184,27 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
 }
 
+/// eu-shared-2 (and `bababa`) never kept a system leader: a TDX node attests a
+/// peer in about a second (Intel's collateral is fetched each time), and
+/// openraft gives an append one heartbeat (200 ms there). Each RPC began the
+/// attestation, was dropped at its deadline, and the next began it again, so
+/// the channel to the peer never opened and the peer never learned who called.
+/// Attestation here takes ten heartbeats; the cluster still forms and writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster() {
+    let c = tokio::time::timeout(
+        Duration::from_secs(60),
+        Cluster::start_with(3, |config| {
+            calimero_node::testing::slow_attestation(&config.public_url, Duration::from_secs(1));
+        }),
+    )
+    .await
+    .expect("the cluster formed");
+    let (_alice, _auth) = tokio::time::timeout(Duration::from_secs(30), signed_up(&c, 1, "alice"))
+        .await
+        .expect("a system write committed");
+}
+
 /// A system write the group cannot commit answers `503 UNAVAILABLE` in
 /// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
 /// system group could not commit, and a sign-up and a node registration each
