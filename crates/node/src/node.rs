@@ -30,10 +30,13 @@ use crate::usage::{Kind as RunKind, Meter, Usage};
 mod component;
 mod job;
 
-pub use job::JobPeer;
+#[cfg(feature = "testing")]
+pub use component::ComputeLimits;
+pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 
+pub(crate) use component::RUN_VIEW;
 pub use component::{
-    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
+    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
 };
 
@@ -453,6 +456,14 @@ pub struct Node {
     issuer_tries: Mutex<HashMap<NodeId, u64>>,
     /// Job nodes this node attested, with when ([`Node::attest_job`]).
     job_peers: Mutex<HashMap<NodeId, (std::time::Instant, u64, JobPeer)>>,
+    /// Bounds the transfers to job nodes under way at once.
+    job_ops: tokio::sync::Semaphore,
+    /// Bounds the control requests to job nodes, so no transfer starves them.
+    job_control: tokio::sync::Semaphore,
+    /// What this node, as a leader, remembers of the compute runs it drives.
+    compute: component::ComputeState,
+    /// Wakes the compute driver: a call started or cancelled a run.
+    pub runs_kick: tokio::sync::Notify,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
@@ -592,9 +603,12 @@ pub(crate) fn blob_too_large() -> ApiError {
     )
 }
 
+/// The code of a command the system log refused for a quota.
+pub const QUOTA_EXCEEDED: &str = "QUOTA_EXCEEDED";
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
-        ApiError::new(429, "QUOTA_EXCEEDED", reason)
+        ApiError::new(429, QUOTA_EXCEEDED, reason)
     } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
         ApiError::new(409, RELEASE_DEADLINE, reason)
     } else {
@@ -688,6 +702,10 @@ impl Node {
             issuers: Mutex::new(HashMap::new()),
             issuer_tries: Mutex::new(HashMap::new()),
             job_peers: Mutex::new(HashMap::new()),
+            job_ops: tokio::sync::Semaphore::new(job::MAX_INFLIGHT_JOB_OPS),
+            job_control: tokio::sync::Semaphore::new(job::MAX_INFLIGHT_JOB_CONTROL),
+            compute: component::ComputeState::default(),
+            runs_kick: tokio::sync::Notify::new(),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
@@ -932,6 +950,11 @@ impl Node {
     /// Callers that wait at the same moment share one round (`ReadRounds`).
     pub async fn sys_fresh(&self) -> bool {
         use std::sync::atomic::Ordering;
+
+        #[cfg(feature = "testing")]
+        if self.probes.system_outage.load(Ordering::Relaxed) {
+            return false;
+        }
 
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
@@ -2986,7 +3009,7 @@ impl Node {
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
-        if app.executor == Kind::Component {
+        if app.executor == Kind::Component && req.method != component::RUN_VIEW {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;
         }

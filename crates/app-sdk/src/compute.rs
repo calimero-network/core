@@ -116,6 +116,71 @@ pub fn cancel(run: &RunId) -> Result<()> {
     backend::cancel(run.as_str()).map_err(fail)
 }
 
+/// How a compute run ended, as its result method is told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputeStatus {
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// A file a run wrote: its id, plaintext size and plaintext SHA-256 (hex).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ComputeOutput {
+    pub id: FileId,
+    #[serde(with = "crate::json::u64_str")]
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// What a run cost.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputeUsage {
+    pub cpu_seconds: f64,
+    pub gib_seconds: f64,
+    #[serde(with = "crate::json::u64_str")]
+    pub fuel: u64,
+}
+
+/// The outcome the node hands a `#[app::compute_result]` method: it takes this as its one
+/// parameter, whatever its name. `reason` is the failure's name (`fuel`, `memory`, `time`, `trap`,
+/// `app-error`, `integrity`, `lost`, `timeout`, `refused`, `quota`) and `result` the compute
+/// method's return bytes as standard base64, present only when the run is done.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputeOutcome {
+    pub run: RunId,
+    pub method: String,
+    pub attempt: u32,
+    pub status: ComputeStatus,
+    pub reason: Option<String>,
+    pub result: Option<String>,
+    pub outputs: Vec<ComputeOutput>,
+    pub usage: ComputeUsage,
+}
+
 fn fail(message: String) -> AppError {
     AppError::with_fields("Compute", json!({ "message": message }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_outcome_reads_the_nodes_json() {
+        let outcome: ComputeOutcome = serde_json::from_value(json!({
+            "run": "r1", "method": "digest", "attempt": 2, "status": "failed", "reason": "time",
+            "result": null,
+            "outputs": [{ "id": "ab", "size": "12", "sha256": "cd" }],
+            "usage": { "cpuSeconds": 1.5, "gibSeconds": 0.25, "fuel": "99" },
+        }))
+        .unwrap();
+        assert_eq!(outcome.status, ComputeStatus::Failed);
+        assert_eq!(outcome.reason.as_deref(), Some("time"));
+        assert_eq!(outcome.outputs[0].size, 12);
+        assert_eq!(outcome.usage.fuel, 99);
+    }
 }

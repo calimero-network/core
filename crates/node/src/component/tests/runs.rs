@@ -1595,3 +1595,42 @@ fn a_run_whose_acquire_was_refused_for_good_can_end_refused_only_before_any_atte
     let late = leader(&w, "r2", refused);
     assert_eq!(why(&w.finish(late)), "the run was assigned");
 }
+
+#[test]
+fn a_run_whose_outputs_pass_the_quota_ends_failed_quota_as_a_leader_outcome() {
+    let quota = FinalOutcome::Failed {
+        reason: FailedReason::Quota,
+    };
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &job_key(1));
+    let mut with_report = w.done("r1", &job_key(1));
+    with_report.outcome = quota;
+    assert_eq!(
+        why(&w.finish(with_report)),
+        "a leader outcome carries no report"
+    );
+    let mut entry = leader(&w, "r1", quota);
+    entry.base_index = w.last;
+    assert!(!w.finish(entry).conflict);
+    let rec = w.record("r1");
+    assert_eq!(rec.state, RunState::Failed);
+    assert_eq!(rec.final_.unwrap().outcome, quota);
+    assert!(w.active().is_empty());
+}
+
+#[test]
+fn a_signed_result_over_the_limit_is_refused() {
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &job_key(1));
+    let mut entry = w.done("r1", &job_key(1));
+    let report = entry.report.as_mut().unwrap();
+    report.result = vec![0; calimero_app_host::MAX_COMPUTE_RESULT_BYTES + 1];
+    entry.signature = Some(sign_report(&job_key(1), &DIGEST, report).unwrap());
+    assert_eq!(
+        why(&w.finish(entry)),
+        "the result is over the limit of a run"
+    );
+    assert!(w.state("r1").is_active());
+}

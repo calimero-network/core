@@ -35,6 +35,8 @@ pub(super) const HASH_BYTES: usize = 32; // a run's token and every hash: 32 byt
 pub const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for finished runs plus those active and new runs may still hold, past which work is refused
 pub const MAX_ASSIGNMENT_BYTES: usize = 1024 * 1024; // the most a request to assign a run may weigh
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
+pub const UNKNOWN_RUN: &str = "UNKNOWN_RUN"; // the code of an answer about a run this node does not hold
+pub const NEED_BUNDLE: &str = "NEED_BUNDLE"; // the code of an assignment whose component this node does not hold
 
 /// A run's secrets, unwrapped at admission and taken by the thread that runs it.
 pub(super) struct Keys {
@@ -191,7 +193,7 @@ fn status_of(state: &RunState) -> Value {
 }
 
 fn unknown_run() -> ApiError {
-    ApiError::new(404, "UNKNOWN_RUN", "this node holds no such run")
+    ApiError::new(404, UNKNOWN_RUN, "this node holds no such run")
 }
 
 /// An attempt of a run of an app: run ids are the app's own, so two apps may share one.
@@ -453,7 +455,7 @@ fn admit_run(
     let prepared = job.bundles.get(&a.bundle).ok_or_else(|| {
         ApiError::new(
             409,
-            "NEED_BUNDLE",
+            NEED_BUNDLE,
             "this node does not hold the bundle: PUT it first",
         )
     })?;
@@ -572,7 +574,23 @@ pub(super) async fn status(
     Path((app, run, attempt)): Path<(String, String, u32)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(find(&job, &app, &run, attempt, &headers)?.status()))
+    let run = find(&job, &app, &run, attempt, &headers)?;
+    #[cfg(feature = "testing")]
+    if let Some(stuck) = test_probe(&job).await {
+        return Ok(stuck);
+    }
+    Ok(Json(run.status()))
+}
+
+/// What a test makes a job node do instead of answering: hang, or claim to be still running.
+#[cfg(feature = "testing")]
+async fn test_probe(job: &JobNode) -> Option<Json<Value>> {
+    if job.frozen.load(Ordering::Relaxed) {
+        std::future::pending::<()>().await;
+    }
+    job.stuck
+        .load(Ordering::Relaxed)
+        .then(|| Json(json!({ "state": "running" })))
 }
 
 /// `read` of the `i`-th output of a finished run.
@@ -594,6 +612,10 @@ pub(super) async fn output(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
+    #[cfg(feature = "testing")]
+    if job.outputs_fail.load(Ordering::Relaxed) {
+        return Err(ApiError::internal("outputs are failing"));
+    }
     let path = output_of(&run, i, |o| o.path.clone())?;
     let bytes = tokio::fs::read(path)
         .await
@@ -621,6 +643,10 @@ pub(super) async fn cancel(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
+    #[cfg(feature = "testing")]
+    if let Some(stuck) = test_probe(&job).await {
+        return Ok(stuck);
+    }
     run.cancel.store(true, Ordering::Relaxed);
     let _ended = run.end_awaiting(Phase::Lost);
     if run.running() {

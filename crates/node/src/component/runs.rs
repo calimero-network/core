@@ -50,6 +50,7 @@ const ATTEMPTS_LEFT: &str = "the run has attempts left";
 const NOT_RUNNING: &str = "the run was never assigned";
 const LEADER_USAGE: &str = "a leader outcome is not charged";
 const OUTPUTS_TOO_LARGE: &str = "outputs are over the limits of a run";
+const RESULT_TOO_LARGE: &str = "the result is over the limit of a run";
 const USAGE_OVER_CAPS: &str = "usage is over what the run's caps allow";
 const ASSIGNED: &str = "the run was assigned";
 const STALE_BASE: &str = "conflict: retry";
@@ -155,6 +156,11 @@ pub struct Final {
     pub outputs: Vec<FileMark>,
     pub usage: ReportUsage,
     pub ts_ms: u64,
+    /// The `id_term` and `id_seq` of the entry that ended the run: which entry it was.
+    #[serde(default)]
+    pub id_term: u64,
+    #[serde(default)]
+    pub id_seq: u64,
 }
 
 /// The record of one run.
@@ -181,8 +187,8 @@ pub struct RunRecord {
     pub final_: Option<Final>,
 }
 
-/// Why a run failed. The first six are a job's own outcome and need its signed report; the
-/// last two are the leader's.
+/// Why a run failed. The first seven are a job's own outcome and need its signed report; the
+/// rest are the leader's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FailedReason {
@@ -200,6 +206,22 @@ pub enum FailedReason {
     Refused,
     /// No report by the deadline.
     Timeout,
+    /// The outputs would pass the payer's stored-file quota.
+    Quota,
+}
+
+impl From<FailReason> for FailedReason {
+    fn from(reason: FailReason) -> Self {
+        match reason {
+            FailReason::Fuel => Self::Fuel,
+            FailReason::Memory => Self::Memory,
+            FailReason::Time => Self::Time,
+            FailReason::Trap => Self::Trap,
+            FailReason::AppError => Self::AppError,
+            FailReason::Integrity => Self::Integrity,
+            FailReason::Cancelled => Self::Cancelled,
+        }
+    }
 }
 
 impl FailedReason {
@@ -213,7 +235,7 @@ impl FailedReason {
             Self::AppError => Some(FailReason::AppError),
             Self::Integrity => Some(FailReason::Integrity),
             Self::Cancelled => Some(FailReason::Cancelled),
-            Self::Lost | Self::Timeout | Self::Refused => None,
+            Self::Lost | Self::Timeout | Self::Refused | Self::Quota => None,
         }
     }
 }
@@ -228,7 +250,9 @@ pub enum FinalOutcome {
 }
 
 impl FinalOutcome {
-    const fn state(self) -> RunState {
+    /// The state the run ends in.
+    #[must_use]
+    pub const fn state(self) -> RunState {
         match self {
             Self::Done => RunState::Done,
             Self::Failed {
@@ -511,6 +535,8 @@ impl AppMachine {
             outputs: entry.outputs.clone(),
             usage: entry.usage,
             ts_ms: entry.ts_ms,
+            id_term: entry.id_term,
+            id_seq: entry.id_seq,
         });
         Self::write_run(tx, &record);
         self.finish_run(tx, &entry.run);
@@ -570,20 +596,25 @@ impl AppMachine {
 
     /// The outputs fit what a run may write: how many, how large each, how large together.
     fn check_outputs(outputs: &[FileMark]) -> Result<(), &'static str> {
-        let total = outputs
-            .iter()
-            .try_fold(0u64, |sum, o| sum.checked_add(o.size));
-        if outputs.len() > host::MAX_NEW_FILES
-            || outputs.iter().any(|o| o.size > host::MAX_FILE_BYTES)
-            || total.is_none_or(|t| t > host::MAX_COMPUTE_FILE_BYTES)
-        {
-            return Err(OUTPUTS_TOO_LARGE);
+        let sizes: Vec<u64> = outputs.iter().map(|o| o.size).collect();
+        if Self::outputs_fit(&sizes) {
+            Ok(())
+        } else {
+            Err(OUTPUTS_TOO_LARGE)
         }
-        Ok(())
+    }
+
+    /// Whether outputs of these `sizes` are within what a run may write.
+    #[must_use]
+    pub fn outputs_fit(sizes: &[u64]) -> bool {
+        let total = sizes.iter().try_fold(0u64, |sum, s| sum.checked_add(*s));
+        sizes.len() <= host::MAX_NEW_FILES
+            && sizes.iter().all(|s| *s <= host::MAX_FILE_BYTES)
+            && total.is_some_and(|t| t <= host::MAX_COMPUTE_FILE_BYTES)
     }
 
     /// What a run measured cannot pass what its caps allow.
-    fn check_usage(caps: &RunCaps, usage: &ReportUsage) -> Result<(), &'static str> {
+    pub fn check_usage(caps: &RunCaps, usage: &ReportUsage) -> Result<(), &'static str> {
         // CPU is one thread's clock and a report may come up to the grace after the wall cap.
         let micros =
             (u128::from(caps.wall_secs) + u128::from(DEADLINE_GRACE.as_secs())) * 1_000_000;
@@ -639,6 +670,9 @@ impl AppMachine {
         }
         if report.usage != entry.usage {
             return Err(USAGE_MISMATCH);
+        }
+        if report.result.len() > host::MAX_COMPUTE_RESULT_BYTES {
+            return Err(RESULT_TOO_LARGE);
         }
         Self::check_usage(&record.caps, &entry.usage)
     }

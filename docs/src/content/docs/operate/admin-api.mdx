@@ -155,6 +155,7 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held | `context storage` |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
+| `GET /apps/{app}/runs/{run}` | app access | A compute run's record without its arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (with plaintext sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` (percent, step) as the app's leader last polled it | - |
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
 | `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `context presence stream` |

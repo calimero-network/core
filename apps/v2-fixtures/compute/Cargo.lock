@@ -439,6 +439,7 @@ name = "v2-fixture-compute"
 version = "0.1.0"
 dependencies = [
  "calimero-app-sdk",
+ "serde_json",
  "sha2",
 ]
 

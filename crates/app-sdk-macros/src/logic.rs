@@ -410,6 +410,18 @@ fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
             None => quote! { ::calimero_app_sdk::__private::encode(&__out) },
         }
     };
+    if m.attrs.compute_result {
+        if let [(name, ty)] = m.params.as_slice() {
+            // The node's outcome is one JSON object that the parameter takes whole.
+            return quote! {
+                #index => {
+                    let #name: #ty = ::calimero_app_sdk::__private::decode_args::<#ty>(args)?;
+                    let __out = #call;
+                    #encode
+                }
+            };
+        }
+    }
     quote! {
         #index => {
             #[derive(::calimero_app_sdk::__private::serde::Deserialize)]
