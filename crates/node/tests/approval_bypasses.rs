@@ -521,10 +521,13 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
     // Node 3 does not issue her a session: no other node would take it.
     let on3 = c.client(2);
     let e = on3.sign_in(&mut key).await.unwrap_err();
-    assert_eq!(e.code(), Some("WRONG_NODE"), "{e}");
+    assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
     // Its image can still sign whatever it likes with its own key: a token
     // for alice, as node 3 would mint it.
+    // Without alice's refresh token, which a client would otherwise use on
+    // the 401 and get a session an approved node signs.
     let mut minted = alice.session().await.unwrap();
+    minted.refresh_token = String::new();
     minted.session_token = running(&c, 2)
         .node
         .mint_session(calimero_identity::SessionClaims {
@@ -554,8 +557,37 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
     on2.use_session(alice.session().await.unwrap()).await;
     assert_eq!(on2.me().await.unwrap()["accountId"], json!(account));
 
-    // A refresh through an approved node gives a session that node signed.
+    // A refresh node 3 may not serve is refused before the refresh token is
+    // spent: the same token then works on an approved node (spent, it would
+    // look like a stolen copy there and revoke the session).
+    on3.use_session(alice.session().await.unwrap()).await;
+    let e = on3.refresh().await.unwrap_err();
+    assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
+    // The same token, through an approved node: a session that node signed.
     let fresh = alice.refresh().await.unwrap();
+    // A sign-in node 3 may not serve is refused before its challenge is spent:
+    // the same ceremony then finishes on an approved node.
+    let begin = on3
+        .post("auth/passkey/login/begin", json!({}))
+        .await
+        .unwrap();
+    let challenge =
+        calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
+    let finish = json!({
+        "challengeId": begin["challengeId"],
+        "assertion": calimero_client::Passkey::get(&mut key, &challenge),
+    });
+    let e = on3
+        .post("auth/passkey/login/finish", finish.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
+    let signed_in = c
+        .client(0)
+        .post("auth/passkey/login/finish", finish)
+        .await
+        .unwrap();
+    assert_eq!(signed_in["accountId"], json!(account));
     assert!(
         fresh.session_token.starts_with("v2."),
         "{}",

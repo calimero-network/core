@@ -250,7 +250,10 @@ The token is per node configuration, not cluster state.
 
 </Steps>
 
-Session-signing keys are each node's receipt key, new at every start.
+Session-signing keys are each node's receipt key, kept in its data directory
+(`signing-key`, wrapped under K_r) across restarts. A node replaced on a new
+data directory gets a new one; the sessions it signed before answer `401` and
+clients refresh. Removing a node ends the sessions it signed the same way.
 
 ## A node is lost
 

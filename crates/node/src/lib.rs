@@ -32,6 +32,7 @@ pub mod placement;
 pub mod presence;
 pub mod proof;
 pub mod services;
+pub mod signing_key;
 pub mod system;
 pub mod types;
 pub mod usage;
@@ -185,6 +186,28 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.reconcile().await;
+        }
+    }));
+
+    // Every peer's session-signing key, attested ahead of the first token it
+    // issued, so a session outlives the node that issued it (failover): at
+    // start, as the directory is learned, on each registration or removal.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    let mut applied = node.system.subscribe_applied();
+    drop(tokio::spawn(async move {
+        loop {
+            let Some(node) = weak.upgrade() else { return };
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = node.warm_issuers() => {}
+            }
+            drop(node);
+            tokio::select! {
+                () = stop.cancelled() => return,
+                _ = applied.changed() => {}
+                () = tokio::time::sleep(node::ISSUER_WARM_EVERY) => {}
+            }
         }
     }));
 

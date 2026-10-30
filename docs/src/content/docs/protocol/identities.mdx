@@ -52,8 +52,11 @@ method, an upgrade, an approval or an organization's deletion — needs the user
 ## Sessions
 
 A session token is `v2.<claims>.<Ed25519 signature>`, signed by the node that
-issued it with its receipt key (made in memory at start, attested with
+issued it with its signing key (the key it signs receipts with, attested with
 `GET /attestation?purpose=receipts`) over `"calimero.session.v2\0" ‖ claims`.
+A node makes that key on its first start and keeps it in its data directory
+wrapped under its storage key K_r, so a restart on the same data directory (a
+crash, a rolling upgrade of the binary) keeps it.
 The claims are the account, a session id, the expiry (15 minutes), the passkey
 the session was opened with, for a session opened on a package's frontend that
 package, and the issuing node with its key. Signing in also returns a refresh
@@ -61,22 +64,45 @@ token (`rt_…`, 30 days, single use): `POST /auth/refresh` on any node exchange
 it for a new token, signed by that node, and a new refresh token; a refresh
 token presented a second time revokes its session.
 
-A node verifies a token issued elsewhere without asking the issuer: it attests
-the issuer's receipt key at the address the cluster registered for it (once,
-and again when a token names a newer key: the issuer restarted), checks the
-signature and expiry, and that the issuer's attested release may vouch for the
-account: a release the account approved for its own apps or an organization it
-belongs to approved (where the operator holds release approvals, one it
-approved). Each app access then also requires the issuer's release to be
-approved for that app's data. So a node on a release nobody approved can mint
-tokens, but no other node takes them. Then — on fresh system state — the node
-checks that the session is not revoked and that its passkey still belongs to
-the account. See [Keys & their lifetimes](/protocol/key-rotation/) for
-revocation.
+A node verifies a token issued elsewhere without asking the issuer: it checks
+the signature against the issuer's signing key as it attested it at the
+address the cluster registered for that node, checks the expiry, and that the
+issuer's attested release may vouch for the account: a release the account
+approved for its own apps or an organization it belongs to approved (where the
+operator holds release approvals, one it approved). Each app access then also
+requires the issuer's release to be approved for that app's data. So a node on
+a release nobody approved can mint tokens, but no other node takes them. Then —
+on fresh system state — the node checks that the session is not revoked and
+that its passkey still belongs to the account. See
+[Keys & their lifetimes](/protocol/key-rotation/) for revocation.
 
-A node restart ends the tokens it issued (its key is new). Once a node stops,
-its tokens verify only on nodes that attested its key before; elsewhere they
-answer `401`, and clients refresh through another node.
+### Failover
+
+Every node attests each registered peer's signing key ahead of time: at start,
+once it learns the directory, and whenever a node is registered. It keeps
+`node → (key, release, attested at)` in memory (`Node::warm_issuers`, at most
+`MAX_CONCURRENT_ISSUER_ATTESTS` at once, each bounded by `ISSUER_ATTEST_WAIT`).
+A token is verified from that entry without reaching the issuer, so a session
+outlives the node that issued it: with the issuer stopped or frozen, any other
+node still takes it.
+
+- **The issuer restarted on its data directory:** same key; its sessions go on
+  verifying everywhere.
+- **A token under another key than the one attested** (the issuer's data
+  directory was replaced): the node attests the issuer again, at most every
+  `ISSUER_RETRY_SECS`. If the issuer cannot be reached, or attests another
+  key, the token is refused with `401`.
+- **The issuer was removed:** its entry is dropped and its tokens stop
+  verifying once the removal applies.
+
+On a `401` a client refreshes once, on any node, and sends the request again
+(the Rust client and `meroctl` do it on their own).
+
+The key is wrapped under K_r, not K_c. K_r comes only to the release whose
+mero-kms holds its root, so only that release opens the key: a key attested
+once under release R signs only for R, and a node on another release booted
+on the same disk cannot sign as this one.
+
 A node on a release the account's owners have not approved neither issues nor
 takes the account's sessions: it answers `421 WRONG_NODE`, and the client uses
 another node.

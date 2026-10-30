@@ -1,7 +1,7 @@
 //! The node: hosts the system group and its app groups, routes calls to each
 //! group's leader, and talks to peers over attested sealed channels.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
@@ -10,6 +10,7 @@ use calimero_log::{
     BoxFuture, Engine, Group, GroupId, NodeId, Proposal, RpcRequest, RpcResponse, Transport,
     WriteError,
 };
+use futures_util::StreamExt;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -322,14 +323,27 @@ pub struct PeerIdentity {
 pub struct Issuer {
     pub key: [u8; 32],
     pub release: Option<String>,
-    /// When it was attested (Unix seconds): a key that no longer verifies
-    /// is attested again at most every [`ISSUER_RETRY_SECS`].
+    /// When it was attested (Unix seconds).
     pub at: u64,
 }
 
-/// How often a node attests a session issuer again whose key did not verify
-/// a token (it may have restarted).
+/// How often a token's verification attests its issuer again (a token under
+/// another key than the one attested: the issuer's data directory was
+/// replaced), or tries one this node holds no key of: at most once per
+/// issuer in this many seconds, so tokens naming an unreachable issuer are
+/// refused at once instead of each waiting on it.
 pub const ISSUER_RETRY_SECS: u64 = 5;
+
+/// How long one attestation of a session issuer may take: a frozen issuer
+/// would otherwise hold it for the HTTP client's 30 s.
+pub const ISSUER_ATTEST_WAIT: Duration = Duration::from_secs(5);
+
+/// At most this many issuers are attested at once ([`Node::warm_issuers`]).
+pub const MAX_CONCURRENT_ISSUER_ATTESTS: usize = 8;
+
+/// How often [`Node::warm_issuers`] runs besides on each system change: a
+/// peer that could not be attested is tried again.
+pub const ISSUER_WARM_EVERY: Duration = Duration::from_secs(2);
 
 /// Shared node state.
 pub struct Node {
@@ -360,8 +374,10 @@ pub struct Node {
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
-    /// Signs receipts for the results this node returns. Made in memory at
-    /// start, never stored; its public half is attested (`purpose=receipts`).
+    /// Signs receipts for the results this node returns and the sessions it
+    /// issues. Made on the node's first start and kept in its data directory
+    /// wrapped under K_r (`signing_key`), so a restart keeps it; its public
+    /// half is attested (`purpose=receipts`).
     receipt_key: ed25519_dalek::SigningKey,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
@@ -380,8 +396,12 @@ pub struct Node {
     /// One attestation of a caller at a time per node id.
     identifying: tokio::sync::Mutex<()>,
     /// The issuers of node-signed sessions this node has attested, by node id
-    /// ([`Self::session_issuer`]).
+    /// ([`Self::session_issuer`]), every peer's ahead of time
+    /// ([`Self::warm_issuers`]).
     issuers: Mutex<HashMap<NodeId, Issuer>>,
+    /// When a token's verification last attested each issuer
+    /// ([`ISSUER_RETRY_SECS`]).
+    issuer_tries: Mutex<HashMap<NodeId, u64>>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
@@ -499,6 +519,8 @@ impl Node {
     /// `cluster_key` (K_c, `cluster_key::resolve`), not by this release's K_r.
     pub async fn start(config: Config, cluster_key: [u8; 32]) -> eyre::Result<Arc<Self>> {
         std::fs::create_dir_all(&config.data_dir)?;
+        let receipt_key =
+            crate::signing_key::load_or_create(&config.data_dir, &config.storage_key)?;
         let peer_transport = Arc::new(PeerTransport {
             node: Mutex::new(Weak::new()),
         });
@@ -548,7 +570,7 @@ impl Node {
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
             transport: sealed,
-            receipt_key: ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>()),
+            receipt_key,
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -564,6 +586,7 @@ impl Node {
             callers: Mutex::new(HashMap::new()),
             identifying: tokio::sync::Mutex::new(()),
             issuers: Mutex::new(HashMap::new()),
+            issuer_tries: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
@@ -917,8 +940,13 @@ impl Node {
     /// The node that issued a session (`claims.node`), as this node attested
     /// it: its receipt key and release, from one receipt-key quote fetched at
     /// the address the cluster has for it (this node itself: its own).
-    /// `refresh` attests it again, at most every [`ISSUER_RETRY_SECS`] (it may
-    /// have restarted with a new key). `None` when it cannot be attested.
+    /// Answered from what this node attested before ([`Self::warm_issuers`]
+    /// attests every peer ahead of time), so a session outlives its issuer.
+    /// Attested here only when this node holds no key for it, or with
+    /// `refresh` (a token under another key), each at most every
+    /// [`ISSUER_RETRY_SECS`] and within [`ISSUER_ATTEST_WAIT`]; an attestation
+    /// that fails leaves the key held before. `None` for a node that is not
+    /// (or no longer) a peer, and for one never attested.
     pub async fn session_issuer(&self, id: NodeId, refresh: bool) -> Option<Issuer> {
         if id == self.config.node_id {
             return Some(Issuer {
@@ -927,15 +955,44 @@ impl Node {
                 at: crate::types::now_secs(),
             });
         }
-        let known = self.issuers.lock().ok()?.get(&id).cloned();
-        let now = crate::types::now_secs();
-        match &known {
-            Some(i) if !refresh || i.at + ISSUER_RETRY_SECS > now => return known,
-            _ => {}
-        }
         if !self.is_peer(id) {
+            // Removed: its sessions stop verifying with the removal.
+            if let Ok(mut issuers) = self.issuers.lock() {
+                let _gone = issuers.remove(&id);
+            }
             return None;
         }
+        let known = self.known_issuer(id);
+        if known.is_some() && !refresh {
+            return known;
+        }
+        let now = crate::types::now_secs();
+        let may_try = self.issuer_tries.lock().is_ok_and(|mut tries| {
+            let due = tries
+                .get(&id)
+                .is_none_or(|at| at + ISSUER_RETRY_SECS <= now);
+            if due {
+                let _prev = tries.insert(id, now);
+            }
+            due
+        });
+        if !may_try {
+            return known;
+        }
+        self.attest_issuer(id).await.or(known)
+    }
+
+    /// The issuer `id` as this node last attested it, without reaching it.
+    #[must_use]
+    pub fn known_issuer(&self, id: NodeId) -> Option<Issuer> {
+        self.issuers.lock().ok()?.get(&id).cloned()
+    }
+
+    /// Attest peer `id`'s receipt key at the address the cluster has for it,
+    /// within [`ISSUER_ATTEST_WAIT`], under the peer policy, and keep it with
+    /// the release the same quote names. `None` (and the key held before kept)
+    /// when it cannot be attested.
+    async fn attest_issuer(&self, id: NodeId) -> Option<Issuer> {
         let addr = self.addr_of(id)?;
         let nonce = calimero_identity::random::<32>();
         let mut url =
@@ -944,36 +1001,79 @@ impl Node {
             .query_pairs_mut()
             .append_pair("nonce", &hex::encode(nonce))
             .append_pair("purpose", "receipts");
-        let doc: crate::attest::AttestationDoc = async {
-            self.http
+        let attested = tokio::time::timeout(ISSUER_ATTEST_WAIT, async {
+            let doc: crate::attest::AttestationDoc = self
+                .http
                 .get(url)
                 .send()
-                .await?
-                .error_for_status()?
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?
                 .json()
                 .await
-        }
+                .ok()?;
+            let (key, _governance) = crate::attest::verify_receipt_key(
+                &doc,
+                &nonce,
+                &self.config.peer_policy(),
+            )
+            .await
+            .map_err(|e| {
+                warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
+            })
+            .ok()?;
+            Some((key, doc.release.version))
+        })
         .await
-        .ok()?;
-        let (key, _governance) = crate::attest::verify_receipt_key(
-            &doc,
-            &nonce,
-            &self.config.peer_policy(),
-        )
-        .await
-        .map_err(
-            |e| warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer"),
-        )
-        .ok()?;
+        .ok()
+        .flatten();
+        let (key, release) = attested?;
         let issuer = Issuer {
             key,
-            release: Some(doc.release.version.clone()),
-            at: now,
+            release: Some(release),
+            at: crate::types::now_secs(),
         };
         if let Ok(mut issuers) = self.issuers.lock() {
             let _prev = issuers.insert(id, issuer.clone());
         }
         Some(issuer)
+    }
+
+    /// Attest every peer's session-signing key this node holds none of yet
+    /// (at most [`MAX_CONCURRENT_ISSUER_ATTESTS`] at once, each within
+    /// [`ISSUER_ATTEST_WAIT`]), and drop the keys of nodes that are no longer
+    /// peers. Run at start and on every system change (`lib.rs`), so a token is
+    /// verified without reaching its issuer, which may be stopped or frozen by
+    /// then.
+    pub async fn warm_issuers(&self) {
+        let candidates: BTreeSet<NodeId> = self
+            .sys(|s| s.nodes.keys().copied().collect::<BTreeSet<_>>())
+            .into_iter()
+            .chain(self.config.peers.keys().copied())
+            .collect();
+        let peers: BTreeSet<NodeId> = candidates
+            .into_iter()
+            .filter(|id| self.is_peer(*id))
+            .collect();
+        let missing: Vec<NodeId> = match self.issuers.lock() {
+            Ok(mut issuers) => {
+                issuers.retain(|id, _| peers.contains(id));
+                peers
+                    .iter()
+                    .filter(|id| !issuers.contains_key(id))
+                    .copied()
+                    .collect()
+            }
+            Err(_) => return,
+        };
+        futures_util::stream::iter(missing)
+            .for_each_concurrent(MAX_CONCURRENT_ISSUER_ATTESTS, |id| async move {
+                if self.attest_issuer(id).await.is_none() {
+                    debug!(node = id, "session issuer not attested yet");
+                }
+            })
+            .await;
     }
 
     fn release_at(&self, addr: &str) -> Option<String> {

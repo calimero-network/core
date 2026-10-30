@@ -95,7 +95,9 @@ code, and app code beyond what its owner approved.
 - **Keys per app.** One K_c covers every app on a cluster; keys per app from
   mero-kms are not done.
 - **Availability.** The host and operator can stop nodes. Raft tolerates the
-  loss of a minority of an app's replicas. A new app's replicas are spread
+  loss of a minority of an app's replicas, and a session outlives the node that
+  issued it: every node holds every peer's attested signing key
+  ([Failover](/protocol/identities/#failover)). A new app's replicas are spread
   across the zones the operator registered ([placement](/protocol/context-lifecycle/#create));
   moving existing apps between zones is the operator's (`ops placement`, `ops move`).
 - **Event audiences.** Everyone who reaches an app receives all its events.

@@ -11,8 +11,9 @@ import { Aside } from '@astrojs/starlight/components';
 There is no separate auth service: the node itself registers passkeys,
 mints sessions and checks API keys (`crates/node/src/api.rs`, with the
 primitives in `calimero-identity`). Accounts, passkeys, API-key hashes, refresh
-tokens, revocations and the session-signing key live in the cluster's system
-group, so any node verifies any credential.
+tokens and revocations live in the cluster's system group, and each node
+attests every peer's session-signing key ahead of time, so any node verifies
+any credential.
 
 | Who | Credential | Lifetime |
 | --- | --- | --- |
@@ -66,8 +67,11 @@ refreshToken }`.
 - **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` exchanges it
   for a new session and a new refresh token. Reusing a refresh token is
   recorded and ends the session.
-- **Signing keys.** Each node signs with its receipt key, made in memory at
-  start: a node's restart ends the sessions it issued, and clients refresh.
+- **Signing keys.** Each node signs with its receipt key, made on its first
+  start and kept in its data directory wrapped under K_r: a restart or a
+  rolling upgrade of the binary keeps the sessions it issued, and they verify
+  on every other node while it is down. A removed or replaced node's sessions
+  answer `401`; clients refresh on any node.
 - **Ending sessions:** `POST /auth/logout` ends one; `POST /auth/logout-all`
   (`meroctl logout --all`) ends every session of the account.
 

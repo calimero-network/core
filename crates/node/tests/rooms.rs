@@ -170,6 +170,10 @@ fn failure(e: &ClientError) -> Failure {
             status: *status,
             code: code.clone(),
         },
+        ClientError::WrongNode { .. } => Failure::Refused {
+            status: 421,
+            code: "WRONG_NODE".into(),
+        },
         ClientError::Transport(e) => Failure::Other(e.to_string()),
     }
 }

@@ -341,17 +341,25 @@ async fn verify_token(
 ) -> Result<(SessionClaims, Option<String>), ApiError> {
     let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
     let issuer_id = claims.node;
+    let unknown = || {
+        ApiError::unauthenticated(
+            "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
+        )
+    };
+    // Answered from the key this node attested ahead of time: the issuer may
+    // be stopped or frozen by now.
     let mut issuer = node
         .session_issuer(issuer_id, false)
         .await
-        .ok_or_else(|| ApiError::unauthenticated("the token's issuing node cannot be attested"))?;
+        .ok_or_else(unknown)?;
     let named = calimero_identity::from_b64url(&claims.key).ok();
     if named.as_deref() != Some(issuer.key.as_slice()) {
-        // Signed under another key than the one attested here: the issuer
-        // may have restarted since.
-        issuer = node.session_issuer(issuer_id, true).await.ok_or_else(|| {
-            ApiError::unauthenticated("the token's issuing node cannot be attested")
-        })?;
+        // Signed under another key than the one attested here: the issuer's
+        // data directory may have been replaced since (a restart keeps it).
+        issuer = node
+            .session_issuer(issuer_id, true)
+            .await
+            .ok_or_else(unknown)?;
     }
     let claims = verify_session(&issuer.key, token, now_secs())
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
@@ -380,12 +388,20 @@ fn wrong_node() -> ApiError {
     )
 }
 
+/// Whether this node's release may serve `account`: issue and take its
+/// sessions (`SystemState::release_may_serve_account`). Asked before a sign-in,
+/// sign-up or refresh spends anything (a challenge, a refresh token), so a
+/// `421 WRONG_NODE` leaves the client free to finish on another node.
+fn serves(node: &Node, account: &str) -> bool {
+    let release = node.own_release();
+    node.sys(|s| s.release_may_serve_account(account, &release))
+}
+
 /// A session token for `claims`, signed by this node's attested receipt key.
 fn session_token(node: &Node, claims: SessionClaims) -> Result<String, ApiError> {
     // A session no other node would take is not issued: the client goes to a
     // node its approvers approved instead.
-    let release = node.own_release();
-    if !node.sys(|s| s.release_may_serve_account(&claims.account, &release)) {
+    if !serves(node, &claims.account) {
         return Err(wrong_node());
     }
     Ok(node.mint_session(claims))
@@ -639,6 +655,13 @@ async fn register_finish(
     State(node): State<Arc<Node>>,
     Json(body): Json<RegisterFinish>,
 ) -> ApiResult {
+    // A new account approves this node's release, so only a release the
+    // operator did not approve (where it holds release approvals) refuses it:
+    // decided before the challenge is spent, so the client can finish on
+    // another node. An account no one holds yet stands for the new one.
+    if !serves(&node, "") {
+        return Err(wrong_node());
+    }
     let Pending::Register {
         challenge, name, ..
     } = take_pending(&node, &body.challenge_id).await?
@@ -750,6 +773,17 @@ async fn check_assertion(
 }
 
 async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
+    // The account the passkey names, if this replica knows it: refused before
+    // the challenge is spent when this node may not serve it, so the client
+    // finishes the same ceremony on another node. (A replica that does not
+    // know the passkey yet decides after the assertion is checked.)
+    let named = node.sys(|s| {
+        s.account_of_credential(&body.assertion.credential_id)
+            .map(|(a, _)| a.account_id.clone())
+    });
+    if named.is_some_and(|a| !serves(&node, &a)) {
+        return Err(wrong_node());
+    }
     let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id).await? else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
@@ -887,6 +921,12 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         }
         return Err(ApiError::unauthenticated("unknown refresh token"));
     };
+    // Decided before the token is spent: a `421 WRONG_NODE` leaves it valid
+    // for another node, where presenting it again would otherwise look like a
+    // stolen copy and revoke the session.
+    if !serves(&node, &rec.account) {
+        return Err(wrong_node());
+    }
     let new_refresh = format!("rt_{}", b64url(&random::<32>()));
     let record = RefreshRecord {
         account: rec.account.clone(),

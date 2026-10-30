@@ -29,7 +29,12 @@ tokens or log entries; existing clusters are recreated.
   node's attested receipt key; other nodes accept one only if the issuer's
   release may serve the account and the app. The shared session key K_s,
   `AddSessionKey` and `--session-key-rotation-secs` are gone. A node whose
-  release may not serve an account answers `421 WRONG_NODE`.
+  release may not serve an account answers `421 WRONG_NODE`, before it spends
+  a refresh token or a sign-in challenge. The receipt key is kept in
+  `<data-dir>/signing-key`, wrapped under K_r, so a node's sessions survive its
+  restart. Every node attests each peer's key ahead of time, so a session
+  works while its issuer is stopped or frozen. `calimero-client` refreshes
+  once on a `401` and reports `421 WRONG_NODE` as `Error::WrongNode`.
 
 ### Added
 

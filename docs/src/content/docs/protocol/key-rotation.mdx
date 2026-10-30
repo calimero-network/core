@@ -13,7 +13,7 @@ process that made them. This page lists them all, shortest-lived first.
 | --- | --- | --- | --- |
 | Sealed-session keys | Noise NK handshake (a node to a peer: IK), both sides' ephemeral keys | 1 hour at most; 10 minutes idle | The client opens a new session |
 | Transport key (X25519) | Each node, in memory, at start | Until the process stops | On restart; clients get `stale_transport_key` and attest again |
-| Receipt key (Ed25519) | Each node, in memory, at start; signs receipts and the sessions the node issues | Until the process stops | On restart; `verify_app_cluster` returns the new keys, and the node's sessions refresh |
+| Receipt key (Ed25519) | Each node, on its first start; kept in its data directory wrapped under K_r; signs receipts and the sessions the node issues | As long as the node's data directory | When a node is replaced (a new data directory): `verify_app_cluster` returns the new key, and the node's sessions refresh |
 | Session token | The node that signs someone in, with its receipt key | 15 minutes | Exchanged with a refresh token |
 | Refresh token (`rt_…`) | The same node; only its hash is stored | 30 days, single use | Each refresh returns a new one |
 | Operator key (Ed25519) | The operator (mdma); only the public half is in the system state | The cluster's lifetime | Not rotated yet |
@@ -26,9 +26,11 @@ process that made them. This page lists them all, shortest-lived first.
 
 Each node signs the sessions it issues with its own receipt key
 ([Sessions](/protocol/identities/#sessions)); no session-signing key is shared
-or replicated. A node verifying another's token attests that node's receipt key
-at its registered address, so a restarted issuer (a new key) is attested again,
-and its old tokens stop verifying: clients refresh.
+or replicated. Every node attests each peer's receipt key at its registered
+address ahead of time and verifies tokens from that, so a node's sessions
+survive its restart (same key) and outlive it while it is down or frozen.
+They stop verifying when the node is removed, or replaced on a new data
+directory (a new key): clients refresh ([Failover](/protocol/identities/#failover)).
 
 ## Revocation
 

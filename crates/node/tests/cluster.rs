@@ -75,6 +75,165 @@ impl Cluster {
         self._dirs.push(dir);
         self.nodes.len() - 1
     }
+
+    /// Stop node `i` and start it again on its data directory, as a restart
+    /// (or a rolling upgrade of its binary) does.
+    async fn restart(&mut self, i: usize) {
+        self.stop(i).await;
+        let peers: BTreeMap<u64, String> = self
+            .urls
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (i as u64 + 1, u.clone()))
+            .collect();
+        let mut config = node_config(i as u64 + 1, &peers, self._dirs[i].path());
+        config.cluster.clone_from(&self.name);
+        config.bootstrap = false;
+        // The stopped node's tasks may hold its store for a moment.
+        for _ in 0..50 {
+            if let Ok(r) = run(config.clone()).await {
+                self.nodes[i] = Some(r);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("node {} did not restart", i + 1);
+    }
+}
+
+/// `session` without its refresh token: a client holding it cannot refresh,
+/// so what it is answered is what the node judged of the session itself.
+fn without_refresh(session: calimero_client::Session) -> calimero_client::Session {
+    calimero_client::Session {
+        refresh_token: String::new(),
+        ..session
+    }
+}
+
+/// Sends `set key=value` through `cl` until it commits, a node answers 401,
+/// or about 10 s pass (an election, a forward to a stopped node).
+async fn set_through(cl: &Client, app: &str, key: &str, value: &str) -> Result<(), String> {
+    let mut wrote = Err(String::new());
+    for _ in 0..100 {
+        wrote = cl
+            .call(app, "set", json!({ "key": key, "value": value }), None)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        match &wrote {
+            Ok(()) => break,
+            Err(e) if e.starts_with("401") => break,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    wrote
+}
+
+/// Failover: a session outlives the node that issued it. Every node attests
+/// each peer's session-signing key ahead of time, so with the issuer gone
+/// another node still verifies the session, without a refresh (merobox
+/// `kv-store-failover` and `frozen-leader` write through a survivor with the
+/// session the dead or frozen node issued).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_session_outlives_the_node_that_issued_it() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    set_through(&alice, &app, "a", "1").await.unwrap();
+    let session = without_refresh(alice.session().await.unwrap());
+    // Node 2 has never been shown a session node 1 issued.
+    c.stop(0).await;
+    let survivor = c.client(1);
+    survivor.use_session(session).await;
+    set_through(&survivor, &app, "b", "2")
+        .await
+        .expect("a write through a survivor with the stopped issuer's session");
+}
+
+/// A node's sessions survive its restart on the same data directory (a crash,
+/// or a rolling upgrade of its binary): the key it signs them with is kept,
+/// wrapped under its K_r, and attested again at start (merobox
+/// `rolling-upgrade`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn sessions_survive_a_restart_of_the_node_that_issued_them() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    set_through(&alice, &app, "a", "1").await.unwrap();
+    let session = without_refresh(alice.session().await.unwrap());
+    c.restart(0).await;
+    for i in [0, 1] {
+        let cl = c.client(i);
+        cl.use_session(session.clone()).await;
+        set_through(&cl, &app, &format!("k{i}"), "v")
+            .await
+            .unwrap_or_else(|e| panic!("node {}: {e}", i + 1));
+    }
+}
+
+/// Once a node is removed, the sessions it issued verify nowhere: no node
+/// keeps a removed node's signing key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_nodes_sessions_are_refused() {
+    let mut c = Cluster::start(3).await;
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    // Signed up on the new node: it issued the session.
+    let mut issued = None;
+    for _ in 0..100 {
+        let cl = c.client(new);
+        let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+        if let Ok(s) = cl.sign_up(&mut pk, "alice").await {
+            issued = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let full = issued.expect("signed up on the joined node");
+    let session = without_refresh(full.clone());
+    let other = c.client(0);
+    other.use_session(session).await;
+    let _me = other.me().await.expect("another node takes the session");
+
+    let mut removed = false;
+    for _ in 0..100 {
+        let leader = system_leader(&c).await;
+        if ops_at(&c, leader)
+            .await
+            .delete(&format!("ops/nodes/{new_id}"))
+            .await
+            .is_ok()
+        {
+            removed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(removed, "node {new_id} was never removed");
+    let mut answer = Ok(Value::Null);
+    for _ in 0..50 {
+        answer = other.me().await;
+        if answer.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let e = answer.expect_err("a removed node's session must be refused");
+    assert!(e.to_string().starts_with("401"), "{e}");
+
+    // A client holding the refresh token refreshes on that 401 on its own,
+    // once, on the node it talks to (one that applied the removal), and sends
+    // the request again.
+    let refreshing = c.client(0);
+    refreshing.use_session(full.clone()).await;
+    let me = refreshing
+        .me()
+        .await
+        .expect("the client refreshes the session on its own");
+    assert!(me["accountId"].is_string(), "{me}");
+    let now = refreshing.session().await.unwrap();
+    assert_ne!(now.session_token, full.session_token, "a new session token");
+    assert_ne!(now.refresh_token, full.refresh_token, "a new refresh token");
 }
 
 /// A passkey ceremony begun on one node finishes on another (a load balancer
@@ -5038,6 +5197,7 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     let _ = alice.delete_confirmed(&path, &mut pk).await.unwrap();
     let status = |e: calimero_client::Error| match e {
         calimero_client::Error::Api { status, .. } => status,
+        calimero_client::Error::WrongNode { .. } => 421,
         calimero_client::Error::Transport(e) => panic!("{e}"),
     };
     assert_eq!(status(alice.get(&path).await.unwrap_err()), 404);

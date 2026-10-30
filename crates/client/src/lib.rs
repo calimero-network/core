@@ -30,9 +30,53 @@ pub enum Error {
         message: String,
         details: Value,
     },
+    /// The node runs a release the account's owners have not approved
+    /// (`421 WRONG_NODE`): it neither issues nor takes the account's sessions.
+    /// Send the request to another node of the cluster.
+    #[error("421 WRONG_NODE: {message}")]
+    WrongNode { message: String, details: Value },
     /// The node could not be reached, attested or understood.
     #[error(transparent)]
     Transport(#[from] eyre::Report),
+}
+
+/// The path a session is refreshed at; a `401` there is not refreshed again.
+const REFRESH_PATH: &str = "auth/refresh";
+
+/// What a request carries, kept so it can be sent again after a refresh.
+enum Payload {
+    Empty,
+    Json(Value),
+    Bytes {
+        content_type: &'static str,
+        bytes: bytes::Bytes,
+    },
+}
+
+/// The error a node's answer `status` with body `v` stands for.
+fn api_error(status: u16, v: &Value) -> Error {
+    let code = v["error"].as_str().unwrap_or("ERROR").to_owned();
+    let message = v["message"].as_str().unwrap_or_default().to_owned();
+    let details = v.get("details").cloned().unwrap_or(Value::Null);
+    if status == 421 && code == "WRONG_NODE" {
+        return Error::WrongNode { message, details };
+    }
+    Error::Api {
+        status,
+        code,
+        message,
+        details,
+    }
+}
+
+/// `resp`'s JSON body, or the error its status stands for.
+async fn answer(resp: reqwest::Response) -> Result<Value> {
+    let status = resp.status().as_u16();
+    let v: Value = resp.json().await.unwrap_or(Value::Null);
+    if status >= 400 {
+        return Err(api_error(status, &v));
+    }
+    Ok(v)
 }
 
 /// How often [`Client::call`] sends a call again while the node is unavailable,
@@ -95,6 +139,7 @@ impl Error {
     pub fn code(&self) -> Option<&str> {
         match self {
             Self::Api { code, .. } => Some(code),
+            Self::WrongNode { .. } => Some("WRONG_NODE"),
             Self::Transport(_) => None,
         }
     }
@@ -106,6 +151,7 @@ impl Error {
     pub fn is_unavailable(&self) -> bool {
         match self {
             Self::Api { status, .. } => *status == 503,
+            Self::WrongNode { .. } => false,
             Self::Transport(e) => e.chain().any(|c| {
                 c.downcast_ref::<reqwest::Error>()
                     .is_some_and(|r| r.is_connect() || r.is_timeout())
@@ -116,7 +162,7 @@ impl Error {
     #[must_use]
     pub fn details(&self) -> Option<&Value> {
         match self {
-            Self::Api { details, .. } => Some(details),
+            Self::Api { details, .. } | Self::WrongNode { details, .. } => Some(details),
             Self::Transport(_) => None,
         }
     }
@@ -206,6 +252,9 @@ pub struct Client {
     sealed: Arc<SealedTransport>,
     auth: RwLock<Option<String>>,
     session: RwLock<Option<Session>>,
+    /// One refresh at a time: requests that got a `401` together refresh once
+    /// (a refresh token presented twice ends the session).
+    refreshing: tokio::sync::Mutex<()>,
 }
 
 impl Client {
@@ -234,6 +283,7 @@ impl Client {
             sealed,
             auth: RwLock::new(None),
             session: RwLock::new(None),
+            refreshing: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -296,14 +346,74 @@ impl Client {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
+        self.send_payload(method, path, body.map_or(Payload::Empty, Payload::Json))
+            .await
+    }
+
+    /// Send a request with this client's credential. A `401` to a session this
+    /// client can refresh (it holds the refresh token) is refreshed once, on
+    /// this node, and the request sent once more: the node that issued the
+    /// session may be gone, or have been removed, and a refresh works on any
+    /// node. Any other answer, or a refresh that fails, is returned as it is.
+    async fn send_payload(
+        &self,
+        method: Method,
+        path: &str,
+        payload: Payload,
+    ) -> Result<reqwest::Response> {
+        let token = self.auth.read().await.clone();
+        let resp = self
+            .send_once(method.clone(), path, &payload, token.as_deref())
+            .await?;
+        if resp.status().as_u16() != 401 || path == REFRESH_PATH {
+            return Ok(resp);
+        }
+        let Some(sent) = token else { return Ok(resp) };
+        match self.refreshed_after(&sent).await {
+            Some(fresh) => self.send_once(method, path, &payload, Some(&fresh)).await,
+            None => Ok(resp),
+        }
+    }
+
+    /// The session token to send again after `sent` was answered `401`: one a
+    /// concurrent request already refreshed into, else a refresh's. `None` when
+    /// `sent` is not a session this client can refresh (an API key, a session
+    /// without its refresh token) or the refresh fails.
+    async fn refreshed_after(&self, sent: &str) -> Option<String> {
+        let _one = self.refreshing.lock().await;
+        let session = self.session.read().await.clone()?;
+        if session.session_token != sent {
+            let current = self.auth.read().await.clone()?;
+            return (current != sent && current == session.session_token).then_some(current);
+        }
+        if session.refresh_token.is_empty() {
+            return None;
+        }
+        self.refresh().await.ok().map(|s| s.session_token)
+    }
+
+    async fn send_once(
+        &self,
+        method: Method,
+        path: &str,
+        payload: &Payload,
+        token: Option<&str>,
+    ) -> Result<reqwest::Response> {
         let url = self.base.join(path).map_err(eyre::Report::from)?;
         let mut req = self.http.request(method, url);
-        if let Some(token) = self.auth.read().await.as_deref() {
+        if let Some(token) = token {
             req = req.bearer_auth(token);
         }
-        if let Some(b) = body {
-            req = req.json(&b);
-        }
+        req = match payload {
+            Payload::Empty => req,
+            Payload::Json(b) => req.json(b),
+            Payload::Bytes {
+                content_type,
+                bytes,
+            } => req
+                .header("content-type", *content_type)
+                .body(bytes.clone()),
+        };
         let req = req.build().map_err(eyre::Report::from)?;
         self.execute(req).await
     }
@@ -313,18 +423,7 @@ impl Client {
     }
 
     async fn json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
-        let resp = self.send(method, path, body).await?;
-        let status = resp.status().as_u16();
-        let v: Value = resp.json().await.unwrap_or(Value::Null);
-        if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
-        }
-        Ok(v)
+        answer(self.send(method, path, body).await?).await
     }
 
     pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
@@ -413,20 +512,19 @@ impl Client {
         Ok(s)
     }
 
-    /// Swap the refresh token for a new session.
+    /// Swap the refresh token for a new session, on this node (any node of
+    /// the cluster takes it).
     pub async fn refresh(&self) -> Result<Session> {
         let current = self
             .session()
             .await
             .ok_or_else(|| eyre::eyre!("no session"))?;
-        let s: Session = serde_json::from_value(
-            self.post(
-                "auth/refresh",
-                json!({ "refreshToken": current.refresh_token }),
-            )
-            .await?,
-        )
-        .map_err(eyre::Report::from)?;
+        let token = self.auth.read().await.clone();
+        let body = Payload::Json(json!({ "refreshToken": current.refresh_token }));
+        let resp = self
+            .send_once(Method::POST, REFRESH_PATH, &body, token.as_deref())
+            .await?;
+        let s: Session = serde_json::from_value(answer(resp).await?).map_err(eyre::Report::from)?;
         self.use_session(s.clone()).await;
         Ok(s)
     }
@@ -447,30 +545,17 @@ impl Client {
     // ------------------------------------------------------------ apps
 
     /// POST raw bytes (a bundle or a package) to `path`.
-    async fn upload(&self, path: &str, content_type: &str, bytes: Vec<u8>) -> Result<Value> {
-        let url = self.base.join(path).map_err(eyre::Report::from)?;
-        let mut req = self
-            .http
-            .post(url)
-            .header("content-type", content_type)
-            .body(bytes);
-        if let Some(token) = self.auth.read().await.as_deref() {
-            req = req.bearer_auth(token);
-        }
-        let resp = self
-            .execute(req.build().map_err(eyre::Report::from)?)
-            .await?;
-        let status = resp.status().as_u16();
-        let v: Value = resp.json().await.unwrap_or(Value::Null);
-        if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
-        }
-        Ok(v)
+    async fn upload(
+        &self,
+        path: &str,
+        content_type: &'static str,
+        bytes: Vec<u8>,
+    ) -> Result<Value> {
+        let payload = Payload::Bytes {
+            content_type,
+            bytes: bytes.into(),
+        };
+        answer(self.send_payload(Method::POST, path, payload).await?).await
     }
 
     /// Upload a raw WASM bundle (development nodes only); returns its hash.
@@ -559,32 +644,12 @@ impl Client {
     /// Upload a blob for app `app`; answers `{ blobId, id, size }` (`blobId`
     /// base58, as apps print it; `id` hex).
     pub async fn upload_blob(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
-        let url = self
-            .base
-            .join(&format!("apps/{app}/blobs"))
-            .map_err(eyre::Report::from)?;
-        let mut req = self
-            .http
-            .post(url)
-            .header("content-type", "application/octet-stream")
-            .body(bytes);
-        if let Some(token) = self.auth.read().await.as_deref() {
-            req = req.bearer_auth(token);
-        }
-        let resp = self
-            .execute(req.build().map_err(eyre::Report::from)?)
-            .await?;
-        let status = resp.status().as_u16();
-        let v: Value = resp.json().await.unwrap_or(Value::Null);
-        if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
-        }
-        Ok(v)
+        self.upload(
+            &format!("apps/{app}/blobs"),
+            "application/octet-stream",
+            bytes,
+        )
+        .await
     }
 
     /// One of an app's blobs, by id (base58 or hex).
@@ -636,12 +701,7 @@ impl Client {
         let status = resp.status().as_u16();
         if status >= 400 {
             let v: Value = resp.json().await.unwrap_or(Value::Null);
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
+            return Err(api_error(status, &v));
         }
         Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
     }
@@ -1202,5 +1262,27 @@ mod retry_tests {
         .await;
         assert!(matches!(out, Err(Error::Api { status: 503, .. })));
         assert_eq!(*sent.lock().unwrap(), CALL_RETRIES + 1);
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use serde_json::json;
+
+    use super::{api_error, Error};
+
+    #[test]
+    fn a_421_wrong_node_is_its_own_error() {
+        let e = api_error(
+            421,
+            &json!({ "error": "WRONG_NODE", "message": "use another node" }),
+        );
+        assert!(matches!(e, Error::WrongNode { .. }), "{e:?}");
+        assert_eq!(e.code(), Some("WRONG_NODE"));
+        assert!(!e.is_unavailable());
+        assert_eq!(e.to_string(), "421 WRONG_NODE: use another node");
+        // Another 421 (a leader elsewhere) stays an answer like any other.
+        let e = api_error(421, &json!({ "error": "NOT_LEADER", "message": "" }));
+        assert!(matches!(e, Error::Api { status: 421, .. }), "{e:?}");
     }
 }

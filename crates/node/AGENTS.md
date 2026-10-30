@@ -166,7 +166,9 @@ is its command line.
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
-  answering node's receipt key (Ed25519, in memory, made at start), over
+  answering node's receipt key (Ed25519, made on the node's first start and kept
+  in `<data_dir>/signing-key` wrapped under K_r, `signing_key.rs`: a restart
+  keeps it, only the release whose mero-kms gives that K_r opens it), over
   `(app, index, SHA-256(JCS(result)), node)`. The key is attested on its own
   (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
   and `GET /apps/{app}/attestation` gathers every replica's
@@ -459,12 +461,28 @@ is its command line.
 - **Sessions are node-signed**: `api::session_token` mints `v2.<claims>.<sig>`
   with the node's receipt key (`Node::mint_session`); a node whose release may
   not serve the account answers `421 WRONG_NODE` instead; `api::verify_token`
-  attests the issuer's receipt key at its registered address
-  (`Node::session_issuer`, again when the token names a newer key) and requires
-  its release to serve the account (`SystemState::release_may_serve_account`);
+  checks the token under the issuer's receipt key as this node attested it at
+  the issuer's registered address (`Node::session_issuer`) and requires the
+  attested release to serve the account (`SystemState::release_may_serve_account`);
   `Principal::issuer_release` then must be approved for each app it reaches
-  (`Principal::within`). There is no shared session key. Regression:
-  `sessions_signed_by_an_unapproved_node_reach_nothing`.
+  (`Principal::within`). There is no shared session key. **Failover**: every
+  node attests every registered peer's receipt key ahead of time
+  (`Node::warm_issuers`, from a loop in `lib.rs` on each system change and every
+  `ISSUER_WARM_EVERY`: at start, once the directory is learned, on
+  registration; `MAX_CONCURRENT_ISSUER_ATTESTS` at once, each bounded by
+  `ISSUER_ATTEST_WAIT`) and keeps `node → Issuer { key, release, at }`, so a
+  token verifies with its issuer stopped or frozen. A token under another key
+  attests the issuer again (at most every `ISSUER_RETRY_SECS`, bounded the same
+  way); unreachable or another key: `401`, and the client refreshes on any node
+  (`calimero-client` does once on its own). A removed node's entry is dropped and
+  `session_issuer` refuses a node that is no longer a peer. The key survives a
+  restart, so do the node's sessions. Wrapped under K_r rather than K_c: K_c is
+  every release's, and a node on another release booted on the disk could sign
+  as this one under the release the others attested. Regressions:
+  `sessions_signed_by_an_unapproved_node_reach_nothing`,
+  `a_session_outlives_the_node_that_issued_it`,
+  `sessions_survive_a_restart_of_the_node_that_issued_them`,
+  `a_removed_nodes_sessions_are_refused`.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
