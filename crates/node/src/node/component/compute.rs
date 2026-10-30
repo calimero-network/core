@@ -50,6 +50,10 @@ const MAX_OUTAGE_CREDIT: Duration = QUEUED_RUN_TIMEOUT;
 const WALL_FALLBACK_FACTOR: u32 = 10;
 /// The reserved view that answers a run's record: the node's own, never an app's method.
 pub const RUN_VIEW: &str = "__run";
+/// How many runs a list answers when the caller names no limit.
+const DEFAULT_RUNS_PAGE: usize = 20;
+/// The most runs a list page holds.
+const MAX_RUNS_PAGE: usize = 100;
 
 /// The waits that end a run the leader cannot get an answer for; tests shorten them.
 #[derive(Clone, Copy, Debug)]
@@ -416,6 +420,7 @@ fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Val
         "state": rec.state,
         "cancelRequested": rec.cancel_requested,
         "startTsMs": rec.start_ts_ms,
+        "caps": rec.caps,
         "inputs": inputs,
         "attempts": rec.attempts.iter().map(|a| json!({
             "attempt": a.attempt,
@@ -589,10 +594,13 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
+        let files = req.args["files"].as_bool().unwrap_or(false);
+        if req.args.get("run").is_none() {
+            return self.runs_view(g, req, files);
+        }
         let run = req.args["run"]
             .as_str()
             .ok_or_else(|| ApiError::bad_request("BAD_RUN", "name the run"))?;
-        let files = req.args["files"].as_bool().unwrap_or(false);
         let (record, applied) = g.read_local(|m, applied| (m.run_record(run), applied));
         let status = g.status();
         let progress = status
@@ -603,6 +611,59 @@ impl Node {
             index: applied,
             status: Status::Ok,
             result: record.map_or(Value::Null, |r| run_json(&r, progress, files)),
+            error: Value::Null,
+            timeout: false,
+        })
+    }
+
+    /// A page of the run records, each as the single-run view shows it.
+    fn runs_view(
+        &self,
+        g: &Group<AppMachine>,
+        req: &ViewRequest,
+        files: bool,
+    ) -> Result<ViewAnswer, ApiError> {
+        let limit = match req.args.get("limit").filter(|l| !l.is_null()) {
+            None => DEFAULT_RUNS_PAGE,
+            Some(l) => l
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=MAX_RUNS_PAGE).contains(n))
+                .ok_or_else(|| {
+                    ApiError::bad_request("BAD_LIMIT", &format!("limit is 1 to {MAX_RUNS_PAGE}"))
+                })?,
+        };
+        let before = match req.args["before"].as_str() {
+            None => None,
+            Some(c) => Some(
+                c.split_once(':')
+                    .and_then(|(ts, run)| Some((ts.parse().ok()?, run.to_owned())))
+                    .ok_or_else(|| {
+                        ApiError::bad_request("BAD_CURSOR", "not a cursor of this list")
+                    })?,
+            ),
+        };
+        let (page, next, applied) = g.read_local(|m, applied| {
+            let (page, next) = m.runs_page(limit, before.as_ref());
+            (page, next, applied)
+        });
+        let status = g.status();
+        let runs: Vec<Value> = page
+            .iter()
+            .map(|r| {
+                let progress = (status.is_leader && r.state.is_active())
+                    .then(|| self.compute.progress(&req.app_id, &r.run, status.term))
+                    .flatten();
+                run_json(r, progress, files)
+            })
+            .collect();
+        Ok(ViewAnswer {
+            index: applied,
+            status: Status::Ok,
+            result: json!({
+                "runs": runs,
+                "next": next.map(|(ts, run)| format!("{ts}:{run}")),
+            }),
             error: Value::Null,
             timeout: false,
         })

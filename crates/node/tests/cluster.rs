@@ -274,6 +274,16 @@ async fn a_sign_in_begun_on_one_node_finishes_on_another() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_that_is_not_a_component_has_no_runs_to_list() {
+    let c = Cluster::start(1).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let e = alice.get(&format!("apps/{app}/runs")).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn end_to_end() {
     let mut c = Cluster::start(3).await;
 

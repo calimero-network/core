@@ -1634,3 +1634,40 @@ fn a_signed_result_over_the_limit_is_refused() {
     );
     assert!(w.state("r1").is_active());
 }
+
+fn start_at(w: &mut World, run: &str, ts_ms: u64) {
+    let mut cmd: ComponentCmd =
+        serde_json::from_slice(&super::call(w.last, None, Vec::new())).unwrap();
+    if let ComponentCmd::Call(c) = &mut cmd {
+        c.ts_ms = ts_ms;
+        c.outcome.compute_starts = vec![started(run)];
+    }
+    assert!(!w.push(&cmd).conflict);
+}
+
+fn ids(records: &[RunRecord]) -> Vec<&str> {
+    records.iter().map(|r| r.run.as_str()).collect()
+}
+
+#[test]
+fn runs_page_newest_first_by_start_then_id_with_a_cursor_to_continue() {
+    let mut w = World::new();
+    for (run, ts) in [("a", 5), ("b", 9), ("c", 5), ("d", 7), ("e", 5)] {
+        start_at(&mut w, run, ts);
+    }
+    finish_quickly(&mut w, "d");
+    let m = &w.r.machine;
+    let (first, next) = m.runs_page(2, None);
+    assert_eq!(ids(&first), ["b", "d"]);
+    assert_eq!(next, Some((7, "d".to_owned())));
+    let (second, next) = m.runs_page(2, next.as_ref());
+    assert_eq!(ids(&second), ["e", "c"], "equal starts by id, descending");
+    let (last, next) = m.runs_page(2, next.as_ref());
+    assert_eq!(ids(&last), ["a"]);
+    assert_eq!(next, None, "no cursor on the last page");
+    assert_eq!(
+        m.runs_page(5, None).1,
+        None,
+        "a page that holds all has no cursor"
+    );
+}

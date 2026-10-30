@@ -508,6 +508,58 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let file = rig.upload(&input()).await;
+    let first = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let _ = rig.outcome(&first).await;
+    let second = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let path = format!("apps/{}/runs", rig.app);
+
+    let all = rig.alice.get(&path).await.unwrap();
+    let runs = all["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{all}");
+    assert_eq!(all["next"], Value::Null);
+    assert_eq!(runs[0]["run"], json!(second), "newest first");
+    assert_eq!(runs[1]["state"], "done");
+    assert!(runs[1]["caps"]["wallSecs"].is_u64(), "{all}");
+    assert!(runs[1]["caps"]["memoryMib"].is_u64() && runs[1]["caps"]["fuel"].is_u64());
+    assert!(runs[1]["inputs"][0]["sha256"].is_string(), "{all}");
+    let single = rig.alice.get(&format!("{path}/{first}")).await.unwrap();
+    assert_eq!(runs[1], single, "the same object as the single run");
+
+    let page = rig.alice.get(&format!("{path}?limit=1")).await.unwrap();
+    assert_eq!(page["runs"].as_array().unwrap().len(), 1);
+    let next = page["next"].as_str().unwrap().to_owned();
+    let rest = rig
+        .alice
+        .get(&format!("{path}?limit=1&before={next}"))
+        .await
+        .unwrap();
+    assert_eq!(rest["runs"][0]["run"], json!(first), "{rest}");
+    assert_eq!(rest["next"], Value::Null);
+
+    for query in ["limit=0", "limit=101", "limit=x", "limit=-1"] {
+        let e = rig.alice.get(&format!("{path}?{query}")).await.unwrap_err();
+        assert_eq!(e.code(), Some("BAD_LIMIT"), "{query}");
+    }
+    let e = rig
+        .alice
+        .get(&format!("{path}?before=zz"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"));
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&path).await.unwrap();
+    assert_eq!(shown["runs"][1]["state"], "done", "{shown}");
+    assert!(
+        shown["runs"][1]["inputs"][0].get("sha256").is_none(),
+        "{shown}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_result_over_the_cap_fails_the_run_and_marks_nothing() {
     let rig = Rig::start(&[JOB_A]).await;
     let run = rig.begin("startRun", json!({ "method": "big" })).await;
