@@ -51,7 +51,7 @@ impl Org {
     /// Signs up `owner` and each of `roles` (`(name, "admin" | "member" | "guest")`), signs
     /// each in on every node, and deploys Rooms in the owner's org.
     async fn setup(c: &Cluster, roles: &[(&str, &str)]) -> Self {
-        let owner = person(c, "owner").await;
+        let mut owner = person(c, "owner").await;
         let org = str_of(
             &owner.on[0]
                 .post("orgs", json!({ "name": "Acme" }))
@@ -64,7 +64,11 @@ impl Org {
             let p = person(c, name).await;
             let token = str_of(
                 &owner.on[0]
-                    .post(&format!("orgs/{org}/invites"), json!({ "role": role }))
+                    .post_confirmed(
+                        &format!("orgs/{org}/invites"),
+                        json!({ "role": role }),
+                        &mut owner.pk,
+                    )
                     .await
                     .unwrap(),
                 "token",
@@ -389,10 +393,14 @@ impl<'a> Runner<'a> {
     async fn remove_member(&mut self, name: &str) -> Result<(), String> {
         self.flush_events().await?;
         let id = self.org.people[name].id.clone();
-        let _r = self
+        let path = format!("orgs/{}/members/{id}", self.org.id);
+        let owner = self
             .org
-            .on("owner", 0)
-            .delete(&format!("orgs/{}/members/{id}", self.org.id))
+            .people
+            .get_mut("owner")
+            .ok_or("the org has no owner")?;
+        let _r = owner.on[0]
+            .delete_confirmed(&path, &mut owner.pk)
             .await
             .map_err(|e| e.to_string())?;
         for r in self.c.nodes.iter().flatten() {
@@ -626,7 +634,7 @@ fn booking_id(v: &Value) -> String {
 async fn no_double_booking_under_contention() {
     const N: usize = 200;
     let c = Cluster::start(3).await;
-    let owner = person(&c, "owner").await;
+    let mut owner = person(&c, "owner").await;
     let org = str_of(
         &owner.on[0]
             .post("orgs", json!({ "name": "Acme" }))
@@ -650,9 +658,10 @@ async fn no_double_booking_under_contention() {
         .unwrap();
     let token = str_of(
         &owner.on[0]
-            .post(
+            .post_confirmed(
                 &format!("orgs/{org}/invites"),
                 json!({ "role": "member", "uses": N }),
+                &mut owner.pk,
             )
             .await
             .unwrap(),

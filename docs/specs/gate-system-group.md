@@ -720,23 +720,26 @@ least min(3, registered) replicas and never removes the last voter).
 
 | Command | Scope after the split | User proof at apply |
 | --- | --- | --- |
-| `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetOperatorRelease`, `Genesis` | Public | Operator signature (`Genesis`: first leader, as today) |
+| `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetOperatorRelease`, `Genesis` | Public | Operator signature, checked at apply (done; `Genesis`: first leader, as today, and it now registers the configured peers) |
 | `PutBundle` | Account (the uploader) | |
 | `InstallPackage`, `UninstallPackage` | Account or publisher scope; public pin; public catalog for operator installs | Operator signature for operator installs |
 | `CreateApp` | The app's org scope or account; account quota (cross-realm) | |
 | `UpgradeApp`, `UpgradeFailed` | The app's scope | Owner assertion, or operator signature |
 | `TransferApp` | The app's scope and the receiving account (cross-realm) | Owner assertion |
-| `DeleteApp`, `SetAccess`, `SetAppMetadata`, `SetReplicas` | The app's scope (public route) | |
+| `DeleteApp`, `SetAccess`, `SetAppMetadata` | The app's scope (public route) | |
+| `SetReplicas` | The app's scope (public route) | Operator signature over the move's target (done) |
 | `CreateAccount` | New account realm; public credential; `maxAccounts` counted from public realm info | Registration attestation |
-| `AddPasskey`, `RemovePasskey` | Account; public credential | Assertion by an existing passkey |
+| `AddPasskey`, `RemovePasskey` | Account; public credential | Assertion by an existing passkey (done) |
 | `SetSignCount`, `SetPasskeyLabel`, `SetAlias`, `RevokeAllSessions`, `RevokeSession`, `RefreshReused`, `RevokeApiKey` | Account | |
-| `CreateApiKey`, `CreateRefresh`, `UseRefresh` | Account | Assertion; for `UseRefresh`, the consumed token |
+| `CreateApiKey` | Account | Assertion (done) |
+| `CreateRefresh`, `UseRefresh` | Account | Assertion; for `UseRefresh`, the consumed token |
 | `AddSessionKey` | Removed (5.6) | |
 | `CreateOrg` | Account and the new org (cross-realm) | |
 | `SetReleaseApproval` | Org scope or account; public `hold`/`serve` | Approver assertion |
 | `SetOutboundApproval` | Publisher scope or account; public for the operator's | Approver assertion, or operator signature |
 | `DeleteOrg` | Org core and scopes; public routes | Owner assertion |
-| `SetOrgMetadata`, `SetMemberMetadata`, `CreateTeam`, `UpdateTeam`, `DeleteTeam`, `SetTeamMember`, `RemoveTeamMember`, `SetCapabilities`, `SetDefaultCapabilities`, `CreateInvite` | Org core (`DeleteTeam` also removes public routes) | |
-| `SetOrgRole`, `RemoveOrgMember` | Org core; member accounts' `hold` | |
-| `RedeemInvite` | Org core and the account (cross-realm); the account's `hold` | |
+| `SetOrgMetadata`, `SetMemberMetadata`, `CreateTeam`, `UpdateTeam`, `DeleteTeam` | Org core (`DeleteTeam` also removes public routes) | |
+| `SetTeamMember`, `RemoveTeamMember`, `SetCapabilities`, `SetDefaultCapabilities`, `CreateInvite` | Org core | Actor's assertion (done) |
+| `SetOrgRole`, `RemoveOrgMember` | Org core; member accounts' `hold` | Actor's assertion (done) |
+| `RedeemInvite` | Org core and the account (cross-realm); the account's `hold` | Signature by the invite token's key, which the log never holds (done) |
 | `StartUpgradeRun`, `FinishUpgradeRun` | Publisher scope | |

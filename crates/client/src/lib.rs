@@ -478,18 +478,37 @@ impl Client {
         Ok(s)
     }
 
-    /// Add another passkey (another device) to the signed-in account.
-    /// Returns its credential id.
-    pub async fn add_passkey(&self, passkey: &mut dyn Passkey) -> Result<String> {
+    /// Add another passkey (another device, `new`) to the signed-in
+    /// account, approved with one it already has (`approver`, answering the
+    /// node's `412 CONFIRM_REQUIRED`). Returns its credential id.
+    pub async fn add_passkey(
+        &self,
+        new: &mut dyn Passkey,
+        approver: &mut dyn Passkey,
+    ) -> Result<String> {
         let begin = self.post("auth/passkeys/add/begin", json!({})).await?;
-        let registration = passkey.create(&begin["options"]);
+        let registration = new.create(&begin["options"]);
         let done = self
-            .post(
+            .post_confirmed(
                 "auth/passkeys/add/finish",
                 json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                approver,
             )
             .await?;
         Ok(done["credentialId"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Remove one of the account's passkeys, approved with a passkey it has.
+    pub async fn remove_passkey(
+        &self,
+        credential: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.delete_confirmed(
+            &format!("auth/passkeys/{}", path_segment(credential)),
+            passkey,
+        )
+        .await
     }
 
     /// Sign in with an existing passkey.
@@ -533,9 +552,16 @@ impl Client {
         self.get("auth/me").await
     }
 
-    /// Create an API key; returns `(key_id, key)`. The key is shown once.
-    pub async fn create_api_key(&self, options: Value) -> Result<(String, String)> {
-        let v = self.post("auth/apikeys", options).await?;
+    /// Create an API key, approved with the account's passkey; returns
+    /// `(key_id, key)`. The key is shown once.
+    pub async fn create_api_key(
+        &self,
+        options: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<(String, String)> {
+        let v = self
+            .post_confirmed("auth/apikeys", options, passkey)
+            .await?;
         Ok((
             v["keyId"].as_str().unwrap_or_default().to_owned(),
             v["key"].as_str().unwrap_or_default().to_owned(),
@@ -767,6 +793,57 @@ impl Client {
     pub async fn delete_confirmed(&self, path: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.confirmed(Method::DELETE, path, json!({}), passkey)
             .await
+    }
+
+    /// POST an operator decision (Ops API): when the node answers `428
+    /// OPERATOR_SIGNATURE_REQUIRED`, sign the bytes it names (`message`,
+    /// base64) with `sign` (the operator's Ed25519 key) and send it again
+    /// with `operatorProof: { nonce, signature }`.
+    pub async fn post_operator_signed(
+        &self,
+        path: &str,
+        body: Value,
+        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<Value> {
+        self.operator_signed(Method::POST, path, body, sign).await
+    }
+
+    /// DELETE an operator decision, signed as [`Self::post_operator_signed`]
+    /// (the proof goes in a JSON body).
+    pub async fn delete_operator_signed(
+        &self,
+        path: &str,
+        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<Value> {
+        self.operator_signed(Method::DELETE, path, json!({}), sign)
+            .await
+    }
+
+    async fn operator_signed(
+        &self,
+        method: Method,
+        path: &str,
+        mut body: Value,
+        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<Value> {
+        let details = match self.json(method.clone(), path, Some(body.clone())).await {
+            Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
+                e.details().cloned().unwrap_or(Value::Null)
+            }
+            other => return other,
+        };
+        let message = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            details["message"].as_str().unwrap_or_default(),
+        )
+        .map_err(eyre::Report::from)?;
+        if let Some(b) = body.as_object_mut() {
+            let _prev = b.insert(
+                "operatorProof".into(),
+                json!({ "nonce": details["nonce"], "signature": hex::encode(sign(&message)) }),
+            );
+        }
+        self.json(method, path, Some(body)).await
     }
 
     /// `method` on `path`, answering a `412 CONFIRM_REQUIRED` with a passkey

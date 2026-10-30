@@ -33,10 +33,14 @@ The signed bytes are, with `0` a zero byte and every field UTF-8:
 "calimero.operator.v1" 0 cluster 0 subject 0 method 0 args 0 nonce 0
 ```
 
-`subject` is `cluster` (release and outbound approvals), the app id (an app's
-upgrade) or `org:<id>` (an organization's run); `method` is
-`__approve_release`, `__withdraw_release`, `__approve_outbound`, `__upgrade`,
-`__upgrade_org` or `__upgrade_org_retry`; `args` is the exact JSON text the
+`subject` is `cluster` (release and outbound approvals, deadlines, nodes,
+quotas), the app id (an app's upgrade or replica move) or `org:<id>` (an
+organization's run); `method` is `__approve_release`, `__withdraw_release`,
+`__approve_outbound`, `__upgrade`, `__upgrade_org`, `__upgrade_org_retry`,
+`__release_deadline`, `__register_node` (`{ id, addr, zone }`),
+`__remove_node` (`{ id }`), `__set_quotas` (`{ quotas }`, every limit after
+the change) or `__set_replicas` (`{ replicas }`, the target set sorted; one
+signature covers both writes of the move); `args` is the exact JSON text the
 node states; `nonce` is base64url, used once. A decision sent without a proof
 answers `428 OPERATOR_SIGNATURE_REQUIRED` with `details { subject, method, args,
 nonce, cluster, message }`, `message` being the bytes above in base64: the
@@ -55,9 +59,10 @@ refused by the log. With no key recorded, operator decisions are refused
 | `GET /ops/placement` | Each app's group and replica node ids; each node's zone, attested release and app count |
 | `GET /ops/apps` | What each app runs and which releases may hold it (below) |
 | `GET /ops/orgs` | Each organization's id and the releases approved to hold its apps |
-| `POST /ops/nodes` | Register a node; the system leader then adds it as a learner ([Replication](/protocol/replication/#joining-nodes)) |
-| `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only ([Replica moves](/protocol/replication/#replica-moves)) |
-| `GET` / `POST /ops/quotas` | Read or set the per-account quotas |
+| `POST /ops/nodes` | Register a node, signed (`428` first); the system leader then adds it as a learner ([Replication](/protocol/replication/#joining-nodes)). The nodes a cluster starts with are registered at genesis |
+| `DELETE /ops/nodes/{id}` | Remove a node, signed (`428` first; the proof in a JSON body) |
+| `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only, signed (`428` first) ([Replica moves](/protocol/replication/#replica-moves)) |
+| `GET` / `POST /ops/quotas` | Read or set the per-account quotas; setting is signed (`428` first; `operatorProof` beside the limits) |
 | `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
 | `POST /ops/releases/{version}/deadline { after, operatorProof }`, `DELETE …` | Set (RFC 3339) or lift (`after: null`, or `DELETE` with the proof in its body) a release's end-of-new-work deadline, signed with the operator key (`428` first): after it, a party that has not approved the release creates, installs and upgrades nothing until it does; running apps go on ([Release deadlines](/protocol/governance/#release-deadlines)). Public at `GET /releases` |
 
