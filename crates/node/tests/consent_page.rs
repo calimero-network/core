@@ -251,8 +251,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         calimero_node::app_host::label(PACKAGE)
     );
     let in_app = c.client(1);
-    let mut app_key = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
-    let _s = in_app.sign_in(&mut app_key).await.unwrap();
+    let mut in_app_passkey = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
 
     // It may not approve anything itself: the routes refuse it, ceremony or not.
     for (path, body) in [
@@ -428,7 +428,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
 
     // Approved on the page: the passkey signs the target's manifest hash.
     // The same passkey (one signature counter) on the node's origin.
-    let mut page_key = SoftAuthenticator::with_key(&app_key, "localhost", &origin(&url));
+    let mut page_key = SoftAuthenticator::with_key(&in_app_passkey, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut page_key).await;
     assert_eq!(args["__method"], "__upgrade");
     assert_eq!(args["manifest"], json!(v2_hash), "{args}");
