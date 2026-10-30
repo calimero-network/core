@@ -35,6 +35,7 @@ calimero-tee-release.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+libp2p-identity = { workspace = true, features = ["rand"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 

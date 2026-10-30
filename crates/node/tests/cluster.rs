@@ -6085,3 +6085,35 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     let own = alice.get("auth/apps").await.unwrap();
     assert_eq!(own["governance"]["appUpgrades"], json!("operator"), "{own}");
 }
+
+/// A system write the group cannot commit answers `503 UNAVAILABLE` in
+/// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
+/// system group could not commit, and a sign-up and a node registration each
+/// waited until the proxy in front of merod cut them at 30 s, so the caller
+/// saw a dropped connection rather than why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_write_that_cannot_commit_answers_unavailable() {
+    let mut c = Cluster::start(3).await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .expect("a system leader");
+    // A first account, so the cluster is known to commit while it has its voters.
+    let _ = signed_up(&c, leader, "alice").await;
+    for i in (0..3).filter(|i| *i != leader) {
+        c.stop(i).await;
+    }
+
+    let bob = c.client(leader);
+    let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let started = std::time::Instant::now();
+    let answer = tokio::time::timeout(Duration::from_secs(60), bob.sign_up(&mut pk, "bob")).await;
+    let waited = started.elapsed();
+    let e = answer
+        .expect("the write must be answered, not left hanging past 60 s")
+        .expect_err("a write the system group cannot commit must fail");
+    assert_eq!(e.code(), Some("UNAVAILABLE"), "{e}");
+    assert!(
+        waited < Duration::from_secs(25),
+        "answered only after {waited:?}"
+    );
+}
