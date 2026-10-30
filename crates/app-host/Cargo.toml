@@ -10,7 +10,7 @@ publish = false
 
 [features]
 # Exposes diagnostic counters (`HostCore::peak_buffered`) and `MemoryFiles` to tests.
-testing = ["dep:hex", "dep:sha2"]
+testing = ["dep:hex"]
 
 [dependencies]
 ciborium.workspace = true
@@ -18,7 +18,7 @@ hex = { workspace = true, optional = true }
 rand.workspace = true
 rand_chacha.workspace = true
 serde_json.workspace = true
-sha2 = { workspace = true, optional = true }
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

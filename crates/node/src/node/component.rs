@@ -28,8 +28,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_app_host::{
-    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, StateView,
-    TimerCtx, TrapKind,
+    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, Runs,
+    StateView, TimerCtx, TrapKind,
 };
 use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
@@ -38,7 +38,9 @@ use tracing::debug;
 use self::files::{Blob, NodeFiles, Stored};
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
-use crate::component::{Applied, CallEntry, ComponentCmd, Marks, Outcome, SysDirectory, TickEntry};
+use crate::component::{
+    Applied, CallEntry, ComponentCmd, FileMark, Marks, Outcome, SysDirectory, TickEntry,
+};
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
@@ -193,41 +195,76 @@ fn abi_check(
     }
 }
 
-/// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the
-/// same call trapped `HostDenied` with nothing in it (D50).
-fn entry_bytes(mut cmd: ComponentCmd) -> (Vec<u8>, bool) {
-    let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
+/// The code of a final entry that is over the log's cap even without its result method's outcome.
+pub const FINAL_TOO_LARGE: &str = "FINAL_TOO_LARGE";
+
+/// `FINAL_TOO_LARGE`: nothing can be logged for the run's end; the leader ends it `Failed{timeout}`.
+#[must_use]
+pub fn final_too_large() -> ApiError {
+    ApiError::new(
+        500,
+        FINAL_TOO_LARGE,
+        "the run's final entry is over the log's cap",
+    )
+}
+
+/// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the same
+/// call trapped `HostDenied` (D50); a final loses only its result method's outcome.
+fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
+    let bytes = serde_json::to_vec(&*cmd).unwrap_or_default();
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
         return (bytes, false);
     }
     let denied = Outcome::trap(TrapKind::HostDenied, "entry too large");
-    match &mut cmd {
+    match cmd {
         ComponentCmd::Call(entry) => entry.outcome = denied,
         ComponentCmd::Tick(entry) => entry.outcome = denied,
         ComponentCmd::Init { outcome, .. } => **outcome = denied,
+        ComponentCmd::ComputeFinal(entry) => entry.result = denied,
         ComponentCmd::Upgrade { .. }
+        | ComponentCmd::ComputeAttempt(_)
         | ComponentCmd::File { .. }
         | ComponentCmd::FileForget { .. }
         | ComponentCmd::Barrier => {}
     }
-    (serde_json::to_vec(&cmd).unwrap_or_default(), true)
+    (serde_json::to_vec(&*cmd).unwrap_or_default(), true)
 }
 
-/// The plaintext bytes of the files `cmd` marks.
-fn new_file_bytes(cmd: &ComponentCmd) -> u64 {
-    let outcome = match cmd {
-        ComponentCmd::Call(entry) => &entry.outcome,
-        ComponentCmd::Tick(entry) => &entry.outcome,
-        ComponentCmd::Init { outcome, .. } => outcome,
-        _ => return 0,
-    };
-    outcome.files.iter().map(|f| f.size).sum()
+/// The files `cmd` marks.
+fn marked_files(cmd: &ComponentCmd) -> Vec<&FileMark> {
+    match cmd {
+        ComponentCmd::ComputeFinal(entry) => {
+            entry.outputs.iter().chain(&entry.result.files).collect()
+        }
+        ComponentCmd::Call(entry) => entry.outcome.files.iter().collect(),
+        ComponentCmd::Tick(entry) => entry.outcome.files.iter().collect(),
+        ComponentCmd::Init { outcome, .. } => outcome.files.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The plaintext bytes of the files `cmd` marks; none when they overflow a `u64`.
+fn new_file_bytes(cmd: &ComponentCmd) -> Option<u64> {
+    marked_files(cmd)
+        .into_iter()
+        .try_fold(0u64, |sum, f| sum.checked_add(f.size))
+}
+
+/// The blobs of `blobs` that `cmd` marks: a replaced entry marks fewer than the run made.
+fn marked_blobs(cmd: &ComponentCmd, blobs: &[Blob]) -> Vec<Blob> {
+    let marked = marked_files(cmd);
+    blobs
+        .iter()
+        .filter(|(id, _)| marked.iter().any(|f| &f.id == id))
+        .cloned()
+        .collect()
 }
 
 /// What a run reads: the app's keys and files as of the entry it runs on.
 struct Reads {
     keys: Arc<dyn StateView>,
     files: Marks,
+    runs: Arc<dyn Runs>,
 }
 
 impl Reads {
@@ -235,6 +272,7 @@ impl Reads {
         Self {
             keys: m.view(),
             files: m.file_marks(),
+            runs: m.runs_provider(None),
         }
     }
 }
@@ -480,18 +518,23 @@ impl Node {
         let files = NodeFiles::new(self, app_id, reads.files, invocation.kind);
         match HostCore::new(app_id, reads.keys, applied, invocation, directory) {
             Ok(host) => {
-                let mut out =
-                    self.wasm
-                        .invoke(prepared, host.with_files(Arc::new(files)), self.budget());
+                let host = host
+                    .with_files(Arc::new(files))
+                    .with_compute(prepared.abi.clone(), reads.runs);
+                let mut out = self.wasm.invoke(prepared, host, self.budget());
                 let blobs = out
                     .new_files
                     .iter_mut()
                     .map(|f| (f.id.clone(), std::mem::take(&mut f.ciphertext)))
                     .collect();
-                Ran {
-                    outcome: Outcome::from_host(out),
-                    blobs,
+                let mut outcome = Outcome::from_host(out);
+                if !outcome.compute_starts.is_empty() {
+                    let owner = self
+                        .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
+                        .unwrap_or_default();
+                    outcome.name_owner(&owner);
                 }
+                Ran { outcome, blobs }
             }
             Err(e) => Ran {
                 outcome: Outcome::trap(TrapKind::Fault, &e.to_string()),
@@ -519,8 +562,7 @@ impl Node {
     }
 
     /// The entry that logs `cmd`, once the files it marks are on a majority of the voters and
-    /// counted against the quota, and what was stored for it. An entry replaced as too large
-    /// marks and deletes none.
+    /// counted against the quota. A replaced call marks none; a replaced final keeps its outputs.
     fn logged_entry(
         &self,
         app_id: &str,
@@ -537,11 +579,24 @@ impl Node {
                 call.base_index += 1;
             }
         }
-        let charged = new_file_bytes(&cmd);
-        let (bytes, replaced) = entry_bytes(cmd);
-        if replaced {
+        let (bytes, replaced) = entry_bytes(&mut cmd);
+        if matches!(cmd, ComponentCmd::ComputeFinal(_))
+            && bytes.len() > calimero_log::MAX_ENTRY_BYTES
+        {
+            return Err(final_too_large());
+        }
+        let charged = new_file_bytes(&cmd)
+            .ok_or_else(|| ApiError::internal("the sizes of the new files overflow"))?;
+        if replaced && charged == 0 {
             return Ok((bytes, Stored::default()));
         }
+        let kept;
+        let blobs = if replaced {
+            kept = marked_blobs(&cmd, blobs);
+            &kept
+        } else {
+            blobs
+        };
         // Counted first: a refused charge sends no bytes anywhere.
         if charged > 0 {
             self.charge_files(app_id, charged)?;
@@ -1288,10 +1343,11 @@ impl Node {
         }
         let p = g
             .propose_led(|m, _, _| {
-                let (entry, _replaced) = entry_bytes(ComponentCmd::Upgrade {
+                let mut cmd = ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
                     base_index: m.state.last_index,
-                });
+                };
+                let (entry, _replaced) = entry_bytes(&mut cmd);
                 Proposal::Append(entry)
             })
             .await?;
@@ -1319,6 +1375,129 @@ fn to_wasmer_applied(a: Applied) -> crate::app::Applied {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_final_is_charged_for_its_outputs_and_its_result_methods_files() {
+        use crate::component::{FileMark, FinalEntry, FinalOutcome};
+        use crate::job_wire::ReportUsage;
+        let file = |size| FileMark {
+            id: "ab".repeat(32),
+            size,
+            sha256: calimero_log::Bytes(vec![1; 32]),
+            wrapped_key: calimero_log::Bytes(vec![2; 60]),
+        };
+        let entry = FinalEntry {
+            run: "r".into(),
+            attempt: 1,
+            outcome: FinalOutcome::Done,
+            report: None,
+            signature: None,
+            outputs: vec![file(10), file(20)],
+            usage: ReportUsage::default(),
+            result: Outcome {
+                files: vec![file(4)],
+                ..Outcome::default()
+            },
+            base_index: 0,
+            ts_ms: 0,
+            id_term: 0,
+            id_seq: 0,
+        };
+        assert_eq!(
+            new_file_bytes(&ComponentCmd::ComputeFinal(Box::new(entry))),
+            Some(34)
+        );
+        let attempt = ComponentCmd::Barrier;
+        assert_eq!(new_file_bytes(&attempt), Some(0));
+    }
+
+    fn big_final(result_bytes: usize, outputs: usize) -> ComponentCmd {
+        use crate::component::{FileMark, FinalEntry, FinalOutcome};
+        use crate::job_wire::ReportUsage;
+        let file = |i: usize| FileMark {
+            id: format!("{i:064x}"),
+            size: 10,
+            sha256: calimero_log::Bytes(vec![1; 32]),
+            wrapped_key: calimero_log::Bytes(vec![2; 60]),
+        };
+        ComponentCmd::ComputeFinal(Box::new(FinalEntry {
+            run: "r".into(),
+            attempt: 1,
+            outcome: FinalOutcome::Done,
+            report: None,
+            signature: None,
+            outputs: (0..outputs).map(file).collect(),
+            usage: ReportUsage::default(),
+            result: Outcome {
+                diff: vec![crate::app::Write {
+                    key: calimero_log::Bytes(b"k".to_vec()),
+                    value: Some(calimero_log::Bytes(vec![0; result_bytes])),
+                }],
+                files: vec![file(9_999)],
+                ..Outcome::default()
+            },
+            base_index: 0,
+            ts_ms: 0,
+            id_term: 0,
+            id_seq: 0,
+        }))
+    }
+
+    #[test]
+    fn an_oversized_final_loses_only_its_result_methods_outcome() {
+        let mut cmd = big_final(2 * calimero_log::MAX_ENTRY_BYTES, 3);
+        assert_eq!(
+            new_file_bytes(&cmd),
+            Some(40),
+            "outputs and the result's file"
+        );
+        let (bytes, replaced) = entry_bytes(&mut cmd);
+        assert!(replaced && bytes.len() <= calimero_log::MAX_ENTRY_BYTES);
+        let ComponentCmd::ComputeFinal(entry) = &cmd else {
+            panic!("not a final");
+        };
+        assert_eq!(entry.outputs.len(), 3, "the outputs stay");
+        assert!(entry.result.diff.is_empty() && entry.result.files.is_empty());
+        assert_eq!(
+            new_file_bytes(&cmd),
+            Some(30),
+            "only the outputs are charged"
+        );
+        // The blobs kept are the outputs'; the result method's file is dropped.
+        let blobs: Vec<Blob> = [0usize, 1, 2, 9_999]
+            .iter()
+            .map(|i| (format!("{i:064x}"), vec![1]))
+            .collect();
+        let kept: Vec<String> = marked_blobs(&cmd, &blobs)
+            .into_iter()
+            .map(|b| b.0)
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                format!("{:064x}", 0),
+                format!("{:064x}", 1),
+                format!("{:064x}", 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_final_over_the_cap_even_without_its_result_is_not_built() {
+        let mut cmd = big_final(10, 6_000);
+        let (bytes, _replaced) = entry_bytes(&mut cmd);
+        assert!(bytes.len() > calimero_log::MAX_ENTRY_BYTES);
+        assert_eq!(final_too_large().code, FINAL_TOO_LARGE);
+    }
+
+    #[test]
+    fn file_sizes_that_overflow_refuse_the_entry() {
+        let mut cmd = big_final(10, 2);
+        if let ComponentCmd::ComputeFinal(entry) = &mut cmd {
+            entry.outputs[0].size = u64::MAX;
+        }
+        assert_eq!(new_file_bytes(&cmd), None);
+    }
 
     #[test]
     fn the_component_cache_key_matches_its_known_answer() {

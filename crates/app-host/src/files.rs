@@ -35,6 +35,7 @@ pub const FILE_FINISHED: &str = "file already finished";
 pub const FILE_FAILED: &str = "file write failed";
 pub const FILE_DELETED_TWICE: &str = "file already deleted";
 pub const FILE_CREATED_IN_RUN: &str = "file created in this run";
+pub const FILE_IS_RUN_INPUT: &str = "file is a run input";
 pub const FILE_TOO_MANY_DELETES: &str = "too many deletes";
 pub const FILE_TOO_MANY_NEW: &str = "too many new files";
 /// The bytes of a file cannot be had now (a view's soft error; a logged run is aborted).

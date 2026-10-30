@@ -18,9 +18,7 @@
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency) are never keys the app sees (D39).
 
-use std::collections::BTreeMap;
-#[cfg(feature = "testing")]
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Weak};
 
 use calimero_app_host as host;
@@ -32,6 +30,13 @@ use crate::app::{rows, AppMachine, Status, Write};
 use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
+
+mod runs;
+
+pub use runs::{
+    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome, NodeRuns,
+    RunCaps, RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT, MAX_ATTEMPTS,
+};
 
 /// An event a run emitted, with its audience (R9).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +69,12 @@ pub struct Outcome {
     /// The ids of the files the run deleted.
     #[serde(default)]
     pub deleted_files: Vec<String>,
+    /// The compute runs the run started (kept only when it ended `Ok`).
+    #[serde(default)]
+    pub compute_starts: Vec<ComputeStart>,
+    /// The active runs the run asked to cancel.
+    #[serde(default)]
+    pub compute_cancels: Vec<String>,
 }
 
 /// What the app's state records of a file (ciphertext lives outside the log, by `id`).
@@ -116,6 +127,7 @@ impl Outcome {
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
         let (files, deleted_files) = (out.new_files, out.deleted_files);
+        let (starts, cancels) = (out.compute_starts, out.compute_cancels);
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events),
             host::Status::AppError { code, message } => Self {
@@ -132,6 +144,8 @@ impl Outcome {
         if outcome.status == Status::Ok {
             outcome.files = files.into_iter().map(FileMark::from).collect();
             outcome.deleted_files = deleted_files;
+            outcome.compute_starts = starts.into_iter().map(ComputeStart::from).collect();
+            outcome.compute_cancels = cancels;
         }
         outcome
     }
@@ -286,6 +300,13 @@ pub enum ComponentCmd {
         #[serde(default)]
         key: Option<String>,
     },
+    /// The leader assigned a run to a job node. Applies to an active run whatever else was
+    /// logged since (see [`AttemptEntry`]).
+    #[serde(rename = "computeAttempt")]
+    ComputeAttempt(Box<AttemptEntry>),
+    /// A run's end, with the outcome of its result method. The first valid one wins.
+    #[serde(rename = "computeFinal")]
+    ComputeFinal(Box<FinalEntry>),
 }
 
 impl ComponentCmd {
@@ -436,6 +457,12 @@ pub struct ComponentHead {
     /// recorded (D74).
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
+    /// The ids of the runs that are queued or running (at most `MAX_ACTIVE_RUNS`).
+    #[serde(default)]
+    pub active_runs: BTreeSet<String>,
+    /// The last finished runs, oldest first; their records are kept until they leave it.
+    #[serde(default)]
+    pub finished_runs: VecDeque<String>,
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -545,7 +572,7 @@ impl AppMachine {
         base_index: u64,
         ts_ms: u64,
         outcome: &Outcome,
-        caller: Option<&str>,
+        caller: &Caller,
     ) -> Applied {
         if base_index != self.state.last_index {
             return Applied::conflict(index, "conflict: retry");
@@ -570,6 +597,7 @@ impl AppMachine {
                 }
             }
             freed = self.apply_files(tx, index, outcome);
+            self.apply_run_changes(tx, ts_ms, caller, outcome);
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
                     tx,
@@ -579,7 +607,7 @@ impl AppMachine {
                         kind: e.kind.clone(),
                         data: e.data.clone(),
                         audience: Some(e.audience.clone()),
-                        caller: caller.map(str::to_owned),
+                        caller: caller.account().map(str::to_owned),
                     },
                 );
             }
@@ -660,6 +688,9 @@ impl AppMachine {
         if !self.state.component.files.contains_key(&id) {
             return Applied::refused(index, "no such file");
         }
+        if self.is_run_input(tx, &id) {
+            return Applied::refused(index, host::FILE_IS_RUN_INPUT);
+        }
         let freed = self.apply_files(
             tx,
             index,
@@ -736,7 +767,7 @@ impl AppMachine {
             tick.base_index,
             tick.ts_ms,
             &tick.outcome,
-            None,
+            &Caller::System,
         );
         if !a.conflict {
             let _prev = self
@@ -773,8 +804,10 @@ impl AppMachine {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
+            Ok(ComponentCmd::ComputeFinal(done)) => Some(done.ts_ms),
             Ok(
                 ComponentCmd::Upgrade { .. }
+                | ComponentCmd::ComputeAttempt(_)
                 | ComponentCmd::File { .. }
                 | ComponentCmd::FileForget { .. }
                 | ComponentCmd::Barrier,
@@ -787,6 +820,7 @@ impl AppMachine {
             }) => self.note_id(*id_term, *id_seq),
             Ok(ComponentCmd::Call(call)) => self.note_id(call.id_term, call.id_seq),
             Ok(ComponentCmd::Tick(tick)) => self.note_id(tick.id_term, tick.id_seq),
+            Ok(ComponentCmd::ComputeFinal(done)) => self.note_id(done.id_term, done.id_seq),
             _ => {}
         }
         let applied = match cmd {
@@ -803,9 +837,19 @@ impl AppMachine {
                 if self.state.initialized || self.state.init_error.is_some() {
                     Applied::conflict(index, "already initialized")
                 } else {
-                    let a =
-                        self.apply_component_outcome(tx, index, base_index, ts_ms, &outcome, None);
-                    if !a.conflict {
+                    // The runs init starts name its bundle.
+                    let before = self.state.bundle.replace(bundle.clone());
+                    let a = self.apply_component_outcome(
+                        tx,
+                        index,
+                        base_index,
+                        ts_ms,
+                        &outcome,
+                        &Caller::System,
+                    );
+                    if a.conflict {
+                        self.state.bundle = before;
+                    } else {
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
                         self.state.component.head.install_ts_ms = ts_ms;
@@ -827,7 +871,7 @@ impl AppMachine {
                     base_index,
                     0,
                     &Outcome::default(),
-                    None,
+                    &Caller::System,
                 );
                 if !a.conflict {
                     // Taken before `init` applied: the entry names the executor.
@@ -843,7 +887,7 @@ impl AppMachine {
                     call.base_index,
                     call.ts_ms,
                     &call.outcome,
-                    call.caller.account(),
+                    &call.caller,
                 );
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
@@ -857,6 +901,10 @@ impl AppMachine {
                 a
             }
             Ok(ComponentCmd::Barrier) => Applied::answered(index, Value::Null),
+            Ok(ComponentCmd::ComputeAttempt(attempt)) => {
+                self.apply_compute_attempt(tx, index, &attempt)
+            }
+            Ok(ComponentCmd::ComputeFinal(done)) => self.apply_compute_final(tx, index, &done),
             Ok(ComponentCmd::FileForget { id, key }) => {
                 let a = self.apply_file_forget(tx, index, id);
                 self.remember_command(tx, key.as_deref(), &a);
@@ -995,6 +1043,8 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod runs;
 
     #[test]
     fn only_wall_clock_and_node_unavailability_are_retryable() {
