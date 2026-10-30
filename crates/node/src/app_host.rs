@@ -181,7 +181,7 @@ impl Node {
     }
 
     /// Every node's API origin, for the page's `connect-src`.
-    fn api_origins(&self) -> Vec<String> {
+    pub(crate) fn api_origins(&self) -> Vec<String> {
         let mut out: Vec<String> = self.sys(|s| {
             s.nodes
                 .values()

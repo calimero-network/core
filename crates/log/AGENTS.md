@@ -56,6 +56,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   gives each append RPC one heartbeat interval, so a huge entry would never reach a
   follower. Large content goes to the sealed blob store (`Engine::put_blob`/`get_blob`).
 - Network: `Transport` trait; the node supplies an attested channel, tests an in-memory one.
+  openraft takes the sender an RPC names (`vote.leader_id`) on trust and a
+  follower accepts an append from any node with a higher term:
+  `RpcRequest::sender` names it so the node checks it against the identified
+  caller and the group's members before `handle_rpc`.
 
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
 (replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext on disk,

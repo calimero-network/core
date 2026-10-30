@@ -19,16 +19,47 @@ in constant time, inside the sealed channel like every other request. A node
 given neither has the Ops API disabled. The operator's actions that the system
 log records carry the actor `operator`, which no account id can be.
 
+The token reaches the node, not the log: every node of the cluster can append
+to the system log, so a decision the governance gives the operator must carry
+the operator's own proof. That is an **operator key**, Ed25519, whose public
+half the nodes are given (`--operator-key <hex>`, `MEROD_OPERATOR_KEY`) and the
+first leader records at genesis. Every operator decision
+(the second table below) carries the key's signature, checked where it applies
+on every node ([system group](/protocol/system-group/#decisions-carry-their-proof)).
+
+The signed bytes are, with `0` a zero byte and every field UTF-8:
+
+```text
+"calimero.operator.v1" 0 cluster 0 subject 0 method 0 args 0 nonce 0
+```
+
+`subject` is `cluster` (release and outbound approvals), the app id (an app's
+upgrade) or `org:<id>` (an organization's run); `method` is
+`__approve_release`, `__withdraw_release`, `__approve_outbound`, `__upgrade`,
+`__upgrade_org` or `__upgrade_org_retry`; `args` is the exact JSON text the
+node states; `nonce` is base64url, used once. A decision sent without a proof
+answers `428 OPERATOR_SIGNATURE_REQUIRED` with `details { subject, method, args,
+nonce, cluster, message }`, `message` being the bytes above in base64: the
+caller signs `message` and sends the same request again with
+`"operatorProof": { "nonce": <details.nonce>, "signature": <hex> }`. A signature
+that does not verify is `403 BAD_OPERATOR_SIGNATURE`; one used before is
+refused by the log. With no key recorded, operator decisions are refused
+(`403`).
+
 ## What it can do
 
 | Route | What |
 | --- | --- |
 | `GET /ops/status` | This node, the system group's Raft status, the Raft status of the app groups hosted here (by app id), the node list, the governance, and counts of apps and accounts |
 | `GET /ops/metrics` | Prometheus text: nodes, apps, accounts, organizations, packages, bundle bytes; groups hosted and led here; open streams; system applied index, leadership, voters, learners; each hosted group's applied index; the build release |
+| `GET /ops/placement` | Each app's group and replica node ids; each node's zone, attested release and app count |
+| `GET /ops/apps` | What each app runs and which releases may hold it (below) |
+| `GET /ops/orgs` | Each organization's id and the releases approved to hold its apps |
 | `POST /ops/nodes` | Register a node; the system leader then adds it as a learner ([Replication](/protocol/replication/#joining-nodes)) |
 | `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only ([Replica moves](/protocol/replication/#replica-moves)) |
 | `GET` / `POST /ops/quotas` | Read or set the per-account quotas |
 | `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
+| `POST /ops/releases/{version}/deadline { after, operatorProof }`, `DELETE …` | Set (RFC 3339) or lift (`after: null`, or `DELETE` with the proof in its body) a release's end-of-new-work deadline, signed with the operator key (`428` first): after it, a party that has not approved the release creates, installs and upgrades nothing until it does; running apps go on ([Release deadlines](/protocol/governance/#release-deadlines)). Public at `GET /releases` |
 
 And, only where the deployment's [governance](/protocol/governance/) gives
 the operator that decision:
@@ -45,17 +76,49 @@ any app may reach, and the secrets requests may carry), the registry releases
 are installed from, the domain app frontends are served under, and the
 measurement policy for peers.
 
+## What runs where
+
+`GET /ops/apps` is how the operator follows a rollout: per app, its id, group
+and **scope** (`{ kind: "org", org }`, or `{ kind: "account" }` for an
+account's own app, never the account), the **bundle digest** it runs, its publisher (the package's pinned signer,
+with the package), who holds
+app upgrades, its **last upgrade** (`from` and `to` digests, when, whether it
+succeeded, and the **actor kind**: `owner`, `member` or `operator`), the
+mero-tee releases approved to hold its data, and each replica's node, release,
+and whether that release is approved for the app. `GET /ops/orgs` gives each
+organization's approved releases. Both are paged (`?after=ID&limit=N`, at most
+`MAX_REPORT_PAGE`, 100, per page; `next` continues).
+
+What it leaves out is deliberate:
+
+- **Package names and versions only for releases the operator installed.**
+  Which package an app runs can say what an organization does (a package
+  uploaded for one customer is named after it), so the report names a release
+  only where `sees_release` lets the operator see it anyway: the releases it
+  installed itself (`/ops/packages`, its catalog). For any other app,
+  `package` is `null` and only the bundle's digest (`hex(SHA-256)` of its WASM)
+  appears: enough to group apps that run the same code and to see an upgrade
+  happen, nothing that names it.
+- **The actor's kind, not the actor.** An upgrade's account, its error text
+  (which the app's code can write) and its upgrade run are left out.
+- Approved releases and governance are not secrets: every replica attests the
+  governance, and the approved releases decide which nodes the operator can
+  place an app on.
+
 ## What it cannot do
 
 There is no Ops route that runs a view, reads state, streams events, lists an
-account's apps, downloads a blob or a bundle, or returns a credential. Status
-and metrics report counts, ids and Raft positions; app names, organization
+account's apps, downloads a blob or a bundle, or returns a credential. Status,
+metrics and the reports above give counts, ids, digests, releases and Raft positions; app names, organization
 names, people's names and app state never appear. The operator cannot sign in
-as anyone: sessions are minted only after a passkey ceremony, under a key held
-in the system state.
+as anyone: sessions are minted only after a passkey ceremony, each signed by
+the attested node that ran it. Nor can the ops token alone make a decision the
+log accepts: that takes the operator key.
 
 The operator does control availability. It can stop, freeze or restart nodes,
-withhold the network, or refuse to register nodes. An app stays available
+withhold the network, or refuse to register nodes, and it sets release
+deadlines, which stop new work on old images but move no data and block no
+approval. An app stays available
 while a majority of its replicas run.
 
 ## Backups

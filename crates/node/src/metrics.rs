@@ -131,7 +131,8 @@ pub fn group(route: &str) -> &'static str {
     };
     match route {
         "/health" => "health",
-        "/attestation" => "attestation",
+        // What the cluster attests about its node releases: governance and deadlines.
+        "/attestation" | "/releases" => "attestation",
         "/internal/raft" => "raft",
         "/apps/{app}/intents" => "calls",
         "/apps/{app}/views" => "views",
@@ -141,8 +142,14 @@ pub fn group(route: &str) -> &'static str {
         _ if in_app("/blobs") => "blobs",
         _ if route.starts_with("/apps") => "apps",
         _ if route.starts_with("/orgs") || route.starts_with("/invites") => "orgs",
-        _ if route.starts_with("/bundles") || route.starts_with("/packages") => "packages",
+        _ if route.starts_with("/bundles")
+            || route.starts_with("/packages")
+            || route.starts_with("/publishers") =>
+        {
+            "packages"
+        }
         _ if route.starts_with("/ops") => "ops",
+        _ if route.starts_with("/consent") => "consent",
         _ if route.starts_with("/internal") => "internal",
         _ => "other",
     }
@@ -686,6 +693,9 @@ mod tests {
         assert_eq!(group("/internal/raft"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
+        assert_eq!(group("/consent/{request}/result"), "consent");
+        assert_eq!(group("/releases"), "attestation");
+        assert_eq!(group("/publishers/{signer}"), "packages");
     }
 
     #[test]

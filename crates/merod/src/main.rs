@@ -19,7 +19,8 @@ use node_config::NodeArgs;
 #[derive(Debug, Parser)]
 #[command(
     name = "merod",
-    version,
+    // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
+    version = calimero_node::RELEASE_VERSION,
     about = "Calimero node: attested, one Raft log per app"
 )]
 struct Cli {
@@ -342,6 +343,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         eyre::bail!("mero-kms needs both --kms-url and --kms-identity");
     }
     let kms_args = args.kms_url.as_deref().zip(args.kms_identity.as_deref());
+    let mut kms_keys = calimero_client::attest::KmsKeys::default();
     let storage_key: [u8; 32] = match kms::key_source(
         dev,
         args.storage_key.as_deref(),
@@ -353,12 +355,25 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             .map_err(|_| eyre::eyre!("storage key must be 32 bytes"))?,
         kms::KeySource::File(path) => kms::derive_storage_key(&kms::read_key_file(path)?, &cluster),
         kms::KeySource::Kms { url, identity } => {
-            kms::derive_storage_key(&kms::fetch(url, identity).await?, &cluster)
+            let (material, evidence) = kms::fetch(url, identity).await?;
+            kms_keys.storage = Some(evidence);
+            kms::derive_storage_key(&material, &cluster)
         }
         kms::KeySource::Dev => {
             calimero_identity::sha256(format!("calimero-dev-storage-key|{cluster}").as_bytes())
         }
     };
+    if let Some(path) = &args.kms_disk_evidence {
+        // Reported only: a record that cannot be read leaves the disk's KMS
+        // "not reported" in the attestation, which is true, rather than
+        // keeping a node whose disk is already open from starting.
+        match calimero_kms_client::disk_key::read_evidence(path) {
+            Ok(evidence) => kms_keys.disk = Some(evidence),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "not reporting the data disk's KMS: {e:#}")
+            }
+        }
+    }
     let peer_measurements = if dev {
         Measurements::None
     } else {
@@ -403,11 +418,11 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         release: calimero_node::RELEASE_VERSION.to_owned(),
         ops_token: args.ops_token.clone(),
         ops_token_sha256: args.ops_token_sha256.clone(),
+        operator_key: args.operator_key.clone(),
         metrics_listen: args.metrics_listen,
         replicas: args.replicas.unwrap_or(3),
         backup_dir: args.backup_dir.clone(),
         raft: calimero_log::Config::default(),
-        session_key_rotation_secs: args.session_key_rotation_secs.unwrap_or(6 * 3600).max(1800),
         read_wait: std::time::Duration::from_secs(2),
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
@@ -430,6 +445,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             app_upgrades: authority(args.app_upgrades),
             outbound: authority(args.outbound_approvals),
         },
+        kms_keys,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

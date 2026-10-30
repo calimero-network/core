@@ -9,7 +9,9 @@
 
 use crate::config::{normalize_attestation_measurement, KmsAttestationConfig, KmsConfig};
 use base64::Engine;
-use calimero_tee_attestation::{generate_attestation, verify_attestation, VerificationResult};
+use calimero_tee_attestation::{
+    generate_attestation, verify_attestation, KmsEvidence, VerificationResult,
+};
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -473,7 +475,7 @@ pub async fn fetch_storage_key(
     peer_id: &str,
     identity: &Keypair,
     policy: Option<&KmsAttestationPolicy>,
-) -> Result<Vec<u8>> {
+) -> Result<ReleasedKey> {
     let Some(kms) = kms else {
         bail!(
             "TEE is enabled but no KMS is configured. \
@@ -485,13 +487,28 @@ pub async fn fetch_storage_key(
     info!("Using mero-kms");
     validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some()))?;
 
-    let attestation_mode = if let Some(p) = policy {
-        let kms_public = verify_kms_attestation_from_release_policy(kms, p).await?;
-        KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public }
+    let (attestation_mode, evidence) = if let Some(p) = policy {
+        let (kms_public, evidence) = verify_kms_attestation_from_release_policy(kms, p).await?;
+        (
+            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { kms_public },
+            Some(evidence),
+        )
     } else {
-        KeyFetchAttestationMode::UseConfigPolicy
+        (KeyFetchAttestationMode::UseConfigPolicy, None)
     };
-    fetch_from_kms(kms, peer_id, identity, attestation_mode).await
+    let key = fetch_from_kms(kms, peer_id, identity, attestation_mode).await?;
+    Ok(ReleasedKey { key, evidence })
+}
+
+/// A key the KMS released, and the KMS quote that was accepted before asking.
+///
+/// No `Debug`: it holds the key.
+pub struct ReleasedKey {
+    pub key: Vec<u8>,
+    /// What the TD verified of the KMS: `Some` whenever the signed release
+    /// policy verified it, `None` on the config-allowlist path (air-gapped
+    /// deployments, which name no release to report).
+    pub evidence: Option<KmsEvidence>,
 }
 
 /// Refused before any request: nothing pins this KMS (release policy or config
@@ -565,7 +582,9 @@ where
     })?;
 
     let kms_public = if let Some(policy) = policy {
-        verify_kms_attestation_from_release_policy(kms, policy).await
+        verify_kms_attestation_from_release_policy(kms, policy)
+            .await
+            .map(|(kms_public, _evidence)| kms_public)
     } else if kms.attestation.enabled {
         verify_kms_attestation(&client, &base_url, &kms.attestation).await
     } else {
@@ -643,10 +662,12 @@ where
 /// Verify KMS via POST /attest using policy fetched from release.
 ///
 /// Calls KMS /attest, verifies the quote, and enforces measurement policy.
+/// Answers the KMS's attested transport key and the record of the quote that
+/// passed, which the node reports in its own attestation.
 async fn verify_kms_attestation_from_release_policy(
     kms: &KmsConfig,
     policy: &KmsAttestationPolicy,
-) -> Result<[u8; 32]> {
+) -> Result<([u8; 32], KmsEvidence)> {
     info!("Verifying KMS attestation before key fetch");
 
     let base_url = ensure_trailing_slash(&kms.url);
@@ -757,7 +778,31 @@ async fn verify_kms_attestation_from_release_policy(
     )?;
     info!("KMS is a TDX cluster replica, pinned by MRTD and RTMR0-3");
     info!("KMS attestation verified successfully");
-    Ok(kms_public)
+    let evidence = KmsEvidence::of_quote(
+        kms_host(&kms.url),
+        policy.release.clone(),
+        policy.profile.clone(),
+        &quote_bytes,
+        &verification_result,
+        unix_now(),
+        is_mock,
+    );
+    Ok((kms_public, evidence))
+}
+
+/// The host (and explicit port) of a KMS URL, as a node reports it.
+fn kms_host(url: &Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// How an attestation policy is enforced.
@@ -2936,6 +2981,8 @@ mod tests {
             allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
             allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
             default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
+            release: "2.4.1".to_owned(),
+            profile: Some("locked-read-only".to_owned()),
         }
     }
 
@@ -2947,6 +2994,77 @@ mod tests {
         let quote_bytes = mock_quote_bytes_with_report_data(&report_data);
         verify_mock_attestation(&quote_bytes, &nonce, &binding)
             .expect("mock verification result should be created")
+    }
+
+    /// A key fetch records the KMS quote it accepted: the registers and hash
+    /// of the very quote that passed, the signed policy's release and profile,
+    /// and the host it dialled. The node reports this record in its own
+    /// attestation, so it has to be what was verified, not what was asked.
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn the_kms_a_key_fetch_accepted_is_recorded() {
+        enable_mock_kms_attestation_env();
+        let (url, _) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&url, false);
+        let mock = make_mock_verification_result();
+        let mrtd = normalize_attestation_measurement(&mock.quote.body.mrtd);
+        let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec![mrtd.clone()]);
+
+        let before = unix_now();
+        let (kms_public, evidence) = verify_kms_attestation_from_release_policy(&kms, &policy)
+            .await
+            .expect("the stand-in KMS matches the policy");
+
+        assert_eq!(kms_public, sealed::public_for_test(&TEST_KMS_SECRET));
+        assert_eq!(
+            evidence.kms_host,
+            format!(
+                "127.0.0.1:{}",
+                url.port().expect("the stand-in names its port")
+            )
+        );
+        assert_eq!(evidence.release, "2.4.1");
+        assert_eq!(evidence.profile.as_deref(), Some("locked-read-only"));
+        assert_eq!(evidence.mrtd, mrtd);
+        assert_eq!(
+            evidence.rtmr3,
+            normalize_attestation_measurement(&mock.quote.body.rtmr3)
+        );
+        assert_eq!(evidence.tcb_status.as_deref(), Some("Mock"));
+        assert!(evidence.mock);
+        assert!(evidence.verified_at >= before);
+        assert_eq!(evidence.quote_sha256.len(), 64);
+        // A KMS quote is over a fresh nonce, so two fetches never record the
+        // same quote.
+        let (_, again) = verify_kms_attestation_from_release_policy(&kms, &policy)
+            .await
+            .expect("the stand-in KMS matches the policy");
+        assert_ne!(again.quote_sha256, evidence.quote_sha256);
+    }
+
+    /// Nothing is recorded for a KMS the policy refuses: the error is all.
+    #[tokio::test]
+    #[cfg(feature = "mock-attestation")]
+    async fn a_refused_kms_leaves_no_record() {
+        enable_mock_kms_attestation_env();
+        let (url, _) = spawn_probe_server(ProbeServerMode {
+            attest: AttestResponseMode::Valid,
+            challenge: ProbeChallengeMode::Valid,
+            get_key: ProbeGetKeyMode::Success,
+        })
+        .await;
+        let kms = make_probe_kms_config(&url, false);
+        let mock = make_mock_verification_result();
+        let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec!["ab".repeat(48)]);
+        let err = verify_kms_attestation_from_release_policy(&kms, &policy)
+            .await
+            .expect_err("an MRTD outside the policy is refused");
+        assert!(err.to_string().contains("MRTD"), "{err}");
     }
 
     #[test]
@@ -3236,7 +3354,9 @@ mod tests {
     ) -> (Result<Vec<u8>>, usize) {
         let (kms, contacts) = stand_in_kms_config(attestation).await;
         let identity = Keypair::generate_ed25519();
-        let result = fetch_storage_key(Some(&kms), "peer", &identity, policy).await;
+        let result = fetch_storage_key(Some(&kms), "peer", &identity, policy)
+            .await
+            .map(|released| released.key);
         (result, contacts_seen(&contacts).await)
     }
 

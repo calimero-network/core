@@ -109,14 +109,15 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--storage-key-file FILE` | `MEROD_STORAGE_KEY_FILE` | none | A file of at least 32 bytes of key material; the storage key is derived from it and `--cluster`. `--dev` only. Conflicts with `--storage-key` and `--kms-url`. |
 | `--kms-url URL` | `MEROD_KMS_URL` | none | Fetch the storage key from mero-kms after it verifies this node. Needs `--kms-identity`; the only source in TDX mode. Conflicts with `--storage-key`. |
 | `--kms-identity FILE` | `MEROD_KMS_IDENTITY` | none | The cluster's disk identity (a protobuf libp2p keypair), shared by its nodes so they derive one key. Created at the path if missing. |
+| `--kms-disk-evidence FILE` | `MEROD_KMS_DISK_EVIDENCE` | none | The record `kms disk-key --evidence-out` wrote of the KMS that released the data disk's key. Read from tmpfs or ramfs only, and reported (bound into the quote) beside the storage key's at `GET /attestation?purpose=kms`. A file that cannot be read is logged and not reported; the node still starts. |
 | `--rp-id ID` | `MEROD_RP_ID` | `localhost` | The WebAuthn relying-party id passkeys are bound to. |
 | `--origins URL,...` | `MEROD_ORIGINS` | `http://localhost:3000` | Origins allowed to run passkey ceremonies and to call the API from a browser (CORS). |
 | `--ops-token TOKEN` | `MEROD_OPS_TOKEN` | none | The Ops API bearer token. Without it or `--ops-token-sha256` the Ops API answers `403`. |
 | `--ops-token-sha256 HEX` | `MEROD_OPS_TOKEN_SHA256` | none | The ops token's hex SHA-256 instead of the token, so the machine's configuration holds nothing usable. Conflicts with `--ops-token`. |
+| `--operator-key HEX` | `MEROD_OPERATOR_KEY` | none | The operator's Ed25519 verify key (32 bytes, hex). Recorded at genesis; every operator decision governance gives the operator must be signed with it ([Operator](/protocol/operator/#the-credential)). Without one, such decisions are refused. |
 | `--metrics-listen ADDR` | `MEROD_METRICS_LISTEN` | off | A plain-HTTP `host:port` serving only `GET /metrics` (the `/ops/metrics` text) for a Prometheus scraper; no credential, so bind it to a private address. |
 | `--replicas N` | `MEROD_REPLICAS` | `3` | How many nodes hold each new app. |
 | `--backup-dir DIR` | `MEROD_BACKUP_DIR` | none | Where encrypted app snapshots are written. When set, the node writes them every 60 seconds; without it, no backups. |
-| `--session-key-rotation-secs N` | `MEROD_SESSION_KEY_ROTATION` | `21600` | Rotate the session-signing key after this many seconds. Values below `1800` are raised to `1800`. |
 | `--tee-release VERSION` | `MERO_TEE_VERSION` | none | The mero-tee release this image is; the node's attestation names it so clients and peers fetch the signed measurements. Required in TDX mode. |
 | `--tee-profile NAME` | `MERO_TEE_PROFILE` | none | The mero-tee image profile this node runs. |
 | `--peer-profiles NAME,...` | `MEROD_PEER_PROFILES` | `--tee-profile` | Profiles a peer's quote may match. |
@@ -197,7 +198,7 @@ sealed under ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
 ## kms disk-key
 
 ```bash
-merod kms disk-key --kms-url URL --identity PATH [--create-identity] --key-out PATH
+merod kms disk-key --kms-url URL --identity PATH [--create-identity] --key-out PATH [--evidence-out PATH]
 ```
 
 Fetches the data-disk unlock key for this TD from mero-kms, for an image's boot
@@ -213,6 +214,7 @@ release named, no key is fetched.
 | `--identity PATH` | The disk-unlock identity: a protobuf-encoded libp2p keypair. |
 | `--create-identity` | Generate the identity first if the file does not exist, for a disk being formatted. An existing disk must present the identity it was made with. |
 | `--key-out PATH` | Where to write the key. It must not exist yet and must be on tmpfs or ramfs; the command checks this before touching the network. |
+| `--evidence-out PATH` | Also write what was verified of the KMS (its quote's registers, TCB status, the signed release and profile, the quote's SHA-256 and the time; JSON) here, for `run --kms-disk-evidence` to report in the node's attestation. Same rules as `--key-out`. |
 
 A TDX node does not take its storage key from this file: `run
 --storage-key-file` is refused without `--dev`. In TDX mode `merod` fetches its

@@ -17,15 +17,44 @@ in [Packages & frontends](/protocol/applications/#installing-a-release).
 New code reads the app's data, so an upgrade is one of the three decisions
 [deployment governance](/protocol/governance/) assigns:
 
-- **Owner** (default): only the app's owner, or the owner of its organization,
-  with a passkey session and a step-up over the exact upgrade
+- **Owner side** (default): each app's package declares who, in its signed
+  manifest (`upgrades`, [App upgrades](/protocol/governance/#app-upgrades)):
+  - `owner` (the default): the app's owner, or, for an organization's app,
+    whoever holds `MANAGE_APPLICATION` on its team or organization-wide;
+  - `publisher`: whoever holds `MANAGE_APPLICATION` in the organization the
+    package's signing key is bound to, for every instance; nobody until the
+    key is bound.
+
+  Each upgrades with a passkey session and a step-up over the exact upgrade
   (`POST /apps/{app}/upgrade { version | bundle, migrate? }`, then the `412`
-  challenge). Organization admins may not. The assertion is recorded as
-  `consent` on the directory's `UpgradeApp` command.
+  challenge). The assertion is recorded as `consent` on the directory's
+  `UpgradeApp` command. A package may move from `publisher` to `owner` in a
+  later release, never back, and an app is never upgraded from an `owner`
+  release to a `publisher` one.
 - **Operator**: only the operator (`POST /ops/apps/{app}/upgrade`), to a release
   it installed itself.
 
+Past a [release deadline](/protocol/governance/#release-deadlines) its
+approver has not met, an upgrade is refused `409 RELEASE_DEADLINE` before the
+migration runs.
+
 A version alone means the app's own package and service.
+
+**What the passkey signs.** The challenge's arguments are
+`{ bundle, migrate, manifest }`: the target WASM's hash and the target
+release's signed-manifest hash, so another manifest installed under the same
+version (other outbound prefixes or frontend origins, the same WASM) is not
+the upgrade that was approved. The node computes both; a target that changes
+between the challenge and the assertion no longer matches it, and the upgrade
+is refused. A raw development bundle has no manifest, and `manifest` is
+`null`.
+
+**From the app itself.** An app's frontend cannot upgrade its instance (its
+session is bound to its package). It asks the node for a consent request
+(`{ kind: "upgrade", subject: { app, toVersion } }`); the node's own page shows
+the capability sheet (outbound, frontend origins, interfaces, methods,
+events, timers, migration, build) and takes the owner's passkey there
+([The consent page](/protocol/consent-page/)).
 
 ## Planning the migration
 
@@ -75,7 +104,10 @@ replicas hold different schemas.
 A refused plan, a failing migration or a failing check leaves the app on its
 bundle with its state untouched. The node answers `422 UPGRADE_FAILED` with the
 reason and records it on the instance (`UpgradeFailed` sets the app's `lastUpgrade` with
-`ok: false` and the error), so a client can see why.
+`ok: false` and the error), so a client can see why. The app's members read the last upgrade, with the
+release it went from and to and the kind of actor, in `GET /orgs/{org}/apps`
+or `GET /auth/apps`; the operator reads it without the account or the error
+in `GET /ops/apps` ([Deployment governance](/protocol/governance/#reading-the-approvals)).
 
 ## Organization-wide upgrade runs
 
@@ -84,8 +116,13 @@ organization that runs `package` — or only a team's apps, and with `cascade`
 the apps of the teams below it — to `version`.
 
 - **Start.** `POST /orgs/{org}/upgrade { package, version, team?, cascade?, migrate? }`
-  by the organization's owner, with one passkey step-up for the whole run; or
-  `POST /ops/orgs/{org}/upgrade` where the operator holds app upgrades. A
+  by a `MANAGE_APPLICATION` holder there, with one passkey step-up for the
+  whole run; `POST /orgs/{org}/packages/{package}/upgrade { version, migrate? }`
+  by a publisher's `MANAGE_APPLICATION` holder, over every instance of a
+  `publisher` package, its customers' included (the run is kept on the
+  publisher); or `POST /ops/orgs/{org}/upgrade` where the operator holds app
+  upgrades. An app the starter may not upgrade is recorded as failed without
+  running anything. A
   release missing from the cluster is installed from the registry first (owner
   runs).
 - **Record.** `StartUpgradeRun` stores an `UpgradeRun` on the organization (run id,

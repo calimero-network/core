@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-10-30
+
+### Security
+
+Phase 0 of gating the system group (`docs/specs/gate-system-group.md`): a node
+on a mero-tee release nobody approved could reach app data and forge
+decisions. It no longer can. **Hard cutover**: no interop with earlier nodes,
+tokens or log entries; existing clusters are recreated.
+
+- **Internal routes judge the calling node** (F2, F4). A node's channel to a
+  peer is identified (sealed handshake version 3, Noise IK with its attested
+  transport key); the receiver attests the caller's registered address itself
+  and learns its release. `internal/view`, `call`, `events`, `storage`,
+  `blob/*`, `app-ready`, `presence` and an app group's `raft` refuse a node
+  whose release the app's owner has not approved; a Raft message must come
+  from the node it names, a member of the group. The cluster secret alone no
+  longer authorizes anything, and anonymous peer sessions are refused. App
+  blobs and presence are sent only to approved nodes.
+- **Decisions are checked where they apply** (F3). Release and outbound
+  approvals, upgrades and upgrade runs, transfers and organization deletions
+  carry the maker's passkey consent with its nonce, verified at apply on every
+  node, for exactly that change, once. The operator's decisions carry an
+  Ed25519 signature by the operator key (`--operator-key`, recorded at
+  genesis); without a proof the Ops API answers `428
+  OPERATOR_SIGNATURE_REQUIRED` with the bytes to sign.
+- **Sessions are node-signed** (F1). Tokens (`v2.`) are signed by the issuing
+  node's attested receipt key; other nodes accept one only if the issuer's
+  release may serve the account and the app. The shared session key K_s,
+  `AddSessionKey` and `--session-key-rotation-secs` are gone. A node whose
+  release may not serve an account answers `421 WRONG_NODE`, before it spends
+  a refresh token or a sign-in challenge. The receipt key is kept in
+  `<data-dir>/signing-key`, wrapped under K_r, so a node's sessions survive its
+  restart. Every node attests each peer's key ahead of time, so a session
+  works while its issuer is stopped or frozen. `calimero-client` refreshes
+  once on a `401` and reports `421 WRONG_NODE` as `Error::WrongNode`.
+
+### Added
+
+- **Releases are approved by capability, per app.** `APPROVE_RELEASES`
+  (capability bit 10) lets an organization's members approve mero-tee
+  releases without owning the organization. An app can bind a publisher
+  (`BindPublisher`) whose approvals count for it, and each app chooses who
+  holds its upgrades (`upgrades: owner | publisher`). The operator can set a
+  release deadline, signed with the operator key; past it, a release that was
+  not approved is refused (`409 RELEASE_DEADLINE`).
+- **The node reports who decides.** Each app reports the version it runs, who
+  upgraded it, `upgradesHeldBy`, `releasesApprovedBy` and its publisher
+  (`publisher.org`).
+- **A consent page served by the node.** Release and upgrade approvals open a
+  page the node itself serves (hash-only CSP, no third-party script). It
+  shows a plain summary, the publisher and what changed, with the
+  measurements behind a disclosure, and a confirmation code (`XXX-XXX`,
+  derived from the request id) to compare with the console. The approval binds
+  the measurements digest or manifest hash and can be withdrawn.
+- **A node reports which KMS it verified, inside its quote.** Each key fetch
+  from mero-kms now keeps what it accepted: the KMS quote's MRTD and RTMR0-3,
+  TCB status, the signed mero-kms release and profile whose policy it matched,
+  the KMS host, the quote's SHA-256 and the time (`KmsEvidence`). `GET
+  /attestation?purpose=kms` returns it as `kms` (`storage`, and `disk` when
+  the boot script recorded the data disk's with `merod kms disk-key
+  --evidence-out` and merod reads it with `--kms-disk-evidence` /
+  `MEROD_KMS_DISK_EVIDENCE`) and binds it into the quote:
+  `report_data = nonce || SHA-256("calimero.tee-attest.kms-evidence.v1" ||
+  transport_binding || SHA-256(JCS(kms)))`. `attest::verify` checks that
+  binding whenever `kms` is present. Opt in: without `purpose=kms` the report
+  data is unchanged, so mero-js, calimero-client-py and older Rust clients see
+  no difference; a node with no record answers `purpose=kms` as before.
+
 ## [1.0.0-rc.3] - 2026-10-29
 
 ### Fixed

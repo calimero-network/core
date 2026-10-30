@@ -44,12 +44,12 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
             election_max_ms: 1000,
             snapshot_every: 200,
         },
-        session_key_rotation_secs: 6 * 3600,
         read_wait: Duration::from_secs(2),
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
+        kms_keys: Default::default(),
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,
@@ -57,6 +57,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
+        operator_key: None,
     }
 }
 

@@ -197,6 +197,7 @@ export default defineConfig({
                 'protocol/authorship',
                 'protocol/organizations',
                 'protocol/governance',
+                'protocol/consent-page',
                 'protocol/operator',
               ],
             },

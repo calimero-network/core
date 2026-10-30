@@ -58,7 +58,7 @@ mode `0600`.
 | `ops-token-sha256` | hex string | none | [Authentication](/operate/auth/#the-ops-token) |
 | `replicas` | integer | `3` | How many nodes hold each new app. |
 | `backup-dir` | path | none | [Runbooks](/operate/runbooks/#back-up-app-state) |
-| `session-key-rotation-secs` | integer | `21600` | Raised to `1800` if lower. |
+| `operator-key` | hex string | none | [Operator](/protocol/operator/#the-credential) |
 | `tee-release` | string | none (`MERO_TEE_VERSION`) | [Security](/operate/security/#peer-and-client-trust) |
 | `tee-profile` | string | none (`MERO_TEE_PROFILE`) | [Security](/operate/security/#peer-and-client-trust) |
 | `peer-profiles` | list | `[tee-profile]` | [Security](/operate/security/#peer-and-client-trust) |

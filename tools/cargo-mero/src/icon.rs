@@ -139,6 +139,7 @@ mod tests {
             frontend_aliases: Vec::new(),
             outbound: Vec::new(),
             frontend_dir: None,
+            upgrades: None,
             app_version: "0.1.0".to_owned(),
             services: Vec::new(),
             manifest_dir: manifest_dir.to_owned(),

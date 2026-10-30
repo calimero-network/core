@@ -170,6 +170,10 @@ fn failure(e: &ClientError) -> Failure {
             status: *status,
             code: code.clone(),
         },
+        ClientError::WrongNode { .. } => Failure::Refused {
+            status: 421,
+            code: "WRONG_NODE".into(),
+        },
         ClientError::Transport(e) => Failure::Other(e.to_string()),
     }
 }
@@ -793,6 +797,10 @@ async fn followers_honour_min_index_and_hide_titles() {
          the test no longer proves minIndex",
         booked.index
     );
+
+    // The restarted node signs with a new key, so the session it issued no
+    // longer verifies: the client refreshes, as a real one does on that 401.
+    let _fresh = org.on("cy", lagging).refresh().await.unwrap();
 
     let order = std::iter::once(lagging).chain((0..3).filter(|i| *i != lagging));
     for node in order {

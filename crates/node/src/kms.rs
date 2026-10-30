@@ -8,6 +8,9 @@
 //!
 //! The KMS derives a key per identity, so the nodes of one cluster share one
 //! disk identity and get one key. K_r is derived from it, bound to the cluster.
+//!
+//! Each fetch keeps what it verified of the KMS (`KmsEvidence`); the node
+//! reports it, bound into its quote, at `GET /attestation?purpose=kms`.
 
 use std::path::Path;
 
@@ -47,8 +50,15 @@ pub fn read_key_file(path: &Path) -> eyre::Result<zeroize::Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
-/// Fetch the KMS key for the cluster's disk identity (created if missing).
-pub async fn fetch(kms_url: &str, identity: &Path) -> eyre::Result<zeroize::Zeroizing<Vec<u8>>> {
+/// Fetch the KMS key for the cluster's disk identity (created if missing),
+/// with the record of the KMS quote that was verified before asking.
+pub async fn fetch(
+    kms_url: &str,
+    identity: &Path,
+) -> eyre::Result<(
+    zeroize::Zeroizing<Vec<u8>>,
+    calimero_tee_attestation::KmsEvidence,
+)> {
     let url = kms_url
         .parse()
         .wrap_err_with(|| format!("invalid KMS URL {kms_url}"))?;

@@ -14,7 +14,7 @@ its peers; mero-js's `src/cloud-v2/attestation.ts` implements the same check.
 
 ## The attestation document
 
-`GET /attestation?nonce=<32 bytes hex>[&app=<app>|&appHash=<hex>][&purpose=receipts]`
+`GET /attestation?nonce=<32 bytes hex>[&app=<app>|&appHash=<hex>][&purpose=receipts|kms]`
 answers, unsealed:
 
 | Field | Meaning |
@@ -26,13 +26,18 @@ answers, unsealed:
 | `release` | `{ version, profile }`: the mero-tee release and image profile the node says it runs |
 | `cluster`, `node`, `mock` | The cluster name, node id, and whether the quote is a mock |
 | `receiptKey`, `governance` | With `purpose=receipts` only: the node's receipt key and the cluster's governance |
+| `kms` | With `purpose=kms` only, and only when the node has a record: what it verified of the mero-kms replica each key came from (below) |
 
 The quote's 64 bytes of report data bind the request to the key:
 
 ```text
 transport:  report_data = nonce ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)
 receipts:   report_data = nonce ‖ SHA-256("calimero.tee-attest.receipt-key.v2" ‖ receipt_key ‖ SHA-256(governance JSON))
+kms:        report_data = nonce ‖ SHA-256("calimero.tee-attest.kms-evidence.v1" ‖ transport_binding ‖ SHA-256(JCS(kms)))
 ```
+
+`transport_binding` is the second half of the transport form, so a `kms`
+quote still attests the transport key; it also commits to the `kms` record.
 
 The nonce makes the quote fresh: an old quote cannot be replayed. The second
 half commits the quote to a key that lives only in that VM's memory. A caller
@@ -64,6 +69,37 @@ steps (`verify_report`):
 Only then does the client open a [sealed session](/protocol/networking/#the-sealed-channel)
 to the transport key.
 
+## Which KMS a node took its keys from
+
+A node's quote proves it runs code that refuses a KMS outside the signed
+mero-kms release policy. It does not say, by itself, which KMS that code
+accepted. So the node keeps what it verified each time it took a key: the KMS
+quote's MRTD and RTMR0–3, its TCB status, the release and profile of the
+signed policy it matched, the KMS URL's host, the quote's SHA-256 and the time
+(`calimero_tee_attestation::KmsEvidence`, recorded by
+`calimero-kms-client`). There is one record per key:
+
+- `storage`: the storage key merod fetches itself at start (`--kms-url`).
+- `disk`: the data disk's key, which the image's boot script fetches with
+  `merod kms disk-key --evidence-out` before merod starts; merod reads that
+  record from a tmpfs/ramfs file (`--kms-disk-evidence`), where only the TD
+  can have written it.
+
+Asked with `purpose=kms`, a node that has a record returns it as `kms` and
+binds `SHA-256(JCS(kms))` into its quote (`kms_report_data`). `attest::verify`
+checks that binding whenever a document carries `kms`, so a relay or the host
+that swaps, adds or strips the record fails the check that attests the
+transport key, and a record that passes is as trustworthy as the node's own
+code. The public attestation verifier (mero-tee `attestation-verifier`) shows
+it as "Keys from a verified KMS" and checks the KMS's registers against the
+`kms_allowed_*` lists of the release it names, as it does on `/kms`.
+
+The binding is opt in, so nothing changes for a client that does not ask: its
+report data is the transport form above, byte for byte. A node with no record
+(`--dev`, a KMS pinned by config rather than a signed release, or a merod
+before this) answers `purpose=kms` with the transport form and no `kms`, which
+a verifier shows as "not reported", not as a failure.
+
 ## Peers are judged the same way
 
 A node opening a channel to a peer uses the same check with its own policy:
@@ -72,6 +108,17 @@ A node opening a channel to a peer uses the same check with its own policy:
 debug image itself. What the peer's verified attestation named as its release
 is remembered and decides whether the peer may receive an app's data
 ([release approvals](/protocol/governance/#release-approvals)).
+
+The check runs the other way too. A node calling a peer proves its own
+attested transport key in the handshake (Noise IK), and the receiving node
+attests the caller's registered address with a fresh nonce, under its own
+peer policy: the caller is the node whose quote names that key, on the release
+that quote names. So a node knows which node calls an internal route and on
+which release, and judges it as it judges where to send
+([Networking](/protocol/networking/#between-nodes)). The same goes for
+sessions: a node takes a session token only under the receipt key it attested
+(`purpose=receipts`) for the node that signed it, ahead of time for every
+registered peer ([Failover](/protocol/identities/#failover)).
 
 
 ## Receipts
@@ -87,8 +134,10 @@ signature  = Ed25519(receipt_key,
                "calimero.receipt.v1\0" ‖ app ‖ 0 ‖ index (u64 BE) ‖ resultHash ‖ 0 ‖ node (u64 BE))
 ```
 
-The receipt key is an Ed25519 key each node makes in memory at start and never
-stores. It is attested on its own (`purpose=receipts`), together with the
+The receipt key is an Ed25519 key each node makes on its first start and keeps
+in its data directory wrapped under its K_r (`signing_key.rs`), so a restart
+keeps it and only the release whose mero-kms gives that K_r opens it. It also
+signs the node's sessions ([Sessions](/protocol/identities/#sessions)). It is attested on its own (`purpose=receipts`), together with the
 cluster's governance. So a receipt is checkable later, offline, by anyone who
 holds that node's receipt-key attestation: it shows that a genuine node of a
 cluster deployed under those rules returned that answer.

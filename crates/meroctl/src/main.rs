@@ -32,7 +32,8 @@ use env::{json_arg, load_dev_passkey, save_passkey, write_private, Env, Home, Tr
 #[derive(Debug, Parser)]
 #[command(
     name = "meroctl",
-    version,
+    // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
+    version = env!("CALIMERO_RELEASE_VERSION"),
     about = "Command line for Calimero nodes",
     after_help = "Examples:\n  \
         meroctl node add local http://127.0.0.1:2501 --allow-mock\n  \
@@ -72,6 +73,11 @@ struct Cli {
     /// The operator's token, for `ops` commands.
     #[arg(long, env = "CALIMERO_OPS_TOKEN", hide_env_values = true)]
     ops_token: Option<String>,
+    /// A file holding the operator's Ed25519 key (32-byte seed, hex): `ops`
+    /// commands sign the decisions governance gives the operator with it
+    /// (the node is started with its public half, `merod --operator-key`).
+    #[arg(long, env = "CALIMERO_OPERATOR_KEY_FILE")]
+    operator_key_file: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -271,7 +277,8 @@ async fn main() -> eyre::Result<()> {
             calimero_client::attest::release::fetch_release_attestation(&base, &nonce).await?;
         return print(&verified_release(&doc, &nonce, &trust).await?);
     }
-    let env = Env::connect(home, url, trust, cli.api_key.clone(), cli.ops_token.clone())?;
+    let mut env = Env::connect(home, url, trust, cli.api_key.clone(), cli.ops_token.clone())?;
+    env.operator_key_file.clone_from(&cli.operator_key_file);
 
     if let Cmd::Ops(cmd) = cli.cmd {
         return print(&ops::run(cmd, &env).await?);

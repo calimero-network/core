@@ -254,6 +254,7 @@ pub fn create_test_bundle(
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
+        upgrades: None,
         outbound: Vec::new(),
         services: None,
         signature: None,
@@ -343,6 +344,7 @@ pub fn signed_bundle_bytes_by(
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
+        upgrades: None,
         outbound: Vec::new(),
         services: (!services.is_empty()).then(|| {
             services
