@@ -245,7 +245,8 @@
     {
       "name": "Let both indexers commit the delete",
       "type": "wait",
-      "seconds": 3.0
+      "seconds": 3.0,
+      "exact": true
     },
     {
       "name": "search-node-1 searches after the delete",

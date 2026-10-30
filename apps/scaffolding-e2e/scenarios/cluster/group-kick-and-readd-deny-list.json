@@ -235,7 +235,8 @@
     {
       "name": "Drain in-flight gossip before negative-control read",
       "type": "wait",
-      "seconds": 5.0
+      "seconds": 5.0,
+      "exact": true
     },
     {
       "name": "Negative control — node-3 must NOT see the dropped write",

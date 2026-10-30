@@ -116,12 +116,14 @@
     {
       "name": "Wait for the migration to settle",
       "type": "wait",
-      "seconds": 15.0
+      "seconds": 15.0,
+      "exact": true
     },
     {
       "name": "Wait for the abort to be persisted",
       "type": "wait",
-      "seconds": 3.0
+      "seconds": 3.0,
+      "exact": true
     },
     {
       "name": "Read schema_info after the abort",

@@ -286,7 +286,8 @@
     {
       "name": "Drain in-flight gossip before negative-control read",
       "type": "wait",
-      "seconds": 5.0
+      "seconds": 5.0,
+      "exact": true
     },
     {
       "name": "Confirm post-revoke write is NOT visible on node-3",

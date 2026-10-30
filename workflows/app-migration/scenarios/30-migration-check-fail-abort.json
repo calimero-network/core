@@ -156,7 +156,8 @@
     {
       "name": "Wait for cascade op to gossip",
       "type": "wait",
-      "seconds": 5.0
+      "seconds": 5.0,
+      "exact": true
     },
     {
       "name": "Read schema_info (triggers lazy migration → check fails → serves v1)",

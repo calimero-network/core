@@ -271,7 +271,8 @@
     {
       "name": "Give the recovery loop several rounds to try",
       "type": "wait",
-      "seconds": 20.0
+      "seconds": 20.0,
+      "exact": true
     },
     {
       "name": "The revoked device reads nothing, its session is gone",

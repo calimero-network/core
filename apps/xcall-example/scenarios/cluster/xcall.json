@@ -173,7 +173,8 @@
     {
       "name": "Wait for xcall dispatch + log flush",
       "type": "wait",
-      "seconds": 8.0
+      "seconds": 8.0,
+      "exact": true
     },
     {
       "name": "C3 pong counter after cross-namespace xcall",
@@ -224,7 +225,8 @@
     {
       "name": "Wait for xcall dispatch + log flush",
       "type": "wait",
-      "seconds": 8.0
+      "seconds": 8.0,
+      "exact": true
     },
     {
       "name": "C2 secret counter after non-entry-point xcall",

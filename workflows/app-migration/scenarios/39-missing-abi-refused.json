@@ -119,7 +119,8 @@
     {
       "name": "Wait for log flush",
       "type": "wait",
-      "seconds": 5.0
+      "seconds": 5.0,
+      "exact": true
     },
     {
       "name": "Read schema_info after the refused upgrade",
