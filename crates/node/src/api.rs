@@ -580,6 +580,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         governance: receipts.then_some(governance),
         kms,
         job_key: None,
+        cluster_identity: None,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -4082,8 +4083,8 @@ async fn invite_redeem(
 // ---------------------------------------------------------------- internal (peers)
 
 /// Compare secrets without leaking where they differ.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    bool::from(subtle::ConstantTimeEq::ct_eq(a, b))
 }
 
 pub(crate) fn peer_only(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
@@ -5038,6 +5039,15 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
         out,
     )
         .into_response()
+}
+
+/// `GET /ops/cluster`: the cluster's name and identity key, which a job node is started with.
+async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(json!({
+        "cluster": node.config.cluster,
+        "identity": hex::encode(node.cluster_identity()),
+    })))
 }
 
 async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -6231,6 +6241,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))
         .route("/ops/status", get(ops_status))
+        .route("/ops/cluster", get(ops_cluster))
         .route("/ops/metrics", get(ops_metrics))
         .route("/ops/placement", get(ops_placement))
         .route("/ops/apps", get(ops_apps))

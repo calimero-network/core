@@ -262,6 +262,7 @@ node answers `403` for the others.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
+| `ops cluster` | `GET /ops/cluster` | The cluster's name and identity key (hex), which `merod run --job-node --cluster-identity` takes. |
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
 | `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |

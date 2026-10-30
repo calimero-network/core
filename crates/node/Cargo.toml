@@ -23,6 +23,7 @@ ring.workspace = true
 semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -78,6 +79,7 @@ calimero-outbound = { workspace = true, features = ["outbound-testing"] }
 # One synced write timed beside the cluster bench, on the disk it runs on.
 rocksdb.workspace = true
 tempfile.workspace = true
+rand_chacha.workspace = true
 
 [lib]
 bench = false

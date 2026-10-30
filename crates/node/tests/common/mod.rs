@@ -325,9 +325,7 @@ impl Cluster {
             release: from.release.clone(),
             tee_release: from.tee_release.clone(),
             tee_profile: from.tee_profile.clone(),
-            peers: from.peers.clone(),
-            allow_mock_peers: from.allow_mock_peers,
-            peer_measurements: from.peer_measurements.clone(),
+            cluster_identity: self.nodes[0].as_ref().unwrap().node.cluster_identity(),
         };
         configure(&mut config);
         let url = format!("http://127.0.0.1:{}/", config.listen.port());

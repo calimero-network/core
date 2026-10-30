@@ -6,6 +6,8 @@ use std::path::Path;
 use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
+const CLUSTER_IDENTITY: &str = "c0bfb91fd240b8b36345da220f2a4040028c563d3499d01af91919e90fe1990a"; // a strong point: what `[1; 32]` as cluster key derives
+
 fn merod(home: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_merod"));
     let _ = c.env("CALIMERO_HOME", home).env("RUST_LOG", "warn");
@@ -378,6 +380,7 @@ fn a_job_node_attests_its_job_key_and_has_no_receipts() {
     let data = home.path().join("data");
     let child = merod(home.path())
         .args(["run", "--job-node", "--dev", "--node-id", "9"])
+        .args(["--cluster-identity", CLUSTER_IDENTITY])
         .args(["--listen", &format!("127.0.0.1:{port}")])
         .arg("--data-dir")
         .arg(&data)
@@ -423,13 +426,62 @@ fn a_job_node_attests_its_job_key_and_has_no_receipts() {
     interrupt(child);
 }
 
-/// A job node outside `--dev` judges leaders by a TEE release and profile, as a
-/// TDX cluster node judges peers: without them it does not start.
+/// A job node needs the identity of the cluster whose work it takes, as 32 bytes of hex.
 #[test]
-fn a_tdx_job_node_needs_the_release_and_profile_to_judge_leaders() {
+fn a_job_node_needs_the_cluster_identity_it_takes_work_from() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let job = |extra: &[&str]| {
+        merod(home.path())
+            .args([
+                "--node",
+                "j2",
+                "run",
+                "--job-node",
+                "--dev",
+                "--node-id",
+                "9",
+            ])
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = job(&[]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--cluster-identity is required"), "{err}");
+    for bad in ["zz", "ab", &"ab".repeat(33)] {
+        let out = job(&["--cluster-identity", bad]);
+        assert!(!out.status.success(), "{bad}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("64 hex digits"), "{err}");
+    }
+    // A key anyone can sign with is no identity.
+    let weak = format!("01{}", "00".repeat(31));
+    let out = job(&["--cluster-identity", &weak]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("weak"), "{err}");
+    // The peers of a cluster node mean nothing to it.
+    let out = job(&[
+        "--cluster-identity",
+        CLUSTER_IDENTITY,
+        "--peers",
+        "1=http://a:1",
+    ]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--peers makes no sense"));
+    assert!(health(port).is_none(), "nothing started");
+}
+
+/// A job node outside `--dev` attests itself with a TEE release and profile: without them it
+/// does not start.
+#[test]
+fn a_tdx_job_node_needs_the_release_and_profile_to_attest_itself() {
     let home = tempfile::tempdir().unwrap();
     let out = merod(home.path())
         .args(["run", "--job-node", "--node-id", "9"])
+        .args(["--cluster-identity", CLUSTER_IDENTITY])
         .args(["--listen", &format!("127.0.0.1:{}", free_port())])
         .arg("--data-dir")
         .arg(home.path().join("data"))

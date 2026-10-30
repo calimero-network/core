@@ -1,6 +1,7 @@
 //! The cluster tests' compute fixture: `digest` streams every input and writes one output,
 //! and `onDone` receives the run's outcome. The output is the input XOR the run's seeded
-//! random stream, so two runs of one assignment write the same bytes.
+//! random stream, so two runs of one assignment write the same bytes. `spin`, `hog`, `burn`
+//! and `peek` each break one limit of a run.
 
 use std::io::{Read, Write};
 
@@ -50,6 +51,40 @@ impl Compute {
         }
         let _: FileId = writer.finish()?;
         Ok(hashes)
+    }
+
+    /// Loops until the wall clock ends it.
+    #[app::compute(fuel = 1_000_000_000_000, memory_mib = 64, wall_secs = 2, result = "on_done")]
+    pub fn spin() -> app::Result<()> {
+        let mut n = 0u64;
+        loop {
+            n = std::hint::black_box(n.wrapping_add(1));
+        }
+    }
+
+    /// Grows memory until the run's memory cap refuses it.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn hog() -> app::Result<u64> {
+        let mut held: Vec<Vec<u8>> = Vec::new();
+        loop {
+            held.push(std::hint::black_box(vec![1u8; 1 << 20]));
+        }
+    }
+
+    /// Loops until its small fuel cap ends it.
+    #[app::compute(fuel = 1_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn burn() -> app::Result<()> {
+        let mut n = 0u64;
+        loop {
+            n = std::hint::black_box(n.wrapping_add(1));
+        }
+    }
+
+    /// Opens the file `id`, which a test names outside the run's inputs.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn peek(id: FileId) -> app::Result<u64> {
+        let _reader = calimero_app_sdk::files::open(&id)?;
+        Ok(0)
     }
 
     /// Receives the outcome of `digest`.
