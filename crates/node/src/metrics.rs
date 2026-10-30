@@ -149,6 +149,7 @@ pub fn group(route: &str) -> &'static str {
             "packages"
         }
         _ if route.starts_with("/ops") => "ops",
+        _ if route.starts_with("/consent") => "consent",
         _ if route.starts_with("/internal") => "internal",
         _ => "other",
     }
@@ -692,6 +693,7 @@ mod tests {
         assert_eq!(group("/internal/raft"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
+        assert_eq!(group("/consent/{request}/result"), "consent");
         assert_eq!(group("/releases"), "attestation");
         assert_eq!(group("/publishers/{signer}"), "packages");
     }

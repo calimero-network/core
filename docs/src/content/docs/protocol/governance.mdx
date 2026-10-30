@@ -102,7 +102,12 @@ which releases may receive it:
   or `/auth/releases` by the account for its own set, each with a passkey
   step-up; or `POST /ops/releases` by the operator. The last approved release
   cannot be withdrawn. `GET /orgs/{org}` lists who may approve
-  (`releaseApprovers`).
+  (`releaseApprovers`). An app or console asks for either through the node's
+  [consent page](/protocol/consent-page/) (`kind: "release"`, with
+  `"withdraw": true` to withdraw). A withdrawal stops new data reaching nodes
+  on that release; it deletes and moves nothing: a replica already there keeps
+  what it holds (and, if it leads the app, keeps leading it) until the
+  operator moves it.
 - **Enforcement** is by the nodes that already hold the data:
   - `Node::may_send` refuses every Raft entry and snapshot of an app group to a
     peer whose verified attestation names a release outside the app's set (a
@@ -234,10 +239,26 @@ The scope's own `approvedReleases` and `clusterReleases` describe the
 organization's or account's own set: the one that governs its raw uploads,
 its unbound packages and, as a publisher, every instance of its packages.
 
-Approving and upgrading stay the passkey routes above (`POST /auth/releases`,
-`POST /orgs/{org}/releases`, `POST /apps/{app}/upgrade`), on the cluster's own
-origin: a session bound to an app's frontend is refused them (`403`), so an
-app sends its user to the cluster's page to approve.
+Approving and upgrading stay passkey decisions on the cluster's own origin: a
+session bound to an app's frontend is refused the approval routes (`403`), so
+an app sends its user to the node's consent page, below.
+
+## Asking from an app: the consent page
+
+Where owners decide, an app often needs its user to make one of these
+decisions: a new version of the app is out, a feature needs an outbound host,
+the operator rolled a new image. The app cannot run the passkey ceremony
+itself: an assertion is blind, so the page that asks for it decides what the
+person thinks they approve, and an app's page is the publisher's code. A
+session opened on an app's frontend is refused every approval route.
+
+Instead the app asks the node (`POST /consent/requests`), and the node serves
+a **consent page** of its own, on its own origin, that shows what is being
+approved from node-side data only (for an upgrade, a capability sheet diffed
+from the two signed manifests), asks for the passkey there, and sends the
+person back to the app with the result. The consent then binds the release's
+measurements digest or the target's signed-manifest hash, not just a version.
+See [The consent page](/protocol/consent-page/).
 
 ## Choosing
 

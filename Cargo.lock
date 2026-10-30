@@ -1337,6 +1337,7 @@ dependencies = [
  "calimero-search",
  "calimero-storage",
  "calimero-tee-attestation",
+ "calimero-tee-release",
  "calimero-wasm-abi",
  "camino",
  "chrono",
