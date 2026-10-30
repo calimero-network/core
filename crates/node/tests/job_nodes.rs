@@ -229,6 +229,70 @@ async fn a_job_node_whose_quote_binds_another_job_key_is_refused() {
     server.abort();
 }
 
+/// A job node that takes work from another cluster is not attested, whatever its quote says.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_started_for_another_cluster_is_not_attested() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let app = create(&alice, "kv").await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let record = node.sys(|s| s.apps[&app].clone());
+    let theirs = calimero_node::backup::cluster_identity_key(&[9; 32]);
+    let job = c
+        .start_job_node(JOB + 3, |cfg| {
+            cfg.cluster_identity = theirs.verifying_key().to_bytes();
+        })
+        .await;
+    c.register_job_node(JOB + 3, &job.url).await;
+    let e = node.attest_job(JOB + 3, &record).await.unwrap_err();
+    assert!(e.to_string().contains("another cluster"), "{e}");
+    // One that takes this cluster's work is.
+    let ours = c.start_job_node(JOB + 4, |_| {}).await;
+    c.register_job_node(JOB + 4, &ours.url).await;
+    assert!(node.attest_job(JOB + 4, &record).await.is_ok());
+}
+
+/// A job node that cannot be started with a weak identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_refuses_a_weak_cluster_identity_at_start() {
+    let c = Cluster::start(3).await;
+    let mut neutral = [0u8; 32];
+    neutral[0] = 1;
+    let dir = tempfile::tempdir().unwrap();
+    let config = calimero_node::JobConfig {
+        node_id: JOB + 5,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_owned(),
+        cluster: c.configs[0].cluster.clone(),
+        attestation: c.configs[0].attestation,
+        sealed_required: false,
+        release: "test".into(),
+        tee_release: None,
+        tee_profile: None,
+        cluster_identity: neutral,
+    };
+    let e = calimero_node::run_job(config).await.err().unwrap();
+    assert!(e.to_string().contains("weak"), "{e}");
+}
+
+/// What a job node answers is read only up to a cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_nodes_answer_past_the_cap_is_refused() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let app = create(&alice, "kv").await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let record = node.sys(|s| s.apps[&app].clone());
+    let flood = axum::Router::new().route("/attestation", get(|| async { "a".repeat(1 << 20) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, flood).await });
+    c.register_job_node(JOB + 2, &addr).await;
+    let e = node.attest_job(JOB + 2, &record).await.unwrap_err();
+    assert!(e.to_string().contains("larger than"), "{e}");
+    server.abort();
+}
+
 fn nonce_query(purpose: Option<&str>) -> String {
     let purpose = purpose.map(|p| format!("&purpose={p}")).unwrap_or_default();
     format!("attestation?nonce={}{purpose}", hex::encode([5_u8; 32]))

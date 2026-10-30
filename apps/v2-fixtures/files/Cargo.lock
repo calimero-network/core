@@ -35,6 +35,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "calimero-app-sdk-macros",
+ "calimero-app-wit",
  "ciborium",
  "hex",
  "rand",
@@ -54,6 +55,10 @@ dependencies = [
  "serde_json",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "calimero-app-wit"
+version = "0.0.0"
 
 [[package]]
 name = "cfg-if"

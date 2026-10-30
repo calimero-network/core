@@ -26,6 +26,9 @@ pub enum NodeRole {
 pub enum OpsCmd {
     /// Node, group and directory counts.
     Status,
+    /// The cluster's name and identity key: what `merod run --job-node --cluster-identity`
+    /// takes, so a job node serves only this cluster.
+    Cluster,
     /// Prometheus metrics (text).
     Metrics,
     /// Where every context's replicas are, and each node's zone, release and
@@ -135,6 +138,7 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
     client.use_api_key(token).await;
     Ok(match cmd {
         OpsCmd::Status => client.get("ops/status").await?,
+        OpsCmd::Cluster => client.get("ops/cluster").await?,
         OpsCmd::Metrics => {
             print!("{}", client.get_text("ops/metrics").await?);
             return Ok(Value::Null);

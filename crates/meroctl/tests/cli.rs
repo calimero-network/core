@@ -541,6 +541,13 @@ fn scenario(root: &Path, url: &str) {
         alice.run(&a)
     };
     assert_eq!(ops(&["status"])["apps"], 3);
+    let cluster = ops(&["cluster"]);
+    assert_eq!(
+        cluster["identity"].as_str().map(str::len),
+        Some(64),
+        "{cluster}"
+    );
+    assert!(cluster["cluster"].is_string(), "{cluster}");
     let placement = ops(&["placement"]);
     assert_eq!(
         placement["apps"].as_array().map(Vec::len),

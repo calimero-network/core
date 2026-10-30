@@ -281,6 +281,7 @@ async fn waiting_attestation(
         governance: None,
         kms: None,
         job_key: None,
+        cluster_identity: None,
     }))
 }
 

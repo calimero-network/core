@@ -411,6 +411,12 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         .or_else(|| home.map(|h| h.join("data")))
         .ok_or_else(|| eyre::eyre!("no data directory: --data-dir DIR (or --node NAME)"))?;
     let dev = args.dev.unwrap_or(false);
+    let identity = args.cluster_identity.as_deref().ok_or_else(|| {
+        eyre::eyre!("--cluster-identity is required with --job-node (meroctl ops cluster)")
+    })?;
+    if !dev && (args.tee_release.is_none() || args.tee_profile.is_none()) {
+        eyre::bail!("a TDX job node needs MERO_TEE_VERSION and MERO_TEE_PROFILE to attest itself");
+    }
     let config = calimero_node::JobConfig {
         node_id,
         listen: args.listen.unwrap_or_else(|| ([0, 0, 0, 0], 2528).into()),
@@ -421,9 +427,7 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         release: calimero_node::RELEASE_VERSION.to_owned(),
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
-        peers: parse_peers(&args)?,
-        allow_mock_peers: dev,
-        peer_measurements: peer_measurements(&args, dev)?,
+        cluster_identity: NodeArgs::parse_cluster_identity(identity)?,
     };
     let running = run_job(config).await?;
     tokio::signal::ctrl_c().await?;
@@ -434,6 +438,9 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
 async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
     if args.job_node.unwrap_or(false) {
         return start_job(home, args).await;
+    }
+    if args.cluster_identity.is_some() {
+        eyre::bail!("--cluster-identity is for --job-node only");
     }
     let node_id = args.node_id.ok_or_else(|| {
         eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")

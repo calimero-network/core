@@ -89,6 +89,11 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_JOB_NODE", num_args = 0..=1, default_missing_value = "true")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_node: Option<bool>,
+    /// With `--job-node`: the cluster's identity key, hex (`meroctl ops cluster`); the job node
+    /// takes work and components only from the cluster that signs with it.
+    #[arg(long, env = "MEROD_CLUSTER_IDENTITY")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_identity: Option<String>,
     /// The passkey relying party id [default: localhost].
     #[arg(long, env = "MEROD_RP_ID")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,6 +212,9 @@ impl NodeArgs {
     pub fn job_node_conflicts(&self) -> Option<&'static str> {
         [
             ("--public-url", self.public_url.is_some()),
+            ("--peers", !self.peers.is_empty()),
+            ("--peer-profiles", !self.peer_profiles.is_empty()),
+            ("--peer-min-release", self.peer_min_release.is_some()),
             ("--bootstrap", self.bootstrap == Some(true)),
             ("--storage-key", self.storage_key.is_some()),
             ("--storage-key-file", self.storage_key_file.is_some()),
@@ -239,6 +247,15 @@ impl NodeArgs {
         .find_map(|(flag, given)| given.then_some(flag))
     }
 
+    /// The cluster identity as 32 bytes: exactly 64 hex digits, nothing else.
+    pub fn parse_cluster_identity(text: &str) -> eyre::Result<[u8; 32]> {
+        let mut identity = [0u8; 32];
+        hex::decode_to_slice(text, &mut identity).map_err(|_| {
+            eyre::eyre!("--cluster-identity is 64 hex digits (meroctl ops cluster)")
+        })?;
+        Ok(identity)
+    }
+
     /// These values, and `base`'s where these leave one out.
     #[must_use]
     pub fn over(self, base: Self) -> Self {
@@ -259,6 +276,7 @@ impl NodeArgs {
             cluster: self.cluster.or(base.cluster),
             dev: self.dev.or(base.dev),
             job_node: self.job_node.or(base.job_node),
+            cluster_identity: self.cluster_identity.or(base.cluster_identity),
             storage_key: self.storage_key.or(base.storage_key),
             rp_id: self.rp_id.or(base.rp_id),
             origins: list(self.origins, base.origins),
@@ -322,7 +340,7 @@ mod tests {
         let job = NodeArgs {
             job_node: Some(true),
             node_id: Some(9),
-            peers: vec!["1=http://a:2528".into()],
+            cluster_identity: Some("ab".repeat(32)),
             ..NodeArgs::default()
         };
         assert_eq!(job.job_node_conflicts(), None);
@@ -344,6 +362,27 @@ mod tests {
                 "--bootstrap",
                 NodeArgs {
                     bootstrap: Some(true),
+                    ..job.clone()
+                },
+            ),
+            (
+                "--peers",
+                NodeArgs {
+                    peers: vec!["1=http://a:2528".into()],
+                    ..job.clone()
+                },
+            ),
+            (
+                "--peer-profiles",
+                NodeArgs {
+                    peer_profiles: vec!["p".into()],
+                    ..job.clone()
+                },
+            ),
+            (
+                "--peer-min-release",
+                NodeArgs {
+                    peer_min_release: Some("2.4.0".into()),
                     ..job.clone()
                 },
             ),
@@ -377,6 +416,24 @@ mod tests {
             ),
         ] {
             assert_eq!(args.job_node_conflicts(), Some(flag));
+        }
+    }
+
+    #[test]
+    fn the_cluster_identity_is_exactly_32_bytes_of_hex() {
+        assert_eq!(
+            NodeArgs::parse_cluster_identity(&"ab".repeat(32)).unwrap(),
+            [0xab; 32]
+        );
+        for bad in [
+            "",
+            "ab",
+            &"ab".repeat(31),
+            &"ab".repeat(33),
+            &"zz".repeat(32),
+            " ab",
+        ] {
+            assert!(NodeArgs::parse_cluster_identity(bad).is_err(), "{bad:?}");
         }
     }
 

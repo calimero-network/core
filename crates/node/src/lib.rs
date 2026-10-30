@@ -25,6 +25,7 @@ pub mod files;
 pub mod idempotency;
 pub mod inspect;
 pub mod job_node;
+pub mod job_wire;
 pub mod kms;
 pub mod local;
 pub mod membership;
