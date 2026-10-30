@@ -304,6 +304,11 @@ pub mod caps {
     pub const DELETE_TEAM: u32 = 1 << 6;
     pub const MANAGE_VISIBILITY: u32 = 1 << 7;
     pub const MANAGE_METADATA: u32 = 1 << 8;
+    /// Approve (or withdraw) the mero-tee releases that may hold the
+    /// organization's apps, held organization-wide only. Bit 10, not 9: v1's
+    /// `MemberCapabilities` spends 9 on `CAN_AUTHOR_ON_BEHALF`, so a client
+    /// that sends v1's `ALL` does not hand out release approvals with it.
+    pub const APPROVE_RELEASES: u32 = 1 << 10;
     /// What a member holds unless an admin says otherwise.
     pub const DEFAULT: u32 = JOIN_OPEN_TEAMS;
 }

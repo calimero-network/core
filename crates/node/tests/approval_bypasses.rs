@@ -412,6 +412,167 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
     );
 }
 
+/// The decisions master added since (#4771) carry their proofs too, checked
+/// where they apply: binding a package's key to an organization needs a
+/// passkey consent of an `APPROVE_RELEASES` holder over that key's binding
+/// generation; a release deadline needs the operator's signature; a
+/// publisher's upgrade run needs its consent over that package and version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_bindings_deadlines_and_publisher_runs_are_refused() {
+    use calimero_node::system::{publisher_binding_message, PublisherProof, SystemCmd};
+    use ed25519_dalek::Signer;
+    let c = Cluster::start(3).await;
+    let (alice_client, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice = alice_client.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (_bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let org = alice_client
+        .post("orgs", json!({ "name": "Acme" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // A publisher key's own signature over the binding: valid, so only the
+    // consent decides.
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(&key.verifying_key().to_bytes());
+    let message = publisher_binding_message(&c.name, &org, &signer, 0);
+    let bind = |consent: Value| {
+        serde_json::to_value(SystemCmd::BindPublisher {
+            signer_id: signer.clone(),
+            org: org.clone(),
+            cluster: c.name.clone(),
+            proof: PublisherProof {
+                public_key: calimero_identity::b64url(&key.verifying_key().to_bytes()),
+                signature: calimero_identity::b64url(&key.sign(&message).to_bytes()),
+            },
+            actor: alice.clone(),
+            consent,
+        })
+        .unwrap()
+    };
+    let subject = format!("org:{org}");
+    let args = json!({ "signerId": signer, "generation": 0 });
+    for (what, cmd) in [
+        ("no consent", bind(Value::Null)),
+        (
+            "bob's passkey",
+            bind(consent(&mut bob_pk, &subject, "__bind_publisher", &args)),
+        ),
+        (
+            "another generation",
+            bind(consent(
+                &mut alice_pk,
+                &subject,
+                "__bind_publisher",
+                &json!({ "signerId": signer, "generation": 1 }),
+            )),
+        ),
+        (
+            "another organization",
+            bind(consent(
+                &mut alice_pk,
+                "org:other",
+                "__bind_publisher",
+                &args,
+            )),
+        ),
+    ] {
+        let e = append(&c, &cmd).await.unwrap_err();
+        assert!(!e.is_empty(), "{what}");
+    }
+    assert!(
+        running(&c, 0).node.sys(|s| s.publishers.is_empty()),
+        "nothing bound"
+    );
+    let real = bind(consent(&mut alice_pk, &subject, "__bind_publisher", &args));
+    let _ok = append(&c, &real).await.unwrap();
+    let e = append(&c, &real).await.unwrap_err();
+    assert!(e.contains("used already"), "{e}");
+
+    // A deadline without the operator's signature, or with one over another
+    // deadline: refused where it applies.
+    let deadline = |after: Option<u64>, proof: Value| {
+        serde_json::to_value(SystemCmd::SetReleaseDeadline {
+            version: "2.0.0".into(),
+            after,
+            proof,
+        })
+        .unwrap()
+    };
+    assert!(append(&c, &deadline(Some(1), Value::Null)).await.is_err());
+    let operator = ed25519_dalek::SigningKey::from_bytes(&harness::OPERATOR_SEED);
+    let signed = |after: Option<u64>| {
+        let statement = calimero_node::proof::Statement::new(
+            "cluster",
+            "__release_deadline",
+            &json!({ "version": "2.0.0", "after": after }),
+        );
+        let signature = operator.sign(&statement.operator_message(&c.name));
+        json!({
+            "subject": statement.subject, "method": statement.method,
+            "args": statement.args, "nonce": statement.nonce,
+            "signature": hex::encode(signature.to_bytes()),
+        })
+    };
+    assert!(append(&c, &deadline(Some(1), signed(Some(2))))
+        .await
+        .is_err());
+    assert!(running(&c, 0).node.sys(|s| s.release_deadlines.is_empty()));
+    // Through the Ops API: the token alone gets the bytes to sign.
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let e = ops
+        .post(
+            "ops/releases/2.0.0/deadline",
+            json!({ "after": "2999-01-01T00:00:00Z" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let _ok = harness::ops_signed(
+        &ops,
+        "ops/releases/2.0.0/deadline",
+        json!({ "after": "2999-01-01T00:00:00Z" }),
+    )
+    .await
+    .unwrap();
+
+    // A publisher's run over every instance of a package, started without
+    // the publisher's consent or with one over another version: refused.
+    let run = |version: &str, consent: Value| {
+        json!({
+            "op": "startUpgradeRun", "org": org, "consent": consent,
+            "run": {
+                "runId": format!("r-{version}"), "package": "com.test.p", "version": version,
+                "team": null, "cascade": false, "by": alice, "startedAt": 1,
+                "apps": [], "done": [], "failed": {}, "finished": false,
+            },
+        })
+    };
+    let published =
+        |version: &str| json!({ "package": "com.test.p", "version": version, "migrate": null });
+    assert!(append(&c, &run("1.1.0", Value::Null)).await.is_err());
+    let other = consent(
+        &mut alice_pk,
+        &subject,
+        "__upgrade_published",
+        &published("1.2.0"),
+    );
+    assert!(append(&c, &run("1.1.0", other)).await.is_err());
+    let real = consent(
+        &mut alice_pk,
+        &subject,
+        "__upgrade_published",
+        &published("1.1.0"),
+    );
+    let _ok = append(&c, &run("1.1.0", real)).await.unwrap();
+}
+
 // ---------------------------------------------------------------- operator
 
 /// Where the operator holds release approvals, its decisions carry its

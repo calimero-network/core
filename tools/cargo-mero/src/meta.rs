@@ -48,6 +48,8 @@ pub struct BundleMeta {
     pub frontend_aliases: Vec<String>,
     /// URLs the app's runs may send an outbound request to; see `BundleManifest::outbound`.
     pub outbound: Vec<String>,
+    /// Who upgrades the package's instances; see `BundleManifest::upgrades`.
+    pub upgrades: Option<calimero_bundle::UpgradeAuthority>,
     /// Built web frontend to ship in the bundle, relative to `manifest_dir`.
     pub frontend_dir: Option<String>,
     pub app_version: String,
@@ -90,6 +92,7 @@ struct RawCalimeroMeta {
     frontend_aliases: Vec<String>,
     #[serde(default)]
     outbound: Vec<String>,
+    upgrades: Option<calimero_bundle::UpgradeAuthority>,
     frontend_dir: Option<String>,
     #[serde(default)]
     services: Vec<RawServiceMeta>,
@@ -405,6 +408,7 @@ fn load_from_values(
         frontend: raw.frontend,
         frontend_aliases: raw.frontend_aliases,
         outbound: raw.outbound,
+        upgrades: raw.upgrades,
         frontend_dir: raw.frontend_dir,
         app_version: crate_version.to_string(),
         services,

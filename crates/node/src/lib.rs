@@ -19,6 +19,7 @@ pub mod attest;
 pub mod backup;
 pub mod cluster_key;
 pub mod component;
+pub mod consent_page;
 pub mod error;
 pub mod idempotency;
 pub mod inspect;
@@ -31,6 +32,7 @@ pub mod packages;
 pub mod placement;
 pub mod presence;
 pub mod proof;
+pub mod report;
 pub mod services;
 pub mod signing_key;
 pub mod system;
@@ -128,6 +130,12 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
     // to) may reach the node. Outermost, so a preflight is answered before the
     // sealed envelope sees it; what travels sealed needs no header of its own.
     let app = tower::Layer::layer(&cors(&node), app);
+    // The consent page, in the clear on the node's own origin and outside
+    // CORS: no other origin reads it or posts to it from a script.
+    let app = tower::Layer::layer(
+        &axum::middleware::from_fn_with_state(Arc::clone(&node), consent_page::layer),
+        app,
+    );
     // App frontends on their own origins, before anything of the node's.
     let app = tower::Layer::layer(
         &axum::middleware::from_fn_with_state(Arc::clone(&node), app_host::layer),

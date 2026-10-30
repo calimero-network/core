@@ -129,6 +129,7 @@ pub fn render(
         frontend: frontend.cloned(),
         frontend_aliases: meta.frontend_aliases.clone(),
         outbound: meta.outbound.clone(),
+        upgrades: meta.upgrades,
         signature: None,
     };
     Ok(serde_json::to_value(manifest)?)
@@ -160,6 +161,7 @@ mod tests {
             frontend_aliases: vec![],
             outbound: Vec::new(),
             frontend_dir: None,
+            upgrades: None,
             app_version: "1.0.0".into(),
             services: vec![],
             manifest_dir: Utf8PathBuf::new(),
@@ -300,6 +302,7 @@ mod tests {
             frontend_aliases: Vec::new(),
             outbound: Vec::new(),
             frontend_dir: None,
+            upgrades: None,
             app_version: "0.5.0".into(),
             services: vec![],
             manifest_dir: Utf8PathBuf::new(),

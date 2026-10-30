@@ -64,14 +64,22 @@ is its command line.
   Ed25519 signature under `SystemState::operator_key` (`--operator-key`,
   recorded at genesis); ops routes answer `428
   OPERATOR_SIGNATURE_REQUIRED` with the bytes to sign (`api::operator_proof`).
-  An org run is consented once (`StartUpgradeRun { consent }`); its per-app
-  `UpgradeApp { run }` is judged by the run. Tests run commands' own authority
-  rules through `run_authorized`. Test clusters start with the harness's
+  An org run is consented once (`StartUpgradeRun { consent }`: `__upgrade_org`,
+  its retry, or a publisher's `__upgrade_published` over every instance of its
+  package); its per-app `UpgradeApp { run }` is judged by the run, found in
+  whichever organization keeps it. `BindPublisher` carries a passkey consent
+  over the key's current binding generation; `SetReleaseDeadline` the
+  operator's signature (`cluster / __release_deadline / { version, after }`;
+  `after: null` lifts it). The consent page (`consent_page::act`) logs the same
+  consent as the API, its assertion made on the node's own origin (`apply`
+  checks the signature and the statement, not the origin). Tests run
+  commands' own authority rules through `run_authorized` (`run_unproven` with
+  the new-work refusal). Test clusters start with the harness's
   operator key (`ops_signed` signs like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
   `operator_decisions_need_the_operator_signature`, `system::tests`.
-- **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
+- **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
-  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
+  `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
   (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
@@ -139,16 +147,50 @@ is its command line.
   it installed), recorded as `system::OPERATOR`, which no account can be and
   which no account quota counts. Owner side: the passkey routes below. Whichever
   party does not hold a decision gets 403 (API) and a refusal (`apply`).
-- **Owner approvals** (where the owner holds the decision; `system::ReleaseScope`, `Org/Account::approved_releases`): the
-  mero-tee releases that may hold an org's (or an account's own) apps; the one it
-  began on is approved at creation, others by the owner with a passkey assertion
-  (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced by the
-  replicas that hold the data: `Node::may_send` refuses Raft entries/snapshots to a
-  peer whose attested release (`HttpAttestor::seen_release`) is not approved,
-  `Node::place` skips such nodes, `/ops/apps/{app}/replicas` refuses them. Upgrades
-  are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
-  on its team or org-wide (`SystemState::manages_apps`), with their own passkey
-  assertion over the exact upgrade (`consent` on `UpgradeApp`).
+- **The approval model** (where governance says `owner`; the same on every
+  cluster, shared or dedicated). Decision × who holds it × who acts × where:
+  - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
+    the org its package's signing key is bound to (`BindPublisher`,
+    `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
+    `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
+    over `system::publisher_binding_message` (cluster name, org, key, the key's
+    generation from `GET /publishers/{signer}`), verified at apply; each binding
+    bumps the generation, so a signature never replays; rebinding needs a new
+    signature from the pinned key; `SystemState::publishers`). `PackageRecord::owner`
+    is only the first installer and is never the publisher. The publisher's
+    `Org::approved_releases` cover every instance of every package the key
+    signs, customers' included. Unbound key or raw bundle: the app's own org's
+    set, or its owner account's. Acted on by members holding
+    `caps::APPROVE_RELEASES` (bit 10; owner and admins hold it, a member when
+    granted org-wide; `SystemState::approves_releases`, 403 at the API and
+    refused at apply), or by the account for its own set
+    (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced
+    by the replicas that hold the data: `Node::may_send` refuses Raft
+    entries/snapshots to a peer whose attested release
+    (`HttpAttestor::seen_release`) is not approved, `Node::place` skips such
+    nodes, `/ops/apps/{app}/replicas` refuses them.
+  - *App upgrades*, per app: the package's signed manifest says
+    `upgrades: owner | publisher` (`calimero_bundle::UpgradeAuthority`, kept on
+    `PackageVersion::upgrades`; absent = `owner`). `owner`: the app's owner, or, for an org app, whoever holds
+    `MANAGE_APPLICATION` on its team or org-wide (`SystemState::manages_apps`).
+    `publisher`: the publisher's org-wide `MANAGE_APPLICATION` holders, for
+    every instance (`POST /orgs/{org}/packages/{package}/upgrade`), not the
+    instance's owner, and nobody (`409`) while the key is unbound.
+    Only loosens toward owners: `PackageRecord::upgrades_in_order` at install,
+    `SystemState::upgrade_keeps_authority` at upgrade (API and apply). Each with
+    their own passkey assertion (`consent` on `UpgradeApp`). `run_upgrade` judges
+    who and where before anything runs on the app's group.
+  - *Release deadlines* (`SetReleaseDeadline`, `SystemState::release_deadlines`):
+    the operator's, any governance, `POST|DELETE /ops/releases/{version}/deadline`
+    (signed with the operator key, `__release_deadline`; `after: null` lifts),
+    public at `GET /releases`. Past one, a party whose newest approved release is
+    older (judged on the set that governs the app) creates, installs and upgrades
+    nothing (`SystemState::stalled_for_bundle`, `install_stalled`; `409
+    RELEASE_DEADLINE`, `node::stalled`), placement skips retired nodes
+    (`SystemState::retired`); running apps go on. Judged at the command's own
+    time (`createdAt`, `at`, `installedAt`), never a node's clock; `run_upgrade`
+    stamps `at` before the migration so apply agrees. No mixed-version
+    support: every node runs the same release.
 - **Placement** (`Node::place`, `placement::choose`): among the approved nodes,
   a new app's `--replicas` span as many zones (`NodeRecord::zone`, from
   `POST /ops/nodes`) as they are in, least loaded (then lower id) first within
@@ -256,6 +298,21 @@ is its command line.
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
   and app count, after `sys_fresh` (`fresh` in the answer). Ids and counts only.
+- **Version and approval reports** (`report.rs`, read-only): `GET /ops/apps`,
+  `GET /ops/orgs` (operator), `GET /orgs/{org}/apps` (any member; `404` else) and
+  `GET /auth/apps` (the account's own apps), paged (`?after&limit`,
+  `report::MAX_REPORT_PAGE`). Per app: scope, bundle digest, package release,
+  `upgradesHeldBy`, `lastUpgrade` (`AppRecord::last_upgrade`, with
+  `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
+  org's owners as they stand), approved releases, each replica's release and
+  whether approved; for accounts also name, the upgrader's account, newer
+  visible releases (`availableVersions`) and `clusterReleases`. The operator
+  sees a package name only for releases it installed (`Reader::Operator`,
+  `sees_release`), never an account, a name or an upgrade's error text.
+  Node releases come from `Node::release_of_node` (attested once, then kept;
+  at most `PLACEMENT_RELEASE_WAIT` each), as for placement. Regressions:
+  `app_versions_and_release_approvals_are_reported_without_names`,
+  `an_operator_upgrade_is_reported_as_the_operators`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
@@ -367,6 +424,34 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, and it creates instances
   of its own package only. Its step-ups come from its own origin only.
+- **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
+  app (any session of the account, package-bound included) asks
+  `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
+  returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
+  `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
+  expiresAt }`; `returnTo` is the package's own frontend origin or one its
+  newest signed manifest names (unbound sessions: `config.origins`). The
+  request (this node's memory,
+  `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
+  a model from node state and verified manifests (an upgrade's capability
+  sheet is `consent_page::diff`). `GET /consent/{id}` (static HTML in the
+  binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
+  `/decline` are an outer layer in the clear on the node's own origin (outside
+  CORS and the sealed channel); `/approve` runs the same route code
+  (`api::upgrade_app`, `set_release_approval`, `set_outbound_approval`) as a
+  `Principal { consent_page: true }` for the request's account, so the
+  `412 CONFIRM_REQUIRED` challenge is over the frozen arguments, and the
+  step-up may come from the nodes' own origins (`consent_page::relying_party`).
+  Upgrade consent always binds the target's manifest hash
+  (`VerifiedBundle::manifest_hash`); a release approval always binds its
+  measurements digest (`consent_page::release_digest`: Sigstore-verified,
+  `503` when unfetchable, over no measurements on mock attestation); a
+  withdrawal binds `{ version }` alone and fetches nothing
+  (`ReleaseChange::Withdraw`); neither route takes the hash from the client.
+  `GET /consent/{id}/result` (sealed, same account; forwarded to the holder
+  over `internal/consent/result`).
+  Package-bound sessions are still refused the approval routes themselves.
+  Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
   who reaches the app; one entry per account and device) applies it here and

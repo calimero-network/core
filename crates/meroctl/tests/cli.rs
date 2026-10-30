@@ -19,9 +19,32 @@ fn kv_wasm() -> PathBuf {
     )
 }
 
+/// How many nodes the test cluster runs, on `base + 1 ..= base + NODES`.
+const NODES: u16 = 3;
+
+/// A base port whose next [`NODES`] ports are free now. Drawn below the
+/// kernel's ephemeral range (Linux: 32768-60999): a port the kernel handed
+/// out, as `bind(0)` does, may next go to any test's outgoing connection, and
+/// its neighbours were never checked at all (CI: `Address already in use`).
 fn free_base_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    use std::hash::{BuildHasher, RandomState};
+    loop {
+        let draw = RandomState::new().hash_one(std::time::SystemTime::now());
+        let base = 20_000 + u16::try_from(draw % 12_000).unwrap_or(0);
+        let held: Vec<_> = (1..=NODES)
+            .filter_map(|i| std::net::TcpListener::bind(("127.0.0.1", base + i)).ok())
+            .collect();
+        if held.len() == usize::from(NODES) {
+            return base;
+        }
+    }
+}
+
+/// Whether starting the cluster failed only because a port was taken
+/// between [`free_base_port`] and the nodes binding: worth another base.
+fn port_taken(e: &eyre::Report) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
 }
 
 /// A signed `.mpk` of `wasm`.
@@ -48,6 +71,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
+        upgrades: None,
         outbound: Vec::new(),
         services: None,
         signature: None,
@@ -125,16 +149,24 @@ fn path(p: &Path) -> &str {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn every_command_group_works_against_a_cluster() {
     let dir = tempfile::tempdir().unwrap();
-    let cluster = calimero_node::local::start(
-        3,
-        free_base_port(),
-        &dir.path().join("cluster"),
-        "ops-token",
-        vec!["http://localhost:3000".into()],
-        None,
-    )
-    .await
-    .unwrap();
+    let mut attempt = 0;
+    let cluster = loop {
+        attempt += 1;
+        let started = calimero_node::local::start(
+            u64::from(NODES),
+            free_base_port(),
+            &dir.path().join(format!("cluster{attempt}")),
+            "ops-token",
+            vec!["http://localhost:3000".into()],
+            None,
+        )
+        .await;
+        match started {
+            Ok(c) => break c,
+            Err(e) if attempt < 5 && port_taken(&e) => continue,
+            Err(e) => panic!("the local cluster did not start: {e:?}"),
+        }
+    };
     let url = cluster.urls[0].clone();
     let root = dir.path().to_path_buf();
 
