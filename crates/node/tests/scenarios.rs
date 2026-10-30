@@ -256,16 +256,26 @@ fn args() -> Args {
     a
 }
 
-/// `SCENARIO_SHARD=k/n`.
+/// `SCENARIO_SHARD=k/n`. Unset or empty runs every scenario; any other value that is not
+/// `k/n` with `1 <= k <= n` fails the run, so a typo never silently runs everything.
 fn shard() -> Option<(usize, usize)> {
     let v = std::env::var("SCENARIO_SHARD").ok()?;
-    let (k, n) = v.split_once('/')?;
-    let (k, n): (usize, usize) = (k.trim().parse().ok()?, n.trim().parse().ok()?);
-    assert!(
-        n >= 1 && (1..=n).contains(&k),
-        "SCENARIO_SHARD={v}: want k/n, 1 <= k <= n"
-    );
-    Some((k, n))
+    if v.trim().is_empty() {
+        return None;
+    }
+    let parsed = v.split_once('/').and_then(|(k, n)| {
+        Some((
+            k.trim().parse::<usize>().ok()?,
+            n.trim().parse::<usize>().ok()?,
+        ))
+    });
+    match parsed {
+        Some((k, n)) if n >= 1 && (1..=n).contains(&k) => Some((k, n)),
+        _ => {
+            eprintln!("SCENARIO_SHARD={v:?}: want k/n with 1 <= k <= n");
+            std::process::exit(101);
+        }
+    }
 }
 
 fn run_one(root: &Path, path: &str, kind: Kind) -> Result<(), String> {

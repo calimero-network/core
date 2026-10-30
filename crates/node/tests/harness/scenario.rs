@@ -1002,6 +1002,10 @@ fn run_assert(step: &Map<String, Value>, vars: &Map<String, Value>) -> Result<()
 
 // ------------------------------------------------------------------ the cluster runner
 
+/// The code a step's failure carries when the node could not be reached, attested or
+/// understood: never a refusal, so no `expected_failure` or `allow_failure` accepts it.
+const TRANSPORT: &str = "TRANSPORT";
+
 /// How a step was refused: the node's answer (`message` is `"{status} {code}: {message}"`,
 /// `details` its details as text), or the runner's own refusal shaped the same way.
 #[derive(Debug)]
@@ -1039,7 +1043,7 @@ impl From<ClientError> for Fail {
             },
             ClientError::Transport(r) => Refusal {
                 message: format!("{r:#}"),
-                code: "TRANSPORT".into(),
+                code: TRANSPORT.into(),
                 details: "null".into(),
             },
         })
@@ -2453,7 +2457,12 @@ impl<'a> Runner<'a> {
             Ok(r) => r,
             Err(Fail::Workflow(e)) => return Err(format!("{label}: {e}")),
             Err(Fail::Refused(e)) => {
-                if expected.as_deref() == Some(e.code.as_str()) || any_failure || tolerated {
+                // `expected_failure` and `allow_failure` take an answer from the node, never a
+                // node that could not be reached: that would pass a refusal nobody made.
+                let answered = e.code != TRANSPORT;
+                if expected.as_deref() == Some(e.code.as_str())
+                    || (answered && (any_failure || tolerated))
+                {
                     let error = format!("{} {}", e.message, e.details);
                     for (var, path) in &outputs {
                         if py::str_of(path).starts_with("error") {
