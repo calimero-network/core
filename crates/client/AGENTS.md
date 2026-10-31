@@ -22,6 +22,13 @@ transport_binding | SHA-256(JCS(kms)))`. Opt in: a document without `kms` is che
 exactly as before. mero-js does not ask for it yet; the attestation verifier
 (mero-tee) recomputes it, pinned by `the_kms_binding_matches_the_published_vector`.
 
+The receipt-key binding hashes `Governance::canonical`, the governance JSON in
+declaration order; `deployments` and `deployers` are written only when not the
+defaults (`open`, `operator`), so a default cluster binds the bytes it did before
+(`the_default_governance_binds_the_bytes_it_did_before_deployers`). A client that
+recomputes it must keep them when the attested object has them; mero-js does
+not compute this binding yet.
+
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data
 `nonce || SHA-256("calimero.tee-attest.release.v1" || u32-BE-length-prefixed merodVersion,

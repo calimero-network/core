@@ -127,6 +127,8 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--release-approvals owner\|operator` | `MEROD_RELEASE_APPROVALS` | `owner` | Who approves the mero-tee releases that may hold apps' data. |
 | `--app-upgrades owner\|operator` | `MEROD_APP_UPGRADES` | `owner` | Who upgrades apps to another bundle. |
 | `--outbound-approvals owner\|operator` | `MEROD_OUTBOUND_APPROVALS` | `owner` | Who approves the URL prefixes apps may call out to. |
+| `--deployments open\|granted` | `MEROD_DEPLOYMENTS` | `open` | Who may install apps (packages, raw bundles): any account, or only accounts holding a deployer grant. Anyone may still create instances of the releases they see ([Deployers](/protocol/governance/#deployers)). |
+| `--deployers operator\|owner` | `MEROD_DEPLOYERS` | `operator` | Who grants deployers where deployments are `granted`: the operator's key, or the cluster's owner once the operator names it. |
 | `--apps-domain DOMAIN` | `MEROD_APPS_DOMAIN` | none | Serve each package's frontend at `{label}.{DOMAIN}` (a wildcard DNS name pointing at the cluster). |
 | `--settings FILE` | `MEROD_SETTINGS` | none | A TOML file whose `[outbound]` table replaces the configuration's. |
 
@@ -134,10 +136,13 @@ A boolean flag takes an optional value: `--dev` is `--dev true`, and
 `--dev false` turns off a `dev = true` the file holds.
 
 <Aside type="caution" title="Fixed at genesis">
-  `--release-approvals`, `--app-upgrades` and `--outbound-approvals` are
+  `--release-approvals`, `--app-upgrades`, `--outbound-approvals`,
+  `--deployments` and `--deployers` are
   written to the system state by the cluster's first leader, before any
   account exists, and attested with every node's receipt key. Changing them on
-  a later start changes nothing. Start every node of a new cluster with the
+  a later start changes nothing; the one change is the operator's signed move
+  of deployments from `open` to `granted` (`POST /ops/deployments/granted`),
+  never back. Start every node of a new cluster with the
   same values. See [Security](/operate/security/#governance).
 </Aside>
 

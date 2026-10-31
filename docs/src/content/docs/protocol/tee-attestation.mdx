@@ -36,6 +36,10 @@ receipts:   report_data = nonce ‖ SHA-256("calimero.tee-attest.receipt-key.v2"
 kms:        report_data = nonce ‖ SHA-256("calimero.tee-attest.kms-evidence.v1" ‖ transport_binding ‖ SHA-256(JCS(kms)))
 ```
 
+`governance JSON` is `Governance::canonical`: its fields in declaration
+order, `deployments` and `deployers` only when not the defaults
+([Deployers](/protocol/governance/#deployers)).
+
 `transport_binding` is the second half of the transport form, so a `kms`
 quote still attests the transport key; it also commits to the `kms` record.
 
