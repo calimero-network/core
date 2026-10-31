@@ -111,7 +111,7 @@ peer has reported yet counts as nothing, so the cap fails open rather than close
 refusing every call to all of a payer's apps whenever one replica of one of them is
 unreachable would be worse than a payer briefly exceeding a daily cap. The cap is a
 decimal string in JSON (D20); a node writes a non-zero cap only once every node runs
-its release or newer (`409 QUOTA_NEEDS_UPGRADE`).
+its release or newer (`409 UPGRADE_PENDING`).
 
 ## Roles and capabilities
 

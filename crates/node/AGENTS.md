@@ -599,8 +599,11 @@ is its command line.
   payer's day. The quota is fuel; wall time is information only (D76). A non-zero
   cap is written only once every registered node's attested release is this node's
   or newer (`Node::nodes_behind_release`, as D71 gates `base_seq`), else
-  `409 QUOTA_NEEDS_UPGRADE`: an older node would drop the field and its snapshots
-  would reset the cap. Usage reads (`app_usage`, `internal/usage`,
+  `409 UPGRADE_PENDING` (`api::UPGRADE_PENDING`, one code for every such release
+  gate): an older node would drop the field and its snapshots would reset the cap.
+  Accepted gap (#4809): an older node added after the cap is set, then sent a quota
+  change itself, writes the quotas without the cap; the runbook says not to add
+  nodes older than `1.0.0-rc.7` then, and the W19 minimum-release gate closes it. Usage reads (`app_usage`, `internal/usage`,
   `replicas_usage_on`) use `replica_group()`, never a group the node keeps after the
   app moved away. Regressions: `the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs`,
   `an_over_cap_payer_is_refused_within_one_refresh_while_a_peer_hangs`,

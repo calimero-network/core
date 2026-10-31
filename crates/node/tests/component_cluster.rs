@@ -4062,7 +4062,7 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
         .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": "1000" }))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("QUOTA_NEEDS_UPGRADE"), "{err}");
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
     assert!(
         matches!(err, calimero_client::Error::Api { status: 409, .. }),
         "{err}"

@@ -36,7 +36,7 @@ pub struct Quotas {
     /// timer ticks still run, and still count. Checked where the call runs, against
     /// the apps' usage books, not at apply: those live in the app groups. A decimal
     /// string in JSON (D20); a number is refused. Written only once every node runs a
-    /// release that knows it (`QUOTA_NEEDS_UPGRADE`, `Node::nodes_behind_release`).
+    /// release that knows it (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_payer_per_day: u64,
 }

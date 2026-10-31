@@ -79,7 +79,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 401 | `UNAUTHENTICATED` | No, unknown, expired or revoked credential. |
 | 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
-| 409 | `CONFLICT`, `QUOTA_NEEDS_UPGRADE` | The state does not allow it now; a fuel cap waits for every node to run this release. |
+| 409 | `CONFLICT`, `UPGRADE_PENDING` | The state does not allow it now; a fuel cap waits for every node to run this release. |
 | 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
 | 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
 | 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
@@ -233,7 +233,7 @@ default):
 | `maxApiKeysPerAccount` | `50` |
 | `maxOrgsPerAccount` | `20` |
 | `maxAccounts` | `100000` |
-| `maxFuelPerPayerPerDay` | `"0"` (a decimal string, D20; no limit; per org for its apps, per account for personal apps, D78; `409 QUOTA_NEEDS_UPGRADE` until every node runs this release) |
+| `maxFuelPerPayerPerDay` | `"0"` (a decimal string, D20; no limit; per org for its apps, per account for personal apps, D78; `409 UPGRADE_PENDING` until every node runs this release) |
 
 ## Internal
 

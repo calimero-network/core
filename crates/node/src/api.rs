@@ -5577,12 +5577,14 @@ async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Ap
     ))
 }
 
+/// `409`: a write that only this release, or a newer one, understands, refused while
+/// a registered node runs an older release or could not be attested
+/// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerPayerPerDay`. One
+/// code for every such gate, so the version gate on new entry shapes can share it.
+pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
-/// `409`: a quota only this release knows (`maxFuelPerPayerPerDay`), set while a node
-/// on an older release, or one not attested, is registered.
-pub const QUOTA_NEEDS_UPGRADE: &str = "QUOTA_NEEDS_UPGRADE";
-
 async fn ops_quotas_set(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5617,7 +5619,7 @@ async fn ops_quotas_set(
                 .collect();
             return Err(ApiError::new(
                 409,
-                QUOTA_NEEDS_UPGRADE,
+                UPGRADE_PENDING,
                 "a fuel cap needs every node on this node's release or newer",
             )
             .with_details(json!({ "release": node.own_release(), "nodes": nodes })));
