@@ -1,31 +1,21 @@
 //! A string key-value store shared by every member of the app's organization: the
-//! component SDK's basic example. State is one table of entries keyed by their key and a
-//! counter of how many there are; every change emits an event to everyone the app reaches.
+//! component SDK's basic example. State is one ordered map of entries, which keeps its own
+//! count; every change emits an event to everyone the app reaches.
 //!
 //! Method names and arguments are the ABI's camelCase ones (`updateIfExists`,
 //! `getOrInsert`, `getResult`, ..). The wasmer build of the same store, which the node's
 //! own tests run, is `apps/wasmer-fixtures/kv-store`.
 
-use calimero_app_sdk::prelude::*;
+use std::collections::BTreeMap;
 
-/// One stored value.
-#[derive(Record)]
-#[table(key = "key")]
-pub struct Entry {
-    /// The key it is stored under; any string, the empty string included.
-    pub key: String,
-    /// The value.
-    pub value: String,
-}
+use calimero_app_sdk::prelude::*;
 
 /// The store.
 #[app::state(version = 1)]
 pub struct KvStore {
-    /// Every value by key. The leader applies one write at a time, so a later write to a
-    /// key replaces an earlier one.
-    entries: Table<Entry>,
-    /// How many keys `entries` holds.
-    size: Counter,
+    /// Every value by key, with its count. The leader applies one write at a time, so a
+    /// later write to a key replaces an earlier one.
+    entries: UnorderedMap<String, String>,
 }
 
 /// A typed failure, `{code, fields}` on the wire.
@@ -48,7 +38,7 @@ pub enum Event {
     Cleared,
 }
 
-/// The most entries one `entries` call lists, and one `clear` pass removes.
+/// The most entries one `entries` call lists.
 const PAGE: u32 = 1000;
 
 #[app::logic]
@@ -64,19 +54,10 @@ impl KvStore {
     /// for a new key and `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         env::log(&format!("set {key:?} = {value:?}"));
-        let event = if self.entries.contains(&key)? {
-            Event::Updated {
-                key: key.clone(),
-                value: value.clone(),
-            }
-        } else {
-            self.size.add(1)?;
-            Event::Inserted {
-                key: key.clone(),
-                value: value.clone(),
-            }
+        let event = match self.entries.insert(&key, &value)? {
+            Some(_) => Event::Updated { key, value },
+            None => Event::Inserted { key, value },
         };
-        self.entries.upsert(Entry { key, value })?;
         env::emit(event, Audience::All)?;
         Ok(())
     }
@@ -84,24 +65,21 @@ impl KvStore {
     /// Replaces the value under `key` only if the key exists, and says whether it did:
     /// `false` writes nothing. Emits `Updated` when the value is replaced.
     pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bool> {
-        let updated = self.entries.update(&key, |e| e.value.clone_from(&value))?;
-        if updated {
-            env::emit(Event::Updated { key, value }, Audience::All)?;
+        if !self.entries.contains(&key)? {
+            return Ok(false);
         }
-        Ok(updated)
+        let _old = self.entries.insert(&key, &value)?;
+        env::emit(Event::Updated { key, value }, Audience::All)?;
+        Ok(true)
     }
 
     /// The value under `key`, first storing `value` there if the key is absent (an
     /// existing value is returned unchanged). Emits `Inserted` only when it stores.
     pub fn get_or_insert(&mut self, key: String, value: String) -> app::Result<String> {
-        if let Some(e) = self.entries.get(&key)? {
-            return Ok(e.value);
+        if let Some(existing) = self.entries.get(&key)? {
+            return Ok(existing);
         }
-        self.entries.insert(Entry {
-            key: key.clone(),
-            value: value.clone(),
-        })?;
-        self.size.add(1)?;
+        let _old = self.entries.insert(&key, &value)?;
         env::emit(
             Event::Inserted {
                 key,
@@ -115,21 +93,21 @@ impl KvStore {
     /// Every key with its value, as a JSON object ordered by key (up to 1000 keys);
     /// `{}` when the store is empty.
     #[app::view]
-    pub fn entries(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
-        let page = self.entries.scan(FindOpts::default().limit(PAGE))?;
-        Ok(page.items.into_iter().map(|e| (e.key, e.value)).collect())
+    pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
+        let page = self.entries.page(FindOpts::default().limit(PAGE))?;
+        Ok(page.items.into_iter().collect())
     }
 
     /// The number of keys; `"0"` when the store is empty.
     #[app::view]
     pub fn len(&self) -> app::Result<u64> {
-        Ok(self.size.get()?)
+        Ok(self.entries.len()?)
     }
 
     /// The value under `key`, or `null` when it is absent.
     #[app::view]
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
-        Ok(self.entries.get(&key)?.map(|e| e.value))
+        Ok(self.entries.get(&key)?)
     }
 
     /// The value under `key`; a missing key aborts the run (a trap, not an app error).
@@ -137,15 +115,15 @@ impl KvStore {
     #[app::view]
     pub fn get_unchecked(&self, key: String) -> app::Result<String> {
         #[allow(clippy::expect_used, reason = "this method exists to show a panic")]
-        let entry = self.entries.get(&key)?.expect("key not found");
-        Ok(entry.value)
+        let value = self.entries.get(&key)?.expect("key not found");
+        Ok(value)
     }
 
     /// The value under `key`; `NotFound { key }` when it is absent.
     #[app::view]
     pub fn get_result(&self, key: String) -> app::Result<String> {
         match self.entries.get(&key)? {
-            Some(e) => Ok(e.value),
+            Some(value) => Ok(value),
             None => Err(Error::NotFound { key }.into()),
         }
     }
@@ -153,31 +131,17 @@ impl KvStore {
     /// Removes `key` and returns the value it held, or `null` when it was absent. Emits
     /// `Removed` only when a value was removed.
     pub fn remove(&mut self, key: String) -> app::Result<Option<String>> {
-        let Some(old) = self.entries.get(&key)? else {
-            return Ok(None);
-        };
-        self.entries.remove(&key)?;
-        self.size.add(-1)?;
-        env::emit(Event::Removed { key }, Audience::All)?;
-        Ok(Some(old.value))
+        let old = self.entries.remove(&key)?;
+        if old.is_some() {
+            env::emit(Event::Removed { key }, Audience::All)?;
+        }
+        Ok(old)
     }
 
     /// Removes every key, as any member may (v1's `clear`, no confirmation). Emits
     /// `Cleared` only when the store was not already empty.
     pub fn clear(&mut self) -> app::Result<()> {
-        let mut removed = false;
-        loop {
-            let page = self.entries.scan(FindOpts::default().limit(PAGE))?;
-            if page.items.is_empty() {
-                break;
-            }
-            for e in page.items {
-                self.entries.remove(&e.key)?;
-                self.size.add(-1)?;
-                removed = true;
-            }
-        }
-        if removed {
+        if self.entries.clear()? > 0 {
             env::emit(Event::Cleared, Audience::All)?;
         }
         Ok(())

@@ -1,5 +1,5 @@
 ## Overview
-A string key-value store: state is one table of entries keyed by string, and nothing the app relies on lives outside it.
+A string key-value store: state is one map of entries keyed by string, and nothing the app relies on lives outside it.
 Every change emits an event: `Inserted` (new key), `Updated` (existing key), `Removed` (one key) or `Cleared` (all keys).
 
 ## Context model

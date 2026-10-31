@@ -3,12 +3,30 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-sdk` (`publish = false`, prototype); builds for the host (tests) and `wasm32-wasip2` (apps)
-- **Entry**: `src/lib.rs` (+ `prelude`); `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `collections/{map,counter}.rs`, `env.rs` (+ `env/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
+- **Entry**: `src/lib.rs` (+ `prelude`); `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `commons.rs` (paged reads, counts, clears, checked keys shared by tables and collections), `collections.rs` (+ `collections/{map,counter,cell,set,vector,frozen,per_user,text,rich_text}.rs`), `env.rs` (+ `env/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
 - **Spec**: `docs/specs/app-runtime-v0.14.md` section 7, the SDK reference, D9, D10, D20, D47, D48, D50, D52
 
 ## What This Crate Does
 
-The shared storage encoding (order-preserving tuple keys, deterministic CBOR values), the `Store` trait over the host's ordered key-value storage, tables with indexes, unique constraints and counts, `UnorderedMap`, `Counter`, `env` and the member/admin guards. It re-exports the `app` attributes and `#[derive(Record)]` (see `crates/app-sdk-macros/AGENTS.md`); apps write `use calimero_app_sdk::prelude::*;`. The `testing` feature adds the test harness (host target only).
+The shared storage encoding (order-preserving tuple keys, deterministic CBOR values), the `Store` trait over the host's ordered key-value storage, tables with indexes, unique constraints and counts, the collections, `env` and the member/admin guards. It re-exports the `app` attributes and `#[derive(Record)]` (see `crates/app-sdk-macros/AGENTS.md`); apps write `use calimero_app_sdk::prelude::*;`. The `testing` feature adds the test harness (host target only).
+
+## Collections
+
+One leader applies every write in log order, so these are plain data structures, not CRDTs (v1's merge semantics have nothing to merge). Every one implements `app::StateField`, so `#[app::state]` lists it in the ABI. Multi-row reads are pages (`FindOpts` in, `Page` out, at most 1,000 rows, `limit + 1` entries read); lengths are stored counts kept with `Store::add`, never a scan; `clear` deletes a batch of at most 1,000 per cursor read until none is left.
+
+| Type (v1 counterpart) | Operations |
+| --- | --- |
+| `Cell<T>` (`LwwRegister`) | `get`, `set`, `clear` |
+| `UnorderedMap<K, V>` (`UnorderedMap`, `SortedMap`, `NestedMap` with tuple keys) | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; with `K: FromKey`: `page`, `range`, `prefix` (whole key parts), `starts_with` (last string/bytes part as a prefix), `first`, `last` |
+| `Set<T>` (`UnorderedSet`, `SortedSet`), `T: ToKey + FromKey` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
+| `Vector<T>` (`Vector`) | `push` (returns the position), `get`, `set` (`OutOfBounds` past the end), `pop`, `len`, `is_empty`, `page` (positions as `KeyPart::Int` in `from`/`to`), `clear` |
+| `Frozen<T, H = CborSha256>` (`FrozenStorage`) | `insert` (returns the hex hash and whether it was new; the same content writes nothing), `get(hex)`, `contains(hex)`, `hash_of`; `H: ContentHash<T>` picks the address (default SHA-256 of the stored CBOR) |
+| `PerUser<T>` (`UserStorage`) | `get`, `set`, `remove` on the caller's own value (`env::caller()`'s account; `LoginRequired` for non-accounts), `get_for(account)` |
+| `Counter` | `get`, `add`, `increment` |
+| `Text` (`FugueText`) | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars` (with ids), `id_at`, `index_of`, `len`, `clear` |
+| `RichText` (`RichText`) | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
+
+`Text` stays a sequence CRDT (Tree-Fugue, after v1's `crates/storage/src/collections/fugue.rs`) because editors send edits typed against a stale view: every character has a stable id, an insert names the id it follows and a delete names ids, so edits land where meant and concurrent runs do not interleave. Its reads and edits load every node (a batch of 1,000 per host read); `len` is one read. RGA is not carried over (Fugue supersedes it), nor v1's `RichDocument`, undo, deltas or mark schemas.
 
 ## The generated `handle` (`__private::handle`)
 
@@ -28,7 +46,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 ## Rules
 
 - Key layouts are the cross-language contract (the TypeScript SDK must produce the same bytes): change them only with the spec.
-- Table counts and `Counter::add` use `Store::add`, never read-modify-write (D47).
+- Table counts, `Counter::add` and every collection length use `Store::add`, never read-modify-write (D47).
 - Keys over 1 KiB are refused with `StorageError::KeyTooLong` before any store call (D50).
 - Queries read `limit + 1` entries through the cursor and no more.
 - `bindings.rs` declares the `handle` export but never exports it: the code `#[app::logic]` generates does, through `__private::bindings::__calimero_export_handle!` and `__private::Export<State>`.
@@ -39,6 +57,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 ## Encoding contract (the TypeScript SDK must match)
 
 - **Keys**: tag byte per part (none 0x00, bool 0x10, int 0x20, string 0x30, bytes 0x40); ints are sign-flipped big-endian 16 bytes; strings and bytes escape `0x00` as `0x00 0xFF` and end with `0x00 0x00`.
+- **Collection keys**: every key starts with the collection's name (the state field in camelCase) as a string part, then a kind part: `UnorderedMap` `(name, "m", key..)`, `Set` `(name, "s", element..)` holding CBOR `null`, `Vector` `(name, "e", position)`, `Cell` `(name, "v")`, `Frozen` `(name, "f", hash as 32 bytes)`, `PerUser` `(name, "u", account)`, `Counter` `(name, "n")`; the map, set and vector keep their length at `(name, "n")`. `Text` keeps a character at `(name, "t", id)` as `{ch, parent, right}` (`ch` null once deleted), its live length at `(name, "n")` and the next id at `(name, "i")`; `RichText` adds marks at `(name, "k", id)` as `{key, value, start, end, endInclusive}`, ids from the same `(name, "i")`.
 - **Key length (D50, ruling 24)**: the host refuses keys over 1,024 bytes. The SDK caps every key it stores (record, index, unique, count, map, counter) at 1,023 (`MAX_SDK_KEY_BYTES`), so derived bounds (`last ++ 0x00`, `prefix ++ 0xFF`) always fit. Every range bound and decoded cursor is checked before any store call: bounds give `KeyTooLong`, a cursor gives `BadCursor`.
 - **Unique constraints use SQL NULL semantics (ruling 23)**: when any field of a unique constraint is `None`, no unique entry is written or checked (insert, upsert, update, remove). Two records with no email both insert; the same `Some(email)` still clashes.
 - **Values**: deterministic CBOR (RFC 8949 core). Field names are camelCase (applied by the `#[app::state]`/record macro, not by the SDK). `None` is written as CBOR null, never omitted. An integral float stays a float (`1.0` is `f93c00`), floats use the shortest exact form, `-0.0` is preserved, NaN is refused, map keys sort by encoded bytes, lengths are definite.

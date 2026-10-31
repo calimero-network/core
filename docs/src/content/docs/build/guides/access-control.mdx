@@ -76,7 +76,7 @@ impl KvStore {
 Internally a map keyed by `AccountId`. `insert` always writes the **current
 executor's** slot, so users can't overwrite each other. Reads can target any
 user. This is the v1 shape of `apps/kv-store-with-user-and-frozen-storage` (on
-the component SDK, the app instead keys a table by the caller's account):
+the component SDK, the app uses `PerUser<T>`, keyed by the caller's account):
 
 ```rust
 use calimero_sdk::{app, AccountId};
