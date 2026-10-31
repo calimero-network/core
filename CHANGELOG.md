@@ -32,12 +32,31 @@
   `scripts/run-workflows.py`, `scripts/workflows-{baseline,durations,smoke}.json`,
   `scripts/check-scenario-coverage.py` and `MEROBOX_REF` are gone.
 
+## [1.0.0-rc.5] - 2026-10-30
+
+### Security
+
+- **wasmtime 50.0.1**, for four RustSec advisories against 50.0.0 (#4792).
+
 ### Fixed
 
+- **A TDX cluster keeps a system leader.** Since 1.0.0-rc.4 a node attests
+  each peer before it opens a channel to it, and attests each calling peer
+  before it takes its messages; on TDX that takes about a second (Intel's
+  collateral is fetched each time), and openraft drops a Raft RPC after one
+  heartbeat (200 ms). The attestation ran inside the RPC, so every attempt was
+  dropped halfway and the next began again: the channels never opened,
+  elections never settled, and system writes hung. Both now run in a task of
+  their own that a dropped RPC does not abort, one per peer at a time; the
+  next RPC finds the channel open and the caller known. Regression:
+  `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`.
 - A system write (sign-up, passkey, org, node registration) that the system
   group cannot commit answers `503 UNAVAILABLE` within 10 s, naming the leader,
   voters, learners and the members behind the leader, instead of waiting until
   a proxy cuts the connection.
+- A stopped node reports its store closed only once RocksDB has released its
+  lock, so a restart or `merod inspect` right after a stop no longer finds the
+  store still locked (#4801).
 
 ## [1.0.0-rc.4] - 2026-10-30
 

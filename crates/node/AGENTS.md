@@ -43,7 +43,12 @@ is its command line.
   (Noise IK with its own transport key, `x-calimero-node: <id>`);
   `Node::identify_peer` attests the claimed node's registered address itself and
   takes the claim only if that quote names the proven key (cached by key; the
-  quote's release with it). `api::peer` replaces the bare cluster-secret check
+  quote's release with it). That attestation, and the one before a channel to
+  a peer opens (`Node::connected`), runs in a task of its own (`node::detach`,
+  one per caller or peer at a time, `MAX_DETACHED`): on TDX it takes about a
+  second, longer than the one heartbeat openraft gives an RPC, and dropped
+  with the RPC it never finished (regression:
+  `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
   (`view`, `call`, `events`, `storage`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
