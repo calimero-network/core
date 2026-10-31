@@ -152,6 +152,41 @@ is its command line.
   it installed), recorded as `system::OPERATOR`, which no account can be and
   which no account quota counts. Owner side: the passkey routes below. Whichever
   party does not hold a decision gets 403 (API) and a refusal (`apply`).
+  Two more rules, `--deployments open|granted` and `--deployers
+  operator|owner` (`Governance::deployments`, `deployers`; below), are left
+  out of the governance JSON when default, so a default cluster attests the
+  bytes it did before (`the_default_governance_binds_the_bytes_it_did_before_deployers`);
+  the one change after genesis is `SetDeploymentsGranted` (open to granted,
+  operator-signed, never back).
+- **Deployers** (`SystemState::deployers`, `cluster_owner`, `may_deploy`):
+  where deployments are `granted`, an account installs (`InstallPackage`,
+  `PutBundle`) only with a live `DeployerGrant` of its own (`account:<id>`) or,
+  holding `MANAGE_APPLICATION` org-wide, of its organization (`org:<id>`);
+  `until` is judged at the command's own time (`installedAt`, `PutBundle::at`),
+  never a node's clock. The API refuses first, before any registry fetch,
+  verification or store (`Node::refuse_undeployable` in
+  `install_from_registry`, `install_upload` and `POST /bundles`; `403
+  DEPLOY_NOT_GRANTED`); `apply` refuses again (`system::NOT_A_DEPLOYER`). So
+  does `POST /apps` (and an upgrade run, the consent page) where it would
+  install a release from the registry first; an instance of a release the
+  caller already sees needs no grant. The operator's installs never need one.
+  Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
+  (`POST /ops/deployers`, `DELETE /ops/deployers/{key}`; `cluster /
+  __grant_deployer / { deployer, until }`, `__revoke_deployer / { deployer }`;
+  `at` is not signed: the 428 and the signed retry are two requests) until,
+  with `deployers: owner`, the operator names the owner once
+  (`SetClusterOwner`, `POST /ops/cluster-owner`, `__cluster_owner`); from then
+  on only the owner account or the owner org's org-wide `MANAGE_APPLICATION`
+  holders, with passkey consent (`POST /deployers`, `DELETE
+  /deployers/{key}`), and the operator's signature is refused
+  (`SystemState::deployers_owner`, `authorize`). Revoking keeps what was
+  installed and running. `GET /deployers` for the operator and the owner side.
+  Regressions: `only_granted_accounts_install_on_a_granted_cluster`,
+  `an_open_cluster_installs_as_before_until_the_operator_grants_deployments`,
+  `the_cluster_owner_grants_deployers_once_the_operator_names_it`
+  (`tests/deployers.rs`), `on_a_granted_cluster_only_deployers_install`,
+  `deployer_grants_carry_the_operators_signature_then_the_owners_passkey`,
+  `deployments_are_granted_one_way` (`system::tests`).
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,

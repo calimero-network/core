@@ -47,6 +47,12 @@ with `SystemCmd::Genesis`, before any account can exist
 that it cannot change: a second genesis is refused, and a node restarted with
 other flags reads the state's answer, not its own.
 
+One part may change once: the operator may move [deployments](#deployers)
+from `open` to `granted` (`SystemCmd::SetDeploymentsGranted`, signed with its
+key), never back, so an existing cluster can close installs without being
+recreated. It only narrows who may install code; the attested governance
+changes with it.
+
 Every node's receipt-key attestation binds the governance its system state
 holds (`receipt_key_binding(key, governance)`). `verify_app_cluster` requires
 every replica of an app to attest the same governance and returns it, so a user
@@ -222,6 +228,49 @@ the prefixes approved and every prefix the approver was shown, so a prefix a
 later release adds reads as *awaiting approval* rather than approved. The
 operator additionally bounds which hosts any app may reach and holds the
 secrets requests may carry ([Application execution](/protocol/execution/#outbound-https)).
+
+## Deployers
+
+Who may **install** apps (signed packages from the registry or an upload, and
+raw bundles in development) is a rule of its own, chosen at deployment and
+attested with the rest (`Governance::deployments`, `--deployments`):
+
+- **`open`** (the default): any account installs.
+- **`granted`**: an account installs only with a live **deployer grant**:
+  its own (`account:<id>`), or, holding `MANAGE_APPLICATION` organization-wide,
+  one its organization holds (`org:<id>`). A grant may end (`until`), judged
+  at the install's own time, never a node's clock. Everyone else still signs
+  up and creates instances of the releases they see (the operator's catalog,
+  their organization's); creating one from a release the cluster lacks
+  installs it from the registry first, and that install needs a grant. The
+  API refuses before it fetches or stores anything (`403
+  DEPLOY_NOT_GRANTED`), and `apply` refuses `InstallPackage` and `PutBundle`
+  again. The operator's own installs need none.
+
+Who grants deployers (`Governance::deployers`, `--deployers`):
+
+- **`operator`** (the default): the operator, signed with its key
+  (`POST /ops/deployers { deployer, until? }`, `DELETE /ops/deployers/{key}`;
+  `cluster / __grant_deployer / { deployer, until }`,
+  `__revoke_deployer / { deployer }`).
+- **`owner`**: a dedicated cluster handed to its customer. The operator grants
+  until it names the cluster's owner, an account or an organization, once
+  (`POST /ops/cluster-owner { owner }`, `__cluster_owner`). From then on the
+  owner, or the owner organization's organization-wide `MANAGE_APPLICATION`
+  holders, grant and revoke with a passkey step-up (`POST /deployers`,
+  `DELETE /deployers/{key}`, `412` first), and the operator's signature is
+  refused.
+
+Revoking a grant stops new installs only: what the deployer installed, and
+the apps running it, stay. `GET /deployers` lists the rule, the owner and every
+grant, for the operator and for whoever acts for the owner.
+
+The governance JSON names `deployments` and `deployers` only when they are not
+the defaults, after the other three fields, so a cluster deployed with the
+defaults attests the same bytes as before
+(`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`). A client
+that recomputes the receipt-key binding must keep both fields, in that order,
+when the attested object carries them.
 
 ## Reading the approvals
 
