@@ -35,7 +35,7 @@ use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
-use crate::system::{SystemCmd, SystemState};
+use crate::system::{Deployer, Deployers, Deployments, SystemCmd, SystemState};
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
@@ -1356,6 +1356,7 @@ async fn apikey_revoke(
 
 async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Body) -> ApiResult {
     let account = installer(&node, &headers).await?.account()?;
+    node.refuse_undeployable(&account).await?;
     if !node.config.allow_unsigned_bundles {
         return Err(ApiError::forbidden(
             "this node takes signed packages only (POST /packages); raw WASM is for development",
@@ -1399,6 +1400,7 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
             hash: hash.clone(),
             size: body.len() as u64,
             actor: account,
+            at: now_secs(),
         })
         .await?;
     Ok(Json(json!({ "hash": hash })))
@@ -3587,8 +3589,9 @@ struct MetadataBody {
     metadata: Value,
 }
 
+/// A body that carries only a passkey confirmation (after a `412`).
 #[derive(Deserialize, Default)]
-struct DeleteOrgBody {
+struct ConfirmOnlyBody {
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
@@ -3642,7 +3645,7 @@ async fn org_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-    body: Option<Json<DeleteOrgBody>>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
@@ -5627,12 +5630,37 @@ struct OpsDeadlineBody {
     operator_proof: Option<OperatorProofBody>,
 }
 
-/// What lifting a deadline with `DELETE` may carry.
+/// What an operator decision that names nothing in its body (lifting a
+/// deadline, revoking a deployer, granting deployments) may carry.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct OpsDeadlineLiftBody {
+struct OpsProofBody {
     #[serde(default, rename = "operatorProof")]
     operator_proof: Option<OperatorProofBody>,
+}
+
+/// [`OpsProofBody`] from a body that may be empty (a `DELETE`).
+fn ops_proof_body(body: &[u8]) -> Result<OpsProofBody, ApiError> {
+    if body.is_empty() {
+        return Ok(OpsProofBody::default());
+    }
+    serde_json::from_slice(body).map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))
+}
+
+/// An RFC 3339 time in the API as Unix seconds, as the log keeps it.
+fn unix_secs(t: Option<&str>, field: &str) -> Result<Option<u64>, ApiError> {
+    t.map(|t| {
+        chrono::DateTime::parse_from_rfc3339(t)
+            .ok()
+            .and_then(|t| u64::try_from(t.timestamp()).ok())
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "BAD_REQUEST",
+                    &format!("`{field}` is an RFC 3339 time after 1970"),
+                )
+            })
+    })
+    .transpose()
 }
 
 /// Set (or, with `after: null`, lift) the end-of-new-work deadline of a
@@ -5647,17 +5675,7 @@ async fn ops_release_deadline(
     Json(body): Json<OpsDeadlineBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    let after = match body.after {
-        None => None,
-        Some(t) => Some(
-            chrono::DateTime::parse_from_rfc3339(&t)
-                .ok()
-                .and_then(|t| u64::try_from(t.timestamp()).ok())
-                .ok_or_else(|| {
-                    ApiError::bad_request("BAD_REQUEST", "`after` is an RFC 3339 time after 1970")
-                })?,
-        ),
-    };
+    let after = unix_secs(body.after.as_deref(), "after")?;
     set_release_deadline(&node, version, after, body.operator_proof).await
 }
 
@@ -5669,12 +5687,7 @@ async fn ops_release_deadline_lift(
     body: axum::body::Bytes,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    let body: OpsDeadlineLiftBody = if body.is_empty() {
-        OpsDeadlineLiftBody::default()
-    } else {
-        serde_json::from_slice(&body)
-            .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?
-    };
+    let body = ops_proof_body(&body)?;
     set_release_deadline(&node, version, None, body.operator_proof).await
 }
 
@@ -5699,6 +5712,304 @@ async fn set_release_deadline(
         })
         .await?,
     ))
+}
+
+// ---------------------------------------------------------------- deployers
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeployerBody {
+    deployer: Deployer,
+    /// RFC 3339: when the grant ends; absent, it does not.
+    #[serde(default)]
+    until: Option<String>,
+    /// The operator's signature, once the node asked for it (`428`).
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
+    /// The owner's passkey, once the node asked for it (`412`).
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClusterOwnerBody {
+    owner: Deployer,
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// The deployer a `{key}` path names (`account:<id>`, `org:<id>`).
+fn deployer_of(key: &str) -> Result<Deployer, ApiError> {
+    Deployer::from_key(key).ok_or_else(|| {
+        ApiError::bad_request("BAD_REQUEST", "a deployer is `account:<id>` or `org:<id>`")
+    })
+}
+
+/// Refused `403` once the cluster's owner grants its deployers: the
+/// operator no longer may.
+async fn operator_grants_deployers(node: &Node) -> Result<(), ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    if node.sys(|s| s.deployers_owner().is_some()) {
+        return Err(ApiError::forbidden(
+            "this cluster's owner grants its deployers, not its operator",
+        ));
+    }
+    Ok(())
+}
+
+/// The account that may grant deployers as the cluster's owner, judged on
+/// fresh state: `403` while the operator grants them, or for anyone not
+/// acting for the owner.
+async fn owner_granting(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    let p = holder(node, headers).await?;
+    let account = p.account()?;
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| match s.deployers_owner() {
+        None => Err(ApiError::forbidden(
+            "this cluster's operator grants its deployers",
+        )),
+        Some(owner) if s.acts_for(owner, &account) => Ok(()),
+        Some(_) => Err(ApiError::forbidden(
+            "only the cluster's owner grants its deployers",
+        )),
+    })?;
+    Ok(p)
+}
+
+/// Let an account or organization install apps where deployments are
+/// granted, signed with the operator key (`cluster / __grant_deployer /
+/// { deployer, until }`), while the operator grants deployers.
+async fn ops_deployer_grant(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<DeployerBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let until = unix_secs(body.until.as_deref(), "until")?;
+    operator_grants_deployers(&node).await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__grant_deployer",
+        &json!({ "deployer": body.deployer, "until": until }),
+        body.operator_proof,
+    )?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::GrantDeployer {
+            deployer: body.deployer,
+            until,
+            at: now_secs(),
+            actor: crate::system::OPERATOR.to_owned(),
+            proof: Some(proof),
+            consent: None,
+        })
+        .await?,
+    ))
+}
+
+/// End a deployer's grant (`__revoke_deployer`, `{ deployer }`): it installs
+/// nothing new; what it installed keeps running.
+async fn ops_deployer_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let body = ops_proof_body(&body)?;
+    let deployer = deployer_of(&key)?;
+    operator_grants_deployers(&node).await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__revoke_deployer",
+        &json!({ "deployer": deployer }),
+        body.operator_proof,
+    )?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::RevokeDeployer {
+            deployer,
+            at: now_secs(),
+            actor: crate::system::OPERATOR.to_owned(),
+            proof: Some(proof),
+            consent: None,
+        })
+        .await?,
+    ))
+}
+
+/// Move the cluster's deployments from `open` to `granted`, once and for
+/// good (`__deployments_granted`): an existing cluster need not be
+/// recreated. The attested governance changes with it.
+async fn ops_deployments_granted(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let body = ops_proof_body(&body)?;
+    let _caught_up = node.sys_fresh().await;
+    if node.sys(|s| s.governance().deployments == Deployments::Granted) {
+        return Err(ApiError::conflict(
+            "this cluster's deployments are granted already",
+        ));
+    }
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__deployments_granted",
+        &json!({}),
+        body.operator_proof,
+    )?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetDeploymentsGranted { proof })
+            .await?,
+    ))
+}
+
+/// Name the cluster's owner, once, where governance says `deployers: owner`
+/// (`__cluster_owner`, `{ owner }`): it grants deployers from then on.
+async fn ops_cluster_owner(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<ClusterOwnerBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| {
+        if s.governance().deployers != Deployers::Owner {
+            return Err(ApiError::conflict(
+                "this cluster was deployed with its deployers granted by its operator",
+            ));
+        }
+        if s.cluster_owner.is_some() {
+            return Err(ApiError::conflict("this cluster's owner is named already"));
+        }
+        Ok(())
+    })?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__cluster_owner",
+        &json!({ "owner": body.owner }),
+        body.operator_proof,
+    )?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetClusterOwner {
+            owner: body.owner,
+            proof,
+        })
+        .await?,
+    ))
+}
+
+/// The cluster's owner grants a deployer, with a passkey assertion over
+/// `cluster / __grant_deployer / { deployer, until }` (a `412` asks for it).
+async fn deployer_grant(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<DeployerBody>,
+) -> ApiResult {
+    let until = unix_secs(body.until.as_deref(), "until")?;
+    let p = owner_granting(&node, &headers).await?;
+    let consent = consent(
+        &node,
+        &p,
+        "cluster",
+        "__grant_deployer",
+        &json!({ "deployer": body.deployer, "until": until }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::GrantDeployer {
+            deployer: body.deployer,
+            until,
+            at: now_secs(),
+            actor: p.account()?,
+            proof: None,
+            consent: Some(consent),
+        })
+        .await?,
+    ))
+}
+
+/// The cluster's owner ends a deployer's grant, with a passkey assertion.
+async fn deployer_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let deployer = deployer_of(&key)?;
+    let p = owner_granting(&node, &headers).await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        "cluster",
+        "__revoke_deployer",
+        &json!({ "deployer": deployer }),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::RevokeDeployer {
+            deployer,
+            at: now_secs(),
+            actor: p.account()?,
+            proof: None,
+            consent: Some(consent),
+        })
+        .await?,
+    ))
+}
+
+/// Who may install apps here: the deployments rule, who grants deployers,
+/// the owner and every grant. For the operator (its token) and for whoever
+/// acts for the cluster's owner; the governance itself is public
+/// (`GET /releases`, and every receipt key's attestation).
+async fn deployer_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    if operator(&node, &headers).is_err() {
+        let account = signed_in(&node, &headers).await?.account()?;
+        let _caught_up = node.sys_fresh().await;
+        let owner = node.sys(|s| {
+            s.cluster_owner
+                .as_ref()
+                .is_some_and(|o| s.acts_for(o, &account))
+        });
+        if !owner {
+            return Err(ApiError::forbidden(
+                "only the cluster's operator and owner read its deployers",
+            ));
+        }
+    } else {
+        let _caught_up = node.sys_fresh().await;
+    }
+    Ok(Json(node.sys(|s| {
+        let g = s.governance();
+        let grants: Vec<Value> = s
+            .deployers
+            .iter()
+            .map(|(key, grant)| {
+                json!({
+                    "key": key,
+                    "deployer": Deployer::from_key(key),
+                    "until": grant.until.map(crate::system::rfc3339),
+                    "untilSecs": grant.until,
+                    "grantedAt": crate::system::rfc3339(grant.granted_at),
+                    "grantedBy": grant.granted_by,
+                })
+            })
+            .collect();
+        json!({
+            "deployments": g.deployments,
+            "deployers": g.deployers,
+            "owner": s.cluster_owner,
+            "grants": grants,
+        })
+    })))
 }
 
 #[derive(Deserialize)]
@@ -6073,6 +6384,12 @@ pub fn router(node: Arc<Node>) -> Router {
             post(ops_release_deadline).delete(ops_release_deadline_lift),
         )
         .route("/releases", get(releases_public))
+        .route("/ops/deployers", post(ops_deployer_grant))
+        .route("/ops/deployers/{key}", delete(ops_deployer_revoke))
+        .route("/ops/deployments/granted", post(ops_deployments_granted))
+        .route("/ops/cluster-owner", post(ops_cluster_owner))
+        .route("/deployers", post(deployer_grant).get(deployer_list))
+        .route("/deployers/{key}", delete(deployer_revoke))
         .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/orgs/{org}/upgrade", post(ops_org_upgrade))
