@@ -111,13 +111,16 @@ to: `(package, signer)`.
 - `POST /apps { package, version?, service?, … }` creates an instance from a
   release; without a version, the newest installed one. If the release is not
   installed yet, it is installed from the registry first. A package with
-  several services needs `service`.
+  several services needs `service`. With `deployment`, the instance runs the
+  release that [deployment](/protocol/governance/#deployments) offers for
+  `package`, and records it.
 - `POST /apps/{app}/upgrade { version }` moves an instance to another release
   of its package ([Upgrades](/protocol/upgrades/)).
 - `DELETE /packages/{p}[/{v}]` removes a release, or all of them, and is
   refused while any app still runs one of its bundles. A bundle another
   release also ships stays, recorded under that release. Only whoever installed
-  the package's first release (an account, or the operator) may uninstall.
+  the package's first release (an account, or the operator) may uninstall, and
+  never a release a deployment offers.
 
 ## Who sees a release
 
@@ -197,7 +200,16 @@ uses `localhost`.
   verified against the publisher's signature before a byte is served.
 - `GET /` redirects to the newest release's entry; `/{version}/{path}` serves a
   file, falling back to the entry for client-side routes. `/.well-known/calimero.json`
-  names the package, its releases and the cluster's API URLs.
+  names the package, its releases, the deployments offering it (`id`, `name`,
+  `app`, `version`) and the cluster's API URLs.
+- `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release that
+  instance runs, so a link handed to a customer opens the frontend matching
+  their instance after a newer release is installed. `GET /d/{deployment}/{path}`
+  redirects to `/{version}/{path}?deployment={id}`, the release that deployment
+  offers for this package (the newest, if it offers several), so the page
+  knows which deployment to create instances from. Neither names anything
+  but a version; an instance of another package, or a deployment that does
+  not offer this one, is a `404`.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
   node route. Responses carry a fixed content security policy with the cluster's
   API origins added to `connect-src`.
