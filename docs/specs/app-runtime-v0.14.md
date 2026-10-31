@@ -10,6 +10,13 @@ Changes in v0.14, from the G1 contract review:
 - D52: `unique-id` is `<leader term>.<call seq>.<n>`, amending D47; an add is logged as its summed value.
 - The SDK env table now says migrations write only through `rebuild`.
 
+> **Comment (Sandi, Oct 30), synchronous xcall:** proposal for review, not yet a decision. An app can call another app **in the same organization** and get its answer back in the same run: `xcall.call(app, method, args) -> result<list<u8>, string>`, plus a read-only `xcall.view`. The motivating case is a shared service, such as a captcha app that several apps in one org call to verify a token before they write. Async `xcall.send` (D25, D29, Q14) stays as it is.
+>
+> Why it fits this design: only the source's leader runs the source call, and followers apply its diff without re-running it. So the target's answer is just another input the leader reads, like the entry timestamp or the leader's CSPRNG. It reaches followers through the source's diff and is never replayed. No cross-group transaction is needed.
+>
+> The comments below mark each place in this spec the proposal touches. The node side (grants, the internal route that runs the target call, cycle and timeout handling, billing) is mine; the WIT, SDK and engine parts are yours.
+
+
 Changes in v0.13, from the G0 spike and the scaling review:
 
 - G0 passed: `fetch` over `wasi:http` works from a TypeScript action (Q5 closed, no fallback binding); a fresh instance costs 0.42 ms p50 for TypeScript and 0.011 ms for Rust, so D7 stays closed.
@@ -168,6 +175,9 @@ Added in v0.5:
 | D24 | The owner registers one or more signing keys per app, and rotates or revokes them with passkey confirmation. A lost key is replaced with confirmation, a 24-hour delay and notifications. A publisher can differ from the owner: an installed third-party app pins its publisher's key, and upgrades from that publisher need the org owner's approval unless the org opts into automatic updates | Completes D18 |
 | D25 | xcall delivery is deduplicated with a per-source watermark: the target keeps the highest (source index, sequence) delivered from each source app | Delivery is ordered per source and target, so a watermark is enough, takes constant space, and needs no retention setting |
 
+> **Comment (Sandi, Oct 30), synchronous xcall:** sync calls do not use the outbox, watermark or dead letters. They are deduplicated by an idempotency key derived from the source call's own key: `xc:<source app>:<source key>:<n>`, where `n` counts sync calls within the run. Suppose the source's leader fails after the target committed but before the source did. The source call is then retried with the same key on the new leader, which reaches the same `n`th call, and the target's idempotency record (D16) returns the stored answer instead of running twice. This needs the source call's key to be deterministic for timers too: the D34 (timer, slot) pair already is.
+
+
 Added in v0.6:
 
 | # | Decision | Why |
@@ -289,6 +299,9 @@ Rules:
 - An engine adapter is generated bindings plus limit wiring. It holds no app state between calls.
 - Any status other than `Ok` drops the diff, the events, the xcalls and any actions started. Except for a Timeout (D23), the call is still logged with its status and result, so its idempotency key is spent and a retry returns the same answer.
 
+> **Comment (Sandi, Oct 30), synchronous xcall:** `Outcome` gains `sync_calls: Vec<SyncCall { app, method, target_index, status }>`. It is kept for audit and the app log only: followers never use it, because the answers are already folded into `diff`. **Not atomic:** the target commits its own entry before the source's call finishes. If the source then fails (`AppError`, a trap, or a lost leadership), the target's change stays. Callers must treat a sync call like an HTTP request to another service, not like a local function. For captcha that is the right behaviour: a used token stays used.
+
+
 State access (D46): the host core reads app state through a `StateView` trait, `get` and `range` at an applied index, and never through a concrete map. Views get a view at the index they read; calls get the leader's latest. The in-memory map is the first implementation.
 
 ## 4. The calimero:app WIT world
@@ -316,6 +329,9 @@ interface types {
   record app-error { code: string, message: string }
   record blob-info { size: u64, sha256: list<u8>, mime: string }
   enum invocation-kind { call, view, action, timer, xcall-deliver, init, migrate }
+
+> **Comment (Sandi, Oct 30), synchronous xcall:** add `xcall-call` (the target runs a mutating sync call) and reuse `view` for `xcall.view`. `xcall-call` gets the same caller (`App(source)`), time and randomness as `xcall-deliver`, but in the **target's** own entry. Each app's timestamps stay its own; the source's clock does not move.
+
 }
 
 interface storage {
@@ -369,6 +385,20 @@ interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
 }
 
+> **Comment (Sandi, Oct 30), synchronous xcall:** proposed additions:
+>
+> ```wit
+> interface xcall {
+>   send: func(app: string, method: string, args: list<u8>) -> result<_, string>;            // unchanged
+>   call: func(app: string, method: string, args: list<u8>) -> result<list<u8>, xcall-error>; // target commits, then returns
+>   view: func(app: string, method: string, args: list<u8>) -> result<list<u8>, xcall-error>; // read-only, at the target's applied index
+> }
+> variant xcall-error { denied(string), app-error(app-error), unavailable, timeout, cycle }
+> ```
+>
+> `call` is allowed in `call`, `timer` and `xcall-call`; `view` is allowed in every kind except `migrate`. A target error is an answer, not a trap: the guest gets `Err` and decides. `denied` covers the cases where the node refuses: not the same org, not an `#[app::xcall]` method, no grant (see the callers table). `unavailable` covers a target that is migrating, deleted, or has no leader. `cycle` is A→…→A, refused before the target runs, with depth bounded by the node's existing `MAX_XCALL_DEPTH`.
+
+
 // Available only while handling kind = action (D12, D17)
 interface action {
   key: func() -> string;                                                    // this action run's idempotency key
@@ -407,6 +437,9 @@ world app {
 Rules the host enforces, whatever the guest says:
 
 - `handle` with `kind = view` runs with storage writes, `emit`, `xcall` and outgoing HTTP disabled; any attempt traps. A method marked `confirm` is refused as a view. This closes review issue 6.
+
+> **Comment (Sandi, Oct 30), synchronous xcall:** carve out `xcall.view` from "`xcall` disabled": a view may call another app's view, because it writes nothing. `xcall.call` and `xcall.send` still trap `HostDenied` in a view.
+
 - The method's attributes (`view`, `confirm`, `public`, `every`, outbound hosts) come from the bundle's ABI, signed with it. The host checks them before calling `handle`.
 - Blob references in state are typed in the ABI, so the host tracks retention itself (requirement R8).
 - A component that imports anything outside this world, including `wasi:filesystem` and `wasi:sockets`, is refused at install.
@@ -474,6 +507,9 @@ Billing and quotas use one unit for every engine: CPU time per call, measured by
 | View | the timestamp of the applied entry the view reads at | fixed at that timestamp | the node's CSPRNG, not recorded |
 | Action | the node's real clock, rounded to the second | fixed at the action's start | the node's CSPRNG, not recorded |
 
+> **Comment (Sandi, Oct 30), synchronous xcall:** the target of `xcall.call` runs as a normal entry in its own log: its own entry timestamp and its own leader's CSPRNG, recorded through its own diff. The source records only the bytes it got back. The target of `xcall.view` reads at its leader's latest applied index, after a read-index round, so the source sees a linearizable answer.
+
+
 The leader stamps each entry with `max(previous + 1 ms, min(own clock, majority median + 2 s))` (D21), so timestamps never go backwards and one host can push time forward by at most 2 s. Idempotency records are kept for a number of log entries per app, not a length of wall time; the default is set by benchmark.
 
 The leader's own clock in that formula is the D26 clock: the last verified Roughtime value plus elapsed TSC time, never the host's clock directly.
@@ -494,6 +530,9 @@ Every engine maps its failures to one status set, written to the log. Any status
 | `Trap(StackOverflow)` | stack limit | empty |
 | `Trap(Fault)` | out-of-bounds, misaligned, bad signature, arithmetic, unreachable, a JS exception | empty |
 | `Trap(HostDenied)` | a forbidden host call, such as a write from a view | empty |
+
+> **Comment (Sandi, Oct 30), synchronous xcall:** no new status. A sync call that fails comes back to the guest as `Err(xcall-error)`. Only the guest's own handling of it decides the outcome. Wall time spent waiting on the target counts toward the source's epoch deadline. The target gets what is left of the source's budget, capped by its own budget, so a chain can never outlive the first caller's `Trap(Timeout)`.
+
 
 TypeScript traps carry a source-mapped stack in the operator-invisible app log (spec §21), never in the response.
 
@@ -621,6 +660,19 @@ Every list view returns `{ items, next? }` with an opaque cursor. The SDK provid
 | Methods invoked by an action | the same caller | as for that caller |
 | Timer | `System` | refused unless the method allows `system` |
 | Delivered xcall | `App(source)` | refused unless the method allows that source app |
+
+> **Comment (Sandi, Oct 30), synchronous xcall:** same row for `xcall-call` and `xcall.view`. "The method allows that source app" becomes concrete:
+>
+> - the method is `#[app::xcall]`;
+> - the source and the target are in the **same organization**, which is the only scope for sync calls (async keeps Q14's cross-org rule);
+> - a method marked `#[app::xcall(granted)]` additionally needs a grant in system state, `GrantXcall { target, source, methods }`. The grant is added by a holder of a new org capability, `MANAGE_XCALLS`, and is shown in the app report and the console. Revoking it takes effect on the next call.
+>
+> The node checks all three before the target runs, so the target's code never hand-checks the caller. `from_same_app` keeps its meaning.
+
+> **Comment (Sandi, Oct 30), synchronous xcall across machines:** the source's leader (node X) and the target's leader (node Y) are usually different machines in the same cluster. X sends the call to Y over the existing sealed, identified peer channel (`internal/call`, Noise IK with attested transport keys). Y runs the call and commits it with the target's replicas, then answers. The cost is one X→Y round-trip plus the target's commit; the same holds for `xcall.view` with a read-index round instead of the commit.
+>
+> Y must not take `App(source)` from the message. It sets the origin only if the channel's node X is the current leader, or at least a replica, of the source app in system state. Otherwise any attested node could claim to speak for any app. The peer release gate from Phase 0 applies too: the target's owner must have approved X's release. If Y is down, X retries against the target's new leader within the source's deadline using the same derived key, then returns `Err(unavailable)` or `Err(timeout)`. Calls across clusters are out of scope (Q14: same cluster only).
+
 | `init` | the owner | allowed |
 | `migrate` | `System` | allowed, migration context only |
 
@@ -832,6 +884,19 @@ Added in v0.4:
 | Q13 | Which apps in the apps repo are rebuilt and which are archived (D15)? | Phase 3 |
 | Q14 | xcall semantics for after the prototype: exactly-once into the target's log (deduplicated on source app, index and sequence), ordered per source and target, same cluster only, cross-org only when the target allows the source app. Agreed in v0.5, with deduplication by watermark (D25); implemented after the prototype | Before xcall leaves prototype scope |
 
+> **Comment (Sandi, Oct 30), synchronous xcall:** propose adding **Q18: synchronous in-org xcall** (`xcall.call` / `xcall.view`), with these answers to confirm:
+>
+> 1. same organization only;
+> 2. not atomic: the target commits first;
+> 3. idempotent across a source failover through a derived key;
+> 4. bounded by the source's deadline and `MAX_XCALL_DEPTH`;
+> 5. cycles refused;
+> 6. the target's CPU time is billed to the source's caller;
+> 7. a source app runs one call at a time today, so a sync call holds only that app's queue, never the target's.
+>
+> Needed by: the captcha / shared-service apps. Open for you: the WIT shape above, and whether components get it before wasmer apps.
+
+
 Added in v0.6:
 
 | # | Question | Needed by |
@@ -987,6 +1052,16 @@ Every host capability, with where it may be called; calling one from a disallowe
 | Applied index | `env::applied_index()` | `env.appliedIndex()` | u64 | all |
 | Emit event | `env::emit(e, audience)` | `env.emit(e, audience)` | — | call, timer, init, xcall delivery |
 | Cross-app call | `env::xcall(app, method, args)` | `env.xcall(app, method, args)` | —, delivered after commit | call, timer |
+
+> **Comment (Sandi, Oct 30), synchronous xcall:** add two rows:
+>
+> | Capability | Rust | TypeScript | Returns | Allowed in |
+> | --- | --- | --- | --- | --- |
+> | Cross-app call, answered | `env::xcall_call(app, method, args)` | `await env.xcallCall(app, method, args)` | `Result<Vec<u8>, XcallError>`; the target has committed | call, timer, xcall-call |
+> | Cross-app view | `env::xcall_view(app, method, args)` | `await env.xcallView(app, method, args)` | `Result<Vec<u8>, XcallError>` | all except migrate |
+>
+> Captcha, from the calling app: `let ok: bool = serde_json::from_slice(&env::xcall_call(&captcha, "verify", &args)?)?; if !ok { app::bail!("captcha failed") }`. On the captcha side: `#[app::xcall(granted)] pub fn verify(&mut self, token: String) -> app::Result<bool>`.
+
 | App log | `env::log!(…)`, stdout | `console.log(…)` | owner-only log | all |
 | State | collections and tables | collections and tables | — | read: all except action; write: call, timer, init, xcall delivery; migrate writes through `rebuild` only |
 
