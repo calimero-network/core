@@ -4150,4 +4150,371 @@ mod tests {
         );
         let _ok = m.run_unproven(upgrade("cora", "h1.2.0")).unwrap();
     }
+
+    // ------------------------------------------------------------ deployers
+
+    /// A release of package `p` (`version`, its WASM `b-<version>`)
+    /// installed by `by` at `at`.
+    fn install_at(by: &str, version: &str, at: u64) -> SystemCmd {
+        SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+                "services": { "": format!("b-{version}") }, "installedBy": by, "installedAt": at
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn raw_bundle(actor: &str, hash: &str, at: u64) -> SystemCmd {
+        SystemCmd::PutBundle {
+            hash: hash.into(),
+            size: 1,
+            actor: actor.into(),
+            at,
+        }
+    }
+
+    fn grant(deployer: super::Deployer, until: Option<u64>, actor: &str) -> SystemCmd {
+        SystemCmd::GrantDeployer {
+            deployer,
+            until,
+            at: 1,
+            actor: actor.into(),
+            proof: None,
+            consent: None,
+        }
+    }
+
+    fn account_deployer(id: &str) -> super::Deployer {
+        super::Deployer::Account(id.into())
+    }
+
+    /// A cluster deployed with `deployments`, alice, bob and carol, and
+    /// organization `org` where bob is a plain member and carol holds
+    /// `MANAGE_APPLICATION` organization-wide.
+    fn deploying(deployments: super::Deployments) -> SystemMachine {
+        let mut m = SystemMachine::default();
+        let _ok = m
+            .run_unproven(genesis(Governance {
+                deployments,
+                ..Governance::default()
+            }))
+            .unwrap();
+        for who in ["alice", "bob", "carol"] {
+            let _ok = m.run_unproven(account(who)).unwrap();
+        }
+        let o = org(
+            &[("alice", "owner"), ("bob", "member"), ("carol", "member")],
+            &[("carol", crate::types::caps::MANAGE_APPLICATION)],
+            &[],
+        );
+        let _prev = m.state.orgs.insert("org".into(), o);
+        m
+    }
+
+    /// Where deployments are granted, an account installs a package or
+    /// uploads a raw bundle only with a live deployer grant, judged at the
+    /// install's own time; an organization's grant reaches only its
+    /// `MANAGE_APPLICATION` holders; the operator always installs. Revoking
+    /// stops new installs and keeps what is installed.
+    #[test]
+    fn on_a_granted_cluster_only_deployers_install() {
+        use super::{Deployer, Deployments, NOT_A_DEPLOYER, OPERATOR};
+        const T: u64 = 1_000;
+        let mut m = deploying(Deployments::Granted);
+        assert_eq!(
+            m.run_unproven(install_at("alice", "1.0.0", 10))
+                .unwrap_err(),
+            NOT_A_DEPLOYER
+        );
+        assert_eq!(
+            m.run_unproven(raw_bundle("alice", "raw", 10)).unwrap_err(),
+            NOT_A_DEPLOYER
+        );
+        let _ok = m.run_unproven(install_at(OPERATOR, "0.9.0", 10)).unwrap();
+
+        // An account's own grant, until T: judged at the install's time.
+        let _ok = m
+            .run_unproven(grant(account_deployer("alice"), Some(T), OPERATOR))
+            .unwrap();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", T - 1)).unwrap();
+        let _ok = m.run_unproven(raw_bundle("alice", "raw", T - 1)).unwrap();
+        assert_eq!(
+            m.run_unproven(install_at("alice", "1.1.0", T)).unwrap_err(),
+            NOT_A_DEPLOYER,
+            "past `until`"
+        );
+        assert!(
+            m.run_unproven(install_at("bob", "1.0.0", 10)).is_err(),
+            "the same release again is still an install"
+        );
+
+        // An organization's grant: its MANAGE_APPLICATION holders only.
+        let _ok = m
+            .run_unproven(grant(Deployer::Org("org".into()), None, OPERATOR))
+            .unwrap();
+        let _ok = m.run_unproven(install_at("carol", "2.0.0", T)).unwrap();
+        let _ok = m.run_unproven(install_at("alice", "2.1.0", T)).unwrap();
+        assert_eq!(
+            m.run_unproven(install_at("bob", "2.2.0", T)).unwrap_err(),
+            NOT_A_DEPLOYER,
+            "a plain member"
+        );
+
+        // Revoked: nothing new, and what is installed stays.
+        let _ok = m
+            .run_unproven(SystemCmd::RevokeDeployer {
+                deployer: Deployer::Org("org".into()),
+                at: T,
+                actor: OPERATOR.into(),
+                proof: None,
+                consent: None,
+            })
+            .unwrap();
+        assert!(m.run_unproven(install_at("carol", "2.3.0", T)).is_err());
+        assert!(m.state.packages["p"].versions.contains_key("2.0.0"));
+
+        // Grants name an account or organization that exists, end after
+        // they are made, and only the operator makes them here.
+        for (why, cmd) in [
+            ("unknown", grant(account_deployer("nobody"), None, OPERATOR)),
+            (
+                "already over",
+                grant(account_deployer("bob"), Some(1), OPERATOR),
+            ),
+            (
+                "not the operator",
+                grant(account_deployer("bob"), None, "alice"),
+            ),
+        ] {
+            assert!(m.run_unproven(cmd).is_err(), "{why}");
+        }
+    }
+
+    /// Where deployments are open, installs go on exactly as before.
+    #[test]
+    fn on_an_open_cluster_anyone_installs() {
+        let mut m = deploying(super::Deployments::Open);
+        let _ok = m.run_unproven(install_at("bob", "1.0.0", 10)).unwrap();
+        let _ok = m.run_unproven(raw_bundle("bob", "raw", 10)).unwrap();
+        assert!(m.state.deployers.is_empty());
+        let json = serde_json::to_value(&m.state).unwrap();
+        assert!(json.get("deployers").is_none() && json.get("clusterOwner").is_none());
+    }
+
+    /// The operator moves deployments from open to granted once; never back,
+    /// and never twice.
+    #[test]
+    fn deployments_are_granted_one_way() {
+        use super::Deployments;
+        let mut m = deploying(Deployments::Open);
+        let _ok = m
+            .run_unproven(SystemCmd::SetDeploymentsGranted {
+                proof: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert_eq!(m.state.governance().deployments, Deployments::Granted);
+        assert!(m
+            .run_unproven(SystemCmd::SetDeploymentsGranted {
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        assert_eq!(
+            m.run_unproven(install_at("bob", "1.0.0", 10)).unwrap_err(),
+            super::NOT_A_DEPLOYER
+        );
+    }
+
+    /// The operator's key in tests, and its signature over a statement.
+    fn operator_signed(subject: &str, method: &str, args: &serde_json::Value) -> serde_json::Value {
+        use ed25519_dalek::Signer;
+        let statement = crate::proof::Statement::new(subject, method, args);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let signature = key.sign(&statement.operator_message("c"));
+        serde_json::to_value(crate::proof::OperatorProof {
+            statement,
+            signature: hex::encode(signature.to_bytes()),
+        })
+        .unwrap()
+    }
+
+    /// Where the cluster's owner grants deployers: the operator grants them
+    /// until it names the owner, once; from then on the owner's passkey
+    /// grants them and the operator's signature does not. Every grant carries
+    /// its proof over exactly that grant, used once.
+    #[test]
+    fn deployer_grants_carry_the_operators_signature_then_the_owners_passkey() {
+        use super::{Deployers, Deployments, OPERATOR};
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut m = SystemMachine::default();
+        let _ok = m
+            .run(SystemCmd::Genesis {
+                governance: Governance {
+                    deployments: Deployments::Granted,
+                    deployers: Deployers::Owner,
+                    ..Governance::default()
+                },
+                release: Some("1.0.0".into()),
+                operator_key: Some(crate::proof::OperatorKey {
+                    key: hex::encode(key.verifying_key().to_bytes()),
+                    cluster: "c".into(),
+                }),
+            })
+            .unwrap();
+        let mut alice = calimero_identity::testing::SoftAuthenticator::new(
+            "localhost",
+            "http://localhost:3000",
+        );
+        let mut bob = calimero_identity::testing::SoftAuthenticator::new(
+            "localhost",
+            "http://localhost:3000",
+        );
+        let _ok = m.run(account_with("alice", &mut alice)).unwrap();
+        let _ok = m.run(account_with("bob", &mut bob)).unwrap();
+        let args = |who: &str| json!({ "deployer": { "account": who }, "until": null });
+        let by_operator = |who: &str, proof: serde_json::Value| SystemCmd::GrantDeployer {
+            deployer: account_deployer(who),
+            until: None,
+            at: 1,
+            actor: OPERATOR.into(),
+            proof: Some(proof),
+            consent: None,
+        };
+
+        // Before the owner is named, the operator grants, with its key.
+        let other = {
+            use ed25519_dalek::Signer;
+            let statement =
+                crate::proof::Statement::new("cluster", "__grant_deployer", &args("bob"));
+            let signature = ed25519_dalek::SigningKey::from_bytes(&[8; 32])
+                .sign(&statement.operator_message("c"));
+            serde_json::to_value(crate::proof::OperatorProof {
+                statement,
+                signature: hex::encode(signature.to_bytes()),
+            })
+            .unwrap()
+        };
+        for (why, cmd) in [
+            ("another key", by_operator("bob", other)),
+            (
+                "over another deployer",
+                by_operator(
+                    "bob",
+                    operator_signed("cluster", "__grant_deployer", &args("alice")),
+                ),
+            ),
+            (
+                "a revocation's signature",
+                by_operator(
+                    "bob",
+                    operator_signed("cluster", "__revoke_deployer", &args("bob")),
+                ),
+            ),
+            (
+                "a passkey instead",
+                SystemCmd::GrantDeployer {
+                    deployer: account_deployer("bob"),
+                    until: None,
+                    at: 1,
+                    actor: "alice".into(),
+                    proof: None,
+                    consent: Some(consent(
+                        &mut alice,
+                        "cluster",
+                        "__grant_deployer",
+                        &args("bob"),
+                    )),
+                },
+            ),
+        ] {
+            assert!(m.run(cmd).is_err(), "{why}");
+        }
+        assert!(m.state.deployers.is_empty());
+        let signed = operator_signed("cluster", "__grant_deployer", &args("bob"));
+        let _ok = m.run(by_operator("bob", signed.clone())).unwrap();
+        assert!(m.state.may_deploy("bob", 5));
+        let _ok = m
+            .run(SystemCmd::RevokeDeployer {
+                deployer: account_deployer("bob"),
+                at: 2,
+                actor: OPERATOR.into(),
+                proof: Some(operator_signed(
+                    "cluster",
+                    "__revoke_deployer",
+                    &json!({ "deployer": { "account": "bob" } }),
+                )),
+                consent: None,
+            })
+            .unwrap();
+        assert_eq!(
+            m.run(by_operator("bob", signed)).unwrap_err(),
+            "that consent was used already",
+            "a grant replayed after its revocation"
+        );
+        assert!(!m.state.may_deploy("bob", 5));
+
+        // The operator names alice the owner, once.
+        let owner = |who: &str| SystemCmd::SetClusterOwner {
+            owner: account_deployer(who),
+            proof: operator_signed(
+                "cluster",
+                "__cluster_owner",
+                &json!({ "owner": { "account": who } }),
+            ),
+        };
+        assert!(m
+            .run(SystemCmd::SetClusterOwner {
+                owner: account_deployer("alice"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        let _ok = m.run(owner("alice")).unwrap();
+        assert!(m.run(owner("bob")).is_err(), "a second owner");
+        assert_eq!(m.state.cluster_owner, Some(account_deployer("alice")));
+
+        // Now the operator's signature grants nothing; alice's passkey does,
+        // and bob's does not.
+        let fresh_operator = operator_signed(
+            "cluster",
+            "__grant_deployer",
+            &json!({ "deployer": { "account": "bob" }, "until": 9 }),
+        );
+        assert!(m
+            .run(SystemCmd::GrantDeployer {
+                deployer: account_deployer("bob"),
+                until: Some(9),
+                at: 1,
+                actor: OPERATOR.into(),
+                proof: Some(fresh_operator),
+                consent: None,
+            })
+            .is_err());
+        let by_owner = |actor: &str, pk: &mut calimero_identity::testing::SoftAuthenticator| {
+            SystemCmd::GrantDeployer {
+                deployer: account_deployer("bob"),
+                until: None,
+                at: 1,
+                actor: actor.into(),
+                proof: None,
+                consent: Some(consent(pk, "cluster", "__grant_deployer", &args("bob"))),
+            }
+        };
+        assert!(m.run(by_owner("bob", &mut bob)).is_err(), "not the owner");
+        assert!(!m.state.may_deploy("bob", 5));
+        let _ok = m.run(by_owner("alice", &mut alice)).unwrap();
+        assert!(m.state.may_deploy("bob", 5));
+        assert_eq!(m.state.deployers["account:bob"].granted_by, "alice");
+    }
+
+    /// A deployer's JSON names its kind, and its key names it back.
+    #[test]
+    fn a_deployer_reads_from_its_key() {
+        use super::Deployer;
+        let d = Deployer::Org("o1".into());
+        assert_eq!(serde_json::to_value(&d).unwrap(), json!({ "org": "o1" }));
+        assert_eq!(Deployer::from_key(&d.key()), Some(d));
+        assert_eq!(Deployer::from_key("team:x"), None);
+    }
 }

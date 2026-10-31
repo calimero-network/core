@@ -903,4 +903,36 @@ mod tests {
         assert!(!p.accept_mock);
         assert!(p.require_app_hash);
     }
+
+    /// A cluster deployed with the defaults binds the bytes it bound before
+    /// `deployments` and `deployers` existed, so its receipt keys verify for
+    /// clients that know neither; a granted cluster binds both, after the
+    /// other three, and an attested document without them reads as the
+    /// defaults.
+    #[test]
+    fn the_default_governance_binds_the_bytes_it_did_before_deployers() {
+        assert_eq!(
+            Governance::default().canonical(),
+            br#"{"releases":"owner","appUpgrades":"owner","outbound":"owner"}"#
+        );
+        let granted = Governance {
+            deployments: Deployments::Granted,
+            deployers: Deployers::Owner,
+            ..Governance::default()
+        };
+        assert_eq!(
+            String::from_utf8(granted.canonical()).unwrap(),
+            r#"{"releases":"owner","appUpgrades":"owner","outbound":"owner","deployments":"granted","deployers":"owner"}"#
+        );
+        assert_ne!(
+            receipt_key_binding(&[1; 32], &granted),
+            receipt_key_binding(&[1; 32], &Governance::default())
+        );
+        let old: Governance = serde_json::from_slice(
+            br#"{"releases":"operator","appUpgrades":"owner","outbound":"owner"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.deployments, Deployments::Open);
+        assert_eq!(old.deployers, Deployers::Operator);
+    }
 }
