@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`meroctl account device label|revoke` take a credential id that starts
+  with `-`.** Passkey credential ids are base64url, and clap read one starting
+  with `-` as a flag (`unexpected argument '-7' found`).
+
 ## [1.0.0-rc.6] - 2026-10-31
 
 ### Added
