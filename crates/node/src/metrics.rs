@@ -144,7 +144,8 @@ pub fn group(route: &str) -> &'static str {
         _ if route.starts_with("/orgs") || route.starts_with("/invites") => "orgs",
         _ if route.starts_with("/bundles")
             || route.starts_with("/packages")
-            || route.starts_with("/publishers") =>
+            || route.starts_with("/publishers")
+            || route.starts_with("/deployers") =>
         {
             "packages"
         }
@@ -693,6 +694,8 @@ mod tests {
         assert_eq!(group("/internal/raft"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
+        // Who may install packages is a packages question.
+        assert_eq!(group("/deployers/{key}"), "packages");
         assert_eq!(group("/consent/{request}/result"), "consent");
         assert_eq!(group("/releases"), "attestation");
         assert_eq!(group("/publishers/{signer}"), "packages");
