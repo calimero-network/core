@@ -393,8 +393,14 @@ pub struct Node {
     /// proved: the node registered at the address that attests that key, and
     /// the release that attestation named ([`Self::identify_peer`]).
     callers: Mutex<HashMap<[u8; 32], PeerIdentity>>,
-    /// One attestation of a caller at a time per node id.
-    identifying: tokio::sync::Mutex<()>,
+    /// One attestation of a caller at a time.
+    identifying: Arc<tokio::sync::Mutex<()>>,
+    /// Attestations of callers under way, by key and claimed node: each runs
+    /// in a task of its own, so a caller that hangs up does not abort it.
+    identifications: Mutex<HashMap<CallerClaim, Detached<Option<PeerIdentity>>>>,
+    /// Channels to peers being opened, by address: each in a task of its own
+    /// ([`Self::connected`]).
+    connecting: Mutex<HashMap<String, Detached<Result<(), String>>>>,
     /// The issuers of node-signed sessions this node has attested, by node id
     /// ([`Self::session_issuer`]), every peer's ahead of time
     /// ([`Self::warm_issuers`]).
@@ -449,6 +455,43 @@ struct ReadRounds {
     turn: tokio::sync::Mutex<()>,
 }
 
+/// Work that runs to the end in a task of its own, whoever still waits on it.
+type Detached<T> = futures_util::future::Shared<futures_util::future::BoxFuture<'static, T>>;
+
+/// A caller's proven transport key and the node it claims to be.
+type CallerClaim = ([u8; 32], NodeId);
+
+/// Most detached attestations of one kind under way at once (callers being
+/// identified, peer channels being opened); past it the request is refused
+/// and its caller tries again.
+const MAX_DETACHED: usize = 64;
+
+/// Start `work` in a task of its own, unless `map` holds unfinished work under
+/// `key`; either way, the work to wait on. Finished work is dropped from `map`.
+fn detach<K, T>(
+    map: &Mutex<HashMap<K, Detached<T>>>,
+    key: K,
+    work: impl FnOnce() -> futures_util::future::BoxFuture<'static, T>,
+) -> Option<Detached<T>>
+where
+    K: std::hash::Hash + Eq,
+    T: Clone + Send + Sync + 'static,
+{
+    use futures_util::FutureExt as _;
+    let mut map = map.lock().ok()?;
+    map.retain(|_, w| w.peek().is_none());
+    if let Some(w) = map.get(&key) {
+        return Some(w.clone());
+    }
+    if map.len() >= MAX_DETACHED {
+        return None;
+    }
+    let w = work().shared();
+    drop(tokio::spawn(w.clone()));
+    let _prev = map.insert(key, w.clone());
+    Some(w)
+}
+
 /// Raft RPCs to peers, over their sealed channels.
 struct PeerTransport {
     node: Mutex<Weak<Node>>,
@@ -457,7 +500,7 @@ struct PeerTransport {
 impl Transport for PeerTransport {
     fn send(
         &self,
-        _target: NodeId,
+        target: NodeId,
         addr: String,
         group: GroupId,
         request: RpcRequest,
@@ -470,7 +513,9 @@ impl Transport for PeerTransport {
                     "{addr} runs a release the app's owner has not approved; it gets none of the app's data"
                 ));
             }
-            let body = json!({ "group": group, "rpc": request });
+            // The addressee, so a node that answers at `addr` but is not
+            // `target` refuses the message (`api::internal_raft`).
+            let body = json!({ "group": group, "target": target, "rpc": request });
             let resp = node
                 .peer_post(&addr, "internal/raft", &body)
                 .await
@@ -492,6 +537,13 @@ pub const READ_ONLY: &str = "read-only in this team: the call would write";
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a system write may take, election and forwarding included, before
+/// it answers `503 UNAVAILABLE`. A system group that cannot commit (too few
+/// voters answering, or a membership change waiting on members that do not)
+/// otherwise left the write waiting until the proxy in front of merod cut the
+/// connection at 30 s, so the caller saw a dropped request and not the reason.
+pub const SYSTEM_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A command the system log refused at apply.
 /// The largest blob (an app's file, a package's `.mpk`) a node keeps: it
 /// reaches the other nodes base64-encoded inside one sealed request
@@ -511,11 +563,22 @@ pub fn stalled(stall: &crate::system::Stall) -> ApiError {
     }))
 }
 
+/// The code of an install refused where deployments are granted and the
+/// installer holds no live deployer grant.
+pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
+
+/// An install refused for want of a deployer grant: `403 DEPLOY_NOT_GRANTED`.
+pub fn not_a_deployer() -> ApiError {
+    ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
+}
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, "QUOTA_EXCEEDED", reason)
     } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
         ApiError::new(409, RELEASE_DEADLINE, reason)
+    } else if reason == crate::system::NOT_A_DEPLOYER {
+        not_a_deployer()
     } else {
         ApiError::bad_request("REJECTED", reason)
     }
@@ -602,7 +665,9 @@ impl Node {
             promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             callers: Mutex::new(HashMap::new()),
-            identifying: tokio::sync::Mutex::new(()),
+            identifying: Arc::default(),
+            identifications: Mutex::default(),
+            connecting: Mutex::default(),
             issuers: Mutex::new(HashMap::new()),
             issuer_tries: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
@@ -672,9 +737,35 @@ impl Node {
         Ok(t)
     }
 
+    /// The sealed channel to the peer at `addr`, opened first if it is not.
+    /// The opening (attesting the peer, then the handshake) runs in a task of
+    /// its own: attesting a TDX peer takes about a second, Intel's collateral
+    /// included, and openraft drops an RPC after one heartbeat (200 ms). Run
+    /// inside the RPC, every attempt was dropped halfway and the next began
+    /// again, so the channel never opened (eu-shared-2's system group kept no
+    /// leader). Now the attempt outlives the RPC and the next one finds the
+    /// channel open; one opening per peer runs at a time.
+    async fn connected(
+        &self,
+        addr: &str,
+    ) -> eyre::Result<Arc<calimero_sealed::client::SealedTransport>> {
+        use futures_util::FutureExt as _;
+        let peer = self.peer(addr)?;
+        if peer.is_open() {
+            return Ok(peer);
+        }
+        let opening = detach(&self.connecting, addr.to_owned(), || {
+            let peer = Arc::clone(&peer);
+            async move { peer.connect().await.map_err(|e| format!("{e:#}")) }.boxed()
+        })
+        .ok_or_else(|| eyre::eyre!("too many peer channels are being opened"))?;
+        opening.await.map_err(|e| eyre::eyre!(e))?;
+        Ok(peer)
+    }
+
     /// POST JSON to a peer's internal route over its sealed channel.
     pub async fn peer_post(&self, addr: &str, path: &str, body: &Value) -> eyre::Result<Value> {
-        let peer = self.peer(addr)?;
+        let peer = self.connected(addr).await?;
         let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
         let req = self
             .http
@@ -732,9 +823,16 @@ impl Node {
     /// Commit a system command through the system group's leader.
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        // Up to ~8 s: long enough to ride out a system leader election.
+        // Long enough to ride out a system leader election, and never longer
+        // than `SYSTEM_WRITE_TIMEOUT` in all.
+        let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
         for attempt in 0..50 {
-            match self.system.write(bytes.clone()).await {
+            let Ok(written) =
+                tokio::time::timeout_at(deadline, self.system.write(bytes.clone())).await
+            else {
+                return Err(self.system_stalled());
+            };
+            match written {
                 Ok((index, out)) => {
                     let _ = index;
                     return output(&out).map_err(|e| rejected(&e));
@@ -760,9 +858,50 @@ impl Node {
                 Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
                 Err(e) => debug!(attempt, error = %e, "system write not yet possible"),
             }
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            if tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(150)))
+                .await
+                .is_err()
+            {
+                return Err(self.system_stalled());
+            }
         }
         Err(ApiError::unavailable("the system group has no leader"))
+    }
+
+    /// The `503` of a system write that did not commit in
+    /// [`SYSTEM_WRITE_TIMEOUT`], naming the system group as this node sees it:
+    /// its leader, voters and learners, and on the leader the members whose
+    /// log is behind. The write may still commit later; nothing here undoes it.
+    fn system_stalled(&self) -> ApiError {
+        let status = self.system.status();
+        let ids = |v: &[NodeId]| {
+            v.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut why = format!(
+            "the system group did not commit this write in {} s (leader {}, voters [{}], learners [{}]",
+            SYSTEM_WRITE_TIMEOUT.as_secs(),
+            status.leader.map_or_else(|| "none".to_owned(), |l| l.to_string()),
+            ids(&status.voters),
+            ids(&status.learners),
+        );
+        if status.is_leader {
+            let metrics = self.system.raft().metrics().borrow().clone();
+            let last = metrics.last_log_index.unwrap_or(0);
+            let behind: Vec<NodeId> = metrics
+                .replication
+                .iter()
+                .flatten()
+                .filter(|(_, log)| log.map_or(0, |l| l.index) < last)
+                .map(|(peer, _)| *peer)
+                .collect();
+            why.push_str(&format!(", behind the leader: [{}]", ids(&behind)));
+        }
+        why.push_str("); it may still apply once the group can commit");
+        warn!(%why, "system write timed out");
+        ApiError::unavailable(&why)
     }
 
     /// The voters and learners of app group `group` as this node's replica
@@ -880,20 +1019,13 @@ impl Node {
     /// nonce, at the address the cluster has for `claimed`; cached by key (a
     /// key lives as long as the process holding it). `None` when the claim
     /// does not hold: no such node, removed, or another key there.
+    ///
+    /// The attestation runs in a task of its own ([`detach`]): it takes
+    /// longer than a Raft RPC may (about a second on TDX), and a caller that
+    /// gives up must not abort it, or no RPC from that peer is ever taken.
     pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
-        let cached = |node: &Self| {
-            node.callers
-                .lock()
-                .ok()?
-                .get(&key)
-                .filter(|p| p.node == claimed)
-                .cloned()
-        };
-        if let Some(p) = cached(self) {
-            return self.is_peer(p.node).then_some(p);
-        }
-        let _one = self.identifying.lock().await;
-        if let Some(p) = cached(self) {
+        use futures_util::FutureExt as _;
+        if let Some(p) = self.cached_caller(&key, claimed) {
             return self.is_peer(p.node).then_some(p);
         }
         if !self.is_peer(claimed) {
@@ -901,38 +1033,65 @@ impl Node {
         }
         let addr = self.addr_of(claimed)?;
         let url: Url = addr.parse().ok()?;
-        let release = Arc::new(Mutex::new(None));
-        let attestor = HttpAttestor {
-            seen_release: Arc::clone(&release),
-            policy: self.config.peer_policy(),
-        };
-        let attested =
-            calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
-                .await;
-        let attested = match attested {
-            Ok(k) => k,
-            Err(e) => {
-                warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
-                return None;
+        // What the task needs, and the node only weakly: a stopping node must
+        // not be kept alive (its store open) by an attestation under way.
+        let (http, policy, turn) = (
+            self.http.clone(),
+            self.config.peer_policy(),
+            Arc::clone(&self.identifying),
+        );
+        let node = self.this.lock().ok()?.clone();
+        let identifying = detach(&self.identifications, (key, claimed), || {
+            async move {
+                let _one = turn.lock().await;
+                if let Some(p) = node.upgrade()?.cached_caller(&key, claimed) {
+                    return Some(p);
+                }
+                let release = Arc::new(Mutex::new(None));
+                let attestor = HttpAttestor {
+                    seen_release: Arc::clone(&release),
+                    policy,
+                };
+                let attested =
+                    calimero_sealed::client::Attest::attest_transport_key(&attestor, &http, &url)
+                        .await;
+                let attested = match attested {
+                    Ok(k) => k,
+                    Err(e) => {
+                        warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
+                        return None;
+                    }
+                };
+                if attested != key {
+                    warn!(
+                        node = claimed,
+                        "a peer called with a key its node's address does not attest"
+                    );
+                    return None;
+                }
+                let identity = PeerIdentity {
+                    node: claimed,
+                    release: release.lock().ok()?.clone(),
+                };
+                if let Ok(mut callers) = node.upgrade()?.callers.lock() {
+                    // A restarted node has a new key: forget its old one.
+                    callers.retain(|_, p| p.node != claimed);
+                    let _prev = callers.insert(key, identity.clone());
+                }
+                Some(identity)
             }
-        };
-        if attested != key {
-            warn!(
-                node = claimed,
-                "a peer called with a key its node's address does not attest"
-            );
-            return None;
-        }
-        let identity = PeerIdentity {
-            node: claimed,
-            release: release.lock().ok()?.clone(),
-        };
-        if let Ok(mut callers) = self.callers.lock() {
-            // A restarted node has a new key: forget its old one.
-            callers.retain(|_, p| p.node != claimed);
-            let _prev = callers.insert(key, identity.clone());
-        }
-        Some(identity)
+            .boxed()
+        })?;
+        identifying.await.filter(|p| self.is_peer(p.node))
+    }
+
+    fn cached_caller(&self, key: &[u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
+        self.callers
+            .lock()
+            .ok()?
+            .get(key)
+            .filter(|p| p.node == claimed)
+            .cloned()
     }
 
     /// Whether `id` is a node of this cluster: registered (or in `--peers`)

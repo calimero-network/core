@@ -166,12 +166,68 @@ pub struct Governance {
     /// (organization `MANAGE_APPLICATION` holders), per publisher key, or the
     /// operator.
     pub outbound: Authority,
+    /// Who may install apps (signed packages, raw bundles). `open`: any
+    /// account. `granted`: only an account holding a live deployer grant, or
+    /// a `MANAGE_APPLICATION` holder of an organization holding one; anyone
+    /// may still create instances of the releases they see. Left out of the
+    /// JSON when `open`, so a cluster with the defaults attests the bytes it
+    /// did before this field.
+    #[serde(default, skip_serializing_if = "Deployments::is_default")]
+    pub deployments: Deployments,
+    /// Who grants deployers where deployments are `granted`. `operator`: the
+    /// operator's key. `owner`: the cluster's owner (an account, or an
+    /// organization's `MANAGE_APPLICATION` holders) with a passkey, once the
+    /// operator names it; the operator until then. Left out when `operator`.
+    #[serde(default, skip_serializing_if = "Deployers::is_default")]
+    pub deployers: Deployers,
+}
+
+/// Who may install apps on a cluster ([`Governance::deployments`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployments {
+    /// Any account.
+    #[default]
+    Open,
+    /// Only deployers someone granted. The operator may move a cluster from
+    /// `open` to `granted` once; never back.
+    Granted,
+}
+
+impl Deployments {
+    /// Whether this is the default (`open`), which the JSON leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Open
+    }
+}
+
+/// Who grants deployers on a cluster ([`Governance::deployers`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployers {
+    /// The operator, with its key.
+    #[default]
+    Operator,
+    /// The cluster's owner, once the operator names it (a dedicated cluster
+    /// handed to its customer).
+    Owner,
+}
+
+impl Deployers {
+    /// Whether this is the default (`operator`), which the JSON leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Operator
+    }
 }
 
 impl Governance {
     /// The bytes a quote binds: the JSON, fields in declaration order
     /// (`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`, what
-    /// `JSON.stringify` writes for the same object too).
+    /// `JSON.stringify` writes for the same object too). `deployments` and
+    /// `deployers` follow only when not the default, so a client that
+    /// recomputes the binding keeps them, in this order, when present.
     #[must_use]
     pub fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
@@ -902,5 +958,37 @@ mod tests {
         assert!(p.allowed_tcb_statuses.is_empty()); // UpToDate only
         assert!(!p.accept_mock);
         assert!(p.require_app_hash);
+    }
+
+    /// A cluster deployed with the defaults binds the bytes it bound before
+    /// `deployments` and `deployers` existed, so its receipt keys verify for
+    /// clients that know neither; a granted cluster binds both, after the
+    /// other three, and an attested document without them reads as the
+    /// defaults.
+    #[test]
+    fn the_default_governance_binds_the_bytes_it_did_before_deployers() {
+        assert_eq!(
+            Governance::default().canonical(),
+            br#"{"releases":"owner","appUpgrades":"owner","outbound":"owner"}"#
+        );
+        let granted = Governance {
+            deployments: Deployments::Granted,
+            deployers: Deployers::Owner,
+            ..Governance::default()
+        };
+        assert_eq!(
+            String::from_utf8(granted.canonical()).unwrap(),
+            r#"{"releases":"owner","appUpgrades":"owner","outbound":"owner","deployments":"granted","deployers":"owner"}"#
+        );
+        assert_ne!(
+            receipt_key_binding(&[1; 32], &granted),
+            receipt_key_binding(&[1; 32], &Governance::default())
+        );
+        let old: Governance = serde_json::from_slice(
+            br#"{"releases":"operator","appUpgrades":"owner","outbound":"owner"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.deployments, Deployments::Open);
+        assert_eq!(old.deployers, Deployers::Operator);
     }
 }

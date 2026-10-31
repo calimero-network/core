@@ -43,7 +43,12 @@ is its command line.
   (Noise IK with its own transport key, `x-calimero-node: <id>`);
   `Node::identify_peer` attests the claimed node's registered address itself and
   takes the claim only if that quote names the proven key (cached by key; the
-  quote's release with it). `api::peer` replaces the bare cluster-secret check
+  quote's release with it). That attestation, and the one before a channel to
+  a peer opens (`Node::connected`), runs in a task of its own (`node::detach`,
+  one per caller or peer at a time, `MAX_DETACHED`): on TDX it takes about a
+  second, longer than the one heartbeat openraft gives an RPC, and dropped
+  with the RPC it never finished (regression:
+  `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
   (`view`, `call`, `events`, `storage`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
@@ -55,6 +60,19 @@ is its command line.
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
+- **Raft addressee** (`PeerTransport::send`, `api::internal_raft`): the sender check above
+  covers one end of a Raft message; the other is its addressee. Every Raft message names the
+  node it is for (`target`), and a node that is not that node refuses it with `421 NOT_ADDRESSEE`.
+  So a genuine member's message that reaches the wrong node (a reused port, a node moved or
+  replaced) cannot move that node's term or log. Regression:
+  `a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy`. Both cases are counted
+  in `calimero_raft_misaddressed_total{reason="not_addressee"|"no_target"}`. **Transition:** a
+  message without `target` comes from a peer on a release before this one (rc.4 and earlier). This
+  release accepts it, counts it as `no_target`, and warns at most once per
+  `api::NO_TARGET_WARN_EVERY` (60 s; one slot per process, taken by compare-and-swap; the count in
+  between is in the metric). The release after this one refuses a missing `target` too
+  (`RaftBody::target` stops being optional). Ship that only once every node runs this release,
+  which `no_target` at zero on every node shows.
 - **Decisions carry proofs** (`proof.rs`, `system::authorize`, run before every command):
   consent is logged as `{ subject, method, args, nonce, assertion }`
   (`api::consent` keeps the nonce in `Pending::Confirm`); `apply` rebuilds
@@ -174,6 +192,42 @@ is its command line.
   it installed), recorded as `system::OPERATOR`, which no account can be and
   which no account quota counts. Owner side: the passkey routes below. Whichever
   party does not hold a decision gets 403 (API) and a refusal (`apply`).
+  Two more rules, `--deployments open|granted` and `--deployers
+  operator|owner` (`Governance::deployments`, `deployers`; below), are left
+  out of the governance JSON when default, so a default cluster attests the
+  bytes it did before (`the_default_governance_binds_the_bytes_it_did_before_deployers`);
+  the one change after genesis is `SetDeploymentsGranted` (open to granted,
+  operator-signed, never back).
+- **Deployers** (`SystemState::deployers`, `cluster_owner`, `may_deploy`):
+  where deployments are `granted`, an account installs (`InstallPackage`,
+  `PutBundle`) only with a live `DeployerGrant` of its own (`account:<id>`) or,
+  holding `MANAGE_APPLICATION` org-wide, of its organization (`org:<id>`);
+  `until` is judged at the command's own time (`installedAt`, `PutBundle::at`),
+  never a node's clock. The API refuses first, before any registry fetch,
+  verification or store (`Node::refuse_undeployable` in
+  `install_from_registry`, `install_upload` and `POST /bundles`; `403
+  DEPLOY_NOT_GRANTED`); `apply` refuses again (`system::NOT_A_DEPLOYER`). So
+  does `POST /apps` (and an upgrade run, the consent page) where it would
+  install a release from the registry first; an instance of a release the
+  caller already sees needs no grant. The operator's installs never need one.
+  Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
+  (`POST /ops/deployers`, `DELETE /ops/deployers/{key}` or `POST
+  /ops/deployers/{key}/revoke`; `cluster /
+  __grant_deployer / { deployer, until }`, `__revoke_deployer / { deployer }`;
+  `at` is not signed: the 428 and the signed retry are two requests) until,
+  with `deployers: owner`, the operator names the owner once
+  (`SetClusterOwner`, `POST /ops/cluster-owner`, `__cluster_owner`); from then
+  on only the owner account or the owner org's org-wide `MANAGE_APPLICATION`
+  holders, with passkey consent (`POST /deployers`, `DELETE
+  /deployers/{key}`), and the operator's signature is refused
+  (`SystemState::deployers_owner`, `authorize`). Revoking keeps what was
+  installed and running. `GET /deployers` for the operator and the owner side.
+  Regressions: `only_granted_accounts_install_on_a_granted_cluster`,
+  `an_open_cluster_installs_as_before_until_the_operator_grants_deployments`,
+  `the_cluster_owner_grants_deployers_once_the_operator_names_it`
+  (`tests/deployers.rs`), `on_a_granted_cluster_only_deployers_install`,
+  `deployer_grants_carry_the_operators_signature_then_the_owners_passkey`,
+  `deployments_are_granted_one_way` (`system::tests`).
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
@@ -254,9 +308,10 @@ is its command line.
   sets, blob marks. App code's overlay answers nothing there and a run that tries is
   refused; the host writes with `Overlay::set_host` and reads with
   `Storage::host_get`. Rotations are judged by `rotation_refusal`.
-- **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
-  read the system state through `sys_fresh` (a read index), so a removal committed
-  elsewhere holds before the next request.
+- **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
+  `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
+  (a read index), so a removal committed elsewhere holds before the next request. Regression:
+  `an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and

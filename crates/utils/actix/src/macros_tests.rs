@@ -113,6 +113,9 @@ impl Handler<GetCurrentName> for MyActor {
 
 #[actix::test]
 async fn test() -> eyre::Result<()> {
+    // Paused time: the stream's ticks fire in virtual time only, so no stall moves the sample.
+    time::pause();
+
     let names = stream::iter([
         "Alice", "Bob", "Carol", "Dave", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy", "Kevin",
         "Larry", "Mallory", "Nancy", "Olivia", "Peggy", "Quentin", "Ralph", "Steve", "Trent",
@@ -129,15 +132,14 @@ async fn test() -> eyre::Result<()> {
     }
     .start();
 
-    let mut interval = time::interval(time::Duration::from_secs(2));
-
-    let _ignored = interval.tick().await;
+    time::sleep(time::Duration::from_millis(100)).await;
 
     let total = addr.send(GetTotal).await?;
 
     assert_eq!(50, total);
 
-    let _ignored = interval.tick().await;
+    // Ticks land at 0, 200, .. ms: Judy is the tenth, at 1800 ms, and Kevin follows at 2000 ms.
+    time::sleep(time::Duration::from_millis(1800)).await;
 
     let e = addr.send(GetCurrentName).await?;
 

@@ -3362,11 +3362,13 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             releases: owner,
             app_upgrades: owner,
             outbound: owner,
+            ..Governance::default()
         },
         Governance {
             releases: operator,
             app_upgrades: operator,
             outbound: operator,
+            ..Governance::default()
         },
         // A managed cluster whose operator rolls out node releases, while
         // each app's owner keeps its code and its outbound hosts.
@@ -3374,6 +3376,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             releases: operator,
             app_upgrades: owner,
             outbound: owner,
+            ..Governance::default()
         },
     ];
     for g in deployments {
@@ -6334,5 +6337,157 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
     assert!(
         matches!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED" | "NOT_LEADER")),
         "{e}"
+    );
+}
+
+/// A Raft message the sender meant for one node, reaching another (an address
+/// now answered by another node of the cluster: a reused port, a node moved or
+/// replaced), is refused there, never handled as that node's own. It comes over
+/// the real peer path (`peer_post`: an identified channel, `api::peer`) from
+/// the genuine leader, so the sender and membership checks (F4) pass: only the
+/// addressee is wrong. A message without an addressee (a peer on the previous
+/// release) is still handled, and both are counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy() {
+    let c = Cluster::start(3).await;
+    let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
+    let leader = (0..3)
+        .find(|i| node(*i).system.status().is_leader)
+        .expect("a system leader");
+    let followers: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
+    let (meant, reached) = (followers[0], followers[1]);
+    let leader_id = node(leader).config.node_id;
+    let meant_id = node(meant).config.node_id;
+    let reached_id = node(reached).config.node_id;
+    let before = node(leader).system.status();
+    // `calimero_raft_misaddressed_total{reason}` on the node the messages reach.
+    let ops = c.client(reached);
+    ops.use_api_key("ops-secret").await;
+    let misaddressed = || async {
+        let text = ops.get_text("ops/metrics").await.unwrap();
+        let count = |reason: &str| -> u64 {
+            let prefix = format!("calimero_raft_misaddressed_total{{reason=\"{reason}\"}} ");
+            text.lines()
+                .find_map(|l| l.strip_prefix(prefix.as_str()))
+                .unwrap_or_else(|| panic!("no {prefix} in the metrics"))
+                .parse()
+                .unwrap()
+        };
+        (count("not_addressee"), count("no_target"))
+    };
+    let counted_before = misaddressed().await;
+
+    // The leader's heartbeat at a newer term, with nothing to append, meant
+    // for `meant`. Had the reached node taken it as its own, it would move to
+    // that term and refuse the leader's appends at the old one, and the group
+    // would hold an election.
+    let term = before.term + 10;
+    let heartbeat = json!({
+        "group": 1,
+        "target": meant_id,
+        "rpc": { "Append": {
+            "vote": { "leader_id": { "term": term, "node_id": leader_id }, "committed": true },
+            "prev_log_id": null,
+            "leader_commit": null,
+            "entries": [],
+        } },
+    });
+    let refused = node(leader)
+        .peer_post(&c.urls[reached], "internal/raft", &heartbeat)
+        .await
+        .expect_err("a message for another node must be refused");
+    let refused = format!("{refused:#}");
+    assert!(refused.contains("NOT_ADDRESSEE"), "{refused}");
+    assert!(
+        refused.contains(&format!("for node {meant_id}; this is node {reached_id}")),
+        "{refused}"
+    );
+
+    // No addressee (a peer on the previous release): handled as before. The
+    // leader's vote for a term long past changes nothing and is answered as a
+    // vote.
+    let stale_vote = json!({
+        "group": 1,
+        "rpc": { "Vote": {
+            "vote": { "leader_id": { "term": 0, "node_id": leader_id }, "committed": false },
+            "last_log_id": null,
+        } },
+    });
+    let answered = node(leader)
+        .peer_post(&c.urls[reached], "internal/raft", &stale_vote)
+        .await
+        .expect("a message without an addressee is handled");
+    assert!(answered.get("Vote").is_some(), "{answered}");
+
+    // Both are counted where they arrived: one refused, one accepted without an
+    // addressee. Nothing else in this process sends either.
+    let counted = misaddressed().await;
+    assert_eq!(
+        (counted.0 - counted_before.0, counted.1 - counted_before.1),
+        (1, 1),
+        "not_addressee and no_target deltas"
+    );
+
+    // The group is unharmed: same leader, same term on every node, and a write
+    // through the node the message reached commits.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for i in 0..3 {
+        let s = node(i).system.status();
+        assert_eq!(s.term, before.term, "node {} term moved", i + 1);
+        assert_eq!(s.leader, before.leader, "node {} leader moved", i + 1);
+    }
+    let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
+}
+
+/// eu-shared-2 (and `bababa`) never kept a system leader: a TDX node attests a
+/// peer in about a second (Intel's collateral is fetched each time), and
+/// openraft gives an append one heartbeat (200 ms there). Each RPC began the
+/// attestation, was dropped at its deadline, and the next began it again, so
+/// the channel to the peer never opened and the peer never learned who called.
+/// Attestation here takes ten heartbeats; the cluster still forms and writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster() {
+    let c = tokio::time::timeout(
+        Duration::from_secs(60),
+        Cluster::start_with(3, |config| {
+            calimero_node::testing::slow_attestation(&config.public_url, Duration::from_secs(1));
+        }),
+    )
+    .await
+    .expect("the cluster formed");
+    let (_alice, _auth) = tokio::time::timeout(Duration::from_secs(30), signed_up(&c, 1, "alice"))
+        .await
+        .expect("a system write committed");
+}
+
+/// A system write the group cannot commit answers `503 UNAVAILABLE` in
+/// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
+/// system group could not commit, and a sign-up and a node registration each
+/// waited until the proxy in front of merod cut them at 30 s, so the caller
+/// saw a dropped connection rather than why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_write_that_cannot_commit_answers_unavailable() {
+    let mut c = Cluster::start(3).await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .expect("a system leader");
+    // A first account, so the cluster is known to commit while it has its voters.
+    let _ = signed_up(&c, leader, "alice").await;
+    for i in (0..3).filter(|i| *i != leader) {
+        c.stop(i).await;
+    }
+
+    let bob = c.client(leader);
+    let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let started = std::time::Instant::now();
+    let answer = tokio::time::timeout(Duration::from_secs(60), bob.sign_up(&mut pk, "bob")).await;
+    let waited = started.elapsed();
+    let e = answer
+        .expect("the write must be answered, not left hanging past 60 s")
+        .expect_err("a write the system group cannot commit must fail");
+    assert_eq!(e.code(), Some("UNAVAILABLE"), "{e}");
+    assert!(
+        waited < Duration::from_secs(25),
+        "answered only after {waited:?}"
     );
 }

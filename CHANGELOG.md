@@ -70,6 +70,55 @@ recreated, and clients must answer the new `412`/`428` step-ups.
   `scripts/run-workflows.py`, `scripts/workflows-{baseline,durations,smoke}.json`,
   `scripts/check-scenario-coverage.py` and `MEROBOX_REF` are gone.
 
+## [1.0.0-rc.6] - 2026-10-31
+
+### Added
+
+- **Deployer grants.** `merod --deployments open|granted` and `--deployers
+  operator|owner` (`MEROD_DEPLOYMENTS`, `MEROD_DEPLOYERS`), attested with the
+  rest of the governance. Where deployments are `granted`, only an account
+  holding a live deployer grant (its own, or as an org-wide
+  `MANAGE_APPLICATION` holder of an organization holding one) installs
+  packages or uploads bundles (`403 DEPLOY_NOT_GRANTED`, refused again at
+  apply); anyone still signs up and creates instances of the releases they see.
+  The operator grants and revokes with its key (`POST /ops/deployers`,
+  `DELETE /ops/deployers/{key}`, or its
+  signed form `POST /ops/deployers/{key}/revoke`), moves an existing cluster from `open` to
+  `granted` once (`POST /ops/deployments/granted`), and, with `--deployers
+  owner`, names the cluster's owner once (`POST /ops/cluster-owner`), who then
+  grants with a passkey (`POST /deployers`, `DELETE /deployers/{key}`) and the
+  operator no longer can. `GET /deployers` lists them. A cluster with the
+  defaults attests exactly the governance bytes it did before; a client that
+  recomputes the receipt-key binding (mero-js, if it does) must keep
+  `deployments` and `deployers`, after the other three fields, when the
+  attested governance carries them.
+
+## [1.0.0-rc.5] - 2026-10-30
+
+### Security
+
+- **wasmtime 50.0.1**, for four RustSec advisories against 50.0.0 (#4792).
+
+### Fixed
+
+- **A TDX cluster keeps a system leader.** Since 1.0.0-rc.4 a node attests
+  each peer before it opens a channel to it, and attests each calling peer
+  before it takes its messages; on TDX that takes about a second (Intel's
+  collateral is fetched each time), and openraft drops a Raft RPC after one
+  heartbeat (200 ms). The attestation ran inside the RPC, so every attempt was
+  dropped halfway and the next began again: the channels never opened,
+  elections never settled, and system writes hung. Both now run in a task of
+  their own that a dropped RPC does not abort, one per peer at a time; the
+  next RPC finds the channel open and the caller known. Regression:
+  `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`.
+- A system write (sign-up, passkey, org, node registration) that the system
+  group cannot commit answers `503 UNAVAILABLE` within 10 s, naming the leader,
+  voters, learners and the members behind the leader, instead of waiting until
+  a proxy cuts the connection.
+- A stopped node reports its store closed only once RocksDB has released its
+  lock, so a restart or `merod inspect` right after a stop no longer finds the
+  store still locked (#4801).
+
 ## [1.0.0-rc.4] - 2026-10-30
 
 ### Security

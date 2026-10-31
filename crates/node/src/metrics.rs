@@ -74,6 +74,8 @@ struct Registry {
     request_bytes: BTreeMap<&'static str, u64>,
     /// group → response body bytes, where the length was known up front.
     response_bytes: BTreeMap<&'static str, u64>,
+    /// Raft messages whose addressee did not check out, by [`RaftAddressee`].
+    raft_misaddressed: BTreeMap<&'static str, u64>,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
@@ -116,6 +118,36 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Why `internal/raft` counted a message ([`raft_misaddressed`]).
+#[derive(Clone, Copy, Debug)]
+pub enum RaftAddressee {
+    /// Addressed to another node: refused (`421 NOT_ADDRESSEE`).
+    NotAddressee,
+    /// No addressee (a peer on a release before it): accepted with a warning
+    /// for now, refused from the release after.
+    NoTarget,
+}
+
+impl RaftAddressee {
+    const ALL: [Self; 2] = [Self::NotAddressee, Self::NoTarget];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::NotAddressee => "not_addressee",
+            Self::NoTarget => "no_target",
+        }
+    }
+}
+
+/// Count one Raft message whose addressee did not check out; returns the
+/// count so far for `reason`.
+pub fn raft_misaddressed(reason: RaftAddressee) -> u64 {
+    let mut r = registry();
+    let n = r.raft_misaddressed.entry(reason.label()).or_default();
+    *n += 1;
+    *n
+}
+
 /// Read the process's start time; called once when the node starts serving.
 pub fn mark_started() {
     let _ = *STARTED;
@@ -144,7 +176,8 @@ pub fn group(route: &str) -> &'static str {
         _ if route.starts_with("/orgs") || route.starts_with("/invites") => "orgs",
         _ if route.starts_with("/bundles")
             || route.starts_with("/packages")
-            || route.starts_with("/publishers") =>
+            || route.starts_with("/publishers")
+            || route.starts_with("/deployers") =>
         {
             "packages"
         }
@@ -303,6 +336,18 @@ pub fn render(out: &mut String) {
         let _w = writeln!(
             out,
             "calimero_http_errors_total{{group=\"{group}\",code=\"{code}\"}} {n}"
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_raft_misaddressed_total Raft messages from peers whose addressee did not check out: not_addressee (refused, 421 NOT_ADDRESSEE), no_target (accepted with a warning this release).\n# TYPE calimero_raft_misaddressed_total counter"
+    );
+    for reason in RaftAddressee::ALL {
+        let label = reason.label();
+        let n = r.raft_misaddressed.get(label).copied().unwrap_or(0);
+        let _w = writeln!(
+            out,
+            "calimero_raft_misaddressed_total{{reason=\"{label}\"}} {n}"
         );
     }
     let _w = writeln!(
@@ -693,6 +738,8 @@ mod tests {
         assert_eq!(group("/internal/raft"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
+        // Who may install packages is a packages question.
+        assert_eq!(group("/deployers/{key}"), "packages");
         assert_eq!(group("/consent/{request}/result"), "consent");
         assert_eq!(group("/releases"), "attestation");
         assert_eq!(group("/publishers/{signer}"), "packages");
