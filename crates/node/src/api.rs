@@ -6353,31 +6353,27 @@ async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> A
 /// A deployment as anyone may read it, by id: its name, its owner's kind
 /// and name, and the apps it offers with their releases; for frontends and
 /// the customer's consent. Never its managers, members or customers.
+/// Read on fresh state: a replica behind would still serve a deployment
+/// deleted, or an app withdrawn, elsewhere.
 async fn deployment_get(State(node): State<Arc<Node>>, Path(id): Path<String>) -> ApiResult {
-    let read = || {
-        node.sys(|s| {
-            let d = s.deployments.get(&id)?;
-            let (kind, name) = match &d.owner {
-                Deployer::Account(a) => ("account", s.accounts.get(a).map(|a| a.name.clone())),
-                Deployer::Org(o) => ("org", s.orgs.get(o).map(|o| o.name.clone())),
-            };
-            Some(json!({
-                "id": d.id,
-                "name": d.name,
-                "owner": { "kind": kind, "name": name },
-                "apps": d.apps.iter().map(|(app, o)| json!({
-                    "app": app, "package": o.package, "version": o.version,
-                })).collect::<Vec<_>>(),
-            }))
-        })
-    };
-    if let Some(v) = read() {
-        return Ok(Json(v));
-    }
     let _caught_up = node.sys_fresh().await;
-    read()
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found("no such deployment"))
+    node.sys(|s| {
+        let d = s.deployments.get(&id)?;
+        let (kind, name) = match &d.owner {
+            Deployer::Account(a) => ("account", s.accounts.get(a).map(|a| a.name.clone())),
+            Deployer::Org(o) => ("org", s.orgs.get(o).map(|o| o.name.clone())),
+        };
+        Some(json!({
+            "id": d.id,
+            "name": d.name,
+            "owner": { "kind": kind, "name": name },
+            "apps": d.apps.iter().map(|(app, o)| json!({
+                "app": app, "package": o.package, "version": o.version,
+            })).collect::<Vec<_>>(),
+        }))
+    })
+    .map(Json)
+    .ok_or_else(|| ApiError::not_found("no such deployment"))
 }
 
 /// One customer organization of a deployment, as its listing counts it.

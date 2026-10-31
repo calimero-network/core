@@ -551,3 +551,60 @@ async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader(
         "the bytes outlived the only app that marked them"
     );
 }
+
+/// A deployment deleted through the system leader is gone for an anonymous
+/// reader on a follower that has not applied the delete yet: the public read
+/// must not serve the copy that follower still holds (the intermittent
+/// `deployments::accounts_and_organizations_own_deployments_their_managers_change`
+/// failure).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, mut alice_pk) = signed_up(&c, leader, "alice").await;
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = alice
+        .post_confirmed(
+            "deployments",
+            json!({ "name": "labs", "owner": { "account": alice_id } }),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_owned();
+    let follower_node = &c.nodes[follower].node;
+    let here = || follower_node.sys(|s| s.deployments.contains_key(&id));
+    for _ in 0..100 {
+        if here() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let anonymous = c.client(follower);
+    let shown = anonymous.get(&format!("deployments/{id}")).await;
+    assert!(shown.is_ok(), "{:?}", shown.err());
+
+    // Hold the follower, delete through the leader, then read anonymously
+    // on the follower.
+    c.hold[follower].send_replace(true);
+    let _deleted = alice
+        .delete_confirmed(&format!("deployments/{id}"), &mut alice_pk)
+        .await
+        .unwrap();
+    assert!(here(), "the follower must still hold the deployment");
+    let read = tokio::spawn({
+        let id = id.clone();
+        async move { anonymous.get(&format!("deployments/{id}")).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[follower].send_replace(false);
+    let err = read
+        .await
+        .unwrap()
+        .expect_err("a deployment deleted before the request must be gone");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}

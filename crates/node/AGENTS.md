@@ -209,14 +209,15 @@ is its command line.
   `AppRecord::deployment`; `CreateApp` checks the offer again
   (`offers_bundle`). `UninstallPackage` refuses an offered release (`offered`);
   `DeleteOrg` refuses an org that owns a deployment. Reads: `GET /deployments`
-  (what the caller manages), `GET /deployments/{id}` (public: name, owner kind
-  and name, offers), `GET /deployments/{id}/orgs` (managers, `sys_fresh`:
+  (what the caller manages), `GET /deployments/{id}` (public, on fresh state:
+  name, owner kind and name, offers), `GET /deployments/{id}/orgs` (managers, `sys_fresh`:
   customer orgs' id, name, instance count, apps and versions, first created).
   Not done: the spec's migration of old installs into deployments, transfer,
   the lockout guard, the consent page naming the deployment. Regressions:
   `tests/deployments.rs`, `deployments_are_their_managers_and_keep_what_they_offer`,
   `deployment_changes_carry_their_managers_consent`,
-  `state_from_before_deployments_reads_with_none_and_writes_as_before`.
+  `state_from_before_deployments_reads_with_none_and_writes_as_before`,
+  `a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
