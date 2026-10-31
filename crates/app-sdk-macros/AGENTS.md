@@ -18,14 +18,15 @@
 
 Every object's keys are written in sorted order (`types::canonical`, never `serde_json::Map` order), so the bytes do not depend on serde_json's `preserve_order`, which the core workspace unifies in through dcap-qvl; the unit tests turn that feature on to prove it.
 
-`{"abiVersion":1,"world":"calimero:app@0.5.0","state":{"fields":{field:kind},"search":{field:[textField,..]},"version":N},"methods":{name:{"kind":"init|call|view|timer","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
+`{"abiVersion":1,"world":"calimero:app@0.5.0","state":{"fields":{field:kind},"search":{field:[textField,..]},"version":N},"methods":{name:{"kind":"init|call|view|timer|action","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"][,"allowAction"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
 
 ## Rules
 
 - Generated code names only `::calimero_app_sdk::..` paths (`__private` for support code, `__private::serde` via `#[serde(crate = ..)]`); an app depends on the SDK and nothing else from us.
 - `#[app::error]` / `#[app::event]` must be in the `#[app::logic]` module: their ABI constants shadow the glob-imported `__private::abi_defaults` there. Elsewhere, the ABI silently lists none. A second enum of either kind in one module is refused (the constant is defined twice).
 - A field the host enforces needs an `abiVersion` bump (D51); free-form keys (`params`, `returns`, `errors`, `events`) are ignored by nodes.
-- Not in this version: `#[app::action]`, `#[app::migrate]`, `#[app::on_*]`, `allow(action)`, typed `Index::..` enums (indexes are named by camelCase strings).
+- `#[app::action]` (D12): no `self`, first parameter `ctx: &mut ActionCtx` (not an argument; the dispatcher passes `ActionCtx::current()`), ABI kind `action`; no `confirm`, `public` or `allow(action)` on it. `#[app::allow(action)]` writes `"allowAction": true`: only the app's own actions call the method (the node refuses clients, `Forbidden`).
+- Not in this version: `#[app::migrate]`, `#[app::on_*]`, typed `Index::..` enums (indexes are named by camelCase strings).
 
 ## Verify
 

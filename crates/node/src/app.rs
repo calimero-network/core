@@ -280,6 +280,8 @@ pub(crate) mod rows {
     pub const COUT: u8 = b'o';
     /// A component's dead letters (D29): `d ‖ n`.
     pub const CDEAD: u8 = b'd';
+    /// A component's pending actions (D17, `crate::component::action`): `a ‖ id`.
+    pub const CACT: u8 = b'a';
 
     pub fn corder(class: u8, n: u64) -> Vec<u8> {
         let mut k = vec![CORDER, class];

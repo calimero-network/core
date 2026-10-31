@@ -169,3 +169,28 @@ pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), St
     });
     Ok(())
 }
+
+/// Actions run only in a component on the engine (the harness); the host target has none.
+const NO_ACTIONS: &str = "actions run only in a component (use the testing harness)";
+
+pub fn start_action(method: &str, _args: &[u8]) -> std::result::Result<String, String> {
+    Ok(format!("a.mock.{method}"))
+}
+
+pub fn action_key() -> String {
+    "a.mock".to_owned()
+}
+
+pub fn action_view(_method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    Err(NO_ACTIONS.to_owned())
+}
+
+pub fn action_call(_method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    Err(NO_ACTIONS.to_owned())
+}
+
+pub fn fetch(
+    _request: &crate::action::Request,
+) -> std::result::Result<crate::action::Response, String> {
+    Err(NO_ACTIONS.to_owned())
+}

@@ -310,7 +310,8 @@ is its command line.
   `placement_across_zones_keeps_to_approved_releases`, `placement::tests`.
 - **Outbound HTTPS** (`calimero-outbound`): `Config::outbound` from
   `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
-  `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
+  `call_local`'s runs (calls, follow-ups, timers; not a read-only member's) and to a
+  component's actions (`NodeHttp`, "Component executor"), for
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
   the account, or for an org whoever holds `MANAGE_APPLICATION` org-wide, with
@@ -792,7 +793,7 @@ API and system group. What differs from the wasmer path:
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
   `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses event
-  handlers, TEE runs and outbound HTTPS to a component; a wasmer app's xcall into a
+  handlers and TEE runs to a component; a wasmer app's xcall into a
   component, and a component's into a wasmer app, are refused (`node::COMPONENT_REFUSES`,
   a dead letter).
 - **Xcalls** (D13, D25, D29, `component/xcall.rs`): an `Ok` entry's `Outcome::xcalls`
@@ -838,6 +839,26 @@ API and system group. What differs from the wasmer path:
   gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
   Derived, in memory, dropped with the app group. Test:
   `views_search_a_components_tables_as_they_change`.
+- **Actions** (D12, D17, D22, D27, S9, R14; `component/action.rs`): a client's call of an
+  `#[app::action]` method (`abi_check` lets an account or API key start one) logs an `Ok`
+  call whose outcome carries `ActionOut { id: a.<term>.<seq>.0 }` and answers
+  `{ actionId }`; `start-action` in a call or timer does the same from the run. Apply
+  records it pending (`rows::CACT ‖ id`, `ActionsHead::pending`, at most
+  `MAX_PENDING_ACTIONS`) with the starter's `Caller` and the entry time. The leader's
+  timer poll (`Node::run_actions`) runs pending ones it is not running in a pool of
+  `MAX_ACTION_WORKERS` (`action_slots`): `attempt_action` on a blocking thread, `kind =
+  action`, `Budget::action()` (10 s), the starter as caller, monotonic clock at the start;
+  `NodeAction` serves `view` (`Node::view`, strong) and `call` (`call_component` with the
+  D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
+  the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
+  (the signed release's prefixes, the owner's approval, the operator's hosts,
+  `{{secret:..}}`, one request per run). The end is logged as `componentActionEnd`: a
+  timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
+  trap or removed method fails at once; a failure sends `ActionFailed { actionId,
+  method, reason }` to the starter (an event with an `Accounts` audience) and runs
+  `onActionFailed` as the starter. A new leader resumes what is pending; an end that
+  another leader logged first changes nothing. Test:
+  `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are

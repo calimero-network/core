@@ -9,6 +9,10 @@ use ciborium::Value;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
+use crate::action::{
+    subcall_key, ActionHost, ActionStart, HttpHost, HttpRequest, HttpResponse, NoHttp,
+    MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
+};
 use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::overlay::{Cursor, Overlay};
 use crate::search::{
@@ -61,7 +65,8 @@ pub const EMIT_UNKNOWN_TEAM: &str = "unknown team";
 pub const EMIT_FOREIGN_ORG: &str = "audience names another org";
 pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
-const ACTIONS_DISABLED: &str = "actions are not enabled";
+/// The refusal of an `action.*` call outside an action, or without the node's runner.
+const NOT_AN_ACTION: &str = "only an action has an action context";
 /// xcalls one run may send (D25).
 pub const MAX_XCALLS: usize = 100;
 /// Bytes of an xcall's target app id or method name.
@@ -87,6 +92,14 @@ pub struct HostCore {
     dir: Arc<dyn Directory>,
     blobs: Arc<dyn BlobHost>,
     search: Arc<dyn SearchHost>,
+    action: Option<Arc<dyn ActionHost>>,
+    http: Arc<dyn HttpHost>,
+    /// Actions this run started (D17).
+    started: Vec<ActionStart>,
+    /// Per (method, args hash), the calls this action made so far (D27).
+    occurrences: BTreeMap<(String, Vec<u8>), u32>,
+    subcalls: u32,
+    http_requests: u32,
     overlay: Overlay,
     writes: u32,
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
@@ -127,6 +140,12 @@ impl HostCore {
             dir,
             blobs: Arc::new(NoBlobs),
             search: Arc::new(NoSearch),
+            action: None,
+            http: Arc::new(NoHttp),
+            started: Vec::new(),
+            occurrences: BTreeMap::new(),
+            subcalls: 0,
+            http_requests: 0,
             overlay: Overlay::default(),
             writes: 0,
             run_bytes: 0,
@@ -154,6 +173,20 @@ impl HostCore {
     #[must_use]
     pub fn with_search(mut self, search: Arc<dyn SearchHost>) -> Self {
         self.search = search;
+        self
+    }
+
+    /// The node's runner for an action (D12, D17): its key, views and calls.
+    #[must_use]
+    pub fn with_action(mut self, action: Arc<dyn ActionHost>) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    /// The node's outbound gate for an action's HTTP (S9); without it nothing is sent.
+    #[must_use]
+    pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
+        self.http = http;
         self
     }
 
@@ -359,17 +392,32 @@ impl HostCore {
         Ok(id)
     }
 
-    /// Starts a durable action (D17): allowed in calls and timers; not enabled in this
-    /// milestone, so the guest gets the WIT `result` error.
+    /// Starts a durable action (D17): calls and timers only. The action is queued on the
+    /// outcome, logged as started with the entry only if the run ends `Ok`, and run by the
+    /// leader's runner after. Its key (`a.<term>.<seq>.<n>`, from the run's unique ids) is
+    /// returned. More than [`MAX_STARTED_ACTIONS`] is the WIT result's error.
     pub fn start_action(
         &mut self,
-        _method: &str,
-        _args: &[u8],
+        method: &str,
+        args: &[u8],
     ) -> Result<Result<String, String>, HostDenied> {
         if !matches!(self.inv.kind, InvocationKind::Call | InvocationKind::Timer) {
             return Err(self.denied("start_action"));
         }
-        Ok(Err(ACTIONS_DISABLED.to_owned()))
+        if self.started.len() >= MAX_STARTED_ACTIONS {
+            return Ok(Err("too many actions started".to_owned()));
+        }
+        if method.is_empty() || method.starts_with("__") {
+            return Ok(Err("not an action".to_owned()));
+        }
+        self.charge(method.len().saturating_add(args.len()))?;
+        let id = format!("a.{}", self.unique_id()?);
+        self.started.push(ActionStart {
+            id: id.clone(),
+            method: method.to_owned(),
+            args: args.to_vec(),
+        });
+        Ok(Ok(id))
     }
 
     // --- events, xcall, blobs, action ------------------------------------------------
@@ -524,24 +572,73 @@ impl HostCore {
         Ok(self.search.query(query))
     }
 
+    /// This action run's key (D17): actions only.
     pub fn action_key(&self) -> Result<String, HostDenied> {
-        Err(HostDenied::new(ACTIONS_DISABLED))
+        Ok(self.action_host()?.key())
     }
 
+    /// Runs view `method` for the action (D12).
     pub fn action_view(
         &mut self,
-        _method: &str,
-        _args: &[u8],
+        method: &str,
+        args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        Err(HostDenied::new(ACTIONS_DISABLED))
+        self.count_subcall()?;
+        Ok(self.action_host()?.view(method, args))
     }
 
+    /// Runs `method` as one logged call for the action, under the D27 key of this
+    /// (method, args) pair's next occurrence in the run.
     pub fn action_call(
         &mut self,
-        _method: &str,
-        _args: &[u8],
+        method: &str,
+        args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        Err(HostDenied::new(ACTIONS_DISABLED))
+        self.count_subcall()?;
+        let host = self.action_host()?;
+        let hash = sha_args(args);
+        let n = self
+            .occurrences
+            .entry((method.to_owned(), hash))
+            .or_insert(0);
+        let key = subcall_key(&host.key(), method, args, *n);
+        *n += 1;
+        Ok(host.call(method, args, &key))
+    }
+
+    /// Sends an action's outgoing HTTP request through the node's gate (S9). Anything but
+    /// an action traps `HostDenied`; past [`MAX_HTTP_REQUESTS`] or a body over
+    /// [`MAX_HTTP_BODY_BYTES`] the request is not sent and the guest gets the error.
+    pub fn http_send(
+        &mut self,
+        request: &HttpRequest,
+    ) -> Result<Result<HttpResponse, String>, HostDenied> {
+        if self.inv.kind != InvocationKind::Action {
+            return Err(HostDenied::new("outgoing http is only allowed in actions"));
+        }
+        if self.http_requests >= MAX_HTTP_REQUESTS {
+            return Ok(Err("too many requests in one action run".to_owned()));
+        }
+        if request.body.len() > MAX_HTTP_BODY_BYTES {
+            return Ok(Err("request body too large".to_owned()));
+        }
+        self.http_requests += 1;
+        Ok(self.http.send(request))
+    }
+
+    fn action_host(&self) -> Result<Arc<dyn ActionHost>, HostDenied> {
+        match (&self.action, self.inv.kind) {
+            (Some(host), InvocationKind::Action) => Ok(Arc::clone(host)),
+            _ => Err(HostDenied::new(NOT_AN_ACTION)),
+        }
+    }
+
+    fn count_subcall(&mut self) -> Result<(), HostDenied> {
+        if self.subcalls >= MAX_ACTION_SUBCALLS {
+            return Err(HostDenied::new("too many calls in one action run"));
+        }
+        self.subcalls += 1;
+        Ok(())
     }
 
     // --- WASI served by the host (D19) -----------------------------------------------
@@ -590,6 +687,7 @@ impl HostCore {
             },
             events: if ok { self.events } else { Vec::new() },
             xcalls: if ok { self.xcalls } else { Vec::new() },
+            actions: if ok { self.started } else { Vec::new() },
             logs: self.logs,
             usage: Usage {
                 writes: self.writes,
@@ -691,6 +789,12 @@ impl HostCore {
             HostDenied::new("rebuild is only available while migrating")
         }
     }
+}
+
+/// The SHA-256 of an action call's arguments, the D27 occurrence counter's key.
+fn sha_args(args: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(args).to_vec()
 }
 
 /// Refuses an app key over `MAX_KEY_BYTES`.
