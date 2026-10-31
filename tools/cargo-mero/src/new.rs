@@ -1,5 +1,5 @@
 //! `cargo mero new`: scaffold a standalone Calimero app from embedded templates.
-//! Replaces the "hand-copy apps/kv-store" onboarding path: the generated app
+//! Replaces the "hand-copy apps/wasmer-fixtures/kv-store" onboarding path: the generated app
 //! builds, tests, and bundles cleanly through the rest of the toolchain.
 
 use std::fs;

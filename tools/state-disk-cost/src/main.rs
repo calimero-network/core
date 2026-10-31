@@ -178,7 +178,7 @@ fn rows_of(seed: u64, f: impl FnOnce()) -> Rows {
 }
 
 /// `n` kv-store entries: `UnorderedMap<String, LwwRegister<String>>`, the
-/// layout of `apps/kv-store`.
+/// layout of `apps/wasmer-fixtures/kv-store`.
 fn kv_rows(seed: u64, n: usize) -> Rows {
     rows_of(seed, || {
         let mut map = Root::new(UnorderedMap::<String, LwwRegister<String>, MainStorage>::new);

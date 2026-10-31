@@ -11,10 +11,10 @@ accepts that write because its signer resolves to `AccountId::TEE_AUTHORITY`,
 and drops a member's attempt to write the same cell.
 
 > **Mock attestation.** The roll is unrigged only if the enclave is genuine. The
-> workflows here run with mock attestation: the namespace's TEE admission policy
-> sets `acceptMock` (`accept_mock` in the merobox step) and lists the all-zero
-> measurements a mock quote reports, and the authoring policy's `allowedMrtd`
-> does the same. Production needs a real attestation policy: `acceptMock` false,
+> scenarios here run with mock attestation: the cluster's nodes report mock
+> quotes and the cluster is every app's TEE, so no admission or authoring policy
+> is set (v1's workflows set `acceptMock` and the all-zero measurements a mock
+> quote reports). Production needs a real attestation policy: `acceptMock` false,
 > `allowedMrtd` and `allowedRtmr1` to `allowedRtmr3` naming the approved image
 > (or `signedRelease`), the real MRTD in the authoring policy, and a `merod`
 > that does not run with `--mock-tee`. See
@@ -55,8 +55,12 @@ Produces `res/tee_dice.wasm`.
 
 ## End to end
 
-`workflows/tee-dice-roll.yml` admits a mock-TEE replica, shows a roll stays
-unresolved while the namespace has no TEE authoring policy, then names the mock
-MRTD in the policy and shows the next roll resolved on the player's node. It
-needs a `merod` built with `--features mock-attestation`; the header of the
-workflow has the local command.
+`scenarios/cluster/tee-dice-roll.json` has a member ask for a roll and checks
+that the cluster's TEE resolves it into `TeeOnly` state the member's node
+reads. v1's first check (a roll staying unresolved until an authoring policy
+named the enclave) has no counterpart, since a cluster is the TEE from its
+start; the file's `comment` says so.
+
+```bash
+cargo test -p calimero-node --test scenarios -- apps/tee-dice/
+```

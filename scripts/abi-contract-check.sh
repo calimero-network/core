@@ -90,10 +90,11 @@ META="$(cargo metadata --no-deps --format-version 1)"
 
 # Resolve app directories to their package names (skip dirs with no wasm app crate).
 # CRDT-diverse apps that build-all-apps.sh omits but that exercise the CRDT
-# types (sorted_map / sorted_set / shared_storage) whose absence was the original
-# downstream breakage. Included so the corpus touches all 11 CrdtCollectionType
-# values, not just the ones in the representative set.
-EXTRA_APPS=(sorted-kv-store sorted-set-store kv-store-with-shared-storage)
+# types whose absence was the original downstream breakage (shared_storage;
+# sorted_map / sorted_set come from state-schema-conformance). Included so the
+# corpus touches all 11 CrdtCollectionType values, not just the ones in the
+# representative set.
+EXTRA_APPS=(kv-store-with-shared-storage)
 
 if [ "${#PKGS[@]}" -eq 0 ]; then
     for dir in "${APP_DIRS[@]}"; do

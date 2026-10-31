@@ -412,6 +412,160 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
     );
 }
 
+/// Every node's view of `account`'s passkeys and `org`'s members.
+async fn credentials_and_members(c: &Cluster, account: &str, org: &str) -> Vec<(usize, Value)> {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| {
+            r.node.sys(|s| {
+                (
+                    s.accounts[account].passkeys.len(),
+                    json!(s.orgs[org].members),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Before, a system leader (decision 7: possibly a node on an unapproved
+/// release) could log `AddPasskey` for any account with a credential of its
+/// own, make itself an organization's owner with `SetOrgRole`, or redeem any
+/// invite for its own account by naming the hash the log kept. Now a passkey
+/// is added only with a passkey the account already has, a role only with
+/// the actor's passkey consent, and an invite is redeemed only with a
+/// signature by the token's own key, which the log never holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_credentials_memberships_and_redemptions_are_refused() {
+    use calimero_node::system::SystemCmd;
+    let c = split_cluster().await;
+    let (alice_client, mut alice_pk, alice, _app, _bundle) = alices_app(&c).await;
+    let (bob_client, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let bob = bob_client.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice_client
+        .post("orgs", json!({ "name": "Acme" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice_client
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invite_key = calimero_node::proof::invite_key(&token);
+    assert!(
+        running(&c, 0)
+            .node
+            .sys(|s| s.invites.contains_key(&invite_key)),
+        "the log keeps the token's public key"
+    );
+    let before = credentials_and_members(&c, &alice, &org).await;
+    assert_eq!(before[0].0, 1);
+
+    // The leader's own passkey for alice's account.
+    let mut theirs = SoftAuthenticator::new("localhost", harness::ORIGIN);
+    let rp = calimero_identity::RelyingParty {
+        id: "localhost".into(),
+        origins: vec![harness::ORIGIN.into()],
+        require_uv: false,
+    };
+    let challenge = calimero_identity::random::<32>();
+    let credential =
+        calimero_identity::verify_registration(&rp, &challenge, &theirs.register(&challenge))
+            .unwrap();
+    let args = json!({ "credentialId": credential.id, "publicKey": credential.public_key });
+    let subject = format!("account:{alice}");
+    let add = |consent: Value| SystemCmd::AddPasskey {
+        account: alice.clone(),
+        credential: credential.clone(),
+        consent,
+    };
+    let make_owner = |consent: Value| SystemCmd::SetOrgRole {
+        org: org.clone(),
+        account: bob.clone(),
+        role: calimero_node::types::OrgRole::Owner,
+        actor: alice.clone(),
+        consent,
+    };
+    let owner_args = json!({ "account": bob, "role": "owner" });
+    let now = calimero_node::types::now_secs();
+    let redeem = |signature: String| SystemCmd::RedeemInvite {
+        invite_key: invite_key.clone(),
+        account: bob.clone(),
+        now,
+        signature,
+    };
+    let refused = [
+        ("a passkey without consent", add(Value::Null)),
+        (
+            "a passkey approved by itself",
+            add(consent(&mut theirs, &subject, "__add_passkey", &args)),
+        ),
+        (
+            "a passkey approved by bob",
+            add(consent(&mut bob_pk, &subject, "__add_passkey", &args)),
+        ),
+        ("an owner without consent", make_owner(Value::Null)),
+        (
+            "an owner by bob's own consent",
+            make_owner(consent(
+                &mut bob_pk,
+                &format!("org:{org}"),
+                "__set_org_role",
+                &owner_args,
+            )),
+        ),
+        (
+            "an owner by a consent to another role",
+            make_owner(consent(
+                &mut alice_pk,
+                &format!("org:{org}"),
+                "__set_org_role",
+                &json!({ "account": bob, "role": "member" }),
+            )),
+        ),
+        ("a redemption without a signature", redeem(String::new())),
+        (
+            "a redemption signed with another key",
+            redeem(calimero_node::proof::sign_invite_redeem(
+                "inv_guess",
+                &bob,
+                now,
+            )),
+        ),
+    ];
+    for (what, cmd) in &refused {
+        let e = append(&c, &serde_json::to_value(cmd).unwrap())
+            .await
+            .unwrap_err();
+        assert!(!e.starts_with("malformed"), "{what}: {e}");
+    }
+    assert_eq!(
+        credentials_and_members(&c, &alice, &org).await,
+        before,
+        "nothing applied anywhere"
+    );
+
+    // The invite still works through a node the token was given to.
+    let joined = bob_client
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(joined["org"], json!(org), "{joined}");
+}
+
 /// The decisions master added since (#4771) carry their proofs too, checked
 /// where they apply: binding a package's key to an organization needs a
 /// passkey consent of an `APPROVE_RELEASES` holder over that key's binding

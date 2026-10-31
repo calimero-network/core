@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Build what the merobox workflows (workflows/**, apps/*/workflows/**)
-install, into target/workflow-wasm/ (override with CORE_WASM_DIR), which the
-workflows name as `{{env.CORE_WASM_DIR}}`:
+"""Build what the cluster scenarios (workflows/**/scenarios/**,
+apps/*/scenarios/cluster/**; converted from the merobox workflows) install, into
+target/workflow-wasm/ (override with CORE_WASM_DIR), which the scenarios name as
+`{{env.CORE_WASM_DIR}}`:
 
 - `dist/<package>-<version>.mpk`: every migration fixture
   `workflows/app-migration/build-wasms.sh` bundles (`cargo mero bundle --dev`,
   same `--package` / `--app-version`, the no-ABI bundle and the
   frontend-release pair), plus its `app.wasm` as `<crate>.wasm`: a workflow
   installs the signed release by name and upgrades by version; and
-  outbound-probe's release (outbound.yml installs it: outbound requests are
+  outbound-probe's release (outbound.json installs it: outbound requests are
   served only to a signed release declaring its URL prefixes);
 - `<crate>.wasm` for every app under apps/ (`cargo mero build`, so each carries
   its ABI, which the node reads): a workflow uploads it as a bundle;
@@ -43,6 +44,12 @@ NOT_APPS = {
     "migration-harness-example": "an rlib: a `#[app::migrate]` example run by TestHost",
     "migrations": "the migration fixtures (FIXTURES, built by build-wasms.sh's list)",
     "rooms": "a calimero:app component (the v2 SDK), built by calimero-app-build for wasm32-wasip2, not cargo mero; the node's tests and the fault script run it",
+    "org-gated": "a calimero:app component; its scenarios/ replace the workflow (the wasmer fixture is apps/wasmer-fixtures/org-gated)",
+    "name-registry-admin": "a calimero:app component; its scenarios/ replace the workflow",
+    "components-demo": "a calimero:app component; its scenarios/ replace the workflow",
+    "kv-store-with-user-and-frozen-storage": "a calimero:app component; its scenarios/ replace the workflows",
+    "indexed-issue-tracker": "a calimero:app component; its scenarios/ replace the workflow",
+    "authored-sorted-kv-store": "a calimero:app component; its scenarios/ replace the workflow",
 }
 
 
@@ -55,11 +62,17 @@ def apps() -> list[dict]:
     package id and services (a multi-service manifest builds no crate of its
     own: each service names the crate it runs)."""
     out = []
-    for cargo in sorted(ROOT.glob("apps/*/Cargo.toml")):
+    # apps/wasmer-fixtures/<app> holds the wasmer builds of apps ported to the
+    # component SDK; they keep their crate (and wasm) names.
+    cargos = [*ROOT.glob("apps/*/Cargo.toml"), *ROOT.glob("apps/wasmer-fixtures/*/Cargo.toml")]
+    for cargo in sorted(cargos):
         d = cargo.parent
         if d.name in NOT_APPS:
             continue
         data = _cargo(d)
+        # A component crate (the v2 SDK) is built by calimero-app-build, not cargo mero.
+        if "calimero-app-sdk" in data.get("dependencies", {}):
+            continue
         pkg = data["package"]
         meta = pkg.get("metadata", {}).get("calimero", {})
         services = {s["name"]: s.get("crate", pkg["name"]) for s in meta.get("services", [])}
@@ -67,7 +80,7 @@ def apps() -> list[dict]:
             continue
         out.append(
             {
-                "app": d.name,
+                "app": d.relative_to(ROOT / "apps").as_posix(),
                 "crate": None if services else pkg["name"],
                 "package": meta.get("package") or f"com.calimero.{d.name}",
                 "services": services,

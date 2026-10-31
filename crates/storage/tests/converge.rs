@@ -12,7 +12,7 @@ use calimero_storage::collections::{Counter, MergeStrategy, Mergeable, Unordered
 use calimero_storage::testing::converge;
 use serial_test::serial;
 
-/// Mirrors `apps/team-metrics-custom`: a map of team -> win counter, with a
+/// Mirrors v1's team-metrics app with badges: a map of team -> win counter, with a
 /// custom (but correct) `Mergeable` impl. This is the issue's headline example.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -33,7 +33,7 @@ impl Mergeable for TeamMetrics {
 }
 
 // `RekeyTarget` is a supertrait of `Mergeable`: re-key the nested `teams`
-// collection deterministically (mirrors `apps/team-metrics-custom`).
+// collection deterministically (as v1's team-metrics app with badges did).
 impl calimero_storage::collections::rekey::RekeyTarget for TeamMetrics {
     fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
         calimero_storage::rekey_field_if_supported!(

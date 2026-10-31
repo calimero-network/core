@@ -1,0 +1,340 @@
+{
+  "name": "E2E KV Store - Private Subgroup / DM Privacy",
+  "description": "End-to-end privacy coverage for member-created private subgroups (the \"DM\" / \"private channel\" shape of the Slack-app stack).\nA non-admin namespace member (node-2), granted CAN_CREATE_SUBGROUP (32) and CAN_JOIN_OPEN_SUBGROUPS (4), creates a Restricted subgroup directly under the namespace root, becomes its owner/admin, adds ONLY node-3 to it, and runs a context inside it. The headline claims:\n\n  * node-3 — directly added by node-2 — can join the subgroup's\n    context and read what node-2 wrote (real, functional access).\n  * node-1 — the *namespace owner/admin* — is walled out of that\n    Restricted subgroup: it can neither `join_context` it nor `call`\n    it. Namespace-root ownership does NOT pierce a member-created\n    Restricted subgroup (the membership walk in\n    `check_group_membership` terminates at the Restricted wall, and\n    the subgroup's `admin_identity` is node-2, not node-1).\n  * Contrast: node-2 also creates an *Open* subgroup with a context.\n    node-1 — without being added to that subgroup — inherits into it\n    (admin authority cascades down an Open chain) and can join + read\n    its context. This proves the privacy boundary is *visibility*, not\n    \"who happened to be added\": flip the same subgroup to `Open` and\n    the namespace owner is back in.\n\nRecursive-invitation leakage (a namespace admin recursively inviting a third party must not mint invitations into / enumerate private subgroups it isn't in) is exercised by the `calimero-context` unit tests `create_recursive_invitations_omits_private_subgroups_inviter_not_in` and `collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in`.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  wait_for_sync x3: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "e2e-node-1",
+    "e2e-node-2",
+    "e2e-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Assert application installed",
+      "type": "assert",
+      "statements": [
+        "is_set({{app_id}})"
+      ]
+    },
+    {
+      "name": "Create namespace on node-1",
+      "type": "create_org",
+      "org_name": "Create namespace on node-1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Assert namespace created",
+      "type": "assert",
+      "statements": [
+        "is_set({{namespace_id}})"
+      ]
+    },
+    {
+      "name": "Invite node-2 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invite_node2": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node2}}",
+      "account": "e2e-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-2",
+      "outputs": {
+        "account_node2": "publicKey"
+      }
+    },
+    {
+      "name": "Invite node-3 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invite_node3": "token"
+      }
+    },
+    {
+      "name": "Node-3 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node3}}",
+      "account": "e2e-node-3"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-3",
+      "outputs": {
+        "identity_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Grant node-2 CAN_CREATE_SUBGROUP (+ keep CAN_JOIN_OPEN_SUBGROUPS) = 36",
+      "type": "capabilities",
+      "org": "{{namespace_id}}",
+      "capabilities": 36,
+      "account": "e2e-node-1",
+      "member": "{{account_node2}}"
+    },
+    {
+      "name": "Read node-2 capabilities back",
+      "type": "member_capabilities",
+      "org": "{{namespace_id}}",
+      "member": "{{account_node2}}",
+      "account": "e2e-node-1",
+      "outputs": {
+        "node2_caps": "capabilities"
+      }
+    },
+    {
+      "name": "Assert node-2 has capabilities 36",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node2_caps}}, 36)"
+      ]
+    },
+    {
+      "name": "Node-2 creates a Restricted subgroup (private DM)",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "private-dm",
+      "join": "invite",
+      "outputs": {
+        "subgroup_priv": "teamId"
+      },
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Assert private subgroup created",
+      "type": "assert",
+      "statements": [
+        "is_set({{subgroup_priv}})"
+      ]
+    },
+    {
+      "name": "Node-2 marks the subgroup Restricted",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_priv}}",
+      "join": "invite",
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Node-2 adds node-3 to the private subgroup",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_priv}}",
+      "members": [
+        "{{identity_node3}}"
+      ],
+      "role": "member",
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Node-2 creates a context in the private subgroup",
+      "type": "deploy",
+      "account": "e2e-node-2",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-2 creates a context in the private subgroup",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{subgroup_priv}}"
+      },
+      "outputs": {
+        "ctx_priv": "contextId"
+      }
+    },
+    {
+      "name": "Assert private context created",
+      "type": "assert",
+      "statements": [
+        "is_set({{ctx_priv}})"
+      ]
+    },
+    {
+      "name": "Node-2 writes a secret into the private context",
+      "type": "call",
+      "app": "{{ctx_priv}}",
+      "method": "set",
+      "args": {
+        "key": "secret_key",
+        "value": "from_node2"
+      },
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Node-3 joins the private context",
+      "type": "whoami",
+      "account": "e2e-node-3",
+      "outputs": {
+        "ctx_key_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Assert node-3 holds a context identity",
+      "type": "assert",
+      "statements": [
+        "is_set({{ctx_key_node3}})"
+      ]
+    },
+    {
+      "name": "Node-3 reads the secret from the private context",
+      "type": "call",
+      "app": "{{ctx_priv}}",
+      "method": "get",
+      "args": {
+        "key": "secret_key"
+      },
+      "account": "e2e-node-3",
+      "outputs": {
+        "secret_read_node3": "rpc"
+      }
+    },
+    {
+      "name": "Assert node-3 sees the secret",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{secret_read_node3}}, {\"output\": \"from_node2\"})"
+      ]
+    },
+    {
+      "name": "Node-1 (namespace owner) cannot join the private context",
+      "type": "http",
+      "method": "get",
+      "path": "apps/{{ctx_priv}}",
+      "account": "e2e-node-1",
+      "expected_failure": true
+    },
+    {
+      "name": "Node-1 (namespace owner) cannot write to the private context",
+      "type": "call",
+      "app": "{{ctx_priv}}",
+      "method": "set",
+      "args": {
+        "key": "owner_was_here",
+        "value": "should_not_work"
+      },
+      "account": "e2e-node-1",
+      "expected_failure": true
+    },
+    {
+      "name": "Node-2 creates an Open subgroup",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "open-channel",
+      "join": "invite",
+      "outputs": {
+        "subgroup_open": "teamId"
+      },
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Node-2 marks the subgroup Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_open}}",
+      "join": "everyone",
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Node-2 creates a context in the Open subgroup",
+      "type": "deploy",
+      "account": "e2e-node-2",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-2 creates a context in the Open subgroup",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{subgroup_open}}"
+      },
+      "outputs": {
+        "ctx_open": "contextId"
+      }
+    },
+    {
+      "name": "Node-2 writes into the Open-subgroup context",
+      "type": "call",
+      "app": "{{ctx_open}}",
+      "method": "set",
+      "args": {
+        "key": "open_key",
+        "value": "from_node2_open"
+      },
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Brief settle for namespace-DAG propagation to node-1",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Node-1 (namespace owner) joins the Open-subgroup context via inheritance",
+      "type": "whoami",
+      "account": "e2e-node-1",
+      "outputs": {
+        "ctx_key_node1_open": "publicKey"
+      }
+    },
+    {
+      "name": "Assert node-1 holds a context identity in the Open subgroup",
+      "type": "assert",
+      "statements": [
+        "is_set({{ctx_key_node1_open}})"
+      ]
+    },
+    {
+      "name": "Node-1 reads the value from the Open-subgroup context",
+      "type": "call",
+      "app": "{{ctx_open}}",
+      "method": "get",
+      "args": {
+        "key": "open_key"
+      },
+      "account": "e2e-node-1",
+      "outputs": {
+        "open_read_node1": "rpc"
+      }
+    },
+    {
+      "name": "Assert node-1 inherits real access to the Open subgroup",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{open_read_node1}}, {\"output\": \"from_node2_open\"})"
+      ]
+    }
+  ]
+}

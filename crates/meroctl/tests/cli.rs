@@ -390,7 +390,15 @@ fn scenario(root: &Path, url: &str) {
     assert_ne!(alice.run(&["context", "get", &raw])["bundle"], before);
 
     // account api-key: a scoped key works on its own.
-    let key = alice.run(&["account", "api-key", "create", "--context", "notes"]);
+    let key = alice.run(&[
+        "account",
+        "api-key",
+        "create",
+        "--context",
+        "notes",
+        "--dev-passkey",
+        pk,
+    ]);
     let key = s(&key["key"]);
     let service = Meroctl {
         home: root.join("service"),
@@ -459,7 +467,15 @@ fn scenario(root: &Path, url: &str) {
     let _ = bob.run(&["node", "add", "local", url, "--allow-mock"]);
     let bob_id =
         s(&bob.run(&["login", "--dev-passkey", path(&bob_pk), "--name", "bob"])["accountId"]);
-    let token = s(&alice.run(&["namespace", "invite", &org, "--role", "member"])["token"]);
+    let token = s(&alice.run(&[
+        "namespace",
+        "invite",
+        &org,
+        "--role",
+        "member",
+        "--dev-passkey",
+        pk,
+    ])["token"]);
     let _ = bob.run(&["namespace", "join", &token]);
     let members = alice.run(&["namespace", "members", "list", &org]);
     assert!(members.to_string().contains(&bob_id), "{members}");
@@ -472,12 +488,23 @@ fn scenario(root: &Path, url: &str) {
         &bob_id,
         "--role",
         "read-only",
+        "--dev-passkey",
+        pk,
     ]);
     assert!(alice
         .run(&["group", "members", "list", &org, &team])
         .to_string()
         .contains(&bob_id));
-    let _ = alice.run(&["group", "members", "remove", &org, &team, &bob_id]);
+    let _ = alice.run(&[
+        "group",
+        "members",
+        "remove",
+        &org,
+        &team,
+        &bob_id,
+        "--dev-passkey",
+        pk,
+    ]);
     let _ = alice.run(&[
         "namespace",
         "member-metadata",
@@ -485,7 +512,7 @@ fn scenario(root: &Path, url: &str) {
         &bob_id,
         r#"{"title":"eng"}"#,
     ]);
-    let _ = bob.run(&["namespace", "leave", &org]);
+    let _ = bob.run(&["namespace", "leave", &org, "--dev-passkey", path(&bob_pk)]);
     assert!(!alice
         .run(&["namespace", "members", "list", &org])
         .to_string()
@@ -585,7 +612,11 @@ fn scenario(root: &Path, url: &str) {
         .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])
         .unwrap_err();
     assert!(
-        unknown.contains("no such node") || unknown.contains("NOT_LEADER"),
+        // A cluster without an operator key refuses every fleet change
+        // before it looks the node up.
+        unknown.contains("no such node")
+            || unknown.contains("NOT_LEADER")
+            || unknown.contains("no operator key"),
         "{unknown}"
     );
 

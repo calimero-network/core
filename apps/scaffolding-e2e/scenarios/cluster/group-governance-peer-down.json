@@ -1,0 +1,147 @@
+{
+  "name": "E2E KV Store - Governance Best-Effort With Peer Down",
+  "description": "Node-2 joins a namespace, then is stopped. Node-1 runs a governance op while node-2 is unreachable — the publish is best-effort and must not fail the workflow. Node-2 is restarted and node-3 joins after the governance op; both must converge on the new capability value via sync.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  json_assert statement on a dropped step's output x1: checks what the dropped steps did",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  output read during a v1 partition x3: checks what the dropped steps did",
+    "  start_node x1: a user's node going offline has no counterpart in a cluster",
+    "  stop_node x1: a user's node going offline has no counterpart in a cluster",
+    "  wait_for_sync x1: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "e2e-node-1",
+    "e2e-node-2",
+    "e2e-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Assert application installed",
+      "type": "assert",
+      "statements": [
+        "is_set({{app_id}})"
+      ]
+    },
+    {
+      "name": "Create namespace on node-1",
+      "type": "create_org",
+      "org_name": "Create namespace on node-1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Create context in namespace on node-1",
+      "type": "deploy",
+      "account": "e2e-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Create context in namespace on node-1",
+      "org": "{{namespace_id}}",
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Assert context created",
+      "type": "assert",
+      "statements": [
+        "is_set({{ctx_id}})"
+      ]
+    },
+    {
+      "name": "Create namespace invitation for node-2",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invitation_node2": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invitation_node2}}",
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Node-1 sets default capabilities with node-2 down",
+      "type": "capabilities",
+      "org": "{{namespace_id}}",
+      "capabilities": 0,
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Create namespace invitation for node-3",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invitation_node3": "token"
+      }
+    },
+    {
+      "name": "Node-3 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invitation_node3}}",
+      "account": "e2e-node-3"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-3",
+      "outputs": {
+        "member_account_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Get node-3 capabilities (inherited the default set while node-2 was down)",
+      "type": "member_capabilities",
+      "org": "{{namespace_id}}",
+      "member": "{{member_account_node3}}",
+      "account": "e2e-node-3",
+      "outputs": {
+        "node3_caps": "capabilities"
+      }
+    },
+    {
+      "name": "Get node-3 capabilities as seen by the restarted node-2",
+      "type": "member_capabilities",
+      "org": "{{namespace_id}}",
+      "member": "{{member_account_node3}}",
+      "account": "e2e-node-2",
+      "outputs": {
+        "node3_caps_view_node2": "capabilities"
+      }
+    },
+    {
+      "name": "Assert restarted node-2 synced the governance op",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node3_caps_view_node2}}, 0)"
+      ]
+    }
+  ]
+}

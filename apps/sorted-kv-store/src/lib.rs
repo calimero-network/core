@@ -1,243 +1,218 @@
-//! Canonical example for [`SortedMap`] — a key-ordered collection that supports
-//! range queries, prefix scans, and pagination (core#2559).
+//! A key-ordered key-value store: range queries, prefix scans and pagination.
 //!
-//! Mirrors `kv-store` (the `UnorderedMap` example) so the two can be compared
-//! side by side: the storage/CRDT behaviour is identical; the difference is that
-//! every iteration here comes back in ascending key order, and the extra
-//! `range` / `prefix` / `page` / `first` / `last` methods let you read a slice
-//! of the keyspace without loading the whole map.
+//! Mirrors `kv-store` so the two can be compared side by side. A `Table` keeps its records in
+//! key order, so every read here comes back in ascending key order, and `range` / `prefix` /
+//! `page` / `first` / `last` read a slice of the keyspace without loading the whole store.
+//! Each reads through the table's cursor, one page at a time.
 
 use std::collections::BTreeMap;
 
-use calimero_sdk::abi::AbiType;
-use calimero_sdk::app;
-use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::{LwwRegister, SortedMap};
-use thiserror::Error;
+use calimero_app_sdk::prelude::*;
 
-#[app::state(emits = for<'a> Event<'a>)]
-pub struct SortedKvStore {
-    items: SortedMap<String, LwwRegister<String>>,
-}
-
-#[app::event]
-pub enum Event<'a> {
-    Inserted { key: &'a str, value: &'a str },
-    Updated { key: &'a str, value: &'a str },
-    Removed { key: &'a str },
-    Cleared,
-}
-
-#[derive(Debug, Error, Serialize)]
-#[serde(crate = "calimero_sdk::serde")]
-#[serde(tag = "kind", content = "data")]
-pub enum Error<'a> {
-    #[error("key not found: {0}")]
-    NotFound(&'a str),
-}
-
-/// A single key/value pair, returned by `first`/`last`. (A record rather than a
-/// tuple because the ABI represents named-field records, not tuples.)
-#[derive(Debug, Serialize, AbiType)]
-#[serde(crate = "calimero_sdk::serde")]
+/// One key/value pair; also what `first` and `last` return.
+#[derive(Record)]
+#[table(key = "key")]
 pub struct Entry {
     pub key: String,
     pub value: String,
 }
 
+#[app::state(version = 1)]
+pub struct SortedKvStore {
+    items: Table<Entry>,
+    size: Counter,
+}
+
+#[app::error]
+pub enum Error {
+    NotFound { key: String },
+}
+
+#[app::event]
+pub enum Event {
+    Inserted { key: String, value: String },
+    Updated { key: String, value: String },
+    Removed { key: String },
+    Cleared,
+}
+
+/// The page size the multi-page reads below fetch with.
+const BATCH: u32 = 1000;
+
 #[app::logic]
+#[allow(clippy::len_without_is_empty)]
 impl SortedKvStore {
     #[app::init]
-    pub fn init() -> SortedKvStore {
-        SortedKvStore {
-            items: SortedMap::new(),
-        }
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
     }
 
+    /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-        app::log!("Setting key: {:?} to value: {:?}", key, value);
-
-        if self.items.contains(&key)? {
-            app::emit!(Event::Updated {
-                key: &key,
-                value: &value,
-            });
+        let fresh = !self.items.contains(&key)?;
+        self.items.upsert(Entry {
+            key: key.clone(),
+            value: value.clone(),
+        })?;
+        let event = if fresh {
+            self.size.add(1)?;
+            Event::Inserted { key, value }
         } else {
-            app::emit!(Event::Inserted {
-                key: &key,
-                value: &value,
-            });
-        }
-
-        self.items.insert(key, value.into())?;
-
-        Ok(())
-    }
-
-    pub fn get(&self, key: &str) -> app::Result<Option<String>> {
-        app::log!("Getting key: {:?}", key);
-
-        Ok(self.items.get(key)?.map(|v| v.get().clone()))
-    }
-
-    pub fn get_result(&self, key: &str) -> app::Result<String> {
-        let Some(value) = self.get(key)? else {
-            app::bail!(Error::NotFound(key));
+            Event::Updated { key, value }
         };
-
-        Ok(value)
-    }
-
-    pub fn remove(&mut self, key: &str) -> app::Result<Option<String>> {
-        app::log!("Removing key: {:?}", key);
-
-        // Only emit `Removed` when a value was actually present — emitting for
-        // an absent key would broadcast a change that never happened.
-        let removed = self.items.remove(key)?.map(|v| v.get().clone());
-        if removed.is_some() {
-            app::emit!(Event::Removed { key });
-        }
-
-        Ok(removed)
-    }
-
-    pub fn clear(&mut self) -> app::Result<()> {
-        app::log!("Clearing all entries");
-
-        // Only emit `Cleared` when the map had entries, and only after the
-        // clear succeeds.
-        let was_non_empty = !self.items.is_empty()?;
-        self.items.clear()?;
-        if was_non_empty {
-            app::emit!(Event::Cleared);
-        }
-
+        env::emit(event, Audience::All)?;
         Ok(())
     }
 
-    /// The number of entries in the map.
-    pub fn len(&self) -> app::Result<usize> {
-        Ok(self.items.len()?)
+    /// The value of `key`, or `null`.
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.items.get(&key)?.map(|e| e.value))
     }
 
-    /// Whether the map has no entries.
+    /// The value of `key`; `NotFound` when absent.
+    #[app::view]
+    pub fn get_result(&self, key: String) -> app::Result<String> {
+        match self.items.get(&key)? {
+            Some(e) => Ok(e.value),
+            None => Err(Error::NotFound { key }.into()),
+        }
+    }
+
+    /// Removes `key` and returns its value. `Removed` only when a value was present: an
+    /// absent key changes nothing, so nothing is broadcast.
+    pub fn remove(&mut self, key: String) -> app::Result<Option<String>> {
+        let Some(old) = self.items.get(&key)? else {
+            return Ok(None);
+        };
+        self.items.remove(&key)?;
+        self.size.add(-1)?;
+        env::emit(Event::Removed { key }, Audience::All)?;
+        Ok(Some(old.value))
+    }
+
+    /// Removes every entry; `Cleared` only when there were any.
+    pub fn clear(&mut self) -> app::Result<()> {
+        let mut removed = false;
+        loop {
+            let page = self.items.scan(FindOpts::default().limit(BATCH))?;
+            if page.items.is_empty() {
+                break;
+            }
+            for e in page.items {
+                self.items.remove(&e.key)?;
+                self.size.add(-1)?;
+                removed = true;
+            }
+        }
+        if removed {
+            env::emit(Event::Cleared, Audience::All)?;
+        }
+        Ok(())
+    }
+
+    /// The number of entries.
+    #[app::view]
+    pub fn len(&self) -> app::Result<u64> {
+        Ok(self.size.get()?)
+    }
+
+    /// Whether there are no entries.
+    #[app::view]
     pub fn is_empty(&self) -> app::Result<bool> {
-        Ok(self.items.is_empty()?)
+        Ok(self.size.get()? == 0)
     }
 
-    /// All entries, **in ascending key order** (the headline difference from
-    /// `kv-store`'s `UnorderedMap`).
+    /// All entries, in ascending key order.
+    #[app::view]
     pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
-        app::log!("Getting all entries (sorted)");
-
-        Ok(self
-            .items
-            .entries()?
-            .map(|(k, v)| (k, v.get().clone()))
-            .collect())
+        self.collect(FindOpts::default(), |_| true)
     }
 
-    /// Entries whose keys fall within `[start, end)`, ascending — a range query
-    /// backed by the ordered index (no full scan). Returned as a key-ordered
-    /// map.
+    /// Entries whose keys fall within `[start, end)`, ascending: the table's own bounds, no
+    /// full scan.
+    #[app::view]
     pub fn range(&self, start: String, end: String) -> app::Result<BTreeMap<String, String>> {
-        app::log!("Range query: [{:?}, {:?})", start, end);
-
-        Ok(self
-            .items
-            .range(start..end)?
-            .map(|(k, v)| (k, v.get().clone()))
-            .collect())
+        if start >= end {
+            return Ok(BTreeMap::new());
+        }
+        let opts = FindOpts::default()
+            .from(vec![KeyPart::Str(start)])
+            .to(vec![KeyPart::Str(end)]);
+        self.collect(opts, |_| true)
     }
 
-    /// Entries whose keys start with `prefix`, ascending — e.g. `prefix("user:")`.
+    /// Entries whose keys start with `prefix`, ascending, e.g. `prefix("user:")`: the scan
+    /// starts at `prefix` and stops at the first key past it.
+    #[app::view]
     pub fn prefix(&self, prefix: String) -> app::Result<BTreeMap<String, String>> {
-        app::log!("Prefix scan: {:?}", prefix);
-
-        Ok(self
-            .items
-            .prefix(prefix.as_bytes())?
-            .map(|(k, v)| (k, v.get().clone()))
-            .collect())
+        let opts = FindOpts::default().from(vec![KeyPart::Str(prefix.clone())]);
+        self.collect(opts, |k| k.starts_with(&prefix))
     }
 
-    /// A page of `limit` entries starting at `offset`, ascending — paginate
-    /// without materialising the whole map.
-    pub fn page(&self, offset: usize, limit: usize) -> app::Result<BTreeMap<String, String>> {
-        app::log!("Page: offset={offset} limit={limit}");
-
-        Ok(self
-            .items
-            .page(offset, limit)?
-            .into_iter()
-            .map(|(k, v)| (k, v.get().clone()))
-            .collect())
+    /// `limit` entries after the first `offset`, ascending. The skipped entries are still
+    /// read; a client paging a large store should prefer `range` from the last key it holds.
+    #[app::view]
+    pub fn page(&self, offset: u32, limit: u32) -> app::Result<BTreeMap<String, String>> {
+        let mut skipped = 0;
+        let mut out = BTreeMap::new();
+        if limit == 0 {
+            return Ok(out);
+        }
+        let mut opts = FindOpts::default().limit(BATCH);
+        loop {
+            let page = self.items.scan(opts.clone())?;
+            for e in page.items {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                let _ = out.insert(e.key, e.value);
+                if out.len() == limit as usize {
+                    return Ok(out);
+                }
+            }
+            match page.next {
+                Some(next) => opts = opts.cursor(next),
+                None => return Ok(out),
+            }
+        }
     }
 
     /// The entry with the smallest key.
+    #[app::view]
     pub fn first(&self) -> app::Result<Option<Entry>> {
-        Ok(self.items.first()?.map(|(key, v)| Entry {
-            key,
-            value: v.get().clone(),
-        }))
+        let page = self.items.scan(FindOpts::default().limit(1))?;
+        Ok(page.items.into_iter().next())
     }
 
     /// The entry with the largest key.
+    #[app::view]
     pub fn last(&self) -> app::Result<Option<Entry>> {
-        Ok(self.items.last()?.map(|(key, v)| Entry {
-            key,
-            value: v.get().clone(),
-        }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use calimero_sdk::testing::TestHost;
-
-    use super::*;
-
-    #[test]
-    fn set_get_and_ordered_entries() {
-        let mut app = TestHost::new(SortedKvStore::init);
-
-        app.call(|s| s.set("b".into(), "2".into())).unwrap();
-        app.call(|s| s.set("a".into(), "1".into())).unwrap();
-
-        assert_eq!(app.view(|s| s.get("a")).unwrap(), Some("1".to_owned()));
-
-        // BTreeMap collects in ascending key order — the headline guarantee.
-        let entries = app.view(|s| s.entries()).unwrap();
-        let keys: Vec<_> = entries.keys().cloned().collect();
-        assert_eq!(keys, vec!["a".to_owned(), "b".to_owned()]);
+        let page = self.items.scan(FindOpts::default().limit(1).reverse())?;
+        Ok(page.items.into_iter().next())
     }
 
-    #[test]
-    fn remove_absent_and_clear_empty_emit_nothing() {
-        let mut app = TestHost::new(SortedKvStore::init);
-
-        // Removing a key that was never set must not broadcast a change.
-        assert_eq!(app.call(|s| s.remove("missing")).unwrap(), None);
-        assert!(app.events().is_empty());
-
-        // Clearing an already-empty store likewise emits nothing.
-        app.call(|s| s.clear()).unwrap();
-        assert!(app.events().is_empty());
-
-        // A real removal still emits exactly one `Removed` event.
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        let _ = app.take_events();
-        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
-        let events = app.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, "Removed");
-
-        // And a real clear (non-empty store) emits exactly one `Cleared`.
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        let _ = app.take_events();
-        app.call(|s| s.clear()).unwrap();
-        let events = app.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, "Cleared");
+    /// The entries from `opts` on, while `keep` holds for their keys.
+    fn collect(
+        &self,
+        opts: FindOpts,
+        keep: impl Fn(&str) -> bool,
+    ) -> app::Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        let mut opts = opts.limit(BATCH);
+        loop {
+            let page = self.items.scan(opts.clone())?;
+            for e in page.items {
+                if !keep(&e.key) {
+                    return Ok(out);
+                }
+                let _ = out.insert(e.key, e.value);
+            }
+            match page.next {
+                Some(next) => opts = opts.cursor(next),
+                None => return Ok(out),
+            }
+        }
     }
 }

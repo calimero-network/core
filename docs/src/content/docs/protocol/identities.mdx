@@ -36,8 +36,8 @@ ceremony that comes from it.
 | --- | --- | --- |
 | Sign up | `/auth/passkey/register/{begin,finish}` | A new account with this passkey, and a session |
 | Sign in | `/auth/passkey/login/{begin,finish}` | A session for the passkey's account |
-| Add a device | `/auth/passkeys/add/{begin,finish}` (signed in) | Another passkey on the account |
-| Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
+| Add a device | `/auth/passkeys/add/{begin,finish}` (signed in; `finish` answers `412` and is approved by a passkey the account already has) | Another passkey on the account |
+| Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` (removal approved with a passkey, `412` first) | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
 
 A ceremony's challenge lives in the memory of the node that issued it, for 5
 minutes; its id names that node. It may finish on any node: that node takes
@@ -119,7 +119,8 @@ passkey, or the API key.
 ## API keys
 
 `POST /auth/apikeys { label, apps?, methods?, readOnly?, allowConfirm?, ttlSecs? }`
-creates a key `cal_…` for the signed-in account; only its hash is stored and
+creates a key `cal_…` for the signed-in account, approved with a passkey (`412`
+first; the consent binds the key's hash and record); only its hash is stored and
 the key is shown once. A key may be scoped:
 
 - `apps`: only these app instances (default: every app the account reaches);

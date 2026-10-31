@@ -4,9 +4,10 @@ Example and test WebAssembly applications demonstrating Calimero SDK usage.
 
 ## Package Identity
 
-- **Target**: `wasm32-unknown-unknown`
-- **SDK**: `calimero-sdk`
-- **Storage**: `calimero-storage` (CRDTs)
+- **Target**: `wasm32-unknown-unknown` (wasmer apps); `wasm32-wasip2` for the
+  [component apps](#component-apps-calimero-app-sdk-wasm32-wasip2)
+- **SDK**: `calimero-sdk` (wasmer apps); `calimero-app-sdk` (component apps)
+- **Storage**: `calimero-storage` (CRDTs) for wasmer apps; tables for component apps
 
 ## Commands
 
@@ -15,7 +16,7 @@ Example and test WebAssembly applications demonstrating Calimero SDK usage.
 rustup target add wasm32-unknown-unknown
 
 # Build one app (emits + embeds the ABI)
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
+cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 
 # Build all apps
 ./scripts/build-all-apps.sh
@@ -25,24 +26,27 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
-| `kv-store`               | Simple key-value store | Basic CRDT usage       |
-| `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
-| `org-gated`              | Org notes              | `env::caller_org()`: gate methods on the caller's organization role and teams |
+| `kv-store`               | Simple key-value store (component SDK) | `Table` + `Counter`, events, a typed error, a `confirm` method; `TestApp` tests and `scenarios/*.json`. Its wasmer build, the node tests' fixture, is `wasmer-fixtures/kv-store` |
+| `kv-store-init`          | KV with custom init (component SDK) | `#[app::init]` seeding the first state as the owner |
+| `org-gated`              | Org notes (component SDK) | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run |
+| `wasmer-fixtures/org-gated` | Org notes (v1 SDK)  | The wasmer fixture `crates/node/tests/cluster.rs` loads (`org_gated.wasm`) for `env::caller_org()` |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
-| `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
-| `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
-| `indexed-issue-tracker`  | Issue tracker          | `IndexedMap` + `#[derive(app::Indexed)]`: filter, count and page by field values without scanning |
-| `indexed-forum`          | Forum                  | `Moderated<IndexedMap>` posts with a three-part compound index over a list and an optional-field index, a `Frozen<String>` charter, `AuthoredSortedMap` comments and `AuthoredMap` votes (one entry per voter); post ids minted to name their author, read with `get_by` |
+| `sorted-kv-store`        | Ordered KV store (component SDK) | A `Table` read in key order: range / prefix / page / first / last through its cursor |
+| `sorted-set-store`       | Ordered set (component SDK) | A `Table` whose record is the element: range / prefix / page / min / max |
+| `authored-sorted-kv-store` | Shared noticeboard (component SDK) | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
+| `indexed-issue-tracker`  | Issue tracker (component SDK) | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
+| `indexed-forum`          | Forum (component SDK)  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; v1's `Moderated`/`Frozen`/`Authored` policies as explicit checks against `env::caller()` and a moderators table |
 | `search-chat`            | Chat with full-text search | `#[derive(app::Searchable)]` + `app::search_indexes!`: the node indexes a map on its own; a view queries it with `Query` and gets entries read back from state. Example and E2E fixture for search |
-| `permissions-showcase`   | Team space             | One field per write policy: `Frozen<T>` values, `WriteOnce` messages, `ModeratedOnce` announcements, an `Authored` page with nested revisions (read by naming its author), `ContentAddressed<IndexedMap>` evidence |
+| `permissions-showcase`   | Team space (component SDK) | One table per v1 write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
 | `name-registry`          | Usernames              | `Registry<K, V>`: one owner per name, decided by a TEE; claim, `#[app::tee]` resolve and timer sweep, release and re-claim |
-| `name-registry-admin`    | Usernames              | `Registry<K, V, Admin>`: one owner per name, decided by the admins; the creator is the first admin, `set_admins` hands the role on, a lost claim is renewed with `rebid` after a release |
+| `name-registry-admin`    | Usernames (component SDK) | v1's `Registry<K, V, Admin>` as claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
 | `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
-| `components-demo`        | Access-control components | `Ownable`, `PermissionedStorage`, `AccessControl` |
-| `kv-store-with-shared-storage` | Writer-set KV    | `SharedStorage` and writer rotation |
-| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `UserStorage`, `FrozenStorage` |
-| `custom-key-store`       | Custom key type        | `AsRef<[u8]>` newtype keys, and the tail rule owned collections add |
+| `components-demo`        | Access-control patterns (component SDK) | An owned cell, a writer set and a role registry (v1's `Ownable`, `PermissionedStorage`, `AccessControl`), each a table plus a check against `env::caller()` |
+| `kv-store-with-shared-storage` | Writer-set KV (component SDK) | A writer set as table rows plus an explicit check, and its rotation. The wasmer `SharedStorage` build is `wasmer-fixtures/kv-store-with-shared-storage` |
+| `wasmer-fixtures/*`      | Wasmer builds of ported apps | Kept for the node's tests, the size gate and the release bundle; same crate and wasm names as before the port |
+| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV (component SDK) | Rows keyed by the caller's account (v1's `UserStorage`), content-addressed rows hashed with `sha2` (v1's `FrozenStorage`) |
+| `custom-key-store`       | Custom key type (component SDK) | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
 | `private_data`           | Node-local secrets     | `#[app::private]`; public hashes in an `AuthoredMap` under creator-named ids |
 | `tee-dice` / `tee-cards` | TEE-decided games      | `TeeOnly`, `TeeSecret`, `#[app::tee]` handlers and timers |
 | `blobs`                  | Blob storage demo      | Blob operations; file records as the uploader's own `AuthoredMap` entries |
@@ -50,10 +54,41 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | `fugue-editor`           | Collaborative text (Fugue) | `FugueText` CRDT       |
 | `fugue-collab`           | Collaborative text (Fugue), with deletes | E2E guest |
 | `rich-collab`            | Collaborative rich text (blocks, marks) | `RichDocument` / `RichText` E2E guest |
-| `team-metrics-macro`     | Metrics with macros    | Macro usage            |
-| `team-metrics-custom`    | Metrics custom impl    | Custom CRDT usage      |
+| `team-metrics`           | Team metrics with badges (component SDK) | Per-team counts and a bitmask as a plain record: what v1's `#[derive(Mergeable)]` and custom `#[app::mergeable]` rule become when one log orders every call |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |
 | `outbound-probe`         | Outbound HTTPS         | `env::http_request` from each kind of run; E2E fixture for the outbound gates, against the test build's `.test` echo |
+
+## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
+
+Sixteen apps are on the component SDK: `rooms`, `authored-sorted-kv-store`,
+`components-demo`, `custom-key-store`, `indexed-forum`, `indexed-issue-tracker`,
+`kv-store`, `kv-store-init`, `kv-store-with-shared-storage`,
+`kv-store-with-user-and-frozen-storage`, `name-registry-admin`, `org-gated`
+(package `org-gated-notes`), `permissions-showcase`, `sorted-kv-store`,
+`sorted-set-store` and `team-metrics`. The wasmer
+builds of `kv-store`, `kv-store-with-shared-storage` and `org-gated` stay as
+fixtures in `wasmer-fixtures/`. The other apps stay on the wasmer SDK until the
+component SDK has what they use (blobs, xcall, search, event handlers, TEE
+methods, outbound requests, migrations, CRDT types). Component apps are standalone
+crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
+members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
+runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is
+`Table<Record>`, `UnorderedMap` and `Counter`; ownership and permission rules are
+explicit checks against `env::caller()` / `env::org_role()`, stated in each app's
+doc comment. Their end-to-end tests are scenario files:
+
+- `scenarios/<name>.json`: app-level steps in the format of
+  `crates/app-sdk/src/testing/scenario.rs`, run by the app's `tests/scenarios.rs`
+  in the harness; `scenarios/<name>.org.json` is the org it needs
+  (`{ "admins": [..], "members": [..], "guests": [..], "teams": {..} }`, the owner
+  is always `owner`).
+- `scenarios/cluster/<name>.json`: steps only a real cluster can run (teams
+  changed mid-run, packages, upgrades).
+
+```bash
+cargo test --manifest-path apps/org-gated/Cargo.toml   # harness tests + scenarios
+cargo run -p calimero-app-build -- apps/org-gated --out org-gated.wasm
+```
 
 ## App Structure
 
@@ -65,18 +100,20 @@ app-name/
 ├── README.md                 # App documentation
 ├── src/
 │   └── lib.rs                # App implementation
-└── workflows/
-    └── *.yml                 # Test workflows (merobox)
+└── scenarios/
+    ├── <name>.json           # App-level scenario (harness and cluster)
+    ├── <name>.org.json       # Its organization (optional)
+    └── cluster/*.json        # Cluster scenarios (node-level steps)
 ```
 
 ## Patterns
 
 ### Basic App Pattern
 
-- ✅ DO: Follow `kv-store/src/lib.rs` as reference
+- ✅ DO: Follow `wasmer-fixtures/kv-store/src/lib.rs` as reference (the component SDK's is `kv-store/src/lib.rs`)
 
 ```rust
-// Simplified example based on apps/kv-store/src/lib.rs
+// Simplified example based on apps/wasmer-fixtures/kv-store/src/lib.rs
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -244,7 +281,7 @@ overflow-checks = true
 
 ### Unit Testing Pattern (`TestHost`)
 
-Exercise app logic as plain Rust - no WASM build, no node, no merobox - with
+Exercise app logic as plain Rust - no WASM build, no node - with
 the in-process harness `calimero_sdk::testing::TestHost`. It runs your methods
 against an in-memory mock host that records events/logs and serves a
 configurable executor identity, so you get millisecond `#[cfg(test)]`
@@ -282,7 +319,7 @@ mod tests {
 - `view(|s| ...)` reads via `&self` without committing.
 - `call_as(executor, |s| ...)` runs a mutation as a specific identity (multi-author CRDT tests).
 - `events()` / `logs()` return what `app::emit!` / `app::log!` produced.
-- Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) - test those paths with merobox workflows.
+- Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) - test those paths with cluster scenarios.
 
 ### Building an App
 
@@ -294,7 +331,8 @@ cargo mero build --manifest-path apps/<app>/Cargo.toml
 
 | File                                | Purpose         |
 | ----------------------------------- | --------------- |
-| `kv-store/src/lib.rs`               | Basic CRDT app  |
+| `wasmer-fixtures/kv-store/src/lib.rs` | Basic CRDT app  |
+| `kv-store/src/lib.rs`               | Basic component app |
 | `components-demo/src/lib.rs`        | Auth patterns   |
 | `kv-store-with-handlers/src/lib.rs` | Event handlers  |
 | `blobs/src/lib.rs`                  | Blob operations |
@@ -324,43 +362,55 @@ rg -n "#\[derive.*Error" */src/
 rg -n "app::bail!" */src/
 ```
 
-## Workflows
+## Scenarios
 
-Each app's `workflows/` holds merobox workflows
-(`backend: cloud-v2`): a cluster of `merod` processes, accounts signed in with
-passkeys, an organization, the app deployed and called as several accounts.
-Most were migrated from the app's v1 workflows by `merobox cloud port`; each
-one's header lists the v1 steps that have no counterpart in this node and any
-fix made in the migration. Every deployable app has at least one; CI runs them
-all (`.github/workflows/e2e.yml`, gated by
-`scripts/workflows-baseline.json`). See
-[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#core-and-app-workflows).
+An app's end-to-end tests are scenario files under `scenarios/`, run on an
+in-process cluster (three nodes, sealed channels, the real WASM) by
+`cargo test -p calimero-node --test scenarios`; each file gets a cluster of
+its own. Two formats
+([Testing strategy](../docs/src/content/docs/contribute/testing.mdx#scenarios)):
 
-```yaml
-# workflows/sorted-kv-store.yml (abridged)
-name: Sorted KV store
-backend: cloud-v2
-cluster: { nodes: 3, base_port: 6000 }
-accounts: [alice, bob]
-steps:
-  - { name: An org, type: create_org, account: alice, org_name: Sorted, outputs: { org: orgId } }
-  - name: The app in it
-    type: deploy
-    account: alice
-    wasm: "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm"
-    org: "{{org}}"
-    outputs: { app: appId }
-  - { type: call, account: alice, app: "{{app}}", method: set, args: { key: a, value: "1" } }
-  - { type: view, account: alice, app: "{{app}}", method: get, args: { key: a }, expect: "1" }
+- **App-level**, `scenarios/<name>.json`: the step array of
+  `calimero_app_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/
+  `removeMember`, `as`, `expect`, `save`, `$var`, `@account`, `events`). The
+  app's own `tests/scenarios.rs` runs it in the harness; the cluster runner
+  builds the app, creates the organization of `<name>.org.json`
+  (`{ "admins": [], "members": [], "guests": [], "teams": { "t": ["acct"] } }`,
+  the owner is `owner`) with invites and teams, deploys the app in it and runs
+  the same steps, `as` each account's client, step `i` on node `i % 3`, the app
+  clock starting at `1_700_000_100_000`.
+- **Cluster**, `scenarios/cluster/**/*.json`: node-level steps a harness cannot
+  run (orgs, invites, teams, packages, upgrades, blobs, raw HTTP). An object in
+  merobox's cloud-v2 workflow format as JSON; the former `workflows/*.yml` were
+  converted by `scripts/workflow-to-scenario.py`, and the converter stays for
+  any workflow still in YAML.
+
+```json
+{
+  "name": "Sorted KV store",
+  "cluster": { "nodes": 3 },
+  "accounts": ["alice", "bob"],
+  "steps": [
+    { "type": "create_org", "account": "alice", "org_name": "Sorted", "outputs": { "org": "orgId" } },
+    { "type": "deploy", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm",
+      "org": "{{org}}", "outputs": { "app": "appId" } },
+    { "type": "call", "account": "alice", "app": "{{app}}", "method": "set", "args": { "key": "a", "value": "1" } },
+    { "type": "view", "account": "alice", "app": "{{app}}", "method": "get", "args": { "key": "a" }, "expect": "1" }
+  ]
+}
 ```
 
 ```bash
-python3 scripts/build-workflow-fixtures.py           # every app's WASM, into target/workflow-wasm
-MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py apps/<app>/workflows/<file>.yml
+cargo test -p calimero-node --test scenarios                       # every scenario
+SCENARIO_FILTER=apps/<app>/ cargo test -p calimero-node --test scenarios
+SCENARIO_SHARD=2/4 cargo test -p calimero-node --test scenarios -- --test-threads 2
+cargo test -p calimero-node --test scenarios -- --list
 ```
 
-A new workflow needs a `base_port` no other workflow uses (each runs its own
-cluster); add it to the baseline once it passes.
+`{{env.CORE_WASM_DIR}}/<crate>.wasm` and `.../dist/<package>-<version>.mpk`
+are built on first use when missing (`cargo mero build`;
+`scripts/build-workflow-fixtures.py` for signed releases). A scenario that
+cannot pass yet goes in `crates/node/tests/scenarios-skip.txt` with its reason.
 
 ## Building for Production
 

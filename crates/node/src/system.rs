@@ -182,8 +182,8 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[serde(rename_all = "camelCase")]
 pub struct SystemState {
     pub nodes: BTreeMap<u64, NodeRecord>,
-    /// Nodes the operator removed (`RemoveNode`): never registered again from
-    /// `--peers`, only by `/ops/nodes`.
+    /// Nodes the operator removed (`RemoveNode`): registered again only by
+    /// the operator (`/ops/nodes`).
     #[serde(default)]
     pub removed_nodes: std::collections::BTreeSet<u64>,
     pub apps: BTreeMap<AppId, AppRecord>,
@@ -198,7 +198,7 @@ pub struct SystemState {
     pub refresh: BTreeMap<String, RefreshRecord>,
     pub revoked_sessions: BTreeSet<String>,
     pub orgs: BTreeMap<OrgId, Org>,
-    /// invite token hash -> invite
+    /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
     #[serde(default)]
     pub quotas: Quotas,
@@ -1305,20 +1305,287 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        // Credentials: the account's own passkey consent. A new passkey is
+        // approved by one the account already has (`consent_of` reads the
+        // passkeys as they stand, without the new one).
+        SystemCmd::AddPasskey {
+            account,
+            credential,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(account, consent)?)?;
+            let args = json!({
+                "credentialId": credential.id,
+                "publicKey": credential.public_key,
+            });
+            states(&st, &format!("account:{account}"), "__add_passkey", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemovePasskey {
+            account,
+            credential_id,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(account, consent)?)?;
+            let args = json!({ "credentialId": credential_id });
+            states(
+                &st,
+                &format!("account:{account}"),
+                "__remove_passkey",
+                &|a| *a == args,
+            )?;
+            Ok(Some(used))
+        }
+        SystemCmd::CreateApiKey {
+            hash,
+            record,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(&record.account, consent)?)?;
+            let args = api_key_args(hash, record);
+            states(
+                &st,
+                &format!("account:{}", record.account),
+                "__create_api_key",
+                &|a| *a == args,
+            )?;
+            Ok(Some(used))
+        }
+        // Memberships: the actor's passkey consent over exactly this change
+        // (a member leaving consents to that too). Who may make it is the
+        // command's own rule (`run_authorized`).
+        SystemCmd::SetOrgRole {
+            org,
+            account,
+            role,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "account": account, "role": role });
+            states(&st, &format!("org:{org}"), "__set_org_role", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveOrgMember {
+            org,
+            account,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "account": account });
+            states(&st, &format!("org:{org}"), "__remove_member", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetTeamMember {
+            org,
+            team,
+            account,
+            lead,
+            role,
+            capabilities,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({
+                "team": team, "account": account, "lead": lead,
+                "role": role, "capabilities": capabilities,
+            });
+            states(&st, &format!("org:{org}"), "__set_team_member", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveTeamMember {
+            org,
+            team,
+            account,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "team": team, "account": account });
+            states(&st, &format!("org:{org}"), "__remove_team_member", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetCapabilities {
+            org,
+            team,
+            account,
+            capabilities,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "team": team, "account": account, "capabilities": capabilities });
+            states(&st, &format!("org:{org}"), "__set_capabilities", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetDefaultCapabilities {
+            org,
+            capabilities,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "capabilities": capabilities });
+            states(
+                &st,
+                &format!("org:{org}"),
+                "__set_default_capabilities",
+                &|a| *a == args,
+            )?;
+            Ok(Some(used))
+        }
+        SystemCmd::CreateInvite {
+            invite_key,
+            invite,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = invite_args(invite_key, invite);
+            states(
+                &st,
+                &format!("org:{}", invite.org),
+                "__create_invite",
+                &|a| *a == args,
+            )?;
+            Ok(Some(used))
+        }
+        // The token's key signs the redemption: only a node the redeemer
+        // gave the token to can make it, never one that only saw the log.
+        SystemCmd::RedeemInvite {
+            invite_key,
+            account,
+            now,
+            signature,
+        } => {
+            if !s.invites.contains_key(invite_key) {
+                return Err("unknown invite");
+            }
+            let used = crate::proof::verify_invite_redeem(invite_key, account, *now, signature)?;
+            if s.used_proofs.contains(&used) {
+                return Err("that redemption was used already");
+            }
+            Ok(Some(used))
+        }
+        // The fleet: the operator's signature.
+        SystemCmd::RegisterNode { node, proof } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "id": node.id, "addr": node.addr, "zone": node.zone });
+            states(&st, "cluster", "__register_node", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveNode { id, proof } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            states(&st, "cluster", "__remove_node", &|a| {
+                *a == json!({ "id": id })
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetQuotas { quotas, proof } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "quotas": quotas });
+            states(&st, "cluster", "__set_quotas", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetReplicas {
+            app_id,
+            replicas,
+            proof,
+        } => {
+            // A move writes the replicas twice under one signature over its
+            // target (`api::move_replicas`): first the union of the current
+            // set and the target, so every node of both starts the group,
+            // then the target. The target spends the proof; the union, as
+            // computed here from the state it applies to, needs it unspent
+            // and leaves it so. Replaying the union after the move is
+            // refused (the proof is spent), and so is any other set.
+            let (st, used) = fresh(operator(proof)?)?;
+            let target: BTreeSet<u64> = serde_json::from_value(st.args()["replicas"].clone())
+                .map_err(|_| "the consent is for another change")?;
+            let args = json!({ "replicas": target });
+            states(&st, app_id, "__set_replicas", &|a| *a == args)?;
+            let wanted: BTreeSet<u64> = replicas.iter().copied().collect();
+            if wanted.len() != replicas.len() {
+                return Err("a node is named twice");
+            }
+            if wanted == target {
+                return Ok(Some(used));
+            }
+            let current = s.apps.get(app_id).ok_or("no such app")?.replicas.iter();
+            let union: BTreeSet<u64> = current.copied().chain(target).collect();
+            if wanted == union {
+                return Ok(None);
+            }
+            Err("the consent is for another change")
+        }
         _ => Ok(None),
     }
+}
+
+/// What a person consents to when creating an API key: every field of the
+/// record but the account (the statement's subject), and the hash of the
+/// key, so the log cannot record another key under the same consent.
+#[must_use]
+pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
+    json!({
+        "hash": hash,
+        "keyId": record.key_id,
+        "label": record.label,
+        "apps": record.apps,
+        "methods": record.methods,
+        "readOnly": record.read_only,
+        "allowConfirm": record.allow_confirm,
+        "expiresAt": record.expires_at,
+    })
+}
+
+/// What a person consents to when creating an invite: its public key
+/// ([`crate::proof::invite_key`]) and its terms.
+#[must_use]
+pub fn invite_args(invite_key: &str, invite: &Invite) -> Value {
+    json!({
+        "inviteKey": invite_key,
+        "role": invite.role,
+        "teams": invite.teams,
+        "expiresAt": invite.expires_at,
+        "uses": invite.uses_left,
+    })
 }
 
 /// A change to the system group.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum SystemCmd {
+    /// Into the directory: the operator's (`cluster / __register_node /
+    /// { id, addr, zone }`). The nodes a cluster starts with come with
+    /// `Genesis`.
     RegisterNode {
         node: NodeRecord,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
     },
     /// Out of the directory; refused while an app keeps a replica on it.
     RemoveNode {
         id: u64,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
     },
     PutBundle {
         hash: String,
@@ -1377,9 +1644,15 @@ pub enum SystemCmd {
         app_id: AppId,
         actor: AccountId,
     },
+    /// The operator moves an app (`<app> / __set_replicas / { replicas }`,
+    /// the sorted target): one signature covers the move's two writes
+    /// ([`authorize`]).
     SetReplicas {
         app_id: AppId,
         replicas: Vec<u64>,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
     },
     SetAccess {
         app_id: AppId,
@@ -1389,9 +1662,13 @@ pub enum SystemCmd {
     CreateAccount {
         account: Account,
     },
+    /// A new passkey, approved by one the account already has.
     AddPasskey {
         account: AccountId,
         credential: Credential,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     /// Remove a passkey and revoke every session opened with it.
     RemovePasskey {
@@ -1399,6 +1676,9 @@ pub enum SystemCmd {
         credential_id: String,
         #[serde(default)]
         now: u64,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     /// Revoke every session of `actor` (sign out everywhere).
     RevokeAllSessions {
@@ -1417,6 +1697,9 @@ pub enum SystemCmd {
     CreateApiKey {
         hash: String,
         record: ApiKeyRecord,
+        /// The account's passkey consent over [`api_key_args`].
+        #[serde(default)]
+        consent: Value,
     },
     RevokeApiKey {
         key_id: String,
@@ -1440,6 +1723,9 @@ pub enum SystemCmd {
     },
     SetQuotas {
         quotas: Quotas,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
     },
     CreateOrg {
         org_id: OrgId,
@@ -1462,6 +1748,10 @@ pub enum SystemCmd {
         /// The operator's verify key (`--operator-key`), if configured.
         #[serde(default)]
         operator_key: Option<crate::proof::OperatorKey>,
+        /// The nodes the cluster starts with (`--peers`): every later node
+        /// joins through the operator's signed `RegisterNode`.
+        #[serde(default)]
+        nodes: Vec<NodeRecord>,
     },
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
@@ -1637,11 +1927,18 @@ pub enum SystemCmd {
         account: AccountId,
         role: OrgRole,
         actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
+    /// Remove a member, or (`account == actor`) leave.
     RemoveOrgMember {
         org: OrgId,
         account: AccountId,
         actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     CreateTeam {
         org: OrgId,
@@ -1663,6 +1960,9 @@ pub enum SystemCmd {
         #[serde(default)]
         capabilities: Option<u32>,
         actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     /// Change a team: its name, whether it is open, where it hangs (`parent`:
     /// `Some(None)` moves it to the top), what the app keeps about it.
@@ -1697,28 +1997,47 @@ pub enum SystemCmd {
         account: AccountId,
         capabilities: u32,
         actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     /// The capabilities members hold unless set for them.
     SetDefaultCapabilities {
         org: OrgId,
         capabilities: u32,
         actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     RemoveTeamMember {
         org: OrgId,
         team: TeamId,
         account: AccountId,
         actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
+    /// An invite, recorded under its token's public key
+    /// ([`crate::proof::invite_key`]); the token itself is never logged.
     CreateInvite {
-        hash: String,
+        invite_key: String,
         invite: Invite,
         actor: AccountId,
+        /// The actor's passkey consent over [`invite_args`].
+        #[serde(default)]
+        consent: Value,
     },
+    /// Redeem an invite for `account`: `signature` is the token's key's
+    /// ([`crate::proof::sign_invite_redeem`]), made by the node the redeemer
+    /// handed the token to.
     RedeemInvite {
-        hash: String,
+        invite_key: String,
         account: AccountId,
         now: u64,
+        #[serde(default)]
+        signature: String,
     },
 }
 
@@ -1820,12 +2139,12 @@ impl SystemMachine {
     fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
         let s = &mut self.state;
         match cmd {
-            SystemCmd::RegisterNode { node } => {
+            SystemCmd::RegisterNode { node, .. } => {
                 let _was = s.removed_nodes.remove(&node.id);
                 let _prev = s.nodes.insert(node.id, node);
                 Ok(Value::Null)
             }
-            SystemCmd::RemoveNode { id } => {
+            SystemCmd::RemoveNode { id, .. } => {
                 if s.apps.values().any(|a| a.replicas.contains(&id)) {
                     return Err("an app still keeps a replica on that node; move it first");
                 }
@@ -2232,7 +2551,9 @@ impl SystemMachine {
                 let _prev = s.apps.remove(&app_id);
                 Ok(Value::Null)
             }
-            SystemCmd::SetReplicas { app_id, replicas } => {
+            SystemCmd::SetReplicas {
+                app_id, replicas, ..
+            } => {
                 let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 app.replicas = replicas;
                 Ok(Value::Null)
@@ -2289,6 +2610,7 @@ impl SystemMachine {
             SystemCmd::AddPasskey {
                 account,
                 credential,
+                ..
             } => {
                 if s.credentials.contains_key(&credential.id) {
                     return Err("credential already registered");
@@ -2305,6 +2627,7 @@ impl SystemMachine {
                 account,
                 credential_id,
                 now,
+                ..
             } => {
                 let acc = s.accounts.get_mut(&account).ok_or("unknown account")?;
                 if acc.passkeys.len() <= 1 {
@@ -2374,7 +2697,7 @@ impl SystemMachine {
                 cred.sign_count = count;
                 Ok(Value::Null)
             }
-            SystemCmd::CreateApiKey { hash, record } => {
+            SystemCmd::CreateApiKey { hash, record, .. } => {
                 if !s.accounts.contains_key(&record.account) {
                     return Err("unknown account");
                 }
@@ -2437,7 +2760,7 @@ impl SystemMachine {
                 s.prune_sessions(now);
                 Ok(Value::Null)
             }
-            SystemCmd::SetQuotas { quotas } => {
+            SystemCmd::SetQuotas { quotas, .. } => {
                 s.quotas = quotas;
                 Ok(Value::Null)
             }
@@ -2485,6 +2808,7 @@ impl SystemMachine {
                 governance,
                 release,
                 operator_key,
+                nodes,
             } => {
                 if s.governance.is_some() || !s.accounts.is_empty() {
                     return Err("the cluster's governance is fixed at genesis");
@@ -2497,6 +2821,9 @@ impl SystemMachine {
                     s.operator_releases = release.into_iter().collect();
                 }
                 s.governance = Some(governance.clone());
+                for node in nodes {
+                    let _prev = s.nodes.insert(node.id, node);
+                }
                 Ok(json!({ "governance": governance }))
             }
             SystemCmd::SetOperatorRelease {
@@ -2837,6 +3164,7 @@ impl SystemMachine {
                 account,
                 role,
                 actor,
+                ..
             } => {
                 let known = s.accounts.contains_key(&account);
                 let o = self.org_mut(&org)?;
@@ -2868,6 +3196,7 @@ impl SystemMachine {
                 org,
                 account,
                 actor,
+                ..
             } => {
                 let o = self.org_mut(&org)?;
                 let actor_role = o.role(&actor).ok_or("not a member")?;
@@ -2940,6 +3269,7 @@ impl SystemMachine {
                 role,
                 capabilities,
                 actor,
+                ..
             } => {
                 let o = self.org_mut(&org)?;
                 if !o.teams.contains_key(&team) {
@@ -3083,6 +3413,7 @@ impl SystemMachine {
                 account,
                 capabilities,
                 actor,
+                ..
             } => {
                 let o = self.org_mut(&org)?;
                 if o.role(&account).is_none() {
@@ -3114,6 +3445,7 @@ impl SystemMachine {
                 org,
                 capabilities,
                 actor,
+                ..
             } => {
                 let o = self.org_mut(&org)?;
                 if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
@@ -3127,6 +3459,7 @@ impl SystemMachine {
                 team,
                 account,
                 actor,
+                ..
             } => {
                 let o = self.org_mut(&org)?;
                 if actor != account && !o.manages_team(&actor, &team) {
@@ -3145,9 +3478,10 @@ impl SystemMachine {
                 Ok(Value::Null)
             }
             SystemCmd::CreateInvite {
-                hash,
+                invite_key,
                 invite,
                 actor,
+                ..
             } => {
                 let o = s.orgs.get(&invite.org).ok_or("no such organization")?;
                 let role = o.role(&actor).ok_or("not a member")?;
@@ -3168,21 +3502,26 @@ impl SystemMachine {
                 if invite.role > role || (invite.role == OrgRole::Owner) {
                     return Err("cannot invite above your own role");
                 }
-                let _prev = s.invites.insert(hash, invite);
+                let _prev = s.invites.insert(invite_key, invite);
                 Ok(Value::Null)
             }
-            SystemCmd::RedeemInvite { hash, account, now } => {
+            SystemCmd::RedeemInvite {
+                invite_key,
+                account,
+                now,
+                ..
+            } => {
                 if !s.accounts.contains_key(&account) {
                     return Err("unknown account");
                 }
-                let inv = s.invites.get_mut(&hash).ok_or("unknown invite")?;
+                let inv = s.invites.get_mut(&invite_key).ok_or("unknown invite")?;
                 if inv.expires_at <= now || inv.uses_left == 0 {
                     return Err("invite expired");
                 }
                 inv.uses_left -= 1;
                 let inv = inv.clone();
                 if inv.uses_left == 0 {
-                    let _prev = s.invites.remove(&hash);
+                    let _prev = s.invites.remove(&invite_key);
                 }
                 let o = s.orgs.get_mut(&inv.org).ok_or("no such organization")?;
                 let role = o
@@ -3235,7 +3574,9 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{Authority, Governance, ReleaseScope, SystemCmd, SystemMachine, SystemState};
+    use super::{
+        Authority, Governance, OrgRole, ReleaseScope, SystemCmd, SystemMachine, SystemState,
+    };
 
     // The tests above `account_with` judge each command's own authority rules
     // (`run_authorized`); the proofs `run` also requires are tested below it.
@@ -3254,6 +3595,7 @@ mod tests {
             governance,
             release: Some("2.0.0".into()),
             operator_key: None,
+            nodes: Vec::new(),
         }
     }
 
@@ -3342,15 +3684,17 @@ mod tests {
             role: None,
             capabilities: None,
             actor: actor.into(),
+            consent: serde_json::Value::Null,
         };
         assert!(reaches(&m), "a direct row");
 
         let _ok = m
-            .run(SystemCmd::RemoveTeamMember {
+            .run_authorized(SystemCmd::RemoveTeamMember {
                 org: "org".into(),
                 team: "open".into(),
                 account: "bob".into(),
                 actor: "bob".into(),
+                consent: serde_json::Value::Null,
             })
             .unwrap();
         assert!(!reaches(&m), "inheritance does not put a leaver back");
@@ -3877,6 +4221,458 @@ mod tests {
         let _ = &mut m;
     }
 
+    type Soft = calimero_identity::testing::SoftAuthenticator;
+
+    /// The operator's signing key in these tests, and what genesis records.
+    fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let public = crate::proof::OperatorKey {
+            key: hex::encode(key.verifying_key().to_bytes()),
+            cluster: "test".into(),
+        };
+        (key, public)
+    }
+
+    /// The operator's signature over `method` on `subject` with `args`.
+    fn signed(subject: &str, method: &str, args: &serde_json::Value) -> serde_json::Value {
+        use ed25519_dalek::Signer;
+        let (key, public) = operator_signer();
+        let statement = crate::proof::Statement::new(subject, method, args);
+        let signature = key.sign(&statement.operator_message(&public.cluster));
+        serde_json::to_value(crate::proof::OperatorProof {
+            statement,
+            signature: hex::encode(signature.to_bytes()),
+        })
+        .unwrap()
+    }
+
+    /// A cluster with the operator's key, alice (owner of `org`), bob (a
+    /// member) and carol (outside it), each with a passkey, a restricted team
+    /// `t`, and an app on nodes 1-3.
+    fn proven_cluster() -> (SystemMachine, Soft, Soft, Soft) {
+        let mut m = SystemMachine::default();
+        let _ok = m
+            .run(SystemCmd::Genesis {
+                governance: all(Authority::Owner),
+                release: Some("2.0.0".into()),
+                operator_key: Some(operator_signer().1),
+                nodes: [1, 2, 3, 4]
+                    .map(|id| crate::types::NodeRecord {
+                        id,
+                        addr: format!("http://n{id}/"),
+                        zone: String::new(),
+                    })
+                    .to_vec(),
+            })
+            .unwrap();
+        let mut pks = Vec::new();
+        for who in ["alice", "bob", "carol"] {
+            let mut pk = Soft::new("localhost", "http://localhost:3000");
+            let _ok = m.run(account_with(who, &mut pk)).unwrap();
+            pks.push(pk);
+        }
+        let _prev = m.state.orgs.insert(
+            "org".into(),
+            serde_json::from_value(json!({
+                "orgId": "org", "name": "Docs",
+                "members": { "alice": "owner", "bob": "member" },
+                "teams": { "t": { "teamId": "t", "name": "T", "join": "invite", "members": {} } }
+            }))
+            .unwrap(),
+        );
+        let _prev = m.state.apps.insert(
+            "app".into(),
+            serde_json::from_value(json!({
+                "appId": "app", "name": "app", "group": 2, "bundle": "b1",
+                "owner": "alice", "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap(),
+        );
+        let carol = pks.pop().unwrap();
+        let bob = pks.pop().unwrap();
+        let alice = pks.pop().unwrap();
+        (m, alice, bob, carol)
+    }
+
+    /// `cmd` applies only with `pk`'s consent over exactly `args`, and once:
+    /// refused without one, with one over `other`, and on replay.
+    fn needs_consent(
+        m: &mut SystemMachine,
+        pk: &mut Soft,
+        (subject, method): (&str, &str),
+        args: &serde_json::Value,
+        other: &serde_json::Value,
+        cmd: impl Fn(serde_json::Value) -> SystemCmd,
+    ) {
+        assert!(
+            m.run(cmd(serde_json::Value::Null)).is_err(),
+            "{method}: none"
+        );
+        let wrong = consent(pk, subject, method, other);
+        assert!(m.run(cmd(wrong)).is_err(), "{method}: other args");
+        let real = consent(pk, subject, method, args);
+        if let Err(e) = m.run(cmd(real.clone())) {
+            panic!("{method}: {e}");
+        }
+        assert_eq!(
+            m.run(cmd(real)).unwrap_err(),
+            "that consent was used already",
+            "{method}: replay"
+        );
+    }
+
+    /// As [`needs_consent`], for the operator's signature.
+    fn needs_signature(
+        m: &mut SystemMachine,
+        (subject, method): (&str, &str),
+        args: &serde_json::Value,
+        other: &serde_json::Value,
+        cmd: impl Fn(serde_json::Value) -> SystemCmd,
+    ) {
+        assert!(
+            m.run(cmd(serde_json::Value::Null)).is_err(),
+            "{method}: none"
+        );
+        assert!(
+            m.run(cmd(signed(subject, method, other))).is_err(),
+            "{method}: other args"
+        );
+        let mut forged = signed(subject, method, args);
+        forged["signature"] = json!(hex::encode([0_u8; 64]));
+        assert!(m.run(cmd(forged)).is_err(), "{method}: not the operator's");
+        let real = signed(subject, method, args);
+        if let Err(e) = m.run(cmd(real.clone())) {
+            panic!("{method}: {e}");
+        }
+        assert_eq!(
+            m.run(cmd(real)).unwrap_err(),
+            "that consent was used already",
+            "{method}: replay"
+        );
+    }
+
+    /// Credentials an account gets (passkeys, API keys) apply only with a
+    /// passkey it already has, over exactly that credential, once.
+    #[test]
+    fn credentials_need_the_accounts_own_passkey() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let mut phone = Soft::new("localhost", "http://localhost:3000");
+        let rp = calimero_identity::RelyingParty {
+            id: "localhost".into(),
+            origins: vec!["http://localhost:3000".into()],
+            require_uv: false,
+        };
+        let challenge = calimero_identity::random::<32>();
+        let cred =
+            calimero_identity::verify_registration(&rp, &challenge, &phone.register(&challenge))
+                .unwrap();
+        let add = |consent| SystemCmd::AddPasskey {
+            account: "alice".into(),
+            credential: cred.clone(),
+            consent,
+        };
+        let args = json!({ "credentialId": cred.id, "publicKey": cred.public_key });
+        // Neither the new passkey itself nor another account's approves it.
+        for pk in [&mut phone, &mut bob] {
+            let c = consent(pk, "account:alice", "__add_passkey", &args);
+            assert!(m.run(add(c)).is_err());
+        }
+        let other = json!({ "credentialId": cred.id, "publicKey": "AAAA" });
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__add_passkey"),
+            &args,
+            &other,
+            add,
+        );
+        assert_eq!(m.state.accounts["alice"].passkeys.len(), 2);
+
+        let remove = |consent| SystemCmd::RemovePasskey {
+            account: "alice".into(),
+            credential_id: cred.id.clone(),
+            now: 1,
+            consent,
+        };
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__remove_passkey"),
+            &json!({ "credentialId": cred.id }),
+            &json!({ "credentialId": "another" }),
+            remove,
+        );
+        assert_eq!(m.state.accounts["alice"].passkeys.len(), 1);
+
+        let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+            "keyId": "k1", "account": "alice", "label": "ci", "apps": ["app"],
+            "methods": null, "readOnly": true, "allowConfirm": false, "expiresAt": 99,
+        }))
+        .unwrap();
+        let args = super::api_key_args("h1", &record);
+        let mut wider = args.clone();
+        wider["readOnly"] = json!(false);
+        let create = |consent| SystemCmd::CreateApiKey {
+            hash: "h1".into(),
+            record: record.clone(),
+            consent,
+        };
+        // Another key's hash under the same consent: refused.
+        let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
+        assert!(m
+            .run(SystemCmd::CreateApiKey {
+                hash: "h2".into(),
+                record: record.clone(),
+                consent: c,
+            })
+            .is_err());
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__create_api_key"),
+            &args,
+            &wider,
+            create,
+        );
+        assert!(m.state.api_keys.contains_key("h1"));
+    }
+
+    /// Membership changes apply only with the actor's passkey consent over
+    /// exactly that change, once; a member leaving consents too.
+    #[test]
+    fn memberships_need_the_actors_passkey() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_org_role"),
+            &json!({ "account": "bob", "role": "admin" }),
+            &json!({ "account": "bob", "role": "member" }),
+            |consent| SystemCmd::SetOrgRole {
+                org: "org".into(),
+                account: "bob".into(),
+                role: OrgRole::Admin,
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Admin);
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_team_member"),
+            &json!({ "team": "t", "account": "bob", "lead": false, "role": null, "capabilities": null }),
+            &json!({ "team": "t", "account": "bob", "lead": true, "role": null, "capabilities": null }),
+            |consent| SystemCmd::SetTeamMember {
+                org: "org".into(),
+                team: "t".into(),
+                account: "bob".into(),
+                lead: false,
+                role: None,
+                capabilities: None,
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        assert!(m.state.orgs["org"].in_team("bob", "t"));
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_capabilities"),
+            &json!({ "team": "t", "account": "bob", "capabilities": 3 }),
+            &json!({ "team": null, "account": "bob", "capabilities": 3 }),
+            |consent| SystemCmd::SetCapabilities {
+                org: "org".into(),
+                team: Some("t".into()),
+                account: "bob".into(),
+                capabilities: 3,
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_default_capabilities"),
+            &json!({ "capabilities": 5 }),
+            &json!({ "capabilities": 7 }),
+            |consent| SystemCmd::SetDefaultCapabilities {
+                org: "org".into(),
+                capabilities: 5,
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        assert_eq!(m.state.orgs["org"].default_capabilities, 5);
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__remove_team_member"),
+            &json!({ "team": "t", "account": "bob" }),
+            &json!({ "team": "t", "account": "alice" }),
+            |consent| SystemCmd::RemoveTeamMember {
+                org: "org".into(),
+                team: "t".into(),
+                account: "bob".into(),
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        // Leaving takes the leaver's own consent, not the owner's.
+        let leave = |consent| SystemCmd::RemoveOrgMember {
+            org: "org".into(),
+            account: "bob".into(),
+            actor: "bob".into(),
+            consent,
+        };
+        let args = json!({ "account": "bob" });
+        let c = consent(&mut alice, "org:org", "__remove_member", &args);
+        assert!(m.run(leave(c)).is_err());
+        needs_consent(
+            &mut m,
+            &mut bob,
+            ("org:org", "__remove_member"),
+            &args,
+            &json!({ "account": "alice" }),
+            leave,
+        );
+        assert!(!m.state.orgs["org"].members.contains_key("bob"));
+    }
+
+    /// An invite is minted with the actor's consent over its key and terms,
+    /// and redeemed only with a signature by the token's key, for the
+    /// account it names, once: a node that saw only the log cannot.
+    #[test]
+    fn invites_are_redeemed_with_the_tokens_key() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let token = "inv_secret";
+        let key = crate::proof::invite_key(token);
+        let invite: crate::types::Invite = serde_json::from_value(json!({
+            "org": "org", "role": "member", "teams": [], "expiresAt": 100, "usesLeft": 2,
+        }))
+        .unwrap();
+        let args = super::invite_args(&key, &invite);
+        let mut admin = args.clone();
+        admin["role"] = json!("admin");
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__create_invite"),
+            &args,
+            &admin,
+            |consent| SystemCmd::CreateInvite {
+                invite_key: key.clone(),
+                invite: invite.clone(),
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        let redeem = |signature: String| SystemCmd::RedeemInvite {
+            invite_key: key.clone(),
+            account: "carol".into(),
+            now: 10,
+            signature,
+        };
+        assert!(m.run(redeem(String::new())).is_err(), "no signature");
+        let forged = crate::proof::sign_invite_redeem("inv_guess", "carol", 10);
+        assert!(m.run(redeem(forged)).is_err(), "another token's key");
+        let for_bob = crate::proof::sign_invite_redeem(token, "bob", 10);
+        assert!(m.run(redeem(for_bob)).is_err(), "another account");
+        let earlier = crate::proof::sign_invite_redeem(token, "carol", 9);
+        assert!(m.run(redeem(earlier)).is_err(), "another time");
+        assert!(!m.state.orgs["org"].members.contains_key("carol"));
+        let real = crate::proof::sign_invite_redeem(token, "carol", 10);
+        let _ok = m.run(redeem(real.clone())).unwrap();
+        assert!(m.state.orgs["org"].members.contains_key("carol"));
+        assert!(m.run(redeem(real)).is_err(), "replay");
+        assert_eq!(m.state.invites[&key].uses_left, 1);
+    }
+
+    /// Nodes and quotas apply only with the operator's signature over
+    /// exactly that change, once.
+    #[test]
+    fn the_fleet_and_quotas_need_the_operators_signature() {
+        let (mut m, ..) = proven_cluster();
+        assert_eq!(m.state.nodes.len(), 4, "genesis registers the peers");
+        let node = crate::types::NodeRecord {
+            id: 9,
+            addr: "http://n9/".into(),
+            zone: "z".into(),
+        };
+        needs_signature(
+            &mut m,
+            ("cluster", "__register_node"),
+            &json!({ "id": 9, "addr": "http://n9/", "zone": "z" }),
+            &json!({ "id": 9, "addr": "http://evil/", "zone": "z" }),
+            |proof| SystemCmd::RegisterNode {
+                node: node.clone(),
+                proof,
+            },
+        );
+        assert!(m.state.nodes.contains_key(&9));
+        needs_signature(
+            &mut m,
+            ("cluster", "__remove_node"),
+            &json!({ "id": 9 }),
+            &json!({ "id": 4 }),
+            |proof| SystemCmd::RemoveNode { id: 9, proof },
+        );
+        assert!(!m.state.nodes.contains_key(&9));
+        let mut quotas = m.state.quotas.clone();
+        quotas.max_accounts = 7;
+        let mut other = quotas.clone();
+        other.max_accounts = 7000;
+        needs_signature(
+            &mut m,
+            ("cluster", "__set_quotas"),
+            &json!({ "quotas": quotas }),
+            &json!({ "quotas": other }),
+            |proof| SystemCmd::SetQuotas {
+                quotas: quotas.clone(),
+                proof,
+            },
+        );
+        assert_eq!(m.state.quotas.max_accounts, 7);
+    }
+
+    /// A move is signed once, over its target: the union step applies with
+    /// the signature and leaves it unspent, the target spends it, and the
+    /// union replayed after the move is refused.
+    #[test]
+    fn a_replica_move_is_signed_once_over_its_target() {
+        let (mut m, ..) = proven_cluster();
+        let set = |replicas: &[u64], proof: &serde_json::Value| SystemCmd::SetReplicas {
+            app_id: "app".into(),
+            replicas: replicas.to_vec(),
+            proof: proof.clone(),
+        };
+        let proof = signed("app", "__set_replicas", &json!({ "replicas": [2, 3, 4] }));
+        assert!(m.run(set(&[2, 3, 4], &serde_json::Value::Null)).is_err());
+        let other = signed("app", "__set_replicas", &json!({ "replicas": [1, 3, 4] }));
+        assert!(m.run(set(&[2, 3, 4], &other)).is_err(), "another target");
+        let elsewhere = signed("other", "__set_replicas", &json!({ "replicas": [2, 3, 4] }));
+        assert!(m.run(set(&[2, 3, 4], &elsewhere)).is_err(), "another app");
+        assert!(
+            m.run(set(&[1, 2, 3, 4, 9], &proof)).is_err(),
+            "not the union"
+        );
+
+        let _ok = m.run(set(&[1, 2, 3, 4], &proof)).unwrap();
+        assert_eq!(m.state.apps["app"].replicas, [1, 2, 3, 4]);
+        let _ok = m.run(set(&[4, 3, 2], &proof)).unwrap();
+        assert_eq!(m.state.apps["app"].replicas, [4, 3, 2]);
+        assert_eq!(
+            m.run(set(&[1, 2, 3, 4], &proof)).unwrap_err(),
+            "that consent was used already",
+            "the union step replayed after the move"
+        );
+        assert!(
+            m.run(set(&[2, 3, 4], &proof)).is_err(),
+            "the final step replayed"
+        );
+        assert_eq!(m.state.apps["app"].replicas, [4, 3, 2]);
+    }
+
     /// An organization of `who` (account -> role), each holding `caps`
     /// organization-wide, with `releases` approved.
     fn org(members: &[(&str, &str)], caps: &[(&str, u32)], releases: &[&str]) -> crate::types::Org {
@@ -3968,6 +4764,7 @@ mod tests {
                 account: "bob".into(),
                 capabilities: 0,
                 actor: "alice".into(),
+                consent: serde_json::Value::Null,
             })
             .unwrap();
         assert!(m.run_unproven(approve("org", "2.2.0", "bob")).is_err());
@@ -3979,6 +4776,7 @@ mod tests {
                 account: "bob".into(),
                 capabilities: APPROVE_RELEASES,
                 actor: "alice".into(),
+                consent: serde_json::Value::Null,
             })
             .unwrap();
         let _ok = m
@@ -3986,6 +4784,7 @@ mod tests {
                 org: "org".into(),
                 account: "bob".into(),
                 actor: "dave".into(),
+                consent: serde_json::Value::Null,
             })
             .unwrap();
         assert!(m.run_unproven(approve("org", "2.2.0", "bob")).is_err());
@@ -4671,6 +5470,7 @@ mod tests {
                     key: hex::encode(key.verifying_key().to_bytes()),
                     cluster: "c".into(),
                 }),
+                nodes: Vec::new(),
             })
             .unwrap();
         let mut alice = calimero_identity::testing::SoftAuthenticator::new(

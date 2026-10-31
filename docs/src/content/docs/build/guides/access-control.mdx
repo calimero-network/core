@@ -35,7 +35,7 @@ public collection to identity fields a writer can forge, are collected in
 A group-writable value. Only public keys in the writer set may `insert`; a
 current admin can `rotate_writers` to change the set (the request is published
 as a governance op, and your own run reads the new set at once). This is
-`apps/kv-store-with-shared-storage`:
+`apps/wasmer-fixtures/kv-store-with-shared-storage`:
 
 ```rust
 use std::collections::BTreeSet;
@@ -75,7 +75,8 @@ impl KvStore {
 
 Internally a map keyed by `AccountId`. `insert` always writes the **current
 executor's** slot, so users can't overwrite each other. Reads can target any
-user. This is `apps/kv-store-with-user-and-frozen-storage`:
+user. This is the v1 shape of `apps/kv-store-with-user-and-frozen-storage` (on
+the component SDK, the app instead keys a table by the caller's account):
 
 ```rust
 use calimero_sdk::{app, AccountId};

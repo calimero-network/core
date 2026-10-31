@@ -27,10 +27,10 @@
 //!
 //! What this does NOT cover: the causal cut. The harness resolves writers from
 //! settled local state, never from the governance fold at a delta's parents, so
-//! rotation ORDERING lives in merobox — see
-//! `apps/scaffolding-e2e/workflows/shared-storage-account-writers-concurrent.yml`
-//! for the same two-devices-of-one-account story over the real wire, where the
-//! nodes sign for themselves.
+//! rotation ORDERING lives in the cluster scenarios — see
+//! `apps/scaffolding-e2e/scenarios/cluster/shared-storage-account-writers-concurrent.json`
+//! for the same two-devices-of-one-account story through a cluster, where the
+//! nodes run the calls themselves.
 //!
 //! Run with:
 //! `cargo test -p calimero-storage --features testing --test shared_two_devices_one_account`

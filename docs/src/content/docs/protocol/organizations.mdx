@@ -126,15 +126,22 @@ organization value). Admins and team leads hold them all where they manage.
 
 Bit 9 is unused: v1's `MemberCapabilities` spends it on `CAN_AUTHOR_ON_BEHALF`,
 so a client that sends v1's `ALL` grants nothing new by accident. A grant is
-`POST /orgs/{org}/capabilities { account, capabilities }` by an admin; `GET
+`POST /orgs/{org}/capabilities { account, capabilities }` by an admin, with
+their passkey (as every membership change: roles, removals and leaving, team
+rows; `412 CONFIRM_REQUIRED` first); `GET
 /orgs/{org}` lists who may approve releases (`releaseApprovers`).
 
 ## Invites
 
 `POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses? }` returns a token
-`inv_…`; only its hash is stored. An invite expires (7 days by default) and
+`inv_…`, after the inviter approves it with a passkey (`412 CONFIRM_REQUIRED`
+first; the consent binds `{ inviteKey, role, teams, expiresAt, uses }`). Only
+the token's Ed25519 public key is stored (`inviteKey`, the key whose seed is
+`SHA-256("calimero.invite.v1\0" ‖ token)`). An invite expires (7 days by default) and
 admits `uses` accounts (1 by default). Its role may not exceed the inviter's and
 is never `owner`. An inviter below admin may name only teams they manage.
-`POST /invites/{token}/redeem`, by a signed-in person, adds them at the invite's
+`POST /invites/{token}/redeem`, by a signed-in person (no passkey prompt): the
+node signs the redemption with the token's key, which every node checks
+where it applies, so a node that saw only the log cannot redeem an invite. It adds them at the invite's
 role (or keeps a higher role they already have) and gives them a plain row in
 each named team.

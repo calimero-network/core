@@ -51,7 +51,10 @@ each a device of the account.
   [quotas](/operate/runbooks/#set-quotas).
 
 Devices: `POST /auth/passkeys/add/*` adds one (`meroctl account device add`),
-`DELETE /auth/passkeys/{cred}` removes one and ends the sessions it opened.
+approved with a passkey the account already has; `DELETE
+/auth/passkeys/{cred}` removes one, approved with a passkey, and ends the
+sessions it opened. Both answer `412 CONFIRM_REQUIRED` first, and every node
+checks the approval where the change applies.
 
 ## Sessions
 
@@ -77,9 +80,10 @@ refreshToken }`.
 
 ## API keys
 
-Created by an account holder with a passkey session (`POST /auth/apikeys`,
-`meroctl account api-key create`); the key is shown once and only its hash is
-stored.
+Created by an account holder with a passkey session and approved with a
+passkey (`POST /auth/apikeys`, `412 CONFIRM_REQUIRED` first; `meroctl account
+api-key create`); the key is shown once and only its hash is stored. An API
+key never creates another.
 
 | Field | Meaning |
 | --- | --- |

@@ -1,0 +1,512 @@
+[
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "me",
+  "args": {},
+  "expect": {
+   "ok": "@bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "me",
+  "args": {},
+  "expect": {
+   "ok": "@owner"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "founding",
+  "args": {},
+  "expect": {
+   "ok": {
+    "name": "calimero core",
+    "motto": "converge without coordinating"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "quorum",
+  "args": {},
+  "expect": {
+   "ok": "2"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "founder",
+  "args": {},
+  "expect": {
+   "ok": "@owner"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "channel": "general",
+   "id": "m1",
+   "text": "hello from node one",
+   "sentAt": "10"
+  },
+  "expect": {
+   "ok": "general/m1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "channel": "general",
+   "id": "m1",
+   "text": "node two at m1",
+   "sentAt": "11"
+  },
+  "expect": {
+   "ok": "general/m1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "channel": "general",
+   "id": "m1",
+   "text": "rewritten by node one",
+   "sentAt": "11"
+  },
+  "expect": {
+   "error": "AlreadyWritten",
+   "fields": {
+    "key": "general/m1"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "channel": "general",
+   "id": "m2",
+   "text": "hello from node two",
+   "sentAt": "12"
+  },
+  "expect": {
+   "ok": "general/m2"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "channel": "random",
+   "id": "m3",
+   "text": "off topic",
+   "sentAt": "13"
+  },
+  "expect": {
+   "ok": "random/m3"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "channel": "gen/eral",
+   "id": "x",
+   "text": "",
+   "sentAt": "0"
+  },
+  "expect": {
+   "error": "HasSeparator",
+   "fields": {
+    "value": "gen/eral"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "channel",
+  "args": {
+   "channel": "general"
+  },
+  "expect": {
+   "ok": [
+    {
+     "key": "general/m1",
+     "author": "@owner",
+     "text": "hello from node one",
+     "sentAt": "10"
+    },
+    {
+     "key": "general/m1",
+     "author": "@bob",
+     "text": "node two at m1",
+     "sentAt": "11"
+    },
+    {
+     "key": "general/m2",
+     "author": "@bob",
+     "text": "hello from node two",
+     "sentAt": "12"
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "announce",
+  "args": {
+   "id": "a1",
+   "text": "node two was here",
+   "sentAt": "20"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "announce",
+  "args": {
+   "id": "a1",
+   "text": "edited",
+   "sentAt": "21"
+  },
+  "expect": {
+   "error": "AlreadyWritten",
+   "fields": {
+    "key": "a1"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a1"
+  },
+  "expect": {
+   "error": "NotModerator"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "announcements",
+  "args": {},
+  "expect": {
+   "ok": [
+    {
+     "key": "a1",
+     "author": "@bob",
+     "text": "node two was here",
+     "sentAt": "20"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a1"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "announcements",
+  "args": {},
+  "expect": {
+   "ok": []
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a1"
+  },
+  "expect": {
+   "ok": false
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "moderators",
+  "args": {},
+  "expect": {
+   "ok": [
+    "@owner"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "addModerator",
+  "args": {
+   "account": "@bob"
+  },
+  "expect": {
+   "error": "NotModerator"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "addModerator",
+  "args": {
+   "account": "@bob"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "announce",
+  "args": {
+   "id": "a2",
+   "text": "all hands at noon",
+   "sentAt": "30"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a2"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "announcements",
+  "args": {},
+  "expect": {
+   "ok": []
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "createPage",
+  "args": {
+   "id": "home",
+   "title": "Home",
+   "text": "welcome"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "renamePage",
+  "args": {
+   "id": "home",
+   "title": "Taken over"
+  },
+  "expect": {
+   "error": "NoPage",
+   "fields": {
+    "id": "home"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "addRevision",
+  "args": {
+   "id": "home",
+   "revision": "r9",
+   "text": "defaced"
+  },
+  "expect": {
+   "error": "NoPage",
+   "fields": {
+    "id": "home"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "deletePage",
+  "args": {
+   "id": "home"
+  },
+  "expect": {
+   "ok": false
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "addRevision",
+  "args": {
+   "id": "home",
+   "revision": "r2",
+   "text": "welcome back"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "page",
+  "args": {
+   "author": "@owner",
+   "id": "home"
+  },
+  "expect": {
+   "ok": {
+    "id": "home",
+    "author": "@owner",
+    "title": "Home",
+    "revisions": [
+     [
+      "r1",
+      "welcome"
+     ],
+     [
+      "r2",
+      "welcome back"
+     ]
+    ]
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "page",
+  "args": {
+   "author": "@bob",
+   "id": "home"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "fileEvidence",
+  "args": {
+   "kind": "log",
+   "body": "boot ok"
+  },
+  "save": "h"
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "evidence",
+  "args": {
+   "hash": "$h"
+  },
+  "expect": {
+   "ok": {
+    "hash": "$h",
+    "kind": "log",
+    "body": "boot ok"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "evidenceOfKind",
+  "args": {
+   "kind": "log"
+  },
+  "expect": {
+   "ok": [
+    {
+     "hash": "$h",
+     "kind": "log",
+     "body": "boot ok"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "fileEvidence",
+  "args": {
+   "kind": "log",
+   "body": "boot ok"
+  },
+  "expect": {
+   "ok": "$h"
+  },
+  "events": {
+   "bob": [
+    "MessagePosted",
+    "MessagePosted",
+    "MessagePosted",
+    "MessagePosted",
+    "Announced",
+    "AnnouncementRemoved",
+    "Announced",
+    "AnnouncementRemoved",
+    "PageChanged",
+    "PageChanged",
+    "EvidenceFiled"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "evidence",
+  "args": {
+   "hash": "zz"
+  },
+  "expect": {
+   "error": "BadHash",
+   "fields": {
+    "hash": "zz"
+   }
+  }
+ }
+]
