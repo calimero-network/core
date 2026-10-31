@@ -59,9 +59,16 @@ pub enum DeviceCmd {
         origin: String,
     },
     /// Name a device ("" clears the name).
-    Label { credential: String, label: String },
+    Label {
+        /// The passkey's credential id (base64url: it may start with `-`).
+        #[arg(allow_hyphen_values = true)]
+        credential: String,
+        label: String,
+    },
     /// Remove a device; its sessions end. Approved with a passkey.
     Revoke {
+        /// The passkey's credential id (base64url: it may start with `-`).
+        #[arg(allow_hyphen_values = true)]
         credential: String,
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
