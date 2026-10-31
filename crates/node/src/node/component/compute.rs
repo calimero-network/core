@@ -54,6 +54,8 @@ pub const RUN_VIEW: &str = "__run";
 const DEFAULT_RUNS_PAGE: usize = 20;
 /// The most runs a list page holds.
 const MAX_RUNS_PAGE: usize = 100;
+/// The longest `before` cursor a list accepts.
+const MAX_RUNS_CURSOR_BYTES: usize = 256; // a real cursor is a timestamp and a run id
 
 /// The waits that end a run the leader cannot get an answer for; tests shorten them.
 #[derive(Clone, Copy, Debug)]
@@ -636,7 +638,9 @@ impl Node {
         let before = match req.args["before"].as_str() {
             None => None,
             Some(c) => Some(
-                c.split_once(':')
+                Some(c)
+                    .filter(|c| c.len() <= MAX_RUNS_CURSOR_BYTES)
+                    .and_then(|c| c.split_once(':'))
                     .and_then(|(ts, run)| Some((ts.parse().ok()?, run.to_owned())))
                     .ok_or_else(|| {
                         ApiError::bad_request("BAD_CURSOR", "not a cursor of this list")

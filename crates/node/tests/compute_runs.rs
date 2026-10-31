@@ -551,6 +551,13 @@ async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
     assert_eq!(e.code(), Some("BAD_CURSOR"));
     let e = rig.alice.get(&format!("{path}?before=")).await.unwrap_err();
     assert_eq!(e.code(), Some("BAD_CURSOR"), "an empty cursor");
+    let long = format!("1:{}", "a".repeat(255));
+    let e = rig
+        .alice
+        .get(&format!("{path}?before={long}"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"), "a cursor over the byte bound");
     let colon = rig
         .alice
         .get(&format!("{path}?before=99999999999999:x:y"))
