@@ -31,6 +31,7 @@ use tracing::debug;
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
+use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
 use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
@@ -188,6 +189,8 @@ fn abi_check(
             Err(ApiError::unauthenticated("sign in to call this method"))
         }
         Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
+        // A delivered xcall reaches only a method that allows its source (D13).
+        Caller::App { app } if !m.allows_app(app) => Err(app_refusal("Forbidden")),
         _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
         _ => Ok(()),
     }
@@ -208,7 +211,8 @@ fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
         ComponentCmd::Upgrade { .. }
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
-        | ComponentCmd::BlobsCollected { .. } => {}
+        | ComponentCmd::BlobsCollected { .. }
+        | ComponentCmd::XcallDone { .. } => {}
     }
     serde_json::to_vec(&cmd).unwrap_or_default()
 }
@@ -584,6 +588,7 @@ impl Node {
         let Ok(prepared) = self.prepared_for(&bundle).await else {
             return;
         };
+        self.deliver_xcalls(g, &app_id, &prepared).await;
         let now = self.clock.now_ms();
         for (timer, method) in &prepared.abi.methods {
             if method.kind != MethodKind::Timer {
@@ -707,6 +712,18 @@ impl Node {
             Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
             None => false,
         };
+        // A delivered xcall only within one organization (or one owner's personal apps),
+        // judged again here on this replica's system state.
+        if let Some(from) = &req.xcall {
+            if !self.sys(|s| same_boundary(s, &from.source, &req.app_id)) {
+                return Err(LocalError::Refused(app_refusal("Forbidden")));
+            }
+        }
+        let kind = if req.xcall.is_some() {
+            InvocationKind::XcallDeliver
+        } else {
+            InvocationKind::Call
+        };
         let args = args_bytes(&req.args);
         let mut refused = None;
         let meter = self.meter(&req.app_id, &bundle);
@@ -720,6 +737,19 @@ impl Node {
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
+                    }
+                }
+                // A message applied here already answers as delivered (D25).
+                if let Some(from) = &req.xcall {
+                    if m.state.component.head.xcall.seen(from) {
+                        let seen = Applied::unlogged(
+                            applied,
+                            Outcome {
+                                status: Status::Ok,
+                                ..Outcome::default()
+                            },
+                        );
+                        return Proposal::Reply(serde_json::to_vec(&seen).unwrap_or_default());
                     }
                 }
                 // An upgrade applied since the checks: run it again on the new bundle.
@@ -751,7 +781,7 @@ impl Node {
                     (m.view(), m.blob_view()),
                     applied,
                     Invocation {
-                        kind: InvocationKind::Call,
+                        kind,
                         method: req.method.clone(),
                         args: args.clone(),
                         caller: req.caller.to_host(),
@@ -792,6 +822,7 @@ impl Node {
                     id_term,
                     id_seq,
                     outcome,
+                    xcall: req.xcall.clone(),
                 }))))
             })
             .await?;
@@ -1052,6 +1083,149 @@ impl Node {
         Ok(to_wasmer_applied(a))
     }
 
+    /// Deliver the head of `source`'s outbox, in order, at most [`DELIVER_BATCH`] messages
+    /// a round (D25, D29). A message that cannot be delivered yet waits its backoff and
+    /// blocks the ones after it; past [`XCALL_WINDOW_MS`] it is dead-lettered.
+    async fn deliver_xcalls(&self, g: &Group<AppMachine>, source: &str, prepared: &Prepared) {
+        for _ in 0..DELIVER_BATCH {
+            let Some(msg) = g.read_local(|m, _| {
+                let h = &m.state.component.head.xcall;
+                (h.first < h.next).then(|| m.outgoing(h.first)).flatten()
+            }) else {
+                return;
+            };
+            let key = (source.to_owned(), msg.seq);
+            let now = self.clock.now_ms();
+            let waiting = self
+                .xcall_retry
+                .lock()
+                .ok()
+                .and_then(|r| r.get(&key).copied());
+            if waiting.is_some_and(|(_, next_at)| now < next_at) {
+                return;
+            }
+            let dead = match self.deliver_one(source, &msg).await {
+                Ok(dead) => dead,
+                Err(why) if now >= msg.sent_ms.saturating_add(XCALL_WINDOW_MS) => {
+                    Some(format!("not delivered within an hour: {why}"))
+                }
+                Err(why) => {
+                    let attempts = waiting.map_or(0, |(a, _)| a) + 1;
+                    debug!(app = %source, seq = msg.seq, error = %why, "xcall retried later");
+                    if let Ok(mut r) = self.xcall_retry.lock() {
+                        let _prev = r.insert(key, (attempts, now + backoff_ms(attempts)));
+                    }
+                    return;
+                }
+            };
+            let seq = msg.seq;
+            let reason = dead.clone();
+            let done = g
+                .propose_led(|m, _, _| {
+                    Proposal::Append(
+                        serde_json::to_vec(&ComponentCmd::XcallDone {
+                            seq,
+                            dead: reason.clone(),
+                            ts_ms: self.stamp(m),
+                        })
+                        .unwrap_or_default(),
+                    )
+                })
+                .await;
+            if let Ok(mut r) = self.xcall_retry.lock() {
+                let _was = r.remove(&key);
+            }
+            if done.is_err() {
+                return;
+            }
+            if let Some(reason) = dead {
+                self.on_xcall_failed(source, prepared, &msg, &reason).await;
+            }
+        }
+    }
+
+    /// One delivery attempt: `Ok(None)` the target answered (whatever it answered),
+    /// `Ok(Some(reason))` it never can (dead letter), `Err` try again later.
+    async fn deliver_one(&self, source: &str, msg: &Outgoing) -> Result<Option<String>, String> {
+        let target = self.sys(|s| s.apps.get(&msg.app).cloned());
+        let Some(target) = target else {
+            return Ok(Some("the target app does not exist".into()));
+        };
+        if !self.sys(|s| same_boundary(s, source, &target.app_id)) {
+            return Ok(Some("the apps are not in the same organization".into()));
+        }
+        if target.executor != Executor::Component {
+            return Ok(Some("the target app is not a component".into()));
+        }
+        let req = CallRequest {
+            idempotency_key: Some(format!(
+                "{}xcall-{source}-{}",
+                crate::app::NODE_KEY_PREFIX,
+                msg.seq
+            )),
+            xcall: Some(XcallFrom {
+                source: source.to_owned(),
+                seq: msg.seq,
+            }),
+            ..CallRequest::new(
+                target.app_id.clone(),
+                msg.method.clone(),
+                msg.args.clone(),
+                Caller::App {
+                    app: source.to_owned(),
+                },
+            )
+        };
+        match self.call_component(&req).await {
+            Ok(a) if a.timeout => Err("the target timed out".into()),
+            Ok(_) => Ok(None),
+            Err(e) if e.status >= 500 => Err(e.message),
+            // A refusal (an unknown method, a method that does not allow the source) is
+            // the target's final answer, like an app error (D29).
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// The source's `onXcallFailed`, if its ABI has one the system may call: told which
+    /// message was dead-lettered and why (D29). Best effort, once.
+    async fn on_xcall_failed(
+        &self,
+        source: &str,
+        prepared: &Prepared,
+        msg: &Outgoing,
+        reason: &str,
+    ) {
+        const HANDLER: &str = "onXcallFailed";
+        if !prepared
+            .abi
+            .methods
+            .get(HANDLER)
+            .is_some_and(|m| m.allow_system && m.kind == MethodKind::Call)
+        {
+            return;
+        }
+        let req = CallRequest {
+            idempotency_key: Some(format!(
+                "{}xcall-failed-{}",
+                crate::app::NODE_KEY_PREFIX,
+                msg.seq
+            )),
+            ..CallRequest::new(
+                source.to_owned(),
+                HANDLER.to_owned(),
+                json!({
+                    "app": msg.app,
+                    "method": msg.method,
+                    "reason": reason,
+                }),
+                Caller::System,
+            )
+        };
+        if let Err(e) = self.call_component(&req).await {
+            debug!(app = %source, seq = msg.seq, error = %e.message, "onXcallFailed did not run");
+        }
+    }
+
     /// The content type a component app's blob was uploaded with, from this node's replica
     /// (`None` when it does not host the app or the app does not hold the blob).
     #[must_use]
@@ -1128,6 +1302,19 @@ impl Node {
         let a = to_wasmer_applied(a);
         self.count_conflict(&a);
         Ok(a)
+    }
+}
+
+/// Whether an xcall from `source` may reach `target`: both in one organization, or both
+/// personal apps of one owner (wasmer's xcall rule, `Node::xcall_refusal`).
+fn same_boundary(s: &crate::system::SystemState, source: &str, target: &str) -> bool {
+    let (Some(a), Some(b)) = (s.apps.get(source), s.apps.get(target)) else {
+        return false;
+    };
+    match (&a.org, &b.org) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => a.owner == b.owner,
+        _ => false,
     }
 }
 

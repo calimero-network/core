@@ -135,6 +135,15 @@ pub struct Event {
     pub audience: Audience,
 }
 
+/// A message to another app's method (D25, D29): kept in the run's outbox and delivered
+/// by the platform after the entry commits, only if the run ends `Ok`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Xcall {
+    pub app: String,
+    pub method: String,
+    pub args: Vec<u8>,
+}
+
 /// What an invocation cost. `writes` is counted by the host core.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
@@ -150,6 +159,8 @@ pub struct Outcome {
     pub result: Vec<u8>,
     pub diff: Vec<Write>,
     pub events: Vec<Event>,
+    /// The xcalls the run sent; empty unless `Ok`.
+    pub xcalls: Vec<Xcall>,
     /// The owner-only app log (stdout, stderr, `log`); kept whatever the status.
     pub logs: Vec<String>,
     pub usage: Usage,

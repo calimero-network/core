@@ -31,6 +31,17 @@ pub struct MethodAbi {
     pub every: Option<Duration>,
     /// Accepts `Caller::System`.
     pub allow_system: bool,
+    /// The apps whose xcalls it accepts (`Caller::App`, D13); `"*"` is any app the
+    /// platform delivers from.
+    pub allow_apps: Vec<String>,
+}
+
+impl MethodAbi {
+    /// Whether a delivered xcall from `app` may run it (D13).
+    #[must_use]
+    pub fn allows_app(&self, app: &str) -> bool {
+        self.allow_apps.iter().any(|a| a == "*" || a == app)
+    }
 }
 
 /// The methods an app declares, by ABI (camelCase) name.
@@ -102,6 +113,19 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         public: flag(fields, "public", name)?,
         every,
         allow_system: flag(fields, "allowSystem", name)?,
+        allow_apps: match fields.get("allowApps") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(apps)) => apps
+                .iter()
+                .map(|a| {
+                    a.as_str()
+                        .filter(|a| !a.is_empty())
+                        .map(str::to_owned)
+                        .ok_or_else(|| bad(format!("{name}: allowApps holds {a}")))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(other) => return Err(bad(format!("{name}: allowApps is not a list: {other}"))),
+        },
     })
 }
 

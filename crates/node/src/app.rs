@@ -276,6 +276,10 @@ pub(crate) mod rows {
     pub const CORDER: u8 = b'q';
     /// A component's blobs (R8, `crate::component::blobs`): its record of each, by SHA-256.
     pub const CBLOB: u8 = b'b';
+    /// A component's xcall outbox (D25, `crate::component::xcall`): `o ‖ seq`.
+    pub const COUT: u8 = b'o';
+    /// A component's dead letters (D29): `d ‖ n`.
+    pub const CDEAD: u8 = b'd';
 
     pub fn corder(class: u8, n: u64) -> Vec<u8> {
         let mut k = vec![CORDER, class];

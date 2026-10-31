@@ -5,6 +5,7 @@ use crate::bindings::calimero::app::context;
 use crate::bindings::calimero::app::events;
 use crate::bindings::calimero::app::search;
 use crate::bindings::calimero::app::types;
+use crate::bindings::calimero::app::xcall;
 use crate::bindings::wasi::random::random;
 use crate::env::{Audience, Caller, OrgRole};
 use crate::error::{AppError, Result};
@@ -126,4 +127,8 @@ pub fn search_query(
         next: page.next,
         total: page.total,
     })
+}
+
+pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), String> {
+    xcall::send(app, method, args)
 }

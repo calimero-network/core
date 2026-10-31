@@ -791,9 +791,25 @@ API and system group. What differs from the wasmer path:
   for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
-  `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses
-  xcall, event handlers, TEE runs and outbound HTTPS to a component; a wasmer app's
-  xcall into a component is refused (`node::COMPONENT_REFUSES`).
+  `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses event
+  handlers, TEE runs and outbound HTTPS to a component; a wasmer app's xcall into a
+  component, and a component's into a wasmer app, are refused (`node::COMPONENT_REFUSES`,
+  a dead letter).
+- **Xcalls** (D13, D25, D29, `component/xcall.rs`): an `Ok` entry's `Outcome::xcalls`
+  go to the source's outbox (`XcallHead` in `ComponentHead`, rows `rows::COUT ‖ seq`,
+  at most `MAX_OUTBOX`). The source leader's timer poll (`Node::deliver_xcalls`, at most
+  `DELIVER_BATCH` a round) delivers the head through `call_component` with
+  `CallRequest::xcall = XcallFrom { source, seq }`, `Caller::App`, a `node:xcall-…` key;
+  the target checks the boundary again (`same_boundary`: one org, or one owner's
+  personal apps), its watermark (`XcallHead::seen`, D25: answered as delivered without
+  running), the ABI (`allowApps`, `"*"` = any; `abi_check`), runs `kind = xcall-deliver`
+  and records `CallEntry::xcall`, whose apply moves the watermark whatever the status.
+  The source then logs `componentXcallDone { seq, dead }`. Timeouts and `5xx` are retried
+  (`xcall_retry`, in memory, `backoff_ms`) until `XCALL_WINDOW_MS` from the send; a
+  missing target, another org's, a wasmer app, or the window passing dead-letters it
+  (`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its
+  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin, a hosting node).
+  Test: `component_xcalls_are_delivered_in_order_or_dead_lettered`.
 - **Blobs** (R8, `component/blobs.rs`): the same store and routes as a wasmer app's
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,

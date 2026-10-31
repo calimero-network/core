@@ -18,7 +18,7 @@ use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
-    InvocationKind, OrgRole, Outcome, Status, Usage,
+    InvocationKind, OrgRole, Outcome, Status, Usage, Xcall,
 };
 
 /// Bytes of an app key (before the generation prefix). Values have no separate cap:
@@ -62,7 +62,13 @@ pub const EMIT_FOREIGN_ORG: &str = "audience names another org";
 pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
 const ACTIONS_DISABLED: &str = "actions are not enabled";
-const XCALL_DISABLED: &str = "xcall is not enabled";
+/// xcalls one run may send (D25).
+pub const MAX_XCALLS: usize = 100;
+/// Bytes of an xcall's target app id or method name.
+pub const MAX_XCALL_NAME_BYTES: usize = 128;
+/// `xcall.send`'s soft errors (the WIT `result<_, string>`).
+pub const XCALL_TOO_MANY: &str = "too many xcalls";
+pub const XCALL_BAD_TARGET: &str = "malformed xcall target";
 const LOG_TRUNCATED: &str = "[log truncated]";
 
 /// A range cursor handed to the guest; the WIT `cursor` resource maps onto it.
@@ -86,6 +92,7 @@ pub struct HostCore {
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
     run_bytes: usize,
     events: Vec<Event>,
+    xcalls: Vec<Xcall>,
     logs: Vec<String>,
     log_bytes: usize,
     unique_ids: u64,
@@ -124,6 +131,7 @@ impl HostCore {
             writes: 0,
             run_bytes: 0,
             events: Vec::new(),
+            xcalls: Vec::new(),
             logs: Vec::new(),
             log_bytes: 0,
             unique_ids: 0,
@@ -437,13 +445,38 @@ impl HostCore {
         }
     }
 
+    /// Queues an xcall in the run's outbox (D25): calls, timers, `init` and xcall
+    /// deliveries only, delivered after the entry commits and only if the run ends `Ok`.
+    /// A malformed target (empty, over [`MAX_XCALL_NAME_BYTES`], a reserved `__` method)
+    /// or more than [`MAX_XCALLS`] is the WIT result's error; the arguments count toward
+    /// [`MAX_RUN_BYTES`].
     pub fn xcall_send(
         &mut self,
-        _app: &str,
-        _method: &str,
-        _args: &[u8],
-    ) -> Result<(), HostDenied> {
-        Err(HostDenied::new(XCALL_DISABLED))
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<(), String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("xcall"));
+        }
+        if self.xcalls.len() >= MAX_XCALLS {
+            return Ok(Err(XCALL_TOO_MANY.to_owned()));
+        }
+        let bad = |s: &str| s.is_empty() || s.len() > MAX_XCALL_NAME_BYTES;
+        if bad(app) || bad(method) || method.starts_with("__") {
+            return Ok(Err(XCALL_BAD_TARGET.to_owned()));
+        }
+        self.charge(
+            app.len()
+                .saturating_add(method.len())
+                .saturating_add(args.len()),
+        )?;
+        self.xcalls.push(Xcall {
+            app: app.to_owned(),
+            method: method.to_owned(),
+            args: args.to_vec(),
+        });
+        Ok(Ok(()))
     }
 
     /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
@@ -556,6 +589,7 @@ impl HostCore {
                 Vec::new()
             },
             events: if ok { self.events } else { Vec::new() },
+            xcalls: if ok { self.xcalls } else { Vec::new() },
             logs: self.logs,
             usage: Usage {
                 writes: self.writes,
