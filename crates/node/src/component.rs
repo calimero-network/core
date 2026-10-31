@@ -19,6 +19,7 @@
 //! `last_ts_ms`, idempotency, blob records) are never keys the app sees (D39).
 
 pub mod blobs;
+pub mod search;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Weak};
@@ -487,6 +488,7 @@ impl AppMachine {
         if base_index != self.state.last_index {
             return Applied::conflict(index, "conflict: retry");
         }
+        let mut touched = Vec::new();
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         if outcome.status == Status::Ok {
@@ -495,6 +497,10 @@ impl AppMachine {
                 let mut deltas = BTreeMap::new();
                 let kv = Arc::make_mut(&mut c.kv);
                 for w in &outcome.diff {
+                    // Search catches up from the records an entry touched.
+                    if search::record_table(&w.key.0).is_some() {
+                        touched.push(hex::encode(&w.key.0));
+                    }
                     match &w.value {
                         Some(v) => {
                             tx.put_hidden(rows::CKV, &w.key.0, &v.0);
@@ -511,6 +517,7 @@ impl AppMachine {
                 deltas.retain(|_, d| *d != 0);
                 c.blobs.count(tx, &deltas, ts_ms);
             }
+            self.note_touched(index, touched);
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
                     tx,

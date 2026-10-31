@@ -14,6 +14,11 @@
   grants (`BlobRef::grant`, up to 24 h) that `GET
   /apps/{app}/blobs/{id}?grant=` takes without a session. Uploads keep their
   `Content-Type`. The harness gains `upload_blob` and `blob_refs`.
+- **Full-text search for component apps** (spec section 7). A table declares
+  its text fields with `#[table(search = [..])]` (listed in the state ABI's
+  `search`); the node indexes its records with `calimero-search`, derived from
+  state and brought up to date before each view, and views query it with
+  `Table::search` through a new WIT `search` interface (views only).
 
 ## [1.0.0-rc.7] - 2026-10-31
 

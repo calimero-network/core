@@ -45,6 +45,9 @@ pub trait AppState: Sized {
 pub trait StateField {
     /// The kind of field, in camelCase: `table`, `unorderedMap`, `counter`, `cell`, ..
     const KIND: &'static str;
+    /// The fields the host indexes for full-text search, as a JSON list: a table's
+    /// `#[table(search = [..])]`, empty for everything else.
+    const SEARCH: &'static str = "[]";
 }
 
 /// An event enum. Implemented by `#[app::event]`.

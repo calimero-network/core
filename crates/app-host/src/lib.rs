@@ -8,6 +8,7 @@ mod blobs;
 mod core;
 mod engine;
 mod overlay;
+mod search;
 mod state;
 mod time;
 mod types;
@@ -21,6 +22,10 @@ pub use core::{
     MAX_LOG_BYTES, MAX_OPEN_CURSORS, MAX_RANGE_BATCH, MAX_RUN_BYTES, MAX_WRITES,
 };
 pub use engine::{Engine, PrepareError, Prepared};
+pub use search::{
+    NoSearch, SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT,
+    MAX_SEARCH_QUERY_BYTES,
+};
 pub use state::{stored_key, KeyValue, StateView, GENERATION};
 pub use types::{
     Audience, BlobInfo, Budget, Caller, Directory, Event, HostDenied, InvalidInvocation,

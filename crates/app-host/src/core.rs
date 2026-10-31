@@ -11,6 +11,9 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::overlay::{Cursor, Overlay};
+use crate::search::{
+    NoSearch, SearchHost, SearchPage, SearchQuery, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_BYTES,
+};
 use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
@@ -77,6 +80,7 @@ pub struct HostCore {
     inv: Invocation,
     dir: Arc<dyn Directory>,
     blobs: Arc<dyn BlobHost>,
+    search: Arc<dyn SearchHost>,
     overlay: Overlay,
     writes: u32,
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
@@ -115,6 +119,7 @@ impl HostCore {
             inv,
             dir,
             blobs: Arc::new(NoBlobs),
+            search: Arc::new(NoSearch),
             overlay: Overlay::default(),
             writes: 0,
             run_bytes: 0,
@@ -133,6 +138,14 @@ impl HostCore {
     #[must_use]
     pub fn with_blobs(mut self, blobs: Arc<dyn BlobHost>) -> Self {
         self.blobs = blobs;
+        self
+    }
+
+    /// The node's search index of the app (spec section 7); without it no table is
+    /// searchable.
+    #[must_use]
+    pub fn with_search(mut self, search: Arc<dyn SearchHost>) -> Self {
+        self.search = search;
         self
     }
 
@@ -455,6 +468,27 @@ impl HostCore {
             .wall_ms()
             .saturating_add(u64::from(ttl_seconds).saturating_mul(1_000));
         Ok(self.blobs.grant(&id, expires_ms))
+    }
+
+    /// Queries a table's full-text index (spec section 7): views only, the index brought
+    /// up to the state the view reads. A limit of 0 or past [`MAX_SEARCH_LIMIT`], and a
+    /// query over [`MAX_SEARCH_QUERY_BYTES`], are the WIT result's error.
+    pub fn search_query(
+        &self,
+        query: &SearchQuery,
+    ) -> Result<Result<SearchPage, String>, HostDenied> {
+        if self.inv.kind != InvocationKind::View {
+            return Err(self.denied("search"));
+        }
+        if query.limit == 0 || query.limit > MAX_SEARCH_LIMIT {
+            return Ok(Err(format!("limit must be 1 to {MAX_SEARCH_LIMIT}")));
+        }
+        if query.text.len() > MAX_SEARCH_QUERY_BYTES {
+            return Ok(Err(format!(
+                "a query is at most {MAX_SEARCH_QUERY_BYTES} bytes"
+            )));
+        }
+        Ok(self.search.query(query))
     }
 
     pub fn action_key(&self) -> Result<String, HostDenied> {

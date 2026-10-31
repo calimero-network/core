@@ -16,7 +16,8 @@ use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
     blob_refs, stored_key as host_key, Audience as HostAudience, BlobHost, BlobInfo, Budget,
     Caller as HostCaller, Engine, HostCore, Invocation, InvocationKind, MethodKind, OrgRole,
-    Outcome, Prepared, Status, TimerCtx, Usage,
+    Outcome, Prepared, SearchHit as HostHit, SearchHost, SearchPage, SearchQuery, Status, TimerCtx,
+    Usage,
 };
 use serde_json::Value;
 
@@ -36,6 +37,69 @@ impl BlobHost for HarnessBlobs {
 
     fn grant(&self, id: &[u8; 32], expires_ms: u64) -> String {
         format!("{}.{expires_ms}", hex32(id))
+    }
+}
+
+/// The harness's search (spec section 7): a plain scan of the table's records that keeps
+/// those whose declared fields contain every word of the query (case-insensitive), each
+/// scored 1.0, in key order. The node ranks with its full-text index; tests should assert
+/// which records match, not their order.
+struct HarnessSearch {
+    state: Arc<BTreeMap<Vec<u8>, Vec<u8>>>,
+    fields: BTreeMap<String, Vec<String>>,
+}
+
+impl SearchHost for HarnessSearch {
+    fn query(&self, q: &SearchQuery) -> Result<SearchPage, String> {
+        let Some(fields) = self.fields.get(&q.table) else {
+            return Err(format!("table {:?} declares no search fields", q.table));
+        };
+        let prefix = host_key(
+            calimero_app_host::GENERATION,
+            &crate::encoding::key::encode(&[
+                crate::KeyPart::Str(q.table.clone()),
+                crate::KeyPart::Str("r".into()),
+            ]),
+        );
+        let words: Vec<String> = q.text.split_whitespace().map(str::to_lowercase).collect();
+        let mut hits = Vec::new();
+        for (k, v) in self.state.range(prefix.clone()..) {
+            if !k.starts_with(&prefix) {
+                break;
+            }
+            let Ok(ciborium::Value::Map(entries)) = ciborium::from_reader(v.as_slice()) else {
+                continue;
+            };
+            let texts: Vec<String> = entries
+                .iter()
+                .filter(|(name, _)| {
+                    name.as_text()
+                        .is_some_and(|n| fields.iter().any(|f| f == n))
+                })
+                .filter_map(|(_, value)| value.as_text().map(str::to_owned))
+                .collect();
+            let all = texts.join(" ").to_lowercase();
+            if !words.is_empty() && words.iter().all(|w| all.contains(w.as_str())) {
+                hits.push(HostHit {
+                    key: k[8..].to_vec(),
+                    score: 1.0,
+                    snippet: texts.first().cloned().unwrap_or_default(),
+                });
+            }
+        }
+        let total = hits.len() as u64;
+        let start = q.cursor as usize;
+        let page: Vec<HostHit> = hits
+            .into_iter()
+            .skip(start)
+            .take(q.limit as usize)
+            .collect();
+        let end = start + page.len();
+        Ok(SearchPage {
+            next: (end < total as usize).then(|| u32::try_from(end).unwrap_or(u32::MAX)),
+            hits: page,
+            total,
+        })
     }
 }
 
@@ -392,16 +456,22 @@ impl TestApp {
             seed: self.next_seed(),
             timer,
         };
+        let state = Arc::new(self.state.clone());
+        let search = Arc::new(HarnessSearch {
+            state: Arc::clone(&state),
+            fields: self.prepared.abi.search.clone(),
+        });
         let host = HostCore::new(
             APP_ID,
-            Arc::new(self.state.clone()),
+            state,
             self.seq,
             inv,
             Arc::new(HarnessDir(self.org.clone())),
         )
         // SAFETY: the harness builds timer slots exactly for timer invocations.
         .expect("harness builds valid invocations")
-        .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())));
+        .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
+        .with_search(search);
         let budget = if is_view {
             Budget::view()
         } else {

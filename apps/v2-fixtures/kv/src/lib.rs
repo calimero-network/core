@@ -10,6 +10,15 @@ pub struct Entry {
     pub value: String,
 }
 
+/// A note, full-text searchable by title and body (spec section 7).
+#[derive(Record)]
+#[table(key = "id", search = ["title", "body"])]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
 /// One tick of `beat`, in the order the ticks were applied.
 #[derive(Record)]
 #[table(key = "n")]
@@ -41,6 +50,7 @@ pub struct Kv {
     beat_faults: UnorderedMap<String, String>,
     /// Uploaded blobs by name (R8): a typed reference keeps the blob alive.
     files: UnorderedMap<String, BlobRef>,
+    notes: Table<Note>,
 }
 
 /// A file as `file` lists it (D20: the size as a decimal string).
@@ -215,6 +225,24 @@ impl Kv {
     #[app::view]
     pub fn share(&self, name: String, ttl: u32) -> app::Result<Option<String>> {
         Ok(self.files.get(&name)?.map(|b| b.grant(ttl)))
+    }
+
+    /// Writes note `id`.
+    pub fn note(&mut self, id: String, title: String, body: String) -> app::Result<()> {
+        self.notes.upsert(Note { id, title, body })?;
+        Ok(())
+    }
+
+    /// Removes note `id`.
+    pub fn drop_note(&mut self, id: String) -> app::Result<bool> {
+        Ok(self.notes.remove(&id)?)
+    }
+
+    /// The ids of the notes matching `text`, best first.
+    #[app::view]
+    pub fn find_notes(&self, text: String) -> app::Result<Vec<String>> {
+        let found = self.notes.search(&text, SearchOpts::default().limit(50))?;
+        Ok(found.items.into_iter().map(|f| f.record.id).collect())
     }
 
     /// The value of `key`, or `null`.

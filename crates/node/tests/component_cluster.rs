@@ -2968,6 +2968,81 @@ async fn a_components_blobs_are_held_by_references_and_granted() {
     panic!("the bytes of a forgotten blob stayed in a store");
 }
 
+/// Spec section 7: the host keeps a full-text index of a table's declared fields from the
+/// component's state, and views on any replica query it as of the state they read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn views_search_a_components_tables_as_they_change() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let mut last = 0;
+    for (id, title, body) in [
+        ("1", "Groceries", "milk and eggs"),
+        ("2", "Trip", "pack the eggs carefully"),
+        ("3", "Work", "quarterly plans"),
+    ] {
+        last = alice
+            .call(
+                &app,
+                "note",
+                json!({ "id": id, "title": title, "body": body }),
+                None,
+            )
+            .await
+            .unwrap()
+            .index;
+    }
+    let sorted = |v: Value| {
+        let mut ids: Vec<String> = serde_json::from_value(v).unwrap();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        sorted(strong_view(&alice, &app, "findNotes", json!({ "text": "eggs" })).await),
+        ["1", "2"]
+    );
+    // Every replica builds its own index from the state it applied.
+    for i in 0..3 {
+        let cl = c.client(i);
+        let _s = cl.sign_in(&mut pk).await.unwrap();
+        let v = cl
+            .view(
+                &app,
+                "findNotes",
+                json!({ "text": "quarterly" }),
+                Consistency::Stale { min_index: last },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!(["3"]), "node {i}");
+    }
+    // Updates and removals reach the index before the next view reads.
+    let _r = alice
+        .call(
+            &app,
+            "note",
+            json!({ "id": "3", "title": "Work", "body": "eggs too" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .call(&app, "dropNote", json!({ "id": "1" }), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        sorted(strong_view(&alice, &app, "findNotes", json!({ "text": "eggs" })).await),
+        ["2", "3"]
+    );
+    // A call of a declared view runs as a strong view, so it may search too.
+    let r = alice
+        .call(&app, "findNotes", json!({ "text": "eggs" }), None)
+        .await
+        .unwrap();
+    assert_eq!(sorted(r.result), ["2", "3"]);
+}
+
 /// R8: the owner deletes a component's blob; it is gone whatever refers to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_owner_deletes_a_components_blob() {

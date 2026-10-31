@@ -12,6 +12,7 @@ const ALLOWED_IMPORTS: &[&str] = &[
     "calimero:app/context@0.5.0",
     "calimero:app/events@0.5.0",
     "calimero:app/blobs@0.5.0",
+    "calimero:app/search@0.5.0",
     "calimero:app/xcall@0.5.0",
     "calimero:app/action@0.5.0",
     "calimero:app/rebuild@0.5.0",

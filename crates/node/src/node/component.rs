@@ -352,9 +352,22 @@ impl Node {
         &self,
         prepared: &Prepared,
         app_id: &str,
+        state: (Arc<dyn calimero_app_host::StateView>, Blobs),
+        applied: u64,
+        invocation: Invocation,
+    ) -> Outcome {
+        self.run_with(prepared, app_id, state, applied, invocation, None)
+    }
+
+    /// [`Self::run_component`], with the app's search index for a view (spec section 7).
+    fn run_with(
+        &self,
+        prepared: &Prepared,
+        app_id: &str,
         (state, blobs): (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
+        search: Option<Arc<dyn calimero_app_host::SearchHost>>,
     ) -> Outcome {
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
@@ -364,11 +377,14 @@ impl Node {
             key: self.blob_grant_key(),
         });
         match HostCore::new(app_id, state, applied, invocation, directory) {
-            Ok(host) => Outcome::from_host(self.wasm.invoke(
-                prepared,
-                host.with_blobs(blobs),
-                self.budget(),
-            )),
+            Ok(host) => {
+                let host = host.with_blobs(blobs);
+                let host = match search {
+                    Some(search) => host.with_search(search),
+                    None => host,
+                };
+                Outcome::from_host(self.wasm.invoke(prepared, host, self.budget()))
+            }
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
         }
     }
@@ -944,18 +960,26 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
-        let (bundle, state, applied, ts_ms) = g.read_local(|m, applied| {
+        let bundle = g
+            .read_local(|m, _| m.component_bundle())
+            .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
+        let prepared = self.prepared_for(&bundle).await?;
+        abi_check(&prepared, &req.method, &req.caller, true, false)?;
+        // The state, its blobs and the search index as of one applied index; an upgrade
+        // applied since the bundle was read runs on its own bundle next time.
+        let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
             (
                 m.component_bundle(),
                 (m.view(), m.blob_view()),
                 applied,
                 m.state.component.head.last_ts_ms,
+                self.component_search
+                    .for_view(&bundle, &prepared.abi.search, m, applied),
             )
         });
-        let bundle =
-            bundle.ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false)?;
+        if bundle_now.as_deref() != Some(bundle.as_str()) {
+            return Err(ApiError::unavailable("the app was upgraded; retry"));
+        }
         let node = self
             .this
             .lock()
@@ -980,7 +1004,7 @@ impl Node {
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
-                node.run_component(&prepared, &app_id, state, applied, invocation)
+                node.run_with(&prepared, &app_id, state, applied, invocation, search)
             })
         })
         .await

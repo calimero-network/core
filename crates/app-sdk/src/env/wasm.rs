@@ -3,6 +3,7 @@
 use crate::bindings::calimero::app::blobs;
 use crate::bindings::calimero::app::context;
 use crate::bindings::calimero::app::events;
+use crate::bindings::calimero::app::search;
 use crate::bindings::calimero::app::types;
 use crate::bindings::wasi::random::random;
 use crate::env::{Audience, Caller, OrgRole};
@@ -96,4 +97,33 @@ pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
 
 pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
     blobs::grant(id, ttl_seconds)
+}
+
+pub fn search_query(
+    table: &str,
+    text: &str,
+    mode: crate::SearchMode,
+    cursor: u32,
+    limit: u32,
+) -> std::result::Result<crate::search::RawPage, String> {
+    let mode = match mode {
+        crate::SearchMode::Words => search::SearchMode::Words,
+        crate::SearchMode::Prefix => search::SearchMode::Prefix,
+        crate::SearchMode::Substring => search::SearchMode::Substring,
+        crate::SearchMode::Fuzzy => search::SearchMode::Fuzzy,
+    };
+    let page = search::query(table, text, mode, cursor, limit)?;
+    Ok(crate::search::RawPage {
+        hits: page
+            .hits
+            .into_iter()
+            .map(|h| crate::search::RawHit {
+                key: h.key,
+                score: h.score,
+                snippet: h.snippet,
+            })
+            .collect(),
+        next: page.next,
+        total: page.total,
+    })
 }

@@ -32,6 +32,10 @@ pub trait Record: Serialize + DeserializeOwned {
     const INDEXES: &'static [FieldSet];
     /// Maintained counts: name and fields.
     const COUNTS: &'static [FieldSet];
+    /// Text fields the host indexes for full-text search (spec section 7); none by default.
+    const SEARCH: &'static [&'static str] = &[];
+    /// [`Self::SEARCH`] as a JSON list, for the state ABI.
+    const SEARCH_JSON: &'static str = "[]";
 
     /// The key parts of the named fields, in order.
     ///
@@ -123,6 +127,7 @@ pub struct Table<T: Record, S: Store = DefaultStore> {
 
 impl<T: Record, S: Store> StateField for Table<T, S> {
     const KIND: &'static str = "table";
+    const SEARCH: &'static str = T::SEARCH_JSON;
 }
 
 impl<T: Record, S: Store + Default> Table<T, S> {
@@ -280,6 +285,41 @@ impl<T: Record, S: Store> Table<T, S> {
     /// The record with this key.
     pub fn get<K: ToKey + ?Sized>(&self, key: &K) -> Result<Option<T>, StorageError> {
         self.read(&self.record_key(&key.to_key())?)
+    }
+
+    /// Full-text search over the fields the record declares with
+    /// `#[table(search = [..])]` (spec section 7), best match first. Views only: the host
+    /// keeps the index from the state the view reads. A hit whose record is gone is
+    /// skipped.
+    ///
+    /// # Errors
+    ///
+    /// `Search` when the table declares no search fields or the query is refused (over 256
+    /// bytes, a limit over 100); decoding errors as for `get`.
+    pub fn search(
+        &self,
+        text: &str,
+        opts: crate::SearchOpts,
+    ) -> Result<crate::SearchResults<T>, StorageError> {
+        let limit = opts.limit.unwrap_or(crate::search::DEFAULT_SEARCH_LIMIT);
+        let page =
+            crate::env::search_query(&self.name, text, opts.mode, opts.cursor.unwrap_or(0), limit)
+                .map_err(StorageError::Search)?;
+        let mut items = Vec::with_capacity(page.hits.len());
+        for hit in page.hits {
+            if let Some(record) = self.read(&hit.key)? {
+                items.push(crate::Found {
+                    record,
+                    score: hit.score,
+                    snippet: hit.snippet,
+                });
+            }
+        }
+        Ok(crate::SearchResults {
+            items,
+            next: page.next,
+            total: page.total,
+        })
     }
 
     /// Whether a record with this key exists.

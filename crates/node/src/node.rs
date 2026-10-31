@@ -426,6 +426,8 @@ pub struct Node {
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
     pub search: Search,
+    /// The same for component apps (spec section 7).
+    pub component_search: crate::component::search::ComponentSearch,
     /// ABI facts per bundle hash.
     facts: Mutex<HashMap<String, Arc<BundleFacts>>>,
     /// Wakes the follow-up driver: an entry may have queued work.
@@ -675,6 +677,7 @@ impl Node {
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
+            component_search: crate::component::search::ComponentSearch::default(),
             facts: Mutex::new(HashMap::new()),
             kick: tokio::sync::Notify::new(),
             this: Mutex::new(Weak::new()),
@@ -1624,6 +1627,7 @@ impl Node {
                         .map(|a| a.app_id.clone())
                 }) {
                     self.search.drop_app(&app);
+                    self.component_search.drop_app(&app);
                 }
                 let _g = self.apps.write().ok().and_then(|mut a| a.remove(&group));
                 let _r = self.engine.remove_group(group).await;

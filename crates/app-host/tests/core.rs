@@ -14,6 +14,7 @@ use calimero_app_host::{
     MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
+use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
 use serde_json::json;
 
 struct NoDirectory;
@@ -1166,4 +1167,82 @@ fn a_value_may_refer_only_to_the_apps_own_blobs() {
     ));
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     assert_eq!(out.diff.len(), 1);
+}
+
+/// Answers every query with one hit on key `k`.
+struct OneHit;
+
+impl SearchHost for OneHit {
+    fn query(&self, _q: &SearchQuery) -> Result<SearchPage, String> {
+        Ok(SearchPage {
+            hits: vec![calimero_app_host::SearchHit {
+                key: b"k".to_vec(),
+                score: 1.0,
+                snippet: String::new(),
+            }],
+            next: None,
+            total: 1,
+        })
+    }
+}
+
+fn query(limit: u32, text: &str) -> SearchQuery {
+    SearchQuery {
+        table: "notes".into(),
+        text: text.into(),
+        mode: SearchMode::Words,
+        cursor: 0,
+        limit,
+    }
+}
+
+#[test]
+fn only_views_search_and_queries_are_bounded() {
+    let state = base(&[]);
+    let view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    assert_eq!(
+        view.search_query(&query(10, "eggs"))
+            .unwrap()
+            .unwrap()
+            .total,
+        1
+    );
+    assert!(view.search_query(&query(0, "eggs")).unwrap().is_err());
+    assert!(view
+        .search_query(&query(MAX_SEARCH_LIMIT + 1, "eggs"))
+        .unwrap()
+        .is_err());
+    assert!(view
+        .search_query(&query(10, &"x".repeat(257)))
+        .unwrap()
+        .is_err());
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::Init,
+        InvocationKind::Action,
+    ] {
+        let host = core_for(&state, &inv(kind)).with_search(Arc::new(OneHit));
+        assert!(host.search_query(&query(10, "eggs")).is_err(), "{kind:?}");
+    }
+    // Without the node's index no table is searchable.
+    let bare = core_for(&state, &inv(InvocationKind::View));
+    assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
+}
+
+#[test]
+fn the_abi_reads_search_fields_and_skips_empty_tables() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {},
+        "state": { "search": { "notes": ["title"], "rows": [] } },
+    }))
+    .unwrap();
+    assert_eq!(abi.search.len(), 1);
+    assert_eq!(abi.search["notes"], vec!["title".to_owned()]);
+    assert!(Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {},
+        "state": { "search": { "notes": [1] } },
+    }))
+    .is_err());
 }

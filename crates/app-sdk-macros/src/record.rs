@@ -1,4 +1,4 @@
-//! `#[derive(Record)]` with `#[table(key = .., unique(..), index(..), count(..))]`.
+//! `#[derive(Record)]` with `#[table(key = .., unique(..), index(..), count(..), search = [..])]`.
 //!
 //! The derive implements `calimero_app_sdk::Record` and serde for the struct: field names
 //! are camelCase in both CBOR (stored values) and JSON (results); `u64`/`i64` fields are
@@ -25,6 +25,8 @@ struct TableAttr {
     unique: Vec<FieldSet>,
     index: Vec<FieldSet>,
     count: Vec<FieldSet>,
+    /// Text fields the host indexes for full-text search (spec section 7).
+    search: Vec<LitStr>,
 }
 
 /// `"a"` or `["a", "b"]`.
@@ -71,10 +73,13 @@ fn parse_table(input: &DeriveInput) -> syn::Result<TableAttr> {
                 field_sets(&meta, &mut table.index)
             } else if meta.path.is_ident("count") {
                 field_sets(&meta, &mut table.count)
+            } else if meta.path.is_ident("search") {
+                table.search = field_list(&meta)?;
+                Ok(())
             } else if meta.path.is_ident("partition") {
                 Err(meta.error("partition is reserved (D48)"))
             } else {
-                Err(meta.error("expected `key`, `unique`, `index` or `count`"))
+                Err(meta.error("expected `key`, `unique`, `index`, `count` or `search`"))
             }
         })?;
     }
@@ -145,6 +150,20 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
         Ok(quote! { &[#(#out),*] })
     };
+    let search = table
+        .search
+        .iter()
+        .map(resolve)
+        .collect::<syn::Result<Vec<_>>>()?;
+    // The same list as JSON, for the state ABI's `search` (joined at compile time).
+    let search_json = format!(
+        "[{}]",
+        search
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     let unique = sets(&table.unique)?;
     let index = sets(&table.index)?;
     let count = sets(&table.count)?;
@@ -207,6 +226,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             const UNIQUE: &'static [::calimero_app_sdk::table::FieldSet] = #unique;
             const INDEXES: &'static [::calimero_app_sdk::table::FieldSet] = #index;
             const COUNTS: &'static [::calimero_app_sdk::table::FieldSet] = #count;
+            const SEARCH: &'static [&'static str] = &[#(#search),*];
+            const SEARCH_JSON: &'static str = #search_json;
 
             fn key_parts(&self, fields: &[&str]) -> ::std::vec::Vec<::calimero_app_sdk::KeyPart> {
                 fields

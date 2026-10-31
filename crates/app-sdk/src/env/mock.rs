@@ -35,6 +35,8 @@ pub struct MockState {
     pub events: Vec<(String, Vec<u8>, Audience)>,
     /// The app's blobs by id (hex), as the node would record them at upload.
     pub blobs: HashMap<String, crate::BlobInfo>,
+    /// What `search_query` answers, by table; a table not listed is not searchable.
+    pub search: HashMap<String, crate::search::RawPage>,
 }
 
 impl Default for MockState {
@@ -52,6 +54,7 @@ impl Default for MockState {
             id_prefix: "1.1".into(),
             events: Vec::new(),
             blobs: HashMap::new(),
+            search: HashMap::new(),
         }
     }
 }
@@ -143,4 +146,15 @@ pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
         "host denied: unknown blob or grant ttl out of range"
     );
     format!("grant:{id}:{ttl_seconds}")
+}
+
+pub fn search_query(
+    table: &str,
+    _text: &str,
+    _mode: crate::SearchMode,
+    _cursor: u32,
+    _limit: u32,
+) -> std::result::Result<crate::search::RawPage, String> {
+    read(|s| s.search.get(table).cloned())
+        .ok_or_else(|| format!("table {table:?} declares no search fields"))
 }

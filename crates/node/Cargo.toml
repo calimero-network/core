@@ -13,6 +13,7 @@ axum.workspace = true
 base64.workspace = true
 camino.workspace = true
 chrono.workspace = true
+ciborium.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
@@ -68,7 +69,6 @@ calimero-app-build.workspace = true
 # and the log can lose its unsynced writes on a stop (the D52 restart test).
 calimero-node = { workspace = true, features = ["testing"] }
 calimero-client = { workspace = true, features = ["testing"] }
-ciborium.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true

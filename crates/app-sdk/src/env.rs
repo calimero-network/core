@@ -165,6 +165,18 @@ pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
     backend::blob_grant(id, ttl_seconds)
 }
 
+/// Query the host's full-text index of `table` (views only). Prefer
+/// [`crate::Table::search`], which reads the records back.
+pub fn search_query(
+    table: &str,
+    text: &str,
+    mode: crate::SearchMode,
+    cursor: u32,
+    limit: u32,
+) -> std::result::Result<crate::search::RawPage, String> {
+    backend::search_query(table, text, mode, cursor, limit)
+}
+
 /// The tick this timer method runs for; none in any other invocation.
 pub fn timer() -> Option<TimerInfo> {
     TIMER.with(Cell::get)

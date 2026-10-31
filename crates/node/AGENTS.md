@@ -791,7 +791,7 @@ API and system group. What differs from the wasmer path:
   for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
-  `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses search,
+  `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses
   xcall, event handlers, TEE runs and outbound HTTPS to a component; a wasmer app's
   xcall into a component is refused (`node::COMPONENT_REFUSES`).
 - **Blobs** (R8, `component/blobs.rs`): the same store and routes as a wasmer app's
@@ -812,6 +812,16 @@ API and system group. What differs from the wasmer path:
   takes without a session (a bad one is `404`). At most `MAX_COMPONENT_BLOBS` per app
   (`429`). Tests: `a_components_blobs_are_held_by_references_and_granted`,
   `an_owner_deletes_a_components_blob`.
+- **Search** (spec section 7, `component/search.rs`, `Node::component_search`): the ABI's
+  `state.search` names each searchable table's text fields; every record
+  (`generation ‖ (table, "r", key..)`, `record_table`) is a `calimero-search` document
+  (id = SHA-256 of the stored key). A view brings the app's indexes up to the state it
+  reads before it runs (`ComponentSearch::for_view`, inside `read_local`): from the record
+  keys the entries since touched (`AppMachine::note_touched` at apply, the same
+  `TOUCHED_RING` as the wasmer path), else a full scan; a new bundle rebuilds. The run
+  gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
+  Derived, in memory, dropped with the app group. Test:
+  `views_search_a_components_tables_as_they_change`.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are
@@ -821,7 +831,7 @@ API and system group. What differs from the wasmer path:
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
 keys per app from mero-kms, snapshot restore into a
-running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
+running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 

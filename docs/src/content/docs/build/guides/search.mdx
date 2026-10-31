@@ -278,6 +278,42 @@ outcome, search or not. The constants (`SEARCH_BASE_GAS`,
 `SEARCH_GAS_PER_MATCH`, `SEARCH_GAS_PER_HIT`, `SEARCH_GAS_PER_BYTE` in the
 runtime) and the measurements behind them are in `tools/search-bench/README.md`.
 
+## Component apps (`calimero-app-sdk`)
+
+A component app declares the fields to index on the table itself, and the host
+keeps the index from the app's state; there are no exports to write:
+
+```rust
+#[derive(Record)]
+#[table(key = "id", search = ["title", "body"])]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[app::view]
+pub fn find_notes(&self, text: String) -> app::Result<Vec<Note>> {
+    let found = self.notes.search(&text, SearchOpts::default().limit(20))?;
+    Ok(found.items.into_iter().map(|f| f.record).collect())
+}
+```
+
+- The state ABI lists the fields (`state.search`: table to fields, camelCase).
+  Text fields are indexed; a list of strings is joined; anything else is skipped.
+- Every record of the table is one document. Each replica derives its index
+  from the record keys the entries it applied touched, else from a scan of the
+  table, before a view reads, exactly as for a wasmer app; nothing enters the
+  log.
+- `Table::search(text, SearchOpts)` queries through the WIT `search` interface
+  (`SearchMode::{Words, Prefix, Substring, Fuzzy}`, a cursor and a limit of 1 to
+  100) and reads each hit's record back; a hit whose record is gone is skipped.
+  Only views search; any other run traps `HostDenied`. A call of a declared view
+  runs as a strong view, so it may search too.
+- The test harness (`TestApp`) answers searches with a plain scan: records whose
+  declared fields contain every word of the query, all scored the same. Assert
+  which records match, not their order.
+
 ## Limits
 
 - One index per `(app, index name)`, over one or more collections of one value type.

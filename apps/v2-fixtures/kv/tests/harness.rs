@@ -205,3 +205,37 @@ fn blobs_are_referenced_from_state_and_granted() {
         .unwrap();
     assert_eq!(t.blob_refs(&id), 0);
 }
+
+#[test]
+fn notes_are_found_by_their_declared_fields() {
+    let mut t = app();
+    for (id, title, body) in [
+        ("1", "Groceries", "milk and eggs"),
+        ("2", "Trip", "pack the eggs carefully"),
+        ("3", "Work", "secret plans"),
+    ] {
+        t.as_("owner")
+            .call("note", json!({ "id": id, "title": title, "body": body }))
+            .unwrap();
+    }
+    let mut found = t
+        .as_("owner")
+        .view("findNotes", json!({ "text": "eggs" }))
+        .unwrap();
+    found.as_array_mut().unwrap().sort_by_key(|v| v.to_string());
+    assert_eq!(found, json!(["1", "2"]));
+    // Search is for views: the same method run as a call traps.
+    assert_eq!(
+        t.as_("owner")
+            .call("findNotes", json!({ "text": "eggs" }))
+            .unwrap_err(),
+        Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied)
+    );
+    t.as_("owner").call("dropNote", json!({ "id": "1" })).unwrap();
+    assert_eq!(
+        t.as_("owner")
+            .view("findNotes", json!({ "text": "eggs" }))
+            .unwrap(),
+        json!(["2"])
+    );
+}

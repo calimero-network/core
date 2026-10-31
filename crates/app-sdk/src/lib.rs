@@ -23,6 +23,7 @@ pub mod env;
 pub mod error;
 pub mod guards;
 pub mod json;
+pub mod search;
 pub mod store;
 pub mod table;
 
@@ -41,6 +42,7 @@ pub use collections::{
 pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
 pub use env::{Audience, Caller, OrgRole};
 pub use error::{AppError, Result, StorageError, TableError};
+pub use search::{Found, SearchMode, SearchOpts, SearchResults};
 pub use store::{MemStore, RangeCursor, Store};
 pub use table::{FindOpts, Page, Record, Table};
 
@@ -54,7 +56,7 @@ pub mod prelude {
     pub use crate::app::{self, AppEvent, AppState};
     pub use crate::{
         env, guards, AppError, Audience, BlobRef, Caller, Cell, ContentHash, Counter, FindOpts,
-        FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText, Set, Span, Table,
-        Text, ToKey, ToKeyPart, UnorderedMap, Vector,
+        Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText, SearchMode,
+        SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap, Vector,
     };
 }

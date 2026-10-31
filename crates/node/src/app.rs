@@ -544,6 +544,26 @@ impl AppMachine {
         }
     }
 
+    /// Keep what entry `index` touched for search to catch up from (`TOUCHED_RING`
+    /// entries): a wasmer app's entity ids, a component's record keys (hex).
+    pub(crate) fn note_touched(&mut self, index: u64, touched: Vec<String>) {
+        if touched.is_empty() {
+            if self.touched_since == u64::MAX {
+                self.touched_since = index;
+            }
+            return;
+        }
+        if self.touched_since == u64::MAX {
+            self.touched_since = index;
+        }
+        self.touched.push_back((index, touched));
+        if self.touched.len() > TOUCHED_RING {
+            if let Some((i, _)) = self.touched.pop_front() {
+                self.touched_since = i + 1;
+            }
+        }
+    }
+
     /// The entities touched by entries after `index`, or `None` when this
     /// replica does not know them all (search then rebuilds).
     #[must_use]
@@ -692,19 +712,7 @@ impl AppMachine {
                     );
                 }
             }
-            if !outcome.touched.is_empty() {
-                if self.touched_since == u64::MAX {
-                    self.touched_since = index;
-                }
-                self.touched.push_back((index, outcome.touched.clone()));
-                if self.touched.len() > TOUCHED_RING {
-                    if let Some((i, _)) = self.touched.pop_front() {
-                        self.touched_since = i + 1;
-                    }
-                }
-            } else if self.touched_since == u64::MAX {
-                self.touched_since = index;
-            }
+            self.note_touched(index, outcome.touched.clone());
             for w in &outcome.diff {
                 match &w.value {
                     Some(v) => tx.put_hidden(rows::KV, &w.key.0, &v.0),
