@@ -38,7 +38,13 @@ Short version:
 7. **Rotation happens at each link** (device, person, right, owner), each a
    signed command. A guard keeps an organization from owning a deployment it
    could lose: at least two members who can manage it.
-8. **Depends on #4791** (proofs at apply for memberships, invites and passkeys):
+8. **Only Cloud users deploy.** Creating a deployment needs a deployer grant
+   signed with the cluster's operator key, which Calimero Cloud holds and gives
+   only to its workspaces. On a cluster that requires deployments (fixed at
+   genesis), apps are created only from a deployment's offers, so an account
+   that merely found the node's address can use apps but never install one. A
+   dedicated cluster is granted only to the workspace that owns it.
+9. **Depends on #4791** (proofs at apply for memberships, invites and passkeys):
    without it, the membership step of the chain is checked only at the API.
 
 ## 1. Today, from the code
@@ -54,6 +60,9 @@ Short version:
 | `MANAGE_APPLICATION` lets a member upgrade an organization's apps; a publisher binding extends it to every instance of a package | `SystemState::manages_apps`; `SystemState::publishers`, `SystemCmd::BindPublisher` |
 | Upgrades and release approvals carry the actor's passkey consent, verified at apply | `proof.rs`, `system::authorize` |
 | Memberships, invites and passkey additions are judged at the API, not proven at apply | core #4791 adds the proofs |
+| Any signed-in account may install a release from the operator's registry and create apps from what it sees; sign-up is open to anyone who reaches a node | `crates/node/src/api.rs`, `package_install` (`installer(...).account()`, no other check); `Node::install_from_registry` |
+| Operator decisions carry an Ed25519 signature under the operator key recorded at genesis, verified at apply | `SystemCmd::Genesis { operator_key }`; `system::authorize` (`verify_operator`) |
+| Genesis fixes the cluster's governance once, before any account exists | `SystemCmd::Genesis`, `Governance` |
 
 ## 2. Goals and non-goals
 
@@ -63,12 +72,13 @@ Goals:
 - A deployer's teammates manage its deployment with their own passkeys.
 - A deployer can see which organizations use its apps.
 - A customer's page always matches the instance behind it.
+- Only Calimero Cloud's users deploy, and a dedicated cluster serves only its owner's deployments.
 - Every right is proven at apply, on every node, from passkey signatures in the log.
 
 Non-goals:
 - Account or organization recovery after every passkey is lost (planned work, not here).
 - Changing who upgrades an instance (owner or publisher, from the package's
-  manifest). Section 10 asks whether the deployer should get it too.
+  manifest). Section 11 asks whether the deployer should get it too.
 - Billing. The listing gives mdma what per-deployer billing would need; pricing is mdma's.
 
 ## 3. The model
@@ -133,7 +143,7 @@ for `Owner::Org`, a member holding `MANAGE_APPLICATION` org-wide there; for
 
 | Command | Effect | Authority, judged at apply |
 | --- | --- | --- |
-| `CreateDeployment { name, owner }` | An empty deployment | `Owner::Org`: the actor holds `MANAGE_APPLICATION` there and the org passes the lockout guard (section 8). `Owner::Account`: the actor is that account |
+| `CreateDeployment { name, owner }` | An empty deployment | `Owner::Org`: the actor holds `MANAGE_APPLICATION` there and the org passes the lockout guard (section 9). `Owner::Account`: the actor is that account |
 | `OfferApp { deployment, app, package, version }` | Installs the release if absent (as `InstallPackage` does today, pinned signer and all), then adds or replaces the entry | A manager |
 | `WithdrawApp { deployment, app }` | Removes the entry. Refused while an instance created from this deployment runs that app's package. Removes the release when it is no longer offered or used | A manager |
 | `OfferDeployment { deployment, to }` | Records a pending transfer | A manager |
@@ -155,17 +165,48 @@ Reads:
   app data. Managers only, after `sys_fresh`.
 - `/ops/*` reports gain the deployment id next to each app, ids only, as today.
 
-## 5. Customers
+## 5. Who may deploy
+
+Accounts are open: anyone who reaches a node can sign up, and must, to use a
+deployer's apps. So deploying is gated separately, with the operator key that
+already signs operator decisions:
+
+| Command | Effect | Authority, judged at apply |
+| --- | --- | --- |
+| `GrantDeployer { owner, until }` | `owner` (an org or an account) may create deployments until `until` | The operator's signature (`verify_operator`) over the exact grant |
+| `RevokeDeployer { owner }` | No new deployments or offers for `owner`; its deployments stay, and their instances run on | The operator's signature |
+
+- `CreateDeployment` and `OfferApp` require a live grant for the deployment's owner.
+- Genesis gains `deployments: open | granted` (in `Governance`, fixed once). On a
+  `granted` cluster `package_install` and `POST /apps` without an offer are
+  refused for accounts: every app is created from a deployment's offer, so every
+  instance is attributable to a deployer, and an account that found the node's
+  address uses apps but never installs one. `open` keeps today's behaviour for
+  local and self-run clusters.
+- Calimero Cloud (mdma) holds each cloud cluster's operator key. It signs a grant
+  when a workspace makes its first deploy on a cluster, and revokes it when the
+  workspace is deleted or suspended.
+- **Dedicated clusters**: mdma grants only the team org (or account) of the
+  workspace that owns the cluster, and refuses any other. Its customers still
+  sign up and create instances of the owner's apps; nobody else can deploy there.
+- A grant does not let mdma act inside a deployment: offering, withdrawing and
+  transferring still need a manager's passkey (section 8). The operator can stop
+  new deployments; it cannot run or change an existing one.
+
+## 6. Customers
 
 - A customer org creates an instance of an app a deployment offers, usually from
   that app's frontend opened at `/d/{deployment}/`. The consent the creator signs
   names the deployment ("You are starting notes from acme-labs").
 - A customer org may use apps from several deployments; each instance records
   its own, and each deployer lists only the orgs with instances from it.
-- Whether the org itself belongs to a deployment, or only its instances do, is
-  open (section 10, question 2).
+- Only instances belong to a deployment, not the org. An org is a customer of a
+  deployment while it has at least one instance from it; deleting its last one
+  ends that, with nothing else to undo. The customer is in control, and core
+  keeps no record beyond the instances (decided; a signed join record can be
+  added later if billing or offers to past customers need it).
 
-## 6. Frontends
+## 7. Frontends
 
 `app_host` keeps `/` (the newest release) and `/{version}/`, and adds:
 
@@ -180,7 +221,7 @@ Reads:
 Both stay `GET` and `HEAD` of public files: no account data. The deployment's
 name is what the customer sees at consent anyway.
 
-## 7. A team manages a deployment
+## 8. A team manages a deployment
 
 When a teammate offers, withdraws or transfers, every node checks this chain,
 all from the replicated log:
@@ -213,7 +254,7 @@ so when a teammate first opens a deployment on a cluster.
 One change at the organization covers its whole deployment; nothing is
 rewritten per app or per deployment.
 
-## 8. The lockout guard
+## 9. The lockout guard
 
 If every manager loses every passkey, nobody can sign for the deployment again
 until recovery exists. So:
@@ -225,7 +266,7 @@ until recovery exists. So:
   an org that owns a deployment below the minimum.
 - The console warns when a manager has only one passkey on the cluster.
 
-## 9. Calimero Cloud (mdma)
+## 10. Calimero Cloud (mdma)
 
 - A workspace's team org and deployment on each cluster are created at its
   first deploy there, named after the workspace, and recorded on the workspace.
@@ -237,25 +278,16 @@ until recovery exists. So:
   the deployment on that cluster. Removing a member removes them there too, both
   signed by an admin in the browser as today.
 - Roles map to capabilities: owner and admin hold `MANAGE_APPLICATION` and
-  `APPROVE_RELEASES`; developer may offer apps and create instances (section 10).
+  `APPROVE_RELEASES`; developer may offer apps and create instances (section 11).
 - The console shows the deployment as the workspace's apps on that cluster, and
   each app's customer organizations from `GET /deployments/{id}/orgs`, joined
   with usage from `/metrics`.
 
-## 10. Open questions
+## 11. Open questions
 
 1. **Can a developer withdraw an app?** Proposed: no, managers only.
 2. **Does a customer org belong to a deployment, or only its instances?**
-   - *Only its instances* (proposed): the relation is derived. An org is a
-     customer of a deployment while it has an instance from it; deleting its
-     last one ends that, with nothing else to undo. The customer controls it
-     entirely, and the listing follows from data that already exists.
-   - *The org joins*: a `JoinDeployment` record, signed by a customer admin,
-     created with the first instance. The deployer could then see a customer
-     who has deleted every instance, offer it new apps, or (later) bill it a
-     base fee; leaving becomes an explicit, signed step.
-   The first can grow into the second later by adding the record; the reverse
-   would mean deleting it.
+   Decided: only its instances (section 6).
 3. **Is the deploying org the publisher?** Proposed: separate. A workspace can
    deploy another publisher's public package and manage its own deployment
    without being bound to the signing key.
@@ -265,19 +297,25 @@ until recovery exists. So:
 5. **Minimum managers**: two, enforced in core (proposed), or a console warning only.
 6. **Customer org names in the listing**: shown (proposed, the customer consented
    to that deployer), or ids only.
+7. **Can a dedicated cluster's owner hold deployer grants without trusting
+   Calimero?** As proposed, mdma signs the grants, so the owner trusts mdma not
+   to grant someone else. An alternative is a genesis governance value naming
+   the owner (`deployers: owner`), whose own passkey grants deployers there.
+   Proposed: operator grants first, the owner option with dedicated self-service.
 
-## 11. Phases
+## 12. Phases
 
 | Phase | What | Needs |
 | --- | --- | --- |
 | 0 | #4791: memberships, invites, passkeys proven at apply | #4738 merged |
 | 1 | `Deployment`, `CreateDeployment`, `OfferApp`, `WithdrawApp`; records from before migrate to one `Owner::Account` deployment per installer, offering the releases it installed | Phase 0 |
+| 1b | `GrantDeployer`, `RevokeDeployer`, `deployments: granted` at genesis; mdma signs grants (dedicated: owner only) | Phase 1 |
 | 2 | `/app/{app}/` and `/d/{deployment}/`; `deployments` in `/.well-known/calimero.json`; `GET /deployments/{id}` | Phase 1 |
 | 3 | `AppRecord::deployment`, the consent text, `GET /deployments/{id}/orgs`; mero-js passes the deployment | Phase 1 |
 | 4 | Transfer and the lockout guard | Phase 1 |
 | 5 | mdma: team orgs and deployments on clusters, invites mirrored, the customer list on the app page | Phases 1 to 4 |
 
-## 12. Tests, red first
+## 13. Tests, red first
 
 - Two deployments offer the same release; each withdraws only its own entry;
   the release stays while the other offers it or any instance runs it, and goes after.
@@ -292,6 +330,12 @@ until recovery exists. So:
   assertion are refused at apply on every node.
 - A removed passkey's session can no longer act; the account's other passkey can.
 - `/app/{app}/` opens the release the instance runs after another deployer offers a newer one.
+- Without a grant, `CreateDeployment` and `OfferApp` are refused at apply; a
+  grant without the operator's signature, or signed by another key, is refused.
+- On a `granted` cluster an account's `package_install`, and `POST /apps` naming
+  no offer, are refused; creating an instance from an offer still works for a
+  customer who only signed up.
+- A revoked owner's existing instances keep running; it can no longer offer.
 - A transfer needs both sides; an org below the minimum cannot own a deployment
   or drop below it while it owns one.
 - Migration: a data directory from before (`a09547b2b`-style fixture) opens with
