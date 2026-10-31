@@ -179,9 +179,13 @@ async fn org(owner: &Client, name: &str) -> String {
 }
 
 /// `who` joins `org` as a member, invited by `admin`.
-async fn join(admin: &Client, org: &str, who: &Client) {
+async fn join(admin: &Client, admin_pk: &mut SoftAuthenticator, org: &str, who: &Client) {
     let token = admin
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            admin_pk,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -193,11 +197,18 @@ async fn join(admin: &Client, org: &str, who: &Client) {
         .unwrap();
 }
 
-async fn set_caps(admin: &Client, org: &str, account: &str, caps: u32) {
+async fn set_caps(
+    admin: &Client,
+    admin_pk: &mut SoftAuthenticator,
+    org: &str,
+    account: &str,
+    caps: u32,
+) {
     let _ok = admin
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/capabilities"),
             json!({ "account": account, "capabilities": caps }),
+            admin_pk,
         )
         .await
         .unwrap();
@@ -383,9 +394,9 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     // An organization's deployment: alice owns the org, carol holds
     // MANAGE_APPLICATION org-wide, bob is a plain member.
     let acme = org(&alice, "Acme").await;
-    join(&alice, &acme, &bob).await;
-    join(&alice, &acme, &carol).await;
-    set_caps(&alice, &acme, &carol_id, MANAGE_APPLICATION).await;
+    join(&alice, &mut alice_pk, &acme, &bob).await;
+    join(&alice, &mut alice_pk, &acme, &carol).await;
+    set_caps(&alice, &mut alice_pk, &acme, &carol_id, MANAGE_APPLICATION).await;
     // carol needs to see the release to offer it: she shares the org with
     // its installer.
     forbidden(
@@ -444,7 +455,7 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
 
     // Carol's capability withdrawn: her next change is refused, at the API
     // and where it applies.
-    set_caps(&alice, &acme, &carol_id, 0).await;
+    set_caps(&alice, &mut alice_pk, &acme, &carol_id, 0).await;
     forbidden(
         &carol
             .delete_confirmed(&format!("deployments/{theirs}/apps/notes"), &mut carol_pk)
@@ -466,9 +477,9 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     .unwrap_err();
     assert!(e.contains("manage"), "a withdrawn capability: {e}");
     // Granted again, then removed from the organization: refused the same.
-    set_caps(&alice, &acme, &carol_id, MANAGE_APPLICATION).await;
+    set_caps(&alice, &mut alice_pk, &acme, &carol_id, MANAGE_APPLICATION).await;
     let _ok = alice
-        .delete(&format!("orgs/{acme}/members/{carol_id}"))
+        .delete_confirmed(&format!("orgs/{acme}/members/{carol_id}"), &mut alice_pk)
         .await
         .unwrap();
     forbidden(
