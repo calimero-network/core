@@ -2,37 +2,43 @@
 
 Oct 31, 2026 · Status: **proposal, not implemented** · No runtime code changes with this document.
 
-A developer deploys an app from Calimero Cloud: the release is installed on a
-cluster, and instances of it are created later, mostly from the app's own
+A developer deploys apps from Calimero Cloud: their releases are installed on a
+cluster, and instances of them are created later, mostly from the app's own
 frontend, one per customer organization. Several developers can deploy the same
 package on the same shared cluster. Today the cluster records a release once,
-owned by whichever account installed it first. This document makes a
-deployment a thing of its own, owned by an organization, managed by that
-organization's members with their own passkeys, and able to list the customer
-organizations running on it.
+owned by whichever account installed it first. This document adds a
+**deployment**: the deployer's list of apps on a cluster and the team that
+manages it, with customer organizations creating instances of the apps it offers.
 
 Short version:
 
-1. **A deployment is a claim on a release, owned by an organization** (or, for a
-   developer on their own, an account). Several deployments may claim the same
-   release. Each deployer removes only its own claim; the release goes when no
-   claim is left and no app runs it.
-2. **Frontends**: `/` keeps serving the newest release. Two new addresses serve
-   a specific one: `/app/{app}/`, the release that app runs, and `/d/{deployment}/`,
-   the release a deployment claims, which also tells the page which deployment
-   to create instances under.
-3. **Instances name the deployment they were created from.** The person creating
-   one sees which deployer they join and consents to it. The deployment's
-   managers can then list the organizations running on it: ids, names, instance
-   counts, versions, never members or app data.
-4. **A team manages a deployment.** Whoever holds `MANAGE_APPLICATION` in the
+1. **A deployment is a list of apps offered and the team that manages them.**
+   It is owned by an organization (the deployer's team on that cluster) or, for
+   a developer on their own, an account. Each entry is an app name and the
+   release it runs (`package@version`).
+2. **Releases are shared underneath.** A release is stored once and may be
+   offered by several deployments; it goes when no deployment offers it and no
+   instance runs it. Removing an app from a deployment never touches another
+   deployer.
+3. **Customer organizations create instances of the apps a deployment offers.**
+   Each instance records the deployment it came from, and the person creating
+   it consents to that deployer. A customer org may use apps from several
+   deployments.
+4. **The deployment's managers list its customers**: the organizations with
+   instances from it, with names, instance counts and versions, never members
+   or app data. Another deployer's customers never appear, even on the same release.
+5. **Frontends**: `/` keeps serving the newest release of a package. Two new
+   addresses serve a specific one: `/app/{app}/`, the release that instance
+   runs, and `/d/{deployment}/`, the deployment's entry for that package, which
+   also tells the page which deployment to create instances under.
+6. **A team manages a deployment.** Whoever holds `MANAGE_APPLICATION` in the
    owning organization may act on it, each with their own passkey, checked at
    apply on every node. Passkeys stay on accounts; nothing about a person is
    written on a deployment.
-5. **Rotation happens at each link** (device, person, right, owner), each a
-   signed command. A guard keeps an organization from owning deployments it
-   could lose: at least two members who can manage them.
-6. **Depends on #4791** (proofs at apply for memberships, invites and passkeys):
+7. **Rotation happens at each link** (device, person, right, owner), each a
+   signed command. A guard keeps an organization from owning a deployment it
+   could lose: at least two members who can manage it.
+8. **Depends on #4791** (proofs at apply for memberships, invites and passkeys):
    without it, the membership step of the chain is checked only at the API.
 
 ## 1. Today, from the code
@@ -52,101 +58,139 @@ Short version:
 ## 2. Goals and non-goals
 
 Goals:
-- Two deployers of the same release do not affect each other: neither can delete
-  what the other relies on, and neither sees the other's customers.
-- A deployer's teammates manage its deployments with their own passkeys.
-- A deployer can see which organizations run on its deployment.
+- Two deployers of the same release do not affect each other: neither can remove
+  what the other offers or runs, and neither sees the other's customers.
+- A deployer's teammates manage its deployment with their own passkeys.
+- A deployer can see which organizations use its apps.
 - A customer's page always matches the instance behind it.
 - Every right is proven at apply, on every node, from passkey signatures in the log.
 
 Non-goals:
 - Account or organization recovery after every passkey is lost (planned work, not here).
 - Changing who upgrades an instance (owner or publisher, from the package's
-  manifest). Section 9 asks whether deployers should get it too.
+  manifest). Section 10 asks whether the deployer should get it too.
 - Billing. The listing gives mdma what per-deployer billing would need; pricing is mdma's.
 
 ## 3. The model
 
 ```
-Deployment ──owned by──▶ Organization (or Account) ──members──▶ Account ──▶ Passkeys
-     │                                                      (MANAGE_APPLICATION)
-     ├──claims──▶ Release (package, version)
-     └──◀──created from── App instance ──in──▶ Customer organization
+ CLUSTER
+ ┌──────────────────────────────────────────────┐
+ │ DEPLOYMENT  acme-labs                        │
+ │   owner: org acme-labs-team                  │──members──▶ ana, bo (MANAGE_APPLICATION)
+ │   apps:  notes  com.acme.notes@1.2.0         │                 └─▶ their passkeys
+ │          board  com.acme.board@0.4.0         │
+ └───────────────┬──────────────────────────────┘
+                 │ instances created from its apps
+     ┌───────────┼─────────────────────┐
+     ▼           ▼                     ▼
+  ORG globex   ORG initech           ORG dana
+  notes 1.2.0  notes 1.2.0,          board 0.4.0
+               board 0.4.0           (and chat, from deployment hooli)
+
+ RELEASES (stored once): com.acme.notes@1.2.0 ◀── offered by acme-labs and by hooli
+                         com.acme.board@0.4.0 ◀── offered by acme-labs
 ```
 
 `SystemState::deployments: BTreeMap<DeploymentId, Deployment>`:
 
 ```rust
 pub struct Deployment {
-    pub id: DeploymentId,          // typed id, like an app's
-    pub owner: Owner,              // Owner::Org(OrgId) | Owner::Account(AccountId)
-    pub package: String,
-    pub version: String,           // the release it claims
+    pub id: DeploymentId,                      // typed id, like an app's
+    pub name: String,                          // shown at consent ("acme-labs")
+    pub owner: Owner,                          // Owner::Org(OrgId) | Owner::Account(AccountId)
+    pub apps: BTreeMap<String, Offer>,         // app name -> what it offers
     pub created_by: AccountId,
     pub created_at: u64,
     pub transfer: Option<PendingTransfer>,
 }
+
+pub struct Offer {
+    pub package: String,
+    pub version: String,                       // the release new instances get
+    pub added_by: AccountId,
+    pub added_at: u64,
+}
 ```
 
-A deployment claims exactly one release. Upgrading a deployment to a new version
-is a new claim on the new release followed by removing the old one (section 4),
-so a deployer's history is a sequence of claims.
-
-`AppRecord` gains `deployment: Option<DeploymentId>`. An app created before this
-has none and appears in no deployment's listing.
+- One deployment per owner per cluster is the expected shape (a workspace's
+  deployment); nothing forbids more, for example staging and production.
+- An offer names one release. Offering a newer version replaces the entry: new
+  instances get it, and existing instances move when they are upgraded.
+- A release is **offered** while any deployment's entry names it, and **used**
+  while any instance runs it. It is removed when it is neither.
+- `AppRecord` gains `deployment: Option<DeploymentId>`. An instance created before
+  this has none and appears in no deployment's listing.
+- `PackageRecord::owner` and `installers` stop deciding who may remove a
+  release; offers do.
 
 ## 4. Commands and who may run them
 
 Every command below carries its actor's passkey consent over the exact statement,
-verified at apply (`system::authorize`), and spends its nonce.
+verified at apply (`system::authorize`), and spends its nonce. "Manager" means:
+for `Owner::Org`, a member holding `MANAGE_APPLICATION` org-wide there; for
+`Owner::Account`, that account.
 
 | Command | Effect | Authority, judged at apply |
 | --- | --- | --- |
-| `Deploy { package, version, owner }` | Installs the release if absent (as `InstallPackage` does today, pinned signer and all), then records the claim | `Owner::Org`: the actor holds `MANAGE_APPLICATION` org-wide there, and the org passes the lockout guard (section 7). `Owner::Account`: the actor is that account |
-| `Undeploy { deployment }` | Removes the claim. Refused while an app created from this deployment runs its release. When no claim is left and no app runs the release, the release is removed as `UninstallPackage` removes it | `MANAGE_APPLICATION` in the owning org, or the owning account |
-| `OfferDeployment { deployment, to }` | Records a pending transfer | `MANAGE_APPLICATION` in the owning org |
-| `AcceptDeployment { deployment }` | Moves ownership to `to` | `MANAGE_APPLICATION` in `to`, and `to` passes the lockout guard |
+| `CreateDeployment { name, owner }` | An empty deployment | `Owner::Org`: the actor holds `MANAGE_APPLICATION` there and the org passes the lockout guard (section 8). `Owner::Account`: the actor is that account |
+| `OfferApp { deployment, app, package, version }` | Installs the release if absent (as `InstallPackage` does today, pinned signer and all), then adds or replaces the entry | A manager |
+| `WithdrawApp { deployment, app }` | Removes the entry. Refused while an instance created from this deployment runs that app's package. Removes the release when it is no longer offered or used | A manager |
+| `OfferDeployment { deployment, to }` | Records a pending transfer | A manager |
+| `AcceptDeployment { deployment }` | Moves ownership to `to` | `MANAGE_APPLICATION` in `to`, which passes the lockout guard |
 | `CancelDeploymentTransfer { deployment }` | Drops a pending transfer | Either side |
-| `CreateApp { app }` with `app.deployment` | As today, plus: the deployment exists, claims a release of the app's package that the creator sees, and the creator's consent names the deployment | The creator, as today |
+| `DeleteDeployment { deployment }` | Removes an empty deployment | A manager |
+| `CreateApp { app }` with `app.deployment` and `app.offer` | As today, plus: the deployment exists, offers that app, and the instance runs exactly the offered release; the creator's consent names the deployment | The creator, as today |
 
-`UninstallPackage` stays for the operator and for releases with no claim (records
-from before this change), and refuses a release any deployment claims.
+`UninstallPackage` stays for the operator and for releases no deployment offers
+(records from before this change), and refuses one that is offered.
 
 Reads:
-- `GET /deployments` lists the deployments the caller manages.
-- `GET /deployments/{id}/orgs` lists, for each customer organization with an app
-  created from the deployment, the org's id and name, how many apps it has there,
-  which versions they run, and when the first was created. It never lists members,
-  teams, app names chosen by the customer, or app data. Access is
-  `MANAGE_APPLICATION` in the owning org, after `sys_fresh`.
+- `GET /deployments` lists the deployments the caller manages; `GET /deployments/{id}`
+  is public by name (its apps and owner name), for frontends and consent.
+- `GET /deployments/{id}/orgs` lists, for each customer organization with an
+  instance from the deployment: the org's id and name, its instances' app names
+  from the deployment's list, the versions they run, and when the first was
+  created. It never lists members, teams, instance names the customer chose, or
+  app data. Managers only, after `sys_fresh`.
 - `/ops/*` reports gain the deployment id next to each app, ids only, as today.
 
-## 5. Frontends
+## 5. Customers
+
+- A customer org creates an instance of an app a deployment offers, usually from
+  that app's frontend opened at `/d/{deployment}/`. The consent the creator signs
+  names the deployment ("You are starting notes from acme-labs").
+- A customer org may use apps from several deployments; each instance records
+  its own, and each deployer lists only the orgs with instances from it.
+- Whether the org itself belongs to a deployment, or only its instances do, is
+  open (section 10, question 2).
+
+## 6. Frontends
 
 `app_host` keeps `/` (the newest release) and `/{version}/`, and adds:
 
-- **`/app/{app}/`** redirects to `/{version}/` of the release that app runs, so a
-  link a frontend hands to a customer always opens the frontend that matches
-  the customer's instance.
+- **`/app/{app}/`** redirects to `/{version}/` of the release that instance runs,
+  so a link a frontend hands to a customer always opens the frontend that
+  matches the customer's instance.
 - **`/d/{deployment}/`** redirects to `/{version}/?deployment={id}` for the
-  release the deployment claims. `/.well-known/calimero.json` gains `deployments`
-  for the package (id, owner name, version), so the page can read the one it was
-  opened for. mero-js passes it on `createApp`.
+  release the deployment offers for this package. `/.well-known/calimero.json`
+  gains `deployments` (id, name, the offered version), so the page reads the one
+  it was opened for. mero-js passes it on `createApp`.
 
-Both stay `GET` and `HEAD` of public files: no account data, and the deployment's
-owner name is what the customer sees at consent anyway.
+Both stay `GET` and `HEAD` of public files: no account data. The deployment's
+name is what the customer sees at consent anyway.
 
-## 6. A team manages a deployment
+## 7. A team manages a deployment
 
-When a teammate upgrades or undeploys, every node checks this chain, all from
-the replicated log:
+When a teammate offers, withdraws or transfers, every node checks this chain,
+all from the replicated log:
 
 1. The actor's passkey is registered to their own account on this cluster (a
    passkey registration, proven at apply by #4791).
 2. An admin of the owning org invited them, with their role and capabilities,
    signed by the admin's passkey (#4791).
 3. They redeemed the invite with their own passkey session (#4791).
-4. The deployment is owned by that org (`Deploy` or `AcceptDeployment`, signed).
+4. The deployment is owned by that org (`CreateDeployment` or `AcceptDeployment`, signed).
 5. The command carries their passkey assertion over the exact statement, unused,
    and at apply they hold `MANAGE_APPLICATION` in that org.
 
@@ -155,7 +199,7 @@ so neither can make or extend this chain.
 
 Passkeys are registered for one cluster's relying party, so a deployment on
 eu-shared-2 is managed by passkeys registered on eu-shared-2. The console says
-so when a teammate first opens an app on a cluster.
+so when a teammate first opens a deployment on a cluster.
 
 ### Rotation
 
@@ -164,77 +208,91 @@ so when a teammate first opens an app on a cluster.
 | A device | Add a passkey to the account, then remove the old one; removal ends its sessions | Another passkey of the same account |
 | A person | Invite or remove a member | An admin of the owning org |
 | A right | Grant or withdraw `MANAGE_APPLICATION` | An admin of the owning org |
-| The owner | `OfferDeployment`, then `AcceptDeployment` | An admin on each side |
+| The owner | `OfferDeployment`, then `AcceptDeployment` | A manager on each side |
 
-One change at the organization covers every deployment it owns; nothing is
-rewritten per deployment.
+One change at the organization covers its whole deployment; nothing is
+rewritten per app or per deployment.
 
-## 7. The lockout guard
+## 8. The lockout guard
 
-If every member who can manage an organization's deployments loses every
-passkey, nobody can sign for them again until recovery exists. So:
+If every manager loses every passkey, nobody can sign for the deployment again
+until recovery exists. So:
 
-- `Deploy` to an org and `AcceptDeployment` require the org to have at least two
-  members holding `MANAGE_APPLICATION` (`MIN_DEPLOYMENT_MANAGERS = 2`). A
-  developer on their own deploys as `Owner::Account` instead.
+- `CreateDeployment` for an org and `AcceptDeployment` require the org to have
+  at least two members holding `MANAGE_APPLICATION` (`MIN_DEPLOYMENT_MANAGERS = 2`).
+  A developer on their own creates an `Owner::Account` deployment instead.
 - Removing a member or withdrawing the capability is refused when it would leave
-  an org that owns deployments below the minimum.
+  an org that owns a deployment below the minimum.
 - The console warns when a manager has only one passkey on the cluster.
 
-## 8. Calimero Cloud (mdma)
+## 9. Calimero Cloud (mdma)
 
-- A workspace's organization on each cluster is created at its first deploy
-  there (an org named after the workspace) and recorded on the workspace.
-- Deploying sends `Deploy { owner: Org }` for that org, or `Owner::Account` for a
-  personal workspace with a single member.
+- A workspace's team org and deployment on each cluster are created at its
+  first deploy there, named after the workspace, and recorded on the workspace.
+  A personal workspace with one member gets an `Owner::Account` deployment.
+- Deploying an app is `OfferApp`; deploying a new version of it replaces the
+  entry; deleting the app from the console is `WithdrawApp`.
 - Inviting a workspace member also mints the cluster invite with the right
   capabilities; they redeem it with their own passkey the first time they open
-  an app on that cluster. Removing a member removes them there too, both signed
-  by an admin in the browser as today.
+  the deployment on that cluster. Removing a member removes them there too, both
+  signed by an admin in the browser as today.
 - Roles map to capabilities: owner and admin hold `MANAGE_APPLICATION` and
-  `APPROVE_RELEASES`; developer may deploy and create instances (section 9).
-- The app page lists the deployment's customer organizations from
-  `GET /deployments/{id}/orgs`, and joins them with usage from `/metrics`.
+  `APPROVE_RELEASES`; developer may offer apps and create instances (section 10).
+- The console shows the deployment as the workspace's apps on that cluster, and
+  each app's customer organizations from `GET /deployments/{id}/orgs`, joined
+  with usage from `/metrics`.
 
-## 9. Open questions
+## 10. Open questions
 
-1. **Can a developer undeploy?** Proposed: no, `MANAGE_APPLICATION` (owner, admin, or granted) only.
-2. **Is the deploying org the publisher?** Proposed: separate. A workspace can
+1. **Can a developer withdraw an app?** Proposed: no, managers only.
+2. **Does a customer org belong to a deployment, or only its instances?**
+   - *Only its instances* (proposed): the relation is derived. An org is a
+     customer of a deployment while it has an instance from it; deleting its
+     last one ends that, with nothing else to undo. The customer controls it
+     entirely, and the listing follows from data that already exists.
+   - *The org joins*: a `JoinDeployment` record, signed by a customer admin,
+     created with the first instance. The deployer could then see a customer
+     who has deleted every instance, offer it new apps, or (later) bill it a
+     base fee; leaving becomes an explicit, signed step.
+   The first can grow into the second later by adding the record; the reverse
+   would mean deleting it.
+3. **Is the deploying org the publisher?** Proposed: separate. A workspace can
    deploy another publisher's public package and manage its own deployment
    without being bound to the signing key.
-3. **Should a deployer upgrade the instances created from its deployment?**
+4. **Should a deployer upgrade the instances created from its deployment?**
    Today the manifest says owner or publisher. A third value, `deployer`, would
    fit customers who expect the provider to keep them current. Proposed: later.
-4. **Minimum managers**: two, enforced in core (proposed), or a console warning only.
-5. **Customer org names in the listing**: shown (proposed, the customer consented
-   to join that deployer), or ids only.
+5. **Minimum managers**: two, enforced in core (proposed), or a console warning only.
+6. **Customer org names in the listing**: shown (proposed, the customer consented
+   to that deployer), or ids only.
 
-## 10. Phases
+## 11. Phases
 
 | Phase | What | Needs |
 | --- | --- | --- |
 | 0 | #4791: memberships, invites, passkeys proven at apply | #4738 merged |
-| 1 | `Deployment`, `Deploy`, `Undeploy`; records from before migrate to one `Owner::Account` deployment per installer of each release | Phase 0 |
-| 2 | `/app/{app}/` and `/d/{deployment}/`; `deployments` in `/.well-known/calimero.json` | Phase 1 |
+| 1 | `Deployment`, `CreateDeployment`, `OfferApp`, `WithdrawApp`; records from before migrate to one `Owner::Account` deployment per installer, offering the releases it installed | Phase 0 |
+| 2 | `/app/{app}/` and `/d/{deployment}/`; `deployments` in `/.well-known/calimero.json`; `GET /deployments/{id}` | Phase 1 |
 | 3 | `AppRecord::deployment`, the consent text, `GET /deployments/{id}/orgs`; mero-js passes the deployment | Phase 1 |
 | 4 | Transfer and the lockout guard | Phase 1 |
-| 5 | mdma: workspace orgs on clusters, invites mirrored, the listing on the app page | Phases 1 to 4 |
+| 5 | mdma: team orgs and deployments on clusters, invites mirrored, the customer list on the app page | Phases 1 to 4 |
 
-## 11. Tests, red first
+## 12. Tests, red first
 
-- Two accounts deploy the same release; each undeploys only its own claim; the
-  release stays while the other's claim or any app remains, and goes after.
-- An undeploy is refused while an app created from that deployment runs it.
-- A member with `MANAGE_APPLICATION` undeploys with their passkey; a member
-  without it, a removed member, and a forged command without the assertion are
-  refused at apply on every node.
+- Two deployments offer the same release; each withdraws only its own entry;
+  the release stays while the other offers it or any instance runs it, and goes after.
+- A withdraw is refused while an instance created from that deployment runs that app.
+- An instance can be created only from an app the deployment offers, at the
+  offered release; one naming another package, another version, or a deployment
+  the creator does not see, is refused.
+- A customer org with instances from two deployments appears in both listings,
+  each showing only its own instances; a third deployer of the same release sees neither.
+- A member with `MANAGE_APPLICATION` offers and withdraws with their passkey; a
+  member without it, a removed member, and a forged command without the
+  assertion are refused at apply on every node.
 - A removed passkey's session can no longer act; the account's other passkey can.
-- `/app/{app}/` opens the release the app runs after another deployer installs a newer one.
-- An app created from `/d/{deployment}/` carries the deployment; one naming a
-  deployment of another package, or one the creator does not see, is refused.
-- `GET /deployments/{id}/orgs` lists only orgs created from that deployment,
-  never another deployer's, and only to its managers.
+- `/app/{app}/` opens the release the instance runs after another deployer offers a newer one.
 - A transfer needs both sides; an org below the minimum cannot own a deployment
   or drop below it while it owns one.
 - Migration: a data directory from before (`a09547b2b`-style fixture) opens with
-  one account-owned deployment per installer, and its apps list nowhere.
+  one account-owned deployment per installer, and its instances list nowhere.
