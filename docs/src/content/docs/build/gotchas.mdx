@@ -62,7 +62,7 @@ collections — but the mental model is what bites.
 ## Who may call
 
 - Who reaches an app is its access rule and the caller's organization and team rows ([Organizations](/protocol/organizations/)). A caller who does not reach it gets `404`, so its existence is not disclosed.
-- A **read-only** member's calls run, but a call that would write anything is refused with `403`.
+- A **read-only** member reaches a component app's views only: a call to any other method is refused with `403` before it runs (on a wasmer app, a call runs and is refused only if it would write).
 - A storage wrapper's rule is checked against the caller's account when the run writes; a check written only in one method guards that method only ([Securing state](/build/guides/securing-state/)).
 
 ## Events, handlers, xcall

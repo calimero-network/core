@@ -161,7 +161,34 @@ meroctl ops set-quotas '{"maxAppsPerAccount":100,"maxBundleBytesPerAccount":1073
 `set-quotas` replaces all of them (a field left out takes its default). They
 live in the system state, so every node enforces the same limits when commands
 apply; refusals are `429 QUOTA_EXCEEDED`. Sign-up is open, so `maxAccounts` is
-what bounds the cluster's growth.
+what bounds the cluster's growth. `maxFuelPerPayerPerDay` (a decimal string; `"0"`,
+the default, is no limit) caps the fuel an organization's apps, or an account's
+personal apps, burn per UTC day; it is checked where a call runs, not at apply
+([Limits](/protocol/limits/#quotas)).
+
+A node of an earlier release does not know `maxFuelPerPayerPerDay`: it would drop the
+field, and its snapshots would bring the cap back to 0. So a non-zero cap is written
+only once every node runs a release that knows it (see `UPGRADE_PENDING` below).
+
+After setting the fuel cap, don't add nodes older than release `1.0.0-rc.7`. A node
+that old, added later and then sent a quota change itself, writes the quotas without
+the cap, and every node then applies 0, no limit.
+
+### `409 UPGRADE_PENDING`
+
+**What refuses with it:** a write that only the receiving node's release, or a newer
+one, understands, while a registered node runs an older release or could not be
+attested. Today that is `set-quotas` with a non-zero `maxFuelPerPayerPerDay`; a
+quota change that leaves the cap at `"0"` is written as before.
+
+**Why:** a node on an older release would drop what it does not understand from the
+system state it applies, and its snapshots would carry that loss to the other nodes.
+
+**What to do:** read `details.release` (the receiving node's release) and
+`details.nodes` (each node behind it, with the release its attestation named, or
+`null` if it could not be attested). Upgrade those nodes to that release or newer,
+or retire them ([Upgrade the cluster's release](#upgrade-the-clusters-release),
+[Remove a node](#remove-a-node)), then send the same request again.
 
 ## Upgrade the cluster's release
 

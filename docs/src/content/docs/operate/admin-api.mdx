@@ -79,7 +79,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 401 | `UNAUTHENTICATED` | No, unknown, expired or revoked credential. |
 | 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
-| 409 | `CONFLICT` | The state does not allow it now. |
+| 409 | `CONFLICT`, `UPGRADE_PENDING` | The state does not allow it now; a fuel cap waits for every node to run this release. |
 | 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
 | 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
 | 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
@@ -110,7 +110,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
 | `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The account's own apps (outside any organization; a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, each app's release, newer releases it may upgrade to, last upgrade and replicas' releases ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
-| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas | `account usage` |
+| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `fuelToday` and `writesToday` over its personal component apps (an org's apps are the org's, D78). `bundleBytes`, `fuelToday` and `writesToday` are decimal strings | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
 | `POST /auth/apikeys` | account holder | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs? }` → `{ keyId, key }` | `account api-key create` |
@@ -154,6 +154,7 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held | `context storage` |
+| `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
@@ -175,6 +176,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
+| `GET /orgs/{org}/usage` | org admin | What the org's apps ran today: `apps`, `fuelToday`, `writesToday` (decimal strings), the quotas (D78); a member gets `403` | |
 | `POST /orgs/{org}/members` | session | `{ account, role }`; `owner` moves ownership | `namespace members add` |
 | `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
@@ -231,6 +233,7 @@ default):
 | `maxApiKeysPerAccount` | `50` |
 | `maxOrgsPerAccount` | `20` |
 | `maxAccounts` | `100000` |
+| `maxFuelPerPayerPerDay` | `"0"` (a decimal string, D20; no limit; per org for its apps, per account for personal apps, D78; `409 UPGRADE_PENDING` until every node runs this release) |
 
 ## Internal
 

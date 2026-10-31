@@ -11,7 +11,7 @@
 - `#[app::state(version = N)]` implements `app::AppState`: `load()` builds each field with `<FieldType>::new("<fieldInCamelCase>")` (state holds only handles, so loading reads nothing); `ABI` is `{"version":N}`.
 - `#[app::logic]` on `impl State { .. }` exposes every `pub fn` plus the `#[app::init]` one (private fns stay helpers), strips the method attributes (`init`, `view`, `confirm`, `public(rate = ..)`, `every("<n>s|m|h")`, `allow(system)`, `allow(app = "..")`), implements `__private::Dispatch` (one serde args struct per method, `deny_unknown_fields`), emits the `handle` export (wasm32 only) and the ABI as a `#[link_section = "calimero:abi"]` static assembled at compile time from `<State as AppState>::ABI` and the module's `__CALIMERO_ABI_ERRORS` / `__CALIMERO_ABI_EVENTS`.
 - Compile-time refusals: `every` intervals other than `<n>s|m|h`, `public(rate = ..)` other than `<n>/s|min|h` (n > 0), `init` with any other attribute (`confirm`, `public`, `allow(system)`, `allow(app = ..)`), a `u64`/`i64`/`Vec<u8>` nested in another type (Ruling 27, see `crates/app-sdk/AGENTS.md`), `partition`. `every` implies `allow(system)` (Ruling 26).
-- `#[app::error]` implements `From<E> for AppError` (code = variant name); `#[app::event]` implements `app::AppEvent` (name = variant name). Fields: camelCase keys, tuple fields `"0"`, `"1"`; `u64`/`i64` (and `Option` of them) as decimal strings (D20, Ruling 25).
+- `#[app::error]` implements `From<E> for AppError` (code = variant name); `#[app::event]` implements `app::AppEvent` (name = variant name). Fields: camelCase keys, every field named (D63: a tuple variant, or a tuple struct in place of the enum, is a compile error; unit variants are fine); `u64`/`i64` (and `Option` of them) as decimal strings (D20, Ruling 25).
 - `#[derive(Record)]` implements `Record` (camelCase index/count/unique names and field lists, checked against the struct) and serde: camelCase names; `u64`/`i64` fields are CBOR integers when stored and decimal strings in JSON results (`json::*_auto`, via `is_human_readable`). `partition` is refused: "partition is reserved (D48)". The derive writes the serde impls, so a record must not also derive `Serialize`/`Deserialize` (its field types still do).
 
 ## ABI contract (read by `calimero_app_host::Abi::from_json`)
@@ -29,4 +29,4 @@ Every object's keys are written in sorted order (`types::canonical`, never `serd
 
 ## Verify
 
-`cargo test -p calimero-app-sdk-macros` (unit) and `cargo test -p calimero-app-sdk --test abi --test compile_fail` (the sample guest end to end, the D48 refusal); `cargo clippy -p calimero-app-sdk-macros --all-targets -- -D warnings`
+`cargo test -p calimero-app-sdk-macros` (unit) and `cargo test -p calimero-app-sdk --test abi --test compile_fail` (the sample guest end to end, the D48, D20 and D63 refusals); `cargo clippy -p calimero-app-sdk-macros --all-targets -- -D warnings`

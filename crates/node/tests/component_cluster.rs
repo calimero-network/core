@@ -3192,3 +3192,912 @@ async fn a_refused_component_upload_is_a_400_like_wasmers() {
     };
     assert_eq!((status, e.code()), (400, Some("BAD_BUNDLE")), "{e}");
 }
+
+// --- Usage (Q20): in the log, to the owner, in quotas -----------------------------------
+
+/// `GET /apps/{app}/usage` through `cl`: today's row and the 30 days before it.
+async fn app_usage(cl: &Client, app: &str) -> Value {
+    cl.get(&format!("apps/{app}/usage")).await.unwrap()
+}
+
+/// A usage figure: a decimal string (D20), never a JSON number.
+fn figure(v: &Value) -> u64 {
+    v.as_str()
+        .unwrap_or_else(|| panic!("not a decimal string: {v}"))
+        .parse()
+        .unwrap()
+}
+
+/// The runs and fuel of every day of an app's usage answer, today included.
+fn usage_totals(u: &Value) -> (u64, u64) {
+    let days = u["days"].as_array().unwrap().iter().chain([&u["today"]]);
+    days.fold((0, 0), |(runs, fuel), d| {
+        (runs + figure(&d["runs"]), fuel + figure(&d["fuel"]))
+    })
+}
+
+/// Sets the cluster's `maxFuelPerPayerPerDay` through the ops API (a decimal
+/// string, D20).
+async fn set_fuel_limit(ops: &Client, limit: u64) {
+    let mut quotas = ops.get("ops/quotas").await.unwrap();
+    quotas["maxFuelPerPayerPerDay"] = json!(limit.to_string());
+    let _ok = ops.post("ops/quotas", quotas).await.unwrap();
+}
+
+/// Waits until every running node reads `limit` as the fuel quota.
+async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
+    for _ in 0..100 {
+        if c.nodes.iter().flatten().all(|r| {
+            r.node.sys(|s| {
+                serde_json::to_value(&s.quotas).unwrap()["maxFuelPerPayerPerDay"]
+                    == json!(limit.to_string())
+            })
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the fuel quota never reached every node");
+}
+
+/// Each running node's own answer for the app's usage, once it applied `target`.
+async fn usage_on_every_node(
+    c: &Cluster,
+    pk: &mut SoftAuthenticator,
+    app: &str,
+    target: u64,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for i in 0..c.nodes.len() {
+        if c.nodes[i].is_none() {
+            continue;
+        }
+        let g = hosted_on(c, i, app).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while g.applied() < target {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node {i} never applied {target}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let cl = c.client(i);
+        let _s = cl.sign_in(pk).await.unwrap();
+        out.push(app_usage(&cl, app).await);
+    }
+    out
+}
+
+/// Q20: every logged run's usage is in its entry, and a replica only adds up what
+/// the entries say. A replica that installed a snapshot, and the replicas left after
+/// the leader goes, answer the same book, wall-clock milliseconds included, and it
+/// counts each run once: the `init`, every call that committed and the tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn usage_survives_a_leader_change_and_a_snapshot_install() {
+    let mut c = Cluster::start_with(3, |cfg| cfg.raft.snapshot_every = 20).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let lagging = (leader + 1) % 3;
+    let other = (leader + 2) % 3;
+    let mut calls = 0;
+    for v in ["a", "b", "c"] {
+        set(&alice, &app, v).await.unwrap();
+        calls += 1;
+    }
+    let lagging_applied = c.applied_on(lagging, &app);
+    c.stop(lagging).await;
+
+    // While it is down: a tick, and enough calls that the leader's log no longer
+    // reaches back to it (it keeps 100 entries past a snapshot).
+    c.advance_all(HOUR);
+    let cl = c.client(other);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    let _t = beats_reach(&cl, &app, 1, 10).await;
+    for _ in 0..300 {
+        let _id = new_id(&cl, &app).await;
+        calls += 1;
+    }
+    {
+        let g = c.nodes[leader].as_ref().unwrap().node.hosted(&app).unwrap();
+        g.snapshot_now().await.unwrap();
+    }
+    c.restart(lagging, |cfg| {
+        cfg.raft.snapshot_every = 1_000_000;
+        cfg.clock_offset_ms = HOUR;
+    })
+    .await;
+    let target = c.applied_on(leader, &app);
+    let group = hosted_on(&c, lagging, &app).await;
+    let node = &c.nodes[lagging].as_ref().unwrap().node;
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let snapshot = || {
+        node.engine
+            .snapshot_file(group.id())
+            .unwrap()
+            .map(|(index, _, _)| index)
+    };
+    while group.applied() < target || snapshot().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node {lagging} did not catch up"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        snapshot().is_some_and(|i| i > lagging_applied),
+        "no snapshot installed"
+    );
+    drop(group);
+
+    let answers = usage_on_every_node(&c, &mut pk, &app, target).await;
+    assert_eq!(answers.len(), 3);
+    assert!(
+        answers.iter().all(|a| *a == answers[0]),
+        "replicas differ: {answers:#?}"
+    );
+    let (runs, fuel) = usage_totals(&answers[0]);
+    assert_eq!(
+        runs,
+        1 + calls + 1,
+        "init, the calls and the tick, once each"
+    );
+    assert!(fuel > 0, "{answers:#?}");
+
+    // The leader goes; the two left elect one and take more calls.
+    c.stop(leader).await;
+    let survivor = c.client(other);
+    let _s = survivor.sign_in(&mut pk).await.unwrap();
+    for v in ["d", "e", "f", "g", "h"] {
+        set(&survivor, &app, v).await.unwrap();
+        calls += 1;
+    }
+    let new_leader = c.app_leader(&app).expect("a new leader");
+    let target = c.applied_on(new_leader, &app);
+    let answers = usage_on_every_node(&c, &mut pk, &app, target).await;
+    assert_eq!(answers.len(), 2);
+    assert_eq!(
+        answers[0], answers[1],
+        "replicas differ after the leader change"
+    );
+    let (runs_after, fuel_after) = usage_totals(&answers[0]);
+    assert_eq!(runs_after, 1 + calls + 1);
+    assert!(fuel_after > fuel);
+}
+
+/// Q20: an account at its daily fuel quota gets `429 QUOTA_EXCEEDED` on a call to
+/// any app it owns, before the call runs; its apps' timers still tick and `init`
+/// still runs (Xabi), and both still count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    // One unit of fuel: the app's own `init` uses it up.
+    set_fuel_limit(&ops, 1).await;
+    fuel_limit_everywhere(&c, 1).await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+
+    let err = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 429, .. }),
+        "{err}"
+    );
+    let me = alice.usage().await.unwrap();
+    let before = figure(&me["fuelToday"]);
+    assert!(before >= 1, "{me}");
+    // Only `init` ran: it is the whole of the account's day, and the app's.
+    let u = app_usage(&alice, &app).await;
+    assert_eq!(figure(&u["today"]["runs"]), 1, "{u}");
+    assert_eq!(figure(&u["today"]["fuel"]), before, "{u} vs {me}");
+    let _writes = figure(&me["writesToday"]);
+    let _bytes = figure(&me["bundleBytes"]);
+    assert_eq!(me["quotas"]["maxFuelPerPayerPerDay"], json!("1"));
+    assert!(
+        alice
+            .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+            .await
+            .unwrap()
+            .result
+            .is_null(),
+        "the refused call ran"
+    );
+
+    // Its timer ticks anyway, and the tick counts.
+    c.advance_all(HOUR);
+    let _rows = beats_reach(&alice, &app, 1, 10).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let u = app_usage(&alice, &app).await;
+        if usage_totals(&u).0 >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the tick never counted: {u}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let after = figure(&alice.usage().await.unwrap()["fuelToday"]);
+    assert!(
+        after > before,
+        "the tick's fuel did not count: {before} → {after}"
+    );
+
+    // A second app's `init` runs while over the quota; its calls are refused too.
+    let second = alice.create_app("kv2", &bundle, json!({})).await.unwrap();
+    let u = app_usage(&alice, &second).await;
+    assert_eq!(figure(&u["today"]["runs"]), 1, "{u}");
+    let err = alice
+        .call(&second, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+}
+
+/// Q20: a limit of 0 (the default) never refuses; a refusal is not logged, so the
+/// same idempotency key runs once the limit is lifted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fuel_limit_of_zero_never_refuses() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let quotas = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(quotas["maxFuelPerPayerPerDay"], json!("0"), "{quotas}");
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    for i in 0..20 {
+        let _r = alice
+            .call(
+                &app,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let used = figure(&alice.usage().await.unwrap()["fuelToday"]);
+    assert!(used > 0);
+
+    set_fuel_limit(&ops, used).await;
+    fuel_limit_everywhere(&c, used).await;
+    let err = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "late", "value": "v" }),
+            Some("late-key"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+
+    set_fuel_limit(&ops, 0).await;
+    fuel_limit_everywhere(&c, 0).await;
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "late", "value": "v" }),
+            Some("late-key"),
+        )
+        .await
+        .unwrap();
+    let got = alice
+        .view(&app, "get", json!({ "key": "late" }), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(got, json!("v"), "the key the refusal did not spend ran");
+}
+
+/// Q20: an app's usage is its owner's and its organization's admins' to read; a
+/// member gets 403, someone who doesn't reach the app 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_the_owner_and_org_admins_read_an_apps_usage() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let (dave, _d) = signed_up(&c, 2, "dave").await;
+    let (eve, _e) = signed_up(&c, 0, "eve").await;
+    let acme = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (who, role) in [(&carol, "member"), (&dave, "admin")] {
+        let token = alice
+            .post(&format!("orgs/{acme}/invites"), json!({ "role": role }))
+            .await
+            .unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let _r = who
+            .post(&format!("invites/{token}/redeem"), json!({}))
+            .await
+            .unwrap();
+    }
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let in_org = alice
+        .create_app("kv-org", &bundle, json!({ "org": acme }))
+        .await
+        .unwrap();
+    let personal = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    // The member reaches the org app (its call runs), but its usage is not theirs.
+    let _r = carol
+        .call(&in_org, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+
+    let owner = app_usage(&alice, &in_org).await;
+    assert_eq!(figure(&owner["today"]["runs"]), 2, "{owner}");
+    assert_eq!(owner["days"].as_array().unwrap().len(), 30, "{owner}");
+    let admin = dave.get(&format!("apps/{in_org}/usage")).await.unwrap();
+    assert_eq!(figure(&admin["today"]["runs"]), 2, "{admin}");
+    let err = carol
+        .get(&format!("apps/{in_org}/usage"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    let err = eve.get(&format!("apps/{in_org}/usage")).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    let _o = app_usage(&alice, &personal).await;
+    for who in [&carol, &dave] {
+        let err = who
+            .get(&format!("apps/{personal}/usage"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    }
+
+    // An admin made a member reads it no longer (403); removed from the org, they
+    // no longer reach the app at all (404). Access is judged fresh on every read.
+    let dave_id = dave.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .post(
+            &format!("orgs/{acme}/members"),
+            json!({ "account": dave_id, "role": "member" }),
+        )
+        .await
+        .unwrap();
+    let err = dave.get(&format!("apps/{in_org}/usage")).await.unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "a demoted admin: {err}");
+    let _r = alice
+        .delete(&format!("orgs/{acme}/members/{dave_id}"))
+        .await
+        .unwrap();
+    let err = dave.get(&format!("apps/{in_org}/usage")).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "a removed member: {err}");
+}
+
+/// D76: over the daily fuel quota, a call to any app the account owns is refused,
+/// a wasmer app's too (wasmer runs are not metered, so the fuel is its component
+/// app's), with `429 QUOTA_EXCEEDED` and the key not spent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_wasmer_app_of_an_account_over_its_fuel_gets_429() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
+    let wasmer = alice.create_app("kv-v1", &v1, json!({})).await.unwrap();
+    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
+    // Its `init` uses more than the one unit allowed below.
+    let _component = alice.create_app("kv-v2", &v2, json!({})).await.unwrap();
+    set_fuel_limit(&ops, 1).await;
+    fuel_limit_everywhere(&c, 1).await;
+
+    let set = |key: &'static str| json!({ "key": "k", "value": key });
+    let err = alice
+        .call(&wasmer, "set", set("v"), Some("wasmer-key"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 429, .. }),
+        "{err}"
+    );
+    let got = alice
+        .view(&wasmer, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    assert!(got.is_null(), "the refused call ran: {got}");
+
+    // The refusal was not logged: the same key runs once the limit is lifted.
+    set_fuel_limit(&ops, 0).await;
+    fuel_limit_everywhere(&c, 0).await;
+    let _r = alice
+        .call(&wasmer, "set", set("v"), Some("wasmer-key"))
+        .await
+        .unwrap();
+    let got = alice
+        .view(&wasmer, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(got, json!("v"));
+}
+
+/// An organization named `name` that `owner` creates; answers its id.
+async fn new_org(owner: &Client, name: &str) -> String {
+    owner.post("orgs", json!({ "name": name })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// `who` joins `org` as `role` through an invite `admin` mints.
+async fn join_org(admin: &Client, who: &Client, org: &str, role: &str) {
+    let token = admin
+        .post(&format!("orgs/{org}/invites"), json!({ "role": role }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = who
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+}
+
+/// D78: an org app's runs are the organization's, not its owner's. The owner's
+/// `/auth/usage` counts only its personal apps; the org's admins read the org's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let in_org = alice
+        .create_app("kv-org", &bundle, json!({ "org": acme }))
+        .await
+        .unwrap();
+    for v in ["a", "b", "c"] {
+        set(&alice, &in_org, v).await.unwrap();
+    }
+    let app_fuel = figure(&app_usage(&alice, &in_org).await["today"]["fuel"]);
+    assert!(app_fuel > 0);
+    let org = alice.get(&format!("orgs/{acme}/usage")).await.unwrap();
+    assert_eq!(figure(&org["fuelToday"]), app_fuel, "{org}");
+    assert!(figure(&org["writesToday"]) >= 3, "{org}");
+    assert_eq!(org["apps"], json!(1), "{org}");
+    let me = alice.usage().await.unwrap();
+    assert_eq!(
+        figure(&me["fuelToday"]),
+        0,
+        "the owner paid for the org's app: {me}"
+    );
+
+    // A personal app is still the owner's, and only it.
+    let personal = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    set(&alice, &personal, "p").await.unwrap();
+    let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
+    let me = alice.usage().await.unwrap();
+    assert_eq!(figure(&me["fuelToday"]), mine, "{me}");
+    let org = alice.get(&format!("orgs/{acme}/usage")).await.unwrap();
+    assert_eq!(figure(&org["fuelToday"]), app_fuel, "{org}");
+}
+
+/// D78: the daily fuel cap holds per payer. An org over it gets 429 on its apps,
+/// wasmer ones included, while its owner's personal apps, under the cap, still run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let personal = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let in_org = alice
+        .create_app("kv-org", &bundle, json!({ "org": acme }))
+        .await
+        .unwrap();
+    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
+    let wasmer_in_org = alice
+        .create_app("kv-v1-org", &v1, json!({ "org": acme }))
+        .await
+        .unwrap();
+    // The org burns far more than the owner's personal app will.
+    let mine = figure(&alice.usage().await.unwrap()["fuelToday"]);
+    let mut org_fuel = 0;
+    for i in 0..400 {
+        set(&alice, &in_org, &format!("v{i}")).await.unwrap();
+        org_fuel = figure(&alice.get(&format!("orgs/{acme}/usage")).await.unwrap()["fuelToday"]);
+        if org_fuel > 20 * mine.max(1) {
+            break;
+        }
+    }
+    assert!(
+        org_fuel > 20 * mine.max(1),
+        "org {org_fuel}, personal {mine}"
+    );
+    set_fuel_limit(&ops, org_fuel).await;
+    fuel_limit_everywhere(&c, org_fuel).await;
+
+    for app in [&in_org, &wasmer_in_org] {
+        let err = alice
+            .call(app, "set", json!({ "key": "k", "value": "x" }), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{app}: {err}");
+    }
+    alice
+        .call(&personal, "set", json!({ "key": "k", "value": "x" }), None)
+        .await
+        .unwrap();
+}
+
+/// D78: an organization's usage is its admins' (and owner's) to read; a member gets
+/// 403, someone outside it 404, and a demoted admin 403 at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_an_orgs_admins_read_its_usage() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let (dave, _d) = signed_up(&c, 2, "dave").await;
+    let (eve, _e) = signed_up(&c, 0, "eve").await;
+    let acme = new_org(&alice, "Acme").await;
+    join_org(&alice, &carol, &acme, "member").await;
+    join_org(&alice, &dave, &acme, "admin").await;
+    let path = format!("orgs/{acme}/usage");
+
+    let owner = alice.get(&path).await.unwrap();
+    let _fuel = figure(&owner["fuelToday"]);
+    let admin = dave.get(&path).await.unwrap();
+    assert_eq!(admin["fuelToday"], owner["fuelToday"]);
+    let err = carol.get(&path).await.unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "a member: {err}");
+    let err = eve.get(&path).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "an outsider: {err}");
+
+    let dave_id = dave.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .post(
+            &format!("orgs/{acme}/members"),
+            json!({ "account": dave_id, "role": "member" }),
+        )
+        .await
+        .unwrap();
+    let err = dave.get(&path).await.unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "a demoted admin: {err}");
+}
+
+// --- Sandi's 10-30 review of the fuel cap -------------------------------------------------
+
+/// Two apps of `cl`'s account on different nodes of a cluster that keeps one replica per
+/// app: `(app, its node's index)` for each.
+async fn apps_apart(c: &Cluster, cl: &Client, bundle: &str) -> ((String, usize), (String, usize)) {
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let mut placed: Vec<(String, usize)> = Vec::new();
+    for i in 0..8 {
+        let app = cl
+            .create_app(&format!("kv{i}"), bundle, json!({}))
+            .await
+            .unwrap();
+        let at = node
+            .sys_until(|s| s.apps.get(&app).map(|a| a.replicas.clone()))
+            .await
+            .unwrap();
+        let idx = usize::try_from(at[0]).unwrap() - 1;
+        if let Some(first) = placed.iter().find(|(_, n)| *n != idx) {
+            return (first.clone(), (app, idx));
+        }
+        placed.push((app, idx));
+    }
+    panic!("every app landed on one node: {placed:?}");
+}
+
+/// Stops node `i` and leaves its port accepting connections that never answer: a
+/// peer that hangs rather than refuses.
+async fn hang(c: &mut Cluster, i: usize) {
+    let addr = c.configs[i].listen;
+    c.stop(i).await;
+    let listener = std::net::TcpListener::bind(addr).unwrap();
+    drop(std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
+        }
+    }));
+}
+
+/// Calls `app` through `cl` until one answers (the system may be electing).
+async fn warm(cl: &Client, app: &str) {
+    for _ in 0..80 {
+        if cl
+            .call(app, "set", json!({ "key": "warm", "value": "w" }), None)
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("{app} never answered");
+}
+
+/// Sandi 10-30 (1): the cap never asks a peer during a call, so a replica of another
+/// of the payer's apps that hangs adds nothing to the call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs() {
+    let mut c = Cluster::start_with(3, |cfg| cfg.replicas = 1).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let ((a, ia), (_b, ib)) = apps_apart(&c, &alice, &bundle).await;
+    let ops = c.client(ia);
+    ops.use_api_key("ops-secret").await;
+    set_fuel_limit(&ops, 1_000_000_000_000_000).await;
+    fuel_limit_everywhere(&c, 1_000_000_000_000_000).await;
+
+    hang(&mut c, ib).await;
+    let cl = c.client(ia);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    warm(&cl, &a).await;
+    let started = std::time::Instant::now();
+    cl.call(&a, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "the call waited on the hung replica: {took:?}"
+    );
+}
+
+/// Sandi 10-30 (1): a payer over its cap is refused within one refresh, and a peer
+/// that stops answering keeps the figure it last reported, so the cap does not fail
+/// open the moment one replica is down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_over_cap_payer_is_refused_within_one_refresh_while_a_peer_hangs() {
+    let mut c = Cluster::start_with(3, |cfg| cfg.replicas = 1).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let ((a, ia), (b, ib)) = apps_apart(&c, &alice, &bundle).await;
+    let ops = c.client(ia);
+    ops.use_api_key("ops-secret").await;
+    set_fuel_limit(&ops, 1_000_000_000_000_000).await;
+    fuel_limit_everywhere(&c, 1_000_000_000_000_000).await;
+
+    // B burns well past what A's `init` took.
+    for i in 0..20 {
+        set(&alice, &b, &format!("v{i}")).await.unwrap();
+    }
+    let b_fuel = figure(&app_usage(&alice, &b).await["today"]["fuel"]);
+    let a_fuel = figure(&app_usage(&alice, &a).await["today"]["fuel"]);
+    assert!(a_fuel < b_fuel, "a {a_fuel}, b {b_fuel}");
+    set_fuel_limit(&ops, b_fuel).await;
+    fuel_limit_everywhere(&c, b_fuel).await;
+    // One refresh carries B's figure to A's node.
+    tokio::time::sleep(calimero_node::node::USAGE_REFRESH + Duration::from_secs(1)).await;
+
+    hang(&mut c, ib).await;
+    let cl = c.client(ia);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let err = loop {
+        match cl
+            .call(&a, "set", json!({ "key": "k", "value": "v" }), None)
+            .await
+        {
+            Err(e) if e.code() == Some("QUOTA_EXCEEDED") => break e,
+            other => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "never refused while B's node hangs: {other:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    };
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 429, .. }),
+        "{err}"
+    );
+}
+
+/// Sandi 10-30 (4): an xcall delivered into an over-cap payer's wasmer app is refused
+/// like a client's call (`QUOTA_EXCEEDED`), and does not run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_xcall_into_an_over_cap_payers_wasmer_app_is_refused() {
+    use calimero_node::app::Trigger;
+    use calimero_node::node::CallRequest;
+    use calimero_node::types::Caller;
+
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
+    let wasmer = alice.create_app("kv-v1", &v1, json!({})).await.unwrap();
+    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
+    // Its `init` uses more than the one unit allowed below.
+    let component = alice.create_app("kv-v2", &v2, json!({})).await.unwrap();
+    set_fuel_limit(&ops, 1).await;
+    fuel_limit_everywhere(&c, 1).await;
+
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let mut req = CallRequest::new(
+        wasmer.clone(),
+        "set".into(),
+        json!({ "key": "k", "value": "x" }),
+        Caller::App {
+            app: component.clone(),
+        },
+    );
+    req.idempotency_key = Some(format!("xcall:{component}:1"));
+    req.trigger = Some(Trigger::XCall {
+        origin: component.clone(),
+        depth: 1,
+    });
+    let out = node.call(&req).await;
+    let err = out.expect_err("the xcall ran");
+    assert_eq!(err.code, "QUOTA_EXCEEDED", "{err:?}");
+    assert_eq!(err.status, 429);
+    let got = alice
+        .view(&wasmer, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    assert!(got.is_null(), "the refused xcall wrote: {got}");
+}
+
+/// Sandi 10-30 (5): a read-only member's call to any method but a view is refused
+/// before it runs, so it burns no fuel uncounted; a view still answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_read_only_members_call_is_refused_before_it_runs() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = new_org(&alice, "Docs").await;
+    join_org(&alice, &bob, &org, "member").await;
+    let bob_id = s(bob.me().await.unwrap(), "accountId");
+    let team = s(
+        alice
+            .post(
+                &format!("orgs/{org}/teams"),
+                json!({ "name": "Team", "join": "everyone" }),
+            )
+            .await
+            .unwrap(),
+        "teamId",
+    );
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{team}/members"),
+            json!({ "account": bob_id, "role": "readOnly" }),
+        )
+        .await
+        .unwrap();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice
+        .create_app(
+            "kv",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "team", "team": team } }),
+        )
+        .await
+        .unwrap();
+    let runs = |u: &Value| usage_totals(u).0;
+    let before = runs(&app_usage(&alice, &app).await);
+
+    // `stamp` writes nothing, but it is not a view: it does not run for him.
+    let err = bob.call(&app, "stamp", json!({}), None).await.unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    // A view called through /intents still answers.
+    let len = bob.call(&app, "len", json!({}), None).await.unwrap();
+    assert_eq!(len.result, json!(0));
+    assert_eq!(runs(&app_usage(&alice, &app).await), before);
+    // Alice (no read-only row) runs it.
+    let _r = alice.call(&app, "stamp", json!({}), None).await.unwrap();
+}
+
+/// Sandi 10-30 (6): the fuel cap is a decimal string in JSON (D20, D76), kept exact
+/// past 2^53; a number is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_fuel_cap_is_a_decimal_string() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let big = "9007199254740993"; // 2^53 + 1
+    let _ok = ops
+        .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": big }))
+        .await
+        .unwrap();
+    let quotas = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(quotas["maxFuelPerPayerPerDay"], json!(big), "{quotas}");
+    let me = alice.usage().await.unwrap();
+    assert_eq!(me["quotas"]["maxFuelPerPayerPerDay"], json!(big), "{me}");
+
+    let err = ops
+        .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": 5 }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 400, .. }),
+        "{err}"
+    );
+    for bad in ["", "-1", "01", "1e3"] {
+        let err = ops
+            .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": bad }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, calimero_client::Error::Api { status: 400, .. }),
+            "{bad:?}: {err}"
+        );
+    }
+}
+
+/// Sandi 10-30 (3) / option A: a fuel cap is written only once every node runs this
+/// release or newer, as D71 gates `base_seq`; an older node would drop it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let err = ops
+        .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": "1000" }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 409, .. }),
+        "{err}"
+    );
+    let behind = &err.details().unwrap()["nodes"];
+    assert_eq!(
+        behind,
+        &json!([{ "node": 3, "release": "0.9.0" }]),
+        "{err:?}"
+    );
+    // Other quotas, and a cap of 0, are written as before.
+    let _ok = ops
+        .post("ops/quotas", json!({ "maxAppsPerAccount": 7 }))
+        .await
+        .unwrap();
+    let quotas = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(quotas["maxFuelPerPayerPerDay"], json!("0"));
+
+    // Node 3 runs the release now: the cap is written.
+    c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match ops
+            .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": "1000" }))
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "still refused after the upgrade: {e}"
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    fuel_limit_everywhere(&c, 1000).await;
+}

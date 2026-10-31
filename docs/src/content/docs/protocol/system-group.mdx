@@ -163,5 +163,6 @@ same command for the same reason:
 | `maxApiKeysPerAccount` | 50 | `CreateApiKey` |
 | `maxOrgsPerAccount` | 20 (organizations owned) | `CreateOrg` |
 | `maxAccounts` | 100 000 | `CreateAccount` (sign-up is open, so this bounds the cluster) |
+| `maxFuelPerPayerPerDay` | `"0"` (a decimal string; no limit) | not at apply: a client's call or an xcall delivery to any app of the payer (wasmer apps too), where it runs, against the payer's fuel today in its component apps' usage books, refreshed from the peers every 5 s (Q20, D76). The payer is an org app's organization, a personal app's owner (D78); `init`, timer ticks and event handlers still run, and count. Written only once every node runs a release that knows it (`409 UPGRADE_PENDING`) |
 
 `GET /auth/usage` shows an account what it uses against them.

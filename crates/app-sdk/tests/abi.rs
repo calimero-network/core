@@ -178,7 +178,7 @@ fn abi_lists_every_method_with_its_attributes() {
     assert_eq!(abi_json["methods"]["releaseNoShows"]["every"], "1m");
     assert_eq!(
         abi_json["errors"],
-        json!({ "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "0": "string" } })
+        json!({ "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "reason": "string" } })
     );
     assert_eq!(
         abi_json["events"],
@@ -236,7 +236,10 @@ fn declared_error_carries_fields() {
     let empty = args(json!({ "roomId": "r1", "start": "8", "title": "" }));
     assert_eq!(
         app_error(&app.call("book", &empty)),
-        ("Invalid".to_owned(), r#"{"0":"empty title"}"#.to_owned())
+        (
+            "Invalid".to_owned(),
+            r#"{"reason":"empty title"}"#.to_owned()
+        )
     );
     let out = app.call("adminRelease", &args(json!({ "id": "nope" })));
     assert_eq!(app_error(&out), ("NotFound".to_owned(), "{}".to_owned()));

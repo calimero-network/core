@@ -16,7 +16,13 @@
 //! `StateView` (ordered `range` scans), and `apply` copies it only while a run still
 //! holds the previous one. The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
-//! `last_ts_ms`, idempotency) are never keys the app sees (D39).
+//! `last_ts_ms`, idempotency, the usage book) are never keys the app sees (D39).
+//!
+//! Usage (Q20): every logged `init`, call and tick carries what its run cost
+//! ([`RunUsage`]), measured by the leader. A replica adds the entry's figures to the
+//! app's usage book ([`ComponentHead::usage`], a [`UsageBook`], per UTC day of the entry's timestamp)
+//! as it applies the entry and never measures anything itself, so every replica holds
+//! the same totals, wall-clock time included.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Weak};
@@ -56,6 +62,93 @@ pub struct Outcome {
     /// The owner-only app log (spec section 5); kept whatever the status.
     #[serde(default)]
     pub logs: Vec<String>,
+    /// What the run cost, as the leader measured it (Q20). Absent in an entry
+    /// written before: nothing.
+    #[serde(default)]
+    pub usage: RunUsage,
+}
+
+/// What one logged run cost (Q20), measured by the leader and stored in its entry;
+/// a follower adds these figures up and never measures them again. `fuel`,
+/// `wall_ms` and `writes` are the run's whatever its status (`writes` is the host
+/// core's count of `put`s and `delete`s); `bytes_written` (keys and values of the
+/// diff) and `events` are what the entry commits, so nothing unless it is `Ok`.
+/// A run that timed out is not logged, so it is not counted (charging it is #4736).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUsage {
+    pub fuel: u64,
+    /// Wall-clock milliseconds on the leader, for information only (D76: the quota
+    /// counts fuel): not deterministic, so never compared between replicas, only
+    /// carried.
+    pub wall_ms: u64,
+    pub writes: u32,
+    pub bytes_written: u64,
+    pub events: u32,
+}
+
+/// One UTC day of an app's usage: the sum of the [`RunUsage`] of the entries
+/// stamped that day, and how many runs (`init`, calls, ticks) they were.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayUsage {
+    pub runs: u64,
+    pub fuel: u64,
+    pub wall_ms: u64,
+    pub writes: u64,
+    pub bytes_written: u64,
+    pub events: u64,
+}
+
+impl DayUsage {
+    /// Adds one run's usage.
+    pub fn add_run(&mut self, u: &RunUsage) {
+        self.runs = self.runs.saturating_add(1);
+        self.fuel = self.fuel.saturating_add(u.fuel);
+        self.wall_ms = self.wall_ms.saturating_add(u.wall_ms);
+        self.writes = self.writes.saturating_add(u64::from(u.writes));
+        self.bytes_written = self.bytes_written.saturating_add(u.bytes_written);
+        self.events = self.events.saturating_add(u64::from(u.events));
+    }
+
+    /// Adds another day's (or app's) totals.
+    pub fn add(&mut self, o: &Self) {
+        self.runs = self.runs.saturating_add(o.runs);
+        self.fuel = self.fuel.saturating_add(o.fuel);
+        self.wall_ms = self.wall_ms.saturating_add(o.wall_ms);
+        self.writes = self.writes.saturating_add(o.writes);
+        self.bytes_written = self.bytes_written.saturating_add(o.bytes_written);
+        self.events = self.events.saturating_add(o.events);
+    }
+}
+
+/// Milliseconds in a UTC day.
+pub const DAY_MS: u64 = 86_400_000;
+
+/// How many UTC days an app's usage book keeps: the newest entry's day and the 30
+/// before it.
+pub const USAGE_DAYS: u64 = 31;
+
+/// The UTC day (days since 1970-01-01) of `ms` milliseconds since the epoch.
+#[must_use]
+pub fn utc_day(ms: u64) -> u64 {
+    ms / DAY_MS
+}
+
+/// `day` (days since 1970-01-01) as `YYYY-MM-DD`, proleptic Gregorian.
+#[must_use]
+pub fn utc_date(day: u64) -> String {
+    // Howard Hinnant's civil_from_days, for days on or after the epoch.
+    let z = day + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + u64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// The name a trap kind has on the wire (the spec's names).
@@ -88,6 +181,7 @@ impl Outcome {
     #[must_use]
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
+        let measured = out.usage;
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events),
             host::Status::AppError { code, message } => Self {
@@ -101,7 +195,32 @@ impl Outcome {
             host::Status::Trap { kind, detail } => Self::trap(kind, &detail),
         };
         outcome.logs = logs;
+        outcome.usage = RunUsage {
+            fuel: measured.fuel,
+            wall_ms: u64::try_from(measured.cpu.as_millis()).unwrap_or(u64::MAX),
+            writes: measured.writes,
+            bytes_written: outcome
+                .diff
+                .iter()
+                .map(|w| (w.key.0.len() + w.value.as_ref().map_or(0, |v| v.0.len())) as u64)
+                .sum(),
+            events: u32::try_from(outcome.events.len()).unwrap_or(u32::MAX),
+        };
         outcome
+    }
+
+    /// `self` replaced by a `HostDenied` trap (an entry too large for the log, D50):
+    /// nothing of it applies, but the run's cost stays on the entry.
+    #[must_use]
+    pub fn denied(&self, detail: &str) -> Self {
+        Self {
+            usage: RunUsage {
+                bytes_written: 0,
+                events: 0,
+                ..self.usage
+            },
+            ..Self::trap(host::TrapKind::HostDenied, detail)
+        }
     }
 
     fn ok(result: Vec<u8>, diff: Vec<host::Write>, events: Vec<host::Event>) -> Self {
@@ -137,6 +256,7 @@ impl Outcome {
                 .collect(),
             events: out,
             logs: Vec::new(),
+            usage: RunUsage::default(),
         }
     }
 
@@ -343,6 +463,57 @@ pub struct ComponentHead {
     /// recorded (D74).
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
+    /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
+    /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
+    /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
+    /// head.
+    #[serde(default, skip_serializing_if = "UsageBook::is_empty")]
+    pub usage: UsageBook,
+}
+
+/// An app's usage per UTC day ([`utc_day`]): what the head keeps, what a replica
+/// answers a peer, and what the API reads. On the wire, a map from the day number
+/// to its [`DayUsage`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UsageBook(BTreeMap<u64, DayUsage>);
+
+impl UsageBook {
+    /// The usage of UTC day `day` (zero if nothing ran).
+    #[must_use]
+    pub fn on(&self, day: u64) -> DayUsage {
+        self.0.get(&day).copied().unwrap_or_default()
+    }
+
+    /// Whether no day has any usage.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Adds a run's usage to the day of its entry timestamp, then lets go of the
+    /// days more than [`USAGE_DAYS`] before the earlier of that day and the day
+    /// after the newest one the book held. One entry stamped far ahead (a leader
+    /// with a wrong app-time offset) so never erases the real days; after a real
+    /// gap, the next entry finishes pruning. Every replica does this from the
+    /// entries alone, so their books are the same.
+    pub fn note(&mut self, ts_ms: u64, usage: &RunUsage) {
+        let day = utc_day(ts_ms);
+        let anchor = self
+            .0
+            .keys()
+            .next_back()
+            .map_or(day, |newest| day.min(newest.saturating_add(1)));
+        self.0.entry(day).or_default().add_run(usage);
+        let oldest = anchor.saturating_sub(USAGE_DAYS - 1);
+        self.0.retain(|d, _| *d >= oldest);
+    }
+
+    /// How many days the book holds.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -554,6 +725,11 @@ impl AppMachine {
             None,
         );
         if !a.conflict {
+            self.state
+                .component
+                .head
+                .usage
+                .note(tick.ts_ms, &tick.outcome.usage);
             let _prev = self
                 .state
                 .component
@@ -615,6 +791,7 @@ impl AppMachine {
                     let a =
                         self.apply_component_outcome(tx, index, base_index, ts_ms, &outcome, None);
                     if !a.conflict {
+                        self.state.component.head.usage.note(ts_ms, &outcome.usage);
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
                         self.state.component.head.install_ts_ms = ts_ms;
@@ -654,6 +831,13 @@ impl AppMachine {
                     &call.outcome,
                     call.caller.account(),
                 );
+                if !a.conflict {
+                    self.state
+                        .component
+                        .head
+                        .usage
+                        .note(call.ts_ms, &call.outcome.usage);
+                }
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
                 }
@@ -1225,6 +1409,181 @@ mod tests {
                 "k"
             )
             .is_some());
+    }
+
+    /// An entry with `usage` and `ts_ms` set on its outcome.
+    fn with_usage(cmd: &[u8], ts_ms: u64, usage: RunUsage) -> Vec<u8> {
+        let mut cmd: ComponentCmd = serde_json::from_slice(cmd).unwrap();
+        match &mut cmd {
+            ComponentCmd::Init {
+                outcome, ts_ms: t, ..
+            } => {
+                outcome.usage = usage;
+                *t = ts_ms;
+            }
+            ComponentCmd::Call(c) => {
+                c.outcome.usage = usage;
+                c.ts_ms = ts_ms;
+            }
+            ComponentCmd::Tick(c) => {
+                c.outcome.usage = usage;
+                c.ts_ms = ts_ms;
+            }
+            ComponentCmd::Upgrade { .. } => {}
+        }
+        serde_json::to_vec(&cmd).unwrap()
+    }
+
+    fn cost(fuel: u64, wall_ms: u64) -> RunUsage {
+        RunUsage {
+            fuel,
+            wall_ms,
+            writes: 2,
+            bytes_written: 10,
+            events: 1,
+        }
+    }
+
+    #[test]
+    fn utc_dates_are_proleptic_gregorian() {
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(59), "1970-03-01");
+        assert_eq!(utc_date(11_016), "2000-02-29");
+        assert_eq!(utc_date(utc_day(1_798_675_200_000)), "2026-12-31");
+        assert_eq!(utc_day(DAY_MS - 1), 0);
+        assert_eq!(utc_day(DAY_MS), 1);
+    }
+
+    /// Init, calls and ticks count on the UTC day of their entry; a conflicted
+    /// entry counts nothing; the book keeps [`USAGE_DAYS`] days; two replicas fed the
+    /// same entries hold the same book, measured or not.
+    #[test]
+    fn the_usage_book_sums_what_the_entries_carry() {
+        let day0 = 20_000 * DAY_MS;
+        let feed = |r: &mut Rig| {
+            let _i = r.apply(1, &with_usage(&init(0), day0 + 5, cost(100, 3)));
+            let _a = r.apply(2, &with_usage(&call(1, None, vec![]), day0 + 6, cost(7, 1)));
+            let _t = r.apply(
+                3,
+                &with_usage(
+                    &tick(2, 1000, Status::AppError, vec![]),
+                    day0 + 7,
+                    cost(5, 9),
+                ),
+            );
+            // Built on a stale state: applies as nothing, counts nothing.
+            let c = r.apply(
+                4,
+                &with_usage(&call(1, None, vec![]), day0 + 8, cost(1_000, 1)),
+            );
+            assert!(c.conflict);
+            let _n = r.apply(
+                5,
+                &with_usage(&call(4, None, vec![]), day0 + DAY_MS, cost(11, 1)),
+            );
+        };
+        let (mut one, mut two) = (Rig::new(), Rig::new());
+        feed(&mut one);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        feed(&mut two);
+        let head = &one.machine.state.component.head;
+        assert_eq!(head.usage, two.machine.state.component.head.usage);
+        let first = head.usage.on(utc_day(day0));
+        assert_eq!(
+            first,
+            DayUsage {
+                runs: 3,
+                fuel: 112,
+                wall_ms: 13,
+                writes: 6,
+                bytes_written: 30,
+                events: 3,
+            }
+        );
+        assert_eq!(head.usage.on(utc_day(day0) + 1).fuel, 11);
+
+        // 31 days on, the first day is let go and the day after it stays. The first
+        // entry after a gap prunes back from the day after the newest one it found
+        // (a far-future stamp can't erase real days); the next one finishes.
+        for (index, ts) in [(6, 0), (7, 1)] {
+            let _l = one.apply(
+                index,
+                &with_usage(
+                    &call(index - 1, None, vec![]),
+                    day0 + USAGE_DAYS * DAY_MS + ts,
+                    cost(1, 1),
+                ),
+            );
+        }
+        let head = &one.machine.state.component.head;
+        assert_eq!(head.usage.on(utc_day(day0)), DayUsage::default());
+        assert_eq!(head.usage.on(utc_day(day0) + 1).fuel, 11);
+        assert_eq!(head.usage.len(), 2);
+
+        // A replica that starts again reads the same book.
+        let mut fresh = AppMachine::new("app".into());
+        calimero_log::Machine::attach(&mut fresh, one.engine.group_state(5));
+        calimero_log::Machine::restore(&mut fresh, &[]).unwrap();
+        assert_eq!(fresh.state.component.head.usage, head.usage);
+    }
+
+    /// One entry stamped far in the future (a leader with a wrong app-time offset)
+    /// does not erase the real days: pruning never reaches further back than the
+    /// window before the day the book had already reached.
+    #[test]
+    fn a_far_future_entry_does_not_erase_the_real_days() {
+        let mut r = Rig::new();
+        let day0 = 20_000 * DAY_MS;
+        let _i = r.apply(1, &with_usage(&init(0), day0, cost(1, 1)));
+        let _a = r.apply(
+            2,
+            &with_usage(&call(1, None, vec![]), day0 + DAY_MS, cost(2, 1)),
+        );
+        let far = day0 + 10_000 * DAY_MS;
+        let _f = r.apply(3, &with_usage(&call(2, None, vec![]), far, cost(5, 1)));
+        // The clock is fixed: entries are stamped on the real day again.
+        let _b = r.apply(
+            4,
+            &with_usage(&call(3, None, vec![]), day0 + DAY_MS + 7, cost(3, 1)),
+        );
+        let head = &r.machine.state.component.head;
+        assert_eq!(head.usage.on(utc_day(day0)).fuel, 1, "{:?}", head.usage);
+        assert_eq!(head.usage.on(utc_day(day0) + 1).fuel, 5, "{:?}", head.usage);
+        assert_eq!(head.usage.on(utc_day(far)).fuel, 5, "{:?}", head.usage);
+    }
+
+    #[test]
+    fn an_entry_written_before_usage_counts_a_run_of_nothing() {
+        let mut r = Rig::new();
+        let mut old: Value = serde_json::from_slice(&init(0)).unwrap();
+        let _gone = old["outcome"].as_object_mut().unwrap().remove("usage");
+        assert!(!r.apply(1, &serde_json::to_vec(&old).unwrap()).conflict);
+        let day = r.machine.state.component.head.usage.on(utc_day(1));
+        assert_eq!(
+            day,
+            DayUsage {
+                runs: 1,
+                ..DayUsage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_denied_entry_keeps_the_runs_cost_but_commits_nothing() {
+        let out = Outcome {
+            usage: cost(9, 4),
+            ..Outcome::default()
+        };
+        let denied = out.denied("entry too large");
+        assert_eq!(denied.status, Status::Trap);
+        assert_eq!(
+            denied.usage,
+            RunUsage {
+                bytes_written: 0,
+                events: 0,
+                ..cost(9, 4)
+            }
+        );
     }
 
     #[test]

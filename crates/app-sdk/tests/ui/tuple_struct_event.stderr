@@ -1,0 +1,5 @@
+error: app events name every field (D63): tuple struct `Booked` has unnamed fields; write `Booked { field: Type }`
+ --> tests/ui/tuple_struct_event.rs:4:1
+  |
+4 | pub struct Booked(String);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^

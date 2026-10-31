@@ -1,0 +1,5 @@
+error: app errors name every field (D63): tuple variant `Invalid` has unnamed fields; write `Invalid { field: Type }`
+ --> tests/ui/tuple_error_variant.rs:6:5
+  |
+6 |     Invalid(String),
+  |     ^^^^^^^^^^^^^^^

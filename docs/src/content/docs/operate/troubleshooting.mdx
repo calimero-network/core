@@ -64,7 +64,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `503 NOT_CAUGHT_UP` | A stale read with `minIndex` the replica has not reached in 2 s | Retry, lower `minIndex`, or read from the leader. |
 | `421 NOT_LEADER` on `ops move` | Sent to a follower | Send it to `details.leaderUrl`; `meroctl ops move` does this itself. |
 | `404 NOT_FOUND` "no such app" | The app does not exist, or the caller does not reach it | Check the id or alias, and the app's access. |
-| `403` "read-only in this team: the call would write" | A read-only team member's call that writes | Change their role, or call a view. |
+| `403` "read-only in this team: the call would write" | A read-only team member's call to a method that is not a view (component apps), or one that writes (wasmer apps) | Change their role, or call a view. |
 | `422 APP_ERROR` | The app's method returned an error | The app's own logic; see `message` and `details`. |
 | `413 TOO_LARGE` | A call's log entry over 1 MiB, or a bundle over 16 MiB | Write less per call; keep large content in blobs. |
 | `429 RATE_LIMITED` on events | The node has 4096 open streams | Use another node, or close idle streams. |

@@ -695,9 +695,16 @@ impl Client {
         self.get(&format!("apps/{}/abi", path_segment(app))).await
     }
 
-    /// What this account uses, with the cluster's quotas.
+    /// What this account uses, with the cluster's quotas, and what its apps ran
+    /// today (`fuelToday`, `writesToday`).
     pub async fn usage(&self) -> Result<Value> {
         self.get("auth/usage").await
+    }
+
+    /// What the app's runs used (its owner and org admins only): `{ today, days }`,
+    /// each day `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`.
+    pub async fn app_usage(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/usage", path_segment(app))).await
     }
 
     pub async fn download_blob(&self, app: &str, id: &str) -> Result<Vec<u8>> {

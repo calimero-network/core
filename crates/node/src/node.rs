@@ -30,9 +30,11 @@ use crate::usage::{Kind as RunKind, Meter, Usage};
 
 mod component;
 
+use component::LocalError;
+
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
-    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
+    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 
 /// The system group's id.
@@ -373,6 +375,9 @@ pub struct Node {
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
+    /// What each peer's replicas last said its apps used today, for the fuel cap
+    /// (`component::USAGE_REFRESH`).
+    peer_usage: Mutex<component::PeerUsage>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns and the sessions it
     /// issues. Made on the node's first start and kept in its data directory
@@ -647,6 +652,7 @@ impl Node {
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
+            peer_usage: Mutex::default(),
             transport: sealed,
             receipt_key,
             peers: Mutex::new(HashMap::new()),
@@ -924,7 +930,7 @@ impl Node {
     /// The app's group, if this node is one of its replicas. A node the app
     /// moved off may still hold the group until reconcile drops it; it must
     /// forward instead of answering from a group it no longer belongs to.
-    fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
+    pub(crate) fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
         if !app.replicas.contains(&self.config.node_id) {
             return None;
         }
@@ -991,6 +997,35 @@ impl Node {
                 .and_then(|v| v["index"].as_u64()),
             Err(_) => None,
         }
+    }
+
+    /// The registered nodes whose attested release is older than this node's own,
+    /// or that could not be attested, with what each named (`None`): until there are
+    /// none, a setting only this release knows is not written, as D71 gates
+    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// from what it applies, and its snapshots would bring it back to its default.
+    pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
+        let own = self.own_release();
+        let ids: Vec<NodeId> = self.sys(|s| {
+            s.nodes
+                .keys()
+                .filter(|id| !s.removed_nodes.contains(id))
+                .copied()
+                .collect()
+        });
+        let releases = futures_util::future::join_all(
+            ids.iter()
+                .map(|id| async move { (*id, self.release_of_node(*id).await) }),
+        )
+        .await;
+        releases
+            .into_iter()
+            .filter(|(_, r)| {
+                r.as_deref().is_none_or(|r| {
+                    crate::system::compare_versions(r, &own) == std::cmp::Ordering::Less
+                })
+            })
+            .collect()
     }
 
     /// The release node `id` runs, as its verified attestation names it (this
@@ -2269,7 +2304,7 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &CallRequest,
-    ) -> Result<Applied, WriteError> {
+    ) -> Result<Applied, LocalError> {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
         // change committed before the call, wherever it was committed.
@@ -2277,7 +2312,7 @@ impl Node {
             self.sys_fresh().await;
         }
         if req.host && req.method == "__upgrade" {
-            return self.upgrade_local(g, req).await;
+            return Ok(self.upgrade_local(g, req).await?);
         }
         // Everything below runs a wasmer app's code or writes its keyspace; a
         // component's calls are `call_component`'s, and its blobs wait for R8.
@@ -2304,7 +2339,7 @@ impl Node {
             let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
             let (_index, out) = g.write(bytes).await?;
             return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
+                .map_err(|e| WriteError::Unavailable(e.to_string()).into());
         }
         if req.host && req.method == "__blob" {
             let cmd = AppCmd::Blob {
@@ -2314,7 +2349,7 @@ impl Node {
             let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
             let (_index, out) = g.write(bytes).await?;
             return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
+                .map_err(|e| WriteError::Unavailable(e.to_string()).into());
         }
         let mut env = self.env(&req.app_id, &req.caller);
         // Who may reach this method, when the node runs it itself.
@@ -2370,14 +2405,31 @@ impl Node {
                 )
             });
         }
+        // A payer over its daily fuel (D76, D78) is refused before a client's call or
+        // an xcall delivery runs, as on the component path; a retry of a call that
+        // committed still replays, below. Timers, event handlers and the node's own
+        // commands still run. A refused xcall is dropped by `drive` with the refusal
+        // logged (`QUOTA_EXCEEDED`).
+        let over_quota = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
+            Some(app) if !req.host && matches!(req.trigger, None | Some(Trigger::XCall { .. })) => {
+                self.fuel_quota_refusal(&app)
+            }
+            _ => None,
+        };
+        let mut quota_refused = None;
         let mut fresh_blobs = Vec::new();
         let mut ran = false;
         let p = g
             .propose(|m, applied| {
+                quota_refused = None;
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
+                }
+                if let Some(e) = &over_quota {
+                    quota_refused = Some(e.clone());
+                    return Proposal::Reply(Vec::new());
                 }
                 // A follow-up already run (a replayed driver pass) is not run twice.
                 if let Some(Trigger::FollowUp { seq }) = &req.trigger {
@@ -2446,6 +2498,9 @@ impl Node {
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
             .await?;
+        if let Some(e) = quota_refused {
+            return Err(LocalError::Refused(e));
+        }
         if p.output.is_empty() {
             // A follow-up someone already ran: nothing to answer.
             return Ok(Applied {
@@ -2741,7 +2796,11 @@ impl Node {
                                 debug!(to = %target, error = %e.message, "xcall waits for its target");
                                 return;
                             }
-                            Err(e) => warn!(to = %target, error = %e.message, "xcall failed"),
+                            // A dead letter: the target's payer is over its fuel cap
+                            // (D76), or the target refused it otherwise.
+                            Err(e) => {
+                                warn!(to = %target, code = %e.code, error = %e.message, "xcall failed");
+                            }
                         }
                     } else {
                         warn!(from = %app.app_id, to = %context, "xcall to an unknown app dropped");
@@ -2799,11 +2858,14 @@ impl Node {
                 match self.call_local(&g, req).await {
                     Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
-                    Err(WriteError::NotLeader {
+                    Err(LocalError::Refused(e)) => return Err(e),
+                    Err(LocalError::Write(WriteError::NotLeader {
                         leader: Some((id, addr)),
-                    }) if id != self.config.node_id && !addr.is_empty() => Some(addr),
+                    })) if id != self.config.node_id && !addr.is_empty() => Some(addr),
                     // No leader will take it either: answer now, as a forward does.
-                    Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
+                    Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => {
+                        return Err(status_of(&e))
+                    }
                     Err(e) => {
                         debug!(error = %e, "call not yet possible here");
                         None
@@ -2853,9 +2915,10 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
         match self.call_local(&g, req).await {
             Ok(a) => Ok(a),
-            Err(WriteError::NotLeader {
+            Err(LocalError::Refused(e)) => Err(e),
+            Err(LocalError::Write(WriteError::NotLeader {
                 leader: Some((id, addr)),
-            }) if id != self.config.node_id && !addr.is_empty() => {
+            })) if id != self.config.node_id && !addr.is_empty() => {
                 let body =
                     serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
                 let v = self
@@ -2864,7 +2927,7 @@ impl Node {
                     .map_err(|e| ApiError::unavailable(&e.to_string()))?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
-            Err(e) => Err(status_of(&e)),
+            Err(LocalError::Write(e)) => Err(status_of(&e)),
         }
     }
 
