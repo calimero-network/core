@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A deleted blob's bytes no longer outlive it on a lagging replica.** A node
+  asked to drop a blob's bytes kept them while its own replica of the app,
+  not yet caught up with the delete, still marked the blob, and nothing asked
+  again. It now judges the mark on the app's leader.
+
 ## [1.0.0-rc.6] - 2026-10-31
 
 ### Added
