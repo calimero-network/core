@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use calimero_node::system::Authority;
+use calimero_node::system::{Authority, Deployers, Deployments};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,22 @@ fn authority(s: &str) -> Result<Authority, String> {
         "owner" => Ok(Authority::Owner),
         "operator" => Ok(Authority::Operator),
         other => Err(format!("{other:?}: expected owner or operator")),
+    }
+}
+
+fn deployments(s: &str) -> Result<Deployments, String> {
+    match s {
+        "open" => Ok(Deployments::Open),
+        "granted" => Ok(Deployments::Granted),
+        other => Err(format!("{other:?}: expected open or granted")),
+    }
+}
+
+fn deployers(s: &str) -> Result<Deployers, String> {
+    match s {
+        "operator" => Ok(Deployers::Operator),
+        "owner" => Ok(Deployers::Owner),
+        other => Err(format!("{other:?}: expected operator or owner")),
     }
 }
 
@@ -179,6 +195,20 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_OUTBOUND_APPROVALS", value_parser = authority)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outbound_approvals: Option<Authority>,
+    /// Who may install apps: `open` (any account) or `granted` (only
+    /// accounts holding a deployer grant; anyone may still create instances
+    /// of the releases they see) [default: open]. Fixed at first start and
+    /// attested, as above; the operator may later move `open` to `granted`
+    /// (`POST /ops/deployments/granted`), never back.
+    #[arg(long, env = "MEROD_DEPLOYMENTS", value_parser = deployments)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployments: Option<Deployments>,
+    /// Who grants deployers where deployments are `granted`: `operator` (its
+    /// key) or `owner` (the cluster's owner, once the operator names it)
+    /// [default: operator]. Fixed at first start and attested.
+    #[arg(long, env = "MEROD_DEPLOYERS", value_parser = deployers)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployers: Option<Deployers>,
     /// Serve app frontends from their releases at `{label}.{DOMAIN}`, one
     /// origin per package (a wildcard DNS name pointing at the cluster).
     #[arg(long, env = "MEROD_APPS_DOMAIN")]
@@ -237,6 +267,8 @@ impl NodeArgs {
             release_approvals: self.release_approvals.or(base.release_approvals),
             app_upgrades: self.app_upgrades.or(base.app_upgrades),
             outbound_approvals: self.outbound_approvals.or(base.outbound_approvals),
+            deployments: self.deployments.or(base.deployments),
+            deployers: self.deployers.or(base.deployers),
             apps_domain: self.apps_domain.or(base.apps_domain),
             settings: self.settings.or(base.settings),
             outbound: self.outbound.or(base.outbound),

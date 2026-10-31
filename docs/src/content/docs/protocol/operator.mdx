@@ -59,6 +59,10 @@ refused by the log. With no key recorded, operator decisions are refused
 | `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only ([Replica moves](/protocol/replication/#replica-moves)) |
 | `GET` / `POST /ops/quotas` | Read or set the per-account quotas |
 | `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
+| `POST /ops/deployments/granted { operatorProof }` | Move the cluster's deployments from `open` to `granted`, once, never back ([Deployers](/protocol/governance/#deployers)) |
+| `POST /ops/deployers { deployer, until?, operatorProof }`, `DELETE /ops/deployers/{key}` (or `POST /ops/deployers/{key}/revoke`, for a client whose `DELETE` carries no body) | Grant (`until`: RFC 3339) or revoke a deployer (`{ "account": id }` or `{ "org": id }`; the key is `account:<id>` or `org:<id>`), signed with the operator key, while the operator grants deployers |
+| `POST /ops/cluster-owner { owner, operatorProof }` | Where governance says `deployers: owner`: name the cluster's owner, once; it grants deployers from then on |
+| `GET /deployers` | The deployments rule, the owner and every grant |
 | `POST /ops/releases/{version}/deadline { after, operatorProof }`, `DELETE …` | Set (RFC 3339) or lift (`after: null`, or `DELETE` with the proof in its body) a release's end-of-new-work deadline, signed with the operator key (`428` first): after it, a party that has not approved the release creates, installs and upgrades nothing until it does; running apps go on ([Release deadlines](/protocol/governance/#release-deadlines)). Public at `GET /releases` |
 
 And, only where the deployment's [governance](/protocol/governance/) gives

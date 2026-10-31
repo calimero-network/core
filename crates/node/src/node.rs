@@ -561,11 +561,22 @@ pub fn stalled(stall: &crate::system::Stall) -> ApiError {
     }))
 }
 
+/// The code of an install refused where deployments are granted and the
+/// installer holds no live deployer grant.
+pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
+
+/// An install refused for want of a deployer grant: `403 DEPLOY_NOT_GRANTED`.
+pub fn not_a_deployer() -> ApiError {
+    ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
+}
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, "QUOTA_EXCEEDED", reason)
     } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
         ApiError::new(409, RELEASE_DEADLINE, reason)
+    } else if reason == crate::system::NOT_A_DEPLOYER {
+        not_a_deployer()
     } else {
         ApiError::bad_request("REJECTED", reason)
     }

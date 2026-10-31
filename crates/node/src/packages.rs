@@ -132,6 +132,7 @@ impl Node {
         version: &str,
         actor: &str,
     ) -> Result<Value, ApiError> {
+        self.refuse_undeployable(actor).await?;
         // Before the fetch, judged by the key the package is pinned to (none
         // yet: unbound); `record_release` judges the verified key again.
         let pinned = self
@@ -163,8 +164,26 @@ impl Node {
         }
     }
 
+    /// Refused `403 DEPLOY_NOT_GRANTED` before any fetch, verification or
+    /// store when `actor` may not install apps here
+    /// ([`crate::system::SystemState::may_deploy`]), judged on fresh state
+    /// before it refuses; `InstallPackage` and `PutBundle` ask again at
+    /// apply, at their own time.
+    pub async fn refuse_undeployable(&self, actor: &str) -> Result<(), ApiError> {
+        let may = || self.sys(|s| s.may_deploy(actor, now_secs()));
+        if may() {
+            return Ok(());
+        }
+        let _caught_up = self.sys_fresh().await;
+        if may() {
+            return Ok(());
+        }
+        Err(crate::node::not_a_deployer())
+    }
+
     /// Install an uploaded `.mpk`.
     pub async fn install_upload(&self, mpk: Arc<[u8]>, actor: &str) -> Result<Value, ApiError> {
+        self.refuse_undeployable(actor).await?;
         let verified = self.verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)?;
         self.record_release(verified, Some(mpk)).await
     }

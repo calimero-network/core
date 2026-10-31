@@ -458,6 +458,12 @@ impl Client {
         self.json(Method::DELETE, path, None).await
     }
 
+    /// `DELETE path` with a JSON body: an operator decision's signature
+    /// (`operatorProof`), as a revocation on the Ops API carries it.
+    pub async fn delete_with(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::DELETE, path, Some(body)).await
+    }
+
     // ------------------------------------------------------------ identity
 
     /// Create an account with a new passkey and sign in.

@@ -3298,11 +3298,13 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             releases: owner,
             app_upgrades: owner,
             outbound: owner,
+            ..Governance::default()
         },
         Governance {
             releases: operator,
             app_upgrades: operator,
             outbound: operator,
+            ..Governance::default()
         },
         // A managed cluster whose operator rolls out node releases, while
         // each app's owner keeps its code and its outbound hosts.
@@ -3310,6 +3312,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             releases: operator,
             app_upgrades: owner,
             outbound: owner,
+            ..Governance::default()
         },
     ];
     for g in deployments {
