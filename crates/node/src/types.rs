@@ -135,6 +135,12 @@ pub struct AppRecord {
     /// The last upgrade tried on this app, done or failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<UpgradeRecord>,
+    /// The deployment it was created from (`system::Deployment`), at a
+    /// release that deployment offered then. Absent (a record from before,
+    /// or an instance made from a release directly): none, and it is left
+    /// out, so such a record writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
 }
 
 /// Which executor runs an app's code.

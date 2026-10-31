@@ -265,12 +265,69 @@ Revoking a grant stops new installs only: what the deployer installed, and
 the apps running it, stay. `GET /deployers` lists the rule, the owner and every
 grant, for the operator and for whoever acts for the owner.
 
+Where deployments are `granted`, creating a [deployment](#deployments) and
+offering an app in one need the same grant, held by the account acting.
+
 The governance JSON names `deployments` and `deployers` only when they are not
 the defaults, after the other three fields, so a cluster deployed with the
 defaults attests the same bytes as before
 (`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`). A client
 that recomputes the receipt-key binding must keep both fields, in that order,
 when the attested object carries them.
+
+## Deployments
+
+A **deployment** is an owner's list of the apps it offers on the cluster
+(`SystemState::deployments`): an id, a name customers see, an owner (an
+account, or an organization) and, per app name, the one installed release it
+offers (`package@version`). Customers create instances from its offers; the
+releases themselves are stored once and may be offered by several
+deployments, each independent of the others.
+
+**Who manages it**: for an account owner, that account; for an organization,
+whoever holds `MANAGE_APPLICATION` there organization-wide (the owner and
+admins included). Each change carries the actor's own passkey consent,
+verified where it applies on every node, and is judged against the state it
+applies to, so a member whose capability was withdrawn, or who left, can no
+longer change it:
+
+| Change | Route | Consent statement | Rule at apply |
+| --- | --- | --- | --- |
+| Create | `POST /deployments { name, owner }` | `cluster / __create_deployment / { name, owner }` | The actor acts for `owner`; a live grant where deployments are `granted`; at most 16 per owner. Its id is derived from the consent's nonce, so no node picks another |
+| Offer | `POST /deployments/{id}/apps { app, package, version }` | `deployment:{id} / __offer_app / { app, package, version }` | A manager who sees the release, installed already; a live grant where `granted`; adds the entry or moves it to another release of its package; at most 64 apps |
+| Withdraw | `DELETE /deployments/{id}/apps/{app}` | `deployment:{id} / __withdraw_app / { app }` | A manager; refused while an instance created from this deployment runs that app's package. The release stays installed |
+| Delete | `DELETE /deployments/{id}` | `deployment:{id} / __delete_deployment / {}` | A manager; only once it offers nothing and no instance came from it |
+
+Each answers `412 CONFIRM_REQUIRED` first. An organization that owns a
+deployment is not deleted until the deployment is.
+
+**Instances**: `POST /apps { deployment, package, version?, service?, … }`
+creates an instance from the release the deployment offers for that package
+(`version`, if given, must be it), whether or not the creator sees the
+release otherwise, and without a deployer grant: nothing is installed. The
+instance records the deployment (`AppRecord::deployment`), and `CreateApp`
+checks again where it applies that the deployment exists and offers the
+release the instance runs. Instances created without a deployment, and those
+from before, record none.
+
+**Releases**: `DELETE /packages/{p}[/{v}]` is refused for a release any
+deployment offers, whoever installed it first; a release no deployment
+offers keeps the rules it had (its first installer uninstalls it once no app
+runs it). Records from before deployments are not moved into one.
+
+**Reads**:
+- `GET /deployments`: the deployments the caller manages.
+- `GET /deployments/{id}`: public by id: its name, its owner's kind and name,
+  and the apps it offers with their releases. Never its managers or customers.
+- `GET /deployments/{id}/orgs`: for its managers, on fresh state: each
+  organization with instances created from it, with its id and name, how many,
+  which of the deployment's apps and the releases they run, and when the
+  first was created. Never members, teams, instance names or app data;
+  instances outside an organization are only counted. Another deployment's
+  customers never appear, even on the same release.
+
+Frontends open at a deployment's release with `/d/{deployment}/`
+([Packages & frontends](/protocol/applications/#frontends)).
 
 ## Reading the approvals
 

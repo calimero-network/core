@@ -83,8 +83,11 @@ signature before a byte is served.
 - Only `GET` and `HEAD`. `/` redirects to the newest release's entry,
   `/{version}/`; `/{version}/{path}` serves a file, or the entry for an HTML
   request to a path with no file (a single-page app's routes survive a
-  reload). `/.well-known/calimero.json` lists the package, its releases and the
-  cluster's API URLs for the page to connect to.
+  reload). `/app/{app}/` redirects to `/{version}/` of the release that
+  instance runs, and `/d/{deployment}/` to `/{version}/?deployment={id}` of
+  the release that deployment offers, whatever newer release `/` points at.
+  `/.well-known/calimero.json` lists the package, its releases, the
+  deployments offering it and the cluster's API URLs for the page to connect to.
 - Responses carry a strict CSP whose `connect-src` adds the cluster's API
   origins.
 - An unknown label under `D` answers `404`, never a node route.

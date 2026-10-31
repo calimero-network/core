@@ -228,6 +228,36 @@ is its command line.
   (`tests/deployers.rs`), `on_a_granted_cluster_only_deployers_install`,
   `deployer_grants_carry_the_operators_signature_then_the_owners_passkey`,
   `deployments_are_granted_one_way` (`system::tests`).
+- **Deployments** (`SystemState::deployments`, `system::Deployment`,
+  `Offer`): an owner's (`Deployer`: account or org) list of offered apps, app
+  name -> one installed `package@version`. Managed by whoever `acts_for` the
+  owner (the account; org-wide `MANAGE_APPLICATION`), each change with that
+  actor's passkey consent judged at apply: `CreateDeployment` (`POST
+  /deployments { name, owner }`, `cluster / __create_deployment / { name,
+  owner }`; the id is `system::deployment_id` of the consent's nonce),
+  `OfferApp` (`POST /deployments/{id}/apps`, `deployment:{id} / __offer_app /
+  { app, package, version }`; the release installed and seen by the actor;
+  an entry keeps its package), `WithdrawApp` (`DELETE
+  /deployments/{id}/apps/{app}`; refused while an instance from it runs that
+  package; the release stays installed), `DeleteDeployment` (`DELETE
+  /deployments/{id}`; nothing offered, no instance from it). Create and offer
+  need `may_deploy` for the actor where deployments are granted. Bounds:
+  `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT`;
+  names `deployment_name_fits`, app names and ids `deployment_segment_fits`.
+  `POST /apps { deployment, package, version? }` creates from the offer
+  (`api::offered_bundle`, no install, no grant, no `sees_release`) and records
+  `AppRecord::deployment`; `CreateApp` checks the offer again
+  (`offers_bundle`). `UninstallPackage` refuses an offered release (`offered`);
+  `DeleteOrg` refuses an org that owns a deployment. Reads: `GET /deployments`
+  (what the caller manages), `GET /deployments/{id}` (public, on fresh state:
+  name, owner kind and name, offers), `GET /deployments/{id}/orgs` (managers, `sys_fresh`:
+  customer orgs' id, name, instance count, apps and versions, first created).
+  Not done: the spec's migration of old installs into deployments, transfer,
+  the lockout guard, the consent page naming the deployment. Regressions:
+  `tests/deployments.rs`, `deployments_are_their_managers_and_keep_what_they_offer`,
+  `deployment_changes_carry_their_managers_consent`,
+  `state_from_before_deployments_reads_with_none_and_writes_as_before`,
+  `a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
@@ -501,8 +531,12 @@ is its command line.
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
   cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
+  `/app/{app}/` → the release that instance runs, `/d/{deployment}/` →
+  `/{version}/?deployment={id}` of the release it offers (looked up again on
+  fresh state when nothing matches),
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
-  origins in `connect-src`, `/.well-known/calimero.json`; an unknown label under
+  origins in `connect-src`, `/.well-known/calimero.json` (with the deployments
+  offering the package); an unknown label under
   D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
   from one opens a session bound to its package (`SessionClaims::app`, carried
   by refresh): `Principal::within` keeps it to that package's apps (gate, app

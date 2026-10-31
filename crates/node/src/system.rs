@@ -261,6 +261,97 @@ pub struct SystemState {
     /// deployers, not the operator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_owner: Option<Deployer>,
+    /// Deployments by id: each an owner's list of the apps it offers, every
+    /// entry naming one installed release ([`Deployment`]). Left out when
+    /// empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deployments: BTreeMap<String, Deployment>,
+}
+
+/// An owner's list of the apps it offers on this cluster. Customers create
+/// instances from its offers ([`AppRecord::deployment`]); whoever
+/// [acts for](SystemState::acts_for) its owner changes it, each with their
+/// own passkey.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Deployment {
+    pub id: String,
+    /// Shown to customers ("acme-labs").
+    pub name: String,
+    /// An account, or an organization whose org-wide `MANAGE_APPLICATION`
+    /// holders manage it.
+    pub owner: Deployer,
+    /// App name -> the release it offers.
+    pub apps: BTreeMap<String, Offer>,
+    pub created_by: AccountId,
+    pub created_at: u64,
+}
+
+/// One app a deployment offers: the release new instances of it run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Offer {
+    pub package: String,
+    pub version: String,
+    pub added_by: AccountId,
+    pub added_at: u64,
+}
+
+/// How many deployments one owner keeps.
+pub const MAX_DEPLOYMENTS_PER_OWNER: usize = 16;
+
+/// How many deployments a cluster keeps.
+pub const MAX_DEPLOYMENTS: usize = 10_000;
+
+/// How many apps one deployment offers.
+pub const MAX_APPS_PER_DEPLOYMENT: usize = 64;
+
+/// The longest deployment name, in characters, and the longest app name or
+/// deployment id, in bytes.
+pub const MAX_DEPLOYMENT_NAME_CHARS: usize = 64;
+
+/// A deployment's id: derived from the nonce its creator's consent signed,
+/// so the consent binds it and no node picks another (32 lowercase hex
+/// characters: URL- and command-line-safe).
+#[must_use]
+pub fn deployment_id(nonce: &str) -> String {
+    let digest = calimero_identity::sha256(format!("calimero.deployment.v1\0{nonce}").as_bytes());
+    hex::encode(&digest[..16])
+}
+
+/// A deployment's name: what customers see, one line of at most
+/// [`MAX_DEPLOYMENT_NAME_CHARS`] characters.
+///
+/// # Errors
+/// Empty, too long, padded or holding a control character.
+pub fn deployment_name_fits(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty()
+        || name.trim() != name
+        || name.chars().count() > MAX_DEPLOYMENT_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err("a deployment's name is 1 to 64 characters on one line");
+    }
+    Ok(())
+}
+
+/// An app's name in a deployment, or a deployment's id: a path segment
+/// (`/deployments/{id}/apps/{app}`, `/d/{id}/`), so ASCII letters, digits,
+/// `.`, `_` and `-`, starting with a letter or digit, at most
+/// [`MAX_DEPLOYMENT_NAME_CHARS`] bytes.
+///
+/// # Errors
+/// Anything else.
+pub fn deployment_segment_fits(s: &str) -> Result<(), &'static str> {
+    let fits = !s.is_empty()
+        && s.len() <= MAX_DEPLOYMENT_NAME_CHARS
+        && s.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if !fits {
+        return Err("an app name is 1 to 64 letters, digits, '.', '_' or '-', starting with a letter or digit");
+    }
+    Ok(())
 }
 
 pub use calimero_client::attest::{Authority, Deployers, Deployments, Governance};
@@ -691,6 +782,52 @@ impl SystemState {
             Some(owner) if actor != OPERATOR && self.acts_for(owner, actor) => Ok(()),
             Some(_) => Err("this cluster's owner grants its deployers"),
         }
+    }
+
+    /// Whether some release of `package` ships the WASM `bundle`.
+    #[must_use]
+    pub fn ships(&self, package: &str, bundle: &str) -> bool {
+        self.packages.get(package).is_some_and(|p| {
+            p.versions
+                .values()
+                .any(|v| v.services.values().any(|h| h == bundle))
+        })
+    }
+
+    /// The release `offer` names, if it is installed.
+    #[must_use]
+    pub fn offered_release(&self, offer: &Offer) -> Option<&PackageVersion> {
+        self.packages
+            .get(&offer.package)?
+            .versions
+            .get(&offer.version)
+    }
+
+    /// Whether `d` offers a release that ships `bundle`: what an instance
+    /// created from it must run.
+    #[must_use]
+    pub fn offers_bundle(&self, d: &Deployment, bundle: &str) -> bool {
+        d.apps.values().any(|o| {
+            self.offered_release(o)
+                .is_some_and(|v| v.services.values().any(|h| h == bundle))
+        })
+    }
+
+    /// Whether some deployment offers `package@version`.
+    #[must_use]
+    pub fn offered(&self, package: &str, version: &str) -> bool {
+        self.deployments
+            .values()
+            .flat_map(|d| d.apps.values())
+            .any(|o| o.package == package && o.version == version)
+    }
+
+    /// Whether `actor` may change `d`: [`Self::acts_for`] its owner.
+    fn manages_deployment(&self, d: &Deployment, actor: &str) -> Result<(), &'static str> {
+        if actor == OPERATOR || !self.acts_for(&d.owner, actor) {
+            return Err("only the deployment's owner, or MANAGE_APPLICATION in its organization, may manage it");
+        }
+        Ok(())
     }
 
     /// Who upgrades an app running `bundle`: its release's declaration; a raw
@@ -1294,6 +1431,75 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::CreateDeployment {
+            id,
+            name,
+            owner,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, "cluster", "__create_deployment", &|a| {
+                a["name"] == json!(name) && a["owner"] == json!(owner)
+            })?;
+            // The id is the consent's own, so a node cannot pick another.
+            if *id != deployment_id(&st.nonce) {
+                return Err("the consent is for another change");
+            }
+            Ok(Some(used))
+        }
+        SystemCmd::OfferApp {
+            deployment,
+            app,
+            package,
+            version,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__offer_app",
+                &|a| {
+                    a["app"] == json!(app)
+                        && a["package"] == json!(package)
+                        && a["version"] == json!(version)
+                },
+            )?;
+            Ok(Some(used))
+        }
+        SystemCmd::WithdrawApp {
+            deployment,
+            app,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__withdraw_app",
+                &|a| a["app"] == json!(app),
+            )?;
+            Ok(Some(used))
+        }
+        SystemCmd::DeleteDeployment {
+            deployment,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__delete_deployment",
+                &|_| true,
+            )?;
+            Ok(Some(used))
+        }
         SystemCmd::DeleteOrg {
             org,
             actor,
@@ -1849,6 +2055,52 @@ pub enum SystemCmd {
         #[serde(default)]
         proof: Value,
     },
+    /// An empty deployment of `owner`, created by an account acting for it
+    /// (`cluster / __create_deployment / { name, owner }`, its passkey
+    /// `consent`); `id` is [`deployment_id`] of that consent's nonce. Where
+    /// deployments are granted, `actor` needs a live deployer grant at `at`.
+    CreateDeployment {
+        id: String,
+        name: String,
+        owner: Deployer,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Offer `package@version`, installed already, as `app` in `deployment`,
+    /// adding the entry or moving it to another release of its package
+    /// (`deployment:{id} / __offer_app / { app, package, version }`). By a
+    /// manager who sees the release, with a live grant where deployments are
+    /// granted.
+    OfferApp {
+        deployment: String,
+        app: String,
+        package: String,
+        version: String,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove `app` from `deployment` (`__withdraw_app / { app }`): refused
+    /// while an instance created from the deployment runs its package. The
+    /// release stays installed.
+    WithdrawApp {
+        deployment: String,
+        app: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove a deployment that offers nothing and no instance came from
+    /// (`__delete_deployment / {}`).
+    DeleteDeployment {
+        deployment: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
     /// The owner approves URL prefixes for a package's publisher to call out
     /// to, in an org's apps or their own outside one. `selection` is the latest release's declared
     /// list or chosen prefixes; `replace` sets exactly those (how a prefix is
@@ -2284,6 +2536,11 @@ impl SystemMachine {
                     Some(v) => vec![v.clone()],
                     None => p.versions.keys().cloned().collect(),
                 };
+                // An offered release is the deployments' to keep: whoever
+                // installed it first does not take it from them.
+                if gone.iter().any(|v| s.offered(&package, v)) {
+                    return Err("a deployment offers that release; it is uninstalled once no deployment offers it");
+                }
                 let hashes: BTreeSet<String> = gone
                     .iter()
                     .filter_map(|v| p.versions.get(v))
@@ -2350,6 +2607,12 @@ impl SystemMachine {
                 }
                 if s.apps.contains_key(&app.app_id) {
                     return Err("app exists");
+                }
+                if let Some(id) = &app.deployment {
+                    let d = s.deployments.get(id).ok_or("no such deployment")?;
+                    if !s.offers_bundle(d, &app.bundle) {
+                        return Err("the deployment does not offer the release this app would run");
+                    }
                 }
                 if let Some(org) = &app.org {
                     let o = s.orgs.get(org);
@@ -3061,6 +3324,140 @@ impl SystemMachine {
                 s.cluster_owner = Some(owner.clone());
                 Ok(json!({ "owner": owner }))
             }
+            SystemCmd::CreateDeployment {
+                id,
+                name,
+                owner,
+                actor,
+                at,
+                consent: _,
+            } => {
+                if !s.accounts.contains_key(&actor) {
+                    return Err("unknown account");
+                }
+                deployment_segment_fits(&id)?;
+                deployment_name_fits(&name)?;
+                if !s.exists(&owner) {
+                    return Err("no such account or organization");
+                }
+                if !s.acts_for(&owner, &actor) {
+                    return Err("a deployment is created by its owner account, or by MANAGE_APPLICATION in its organization");
+                }
+                if !s.may_deploy(&actor, at) {
+                    return Err(NOT_A_DEPLOYER);
+                }
+                if s.deployments.contains_key(&id) {
+                    return Err("that deployment exists");
+                }
+                if s.deployments.values().filter(|d| d.owner == owner).count()
+                    >= MAX_DEPLOYMENTS_PER_OWNER
+                {
+                    return Err("quota exceeded: deployments per owner");
+                }
+                if s.deployments.len() >= MAX_DEPLOYMENTS {
+                    return Err("quota exceeded: deployments");
+                }
+                let d = Deployment {
+                    id: id.clone(),
+                    name,
+                    owner,
+                    apps: BTreeMap::new(),
+                    created_by: actor,
+                    created_at: at,
+                };
+                let out = json!({ "id": id, "deployment": d });
+                let _prev = s.deployments.insert(id, d);
+                Ok(out)
+            }
+            SystemCmd::OfferApp {
+                deployment,
+                app,
+                package,
+                version,
+                actor,
+                at,
+                consent: _,
+            } => {
+                let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+                s.manages_deployment(d, &actor)?;
+                if !s.may_deploy(&actor, at) {
+                    return Err(NOT_A_DEPLOYER);
+                }
+                deployment_segment_fits(&app)?;
+                // A release the manager may not see is answered as missing.
+                let seen = s
+                    .packages
+                    .get(&package)
+                    .and_then(|p| p.versions.get(&version))
+                    .is_some_and(|v| s.sees_release(v, &actor));
+                if !seen {
+                    return Err("install the release before offering it");
+                }
+                match d.apps.get(&app) {
+                    Some(o) if o.package != package => {
+                        return Err("an app moves to another release of its own package; withdraw it to offer another package");
+                    }
+                    Some(_) => {}
+                    None if d.apps.len() >= MAX_APPS_PER_DEPLOYMENT => {
+                        return Err("quota exceeded: apps per deployment");
+                    }
+                    None => {}
+                }
+                let offer = Offer {
+                    package,
+                    version,
+                    added_by: actor,
+                    added_at: at,
+                };
+                let out = json!({ "deployment": deployment, "app": app, "offer": offer });
+                if let Some(d) = s.deployments.get_mut(&deployment) {
+                    let _prev = d.apps.insert(app, offer);
+                }
+                Ok(out)
+            }
+            SystemCmd::WithdrawApp {
+                deployment,
+                app,
+                actor,
+                consent: _,
+            } => {
+                let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+                s.manages_deployment(d, &actor)?;
+                let offer = d
+                    .apps
+                    .get(&app)
+                    .ok_or("the deployment offers no such app")?;
+                let running = s.apps.values().any(|a| {
+                    a.deployment.as_deref() == Some(deployment.as_str())
+                        && s.ships(&offer.package, &a.bundle)
+                });
+                if running {
+                    return Err("an instance created from this deployment still runs that app; withdraw it once none does");
+                }
+                if let Some(d) = s.deployments.get_mut(&deployment) {
+                    let _gone = d.apps.remove(&app);
+                }
+                Ok(json!({ "deployment": deployment, "app": app }))
+            }
+            SystemCmd::DeleteDeployment {
+                deployment,
+                actor,
+                consent: _,
+            } => {
+                let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+                s.manages_deployment(d, &actor)?;
+                if !d.apps.is_empty() {
+                    return Err("the deployment still offers apps; withdraw them first");
+                }
+                if s.apps
+                    .values()
+                    .any(|a| a.deployment.as_deref() == Some(deployment.as_str()))
+                {
+                    return Err("an instance created from this deployment still exists");
+                }
+                let _gone = s.deployments.remove(&deployment);
+                Ok(json!({ "deployment": deployment }))
+            }
             SystemCmd::DeleteOrg {
                 org,
                 actor,
@@ -3069,6 +3466,10 @@ impl SystemMachine {
                 let o = s.orgs.get(&org).ok_or("no such organization")?;
                 if o.role(&actor) != Some(OrgRole::Owner) {
                     return Err("only the organization's owner deletes it");
+                }
+                let owner = Deployer::Org(org.clone());
+                if s.deployments.values().any(|d| d.owner == owner) {
+                    return Err("the organization owns a deployment; delete it first");
                 }
                 let _gone = s.orgs.remove(&org);
                 s.invites.retain(|_, i| i.org != org);
@@ -5626,5 +6027,345 @@ mod tests {
         assert_eq!(serde_json::to_value(&d).unwrap(), json!({ "org": "o1" }));
         assert_eq!(Deployer::from_key(&d.key()), Some(d));
         assert_eq!(Deployer::from_key("team:x"), None);
+    }
+
+    // ------------------------------------------------------------ deployments
+
+    fn create_deployment(id: &str, owner: super::Deployer, actor: &str) -> SystemCmd {
+        SystemCmd::CreateDeployment {
+            id: id.into(),
+            name: id.into(),
+            owner,
+            actor: actor.into(),
+            at: 10,
+            consent: serde_json::Value::Null,
+        }
+    }
+
+    fn offer_app(deployment: &str, app: &str, version: &str, actor: &str) -> SystemCmd {
+        SystemCmd::OfferApp {
+            deployment: deployment.into(),
+            app: app.into(),
+            package: "p".into(),
+            version: version.into(),
+            actor: actor.into(),
+            at: 10,
+            consent: serde_json::Value::Null,
+        }
+    }
+
+    fn withdraw_app(deployment: &str, app: &str, actor: &str) -> SystemCmd {
+        SystemCmd::WithdrawApp {
+            deployment: deployment.into(),
+            app: app.into(),
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        }
+    }
+
+    fn delete_deployment(deployment: &str, actor: &str) -> SystemCmd {
+        SystemCmd::DeleteDeployment {
+            deployment: deployment.into(),
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        }
+    }
+
+    /// An instance `id` of `owner`'s running `bundle`, from `deployment`.
+    fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> SystemCmd {
+        SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 0, "bundle": bundle, "owner": owner,
+                    "replicas": [1], "createdAt": 10, "deployment": deployment,
+                }))
+                .unwrap(),
+            ),
+        }
+    }
+
+    /// An account's deployment is its own; an organization's is its
+    /// org-wide `MANAGE_APPLICATION` holders'. Offers name installed
+    /// releases the manager sees; an instance from a deployment runs exactly
+    /// an offered release; a withdraw waits for the deployment's own
+    /// instances; an offered release is not uninstalled; a deployment is
+    /// deleted once it offers nothing and no instance came from it.
+    #[test]
+    fn deployments_are_their_managers_and_keep_what_they_offer() {
+        use super::{Deployer, Deployments, MAX_DEPLOYMENTS_PER_OWNER, QUOTA_PREFIX};
+        let mut m = deploying(Deployments::Open);
+        let alice = || Deployer::Account("alice".into());
+        let org = || Deployer::Org("org".into());
+        // alice, alone, for herself; carol (MANAGE_APPLICATION) for the org.
+        assert!(m
+            .run_unproven(create_deployment("a", alice(), "bob"))
+            .is_err());
+        let _ok = m
+            .run_unproven(create_deployment("a", alice(), "alice"))
+            .unwrap();
+        assert!(m
+            .run_unproven(create_deployment("o", org(), "bob"))
+            .is_err());
+        let _ok = m
+            .run_unproven(create_deployment("o", org(), "carol"))
+            .unwrap();
+        assert!(
+            m.run_unproven(create_deployment("o", org(), "alice"))
+                .is_err(),
+            "exists"
+        );
+        let bad_name = SystemCmd::CreateDeployment {
+            id: "x".into(),
+            name: " padded ".into(),
+            owner: alice(),
+            actor: "alice".into(),
+            at: 10,
+            consent: serde_json::Value::Null,
+        };
+        assert!(m.run_unproven(bad_name).is_err());
+        assert!(m
+            .run_unproven(create_deployment("-x", alice(), "alice"))
+            .is_err());
+
+        // Only installed releases, seen by the manager.
+        assert!(m
+            .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+            .is_err());
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+        let _ok = m.run_unproven(install_at("alice", "2.0.0", 5)).unwrap();
+        let _ok = m
+            .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+            .unwrap();
+        assert!(m
+            .run_unproven(offer_app("a", "notes", "1.0.0", "bob"))
+            .is_err());
+        assert!(m
+            .run_unproven(offer_app("a", "../x", "1.0.0", "alice"))
+            .is_err());
+        // bob is a plain member; carol shares the org with alice, so sees it.
+        assert!(m
+            .run_unproven(offer_app("o", "notes", "1.0.0", "bob"))
+            .is_err());
+        let _ok = m
+            .run_unproven(offer_app("o", "notes", "1.0.0", "carol"))
+            .unwrap();
+        let _ok = m
+            .run_unproven(offer_app("o", "notes", "1.0.0", "alice"))
+            .unwrap();
+        // An entry keeps its package.
+        let mut other = offer_app("a", "notes", "1.0.0", "alice");
+        if let SystemCmd::OfferApp { package, .. } = &mut other {
+            *package = "q".into();
+        }
+        assert!(m.run_unproven(other).is_err());
+
+        // Instances: only the offered release, of a deployment that exists.
+        let _ok = m
+            .run_unproven(instance("i1", "bob", "b-1.0.0", Some("a")))
+            .unwrap();
+        assert!(m
+            .run_unproven(instance("i2", "bob", "b-2.0.0", Some("a")))
+            .is_err());
+        assert!(m
+            .run_unproven(instance("i3", "bob", "b-1.0.0", Some("zz")))
+            .is_err());
+        let _ok = m
+            .run_unproven(instance("i4", "bob", "b-2.0.0", None))
+            .unwrap();
+
+        // Withdraw: refused while an instance from this deployment runs the
+        // package; the other deployment's entry is its own.
+        assert!(m.run_unproven(withdraw_app("a", "notes", "alice")).is_err());
+        let _ok = m.run_unproven(withdraw_app("o", "notes", "carol")).unwrap();
+        // Offered by `a`: not uninstalled, even by its first installer; a
+        // release nobody offers keeps today's rules.
+        let uninstall = |v: &str| SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some(v.into()),
+            actor: "alice".into(),
+        };
+        assert!(m.run_unproven(uninstall("1.0.0")).is_err());
+        let _gone = m.state.apps.remove("i1");
+        assert!(
+            m.run_unproven(delete_deployment("a", "alice")).is_err(),
+            "it offers notes"
+        );
+        let _ok = m.run_unproven(withdraw_app("a", "notes", "alice")).unwrap();
+        let _ok = m.run_unproven(uninstall("1.0.0")).unwrap();
+        assert!(m.run_unproven(delete_deployment("a", "bob")).is_err());
+        let _ok = m.run_unproven(delete_deployment("a", "alice")).unwrap();
+        assert!(!m.state.deployments.contains_key("a"));
+
+        // An organization owning a deployment is not deleted under it.
+        let delete_org = SystemCmd::DeleteOrg {
+            org: "org".into(),
+            actor: "alice".into(),
+            consent: serde_json::Value::Null,
+        };
+        assert!(m.run_unproven(delete_org).is_err());
+
+        // A bounded number per owner.
+        for i in 1..MAX_DEPLOYMENTS_PER_OWNER {
+            let _ok = m
+                .run_unproven(create_deployment(&format!("o{i}"), org(), "carol"))
+                .unwrap();
+        }
+        let e = m
+            .run_unproven(create_deployment("one-more", org(), "carol"))
+            .unwrap_err();
+        assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    }
+
+    /// Where deployments are granted, creating one and offering need a live
+    /// grant at the command's time; withdrawing does not.
+    #[test]
+    fn on_a_granted_cluster_deploying_needs_a_grant() {
+        use super::{Deployer, Deployments, NOT_A_DEPLOYER, OPERATOR};
+        let mut m = deploying(Deployments::Granted);
+        let alice = || Deployer::Account("alice".into());
+        assert_eq!(
+            m.run_unproven(create_deployment("a", alice(), "alice"))
+                .unwrap_err(),
+            NOT_A_DEPLOYER
+        );
+        let _ok = m.run_unproven(grant(alice(), None, OPERATOR)).unwrap();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+        let _ok = m
+            .run_unproven(create_deployment("a", alice(), "alice"))
+            .unwrap();
+        let _ok = m
+            .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+            .unwrap();
+        // A customer without a grant creates from the offer.
+        let _ok = m
+            .run_unproven(instance("i1", "bob", "b-1.0.0", Some("a")))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::RevokeDeployer {
+                deployer: alice(),
+                at: 20,
+                actor: OPERATOR.into(),
+                proof: None,
+                consent: None,
+            })
+            .unwrap();
+        assert_eq!(
+            m.run_unproven(offer_app("a", "more", "1.0.0", "alice"))
+                .unwrap_err(),
+            NOT_A_DEPLOYER
+        );
+        let _gone = m.state.apps.remove("i1");
+        let _ok = m.run_unproven(withdraw_app("a", "notes", "alice")).unwrap();
+    }
+
+    /// Each change to a deployment carries its actor's passkey consent over
+    /// exactly that change, once; a deployment's id is its creating
+    /// consent's, so no node picks another.
+    #[test]
+    fn deployment_changes_carry_their_managers_consent() {
+        use super::{deployment_id, Deployer};
+        let (mut m, mut alice, mut bob) = two_accounts();
+        let owner = json!({ "account": "alice" });
+        let args = json!({ "name": "labs", "owner": owner });
+        let create =
+            |id: String, actor: &str, consent: serde_json::Value| SystemCmd::CreateDeployment {
+                id,
+                name: "labs".into(),
+                owner: Deployer::Account("alice".into()),
+                actor: actor.into(),
+                at: 10,
+                consent,
+            };
+        assert!(m
+            .run(create("d".into(), "alice", serde_json::Value::Null))
+            .is_err());
+        let c = consent(&mut alice, "cluster", "__create_deployment", &args);
+        assert!(
+            m.run(create("picked".into(), "alice", c.clone())).is_err(),
+            "an id the consent does not name"
+        );
+        let id = deployment_id(c["nonce"].as_str().unwrap());
+        let theirs = consent(&mut bob, "cluster", "__create_deployment", &args);
+        let bobs_id = deployment_id(theirs["nonce"].as_str().unwrap());
+        assert!(
+            m.run(create(bobs_id, "alice", theirs)).is_err(),
+            "bob's passkey"
+        );
+        let _ok = m.run(create(id.clone(), "alice", c.clone())).unwrap();
+        assert!(m.run(create(id.clone(), "alice", c)).is_err(), "used once");
+
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+        let subject = format!("deployment:{id}");
+        let offer = |version: &str, consent: serde_json::Value| SystemCmd::OfferApp {
+            deployment: id.clone(),
+            app: "notes".into(),
+            package: "p".into(),
+            version: version.into(),
+            actor: "alice".into(),
+            at: 10,
+            consent,
+        };
+        let for_1 = json!({ "app": "notes", "package": "p", "version": "1.0.0" });
+        let c = consent(&mut alice, &subject, "__offer_app", &for_1);
+        assert!(m.run(offer("2.0.0", c.clone())).is_err(), "another version");
+        let _ok = m.run(offer("1.0.0", c)).unwrap();
+        let withdraw = |consent: serde_json::Value| SystemCmd::WithdrawApp {
+            deployment: id.clone(),
+            app: "notes".into(),
+            actor: "alice".into(),
+            consent,
+        };
+        let c = consent(
+            &mut alice,
+            "deployment:other",
+            "__withdraw_app",
+            &json!({ "app": "notes" }),
+        );
+        assert!(m.run(withdraw(c)).is_err(), "another deployment");
+        let c = consent(
+            &mut alice,
+            &subject,
+            "__withdraw_app",
+            &json!({ "app": "notes" }),
+        );
+        let _ok = m.run(withdraw(c)).unwrap();
+        let c = consent(&mut alice, &subject, "__delete_deployment", &json!({}));
+        let _ok = m
+            .run(SystemCmd::DeleteDeployment {
+                deployment: id.clone(),
+                actor: "alice".into(),
+                consent: c,
+            })
+            .unwrap();
+        assert!(m.state.deployments.is_empty());
+    }
+
+    /// A system state and an app record written before deployments (log
+    /// entries and snapshots are JSON) read with none, and write back as
+    /// they were.
+    #[test]
+    fn state_from_before_deployments_reads_with_none_and_writes_as_before() {
+        // `AppRecord` as the previous release wrote it, every field present.
+        let written: crate::types::AppRecord = serde_json::from_value(json!({
+            "appId": "a", "name": "n", "group": 2, "bundle": "b", "owner": "alice",
+            "replicas": [1], "createdAt": 0,
+        }))
+        .unwrap();
+        let app = serde_json::to_value(&written).unwrap();
+        assert!(app.get("deployment").is_none(), "{app}");
+        let record: crate::types::AppRecord = serde_json::from_value(app.clone()).unwrap();
+        assert_eq!(record.deployment, None);
+        assert_eq!(serde_json::to_value(&record).unwrap(), app);
+
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let _prev = m.state.apps.insert("a".into(), record);
+        let before = serde_json::to_value(&m.state).unwrap();
+        assert!(before.get("deployments").is_none(), "{before}");
+        assert!(before["apps"]["a"].get("deployment").is_none());
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert!(restored.deployments.is_empty());
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
     }
 }
