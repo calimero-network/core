@@ -5470,6 +5470,7 @@ mod tests {
                     key: hex::encode(key.verifying_key().to_bytes()),
                     cluster: "c".into(),
                 }),
+                nodes: Vec::new(),
             })
             .unwrap();
         let mut alice = calimero_identity::testing::SoftAuthenticator::new(
