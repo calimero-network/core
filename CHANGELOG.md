@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.6] - 2026-10-31
+
 ### Added
 
 - **Deployer grants.** `merod --deployments open|granted` and `--deployers
@@ -12,7 +14,8 @@
   packages or uploads bundles (`403 DEPLOY_NOT_GRANTED`, refused again at
   apply); anyone still signs up and creates instances of the releases they see.
   The operator grants and revokes with its key (`POST /ops/deployers`,
-  `DELETE /ops/deployers/{key}`), moves an existing cluster from `open` to
+  `DELETE /ops/deployers/{key}`, or its
+  signed form `POST /ops/deployers/{key}/revoke`), moves an existing cluster from `open` to
   `granted` once (`POST /ops/deployments/granted`), and, with `--deployers
   owner`, names the cluster's owner once (`POST /ops/cluster-owner`), who then
   grants with a passkey (`POST /deployers`, `DELETE /deployers/{key}`) and the
