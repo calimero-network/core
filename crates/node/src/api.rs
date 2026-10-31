@@ -4724,9 +4724,16 @@ async fn internal_blob_delete(
     let _caller = peer(&node, &headers, key).await?;
     let hash = body["hash"].as_str().unwrap_or_default().to_owned();
     // The node that collects a blob checked that no app marks it; one here
-    // that still does keeps its bytes, whoever asks.
-    if !hosted_holders(&node, &hash).is_empty() {
-        return Err(ApiError::forbidden("an app here still holds that blob"));
+    // that still does keeps its bytes, whoever asks. A mark is judged as the
+    // app's leader holds it: this replica may not have applied the delete
+    // that let the blob go yet, and would keep the bytes for good (nothing
+    // asks again). Unknown counts as held.
+    if let Ok(raw) = <[u8; 32]>::try_from(hex::decode(&hash).unwrap_or_default()) {
+        for app in hosted_holders(&node, &hash) {
+            if node.blob_held_strong(&app, &raw).await.unwrap_or(true) {
+                return Err(ApiError::forbidden("an app here still holds that blob"));
+            }
+        }
     }
     let code = node.sys(|s| {
         s.bundles.contains_key(&hash)

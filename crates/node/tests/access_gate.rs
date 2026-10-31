@@ -465,3 +465,89 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     let err = read.expect_err("a blob deleted before the request must not be served");
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
+
+/// A blob deleted through the app's leader leaves no bytes on a follower that
+/// had not applied the delete when the leader asked it to drop them: the
+/// follower must not keep them because its own replica still marks the blob
+/// (the intermittent `blobs_list_and_delete_and_storage_is_inspectable`
+/// failure, "the bytes outlived every app").
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let mut leader = None;
+    for _ in 0..200 {
+        leader = (0..3).find(|i| {
+            c.nodes[*i]
+                .node
+                .hosted(&app)
+                .is_some_and(|g| g.status().is_leader)
+        });
+        if leader.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let leader = leader.expect("the app's group elects a leader");
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let blob = alice.upload_blob(&app, vec![9_u8; 4096]).await.unwrap();
+    let id = blob["id"].as_str().unwrap().to_owned();
+    let raw: [u8; 32] = hex::decode(&id).unwrap().try_into().unwrap();
+    let follower_group = c.nodes[follower].node.hosted(&app).unwrap();
+    let follower_has_bytes = || {
+        c.nodes[follower]
+            .node
+            .engine
+            .get_blob(&id)
+            .unwrap()
+            .is_some()
+    };
+    for _ in 0..100 {
+        if follower_group.read_local(|m, _| m.holds_blob(&raw)) && follower_has_bytes() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(follower_has_bytes(), "the follower holds the bytes first");
+    let deleter = c.client(leader);
+    let _s = deleter.sign_in(&mut alice_pk).await.unwrap();
+
+    // Hold the follower and delete through the leader: the other follower's
+    // ack commits the delete, and the request to drop the bytes waits with
+    // the held follower's appends.
+    c.hold[follower].send_replace(true);
+    let delete = tokio::spawn({
+        let (app, id) = (app.clone(), id.clone());
+        async move { deleter.delete_blob(&app, &id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        follower_group.read_local(|m, _| m.holds_blob(&raw)),
+        "the follower must still hold the mark"
+    );
+    c.hold[follower].send_replace(false);
+    let _deleted = delete.await.unwrap().unwrap();
+
+    // Once the follower catches up, it holds neither the mark nor the bytes.
+    for _ in 0..150 {
+        if !follower_group.read_local(|m, _| m.holds_blob(&raw)) && !follower_has_bytes() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !follower_group.read_local(|m, _| m.holds_blob(&raw)),
+        "the follower applied the delete"
+    );
+    assert!(
+        !follower_has_bytes(),
+        "the bytes outlived the only app that marked them"
+    );
+}

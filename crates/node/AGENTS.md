@@ -474,7 +474,10 @@ is its command line.
   node (`internal/blob/delete`) unless another app still marks the same content
   (asked of each app's leader, `blob_held_strong`: a lagging replica could miss
   a mark just committed; an app whose leader does not answer counts as holding
-  it) or it is a bundle or a release `.mpk`. Known window: the same content
+  it) or it is a bundle or a release `.mpk`. A peer asked to drop the bytes
+  judges its own apps' marks the same way, on their leaders: a replica that
+  has not applied the delete yet would otherwise keep them for good
+  (regression: `a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader`). Known window: the same content
   uploaded to another app between that check and the deletion loses its bytes.
   A blob past `MAX_BLOB_BYTES` (47 MiB) is refused `413 TOO_LARGE` by the node,
   one past the sealed cap (64 MiB) by the envelope, in the clear; the client
