@@ -185,10 +185,13 @@ already signs operator decisions:
   local and self-run clusters.
 - Calimero Cloud (mdma) holds each cloud cluster's operator key. It signs a grant
   when a workspace makes its first deploy on a cluster, and revokes it when the
-  workspace is deleted or suspended.
-- **Dedicated clusters**: mdma grants only the team org (or account) of the
-  workspace that owns the cluster, and refuses any other. Its customers still
-  sign up and create instances of the owner's apps; nobody else can deploy there.
+  workspace is deleted or suspended. Who it grants depends on the cluster:
+
+| Cluster | Who may create deployments | Who may use the apps |
+| --- | --- | --- |
+| Shared | Every Calimero Cloud workspace (granted on its first deploy there) | Anyone who signs up, through a deployment's offers |
+| Dedicated | Only the workspace that owns the cluster; mdma refuses a grant for any other | Anyone who signs up, through the owner's deployments |
+| Self-run (`deployments: open`) | Any account, as today | Any account |
 - A grant does not let mdma act inside a deployment: offering, withdrawing and
   transferring still need a manager's passkey (section 8). The operator can stop
   new deployments; it cannot run or change an existing one.
