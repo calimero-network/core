@@ -35,7 +35,10 @@ use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
-use crate::system::{Deployer, Deployers, Deployments, SystemCmd, SystemState};
+use crate::system::{
+    deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
+    Deployments, SystemCmd, SystemState,
+};
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
@@ -1772,6 +1775,66 @@ async fn bundle_named(
     }
 }
 
+/// The bundle an instance of `package` from deployment `id` runs: the
+/// release the deployment offers for it (`version`, when given, must be that
+/// release), service `service`. `404` for an unknown deployment; `400
+/// NOT_OFFERED` for a package or version it does not offer. `CreateApp`
+/// checks the offer again where it applies.
+async fn offered_bundle(
+    node: &Node,
+    id: &str,
+    package: &str,
+    version: Option<&str>,
+    service: Option<&str>,
+) -> Result<String, ApiError> {
+    let find = || {
+        node.sys(|s| {
+            let d = s.deployments.get(id)?;
+            let mut releases: Vec<(String, BTreeMap<String, String>)> = d
+                .apps
+                .values()
+                .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
+                .filter_map(|o| Some((o.version.clone(), s.offered_release(o)?.services.clone())))
+                .collect();
+            releases.sort_by(|a, b| a.0.cmp(&b.0));
+            releases.dedup_by(|a, b| a.0 == b.0);
+            Some(releases)
+        })
+    };
+    let releases = match find() {
+        Some(r) => r,
+        None => {
+            let _caught_up = node.sys_fresh().await;
+            find().ok_or_else(|| ApiError::not_found("no such deployment"))?
+        }
+    };
+    let (version, services) = match releases.as_slice() {
+        [] => {
+            return Err(ApiError::bad_request(
+                "NOT_OFFERED",
+                &format!(
+                    "the deployment does not offer {package}{}",
+                    version.map(|v| format!("@{v}")).unwrap_or_default()
+                ),
+            ))
+        }
+        [one] => one,
+        _ => {
+            return Err(ApiError::bad_request(
+                "VERSION_REQUIRED",
+                &format!("the deployment offers several releases of {package}; name one"),
+            ))
+        }
+    };
+    let key = service.unwrap_or_default();
+    services.get(key).cloned().ok_or_else(|| {
+        ApiError::bad_request(
+            "NO_SUCH_SERVICE",
+            &format!("{package}@{version} has no service {key:?}"),
+        )
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateAppBody {
@@ -1798,6 +1861,11 @@ struct CreateAppBody {
     /// The instance's metadata.
     #[serde(default)]
     metadata: Value,
+    /// The deployment to create it from: then `package` names one of the
+    /// packages it offers (and `version`, if given, the offered release),
+    /// and the instance runs exactly the release it offers.
+    #[serde(default)]
+    deployment: Option<String>,
 }
 
 async fn app_create(
@@ -1825,17 +1893,42 @@ async fn app_create(
     }
     let owner = p.account()?;
     let now = now_secs();
-    let bundle = bundle_named(
-        &node,
-        body.bundle,
-        body.package.as_deref(),
-        body.version.as_deref(),
-        body.service.as_deref(),
-        &owner,
-        // Checked above: a bound session names its own package only.
-        p.bound_app().is_some(),
-    )
-    .await?;
+    let bundle = match &body.deployment {
+        // From a deployment's offer: installed already, and the caller's
+        // to run whether or not they see the release otherwise.
+        Some(d) => {
+            if body.bundle.is_some() {
+                return Err(ApiError::bad_request(
+                    "BAD_REQUEST",
+                    "an instance from a deployment names its package, not a bundle",
+                ));
+            }
+            let package = body.package.as_deref().ok_or_else(|| {
+                ApiError::bad_request("BAD_REQUEST", "name the package the deployment offers")
+            })?;
+            offered_bundle(
+                &node,
+                d,
+                package,
+                body.version.as_deref(),
+                body.service.as_deref(),
+            )
+            .await?
+        }
+        None => {
+            bundle_named(
+                &node,
+                body.bundle,
+                body.package.as_deref(),
+                body.version.as_deref(),
+                body.service.as_deref(),
+                &owner,
+                // Checked above: a bound session names its own package only.
+                p.bound_app().is_some(),
+            )
+            .await?
+        }
+    };
     // The executor is decided once, here, from the WASM the bundle names (a
     // package's service, or the raw upload), and recorded with the app.
     let executor = node.executor_of(&bundle).await?;
@@ -1894,6 +1987,7 @@ async fn app_create(
                 init_args: body.init_args,
                 metadata: body.metadata,
                 last_upgrade: None,
+                deployment: body.deployment,
             }),
         })
         .await?;
@@ -2006,6 +2100,7 @@ async fn app_list(
                     "bundle": a.bundle,
                     "package": release.as_ref().map(|r| &r.package),
                     "version": release.as_ref().map(|r| &r.version),
+                    "deployment": a.deployment,
                 })
             })
             .collect()
@@ -6419,6 +6514,340 @@ async fn deployer_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
     })))
 }
 
+// ---------------------------------------------------------------- deployments
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeploymentBody {
+    name: String,
+    owner: Deployer,
+    /// The creator's passkey, once the node asked for it (`412`).
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OfferBody {
+    app: String,
+    package: String,
+    version: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+fn malformed(why: &'static str) -> ApiError {
+    ApiError::bad_request("BAD_REQUEST", why)
+}
+
+/// Deployment `id` for `account` to manage, judged on fresh state: `404`
+/// when there is none, `403` unless the account acts for its owner.
+async fn managed_deployment(node: &Node, account: &str, id: &str) -> Result<Deployment, ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| {
+        let d = s
+            .deployments
+            .get(id)
+            .ok_or_else(|| ApiError::not_found("no such deployment"))?;
+        if !s.acts_for(&d.owner, account) {
+            return Err(ApiError::forbidden(
+                "only the deployment's owner, or MANAGE_APPLICATION in its organization, manages it",
+            ));
+        }
+        Ok(d.clone())
+    })
+}
+
+/// A deployment as its managers read it.
+fn deployment_json(d: &Deployment) -> Value {
+    json!({
+        "id": d.id,
+        "name": d.name,
+        "owner": d.owner,
+        "apps": d.apps.iter().map(|(app, o)| json!({
+            "app": app,
+            "package": o.package,
+            "version": o.version,
+            "addedBy": o.added_by,
+            "addedAt": crate::system::rfc3339(o.added_at),
+        })).collect::<Vec<_>>(),
+        "createdBy": d.created_by,
+        "createdAt": crate::system::rfc3339(d.created_at),
+    })
+}
+
+/// Create a deployment of `owner` (the caller's own account, or an
+/// organization where it holds `MANAGE_APPLICATION` org-wide), with a passkey
+/// assertion over `cluster / __create_deployment / { name, owner }` (a `412`
+/// asks for it). Its id comes from that consent ([`deployment_id`]).
+async fn deployment_create(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<DeploymentBody>,
+) -> ApiResult {
+    deployment_name_fits(&body.name).map_err(malformed)?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let _caught_up = node.sys_fresh().await;
+    if !node.sys(|s| s.acts_for(&body.owner, &account)) {
+        return Err(ApiError::forbidden(
+            "a deployment is created by its owner account, or by MANAGE_APPLICATION in its organization",
+        ));
+    }
+    node.refuse_undeployable(&account).await?;
+    let consent = consent(
+        &node,
+        &p,
+        "cluster",
+        "__create_deployment",
+        &json!({ "name": body.name, "owner": body.owner }),
+        body.confirm,
+    )
+    .await?;
+    let id = deployment_id(consent["nonce"].as_str().unwrap_or_default());
+    Ok(Json(
+        node.sys_write(&SystemCmd::CreateDeployment {
+            id,
+            name: body.name,
+            owner: body.owner,
+            actor: account,
+            at: now_secs(),
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Offer an installed release the manager sees as `app` (adding it, or
+/// moving it to another release of its package), with a passkey assertion
+/// over `deployment:{id} / __offer_app / { app, package, version }`.
+async fn deployment_offer(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<OfferBody>,
+) -> ApiResult {
+    deployment_segment_fits(&body.app).map_err(malformed)?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let _d = managed_deployment(&node, &account, &id).await?;
+    node.refuse_undeployable(&account).await?;
+    let seen = node.sys(|s| {
+        s.packages
+            .get(&body.package)
+            .and_then(|p| p.versions.get(&body.version))
+            .is_some_and(|v| s.sees_release(v, &account))
+    });
+    if !seen {
+        return Err(ApiError::not_found(
+            "no such release; install it before offering it",
+        ));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__offer_app",
+        &json!({ "app": body.app, "package": body.package, "version": body.version }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::OfferApp {
+            deployment: id,
+            app: body.app,
+            package: body.package,
+            version: body.version,
+            actor: account,
+            at: now_secs(),
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Withdraw `app` from the deployment, with a passkey assertion over
+/// `deployment:{id} / __withdraw_app / { app }`; refused while an instance
+/// created from the deployment runs it.
+async fn deployment_withdraw(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((id, app)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let d = managed_deployment(&node, &account, &id).await?;
+    if !d.apps.contains_key(&app) {
+        return Err(ApiError::not_found("the deployment offers no such app"));
+    }
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__withdraw_app",
+        &json!({ "app": app }),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::WithdrawApp {
+            deployment: id,
+            app,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Delete a deployment that offers nothing, with a passkey assertion over
+/// `deployment:{id} / __delete_deployment / {}`.
+async fn deployment_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let _d = managed_deployment(&node, &account, &id).await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__delete_deployment",
+        &json!({}),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::DeleteDeployment {
+            deployment: id,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// The deployments the caller manages: its own account's, and those of the
+/// organizations where it holds `MANAGE_APPLICATION` org-wide.
+async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    p.unbound()?;
+    let account = p.account()?;
+    let _caught_up = node.sys_fresh().await;
+    let deployments: Vec<Value> = node.sys(|s| {
+        s.deployments
+            .values()
+            .filter(|d| s.acts_for(&d.owner, &account))
+            .map(deployment_json)
+            .collect()
+    });
+    Ok(Json(json!({ "deployments": deployments })))
+}
+
+/// A deployment as anyone may read it, by id: its name, its owner's kind
+/// and name, and the apps it offers with their releases; for frontends and
+/// the customer's consent. Never its managers, members or customers.
+/// Read on fresh state: a replica behind would still serve a deployment
+/// deleted, or an app withdrawn, elsewhere.
+async fn deployment_get(State(node): State<Arc<Node>>, Path(id): Path<String>) -> ApiResult {
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| {
+        let d = s.deployments.get(&id)?;
+        let (kind, name) = match &d.owner {
+            Deployer::Account(a) => ("account", s.accounts.get(a).map(|a| a.name.clone())),
+            Deployer::Org(o) => ("org", s.orgs.get(o).map(|o| o.name.clone())),
+        };
+        Some(json!({
+            "id": d.id,
+            "name": d.name,
+            "owner": { "kind": kind, "name": name },
+            "apps": d.apps.iter().map(|(app, o)| json!({
+                "app": app, "package": o.package, "version": o.version,
+            })).collect::<Vec<_>>(),
+        }))
+    })
+    .map(Json)
+    .ok_or_else(|| ApiError::not_found("no such deployment"))
+}
+
+/// One customer organization of a deployment, as its listing counts it.
+struct Customer<'a> {
+    instances: u64,
+    /// (app name in the deployment, the release its instance runs)
+    apps: std::collections::BTreeSet<(&'a str, &'a str)>,
+    /// When its first instance from the deployment was created.
+    first: u64,
+}
+
+/// The organizations with instances created from the deployment, for its
+/// managers, on fresh state: each organization's id and name, how many
+/// instances it has from here, which of the deployment's apps they are and
+/// the releases they run, and when its first was created. Never members,
+/// teams, instance names or app data; instances outside an organization are
+/// counted only (`outsideOrgs`).
+async fn deployment_orgs(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    p.unbound()?;
+    let account = p.account()?;
+    let d = managed_deployment(&node, &account, &id).await?;
+    Ok(Json(node.sys(|s| {
+        let mut orgs: BTreeMap<&str, Customer<'_>> = BTreeMap::new();
+        let mut outside = 0u64;
+        for a in s
+            .apps
+            .values()
+            .filter(|a| a.deployment.as_deref() == Some(id.as_str()))
+        {
+            let Some(org) = a.org.as_deref() else {
+                outside += 1;
+                continue;
+            };
+            let entry = orgs.entry(org).or_insert(Customer {
+                instances: 0,
+                apps: std::collections::BTreeSet::new(),
+                first: u64::MAX,
+            });
+            entry.instances += 1;
+            entry.first = entry.first.min(a.created_at);
+            for (app, o) in &d.apps {
+                let version = s.packages.get(&o.package).and_then(|p| {
+                    p.versions
+                        .values()
+                        .find(|v| v.services.values().any(|h| *h == a.bundle))
+                });
+                if let Some(v) = version {
+                    let _new = entry.apps.insert((app.as_str(), v.version.as_str()));
+                }
+            }
+        }
+        let orgs: Vec<Value> = orgs
+            .into_iter()
+            .map(|(org, c)| {
+                json!({
+                    "orgId": org,
+                    "name": s.orgs.get(org).map(|o| o.name.clone()),
+                    "instances": c.instances,
+                    "apps": c.apps.iter().map(|(app, version)| json!({
+                        "app": app, "version": version,
+                    })).collect::<Vec<_>>(),
+                    "firstCreatedAt": crate::system::rfc3339(c.first),
+                })
+            })
+            .collect();
+        json!({ "deployment": id, "orgs": orgs, "outsideOrgs": outside })
+    })))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PublisherBody {
@@ -6800,6 +7229,11 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/cluster-owner", post(ops_cluster_owner))
         .route("/deployers", post(deployer_grant).get(deployer_list))
         .route("/deployers/{key}", delete(deployer_revoke))
+        .route("/deployments", post(deployment_create).get(deployment_list))
+        .route("/deployments/{id}", get(deployment_get).delete(deployment_delete))
+        .route("/deployments/{id}/apps", post(deployment_offer))
+        .route("/deployments/{id}/apps/{app}", delete(deployment_withdraw))
+        .route("/deployments/{id}/orgs", get(deployment_orgs))
         .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/orgs/{org}/upgrade", post(ops_org_upgrade))

@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Deployments.** An owner's (an account's, or an organization's) list of
+  the apps it offers on a cluster, each naming one installed release. Its
+  managers (the account; the organization's org-wide `MANAGE_APPLICATION`
+  holders) change it with their own passkey, judged where the change applies:
+  `POST /deployments { name, owner }`, `POST /deployments/{id}/apps { app,
+  package, version }` (offer, or move to another release), `DELETE
+  /deployments/{id}/apps/{app}` (withdraw; refused while an instance from it
+  runs that app), `DELETE /deployments/{id}` (once it offers nothing). Where
+  deployments are `granted`, creating and offering need a deployer grant.
+  `POST /apps { deployment, package, version? }` creates an instance from an
+  offer (no grant, no install) and the instance records its deployment.
+  `GET /deployments` lists what the caller manages, `GET /deployments/{id}` is
+  public (name, owner's kind and name, offers), and `GET
+  /deployments/{id}/orgs` lists, for its managers, the organizations with
+  instances from it (id, name, count, apps and versions, first created), never
+  members or data. A release a deployment offers is not uninstalled.
+- **Frontends at the deployed release.** `/app/{app}/` redirects to the
+  release that instance runs and `/d/{deployment}/` to the release the
+  deployment offers (`?deployment={id}`), so a customer's page matches their
+  instance after a newer release is installed; `/.well-known/calimero.json`
+  lists the deployments offering the package. Records from before deployments
+  are not moved into one.
+
 ### Security
 
 The next phase of gating the system group (`docs/specs/gate-system-group.md`,

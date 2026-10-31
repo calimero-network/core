@@ -14,7 +14,15 @@
 //!   last segment and an `Accept` naming HTML, the entry (a single-page app's
 //!   routes survive a reload); otherwise the path with leading segments
 //!   dropped (an entry built with a relative base on a deep link); else 404.
-//! - `GET /.well-known/calimero.json`: the package, its releases and the
+//! - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release
+//!   that instance runs (a release of this package; else 404), so a link
+//!   handed to a customer opens the frontend matching their instance.
+//! - `GET /d/{deployment}/{path}` redirects to
+//!   `/{version}/{path}?deployment={id}`, the release that deployment offers
+//!   for this package (the newest, if it offers several), so the page knows
+//!   which deployment to create instances from.
+//! - `GET /.well-known/calimero.json`: the package, its releases, the
+//!   deployments offering it (`id`, `name`, `app`, `version`) and the
 //!   cluster's API URLs, for the page to connect to.
 //! - Nothing else: only `GET` and `HEAD`, never the node's own routes.
 
@@ -29,7 +37,7 @@ use axum::response::{IntoResponse, Response};
 use calimero_bundle::{mime_type, FRONTEND_ROOT};
 
 use crate::node::Node;
-use crate::system::compare_versions;
+use crate::system::{compare_versions, SystemState};
 
 /// v1's content security policy, with the cluster's API origins added to
 /// `connect-src` (the page talks to the cluster, not to its own origin).
@@ -258,9 +266,25 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
         v
     });
     if path == "/.well-known/calimero.json" {
+        let deployments: Vec<serde_json::Value> = node.sys(|s| {
+            s.deployments
+                .values()
+                .flat_map(|d| {
+                    d.apps
+                        .iter()
+                        .filter(|(_, o)| o.package == package)
+                        .map(move |(app, o)| {
+                            serde_json::json!({
+                                "id": d.id, "name": d.name, "app": app, "version": o.version,
+                            })
+                        })
+                })
+                .collect()
+        });
         let body = serde_json::json!({
             "package": package,
             "versions": versions,
+            "deployments": deployments,
             "api": node.api_origins(),
         });
         return (
@@ -282,6 +306,20 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
             [(header::LOCATION, format!("/{latest}/"))],
         )
             .into_response();
+    }
+    let redirect = if let Some(tail) = rest.strip_prefix("app/") {
+        Some(pinned(node, |s| instance_release(s, node, package, tail)).await)
+    } else if let Some(tail) = rest.strip_prefix("d/") {
+        Some(pinned(node, |s| offered_release(s, package, tail)).await)
+    } else {
+        None
+    };
+    match redirect {
+        Some(Some(location)) => {
+            return (StatusCode::FOUND, [(header::LOCATION, location)]).into_response();
+        }
+        Some(None) => return StatusCode::NOT_FOUND.into_response(),
+        None => {}
     }
     let (version, file) = rest.split_once('/').unwrap_or((rest, ""));
     if !versions.iter().any(|v| v == version) {
@@ -324,6 +362,44 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
         set(h, header::CACHE_CONTROL, IMMUTABLE);
     }
     resp
+}
+
+/// Where a pinned path (`/app/...`, `/d/...`) redirects, from this node's
+/// state, or, when that names nothing, from state caught up with the log.
+async fn pinned(node: &Node, find: impl Fn(&SystemState) -> Option<String>) -> Option<String> {
+    if let Some(found) = node.sys(&find) {
+        return Some(found);
+    }
+    let _caught_up = node.sys_fresh().await;
+    node.sys(&find)
+}
+
+/// `{app}/{tail}`: `/{version}/{tail}` of the release of `package` that
+/// instance runs.
+fn instance_release(s: &SystemState, node: &Node, package: &str, rest: &str) -> Option<String> {
+    let (app, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let a = s.apps.get(&node.canonical_app_id(app))?;
+    let v = s
+        .packages
+        .get(package)?
+        .versions
+        .values()
+        .find(|v| v.services.values().any(|h| *h == a.bundle))?;
+    Some(format!("/{}/{tail}", v.version))
+}
+
+/// `{deployment}/{tail}`: `/{version}/{tail}?deployment={id}`, the installed
+/// release of `package` the deployment offers (the newest of several).
+fn offered_release(s: &SystemState, package: &str, rest: &str) -> Option<String> {
+    let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let d = s.deployments.get(id)?;
+    let version = d
+        .apps
+        .values()
+        .filter(|o| o.package == package && s.offered_release(o).is_some())
+        .map(|o| o.version.as_str())
+        .max_by(|a, b| compare_versions(a, b))?;
+    Some(format!("/{version}/{tail}?deployment={}", d.id))
 }
 
 /// Which file `file` (the path after `/{version}/`) answers with, and
