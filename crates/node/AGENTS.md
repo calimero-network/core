@@ -171,7 +171,8 @@ is its command line.
   install a release from the registry first; an instance of a release the
   caller already sees needs no grant. The operator's installs never need one.
   Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
-  (`POST /ops/deployers`, `DELETE /ops/deployers/{key}`; `cluster /
+  (`POST /ops/deployers`, `DELETE /ops/deployers/{key}` or `POST
+  /ops/deployers/{key}/revoke`; `cluster /
   __grant_deployer / { deployer, until }`, `__revoke_deployer / { deployer }`;
   `at` is not signed: the 428 and the signed retry are two requests) until,
   with `deployers: owner`, the operator names the owner once

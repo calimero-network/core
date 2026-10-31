@@ -328,8 +328,9 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
         "__revoke_deployer",
         &json!({ "deployer": { "account": alice_id } }),
     );
+    // The POST form, for a client whose DELETE carries no body.
     let _ok = ops
-        .delete_with(&path, json!({ "operatorProof": proof }))
+        .post(&format!("{path}/revoke"), json!({ "operatorProof": proof }))
         .await
         .unwrap();
     refused(

@@ -6386,6 +6386,9 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/releases", get(releases_public))
         .route("/ops/deployers", post(ops_deployer_grant))
         .route("/ops/deployers/{key}", delete(ops_deployer_revoke))
+        // The same revoke for an HTTP client whose DELETE carries no body
+        // (calimero-client-py's), which the operator's proof needs.
+        .route("/ops/deployers/{key}/revoke", post(ops_deployer_revoke))
         .route("/ops/deployments/granted", post(ops_deployments_granted))
         .route("/ops/cluster-owner", post(ops_cluster_owner))
         .route("/deployers", post(deployer_grant).get(deployer_list))
