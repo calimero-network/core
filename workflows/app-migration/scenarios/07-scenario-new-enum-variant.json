@@ -1,0 +1,285 @@
+{
+  "name": "07 — Scenario \"new enum variant\" (v1 → v2 append-only enum, 2-node)",
+  "description": "Borsh encodes enums by discriminant INDEX (0, 1, 2, ...). Appending a new variant at the END of an existing enum preserves every pre-existing variant's index, so v1-encoded state bytes deserialize unchanged under v2 — no migration function is required. v1's `Status` has {Active=0, Paused=1}; v2's `Status` is {Active=0, Paused=1, Archived=2}. The upgrade is `upgrade_group(group=subgroup, target=v2)` (no caller-supplied method exists). Topology: namespace + one Open subgroup + one context in the subgroup.\nNegative assertion: before the upgrade, the v2-only setter `set_status_archived` must NOT be callable (v1 doesn't export it). Post-upgrade, the implicit (non-migrating) decode preserves the v1 `Paused` status because its borsh index didn't shift, and the v2-only setter round-trips Archived from node 1 to node 2 (Phase 7d).\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_migration_complete x1: v1 group migration",
+    "  delete_context (unknown) x1: checks what the dropped steps did",
+    "  delete_namespace x1: v1 namespace deletion",
+    "  uninstall_application (unknown) x1: checks what the dropped steps did",
+    "  wait_for_sync x2: replication is synchronous: a read sees every committed write",
+    "Fixed in the migration (converter bugs): a cascade upgrade_group",
+    "upgrades every app in the namespace's teams; of get_migration_status",
+    "only the outputs that mean the same here are kept."
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "app-migration-newenum-1",
+    "app-migration-newenum-2"
+  ],
+  "steps": [
+    {
+      "name": "Install scenario-new-enum-variant-v1 on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-new-enum-variant-1.0.0.mpk",
+      "outputs": {
+        "app_v1": "package",
+        "app_v1_version": "version"
+      },
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Create namespace (v1) on node 1",
+      "type": "create_org",
+      "org_name": "Create namespace (v1) on node 1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Create Open subgroup under namespace",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "new-enum-variant-scenario-subgroup",
+      "join": "invite",
+      "outputs": {
+        "group_id": "teamId"
+      },
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Mark subgroup as Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "join": "everyone",
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Create context in subgroup on node 1 (v1)",
+      "type": "deploy",
+      "account": "app-migration-newenum-1",
+      "package": "{{app_v1}}",
+      "version": "{{app_v1_version}}",
+      "app_name": "Create context in subgroup on node 1 (v1)",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Create namespace invitation for node 2",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "app-migration-newenum-1",
+      "outputs": {
+        "namespace_invitation": "token"
+      }
+    },
+    {
+      "name": "Node 2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{namespace_invitation}}",
+      "account": "app-migration-newenum-2"
+    },
+    {
+      "name": "Node 2 materialises subgroup membership via inheritance",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-newenum-2"
+    },
+    {
+      "name": "Write v1 state — set status to Paused",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_status_paused",
+      "args": {},
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Write item to v1 map",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_item",
+      "args": {
+        "key": "k1",
+        "value": "v1"
+      },
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Sanity-check v1 state shape on node 1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-newenum-1",
+      "outputs": {
+        "v1_schema": "rpc"
+      }
+    },
+    {
+      "name": "Assert v1 schema in place",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v1_schema}}, {\"output\": {\"schema_version\": \"1.0.0\", \"status\": \"Paused\"}})"
+      ]
+    },
+    {
+      "name": "Negative — set_status_archived is not exported by v1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_status_archived",
+      "args": {},
+      "account": "app-migration-newenum-1",
+      "expected_failure": true
+    },
+    {
+      "name": "Install scenario-new-enum-variant-v2 on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-new-enum-variant-2.0.0.mpk",
+      "outputs": {
+        "app_v2": "package",
+        "app_v2_version": "version"
+      },
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Assert both versions share one application id (bundle same-id)",
+      "type": "json_assert",
+      "statements": [
+        "equal(\"{{app_v1}}\", \"{{app_v2}}\")"
+      ]
+    },
+    {
+      "name": "Upgrade subgroup v1 → v2 (no migrate — append-only enum is borsh-compatible)",
+      "type": "upgrade_app",
+      "app": "{{ctx_id}}",
+      "version": "{{app_v2_version}}",
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Wait for upgrade to apply + log flush",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Read post-upgrade schema_info on node 1 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-newenum-1",
+      "outputs": {
+        "v2_schema_node1": "rpc"
+      }
+    },
+    {
+      "name": "Read post-upgrade schema_info on node 2 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-newenum-2",
+      "outputs": {
+        "v2_schema_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert v2 schema on node 1 (schema_version bump + v1 status preserved)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_node1}}, {\"output\": {\"schema_version\": \"2.0.0\", \"status\": \"Paused\"}})"
+      ]
+    },
+    {
+      "name": "Assert v2 schema on node 2 (same shape, proves upgrade reached node 2)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_node2}}, {\"output\": {\"schema_version\": \"2.0.0\", \"status\": \"Paused\"}})"
+      ]
+    },
+    {
+      "name": "Assert v1 item map preserved through implicit decode (node 1)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_item",
+      "args": {
+        "key": "k1"
+      },
+      "account": "app-migration-newenum-1",
+      "outputs": {
+        "preserved_item": "rpc"
+      }
+    },
+    {
+      "name": "Assert preserved v1 item value",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{preserved_item}}, {\"output\": \"v1\"})"
+      ]
+    },
+    {
+      "name": "v2-only set_status_archived on node 1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_status_archived",
+      "args": {},
+      "account": "app-migration-newenum-1"
+    },
+    {
+      "name": "Read schema_info after archiving on node 1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-newenum-1",
+      "outputs": {
+        "v2_schema_archived_node1": "rpc"
+      }
+    },
+    {
+      "name": "Assert v2-only Archived variant round-trips on node 1",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_archived_node1}}, {\"output\": {\"schema_version\": \"2.0.0\", \"status\": \"Archived\"}})"
+      ]
+    },
+    {
+      "name": "Read schema_info after archiving on node 2",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-newenum-2",
+      "outputs": {
+        "v2_schema_archived_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert v2-only Archived variant reached node 2",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_archived_node2}}, {\"output\": {\"schema_version\": \"2.0.0\", \"status\": \"Archived\"}})"
+      ]
+    },
+    {
+      "name": "Delete subgroup",
+      "type": "team_delete",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-newenum-1"
+    }
+  ]
+}

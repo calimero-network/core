@@ -1,0 +1,200 @@
+{
+  "name": "E2E Account - A Namespace The Account Leaves With A Purge Is Gone From Every Device",
+  "description": "A device leaves a namespace with `?purge=true`: the inviter drops the account, the leaving device and its linked device hold neither the namespace nor its context, a restart brings neither back, and a fresh invitation still admits it.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_api_response x9: v1 admin API",
+    "  login (unknown) x5: checks what the dropped steps did",
+    "  script x1: scripts drive v1 node RPC URLs",
+    "  start_node x1: a user's node going offline has no counterpart in a cluster",
+    "  stop_node x1: a user's node going offline has no counterpart in a cluster",
+    "  wait_for_sync x1: replication is synchronous: a read sees every committed write",
+    "Migration note: v1's leave with a purge was a script (scripts/leave-namespace-",
+    "  purge.sh, dropped) and its checks the nodes' own copies (no namespace, no context,",
+    "  none back after a restart), which have no counterpart: a member holds no copy. Here",
+    "  the account leaves the organization itself (remove_member of oneself), and then",
+    "  reaches the app no more; the inviter no longer lists it and a fresh invite admits it",
+    "  again"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "account-purge-node-1",
+    "account-purge-node-2",
+    "account-purge-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install the app on node-3",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "account-purge-node-3"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-3 creates the namespace",
+      "type": "create_org",
+      "org_name": "Node-3 creates the namespace",
+      "outputs": {
+        "ns": "orgId"
+      },
+      "account": "account-purge-node-3"
+    },
+    {
+      "name": "Node-3 creates a context in it",
+      "type": "deploy",
+      "account": "account-purge-node-3",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-3 creates a context in it",
+      "org": "{{ns}}",
+      "outputs": {
+        "ctx": "contextId",
+        "node3_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Node-3 writes state",
+      "type": "call",
+      "app": "{{ctx}}",
+      "method": "set",
+      "args": {
+        "key": "before_leave",
+        "value": "written by node-3"
+      },
+      "account": "account-purge-node-3",
+      "as_key": "{{node3_key}}"
+    },
+    {
+      "name": "What node-1 speaks as",
+      "type": "whoami",
+      "outputs": {
+        "alice_root": "publicKey"
+      },
+      "account": "account-purge-node-1"
+    },
+    {
+      "name": "Pair node-2 onto Alice's account",
+      "type": "add_device",
+      "account": "account-purge-node-1",
+      "device": "account-purge-node-2"
+    },
+    {
+      "name": "Invite node-1",
+      "type": "invite",
+      "org": "{{ns}}",
+      "role": "member",
+      "account": "account-purge-node-3",
+      "outputs": {
+        "invite": "token"
+      }
+    },
+    {
+      "name": "Node-1 joins",
+      "type": "redeem_invite",
+      "token": "{{invite}}",
+      "account": "account-purge-node-1"
+    },
+    {
+      "type": "whoami",
+      "account": "account-purge-node-1",
+      "outputs": {
+        "alice_account": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 joins the context",
+      "type": "whoami",
+      "account": "account-purge-node-1",
+      "outputs": {
+        "node1_key": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 reads node-3's state",
+      "type": "call",
+      "app": "{{ctx}}",
+      "method": "get",
+      "args": {
+        "key": "before_leave"
+      },
+      "account": "account-purge-node-1",
+      "as_key": "{{node1_key}}",
+      "outputs": {
+        "read_before": "rpc"
+      }
+    },
+    {
+      "name": "The state reached node-1",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{read_before}}, {\"output\": \"written by node-3\"})"
+      ]
+    },
+    {
+      "name": "Node-1 leaves with a purge",
+      "type": "remove_member",
+      "org": "{{ns}}",
+      "member": "account-purge-node-1",
+      "account": "account-purge-node-1"
+    },
+    {
+      "name": "Node-1 no longer reaches the context",
+      "type": "call",
+      "app": "{{ctx}}",
+      "method": "get",
+      "args": {
+        "key": "before_leave"
+      },
+      "account": "account-purge-node-1",
+      "expected_error": "NOT_FOUND"
+    },
+    {
+      "name": "List node-3's members after the leave",
+      "type": "team_list",
+      "org": "{{ns}}",
+      "account": "account-purge-node-3",
+      "outputs": {
+        "members_after_leave": "members"
+      }
+    },
+    {
+      "name": "Node-3 no longer lists Alice's account",
+      "type": "assert",
+      "statements": [
+        "not_contains({{members_after_leave}}, {{alice_account}})"
+      ]
+    },
+    {
+      "name": "Let the start-up sweeps run",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Invite node-1 again",
+      "type": "invite",
+      "org": "{{ns}}",
+      "role": "member",
+      "account": "account-purge-node-3",
+      "outputs": {
+        "invite_again": "token"
+      }
+    },
+    {
+      "name": "Node-1 joins again",
+      "type": "redeem_invite",
+      "token": "{{invite_again}}",
+      "account": "account-purge-node-1"
+    }
+  ]
+}

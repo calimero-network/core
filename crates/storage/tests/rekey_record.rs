@@ -117,8 +117,8 @@ macro_rules! team_app {
         }
         impl TeamApp for $app {
             fn record_win(&mut self, team: &str) -> app::Result<()> {
-                // `app::Result` + `?`, exactly as real apps write methods (see
-                // apps/team-metrics-custom). The `entry().or_default()` handle is
+                // `app::Result` + `?`, exactly as real apps write methods (as
+                // v1's team-metrics app did). The `entry().or_default()` handle is
                 // write-back-guarded (core#2576): the increment persists when the
                 // guard drops — no explicit re-insert.
                 let mut stats = self.teams.entry(team.to_owned())?.or_default()?;

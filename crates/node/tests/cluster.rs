@@ -960,6 +960,7 @@ async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value
         .result
 }
 
+/// On wasmer, with the fixture `apps/wasmer-fixtures/org-gated` (`org_gated.wasm`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn apps_see_the_callers_organization_role_and_teams() {
     let c = Cluster::start(3).await;

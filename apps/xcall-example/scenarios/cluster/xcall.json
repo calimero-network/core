@@ -1,0 +1,379 @@
+{
+  "name": "XCall Authorization (L1 owning-group · L3 entry-point · L2a provenance)",
+  "description": "End-to-end validation of cross-context-call authorization (closes #2130 / #2137).\nA node-local xcall is gated by three independent layers, all exercised here:\n  * L1 — owning-group boundary: a context may only xcall a target in its OWN\n    owning group. Calls to a target in a different group — a different\n    namespace, or a different subgroup of the same namespace — are denied\n    (fail-closed). Gating on the shared namespace root instead would let any\n    sibling context anywhere in the namespace reach into another subgroup.\n  * L3 — entry points: only methods declared `#[app::xcall]` are reachable\n    via xcall. The non-entry-point `secret` method is denied.\n  * L2a — provenance: `env::xcall_origin()` is set by the node from the\n    calling context and cannot be forged, so a direct call (no origin) to the\n    xcall-only `pong` is rejected by the app.\n\nDenials are observable: the target counter never moves, and the node logs the same \"xcall denied: ...\" line that drives the `XCall` Denied event.\nThree regression scenarios also run at the end:\n  * Self-xcall (C1 -> C1) must COMPLETE, not hang. xcalls are dispatched\n    out-of-band; awaiting them inline re-entered the actor and deadlocked on\n    the source context's execution lock. A reintroduced inline dispatch hangs\n    this step until wait_timeout.\n  * Cross-subgroup xcall (C1 in N's root group -> C4 in subgroup S under N) is\n    DENIED. This is the owning-group boundary in its own right: same\n    namespace, different owning group — the old namespace-root gate allowed\n    it, the owning-group gate denies it.\n  * Depth cap: `relay` xcalls itself on the same context every hop, so an\n    uncapped node would recurse forever. The node bounds the local cascade at\n    MAX_XCALL_DEPTH, so the counter settles at MAX_XCALL_DEPTH + 1 and a\n    depth-limit denial is logged instead of the run spinning to wait_timeout.\n\nSingle node: all contexts are created by node-1, which owns a member of each, so every xcall dispatches locally — the gates are node-local, so one node exercises them fully.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_absent x1: v1 node logs",
+    "  assert_log_present x4: v1 node logs",
+    "  login (unknown) x1: checks what the dropped steps did",
+    "Migration note: v1's owning-group check (an xcall into an app of another subgroup of",
+    "  the same namespace is denied) is dropped: the node's boundary is the organization",
+    "  (docs/src/content/docs/protocol/xcall.mdx, Authorization), so two apps of one",
+    "  organization's teams may call each other. The cross-organization denial (C1 -> C3)",
+    "  and the entry-point and provenance checks stand"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "xcall-authz-1"
+  ],
+  "steps": [
+    {
+      "name": "Install app on Node 1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/xcall_example.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.xcall-example"
+      }
+    },
+    {
+      "name": "Create Namespace N",
+      "type": "create_org",
+      "org_name": "Create Namespace N",
+      "outputs": {
+        "ns_n": "orgId"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Create Context C1 in N",
+      "type": "deploy",
+      "account": "xcall-authz-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/xcall_example.wasm",
+      "app_name": "Create Context C1 in N",
+      "org": "{{ns_n}}",
+      "outputs": {
+        "c1": "contextId",
+        "c1_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Create Context C2 in N",
+      "type": "deploy",
+      "account": "xcall-authz-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/xcall_example.wasm",
+      "app_name": "Create Context C2 in N",
+      "org": "{{ns_n}}",
+      "outputs": {
+        "c2": "contextId",
+        "c2_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Create Namespace M",
+      "type": "create_org",
+      "org_name": "Create Namespace M",
+      "outputs": {
+        "ns_m": "orgId"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Create Context C3 in M",
+      "type": "deploy",
+      "account": "xcall-authz-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/xcall_example.wasm",
+      "app_name": "Create Context C3 in M",
+      "org": "{{ns_m}}",
+      "outputs": {
+        "c3": "contextId",
+        "c3_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "C2 pong counter starts at 0",
+      "type": "call",
+      "app": "{{c2}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c2_before": "result"
+      }
+    },
+    {
+      "name": "Assert C2 counter is 0",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c2_before}}, 0)"
+      ]
+    },
+    {
+      "name": "Ping C1 -> C2 (targets pong, a declared entry point)",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "ping",
+      "args": {
+        "target_context": "{{c2}}"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Wait for xcall dispatch + log flush",
+      "type": "wait",
+      "seconds": 8.0,
+      "message": "Let the post-commit xcall dispatch + target execute, and flush logs"
+    },
+    {
+      "name": "C2 pong counter after allowed xcall",
+      "type": "call",
+      "app": "{{c2}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c2_after": "result"
+      }
+    },
+    {
+      "name": "Assert pong ran (L1 allow + L3 entry-point + L2a origin matched)",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c2_after}}, 1)"
+      ]
+    },
+    {
+      "name": "C3 pong counter starts at 0",
+      "type": "call",
+      "app": "{{c3}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c3_before": "result"
+      }
+    },
+    {
+      "name": "Assert C3 counter is 0",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c3_before}}, 0)"
+      ]
+    },
+    {
+      "name": "Ping C1 -> C3 (cross-namespace, must be denied)",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "ping",
+      "args": {
+        "target_context": "{{c3}}"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Wait for xcall dispatch + log flush",
+      "type": "wait",
+      "seconds": 8.0,
+      "exact": true
+    },
+    {
+      "name": "C3 pong counter after cross-namespace xcall",
+      "type": "call",
+      "app": "{{c3}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c3_after": "result"
+      }
+    },
+    {
+      "name": "Assert pong did NOT run across owning groups (L1 denied)",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c3_after}}, 0)"
+      ]
+    },
+    {
+      "name": "C2 secret counter starts at 0",
+      "type": "call",
+      "app": "{{c2}}",
+      "method": "get_secret_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "secret_before": "result"
+      }
+    },
+    {
+      "name": "Assert secret counter is 0",
+      "type": "json_assert",
+      "statements": [
+        "equal({{secret_before}}, 0)"
+      ]
+    },
+    {
+      "name": "Ping C1 -> C2 targeting 'secret' (not an entry point)",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "ping_secret",
+      "args": {
+        "target_context": "{{c2}}"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Wait for xcall dispatch + log flush",
+      "type": "wait",
+      "seconds": 8.0,
+      "exact": true
+    },
+    {
+      "name": "C2 secret counter after non-entry-point xcall",
+      "type": "call",
+      "app": "{{c2}}",
+      "method": "get_secret_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "secret_after": "result"
+      }
+    },
+    {
+      "name": "Assert secret did NOT run (L3 denied)",
+      "type": "json_assert",
+      "statements": [
+        "equal({{secret_after}}, 0)"
+      ]
+    },
+    {
+      "name": "Direct call to xcall-only pong is rejected (no provenance)",
+      "type": "call",
+      "app": "{{c2}}",
+      "method": "pong",
+      "args": {
+        "from_context": "{{c2}}"
+      },
+      "account": "xcall-authz-1",
+      "expected_failure": true
+    },
+    {
+      "name": "C2 pong counter unchanged after rejected direct call",
+      "type": "call",
+      "app": "{{c2}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c2_final": "result"
+      }
+    },
+    {
+      "name": "Assert pong counter still 1 (direct call did not execute)",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c2_final}}, 1)"
+      ]
+    },
+    {
+      "name": "C1 pong counter starts at 0",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c1_before": "result"
+      }
+    },
+    {
+      "name": "Assert C1 counter is 0",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c1_before}}, 0)"
+      ]
+    },
+    {
+      "name": "Ping C1 -> C1 (self-xcall; pre-fix this deadlocked the actor)",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "ping",
+      "args": {
+        "target_context": "{{c1}}"
+      },
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Wait for self-xcall dispatch + target execute",
+      "type": "wait",
+      "seconds": 8.0
+    },
+    {
+      "name": "C1 pong counter after self-xcall",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "get_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c1_after": "result"
+      }
+    },
+    {
+      "name": "Assert self-xcall completed (pong ran on C1 exactly once; no deadlock/hang)",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c1_after}}, 1)"
+      ]
+    },
+    {
+      "name": "C1 relay counter starts at 0",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "get_relay_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c1_relay_before": "result"
+      }
+    },
+    {
+      "name": "Assert C1 relay counter is 0",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c1_relay_before}}, 0)"
+      ]
+    },
+    {
+      "name": "Kick off the self-recursive relay cascade on C1 (direct call, depth 0)",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "relay",
+      "args": {},
+      "account": "xcall-authz-1"
+    },
+    {
+      "name": "Wait for the depth-capped cascade to fully drain",
+      "type": "wait",
+      "seconds": 40.0
+    },
+    {
+      "name": "C1 relay counter after the cascade",
+      "type": "call",
+      "app": "{{c1}}",
+      "method": "get_relay_counter",
+      "args": {},
+      "account": "xcall-authz-1",
+      "outputs": {
+        "c1_relay_after": "result"
+      }
+    },
+    {
+      "name": "Assert the cascade ran exactly depth+1 hops then stopped",
+      "type": "json_assert",
+      "statements": [
+        "equal({{c1_relay_after}}, 4)"
+      ]
+    }
+  ]
+}

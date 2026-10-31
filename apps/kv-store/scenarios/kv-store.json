@@ -1,0 +1,219 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "updateIfExists",
+  "args": {
+   "key": "k",
+   "value": "v"
+  },
+  "expect": {
+   "ok": false
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "getOrInsert",
+  "args": {
+   "key": "k",
+   "value": "first"
+  },
+  "expect": {
+   "ok": "first"
+  },
+  "events": {
+   "bob": [
+    "Inserted"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "getOrInsert",
+  "args": {
+   "key": "k",
+   "value": "second"
+  },
+  "expect": {
+   "ok": "first"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "updateIfExists",
+  "args": {
+   "key": "k",
+   "value": "v"
+  },
+  "expect": {
+   "ok": true
+  },
+  "events": {
+   "bob": [
+    "Inserted",
+    "Updated"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "getResult",
+  "args": {
+   "key": "k"
+  },
+  "expect": {
+   "ok": "v"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "getResult",
+  "args": {
+   "key": "nope"
+  },
+  "expect": {
+   "error": "NotFound",
+   "fields": {
+    "key": "nope"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "getUnchecked",
+  "args": {
+   "key": "nope"
+  },
+  "expect": {
+   "trap": "Fault"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "remove",
+  "args": {
+   "key": "nope"
+  },
+  "expect": {
+   "ok": null
+  },
+  "events": {
+   "bob": [
+    "Inserted",
+    "Updated"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "j",
+   "value": "w"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "remove",
+  "args": {
+   "key": "k"
+  },
+  "expect": {
+   "ok": "v"
+  },
+  "events": {
+   "bob": [
+    "Inserted",
+    "Updated",
+    "Inserted",
+    "Removed"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "clear",
+  "args": {},
+  "events": {
+   "bob": [
+    "Inserted",
+    "Updated",
+    "Inserted",
+    "Removed",
+    "Cleared"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "0"
+  }
+ },
+ {
+  "as": "gus",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "g",
+   "value": "guest"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "get",
+  "args": {
+   "key": "g"
+  },
+  "expect": {
+   "ok": "guest"
+  }
+ },
+ {
+  "as": "@anonymous",
+  "op": "view",
+  "method": "get",
+  "args": {
+   "key": "g"
+  },
+  "expect": {
+   "refused": "UNAUTHENTICATED"
+  }
+ },
+ {
+  "as": "mallory",
+  "op": "view",
+  "method": "get",
+  "args": {
+   "key": "g"
+  },
+  "expect": {
+   "refused": "NOT_FOUND"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "g"
+  },
+  "expect": {
+   "error": "BadArgs"
+  }
+ }
+]

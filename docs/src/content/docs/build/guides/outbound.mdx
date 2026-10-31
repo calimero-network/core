@@ -204,9 +204,12 @@ name a package, only its publisher can sign it.
 `Err("outbound requests need a node")`, so unit-test the logic around the
 answer by passing the answer in.
 
-End to end, build `merod` with `--features calimero-node/outbound-testing`.
-Its `[outbound.testing]` table, which a release build refuses, answers `.test`
-hosts in-process and takes literal secrets:
+End to end, use a node built with `--features calimero-node/outbound-testing`:
+the scenario runner's in-process nodes are, and so is
+`cargo build -p merod --features calimero-node/outbound-testing`. Its
+`[outbound.testing]` table, which a release build refuses, answers `.test`
+hosts in-process and takes literal secrets. A scenario gives its nodes that
+TOML as `cluster.settings`:
 
 ```toml
 [outbound]
@@ -226,8 +229,13 @@ hosts = ["echo.outbound.test"]
 The echo answers `200` with the request the node sent, as JSON: method, URL,
 path, query, headers, body and the number of secrets filled in. It answers only
 after every gate has passed, and its answer is redacted like any other, so a
-test sees exactly what left the node. `apps/outbound-probe` and its
-`workflows/outbound.yml` cover every gate this way.
+scenario sees exactly what left the node. `apps/outbound-probe` and its
+scenarios (`scenarios/cluster/outbound.json`, and `outbound-off.json` for a
+cluster with outbound off) cover every gate this way:
+
+```bash
+cargo test -p calimero-node --test scenarios -- outbound-probe
+```
 
 ## Where it stops
 

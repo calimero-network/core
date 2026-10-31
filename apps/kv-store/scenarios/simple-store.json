@@ -1,0 +1,65 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "greeting",
+   "value": "hello-world"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "greeting"
+  },
+  "expect": {
+   "ok": "hello-world"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "foo",
+   "value": "bar"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "test",
+   "value": "data"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "entries",
+  "args": {},
+  "expect": {
+   "ok": {
+    "greeting": "hello-world",
+    "foo": "bar",
+    "test": "data"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "3"
+  }
+ }
+]

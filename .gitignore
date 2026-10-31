@@ -39,3 +39,4 @@ tools/cargo-mero/tests/fixtures/*/crates/*/res/
 # Random bytes, 141 MiB at the default tier — regenerated per run, never committed.
 apps/blobs/static/generated/
 
+__pycache__/

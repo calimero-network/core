@@ -1,0 +1,484 @@
+{
+  "name": "Private Data Rust Example",
+  "description": "Private data storage example using the Rust SDK.",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  wait_for_sync x3: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "rust-private-data-1",
+    "rust-private-data-2"
+  ],
+  "steps": [
+    {
+      "name": "Install Private Data Application",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/private_data.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "rust-private-data-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.private-data"
+      }
+    },
+    {
+      "name": "Create Mesh",
+      "type": "create_org",
+      "account": "rust-private-data-1",
+      "org_name": "mesh",
+      "outputs": {
+        "namespace_id": "orgId"
+      }
+    },
+    {
+      "type": "invite",
+      "account": "rust-private-data-1",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "outputs": {
+        "_mesh_invite": "token"
+      }
+    },
+    {
+      "type": "redeem_invite",
+      "account": "rust-private-data-2",
+      "token": "{{_mesh_invite}}"
+    },
+    {
+      "name": "Create Mesh",
+      "type": "deploy",
+      "account": "rust-private-data-1",
+      "org": "{{namespace_id}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/private_data.wasm",
+      "app_name": "Create Mesh",
+      "outputs": {
+        "context_id": "contextId",
+        "member_public_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Node 1 Add Secret",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "add_secret",
+      "args": {
+        "game_id": "game1",
+        "secret": "node1-secret-123"
+      },
+      "account": "rust-private-data-1",
+      "outputs": {
+        "game1_id": "result"
+      }
+    },
+    {
+      "name": "Node 1 Add Another Secret",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "add_secret",
+      "args": {
+        "game_id": "game2",
+        "secret": "node1-secret-456"
+      },
+      "account": "rust-private-data-1"
+    },
+    {
+      "name": "Node 1 Get Own Secrets",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "my_secrets",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_secrets": "result"
+      }
+    },
+    {
+      "name": "Assert Node 1 Has Secrets",
+      "type": "assert",
+      "statements": [
+        "is_set({{node_1_secrets}})"
+      ]
+    },
+    {
+      "name": "Node 1 Get Games",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "games",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_games": "result"
+      }
+    },
+    {
+      "name": "Assert Games Are Visible",
+      "type": "assert",
+      "statements": [
+        "is_set({{node_1_games}})"
+      ]
+    },
+    {
+      "name": "Node 2 Get Games",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "games",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_games": "result"
+      }
+    },
+    {
+      "name": "Assert Node 2 Sees Games",
+      "type": "assert",
+      "statements": [
+        "is_set({{node_2_games}})"
+      ]
+    },
+    {
+      "name": "Node 2 Get Own Secrets",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "my_secrets",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_secrets": "result"
+      }
+    },
+    {
+      "name": "Assert Node 2 Has No Secrets Initially",
+      "type": "assert",
+      "statements": [
+        "is_empty({{node_2_secrets}})"
+      ]
+    },
+    {
+      "name": "Node 2 Add Secret",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "add_secret",
+      "args": {
+        "game_id": "game3",
+        "secret": "node2-secret-789"
+      },
+      "account": "rust-private-data-2"
+    },
+    {
+      "name": "Capture the games map on rust-private-data-2",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "games",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "games_after_node2_add": "result"
+      }
+    },
+    {
+      "name": "Node 1 Get Own Secrets Again",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "my_secrets",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_secrets_again": "result"
+      }
+    },
+    {
+      "name": "Assert Node 1 Secrets Unchanged",
+      "type": "assert",
+      "statements": [
+        "is_set({{node_1_secrets_again}})"
+      ]
+    },
+    {
+      "name": "Node 2 Try To Guess",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "add_guess",
+      "args": {
+        "game_id": "{{game1_id}}",
+        "guess": "wrong-guess"
+      },
+      "account": "rust-private-data-2",
+      "outputs": {
+        "guess_result": "result"
+      }
+    },
+    {
+      "name": "Assert Guess Failed",
+      "type": "assert",
+      "statements": [
+        "{{guess_result}} == False"
+      ]
+    },
+    {
+      "name": "Node 1 Secrets Added Count",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "secrets_added",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_secrets_added": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 1 Counted Both Adds",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_1_secrets_added}}, {\"output\": 2})"
+      ]
+    },
+    {
+      "name": "Node 2 Secrets Added Count",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "secrets_added",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_secrets_added": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 2 Independent Count",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_2_secrets_added}}, {\"output\": 1})"
+      ]
+    },
+    {
+      "name": "Node 2 Attempted Games",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "attempted_games",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_attempted": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 2 Recorded Its Attempt",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_2_attempted}}, {\"output\": [\"{{game1_id}}\"]})"
+      ]
+    },
+    {
+      "name": "Node 1 Attempted Games",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "attempted_games",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_attempted": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 1 Did Not See Node 2 Attempts",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_1_attempted}}, {\"output\": []})"
+      ]
+    },
+    {
+      "name": "Node 2 Guess Count",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "guess_count",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_guess_count": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 2 Logged One Guess",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_2_guess_count}}, {\"output\": 1})"
+      ]
+    },
+    {
+      "name": "Node 1 Guess Count",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "guess_count",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_guess_count": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 1 Logged Zero Guesses",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_1_guess_count}}, {\"output\": 0})"
+      ]
+    },
+    {
+      "name": "Node 1 Enable Remember Last Guess",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "set_remember_last_guess",
+      "args": {
+        "value": true
+      },
+      "account": "rust-private-data-1"
+    },
+    {
+      "name": "Node 1 Read Remember Flag",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "remember_last_guess",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_remember": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 1 Remember Flag On",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_1_remember}}, {\"output\": true})"
+      ]
+    },
+    {
+      "name": "Node 2 Read Remember Flag",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "remember_last_guess",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_remember": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 2 Remember Flag Untouched",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_2_remember}}, {\"output\": false})"
+      ]
+    },
+    {
+      "name": "Node 1 Set A Note",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "set_note",
+      "args": {
+        "game_id": "game1",
+        "note": "my-private-note"
+      },
+      "account": "rust-private-data-1"
+    },
+    {
+      "name": "Node 1 Read Notes",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "notes",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_notes": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 1 Note Round-Trips",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_1_notes}}, {\"output\": {\"game1\": \"my-private-note\"}})"
+      ]
+    },
+    {
+      "name": "Node 2 Read Notes",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "notes",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_notes": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 2 Notes Empty",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_2_notes}}, {\"output\": {}})"
+      ]
+    },
+    {
+      "name": "Node 1 Add Tag Alpha",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "add_tag",
+      "args": {
+        "tag": "alpha"
+      },
+      "account": "rust-private-data-1"
+    },
+    {
+      "name": "Node 1 Add Tag Beta",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "add_tag",
+      "args": {
+        "tag": "beta"
+      },
+      "account": "rust-private-data-1"
+    },
+    {
+      "name": "Node 1 Read Tags",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "tags",
+      "args": {},
+      "account": "rust-private-data-1",
+      "outputs": {
+        "node_1_tags": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 1 Tags",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_1_tags}}, {\"output\": [\"alpha\", \"beta\"]})"
+      ]
+    },
+    {
+      "name": "Node 2 Read Tags",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "tags",
+      "args": {},
+      "account": "rust-private-data-2",
+      "outputs": {
+        "node_2_tags": "rpc"
+      }
+    },
+    {
+      "name": "Assert Node 2 Tags Empty",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node_2_tags}}, {\"output\": []})"
+      ]
+    }
+  ]
+}

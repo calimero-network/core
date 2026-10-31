@@ -1,0 +1,329 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "open",
+  "args": {
+   "id": "t1",
+   "title": "login button misaligned",
+   "labels": [
+    "bug",
+    "ui"
+   ],
+   "createdAt": "10"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "open",
+  "args": {
+   "id": "t2",
+   "title": "crash on empty search",
+   "labels": [
+    "bug"
+   ],
+   "createdAt": "20"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "open",
+  "args": {
+   "id": "t3",
+   "title": "dark mode",
+   "labels": [
+    "feature"
+   ],
+   "createdAt": "30"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "open",
+  "args": {
+   "id": "t1",
+   "title": "again",
+   "labels": [],
+   "createdAt": "1"
+  },
+  "expect": {
+   "error": "Exists",
+   "fields": {
+    "id": "t1"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "listByStatus",
+  "args": {
+   "status": "open",
+   "offset": 0,
+   "limit": 2
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "t3",
+     "title": "dark mode",
+     "status": "open",
+     "assignee": null,
+     "labels": [
+      "feature"
+     ],
+     "createdAt": "30"
+    },
+    {
+     "id": "t2",
+     "title": "crash on empty search",
+     "status": "open",
+     "assignee": null,
+     "labels": [
+      "bug"
+     ],
+     "createdAt": "20"
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "listByStatus",
+  "args": {
+   "status": "open",
+   "offset": 2,
+   "limit": 2
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "t1",
+     "title": "login button misaligned",
+     "status": "open",
+     "assignee": null,
+     "labels": [
+      "bug",
+      "ui"
+     ],
+     "createdAt": "10"
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "statusCounts",
+  "expect": {
+   "ok": [
+    {
+     "status": "open",
+     "count": "3"
+    },
+    {
+     "status": "in_progress",
+     "count": "0"
+    },
+    {
+     "status": "closed",
+     "count": "0"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "statusCounts",
+  "expect": {
+   "ok": [
+    {
+     "status": "open",
+     "count": "3"
+    },
+    {
+     "status": "in_progress",
+     "count": "0"
+    },
+    {
+     "status": "closed",
+     "count": "0"
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "setStatus",
+  "args": {
+   "id": "t2",
+   "status": "closed"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "setStatus",
+  "args": {
+   "id": "t2",
+   "status": "someday"
+  },
+  "expect": {
+   "error": "UnknownStatus",
+   "fields": {
+    "status": "someday"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "setStatus",
+  "args": {
+   "id": "nope",
+   "status": "closed"
+  },
+  "expect": {
+   "error": "NotFound",
+   "fields": {
+    "id": "nope"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "assign",
+  "args": {
+   "id": "t1",
+   "assignee": "alice"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "statusCounts",
+  "expect": {
+   "ok": [
+    {
+     "status": "open",
+     "count": "2"
+    },
+    {
+     "status": "in_progress",
+     "count": "0"
+    },
+    {
+     "status": "closed",
+     "count": "1"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "listByAssignee",
+  "args": {
+   "assignee": "alice"
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "t1",
+     "title": "login button misaligned",
+     "status": "open",
+     "assignee": "alice",
+     "labels": [
+      "bug",
+      "ui"
+     ],
+     "createdAt": "10"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "open",
+  "args": {
+   "id": "t4",
+   "title": "export to csv",
+   "labels": [
+    "feature"
+   ],
+   "createdAt": "40"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "listByLabel",
+  "args": {
+   "label": "feature"
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "t3",
+     "title": "dark mode",
+     "status": "open",
+     "assignee": null,
+     "labels": [
+      "feature"
+     ],
+     "createdAt": "30"
+    },
+    {
+     "id": "t4",
+     "title": "export to csv",
+     "status": "open",
+     "assignee": null,
+     "labels": [
+      "feature"
+     ],
+     "createdAt": "40"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "listCreatedBetween",
+  "args": {
+   "status": "open",
+   "from": "20",
+   "to": "40"
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "t3",
+     "title": "dark mode",
+     "status": "open",
+     "assignee": null,
+     "labels": [
+      "feature"
+     ],
+     "createdAt": "30"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "issueCount",
+  "expect": {
+   "ok": "4"
+  }
+ }
+]

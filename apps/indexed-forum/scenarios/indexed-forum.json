@@ -1,0 +1,520 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "p1",
+   "board": "dev",
+   "title": "borrow checker tips",
+   "body": "",
+   "tags": [
+    "rust",
+    "wasm"
+   ],
+   "createdAt": "10"
+  },
+  "save": "p1"
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "p2",
+   "board": "dev",
+   "title": "async traits at last",
+   "body": "",
+   "tags": [
+    "rust"
+   ],
+   "createdAt": "20"
+  },
+  "save": "p2"
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "p3",
+   "board": "dev",
+   "title": "bundler shootout",
+   "body": "",
+   "tags": [
+    "js"
+   ],
+   "createdAt": "30"
+  },
+  "save": "p3"
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "o1",
+   "board": "ops",
+   "title": "rust in the pager rotation",
+   "body": "",
+   "tags": [
+    "rust"
+   ],
+   "createdAt": "40"
+  },
+  "save": "o1"
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "boardTagFeed",
+  "args": {
+   "board": "dev",
+   "tag": "rust",
+   "offset": 0,
+   "limit": 10
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "$p2",
+     "board": "dev",
+     "author": "@owner",
+     "title": "async traits at last",
+     "body": "",
+     "tags": [
+      "rust"
+     ],
+     "createdAt": "20",
+     "pinned": false,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    },
+    {
+     "id": "$p1",
+     "board": "dev",
+     "author": "@owner",
+     "title": "borrow checker tips",
+     "body": "",
+     "tags": [
+      "rust",
+      "wasm"
+     ],
+     "createdAt": "10",
+     "pinned": false,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "boardStats",
+  "args": {
+   "board": "dev"
+  },
+  "expect": {
+   "ok": {
+    "posts": "3",
+    "pinned": "0"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "boardStats",
+  "args": {
+   "board": "dev"
+  },
+  "expect": {
+   "ok": {
+    "posts": "3",
+    "pinned": "0"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "p5",
+   "board": "dev",
+   "title": "read before posting",
+   "body": "",
+   "tags": [
+    "meta"
+   ],
+   "createdAt": "50"
+  },
+  "save": "p5"
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "pin",
+  "args": {
+   "id": "$p5",
+   "at": "60"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "vote",
+  "args": {
+   "post": "$p1"
+  },
+  "expect": {
+   "ok": "1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "comment",
+  "args": {
+   "post": "$p1",
+   "id": "c1",
+   "body": "clone less and borrow more",
+   "createdAt": "70"
+  },
+  "save": "c1"
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "boardStats",
+  "args": {
+   "board": "dev"
+  },
+  "expect": {
+   "ok": {
+    "posts": "4",
+    "pinned": "1"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "pinned",
+  "args": {
+   "board": "dev"
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "$p5",
+     "board": "dev",
+     "author": "@bob",
+     "title": "read before posting",
+     "body": "",
+     "tags": [
+      "meta"
+     ],
+     "createdAt": "50",
+     "pinned": true,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "vote",
+  "args": {
+   "post": "$p1"
+  },
+  "expect": {
+   "ok": "2"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "comments",
+  "args": {
+   "post": "$p1",
+   "offset": 0,
+   "limit": 10
+  },
+  "expect": {
+   "ok": [
+    {
+     "key": "$c1",
+     "author": "@bob",
+     "body": "clone less and borrow more",
+     "createdAt": "70"
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "pin",
+  "args": {
+   "id": "$p1",
+   "at": "80"
+  },
+  "expect": {
+   "error": "NotAuthor",
+   "fields": {
+    "id": "$p1"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "editComment",
+  "args": {
+   "key": "$c1",
+   "body": "node one was here"
+  },
+  "expect": {
+   "error": "NoComment",
+   "fields": {
+    "key": "$c1"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "comments",
+  "args": {
+   "post": "$p1",
+   "offset": 0,
+   "limit": 10
+  },
+  "expect": {
+   "ok": [
+    {
+     "key": "$c1",
+     "author": "@bob",
+     "body": "clone less and borrow more",
+     "createdAt": "70"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "p6",
+   "board": "dev",
+   "title": "no_std for fun",
+   "body": "",
+   "tags": [
+    "rust"
+   ],
+   "createdAt": "90"
+  },
+  "save": "p6"
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "boardTagFeed",
+  "args": {
+   "board": "dev",
+   "tag": "rust",
+   "offset": 0,
+   "limit": 1
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "$p6",
+     "board": "dev",
+     "author": "@owner",
+     "title": "no_std for fun",
+     "body": "",
+     "tags": [
+      "rust"
+     ],
+     "createdAt": "90",
+     "pinned": false,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "charter",
+  "args": {},
+  "expect": {
+   "ok": "be kind and stay on topic"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "moderators",
+  "args": {},
+  "expect": {
+   "ok": [
+    "@owner"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "createPost",
+  "args": {
+   "id": "spam",
+   "board": "dev",
+   "title": "cheap watches",
+   "body": "",
+   "tags": [],
+   "createdAt": "95"
+  },
+  "save": "spam"
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "moderatePost",
+  "args": {
+   "id": "$p1"
+  },
+  "expect": {
+   "error": "NotModerator",
+   "fields": {
+    "id": "$p1"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "moderatePost",
+  "args": {
+   "id": "$spam"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "boardFeed",
+  "args": {
+   "board": "dev",
+   "offset": 0,
+   "limit": 20
+  },
+  "expect": {
+   "ok": [
+    {
+     "id": "$p6",
+     "board": "dev",
+     "author": "@owner",
+     "title": "no_std for fun",
+     "body": "",
+     "tags": [
+      "rust"
+     ],
+     "createdAt": "90",
+     "pinned": false,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    },
+    {
+     "id": "$p5",
+     "board": "dev",
+     "author": "@bob",
+     "title": "read before posting",
+     "body": "",
+     "tags": [
+      "meta"
+     ],
+     "createdAt": "50",
+     "pinned": true,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    },
+    {
+     "id": "$p3",
+     "board": "dev",
+     "author": "@owner",
+     "title": "bundler shootout",
+     "body": "",
+     "tags": [
+      "js"
+     ],
+     "createdAt": "30",
+     "pinned": false,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    },
+    {
+     "id": "$p2",
+     "board": "dev",
+     "author": "@owner",
+     "title": "async traits at last",
+     "body": "",
+     "tags": [
+      "rust"
+     ],
+     "createdAt": "20",
+     "pinned": false,
+     "votes": "0",
+     "comments": "0",
+     "votedByMe": false
+    },
+    {
+     "id": "$p1",
+     "board": "dev",
+     "author": "@owner",
+     "title": "borrow checker tips",
+     "body": "",
+     "tags": [
+      "rust",
+      "wasm"
+     ],
+     "createdAt": "10",
+     "pinned": false,
+     "votes": "2",
+     "comments": "1",
+     "votedByMe": true
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "getPost",
+  "args": {
+   "id": "$spam"
+  },
+  "expect": {
+   "ok": null
+  }
+ }
+]

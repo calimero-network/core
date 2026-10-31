@@ -17,7 +17,7 @@ changes in the user-interface.
 
 For a bug fix, show it actually works - not just that tests pass:
 
-- **Reproduction**: the exact command / test / merobox scenario that triggers the bug.
+- **Reproduction**: the exact command / test / scenario file that triggers the bug.
 - **Before**: the failing output or log line (the symptom).
 - **After**: the same run now passing, plus the regression test that locks it in.
 

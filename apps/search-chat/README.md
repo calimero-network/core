@@ -53,7 +53,7 @@ host's work included. `scan_search` runs out of the one-billion budget before
 
 ## The scenario
 
-`workflows/search-chat.yml` runs two real nodes and two contexts:
+`scenarios/cluster/search-chat.json` runs two nodes and two apps on an in-process cluster:
 
 1. Node 1 posts; node 2 receives the message by sync, indexes it itself, and
    finds it.
@@ -67,5 +67,5 @@ host's work included. `scan_search` runs out of the one-billion budget before
 ```bash
 cargo mero build
 cargo test -p calimero-context --lib search_tests   # the node-side suite, which builds this app
-merobox bootstrap run workflows/search-chat.yml
+cargo test -p calimero-node --test scenarios -- apps/search-chat/
 ```

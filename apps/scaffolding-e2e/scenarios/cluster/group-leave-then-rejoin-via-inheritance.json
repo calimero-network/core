@@ -1,0 +1,364 @@
+{
+  "name": "E2E KV Store - Voluntary Leave, Then You Must Be Let Back In",
+  "description": "Tests the cycle: voluntary `leave_group` (publishes `MemberLeft`) → self-rejoin via `join_subgroup_inheritance` is REJECTED → admin re-add puts them back in the member list.\nIt stops there on purpose. It does NOT assert that the re-added leaver can write again, because today they cannot — a pre-existing gap in the leave → admin-readd path that has nothing to do with re-entry control, documented at the foot of this file. The write-after-re-add property is already covered by the two kick flows.\nLeaving is not a ban: node-2 can come back. What it cannot do is let ITSELF back in. `MemberLeft` writes a re-entry block, and re-entry has to be an explicit act — a freshly issued invitation, or an admin re-adding you. Inheritance is neither: an Open subgroup admits any parent member holding `CAN_JOIN_OPEN_SUBGROUPS` automatically, so if inheritance could readmit a leaver, walking out and walking back in would be indistinguishable from never having left. The only lever an admin would have left is revoking `CAN_JOIN_OPEN_SUBGROUPS` wholesale — which also bars them from every *other* Open subgroup.\nThe deny-list and the re-entry block are different things and this flow leans on the difference. The deny-list *silences* node-2 (its state deltas are dropped at the receive filter) and is retracted the moment any member row is written. The block *authorizes*, and deliberately survives a member-row write, so the re-join fails instead of quietly succeeding.\nDirect-row prerequisite: the `leave_group` handler at `crates/context/src/handlers/leave_group.rs` requires the leaver to be a *direct* member of the subgroup (an inherited-only member has no row to remove and the handler bails with \"leave the parent group where the membership anchor lives instead\"). So the test admin first adds node-2 via `add_group_members` to give them a direct row. Its inherited path stays fully intact afterwards — node-2 still holds `CAN_JOIN_OPEN_SUBGROUPS` and the subgroup is still `Open` — which is what makes the rejection in Phase 5 a tight test of the block itself rather than of some incidental loss of authority.\nDistinct from siblings:\n  * `group-leave-context.yml` covers `leave_context` (local opt-out,\n    no DAG op) → `join_context` rejoin. No `MemberLeft`, no\n    deny-list, no re-entry block, no inheritance.\n  * `group-kick-and-rejoin-keyshare.json` covers `MemberRemoved`\n    (admin kick), where the block is stricter still: no invitation\n    readmits a removed member, only an admin re-add.\n  * This workflow covers `MemberLeft` (self-published), where a\n    fresh invitation WOULD also work — the invitation half of that\n    is unit-tested in `governance-store`; here we exercise the admin\n    re-add at the wire level.\n\nMero-chat user-visible failure mode this guards against: \"I left a public channel and immediately rejoined myself — leaving does not actually do anything.\"\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  wait_for_sync x4: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "leave-rejoin-node-1",
+    "leave-rejoin-node-2",
+    "leave-rejoin-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-1 creates namespace",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "name": "Invite node-2 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "leave-rejoin-node-1",
+      "outputs": {
+        "invite_node2": "token"
+      }
+    },
+    {
+      "name": "Invite node-3 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "leave-rejoin-node-1",
+      "outputs": {
+        "invite_node3": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node2}}",
+      "account": "leave-rejoin-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "leave-rejoin-node-2",
+      "outputs": {
+        "identity_node2": "publicKey",
+        "account_node2": "publicKey"
+      }
+    },
+    {
+      "name": "Node-3 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node3}}",
+      "account": "leave-rejoin-node-3"
+    },
+    {
+      "type": "whoami",
+      "account": "leave-rejoin-node-3",
+      "outputs": {
+        "identity_node3": "publicKey",
+        "account_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 creates Open subgroup",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "open-channel",
+      "join": "invite",
+      "outputs": {
+        "subgroup_id": "teamId"
+      },
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "name": "Mark subgroup as Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "join": "everyone",
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "name": "Admin adds node-2 and node-3 to subgroup directly",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{identity_node2}}"
+      ],
+      "role": "member",
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "name": "Admin adds node-2 and node-3 to subgroup directly",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{identity_node3}}"
+      ],
+      "role": "member",
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "name": "Node-1 creates context inside Open subgroup",
+      "type": "deploy",
+      "account": "leave-rejoin-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates context inside Open subgroup",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{subgroup_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Wait for MemberAdded + ContextRegistered to propagate",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Node-2 joins context",
+      "type": "whoami",
+      "account": "leave-rejoin-node-2",
+      "outputs": {
+        "node2_key": "publicKey"
+      }
+    },
+    {
+      "name": "Node-3 joins context",
+      "type": "whoami",
+      "account": "leave-rejoin-node-3",
+      "outputs": {
+        "node3_key": "publicKey"
+      }
+    },
+    {
+      "name": "Pre-leave — node-2 writes",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "pre_leave",
+        "value": "node2_msg_before_leave"
+      },
+      "account": "leave-rejoin-node-2",
+      "as_key": "{{node2_key}}"
+    },
+    {
+      "name": "Pre-leave — node-3 reads node-2's write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "pre_leave"
+      },
+      "account": "leave-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "pre_leave_read": "rpc"
+      }
+    },
+    {
+      "name": "Assert pre-leave converged",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{pre_leave_read}}, {\"output\": \"node2_msg_before_leave\"})"
+      ]
+    },
+    {
+      "name": "Node-2 leaves subgroup voluntarily",
+      "type": "team_remove",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "leave-rejoin-node-2"
+      ],
+      "account": "leave-rejoin-node-2"
+    },
+    {
+      "name": "Confirm node-2 absent from subgroup membership",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "leave-rejoin-node-1",
+      "outputs": {
+        "members_after_leave": "members"
+      }
+    },
+    {
+      "name": "Assert node-2 absent after leave",
+      "type": "assert",
+      "statements": [
+        "not_contains({{members_after_leave}}, {{account_node2}})",
+        "contains({{members_after_leave}}, {{account_node3}})"
+      ]
+    },
+    {
+      "name": "Post-leave — node-2 attempts write (must fail or be dropped)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "while_left",
+        "value": "this_must_not_appear"
+      },
+      "account": "leave-rejoin-node-2",
+      "as_key": "{{node2_key}}",
+      "expected_failure": true
+    },
+    {
+      "name": "Drain in-flight gossip before negative-control read",
+      "type": "wait",
+      "seconds": 5.0,
+      "exact": true
+    },
+    {
+      "name": "Negative control — node-3 must NOT see the dropped write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "while_left"
+      },
+      "account": "leave-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "while_left_pre_rejoin": "rpc"
+      }
+    },
+    {
+      "name": "Assert dropped value is genuinely absent on node-3 BEFORE rejoin",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{while_left_pre_rejoin}}, {\"output\": null})"
+      ]
+    },
+    {
+      "name": "Node-2 attempts to re-inherit into the subgroup (must be rejected)",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "leave-rejoin-node-2",
+      "expected_failure": true
+    },
+    {
+      "name": "Confirm subgroup membership after the rejected re-inheritance",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "leave-rejoin-node-1",
+      "outputs": {
+        "members_after_failed_rejoin": "members"
+      }
+    },
+    {
+      "name": "Assert the leaver is still out",
+      "type": "assert",
+      "statements": [
+        "not_contains({{members_after_failed_rejoin}}, {{account_node2}})",
+        "contains({{members_after_failed_rejoin}}, {{account_node3}})"
+      ]
+    },
+    {
+      "name": "Admin (node-1) re-adds node-2 to the subgroup",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{identity_node2}}"
+      ],
+      "role": "member",
+      "account": "leave-rejoin-node-1"
+    },
+    {
+      "name": "Wait for MemberAdded to propagate",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Confirm subgroup membership shape after the re-add",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "leave-rejoin-node-1",
+      "outputs": {
+        "members_after_rejoin": "members"
+      }
+    },
+    {
+      "name": "Assert the re-added leaver is back in the member list",
+      "type": "assert",
+      "statements": [
+        "contains({{members_after_rejoin}}, {{account_node2}})",
+        "contains({{members_after_rejoin}}, {{account_node3}})"
+      ]
+    },
+    {
+      "name": "Post-re-add — node-2 writes",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "post_readd",
+        "value": "node2_msg_after_readd"
+      },
+      "account": "leave-rejoin-node-2",
+      "as_key": "{{node2_key}}"
+    },
+    {
+      "name": "Post-re-add — node-3 reads node-2's write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "post_readd"
+      },
+      "account": "leave-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "post_readd_read": "rpc"
+      }
+    },
+    {
+      "name": "Assert the re-added leaver's write reached node-3",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{post_readd_read}}, {\"output\": \"node2_msg_after_readd\"})"
+      ]
+    }
+  ]
+}

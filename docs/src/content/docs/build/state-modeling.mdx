@@ -50,7 +50,7 @@ question is the shape of the data and how you read it:
 
 Nesting is the lever you compose with: a
 `UnorderedMap<String, LwwRegister<String>>` is "a map where each key is its own
-cell" — the pattern `apps/kv-store` uses. A `UnorderedMap<String, Counter>` is
+cell" — the pattern `apps/wasmer-fixtures/kv-store` uses. A `UnorderedMap<String, Counter>` is
 "a count per key." Each entry is its own entity, so writing one does not rewrite
 the others.
 
@@ -184,7 +184,9 @@ let window = log.range(start.to_be_bytes()..end.to_be_bytes())?;
 
 On a cluster the node keeps no ordered index, so each ordered read sorts the
 entries in memory, `O(n log n)`
-([Storage performance](/build/storage-complexity/)). See `apps/sorted-kv-store`.
+([Storage performance](/build/storage-complexity/)). `apps/sorted-kv-store`
+makes the same ordered reads on the component SDK, where a `Table` keeps its
+records in key order.
 
 ### Per-user data with `UserStorage`
 
@@ -199,7 +201,8 @@ let mine = profiles.get()?;                            // my slot
 let theirs = profiles.get_for_user(&bob_key)?;         // anyone's slot, read-only
 ```
 
-A member cannot overwrite another member's slot: the wrapper refuses the write. See
+A member cannot overwrite another member's slot: the wrapper refuses the write. On
+the component SDK the same rule is a table keyed by the caller's account, as in
 `apps/kv-store-with-user-and-frozen-storage`.
 
 ### An open keyspace with per-entry owners via `AuthoredMap`

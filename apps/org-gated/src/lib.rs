@@ -1,29 +1,56 @@
-//! Notes an organization keeps, gated by the caller's standing in it
-//! (`env::caller_org`): members read, admins write,
-//! and a team's members write that team's note.
+//! Notes an organization keeps, gated by the caller's standing in it (`env::org_role`,
+//! `env::in_team`): members read the pinned note, admins write it, and a team's members
+//! write that team's note. Method names and arguments are the ABI's camelCase ones.
+//!
+//! The v1 SDK version this was ported from is kept as a wasmer-runtime fixture,
+//! `apps/wasmer-fixtures/org-gated`; `apps/v2-fixtures/org-gated` is the node's component
+//! fixture of the same shape. `scenarios/` holds the app-level scenarios (run by
+//! `tests/scenarios.rs`) and `scenarios/cluster/` the one that changes a team mid-run.
 
-use calimero_sdk::abi::AbiType;
-use calimero_sdk::app;
-use calimero_sdk::env::{self, OrgRole};
-use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::{LwwRegister, UnorderedMap};
+use calimero_app_sdk::env::{Caller, OrgRole};
+use calimero_app_sdk::prelude::*;
 
-#[app::state]
+#[derive(Record)]
+#[table(key = "team")]
+pub struct TeamNote {
+    pub team: String,
+    pub text: String,
+}
+
+#[derive(Record)]
+#[table(key = "id")]
+pub struct Pinned {
+    pub id: String,
+    pub text: String,
+}
+
+#[app::state(version = 1)]
 pub struct OrgNotes {
-    /// The organization-wide note.
-    pinned: LwwRegister<String>,
-    /// One note per team id.
-    team_notes: UnorderedMap<String, LwwRegister<String>>,
+    pinned: Table<Pinned>,
+    team_notes: Table<TeamNote>,
+}
+
+#[app::error]
+pub enum Error {
+    MembersOnly,
+    AdminsOnly,
+    TeamOnly,
+}
+
+#[app::event]
+pub enum Event {
+    Announced { text: String },
 }
 
 /// What the node told the app about the caller.
-#[derive(Serialize, AbiType)]
-#[serde(crate = "calimero_sdk::serde")]
+#[derive(serde::Serialize)]
 pub struct Standing {
     pub org: String,
     pub role: String,
     pub teams: Vec<String>,
 }
+
+const PIN: &str = "pinned";
 
 fn role_name(r: OrgRole) -> &'static str {
     match r {
@@ -34,52 +61,97 @@ fn role_name(r: OrgRole) -> &'static str {
     }
 }
 
+/// The calling account, if the caller is one.
+fn account() -> Option<String> {
+    match env::caller() {
+        Caller::Account(a) | Caller::ApiKey { account: a, .. } => Some(a),
+        _ => None,
+    }
+}
+
+/// The caller's role in the app's org; `None` outside one.
+fn role() -> Option<OrgRole> {
+    env::org()?;
+    env::org_role(&account()?)
+}
+
 #[app::logic]
 impl OrgNotes {
     #[app::init]
-    pub fn init() -> OrgNotes {
-        OrgNotes {
-            pinned: LwwRegister::new(String::new()),
-            team_notes: UnorderedMap::new(),
-        }
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
     }
 
-    /// The caller's standing, or `null` outside the app's organization.
-    pub fn whoami(&self) -> app::Result<Option<Standing>> {
-        Ok(env::caller_org().map(|o| Standing {
-            org: o.org,
-            role: role_name(o.role).to_owned(),
-            teams: o.teams,
+    /// The caller's standing, or `null` outside the app's organization. The node does not
+    /// list a caller's teams, so the caller names `candidates` and gets those it is in.
+    #[app::view]
+    pub fn whoami(&self, candidates: Option<Vec<String>>) -> app::Result<Option<Standing>> {
+        let (Some(org), Some(me), Some(role)) = (env::org(), account(), role()) else {
+            return Ok(None);
+        };
+        let teams = candidates
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| env::in_team(&me, t))
+            .collect();
+        Ok(Some(Standing {
+            org,
+            role: role_name(role).to_owned(),
+            teams,
         }))
     }
 
+    /// The caller's role as the app sees it (`guest`, `member`, `admin`, `owner`), or `null`
+    /// outside the app's organization: `whoami` without the org id, which a scenario cannot
+    /// know in advance.
+    #[app::view]
+    pub fn role(&self) -> app::Result<Option<String>> {
+        Ok(role().map(|r| role_name(r).to_owned()))
+    }
+
     /// The organization-wide note. Members and above.
+    #[app::view]
     pub fn pinned(&self) -> app::Result<String> {
-        if !env::caller_org().is_some_and(|o| o.role >= OrgRole::Member) {
-            app::bail!("members only");
+        if !role().is_some_and(|r| r >= OrgRole::Member) {
+            return Err(Error::MembersOnly.into());
         }
-        Ok(self.pinned.get().clone())
+        Ok(self.pinned.get(PIN)?.map(|p| p.text).unwrap_or_default())
     }
 
-    /// Replace the organization-wide note. Admins and owners only.
+    /// Replaces the organization-wide note. Admins and owners only.
     pub fn set_pinned(&mut self, text: String) -> app::Result<()> {
-        if !env::caller_org().is_some_and(|o| o.role >= OrgRole::Admin) {
-            app::bail!("admins only");
+        if !role().is_some_and(|r| r >= OrgRole::Admin) {
+            return Err(Error::AdminsOnly.into());
         }
-        self.pinned.set(text);
+        self.pinned.upsert(Pinned {
+            id: PIN.to_owned(),
+            text,
+        })?;
         Ok(())
     }
 
-    /// Replace `team`'s note. Members of that team only.
+    /// Tells the organization's members `text` (an `Org` audience event). Members and above.
+    pub fn announce(&mut self, text: String) -> app::Result<()> {
+        if !role().is_some_and(|r| r >= OrgRole::Member) {
+            return Err(Error::MembersOnly.into());
+        }
+        env::emit(Event::Announced { text }, Audience::Org)?;
+        Ok(())
+    }
+
+    /// Replaces `team`'s note. Members of that team only.
     pub fn set_team_note(&mut self, team: String, text: String) -> app::Result<()> {
-        if !env::caller_org().is_some_and(|o| o.in_team(&team)) {
-            app::bail!("members of that team only");
+        let allowed = env::org().is_some() && account().is_some_and(|a| env::in_team(&a, &team));
+        if !allowed {
+            return Err(Error::TeamOnly.into());
         }
-        drop(self.team_notes.insert(team, LwwRegister::new(text))?);
+        self.team_notes.upsert(TeamNote { team, text })?;
         Ok(())
     }
 
+    /// `team`'s note, or `null`.
+    #[app::view]
     pub fn team_note(&self, team: String) -> app::Result<Option<String>> {
-        Ok(self.team_notes.get(&team)?.map(|r| r.get().clone()))
+        Ok(self.team_notes.get(&team)?.map(|n| n.text))
     }
 }

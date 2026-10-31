@@ -1,0 +1,352 @@
+{
+  "name": "Blob Cross-Node Size Sweep",
+  "description": "Cross-node blob transfer at increasing sizes, asserting the received BYTES (size + sha256) each time. Companion to blob-cross-node-transfer.json, which covers correctness on small fixtures; this one covers length — where a chunked transfer actually breaks.\nSIZES: 1, 5, 10, 50, 100 and 250 MiB. CHUNK_SIZE is 1 MiB, so 1 MiB is the only size that does not walk the chunk graph and every larger one exercises the streaming path at a different chunk count (5 → 250 chunks).\nTHE 500 MiB CEILING: MAX_BLOB_SIZE_BYTES is 500 MiB (crates/network/src/handlers/commands/request_blob.rs). The sweep tops out at 250 MiB — comfortably under it — because a transfer ABOVE the ceiling is REFUSED BY DESIGN (\"Blob exceeds maximum allowed size of 524288000 bytes\"). If you want that boundary covered, assert the refusal with `expected_failure: true`; do not assert a success.\nFIXTURES: generated, not committed — run ./scripts/gen-blob-fixtures.sh first (416 MiB, the default tier matches this sweep). They are random bytes on purpose: blobs are content-addressed, so a predictable fixture would already exist on the fetching node and the network path under test would be skipped entirely. For a heavier local sweep, set BLOB_FIXTURE_SIZES_MIB and add steps to match.\nRUN IT LOCALLY WITH --e2e-mode. That flag makes merobox clear the public devnet bootstrap list `merod init` writes. Without it the container keeps dialing unreachable public peers, the Kademlia provider lookup burns its rounds on them, and fetches fail `Blob query failed: Timeout` at seemingly arbitrary sizes — a harness artifact, not a blob defect. Note that is a DIFFERENT failure from `NotFound { closest_peers: [] }`, which means the lookup resolved and had nobody to ask:\n\n  cd apps/blobs && ./scripts/gen-blob-fixtures.sh\n  cargo test -p calimero-node --test scenarios -- apps/blobs/scenarios/cluster/blob-cross-node-sizes.json\n\nPass `--image merod:local` to test an unreleased fix: the image pinned below is `merod:edge`, built from MASTER, so a fix on your own branch is not in it. CI builds merod:local from the PR and does exactly this.\nWHY THE KAD PRECONDITION: blob bytes ride a Kademlia provider lookup, not gossipsub. Until #3326 seeded kad from identify-discovered peers, a two-node fleet with no bootstrap node left node 2's routing table empty — every fetch failed `NotFound { closest_peers: [] }` with `requests: 0` while gossipsub and CRDT state replicated fine. The RoutingUpdated assertions below fail loudly on that specific regression instead of letting it surface as a mystery timeout.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_absent x1: v1 node logs",
+    "  assert_log_present x3: v1 node logs",
+    "  download_blob (a node-local miss) x6: checks what the dropped steps did",
+    "  login (unknown) x2: checks what the dropped steps did",
+    "  wait_for_sync x6: replication is synchronous: a read sees every committed write",
+    "Migration note: the node's ceiling for one blob is 47 MiB, not v1's 500 MiB (a blob",
+    "  reaches the other nodes base64-encoded in one sealed request:",
+    "  docs/src/content/docs/protocol/limits.mdx): the sweep's 50, 100 and 250 MiB uploads",
+    "  are refused (the 50 MiB one naming the blob limit, the 100 and 250 MiB ones the",
+    "  sealed channel's 64 MiB), as v1's sweep stopped below its ceiling. A 40",
+    "  MiB transfer (apps/blobs/scripts/gen-blob-fixtures.sh) takes the place of the",
+    "  largest size that still fits"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "rust-blob-size-1",
+    "rust-blob-size-2"
+  ],
+  "steps": [
+    {
+      "name": "Install Rust blobs app on inviter",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "rust-blob-size-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.blobs"
+      }
+    },
+    {
+      "name": "Create Mesh",
+      "type": "create_org",
+      "account": "rust-blob-size-1",
+      "org_name": "mesh",
+      "outputs": {
+        "namespace_id": "orgId"
+      }
+    },
+    {
+      "type": "invite",
+      "account": "rust-blob-size-1",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "outputs": {
+        "_mesh_invite": "token"
+      }
+    },
+    {
+      "type": "redeem_invite",
+      "account": "rust-blob-size-2",
+      "token": "{{_mesh_invite}}"
+    },
+    {
+      "name": "Create Mesh",
+      "type": "deploy",
+      "account": "rust-blob-size-1",
+      "org": "{{namespace_id}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm",
+      "app_name": "Create Mesh",
+      "outputs": {
+        "context_id": "contextId"
+      }
+    },
+    {
+      "name": "Assert the mesh came up",
+      "type": "assert",
+      "statements": [
+        "is_set({{context_id}})"
+      ]
+    },
+    {
+      "name": "Upload 1 MiB on node 1",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-1mib.bin",
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "blob_1": "blob_id",
+        "size_1": "size"
+      }
+    },
+    {
+      "name": "Assert the 1 MiB upload is the expected length",
+      "type": "assert",
+      "statements": [
+        "{{size_1}} == 1048576"
+      ]
+    },
+    {
+      "name": "Read the 1 MiB blob locally on node 1",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_1}}",
+      "expected_size": 1048576,
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "src_sha_1": "sha256"
+      }
+    },
+    {
+      "name": "Let the 1 MiB announce reach the DHT",
+      "type": "wait",
+      "seconds": 20.0
+    },
+    {
+      "name": "Node 2 fetches the 1 MiB blob over the network",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_1}}",
+      "expected_size": 1048576,
+      "expected_sha256": "{{src_sha_1}}",
+      "account": "rust-blob-size-2",
+      "outputs": {
+        "dst_sha_1": "sha256"
+      }
+    },
+    {
+      "name": "Assert the 1 MiB transfer was byte-exact",
+      "type": "assert",
+      "statements": [
+        "equal({{dst_sha_1}}, {{src_sha_1}})"
+      ]
+    },
+    {
+      "name": "Upload 5 MiB on node 1",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-5mib.bin",
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "blob_5": "blob_id",
+        "size_5": "size"
+      }
+    },
+    {
+      "name": "Assert the 5 MiB upload is the expected length",
+      "type": "assert",
+      "statements": [
+        "{{size_5}} == 5242880"
+      ]
+    },
+    {
+      "name": "Read the 5 MiB blob locally on node 1",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_5}}",
+      "expected_size": 5242880,
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "src_sha_5": "sha256"
+      }
+    },
+    {
+      "name": "Let the 5 MiB announce reach the DHT",
+      "type": "wait",
+      "seconds": 20.0
+    },
+    {
+      "name": "Node 2 fetches the 5 MiB blob over the network",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_5}}",
+      "expected_size": 5242880,
+      "expected_sha256": "{{src_sha_5}}",
+      "account": "rust-blob-size-2",
+      "outputs": {
+        "dst_sha_5": "sha256"
+      }
+    },
+    {
+      "name": "Assert the 5 MiB transfer was byte-exact",
+      "type": "assert",
+      "statements": [
+        "equal({{dst_sha_5}}, {{src_sha_5}})"
+      ]
+    },
+    {
+      "name": "Upload 10 MiB on node 1",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-10mib.bin",
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "blob_10": "blob_id",
+        "size_10": "size"
+      }
+    },
+    {
+      "name": "Assert the 10 MiB upload is the expected length",
+      "type": "assert",
+      "statements": [
+        "{{size_10}} == 10485760"
+      ]
+    },
+    {
+      "name": "Read the 10 MiB blob locally on node 1",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_10}}",
+      "expected_size": 10485760,
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "src_sha_10": "sha256"
+      }
+    },
+    {
+      "name": "Let the 10 MiB announce reach the DHT",
+      "type": "wait",
+      "seconds": 20.0
+    },
+    {
+      "name": "Node 2 fetches the 10 MiB blob over the network",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_10}}",
+      "expected_size": 10485760,
+      "expected_sha256": "{{src_sha_10}}",
+      "account": "rust-blob-size-2",
+      "outputs": {
+        "dst_sha_10": "sha256"
+      }
+    },
+    {
+      "name": "Assert the 10 MiB transfer was byte-exact",
+      "type": "assert",
+      "statements": [
+        "equal({{dst_sha_10}}, {{src_sha_10}})"
+      ]
+    },
+    {
+      "name": "Upload 40 MiB on node 1",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-40mib.bin",
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "blob_40": "blob_id",
+        "size_40": "size"
+      }
+    },
+    {
+      "name": "Assert the 40 MiB upload is the expected length",
+      "type": "assert",
+      "statements": [
+        "{{size_40}} == 41943040"
+      ]
+    },
+    {
+      "name": "Read the 40 MiB blob locally on node 1",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_40}}",
+      "expected_size": 41943040,
+      "account": "rust-blob-size-1",
+      "outputs": {
+        "src_sha_40": "sha256"
+      }
+    },
+    {
+      "name": "Let the 40 MiB announce reach the DHT",
+      "type": "wait",
+      "seconds": 20.0
+    },
+    {
+      "name": "Node 2 fetches the 40 MiB blob over the network",
+      "type": "download_blob",
+      "app": "{{context_id}}",
+      "blob_id": "{{blob_40}}",
+      "expected_size": 41943040,
+      "expected_sha256": "{{src_sha_40}}",
+      "account": "rust-blob-size-2",
+      "outputs": {
+        "dst_sha_40": "sha256"
+      }
+    },
+    {
+      "name": "Assert the 40 MiB transfer was byte-exact",
+      "type": "assert",
+      "statements": [
+        "equal({{dst_sha_40}}, {{src_sha_40}})"
+      ]
+    },
+    {
+      "name": "A 50 MiB upload is over the cluster's blob limit",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-50mib.bin",
+      "account": "rust-blob-size-1",
+      "expected_failure": true,
+      "outputs": {
+        "refused_50": "error"
+      }
+    },
+    {
+      "name": "The 50 MiB refusal names the limit",
+      "type": "assert",
+      "statements": [
+        "contains(\"{{refused_50}}\", \"a blob is limited to 47 MiB\")"
+      ]
+    },
+    {
+      "name": "A 100 MiB upload is over the sealed channel's limit",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-100mib.bin",
+      "account": "rust-blob-size-1",
+      "expected_failure": true,
+      "outputs": {
+        "refused_100": "error"
+      }
+    },
+    {
+      "name": "The 100 MiB refusal is the node's 413 naming the sealed limit",
+      "type": "assert",
+      "statements": [
+        "contains(\"{{refused_100}}\", \"a sealed request is limited to 64 MiB\")"
+      ]
+    },
+    {
+      "name": "A 250 MiB upload is over the sealed channel's limit",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/generated/blob-250mib.bin",
+      "account": "rust-blob-size-1",
+      "expected_failure": true,
+      "outputs": {
+        "refused_250": "error"
+      }
+    },
+    {
+      "name": "The 250 MiB refusal is the node's 413 naming the sealed limit",
+      "type": "assert",
+      "statements": [
+        "contains(\"{{refused_250}}\", \"a sealed request is limited to 64 MiB\")"
+      ]
+    }
+  ]
+}

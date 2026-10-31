@@ -85,12 +85,10 @@ WORKFLOWS = {
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
             "scripts/check-rust-cache-groups.py",
-            "scripts/check-scenario-coverage.py",
-            "scripts/run-workflows.py",
+            "scripts/check-scenario-discovery.py",
             "scripts/check-storage-cost.sh",
             "scripts/check-wasm-size.sh",
             "scripts/tests/check-like-ci.test.sh",
-            "scripts/tests/check-scenario-coverage-test.py",
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
@@ -135,7 +133,7 @@ def cargo_mero_fixtures():
 JOBS = {
     "storage_cost": (lambda: ["tools/storage-cost"], True, ("scripts/check-storage-cost.sh",)),
     "wasm_size": (
-        lambda: ["apps/kv-store", "apps/kv-store-with-handlers", "apps/scaffolding-e2e", "tools/cargo-mero"],
+        lambda: ["apps/wasmer-fixtures/kv-store", "apps/kv-store-with-handlers", "apps/scaffolding-e2e", "tools/cargo-mero"],
         False,
         ("scripts/check-wasm-size.sh", *CARGO_MERO_SETUP),
     ),

@@ -14,10 +14,10 @@ take a name. Every peer accepts the verdict because its signer resolves to
 `AccountId::TEE_AUTHORITY`, and drops any member's attempt to write one.
 
 > **Mock attestation.** A name stays safe from other members only if the verdict
-> comes from a genuine enclave. The workflows here run with mock attestation:
-> the namespace's TEE admission policy sets `acceptMock` (`accept_mock` in the
-> merobox step) and lists the all-zero measurements a mock quote reports, and
-> the authoring policy's `allowedMrtd` does the same. Production needs a real
+> comes from a genuine enclave. The scenarios here run with mock attestation:
+> the cluster's nodes report mock quotes and the cluster is every app's TEE, so
+> no admission or authoring policy is set (v1's workflows set `acceptMock` and
+> the all-zero measurements a mock quote reports). Production needs a real
 > attestation policy: `acceptMock` false, `allowedMrtd` and `allowedRtmr1` to
 > `allowedRtmr3` naming the approved image (or `signedRelease`), the real MRTD
 > in the authoring policy, and a `merod` that does not run with `--mock-tee`.
@@ -46,9 +46,12 @@ Produces `res/name_registry.wasm`.
 
 ## End to end
 
-`workflows/name-registry-contested.yml` admits a mock-TEE replica, shows a claim
-stays pending while the namespace has no TEE authoring policy, then has two
-members on two nodes claim `rose`. Both nodes must name the same owner and
-disagree only on who lost; after the owner lets it go, the other member claims
-it at the next epoch. It needs a `merod` built with `--features
-mock-attestation`; the header of the workflow has the local command.
+`scenarios/cluster/name-registry-contested.json` has two members on two nodes
+claim `rose`. Both nodes must name the same owner and disagree only on who
+lost; after the owner lets it go, the other member claims it at the next epoch.
+v1's first check (a claim staying pending until an authoring policy named the
+enclave) has no counterpart, since a cluster is the TEE from its start.
+
+```bash
+cargo test -p calimero-node --test scenarios -- apps/name-registry/
+```
