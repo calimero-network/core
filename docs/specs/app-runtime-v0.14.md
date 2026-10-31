@@ -564,6 +564,8 @@ Full API for both languages, the client SDK and the test harness: SDK reference
 
 `UnorderedMap`, `SortedMap`, `Vector`, `UnorderedSet`, `SortedSet`, `Counter`, and `FugueText` / `RichText` for collaborative text. All are plain data structures over the ordered key-value store.
 
+In the Rust SDK an `UnorderedMap` reads in key order too (`page`, `range`, `prefix`, `first`, `last`), so it is also the `SortedMap`; `Set<T>` is both sets; `Cell<T>` holds one value, `Frozen<T>` content-addressed write-once values and `PerUser<T>` one value per caller account; `Text` / `RichText` are the Fugue texts. Their key layouts are listed in `crates/app-sdk/AGENTS.md` (encoding contract), which the TypeScript SDK must match.
+
 ### Tables with declared indexes (new, R2)
 
 ```ts

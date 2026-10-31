@@ -99,6 +99,17 @@ pub enum StorageError {
     /// A counter's stored value is negative or not an integer.
     #[error("counter `{0}` does not hold a non-negative integer")]
     BadCounter(String),
+    /// A position past the end of a vector or text.
+    #[error("index {index} is out of bounds for length {len}")]
+    OutOfBounds {
+        /// The position asked for.
+        index: u64,
+        /// The length at the time.
+        len: u64,
+    },
+    /// A text has no character with this id.
+    #[error("no character with id {0}")]
+    UnknownId(u64),
 }
 
 /// A failure of a table operation.

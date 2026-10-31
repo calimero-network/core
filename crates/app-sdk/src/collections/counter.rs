@@ -1,5 +1,6 @@
 //! `Counter`: a non-negative integer at `(name, "n")`.
 
+use crate::app::StateField;
 use crate::encoding::key::{self, KeyPart};
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -10,6 +11,10 @@ use crate::store::{check_key, DefaultStore, Store};
 pub struct Counter<S: Store = DefaultStore> {
     name: String,
     store: S,
+}
+
+impl<S: Store> StateField for Counter<S> {
+    const KIND: &'static str = "counter";
 }
 
 impl<S: Store + Default> Counter<S> {

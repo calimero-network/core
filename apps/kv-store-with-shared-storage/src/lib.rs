@@ -33,8 +33,8 @@ pub struct Entry {
 #[app::state(version = 1)]
 pub struct SharedKv {
     writers: Table<Writer>,
-    /// The guarded value, under the one key `"value"`.
-    value: UnorderedMap<String, String>,
+    /// The guarded value.
+    value: Cell<String>,
     map: Table<Entry>,
 }
 
@@ -84,7 +84,7 @@ impl SharedKv {
     /// Replaces the shared value. Writers of the value only.
     pub fn set_shared(&mut self, value: String) -> app::Result<()> {
         self.require_writer(VALUE)?;
-        self.value.insert(&VALUE.to_owned(), &value)?;
+        self.value.set(&value)?;
         env::emit(Event::SharedSet { value }, Audience::All)?;
         Ok(())
     }
@@ -92,7 +92,7 @@ impl SharedKv {
     /// The shared value; `""` before the first `setShared`.
     #[app::view]
     pub fn get_shared(&self) -> app::Result<String> {
-        Ok(self.value.get(&VALUE.to_owned())?.unwrap_or_default())
+        Ok(self.value.get()?.unwrap_or_default())
     }
 
     /// Sets an entry of the guarded map. Writers of the map only: anyone else gets

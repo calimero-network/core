@@ -2,8 +2,8 @@
 
 A string key-value store shared by everyone the app admits: the component SDK's basic
 example (`calimero-app-sdk`, built for `wasm32-wasip2` into a `calimero:app` component).
-State is one `Table<Entry>` keyed by `key` and a `Counter` of the keys; every change emits
-an event to the app's whole audience.
+State is one `UnorderedMap<String, String>`, which keeps its own count of keys; every change
+emits an event to the app's whole audience.
 
 The wasmer build of the same store, which the node's own tests, the size gate and the
 release's test bundle use, is [`../wasmer-fixtures/kv-store`](../wasmer-fixtures/kv-store).

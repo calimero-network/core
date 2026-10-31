@@ -1,16 +1,18 @@
 # kv-store-with-user-and-frozen-storage
 
 A key-value store on the component SDK (`calimero-app-sdk`) with two more kinds
-of state beside the shared items, each a table plus a rule (v1 used
+of state beside the shared items, each a collection that holds a rule (v1 used
 `UserStorage` and `FrozenStorage`):
 
-- **Per-account values**: `setUserSimple` / `setUserNested` write rows keyed by
-  `env::caller()`'s account and take no account argument, so an account writes
-  only its own. `getUserSimpleFor(userKey)` reads anyone's.
-- **Frozen values**: `addFrozen(value)` stores the value under the hex SHA-256
-  of its borsh encoding (as v1 did, so the hashes are v1's), computed in the
-  guest with `sha2`; nothing ever changes or removes one, and the same content
-  again returns the same hash. `getFrozen(hashHex)` reads it.
+- **Per-account values**: `setUserSimple` writes the caller's own value in a
+  `PerUser<String>` and `setUserNested` a map keyed by `(account, key)`; both
+  take the account from `env::caller()`, never as an argument, so an account
+  writes only its own. `getUserSimpleFor(userKey)` reads anyone's.
+- **Frozen values**: `addFrozen(value)` stores the value in a
+  `Frozen<String, BorshSha256>` under the hex SHA-256 of its borsh encoding (as
+  v1 did, so the hashes are v1's; `BorshSha256` computes it in the guest with
+  `sha2`); nothing ever changes or removes one, and the same content again
+  returns the same hash. `getFrozen(hashHex)` reads it.
 
 Shared items: `set`, `get`, `entries`, `len`, `getResult`, `getUnchecked` (traps
 on a missing key, on purpose), `remove`, `clear`. Every method needs an org

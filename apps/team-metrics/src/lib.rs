@@ -1,7 +1,7 @@
 //! Team metrics: wins, losses, draws and an achievement bitmask per team.
 //!
-//! `TeamStats` is a plain record in a `Table` keyed by team: three counts and `badges`, a
-//! `u64` with one bit per badge, which `award_badge` ORs a bit into.
+//! `TeamStats` is a plain value in a map keyed by team, as in v1: three counts and `badges`,
+//! a `u64` with one bit per badge, which `award_badge` ORs a bit into.
 //!
 //! What no longer exists: v1 shipped this as two apps, one deriving `Mergeable` for a struct
 //! of `Counter`s that storage merged field by field, and one declaring its own merge rule
@@ -15,10 +15,8 @@
 use calimero_app_sdk::prelude::*;
 
 /// One team's statistics.
-#[derive(Record)]
-#[table(key = "team_id")]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct TeamStats {
-    pub team_id: String,
     pub wins: u64,
     pub losses: u64,
     pub draws: u64,
@@ -28,7 +26,7 @@ pub struct TeamStats {
 
 #[app::state(version = 1)]
 pub struct TeamMetricsApp {
-    teams: Table<TeamStats>,
+    teams: UnorderedMap<String, TeamStats>,
 }
 
 #[app::error]
@@ -79,11 +77,10 @@ impl TeamMetricsApp {
         if badge > 63 {
             app::bail!(Error::BadgeOutOfRange { badge });
         }
-        let mut s = self.stats_or_new(team_id)?;
+        let mut s = self.teams.get(&team_id)?.unwrap_or_default();
         s.badges |= 1_u64 << badge;
-        let badges = s.badges;
-        self.teams.upsert(s)?;
-        Ok(badges)
+        let _old = self.teams.insert(&team_id, &s)?;
+        Ok(s.badges)
     }
 
     /// How many badges the team holds.
@@ -123,36 +120,21 @@ impl TeamMetricsApp {
         }
     }
 
-    fn stats_or_new(&self, team_id: String) -> app::Result<TeamStats> {
-        Ok(self.teams.get(&team_id)?.unwrap_or(TeamStats {
-            team_id,
-            wins: 0,
-            losses: 0,
-            draws: 0,
-            badges: 0,
-        }))
-    }
-
     fn record(&mut self, team_id: String, outcome: Outcome) -> app::Result<u64> {
-        let mut s = self.stats_or_new(team_id.clone())?;
-        let (total, event) = match outcome {
-            Outcome::Win => {
-                s.wins += 1;
-                let total = s.wins;
-                (total, MetricsEvent::WinRecorded { team_id, total })
-            }
-            Outcome::Loss => {
-                s.losses += 1;
-                let total = s.losses;
-                (total, MetricsEvent::LossRecorded { team_id, total })
-            }
-            Outcome::Draw => {
-                s.draws += 1;
-                let total = s.draws;
-                (total, MetricsEvent::DrawRecorded { team_id, total })
-            }
+        let mut s = self.teams.get(&team_id)?.unwrap_or_default();
+        let count = match outcome {
+            Outcome::Win => &mut s.wins,
+            Outcome::Loss => &mut s.losses,
+            Outcome::Draw => &mut s.draws,
         };
-        self.teams.upsert(s)?;
+        *count += 1;
+        let total = *count;
+        let _old = self.teams.insert(&team_id, &s)?;
+        let event = match outcome {
+            Outcome::Win => MetricsEvent::WinRecorded { team_id, total },
+            Outcome::Loss => MetricsEvent::LossRecorded { team_id, total },
+            Outcome::Draw => MetricsEvent::DrawRecorded { team_id, total },
+        };
         env::emit(event, Audience::All)?;
         Ok(total)
     }

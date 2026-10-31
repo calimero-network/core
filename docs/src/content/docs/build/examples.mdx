@@ -52,7 +52,7 @@ the source is short enough to read end to end.
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
 | [`kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-shared-storage) | On the component SDK: group-writable state guarded by a writer set kept as table rows, checked on every write, and its rotation. The wasmer `SharedStorage` build is [`wasmer-fixtures/kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/wasmer-fixtures/kv-store-with-shared-storage) | [Permissioned storage](/build/permissioned-storage/) |
-| [`kv-store-with-user-and-frozen-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-user-and-frozen-storage) | On the component SDK: per-account rows keyed by the caller (v1's `UserStorage`) and content-addressed rows hashed in the guest (v1's `FrozenStorage`) | [Permissioned storage](/build/permissioned-storage/) |
+| [`kv-store-with-user-and-frozen-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-user-and-frozen-storage) | On the component SDK: a `PerUser` value keyed by the caller (v1's `UserStorage`) and `Frozen` content-addressed values hashed in the guest (v1's `FrozenStorage`) | [Permissioned storage](/build/permissioned-storage/) |
 | [`components-demo`](https://github.com/calimero-network/core/tree/master/apps/components-demo) | On the component SDK: the three access-control patterns v1 shipped as `Ownable`, `PermissionedStorage` and `AccessControl` (an owned cell, a writer set, admins granting named roles), each a table plus a check against the caller | [Permissioned storage](/build/permissioned-storage/) |
 | [`tee-dice`](https://github.com/calimero-network/core/tree/master/apps/tee-dice) | `TeeOnly` state and an `#[app::tee]` method: a dice roll only an attested TEE can write | [TEE authorship](/protocol/tee-authorship/) |
 | [`name-registry`](https://github.com/calimero-network/core/tree/master/apps/name-registry) | A `Registry` the TEE decides: usernames at most one account owns, a claim resolved by an `#[app::tee]` trigger and a timer sweep, released and re-claimed at the next epoch | [Choosing state](/build/choosing-state/#unique-names-registry) · [TEE authorship](/protocol/tee-authorship/) |
@@ -64,8 +64,8 @@ the source is short enough to read end to end.
 
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
-| [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | On the component SDK: a `Table` read in key order, with range / prefix / pagination / first / last through its cursor | [Collections](/build/collections/) |
-| [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | On the component SDK: an ordered set as a `Table` whose record is the element, with range / prefix / pagination / min / max | [Collections](/build/collections/) |
+| [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | On the component SDK: an `UnorderedMap` read in key order, with range / prefix / pagination / first / last through its cursor | [Collections](/build/collections/) |
+| [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | On the component SDK: an ordered `Set`, with range / prefix / pagination / min / max | [Collections](/build/collections/) |
 | [`indexed-issue-tracker`](https://github.com/calimero-network/core/tree/master/apps/indexed-issue-tracker) | On the component SDK: a `Table` with a compound `(status, createdAt)` index, an assignee index, a label table and maintained counts; list views by status, label and assignee, newest first, without scanning | [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | On the component SDK: tables with compound and optional-field indexes and maintained counts, a tag index as one row per tag, and v1's `Moderated` / `Frozen` / `Authored` policies as explicit checks against `env::caller()` | [Choosing state](/build/choosing-state/) · [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`permissions-showcase`](https://github.com/calimero-network/core/tree/master/apps/permissions-showcase) | On the component SDK: one table per v1 write policy (`Frozen`, `WriteOnce`, `ModeratedOnce`, `Authored`, `ContentAddressed`), each an explicit check against `env::caller()` | [Choosing state](/build/choosing-state/) |
@@ -81,7 +81,7 @@ the source is short enough to read end to end.
 | [`fugue-collab`](https://github.com/calimero-network/core/tree/master/apps/fugue-collab) | A `FugueText` document edited by several members, with anchors and id-carrying events | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`rich-collab`](https://github.com/calimero-network/core/tree/master/apps/rich-collab) | A `RichDocument`: blocks, formatting marks, split and merge, undo | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`nested-crdt-test`](https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test) | Nesting collections inside collection values (maps of maps, vectors of counters) | [Advanced SDK](/build/advanced-sdk/) |
-| [`team-metrics`](https://github.com/calimero-network/core/tree/master/apps/team-metrics) | On the component SDK: per-team counts and a badge bitmask as a plain `Table` record, what v1's `#[derive(Mergeable)]` struct and hand-written merge rule became **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
+| [`team-metrics`](https://github.com/calimero-network/core/tree/master/apps/team-metrics) | On the component SDK: per-team counts and a badge bitmask as a plain map value, what v1's `#[derive(Mergeable)]` struct and hand-written merge rule became **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
 | [`blobs`](https://github.com/calimero-network/core/tree/master/apps/blobs) | Blob storage: hold file metadata + announce blobs to the app **(walkthrough below)** | [Blobs](/build/guides/blobs/) |
 | [`xcall-example`](https://github.com/calimero-network/core/tree/master/apps/xcall-example) | Cross-context calls + the `#[app::xcall]` entry-point gate **(walkthrough below)** | [Cross-context calls](/build/guides/cross-context/) |
 
@@ -111,23 +111,16 @@ The wasmer build of the same store, which the node's own tests run, is
 **State shape** ([`apps/kv-store/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/kv-store/src/lib.rs)):
 
 ```rust
-#[derive(Record)]
-#[table(key = "key")]
-pub struct Entry {
-    pub key: String,
-    pub value: String,
-}
-
 #[app::state(version = 1)]
 pub struct KvStore {
-    entries: Table<Entry>,
-    size: Counter,
+    entries: UnorderedMap<String, String>,
 }
 ```
 
-A `Table` holds records under their key (and any indexes, unique constraints and
-counts the `#[table]` attribute declares); a `Counter` is changed only by adding,
-so two increments never race.
+An `UnorderedMap` holds values under their key in key order and keeps its own
+count of keys, changed only by adding, so `len` is one read. For records with
+indexes, unique constraints and counts, use a `Table` (see the
+[tutorial](/build/tutorial/)).
 
 **Key methods** (ABI names are camelCase; `u64` travels as a decimal string):
 
@@ -233,8 +226,8 @@ appears with two members editing the same app: interleave their
 
 ## team-metrics
 
-A component-SDK app that keeps a `TeamStats` record per team (wins, losses,
-draws and a badge bitmask) and shows what v1's merge code becomes when one Raft
+A component-SDK app that keeps a `TeamStats` value per team in a map (wins,
+losses, draws and a badge bitmask) and shows what v1's merge code becomes when one Raft
 log orders every call. In v1 two apps showed this: one derived `Mergeable` for a
 struct of `Counter`s, the other hand-wrote a merge (`badges |= other.badges`).
 For the v1 SDK's derive and a hand-written impl, see
@@ -243,10 +236,8 @@ For the v1 SDK's derive and a hand-written impl, see
 **State shape** ([`apps/team-metrics/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/team-metrics/src/lib.rs)):
 
 ```rust
-#[derive(Record)]
-#[table(key = "team_id")]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct TeamStats {
-    pub team_id: String,
     pub wins: u64,
     pub losses: u64,
     pub draws: u64,
@@ -256,12 +247,12 @@ pub struct TeamStats {
 
 #[app::state(version = 1)]
 pub struct TeamMetricsApp {
-    teams: Table<TeamStats>,
+    teams: UnorderedMap<String, TeamStats>,
 }
 ```
 
-A record call reads the team's row (or starts one at zero), adds one, and
-upserts it; two members recording a win at once are two entries in the log,
+A record call reads the team's value (or starts one at zero), adds one, and
+writes it back; two members recording a win at once are two entries in the log,
 each adding one, so there is nothing to merge. `award_badge` ORs a bit into the
 current mask, so two concurrent awards both land without a merge rule.
 

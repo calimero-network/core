@@ -185,8 +185,8 @@ let window = log.range(start.to_be_bytes()..end.to_be_bytes())?;
 On a cluster the node keeps no ordered index, so each ordered read sorts the
 entries in memory, `O(n log n)`
 ([Storage performance](/build/storage-complexity/)). `apps/sorted-kv-store`
-makes the same ordered reads on the component SDK, where a `Table` keeps its
-records in key order.
+makes the same ordered reads on the component SDK, where an `UnorderedMap` keeps
+its entries in key order.
 
 ### Per-user data with `UserStorage`
 
@@ -202,8 +202,8 @@ let theirs = profiles.get_for_user(&bob_key)?;         // anyone's slot, read-on
 ```
 
 A member cannot overwrite another member's slot: the wrapper refuses the write. On
-the component SDK the same rule is a table keyed by the caller's account, as in
-`apps/kv-store-with-user-and-frozen-storage`.
+the component SDK the same rule is `PerUser<T>`, keyed by the caller's account, as
+in `apps/kv-store-with-user-and-frozen-storage`.
 
 ### An open keyspace with per-entry owners via `AuthoredMap`
 

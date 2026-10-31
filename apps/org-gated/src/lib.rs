@@ -10,24 +10,12 @@
 use calimero_app_sdk::env::{Caller, OrgRole};
 use calimero_app_sdk::prelude::*;
 
-#[derive(Record)]
-#[table(key = "team")]
-pub struct TeamNote {
-    pub team: String,
-    pub text: String,
-}
-
-#[derive(Record)]
-#[table(key = "id")]
-pub struct Pinned {
-    pub id: String,
-    pub text: String,
-}
-
 #[app::state(version = 1)]
 pub struct OrgNotes {
-    pinned: Table<Pinned>,
-    team_notes: Table<TeamNote>,
+    /// The organization-wide note.
+    pinned: Cell<String>,
+    /// Each team's note, by team.
+    team_notes: UnorderedMap<String, String>,
 }
 
 #[app::error]
@@ -49,8 +37,6 @@ pub struct Standing {
     pub role: String,
     pub teams: Vec<String>,
 }
-
-const PIN: &str = "pinned";
 
 fn role_name(r: OrgRole) -> &'static str {
     match r {
@@ -115,7 +101,7 @@ impl OrgNotes {
         if !role().is_some_and(|r| r >= OrgRole::Member) {
             return Err(Error::MembersOnly.into());
         }
-        Ok(self.pinned.get(PIN)?.map(|p| p.text).unwrap_or_default())
+        Ok(self.pinned.get()?.unwrap_or_default())
     }
 
     /// Replaces the organization-wide note. Admins and owners only.
@@ -123,10 +109,7 @@ impl OrgNotes {
         if !role().is_some_and(|r| r >= OrgRole::Admin) {
             return Err(Error::AdminsOnly.into());
         }
-        self.pinned.upsert(Pinned {
-            id: PIN.to_owned(),
-            text,
-        })?;
+        self.pinned.set(&text)?;
         Ok(())
     }
 
@@ -145,13 +128,13 @@ impl OrgNotes {
         if !allowed {
             return Err(Error::TeamOnly.into());
         }
-        self.team_notes.upsert(TeamNote { team, text })?;
+        let _old = self.team_notes.insert(&team, &text)?;
         Ok(())
     }
 
     /// `team`'s note, or `null`.
     #[app::view]
     pub fn team_note(&self, team: String) -> app::Result<Option<String>> {
-        Ok(self.team_notes.get(&team)?.map(|n| n.text))
+        Ok(self.team_notes.get(&team)?)
     }
 }

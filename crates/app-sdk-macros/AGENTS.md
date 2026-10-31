@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-- `#[app::state(version = N)]` implements `app::AppState`: `load()` builds each field with `<FieldType>::new("<fieldInCamelCase>")` (state holds only handles, so loading reads nothing); `ABI` is `{"version":N}`.
+- `#[app::state(version = N)]` implements `app::AppState`: `load()` builds each field with `<FieldType>::new("<fieldInCamelCase>")` (state holds only handles, so loading reads nothing); `ABI` is `{"fields":{"<fieldInCamelCase>":"<kind>",..},"version":N}`, each kind the field type's `app::StateField::KIND` (`table`, `unorderedMap`, `counter`, `cell`, `set`, `vector`, `frozen`, `perUser`, `text`, `richText`), joined at compile time.
 - `#[app::logic]` on `impl State { .. }` exposes every `pub fn` plus the `#[app::init]` one (private fns stay helpers), strips the method attributes (`init`, `view`, `confirm`, `public(rate = ..)`, `every("<n>s|m|h")`, `allow(system)`, `allow(app = "..")`), implements `__private::Dispatch` (one serde args struct per method, `deny_unknown_fields`), emits the `handle` export (wasm32 only) and the ABI as a `#[link_section = "calimero:abi"]` static assembled at compile time from `<State as AppState>::ABI` and the module's `__CALIMERO_ABI_ERRORS` / `__CALIMERO_ABI_EVENTS`.
 - Compile-time refusals: `every` intervals other than `<n>s|m|h`, `public(rate = ..)` other than `<n>/s|min|h` (n > 0), `init` with any other attribute (`confirm`, `public`, `allow(system)`, `allow(app = ..)`), a `u64`/`i64`/`Vec<u8>` nested in another type (Ruling 27, see `crates/app-sdk/AGENTS.md`), `partition`. `every` implies `allow(system)` (Ruling 26).
 - `#[app::error]` implements `From<E> for AppError` (code = variant name); `#[app::event]` implements `app::AppEvent` (name = variant name). Fields: camelCase keys, tuple fields `"0"`, `"1"`; `u64`/`i64` (and `Option` of them) as decimal strings (D20, Ruling 25).
@@ -18,7 +18,7 @@
 
 Every object's keys are written in sorted order (`types::canonical`, never `serde_json::Map` order), so the bytes do not depend on serde_json's `preserve_order`, which the core workspace unifies in through dcap-qvl; the unit tests turn that feature on to prove it.
 
-`{"abiVersion":1,"world":"calimero:app@0.5.0","state":{"version":N},"methods":{name:{"kind":"init|call|view|timer","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
+`{"abiVersion":1,"world":"calimero:app@0.5.0","state":{"fields":{field:kind},"version":N},"methods":{name:{"kind":"init|call|view|timer","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
 
 ## Rules
 
