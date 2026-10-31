@@ -4666,6 +4666,49 @@ async fn app_run(
     Ok(Json(answer.result))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunsQuery {
+    #[serde(default)]
+    limit: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
+}
+
+/// A page of an app's compute runs, newest first, each as `app_run` shows it, with the cursor of
+/// the next page.
+async fn app_runs(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Query(q): Query<RunsQuery>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::not_found("no such run"));
+    }
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let files = require_file_access(&node, &app, &p).is_ok();
+    let limit = match q.limit {
+        None => Value::Null,
+        Some(l) => json!(l
+            .parse::<u64>()
+            .map_err(|_| { ApiError::bad_request("BAD_LIMIT", "limit is a whole number") })?),
+    };
+    let answer = node
+        .view(&ViewRequest {
+            app_id,
+            method: crate::node::RUN_VIEW.to_owned(),
+            args: json!({ "limit": limit, "before": q.before, "files": files }),
+            caller: p.caller,
+            strong: true,
+            min_index: 0,
+        })
+        .await?;
+    Ok(Json(answer.result))
+}
+
 /// What the caller's account uses, against the cluster's quotas.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
@@ -6209,6 +6252,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/abi", get(app_abi))
+        .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
         .route("/apps/{app}/presence/stream", get(presence_stream))

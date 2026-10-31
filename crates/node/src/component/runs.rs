@@ -377,6 +377,33 @@ impl AppMachine {
         serde_json::from_slice(&raw).ok()
     }
 
+    /// Up to `limit` records, newest start first (ties by run id, descending), all older than the
+    /// `before` key `(start_ts_ms, run)`; the key to continue from when more follow. Reads every
+    /// kept record: at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` rows per page.
+    #[must_use]
+    pub fn runs_page(
+        &self,
+        limit: usize,
+        before: Option<&(u64, String)>,
+    ) -> (Vec<RunRecord>, Option<(u64, String)>) {
+        let head = &self.state.component.head;
+        let mut all: Vec<RunRecord> = head
+            .active_runs
+            .iter()
+            .chain(&head.finished_runs)
+            .filter_map(|run| self.run_record(run))
+            .filter(|r| before.is_none_or(|(ts, run)| (r.start_ts_ms, &r.run) < (*ts, run)))
+            .collect();
+        all.sort_by(|a, b| (b.start_ts_ms, &b.run).cmp(&(a.start_ts_ms, &a.run)));
+        let more = all.len() > limit;
+        all.truncate(limit);
+        let next = all
+            .last()
+            .filter(|_| more)
+            .map(|r| (r.start_ts_ms, r.run.clone()));
+        (all, next)
+    }
+
     /// The ids of the active runs, in order.
     #[must_use]
     pub fn active_runs(&self) -> Vec<String> {

@@ -110,9 +110,11 @@ A cancel is `status: cancelled` with `reason: null`.
 If the result method itself fails, the run keeps its outcome and its outputs stay marked.
 Neither `/intents` nor `/views` reaches a result method, for any caller, and the SDK macro refuses `compute_result` on a public method, so no client can forge an outcome.
 
-`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, and `progress` while it runs.
+`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, its `caps` (`fuel`, `memoryMib`, `wallSecs`), and `progress` while it runs.
 Plaintext sizes and SHA-256 hashes of inputs and outputs are shown only to callers who may list the app's files; others get ids.
 It never returns arguments or keys.
+`GET /apps/{app}/runs?limit=<n>&before=<cursor>` answers `{ runs, next }` with the same objects, newest start first (ties by run id, descending), `limit` 1 to 100 (default 20) and `next` an opaque cursor for `before`, `null` on the last page.
+Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are kept, so the list reaches no further back, and a bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
 
 ## Restarts, cancel and caps
 
