@@ -9,17 +9,15 @@
 
 use core::marker::PhantomData;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use crate::app::StateField;
+use crate::commons::{bounds, read_page};
 use crate::encoding::key::{self, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::{StorageError, TableError};
-use crate::store::{
-    check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH, MAX_SDK_KEY_BYTES,
-};
+use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
 
 /// A named set of fields: an index, a unique constraint or a count.
 pub type FieldSet = (&'static str, &'static [&'static str]);
@@ -44,7 +42,8 @@ pub trait Record: Serialize + DeserializeOwned {
 
 /// The default page size, and the cap on `limit`, of a query.
 pub const DEFAULT_LIMIT: u32 = 100;
-const MAX_LIMIT: u32 = 1000;
+/// The largest page a query returns.
+pub const MAX_LIMIT: u32 = 1000;
 
 /// One page of a query. `next` is an opaque cursor, present when more follow.
 ///
@@ -107,9 +106,6 @@ impl FindOpts {
     }
 }
 
-/// One key-value entry read from the store.
-type Entry = (Vec<u8>, Vec<u8>);
-
 /// Every storage key one record owns, computed from its fields.
 struct Entries {
     record: Vec<u8>,
@@ -123,6 +119,10 @@ pub struct Table<T: Record, S: Store = DefaultStore> {
     name: String,
     store: S,
     _record: PhantomData<fn() -> T>,
+}
+
+impl<T: Record, S: Store> StateField for Table<T, S> {
+    const KIND: &'static str = "table";
 }
 
 impl<T: Record, S: Store + Default> Table<T, S> {
@@ -339,7 +339,7 @@ impl<T: Record, S: Store> Table<T, S> {
             });
         }
         let base = self.prefix("i", &[index], prefix);
-        let (entries, next) = self.read_page(&base, &opts)?;
+        let (entries, next) = read_page(&self.store, &self.encode(&base)?, &opts)?;
         let mut items = Vec::with_capacity(entries.len());
         for (_, record_key) in entries {
             let record = self.read(&record_key)?.ok_or(StorageError::Dangling)?;
@@ -351,7 +351,7 @@ impl<T: Record, S: Store> Table<T, S> {
     /// All records in key order, one page at a time.
     pub fn scan(&self, opts: FindOpts) -> Result<Page<T>, StorageError> {
         let base = self.prefix("r", &[], &[]);
-        let (entries, next) = self.read_page(&base, &opts)?;
+        let (entries, next) = read_page(&self.store, &self.encode(&base)?, &opts)?;
         let items = entries
             .iter()
             .map(|(_, bytes)| value::from_slice(bytes))
@@ -395,61 +395,4 @@ impl<T: Record, S: Store> Table<T, S> {
         };
         u64::try_from(sum).map_err(|_| StorageError::BadCounter(name.into()))
     }
-
-    /// Read up to `limit + 1` entries under `base` and cut the page at `limit`.
-    fn read_page(
-        &self,
-        base: &[KeyPart],
-        opts: &FindOpts,
-    ) -> Result<(Vec<Entry>, Option<String>), StorageError> {
-        let limit = opts.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
-        // Checked first: every bound below adds at most one byte to a key of this length.
-        let encoded_base = self.encode(base)?;
-        if limit == 0 {
-            return Ok((Vec::new(), None));
-        }
-        let (mut start, mut end) = bounds(&encoded_base);
-        if let Some(from) = &opts.from {
-            start = self.encode(&[base, from].concat())?;
-        }
-        if let Some(to) = &opts.to {
-            end = self.encode(&[base, to].concat())?;
-        }
-        if let Some(cursor) = &opts.cursor {
-            let last = URL_SAFE_NO_PAD
-                .decode(cursor)
-                .map_err(|_| StorageError::BadCursor)?;
-            if last.len() > MAX_SDK_KEY_BYTES || !last.starts_with(&encoded_base) {
-                return Err(StorageError::BadCursor);
-            }
-            if opts.reverse {
-                end = last;
-            } else {
-                // The smallest key after `last`.
-                start = [last.as_slice(), &[0x00]].concat();
-            }
-        }
-        let mut cursor = self.store.range(&start, &end, opts.reverse);
-        let mut entries = Vec::with_capacity(limit + 1);
-        while entries.len() <= limit {
-            let want = (limit + 1 - entries.len()).min(MAX_RANGE_BATCH as usize);
-            let batch = cursor.next(want as u32);
-            if batch.is_empty() {
-                break;
-            }
-            entries.extend(batch);
-        }
-        let next = if entries.len() > limit {
-            entries.truncate(limit);
-            entries.last().map(|(k, _)| URL_SAFE_NO_PAD.encode(k))
-        } else {
-            None
-        };
-        Ok((entries, next))
-    }
-}
-
-/// The range covering every key that starts with `prefix`: tags never reach `0xFF`.
-fn bounds(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    (prefix.to_vec(), [prefix, &[0xFF]].concat())
 }

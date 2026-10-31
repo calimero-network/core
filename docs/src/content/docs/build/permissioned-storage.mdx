@@ -181,32 +181,31 @@ impl KvStore {
 ```
 
 The app itself is now on the component SDK (`calimero-app-sdk`), where both
-rules are a table plus a check: a per-account row is keyed by the caller's
-account, so a setter has no way to name anyone else's, and a frozen row is keyed
-by the SHA-256 of its content (hashed in the guest with `sha2`), inserted once
-and never changed:
+rules live in the collection: `PerUser<T>` keys a value by the caller's account,
+so a setter has no way to name anyone else's, and `Frozen<T, H>` keys a value by
+the SHA-256 of its content, inserted once and never changed. The app keeps v1's
+hashes by hashing v1's borsh bytes (`BorshSha256`, a `ContentHash`, computed in
+the guest with `sha2`):
 
 ```rust
-#[derive(Record)]
-#[table(key = "account")]
-pub struct UserValue { pub account: String, pub value: String }
-
-#[derive(Record)]
-#[table(key = "hash")]
-pub struct Frozen { pub hash: String, pub value: String }
+#[app::state(version = 1)]
+pub struct KvStore {
+    items: UnorderedMap<String, String>,
+    user_simple: PerUser<String>,
+    user_nested: UnorderedMap<(String, String), String>, // (account, key)
+    frozen: Frozen<String, BorshSha256>,
+}
 
 pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
-    let account = guards::require_member()?; // the caller; never an argument
-    self.user_simple.upsert(UserValue { account, value })?;
+    guards::require_member()?;
+    let account = self.user_simple.set(&value)?; // the caller's own; never an argument
+    env::emit(Event::UserSimpleSet { account, value }, Audience::Org)?;
     Ok(())
 }
 
 pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
     guards::require_member()?;
-    let hash = content_hash(&value); // hex SHA-256 of v1's borsh bytes
-    if !self.frozen.contains(&hash)? {
-        self.frozen.insert(Frozen { hash: hash.clone(), value })?;
-    }
+    let (hash, _fresh) = self.frozen.insert(&value)?; // the same content stores nothing
     Ok(hash)
 }
 ```

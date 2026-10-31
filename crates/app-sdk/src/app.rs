@@ -40,6 +40,13 @@ pub trait AppState: Sized {
     fn load() -> Self;
 }
 
+/// A table or collection that can be a field of the app state; `#[app::state]` lists each
+/// field's [`StateField::KIND`] under `"fields"` in the ABI's `"state"`.
+pub trait StateField {
+    /// The kind of field, in camelCase: `table`, `unorderedMap`, `counter`, `cell`, ..
+    const KIND: &'static str;
+}
+
 /// An event enum. Implemented by `#[app::event]`.
 pub trait AppEvent {
     /// The event name (the variant name) and its JSON data.

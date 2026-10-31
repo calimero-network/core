@@ -168,7 +168,18 @@ fn abi_lists_every_method_with_its_attributes() {
 
     assert_eq!(abi_json["abiVersion"], 1);
     assert_eq!(abi_json["world"], "calimero:app@0.5.0");
-    assert_eq!(abi_json["state"], json!({ "version": 3 }));
+    assert_eq!(
+        abi_json["state"],
+        json!({
+            "fields": {
+                "blobs": "table",
+                "bookings": "table",
+                "nextId": "counter",
+                "titles": "unorderedMap",
+            },
+            "version": 3,
+        })
+    );
     assert_eq!(
         abi_json["methods"]["book"]["params"],
         json!([["roomId", "string"], ["start", "u64"], ["title", "string"]])

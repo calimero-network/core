@@ -74,7 +74,7 @@ choosing a data structure, a cost and a write rule, not a merge.
   A cluster node keeps no ordered index, so each of these reads loads and sorts
   every entry ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
   `apps/sorted-kv-store` and `apps/sorted-set-store` make the same reads on the
-  component SDK, through a `Table`'s cursor.
+  component SDK, through an `UnorderedMap`'s and a `Set`'s cursor.
 - **`IndexedMap`** — an `UnorderedMap` whose value type declares what it is
   looked up by, so a list view is a query by field. Derive the declaration and
   query by index name:
@@ -397,6 +397,35 @@ what protects the collections nested inside a guarded entry.
   replaces the whole struct. See
   [Writing: the entry is the unit](/build/choosing-state/#writing-the-entry-is-the-unit).
 </Aside>
+
+## On the component SDK
+
+A `calimero:app` component (`calimero-app-sdk`, `use calimero_app_sdk::prelude::*;`)
+has its own collections over the app's ordered key-value store. The app's leader
+applies every write in log order, so they are plain data structures with nothing
+to merge, and each names its keys after its state field. Every read of many rows
+is a page (`FindOpts` in, `Page { items, next }` out, at most 1,000 rows), every
+length is a stored count (one read, never a scan), and `#[app::state]` lists each
+field's kind under `"fields"` in the ABI's `"state"`.
+
+| Type | Replaces (v1) | Operations |
+|------|---------------|------------|
+| `Table<R>` + `#[derive(Record)]` | `IndexedMap` | records with declared indexes, unique constraints and counts: `insert`, `upsert`, `update`, `get`, `find`, `scan`, `count` |
+| `UnorderedMap<K, V>` | `UnorderedMap`, `SortedMap`, `NestedMap` | `get`, `insert` / `remove` (return the old value), `contains`, `len`, `clear`; in key order: `page`, `range`, `prefix`, `starts_with`, `first`, `last`. Tuple keys (`(account, key)`) cover nested maps |
+| `Set<T>` | `UnorderedSet`, `SortedSet` | `insert`, `remove`, `contains`, `len`, `clear`; in order: `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
+| `Vector<T>` | `Vector` | `push`, `get`, `set`, `pop`, `len`, `page`, `clear` |
+| `Cell<T>` | `LwwRegister` | `get`, `set`, `clear` of one value |
+| `Counter` | `Counter` | `add` (never conflicts), `increment`, `get` |
+| `Frozen<T>` | `FrozenStorage` | `insert` returns the hex SHA-256 of the content; the same content again stores nothing; `get(hash)` |
+| `PerUser<T>` | `UserStorage` | `get` / `set` / `remove` of the caller's own value, `get_for(account)` to read anyone's |
+| `Text`, `RichText` | `FugueText`, `RichText` | Fugue text with stable character ids: `insert_after(id, ..)`, `delete_ids`, index helpers, `read`; `RichText` adds formatting marks and `spans` |
+
+Text keeps its CRDT shape on purpose: an editor sends edits typed against a view
+that may be stale, and naming the neighbour's id rather than an index makes an
+insert land where its author meant, without interleaving another user's run.
+`apps/sorted-kv-store` (map ranges), `apps/sorted-set-store` (`Set`),
+`apps/org-gated` (`Cell`) and `apps/kv-store-with-user-and-frozen-storage`
+(`PerUser`, `Frozen`) show them in use.
 
 ## Next steps
 
