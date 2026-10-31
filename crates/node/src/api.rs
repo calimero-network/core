@@ -1930,6 +1930,13 @@ async fn app_get(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let p = principal(&node, &headers).await?;
+    // As in `gate`: an anonymous caller is judged on the cluster's latest
+    // system state too, so an app made private through another node is hidden
+    // here at once (#4723). `principal` already read fresh for a credential.
+    // Read before the record, so the record answered is the fresh one.
+    if p.is_none() {
+        node.sys_fresh().await;
+    }
     let app = node.app(&app_id).await?;
     if let Some(p) = &p {
         p.within(&node, &app)?;
@@ -4239,7 +4246,31 @@ async fn internal_cluster_key(
 #[derive(Deserialize)]
 struct RaftBody {
     group: u64,
+    /// The node the sender meant (`PeerTransport::send`). Absent from a peer
+    /// on a release before it; accepted then, until every peer sends it.
+    #[serde(default)]
+    target: Option<calimero_log::NodeId>,
     rpc: calimero_log::RpcRequest,
+}
+
+/// How often, at most, `internal_raft` warns that it accepted a Raft message
+/// without an addressee: a peer on an earlier release sends one per heartbeat.
+pub const NO_TARGET_WARN_EVERY: Duration = Duration::from_secs(60);
+
+/// Whether a warning about an accepted message without an addressee is due:
+/// true for the first one, then at most once per `NO_TARGET_WARN_EVERY` (one
+/// slot per process, taken with a compare-and-swap, so concurrent messages
+/// warn once between them). The count in between is in
+/// `calimero_raft_misaddressed_total{reason="no_target"}`.
+fn no_target_warning_due() -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = now_secs().max(1);
+    let last = LAST.load(Ordering::Relaxed);
+    (last == 0 || now.saturating_sub(last) >= NO_TARGET_WARN_EVERY.as_secs())
+        && LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
 }
 
 async fn internal_raft(
@@ -4249,6 +4280,39 @@ async fn internal_raft(
     Json(body): Json<RaftBody>,
 ) -> ApiResult {
     let caller = peer(&node, &headers, key).await?;
+    // The addressee, as the sender checks below check the other end: a message
+    // meant for another node (an address now held by another node of this
+    // cluster: a reused port, a node moved or replaced) is refused, never
+    // handled as this node's. A genuine member's vote or append there would
+    // move this node's term or log for a sender that meant someone else.
+    match body.target {
+        Some(target) if target != node.config.node_id => {
+            let _seen =
+                crate::metrics::raft_misaddressed(crate::metrics::RaftAddressee::NotAddressee);
+            return Err(ApiError::new(
+                421,
+                "NOT_ADDRESSEE",
+                &format!(
+                    "this Raft message is for node {target}; this is node {}",
+                    node.config.node_id
+                ),
+            ));
+        }
+        Some(_) => {}
+        // No addressee: a peer on a release before it. Accepted this release,
+        // counted, and warned about at most once per `NO_TARGET_WARN_EVERY`;
+        // the release after refuses it (crates/node/AGENTS.md, "Raft addressee").
+        None => {
+            let seen = crate::metrics::raft_misaddressed(crate::metrics::RaftAddressee::NoTarget);
+            if no_target_warning_due() {
+                warn!(
+                    group = body.group,
+                    seen,
+                    "accepted a Raft message without an addressee (a peer on an earlier release); the release after this one refuses them"
+                );
+            }
+        }
+    }
     // openraft takes the sender an RPC names on trust, and a follower takes
     // an append from any node with a higher term: the sender must be the
     // caller, and a member of the group (F4).
@@ -4629,9 +4693,16 @@ async fn internal_blob_delete(
     let _caller = peer(&node, &headers, key).await?;
     let hash = body["hash"].as_str().unwrap_or_default().to_owned();
     // The node that collects a blob checked that no app marks it; one here
-    // that still does keeps its bytes, whoever asks.
-    if !hosted_holders(&node, &hash).is_empty() {
-        return Err(ApiError::forbidden("an app here still holds that blob"));
+    // that still does keeps its bytes, whoever asks. A mark is judged as the
+    // app's leader holds it: this replica may not have applied the delete
+    // that let the blob go yet, and would keep the bytes for good (nothing
+    // asks again). Unknown counts as held.
+    if let Ok(raw) = <[u8; 32]>::try_from(hex::decode(&hash).unwrap_or_default()) {
+        for app in hosted_holders(&node, &hash) {
+            if node.blob_held_strong(&app, &raw).await.unwrap_or(true) {
+                return Err(ApiError::forbidden("an app here still holds that blob"));
+            }
+        }
     }
     let code = node.sys(|s| {
         s.bundles.contains_key(&hash)
@@ -6437,5 +6508,24 @@ mod tests {
             assert!(!id.starts_with('-'), "{id}");
             assert_eq!(id.len(), 22);
         }
+    }
+
+    /// The warning for a Raft message without an addressee is given once, then
+    /// not again within `NO_TARGET_WARN_EVERY`, however many arrive at once.
+    #[test]
+    fn the_no_target_warning_is_given_at_most_once_a_minute() {
+        let due: usize = std::thread::scope(|s| {
+            let threads: Vec<_> = (0..16)
+                .map(|_| {
+                    s.spawn(|| {
+                        (0..1_000)
+                            .filter(|_| super::no_target_warning_due())
+                            .count()
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap_or(0)).sum()
+        });
+        assert_eq!(due, 1);
     }
 }
