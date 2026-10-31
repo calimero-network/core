@@ -404,3 +404,30 @@ async fn main() -> eyre::Result<()> {
     };
     print(&out)
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    /// A passkey's credential id is base64url and may start with `-`; clap
+    /// must take it as the value, not as a flag.
+    #[test]
+    fn a_credential_id_starting_with_a_dash_is_a_value() {
+        for args in [
+            &[
+                "meroctl",
+                "account",
+                "device",
+                "label",
+                "-7qCMOBQeBL02g",
+                "laptop",
+            ][..],
+            &["meroctl", "account", "device", "revoke", "-7qCMOBQeBL02g"][..],
+        ] {
+            let parsed = Cli::try_parse_from(args);
+            assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
+        }
+    }
+}

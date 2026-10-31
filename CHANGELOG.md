@@ -33,6 +33,9 @@
   asked to drop a blob's bytes kept them while its own replica of the app,
   not yet caught up with the delete, still marked the blob, and nothing asked
   again. It now judges the mark on the app's leader.
+- **`meroctl account device label|revoke` take a credential id that starts
+  with `-`.** Passkey credential ids are base64url, and clap read one starting
+  with `-` as a flag (`unexpected argument '-7' found`).
 
 ## [1.0.0-rc.6] - 2026-10-31
 
