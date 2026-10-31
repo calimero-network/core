@@ -181,3 +181,178 @@ tuple_key!(A);
 tuple_key!(A, B);
 tuple_key!(A, B, C);
 tuple_key!(A, B, C, D);
+
+/// Decode a tuple encoded by [`encode`]; `None` when the bytes are not one.
+pub fn decode(mut bytes: &[u8]) -> Option<Vec<KeyPart>> {
+    let mut parts = Vec::new();
+    while let Some((&tag, rest)) = bytes.split_first() {
+        let (part, rest) = match tag {
+            TAG_NONE => (KeyPart::None, rest),
+            TAG_BOOL => {
+                let (&b, rest) = rest.split_first()?;
+                let b = match b {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                };
+                (KeyPart::Bool(b), rest)
+            }
+            TAG_INT => {
+                let (int, rest) = rest.split_first_chunk::<16>()?;
+                let flipped = u128::from_be_bytes(*int) ^ (1u128 << 127);
+                (KeyPart::Int(flipped as i128), rest)
+            }
+            TAG_STR => {
+                let (raw, rest) = unescaped(rest)?;
+                (KeyPart::Str(String::from_utf8(raw).ok()?), rest)
+            }
+            TAG_BYTES => {
+                let (raw, rest) = unescaped(rest)?;
+                (KeyPart::Bytes(raw), rest)
+            }
+            _ => return None,
+        };
+        parts.push(part);
+        bytes = rest;
+    }
+    Some(parts)
+}
+
+/// The payload of an escaped part and what follows its `0x00 0x00` end.
+fn unescaped(bytes: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        let b = *bytes.get(i)?;
+        if b != 0 {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        match *bytes.get(i + 1)? {
+            0x00 => return Some((out, &bytes[i + 2..])),
+            0xFF => {
+                out.push(0);
+                i += 2;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The encoding of `parts` as a prefix of longer keys: whole parts, except that a last
+/// string or bytes part matches as a prefix of that part (its end marker is dropped).
+pub fn encode_prefix(parts: &[KeyPart]) -> Vec<u8> {
+    let mut out = encode(parts);
+    if matches!(parts.last(), Some(KeyPart::Str(_) | KeyPart::Bytes(_))) {
+        out.truncate(out.len() - 2);
+    }
+    out
+}
+
+/// A value read back from one key part.
+pub trait FromKeyPart: Sized {
+    /// The value of `part`; `None` when the part is of another type or out of range.
+    fn from_key_part(part: &KeyPart) -> Option<Self>;
+}
+
+impl FromKeyPart for KeyPart {
+    fn from_key_part(part: &KeyPart) -> Option<Self> {
+        Some(part.clone())
+    }
+}
+
+impl FromKeyPart for String {
+    fn from_key_part(part: &KeyPart) -> Option<Self> {
+        match part {
+            KeyPart::Str(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl FromKeyPart for bool {
+    fn from_key_part(part: &KeyPart) -> Option<Self> {
+        match part {
+            KeyPart::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+impl FromKeyPart for Vec<u8> {
+    fn from_key_part(part: &KeyPart) -> Option<Self> {
+        match part {
+            KeyPart::Bytes(b) => Some(b.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl FromKeyPart for () {
+    fn from_key_part(part: &KeyPart) -> Option<Self> {
+        matches!(part, KeyPart::None).then_some(())
+    }
+}
+
+impl<T: FromKeyPart> FromKeyPart for Option<T> {
+    fn from_key_part(part: &KeyPart) -> Option<Self> {
+        match part {
+            KeyPart::None => Some(None),
+            other => T::from_key_part(other).map(Some),
+        }
+    }
+}
+
+macro_rules! int_from_key_part {
+    ($($t:ty),*) => {$(
+        impl FromKeyPart for $t {
+            fn from_key_part(part: &KeyPart) -> Option<Self> {
+                match part {
+                    KeyPart::Int(i) => <$t>::try_from(*i).ok(),
+                    _ => None,
+                }
+            }
+        }
+    )*};
+}
+
+int_from_key_part!(u8, u16, u32, u64, i8, i16, i32, i64, i128);
+
+/// A value read back from a whole key tuple: the inverse of [`ToKey`].
+pub trait FromKey: Sized {
+    /// The value of `parts`; `None` when they do not have its shape.
+    fn from_key(parts: &[KeyPart]) -> Option<Self>;
+}
+
+impl<T: FromKeyPart> FromKey for T {
+    fn from_key(parts: &[KeyPart]) -> Option<Self> {
+        match parts {
+            [one] => T::from_key_part(one),
+            _ => None,
+        }
+    }
+}
+
+impl FromKey for Vec<KeyPart> {
+    fn from_key(parts: &[KeyPart]) -> Option<Self> {
+        Some(parts.to_vec())
+    }
+}
+
+macro_rules! tuple_from_key {
+    ($len:literal; $($name:ident),+) => {
+        impl<$($name: FromKeyPart),+> FromKey for ($($name,)+) {
+            #[allow(non_snake_case)]
+            fn from_key(parts: &[KeyPart]) -> Option<Self> {
+                let [$($name),+] = <&[KeyPart; $len]>::try_from(parts).ok()?;
+                Some(($($name::from_key_part($name)?,)+))
+            }
+        }
+    };
+}
+
+tuple_from_key!(1; A);
+tuple_from_key!(2; A, B);
+tuple_from_key!(3; A, B, C);
+tuple_from_key!(4; A, B, C, D);

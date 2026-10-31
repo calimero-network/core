@@ -16,6 +16,7 @@ pub mod bindings;
 
 pub mod app;
 pub mod collections;
+mod commons;
 pub mod encoding;
 pub mod env;
 pub mod error;
@@ -31,8 +32,11 @@ pub mod testing;
 #[path = "private.rs"]
 pub mod __private;
 
-pub use collections::{Counter, UnorderedMap};
-pub use encoding::key::{KeyPart, ToKey, ToKeyPart};
+pub use collections::{
+    CborSha256, Cell, ContentHash, Counter, Frozen, Mark, PerUser, RichText, Set, Span, Text,
+    UnorderedMap, Vector,
+};
+pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
 pub use env::{Audience, Caller, OrgRole};
 pub use error::{AppError, Result, StorageError, TableError};
 pub use store::{MemStore, RangeCursor, Store};
@@ -47,7 +51,8 @@ pub use calimero_app_sdk_macros::Record;
 pub mod prelude {
     pub use crate::app::{self, AppEvent, AppState};
     pub use crate::{
-        env, guards, AppError, Audience, Caller, Counter, FindOpts, KeyPart, Page, Record, Table,
-        ToKeyPart, UnorderedMap,
+        env, guards, AppError, Audience, Caller, Cell, ContentHash, Counter, FindOpts, FromKey,
+        FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText, Set, Span, Table, Text,
+        ToKey, ToKeyPart, UnorderedMap, Vector,
     };
 }

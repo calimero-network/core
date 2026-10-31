@@ -52,13 +52,42 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
         let storage = camel(&ident.to_string());
         quote! { #ident: <#ty>::new(#storage) }
     });
-    let abi = format!("{{\"version\":{version}}}");
+    // `{"fields":{"<name>":"<kind>",..},"version":N}`, keys sorted (see `types::canonical`);
+    // each kind is the field type's `StateField::KIND`, joined at compile time.
+    let mut kinds: Vec<(String, &syn::Type)> = fields
+        .named
+        .iter()
+        .map(|f| {
+            // SAFETY: guaranteed by `Fields::Named`, whose fields all have identifiers.
+            let ident = f.ident.as_ref().expect("named field");
+            (camel(&ident.to_string()), &f.ty)
+        })
+        .collect();
+    kinds.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut parts = vec![quote! { "{\"fields\":{" }];
+    for (i, (field, ty)) in kinds.iter().enumerate() {
+        let open = format!("{}\"{field}\":\"", if i == 0 { "" } else { "," });
+        parts.push(quote! { #open });
+        parts.push(quote! { <#ty as ::calimero_app_sdk::app::StateField>::KIND });
+        parts.push(quote! { "\"" });
+    }
+    let close = format!("}},\"version\":{version}}}");
+    parts.push(quote! { #close });
     Ok(quote! {
         #item
 
         impl ::calimero_app_sdk::app::AppState for #name {
             const VERSION: u32 = #version;
-            const ABI: &'static str = #abi;
+            const ABI: &'static str = {
+                const __PARTS: &[&str] = &[#(#parts),*];
+                const __LEN: usize = ::calimero_app_sdk::__private::abi_len(__PARTS);
+                const __BYTES: [u8; __LEN] =
+                    ::calimero_app_sdk::__private::abi_concat::<__LEN>(__PARTS);
+                match ::core::str::from_utf8(&__BYTES) {
+                    ::core::result::Result::Ok(abi) => abi,
+                    ::core::result::Result::Err(_) => panic!("the state ABI is ASCII"),
+                }
+            };
 
             fn load() -> Self {
                 Self { #(#inits),* }
