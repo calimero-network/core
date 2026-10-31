@@ -1,0 +1,300 @@
+{
+  "name": "E2E Shared Storage - One Granted Account, Two Devices Writing",
+  "description": "The acceptance test for account-keyed writer sets (#3344). A `SharedStorage` writer set names ACCOUNTS, so one grant must cover every device its holder owns — and a signature only ever names a KEY, so the receiver has to resolve that key to an account at the write's causal cut before it can match the set. Everything about that resolution is unit-tested; this is the only thing that proves it over the real wire, where the two nodes hold different amounts of the device-binding history.\nDistinct from `account-device-revoke-lockout`, which proves the same one-account-two-devices story on the MEMBERSHIP plane with plain KV writes. Membership and writer sets are separate gates resolved by separate code: a paired device can be a perfectly good context member and still have every guarded write refused. That is precisely the bug this scenario would have caught — two account spaces, where a node's own writes were refused by every peer — so the planes need separate coverage.\nWhat each phase is load-bearing for:\n\n  1. Three nodes. node-1 is admin and the context creator, so it is the sole\n     initial writer. node-2 is Alice's laptop, a namespace member. node-3 is\n     Alice's phone: DELIBERATELY never invited, never granted, and never named\n     in the writer set. One device per node, because `NodeDeviceIdentity` is\n     keyed per namespace.\n\n  2. node-1 grants Alice's ACCOUNT — one call, `shared_add_writer`. The\n     account has to be read out of node-2 (`my_account`), because an account is\n     derived from a node's root rather than carried on the wire, so a scenario\n     has no other way to learn one.\n\n  3. The laptop writes the shared value and node-1 reads it. Baseline: the\n     grant works for the device that was present when it was made.\n\n  4. The phone is paired onto Alice's account and writes the SAME shared\n     value, with no second grant and no rotation. This is the feature. Two\n     assertions carry it: the phone's `my_account` equals the laptop's — one\n     principal, two devices — and the writer set is byte-identical before and\n     after the phone's write, so nothing was added on its behalf.\n\n     It is also the step that needs the receiver-side resolution: the phone's\n     action is signed by a key that appears in no writer set anywhere. A\n     receiver that resolved the signer from its own identity, or refused a key\n     it could not name, would drop this write — and a receiver that accepted\n     it unresolved would let any key claim any account.\n\n  5. The authored plane, which is the same account gate over a different\n     principal. The phone updates an entry the LAPTOP filed, with no grant of\n     its own: an authored entry's owner is the account, so one person reaches\n     their own note from either machine. The signature still names the phone's\n     key, so this only passes if the receiver resolves that key to Alice's\n     account — the same resolution step 4 needs, on a second plane.\n\n     What stays per device is the per-writer state underneath: an LWW\n     tiebreak, a counter slot, an HLC seed. Moving THOSE onto accounts is what\n     makes two devices of one person clobber each other, and it is a different\n     mistake from this one. Both compile — `AccountId` and `PublicKey` are\n     both 32 bytes.\n\nWhat this does NOT cover (intentionally):\n  * A deferral: a receiver that has not yet folded the binding must retry\n    rather than refuse. Real nodes here settle before every read, so the gap\n    never opens. It is pinned in `calimero-storage`'s\n    `deferred_signer_convergence` tests, which can hold two receivers at\n    different fold depths on purpose.\n  * Revocation of the paired device. That is `account-device-revoke-lockout`'s\n    job, on the membership plane; the writer plane's half is unit-tested in\n    `calimero-op-adapter`.\n\nUser-visible failure mode this guards against: \"I was granted write access, and then my second device got permission denied.\"\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  account_pair output credential (v1 device key) x1: checks what the dropped steps did",
+    "  json_assert statement on a dropped step's output x1: checks what the dropped steps did",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  wait_for_sync x8: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "shared-account-node-1",
+    "shared-account-node-2",
+    "shared-account-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on shared-account-node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "shared-account-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-1 creates the namespace",
+      "type": "create_org",
+      "org_name": "Node-1 creates the namespace",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "shared-account-node-1"
+    },
+    {
+      "name": "Invite node-2 to the namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "shared-account-node-1",
+      "outputs": {
+        "invitation": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins the namespace",
+      "type": "redeem_invite",
+      "token": "{{invitation}}",
+      "account": "shared-account-node-2"
+    },
+    {
+      "name": "Node-1 creates the context",
+      "type": "deploy",
+      "account": "shared-account-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates the context",
+      "org": "{{namespace_id}}",
+      "outputs": {
+        "context_id": "contextId"
+      }
+    },
+    {
+      "name": "Node-2 enrolls a device for a fresh account",
+      "type": "whoami",
+      "outputs": {
+        "enrolled_account": "publicKey",
+        "laptop_device": "passkeyId",
+        "root_key": "publicKey"
+      },
+      "account": "shared-account-node-2"
+    },
+    {
+      "name": "Read Alice's account off her laptop",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "my_account",
+      "args": {},
+      "account": "shared-account-node-2",
+      "outputs": {
+        "alice_account": "result"
+      }
+    },
+    {
+      "name": "Node-1 grants Alice's account as a writer",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_add_writer",
+      "args": {
+        "writer": "{{alice_account}}"
+      },
+      "account": "shared-account-node-1"
+    },
+    {
+      "name": "The granted writer set, as node-1 sees it",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get_writers",
+      "args": {},
+      "account": "shared-account-node-1",
+      "outputs": {
+        "writers_after_grant": "rpc"
+      }
+    },
+    {
+      "name": "Alice's account is a writer",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_is_writer",
+      "args": {
+        "account": "{{alice_account}}"
+      },
+      "account": "shared-account-node-2",
+      "outputs": {
+        "alice_is_writer": "rpc"
+      }
+    },
+    {
+      "name": "The grant landed on both nodes",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{alice_is_writer}}, {\"output\": true})"
+      ]
+    },
+    {
+      "name": "The laptop writes the shared value",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_set",
+      "args": {
+        "value": "from-laptop"
+      },
+      "account": "shared-account-node-2"
+    },
+    {
+      "name": "Node-1 reads the laptop's write",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get",
+      "args": {},
+      "account": "shared-account-node-1",
+      "outputs": {
+        "shared_after_laptop": "rpc"
+      }
+    },
+    {
+      "name": "The granted device's write converged",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{shared_after_laptop}}, {\"output\": \"from-laptop\"})"
+      ]
+    },
+    {
+      "name": "Pair node-3 onto Alice's account",
+      "type": "add_device",
+      "account": "shared-account-node-2",
+      "device": "shared-account-node-3",
+      "outputs": {
+        "key_delivered": "keyDelivered"
+      }
+    },
+    {
+      "name": "The pairing delivered a scope key and minted a credential",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{key_delivered}}, true)"
+      ]
+    },
+    {
+      "name": "Read the account the phone speaks for",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "my_account",
+      "args": {},
+      "account": "shared-account-node-3",
+      "outputs": {
+        "phone_account": "result"
+      }
+    },
+    {
+      "name": "The phone speaks for the same account as the laptop",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{phone_account}}, {{alice_account}})"
+      ]
+    },
+    {
+      "name": "The phone writes the shared value",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_set",
+      "args": {
+        "value": "from-phone"
+      },
+      "account": "shared-account-node-3"
+    },
+    {
+      "name": "Node-1 reads the phone's write",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get",
+      "args": {},
+      "account": "shared-account-node-1",
+      "outputs": {
+        "shared_n1": "rpc"
+      }
+    },
+    {
+      "name": "Node-2 reads the phone's write",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get",
+      "args": {},
+      "account": "shared-account-node-2",
+      "outputs": {
+        "shared_n2": "rpc"
+      }
+    },
+    {
+      "name": "The writer set as node-1 sees it after the phone's write",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get_writers",
+      "args": {},
+      "account": "shared-account-node-1",
+      "outputs": {
+        "writers_final": "rpc"
+      }
+    },
+    {
+      "name": "An ungranted device of a granted account wrote, and converged",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{shared_n1}}, {\"output\": \"from-phone\"})",
+        "json_equal({{shared_n2}}, {\"output\": \"from-phone\"})",
+        "json_equal({{writers_final}}, {{writers_after_grant}})"
+      ]
+    },
+    {
+      "name": "The laptop files an authored entry",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "authored_insert",
+      "args": {
+        "key": "notes",
+        "value": "laptop-wrote-this"
+      },
+      "account": "shared-account-node-2"
+    },
+    {
+      "name": "The phone updates the laptop's authored entry",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "authored_update",
+      "args": {
+        "key": "notes",
+        "value": "phone-wrote-this"
+      },
+      "account": "shared-account-node-3"
+    },
+    {
+      "name": "Node-1 reads the authored entry",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "authored_get",
+      "args": {
+        "key": "notes"
+      },
+      "account": "shared-account-node-1",
+      "outputs": {
+        "authored_n1": "rpc"
+      }
+    },
+    {
+      "name": "The second device's update landed, and propagated",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{authored_n1}}, {\"output\": \"phone-wrote-this\"})"
+      ]
+    },
+    {
+      "name": "The two devices authored as one account but distinct replicas",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{phone_account}}, {{alice_account}})",
+        "json_equal({{alice_account}}, {{enrolled_account}})"
+      ]
+    }
+  ]
+}

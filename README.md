@@ -53,7 +53,6 @@ The docs live in [`docs/`](docs/) (Astro Starlight).
 
 ## Related Repositories
 
-- [calimero-network/merobox](https://github.com/calimero-network/merobox) -- scenario testing (`cloud-v2` backend)
 - [calimero-network/mero-tee](https://github.com/calimero-network/mero-tee) -- TEE images, mero-kms, signed releases
 - [calimero-network/mdma](https://github.com/calimero-network/mdma) -- Calimero's cluster manager (VMs, placement, the rebalancer)
 - [calimero-network/mero-js](https://github.com/calimero-network/mero-js) -- JavaScript/TypeScript client

@@ -244,7 +244,7 @@ The bundle's `abi.json` sidecar is the same manifest, pretty-printed.
 ## Links
 
 - Calimero core documentation: <https://calimero-network.github.io/core/>
-- merobox (networked end-to-end testing with real nodes): <https://github.com/calimero-network/merobox>
+- Testing an app (unit tests, scenario files, a cluster): <https://calimero-network.github.io/core/build/testing/>
 - Signing guide: [SIGNING.md](SIGNING.md)
 
 ## Repository layout

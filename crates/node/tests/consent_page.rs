@@ -882,14 +882,18 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
 async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_releases() {
     const APPROVE_RELEASES: u32 = 1 << 10;
     let c = Cluster::start(3).await;
-    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, _) = signed_up(&c, 0, "bob").await;
     let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut alice_key,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -927,15 +931,20 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     // Granted, then revoked while the page is open: refused before the passkey.
     let caps = format!("orgs/{org}/capabilities");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &caps,
             json!({ "account": bob_id, "capabilities": APPROVE_RELEASES }),
+            &mut alice_key,
         )
         .await
         .unwrap();
     let made = bob.post("consent/requests", ask.clone()).await.unwrap();
     let _ok = alice
-        .post(&caps, json!({ "account": bob_id, "capabilities": 0 }))
+        .post_confirmed(
+            &caps,
+            json!({ "account": bob_id, "capabilities": 0 }),
+            &mut alice_key,
+        )
         .await
         .unwrap();
     let (code, refused) = Page::new(made["url"].as_str().unwrap())

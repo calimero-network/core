@@ -1,7 +1,7 @@
 # Outbound Probe
 
 The E2E fixture for outbound HTTPS requests (`env::http_request`). Each method
-asks for a request from a different kind of run, so the `outbound` merobox
+asks for a request from a different kind of run, so the `outbound` cluster
 scenario can show every gate the node puts in front of one:
 
 - `probe(path, body)`: a write that POSTs under the one declared prefix,
@@ -15,5 +15,5 @@ scenario can show every gate the node puts in front of one:
 
 `.test` hosts exist only in the test build (`merod --features
 mock-attestation`), whose `[context.outbound.testing]` answers them in-process
-with an echo of the request the node sent. See `workflows/outbound.yml`, and the
+with an echo of the request the node sent. See `scenarios/cluster/outbound.json` (and `outbound-off.json`), and the
 guide `docs/src/content/docs/build/guides/outbound.mdx`.

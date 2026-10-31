@@ -386,9 +386,11 @@ cargo mero build
 
 This will compile the contract to WebAssembly.
 
-## Workflow Testing
+## Scenario Testing
 
-The `workflows/blobs-example.yml` file provides end-to-end testing that demonstrates:
+The cluster scenario `scenarios/cluster/blobs-example.json` (run by
+`cargo test -p calimero-node --test scenarios -- apps/blobs/`, with the other
+blob scenarios beside it) provides end-to-end testing that demonstrates:
 
 ### 1. Blob API Integration
 

@@ -78,6 +78,11 @@ pub enum Pending {
         nonce: String,
         account: String,
         expires: u64,
+        /// What the retry needs that is not signed and never logged (a new
+        /// API key, an invite token, the registered credential), for a
+        /// step-up whose arguments the node made ([`consent_minted`]).
+        #[serde(default)]
+        carry: Option<Value>,
     },
 }
 
@@ -866,47 +871,106 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
     })))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddPasskeyFinish {
+    challenge_id: String,
+    registration: Registration,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// What a person approves when adding a passkey (`__add_passkey`).
+fn add_passkey_args(cred: &calimero_identity::Credential) -> Value {
+    json!({ "credentialId": cred.id, "publicKey": cred.public_key })
+}
+
+/// Add a passkey: the registration is checked first, then a passkey the
+/// account already has approves exactly that credential (412 first). The
+/// retry carries the approval; the registration it repeats was spent by the
+/// first request, and the credential comes back with the challenge.
 async fn passkey_add_finish(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(body): Json<RegisterFinish>,
+    Json(body): Json<AddPasskeyFinish>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
-    let Pending::AddPasskey {
-        challenge, account, ..
-    } = take_pending(&node, &body.challenge_id).await?
-    else {
-        return Err(ApiError::bad_request(
-            "WRONG_CHALLENGE",
-            "not an add-passkey challenge",
-        ));
+    let account = p.account()?;
+    let made = if body.confirm.is_some() {
+        None
+    } else {
+        let Pending::AddPasskey {
+            challenge,
+            account: issued,
+            ..
+        } = take_pending(&node, &body.challenge_id).await?
+        else {
+            return Err(ApiError::bad_request(
+                "WRONG_CHALLENGE",
+                "not an add-passkey challenge",
+            ));
+        };
+        if issued != account {
+            return Err(ApiError::forbidden("challenge issued to another account"));
+        }
+        Some(
+            verify_registration(&rp(&node), &challenge, &body.registration)
+                .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?,
+        )
     };
-    if p.account()? != account {
-        return Err(ApiError::forbidden("challenge issued to another account"));
-    }
-    let cred = verify_registration(&rp(&node), &challenge, &body.registration)
-        .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
+    let args = made.as_ref().map_or(Value::Null, add_passkey_args);
+    let carry = made.and_then(|c| serde_json::to_value(c).ok());
+    let c = consent_minted(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__add_passkey",
+        &args,
+        carry,
+        body.confirm,
+    )
+    .await?;
+    let cred: calimero_identity::Credential = c
+        .carry
+        .and_then(|v| serde_json::from_value(v).ok())
+        .filter(|cred| add_passkey_args(cred) == c.args)
+        .ok_or_else(|| ApiError::bad_request("WRONG_CHALLENGE", "not an add-passkey approval"))?;
     let id = cred.id.clone();
     let _ok = node
         .sys_write(&SystemCmd::AddPasskey {
             account,
             credential: cred,
+            consent: c.consent,
         })
         .await?;
     Ok(Json(json!({ "credentialId": id })))
 }
 
+/// Remove a passkey: the account's, approved with a passkey (412 first; the
+/// retry's JSON body carries `confirm`).
 async fn passkey_remove(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(cred): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__remove_passkey",
+        &json!({ "credentialId": cred }),
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
     let _ok = node
         .sys_write(&SystemCmd::RemovePasskey {
             account,
             credential_id: cred,
             now: now_secs(),
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
@@ -1296,33 +1360,79 @@ struct ApiKeyBody {
     allow_confirm: bool,
     #[serde(default)]
     ttl_secs: Option<u64>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
+/// The longest an API key lives.
+const MAX_API_KEY_TTL: u64 = 365 * 24 * 3600;
+
+/// Create an API key: the account's, approved with a passkey over the key's
+/// record and hash (412 first). The first request makes the key, its id and
+/// expiry and keeps them with the challenge; the retry logs what was
+/// approved. A passkey session only: an API key cannot make another.
 async fn apikey_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<ApiKeyBody>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
     let (key, hash) = calimero_identity::new_api_key();
-    let key_id = typed_id::<8>();
+    let record = ApiKeyRecord {
+        key_id: typed_id::<8>(),
+        account: account.clone(),
+        label: body.label,
+        apps: body.apps,
+        methods: body.methods,
+        read_only: body.read_only,
+        allow_confirm: body.allow_confirm,
+        expires_at: now_secs()
+            + body
+                .ttl_secs
+                .unwrap_or(MAX_API_KEY_TTL)
+                .min(MAX_API_KEY_TTL),
+    };
+    let args = crate::system::api_key_args(&hash, &record);
+    let c = consent_minted(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__create_api_key",
+        &args,
+        Some(json!(key)),
+        body.confirm,
+    )
+    .await?;
+    // The retry logs the key the approval names, made by the first request;
+    // its scope must be the one this request asks for.
+    let key = c
+        .carry
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::bad_request("WRONG_CHALLENGE", "not an API key approval"))?;
+    let hash = calimero_identity::api_key_hash(&key);
+    let signed = |f: &str| c.args.get(f).cloned().unwrap_or(Value::Null);
+    let record = ApiKeyRecord {
+        key_id: signed("keyId").as_str().unwrap_or_default().to_owned(),
+        expires_at: signed("expiresAt").as_u64().unwrap_or_default(),
+        ..record
+    };
+    if crate::system::api_key_args(&hash, &record) != c.args
+        || record.expires_at > now_secs() + MAX_API_KEY_TTL
+    {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "the approval was for a different call",
+        ));
+    }
+    let key_id = record.key_id.clone();
     let _ok = node
         .sys_write(&SystemCmd::CreateApiKey {
             hash,
-            record: ApiKeyRecord {
-                key_id: key_id.clone(),
-                account,
-                label: body.label,
-                apps: body.apps,
-                methods: body.methods,
-                read_only: body.read_only,
-                allow_confirm: body.allow_confirm,
-                expires_at: now_secs()
-                    + body
-                        .ttl_secs
-                        .unwrap_or(365 * 24 * 3600)
-                        .min(365 * 24 * 3600),
-            },
+            record,
+            consent: c.consent,
         })
         .await?;
     Ok(Json(json!({ "keyId": key_id, "key": key })))
@@ -2166,6 +2276,54 @@ pub(crate) async fn consent(
     args: &Value,
     confirm: Option<ConfirmBody>,
 ) -> Result<Value, ApiError> {
+    Ok(step_up(node, p, app_id, method, args, None, confirm, true)
+        .await?
+        .consent)
+}
+
+/// A passkey step-up over arguments the node makes itself (an id, an expiry,
+/// a key): the first request makes them, keeps them in the challenge with
+/// `carry`, and answers `412`; the retry answers the consent with the
+/// arguments that were signed and the carry, whatever the retry's own
+/// request would make now. The caller checks them against the request.
+pub(crate) async fn consent_minted(
+    node: &Node,
+    p: &Principal,
+    subject: &str,
+    method: &str,
+    args: &Value,
+    carry: Option<Value>,
+    confirm: Option<ConfirmBody>,
+) -> Result<Consented, ApiError> {
+    step_up(node, p, subject, method, args, carry, confirm, false).await
+}
+
+/// A consent, the arguments it signed, and what the challenge carried.
+pub(crate) struct Consented {
+    pub consent: Value,
+    pub args: Value,
+    pub carry: Option<Value>,
+}
+
+/// [`consent`] and [`consent_minted`]: `exact` refuses a retry whose
+/// arguments differ from the signed ones.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the step-up's subject, method, arguments, carry and answer"
+)]
+async fn step_up(
+    node: &Node,
+    p: &Principal,
+    app_id: &str,
+    method: &str,
+    args: &Value,
+    carry: Option<Value>,
+    confirm: Option<ConfirmBody>,
+    exact: bool,
+) -> Result<Consented, ApiError> {
+    // An API key never passes a passkey step-up for its holder: refused
+    // unless the key was made for confirm methods (and then the retry still
+    // needs a passkey assertion).
     if p.api_key.as_ref().is_some_and(|k| !k.allow_confirm) {
         return Err(ApiError::forbidden(
             "this method needs the account holder's passkey",
@@ -2186,6 +2344,7 @@ pub(crate) async fn consent(
                 nonce: b64url(&nonce),
                 account: account.clone(),
                 expires: now_secs() + CHALLENGE_TTL,
+                carry,
             },
         )?;
         let creds: Vec<String> = node.sys(|s| {
@@ -2213,6 +2372,7 @@ pub(crate) async fn consent(
         args: a,
         nonce,
         account: acc,
+        carry,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
     else {
@@ -2221,7 +2381,7 @@ pub(crate) async fn consent(
             "not a confirm challenge",
         ));
     };
-    if app != app_id || m != method || a != args_bytes || acc != account {
+    if app != app_id || m != method || (exact && a != args_bytes) || acc != account {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
             "the approval was for a different call",
@@ -2245,16 +2405,22 @@ pub(crate) async fn consent(
     .await?;
     // Logged with what was signed, so every replica checks it where the
     // command applies (`system::authorize`).
+    let signed = String::from_utf8(a).unwrap_or_default();
+    let args = serde_json::from_str(&signed).unwrap_or(Value::Null);
     let consent = crate::proof::Consent {
         statement: crate::proof::Statement {
             subject: app,
             method: m,
-            args: String::from_utf8(a).unwrap_or_default(),
+            args: signed,
             nonce,
         },
         assertion: confirm.assertion,
     };
-    Ok(serde_json::to_value(&consent).unwrap_or_default())
+    Ok(Consented {
+        consent: serde_json::to_value(&consent).unwrap_or_default(),
+        args,
+        carry,
+    })
 }
 
 fn answer(node: &Node, app_id: &str, a: Applied) -> Response {
@@ -3860,6 +4026,21 @@ async fn passkey_label(
 struct MemberBody {
     account: String,
     role: OrgRole,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// A membership change in `org`, approved by `p`'s passkey (412 first): the
+/// consent to log with it ([`consent`] on `org:<org>`).
+async fn org_consent(
+    node: &Node,
+    p: &Principal,
+    org: &str,
+    method: &str,
+    args: &Value,
+    confirm: Option<ConfirmBody>,
+) -> Result<Value, ApiError> {
+    consent(node, p, &format!("org:{org}"), method, args, confirm).await
 }
 
 async fn org_set_member(
@@ -3868,29 +4049,41 @@ async fn org_set_member(
     Path(org): Path<String>,
     Json(body): Json<MemberBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    let args = json!({ "account": body.account, "role": body.role });
+    let consent = org_consent(&node, &p, &org, "__set_org_role", &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetOrgRole {
             org,
             account: body.account,
             role: body.role,
             actor,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
 }
 
+/// Remove a member, or leave (`account` = oneself): either way with the
+/// actor's passkey (412 first; the retry's JSON body carries `confirm`).
 async fn org_remove_member(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, account)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    let args = json!({ "account": account });
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = org_consent(&node, &p, &org, "__remove_member", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveOrgMember {
             org,
             account,
             actor,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
@@ -3933,6 +4126,8 @@ struct TeamMemberBody {
     role: Option<crate::types::TeamRole>,
     #[serde(default)]
     capabilities: Option<u32>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
 async fn team_set_member(
@@ -3941,7 +4136,13 @@ async fn team_set_member(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamMemberBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    let args = json!({
+        "team": team, "account": body.account, "lead": body.lead,
+        "role": body.role, "capabilities": body.capabilities,
+    });
+    let consent = org_consent(&node, &p, &org, "__set_team_member", &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetTeamMember {
             org,
@@ -3951,6 +4152,7 @@ async fn team_set_member(
             role: body.role,
             capabilities: body.capabilities,
             actor,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
@@ -4081,47 +4283,73 @@ struct CapabilitiesBody {
     #[serde(default)]
     team: Option<String>,
     capabilities: u32,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
-/// without an account, the organization's default.
+/// without an account, the organization's default; approved with the
+/// actor's passkey (412 first).
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
     Json(body): Json<CapabilitiesBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
     let cmd = match body.account {
-        Some(account) => SystemCmd::SetCapabilities {
-            org,
-            team: body.team,
-            account,
-            capabilities: body.capabilities,
-            actor,
-        },
-        None => SystemCmd::SetDefaultCapabilities {
-            org,
-            capabilities: body.capabilities,
-            actor,
-        },
+        Some(account) => {
+            let args = json!({
+                "team": body.team, "account": account, "capabilities": body.capabilities,
+            });
+            let consent =
+                org_consent(&node, &p, &org, "__set_capabilities", &args, body.confirm).await?;
+            SystemCmd::SetCapabilities {
+                org,
+                team: body.team,
+                account,
+                capabilities: body.capabilities,
+                actor,
+                consent,
+            }
+        }
+        None => {
+            let args = json!({ "capabilities": body.capabilities });
+            let method = "__set_default_capabilities";
+            let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
+            SystemCmd::SetDefaultCapabilities {
+                org,
+                capabilities: body.capabilities,
+                actor,
+                consent,
+            }
+        }
     };
     let _ok = node.sys_write(&cmd).await?;
     Ok(Json(json!({})))
 }
 
+/// Remove a team member, or leave a team; with the actor's passkey (412
+/// first; the retry's JSON body carries `confirm`).
 async fn team_remove_member(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team, account)): Path<(String, String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    let args = json!({ "team": team, "account": account });
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = org_consent(&node, &p, &org, "__remove_team_member", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveTeamMember {
             org,
             team,
             account,
             actor,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
@@ -4137,43 +4365,90 @@ struct InviteBody {
     ttl_secs: Option<u64>,
     #[serde(default)]
     uses: Option<u32>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
+/// Mint an invite: the actor's, approved with their passkey over the
+/// invite's key and terms (412 first). The first request makes the token and
+/// keeps it with the challenge; the log records only the token's public key
+/// (`proof::invite_key`), so redeeming needs the token itself.
 async fn invite_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
     Json(body): Json<InviteBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
     let token = format!("inv_{}", b64url(&random::<24>()));
+    let invite = Invite {
+        org: org.clone(),
+        role: body.role,
+        teams: body.teams,
+        expires_at: now_secs() + body.ttl_secs.unwrap_or(7 * 24 * 3600),
+        uses_left: body.uses.unwrap_or(1).max(1),
+    };
+    let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
+    let c = consent_minted(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__create_invite",
+        &args,
+        Some(json!(token)),
+        body.confirm,
+    )
+    .await?;
+    // The retry records the invite the approval names, minted by the first
+    // request; its terms must be the ones this request asks for.
+    let token = c
+        .carry
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::bad_request("WRONG_CHALLENGE", "not an invite approval"))?;
+    let invite_key = crate::proof::invite_key(&token);
+    let invite = Invite {
+        expires_at: c
+            .args
+            .get("expiresAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        ..invite
+    };
+    if crate::system::invite_args(&invite_key, &invite) != c.args {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "the approval was for a different call",
+        ));
+    }
     let _ok = node
         .sys_write(&SystemCmd::CreateInvite {
-            hash: b64url(&sha256(token.as_bytes())),
-            invite: Invite {
-                org,
-                role: body.role,
-                teams: body.teams,
-                expires_at: now_secs() + body.ttl_secs.unwrap_or(7 * 24 * 3600),
-                uses_left: body.uses.unwrap_or(1).max(1),
-            },
+            invite_key,
+            invite,
             actor,
+            consent: c.consent,
         })
         .await?;
     Ok(Json(json!({ "token": token })))
 }
 
+/// Redeem an invite for the signed-in account. This node, holding the token,
+/// signs the redemption with the token's key; no passkey prompt.
 async fn invite_redeem(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> ApiResult {
     let account = person(&node, &headers).await?.account()?;
+    let now = now_secs();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
-            hash: b64url(&sha256(token.as_bytes())),
+            invite_key: crate::proof::invite_key(&token),
+            signature: crate::proof::sign_invite_redeem(&token, &account, now),
             account,
-            now: now_secs(),
+            now,
         })
         .await?;
     Ok(Json(v))
@@ -5402,14 +5677,25 @@ struct NodeBody {
     addr: String,
     #[serde(default)]
     zone: String,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
 }
 
+/// Register a node: the operator's decision, signed
+/// (`cluster / __register_node / { id, addr, zone }`, 428 first).
 async fn ops_register_node(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(b): Json<NodeBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__register_node",
+        &json!({ "id": b.id, "addr": b.addr, "zone": b.zone }),
+        b.operator_proof,
+    )?;
     let _ok = node
         .sys_write(&SystemCmd::RegisterNode {
             node: crate::types::NodeRecord {
@@ -5417,6 +5703,7 @@ async fn ops_register_node(
                 addr: b.addr,
                 zone: b.zone,
             },
+            proof,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5430,8 +5717,19 @@ async fn ops_remove_node(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(id): Path<u64>,
+    body: axum::body::Bytes,
 ) -> ApiResult {
     operator(&node, &headers)?;
+    // Signed (`cluster / __remove_node / { id }`, 428 first) before the
+    // leader redirect, so the signed retry can go to the leader as it is.
+    let given = ops_proof_body(&body)?.operator_proof;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__remove_node",
+        &json!({ "id": id }),
+        given,
+    )?;
     let st = node.system.status();
     if !st.is_leader {
         let addr = st
@@ -5449,7 +5747,7 @@ async fn ops_remove_node(
             "the cluster's last voter cannot be removed",
         ));
     }
-    let _ok = node.sys_write(&SystemCmd::RemoveNode { id }).await?;
+    let _ok = node.sys_write(&SystemCmd::RemoveNode { id, proof }).await?;
     let learners: Vec<u64> = node.sys(|s| {
         st.learners
             .iter()
@@ -5473,6 +5771,8 @@ async fn ops_remove_node(
 #[derive(Deserialize)]
 struct ReplicaBody {
     replicas: Vec<u64>,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
 }
 
 /// A membership change failed; a follower names the leader to retry at.
@@ -5518,6 +5818,16 @@ async fn ops_set_replicas(
             &format!("node {id} is not registered"),
         ));
     }
+    // One signature over the target covers both of the move's writes
+    // (`system::authorize`); asked for before the leader redirect, so the
+    // signed retry goes to the leader as it is.
+    let proof = operator_proof(
+        &node,
+        &app_id,
+        "__set_replicas",
+        &json!({ "replicas": target }),
+        b.operator_proof,
+    )?;
     let app = node.app(&app_id).await?;
     // The operator moves an app only onto nodes on a release its owner
     // approved: a move is how data would reach a new image.
@@ -5555,7 +5865,7 @@ async fn ops_set_replicas(
     };
     // The move runs to the end in a task of its own, which holds the guard:
     // a caller that disconnects does not leave it half done and unguarded.
-    tokio::spawn(move_replicas(node, app_id, target, moving))
+    tokio::spawn(move_replicas(node, app_id, target, proof, moving))
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
 }
@@ -5565,6 +5875,7 @@ async fn move_replicas(
     node: Arc<Node>,
     app_id: String,
     target: std::collections::BTreeSet<u64>,
+    proof: Value,
     _moving: crate::node::MoveGuard,
 ) -> ApiResult {
     // The replica set as of now, not as of before the guard.
@@ -5580,11 +5891,15 @@ async fn move_replicas(
         return Ok(Json(json!({ "status": st, "unchanged": true })));
     }
     let union: Vec<u64> = current.union(&target).copied().collect();
+    // Already the target (the move only adds nodes): this write spends the
+    // signature, and the final one is not needed.
+    let grows = union.len() == target.len();
     // Every node of the union starts the group before membership changes.
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
             app_id: app_id.clone(),
             replicas: union,
+            proof: proof.clone(),
         })
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -5611,12 +5926,15 @@ async fn move_replicas(
     g.change_voters(target.clone())
         .await
         .map_err(|e| membership_err(&e))?;
-    let _ok = node
-        .sys_write(&SystemCmd::SetReplicas {
-            app_id,
-            replicas: target.into_iter().collect(),
-        })
-        .await?;
+    if !grows {
+        let _ok = node
+            .sys_write(&SystemCmd::SetReplicas {
+                app_id,
+                replicas: target.into_iter().collect(),
+                proof,
+            })
+            .await?;
+    }
     Ok(Json(json!({ "status": g.status(), "unchanged": false })))
 }
 
@@ -5632,9 +5950,14 @@ async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Ap
 async fn ops_quotas_set(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(changes): Json<serde_json::Map<String, Value>>,
+    Json(mut changes): Json<serde_json::Map<String, Value>>,
 ) -> ApiResult {
     operator(&node, &headers)?;
+    let given: Option<OperatorProofBody> = changes
+        .remove("operatorProof")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
     node.sys_fresh().await;
     let mut merged = serde_json::to_value(node.sys(|s| s.quotas.clone()))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -5652,7 +5975,19 @@ async fn ops_quotas_set(
     }
     let quotas: crate::system::Quotas = serde_json::from_value(merged)
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
-    let _ok = node.sys_write(&SystemCmd::SetQuotas { quotas }).await?;
+    // Signed over the whole merged limits (`cluster / __set_quotas /
+    // { quotas }`, 428 first), so a change made in between is not signed
+    // over by mistake: the retry merges again and must match.
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__set_quotas",
+        &json!({ "quotas": quotas }),
+        given,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetQuotas { quotas, proof })
+        .await?;
     Ok(Json(json!({})))
 }
 
@@ -5797,7 +6132,8 @@ struct OpsDeadlineBody {
 }
 
 /// What an operator decision that names nothing in its body (lifting a
-/// deadline, revoking a deployer, granting deployments) may carry.
+/// deadline, removing a node, revoking a deployer, granting deployments) may
+/// carry.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct OpsProofBody {

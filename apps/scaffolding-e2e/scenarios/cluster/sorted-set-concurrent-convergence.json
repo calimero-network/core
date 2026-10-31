@@ -1,0 +1,188 @@
+{
+  "name": "SortedSet concurrent ordered-read convergence repro (#3333)",
+  "description": "Networked repro for calimero-network/core#3333: after two nodes concurrently add distinct elements to a `SortedSet`, MEMBERSHIP (`contains`) and `len` converge cross-node, but ORDERED reads (`iter`/`keys`/`range`) may not — one node's ordered view can serve a stale subset forever because its node-local ordered-index validity marker was left stamped to a `full_hash` that ran ahead of the child set (sdk-js#87 shape).\nThe defect was localized to the node HashComparison / deferred-root-merge path: in-process Rust harnesses over the real storage `apply_action` path all SELF-HEAL (the `SortedIndexMeta` marker-clear + rebuild-on-read converges deterministically in one process), and the deferred root merge is a silent no-op for a structured Rust root (borsh `Entry<AppState>` framing vs bare `AppState` decode). So the open question this scenario answers is whether a REAL merod Rust node reproduces the divergence over the actual network.\nThis scenario runs on a `merod:local` image built FROM this branch, which carries the `calimero_storage::sorted_index_dbg` trace instrumentation. The DISCRIMINATOR is the final ordered-read assertion (`sorted_tags_all()` == [\"a\",\"b\"] on BOTH nodes). Membership assertions are expected to pass on both; if the ordered-read assertion FAILS on either node, #3333 is reproduced on an instrumented node and the decisive path is in the uploaded node logs (grep `sorted_index_dbg`: APPLY_ADD clearing parent marker / CHECK index marker / REBUILD index / STAMP index marker). If it PASSES, real Rust merod converges and the divergence is JS-path-specific.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x2: checks what the dropped steps did",
+    "  wait_for_sync x2: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "sortedset-node-1",
+    "sortedset-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "sortedset-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Create mesh with node-2",
+      "type": "create_org",
+      "account": "sortedset-node-1",
+      "org_name": "mesh",
+      "outputs": {
+        "group_id": "orgId"
+      }
+    },
+    {
+      "type": "set",
+      "values": {
+        "namespace_id": "{{group_id}}"
+      }
+    },
+    {
+      "type": "invite",
+      "account": "sortedset-node-1",
+      "org": "{{group_id}}",
+      "role": "member",
+      "outputs": {
+        "_mesh_invite": "token"
+      }
+    },
+    {
+      "type": "redeem_invite",
+      "account": "sortedset-node-2",
+      "token": "{{_mesh_invite}}"
+    },
+    {
+      "name": "Create mesh with node-2",
+      "type": "deploy",
+      "account": "sortedset-node-1",
+      "org": "{{group_id}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Create mesh with node-2",
+      "outputs": {
+        "context_id": "contextId",
+        "node1_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "node-1 adds \"a\"",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tag_add",
+      "args": {
+        "tag": "a"
+      },
+      "account": "sortedset-node-1"
+    },
+    {
+      "name": "node-2 adds \"b\"",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tag_add",
+      "args": {
+        "tag": "b"
+      },
+      "account": "sortedset-node-2"
+    },
+    {
+      "name": "node-1 contains \"a\"",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tag_contains",
+      "args": {
+        "tag": "a"
+      },
+      "account": "sortedset-node-1",
+      "outputs": {
+        "n1_has_a": "rpc"
+      }
+    },
+    {
+      "name": "node-1 contains \"b\"",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tag_contains",
+      "args": {
+        "tag": "b"
+      },
+      "account": "sortedset-node-1",
+      "outputs": {
+        "n1_has_b": "rpc"
+      }
+    },
+    {
+      "name": "node-2 contains \"a\"",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tag_contains",
+      "args": {
+        "tag": "a"
+      },
+      "account": "sortedset-node-2",
+      "outputs": {
+        "n2_has_a": "rpc"
+      }
+    },
+    {
+      "name": "node-2 contains \"b\"",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tag_contains",
+      "args": {
+        "tag": "b"
+      },
+      "account": "sortedset-node-2",
+      "outputs": {
+        "n2_has_b": "rpc"
+      }
+    },
+    {
+      "name": "Assert membership converged on both nodes",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{n1_has_a}}, {\"output\": true})",
+        "json_equal({{n1_has_b}}, {\"output\": true})",
+        "json_equal({{n2_has_a}}, {\"output\": true})",
+        "json_equal({{n2_has_b}}, {\"output\": true})"
+      ]
+    },
+    {
+      "name": "node-1 ordered iter",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tags_all",
+      "args": {},
+      "account": "sortedset-node-1",
+      "outputs": {
+        "n1_all": "rpc"
+      }
+    },
+    {
+      "name": "node-2 ordered iter",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "sorted_tags_all",
+      "args": {},
+      "account": "sortedset-node-2",
+      "outputs": {
+        "n2_all": "rpc"
+      }
+    },
+    {
+      "name": "Assert ordered iter converged on both nodes (#3333 discriminator)",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{n1_all}}, {\"output\": [\"a\", \"b\"]})",
+        "json_equal({{n2_all}}, {\"output\": [\"a\", \"b\"]})"
+      ]
+    }
+  ]
+}

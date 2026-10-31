@@ -35,7 +35,7 @@ meroctl context create --bundle <hash> --name kv --alias kv
 meroctl call --context kv set --args '{"key":"a","value":"1"}'
 meroctl call --context kv get --args '{"key":"a"}' --view
 meroctl context watch kv
-meroctl account api-key create --context kv --read-only
+meroctl account api-key create --context kv --read-only --dev-passkey ./dev-passkey.json
 ```
 
 In `meroctl`, an `app` is a signed package, a `context` an app instance, a
@@ -76,11 +76,30 @@ The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passke
 sign-in, a store per user, live events) with a Playwright test that drives a real
 passkey ceremony through Chromium's virtual authenticator.
 
-## 4. Next
+## 4. Scenario tests and the process suite
+
+An app's scenarios (`apps/<app>/scenarios/*.json`) and core's
+(`workflows/**/scenarios/`) run on an in-process 3-node cluster: deploy, call
+and read as several accounts, in orgs and teams, with packages and upgrades.
+The process suite starts one `merod run --dev` process per node and crashes,
+freezes, restarts or upgrades them, checking the app keeps its data and answers
+within a time budget.
+
+```bash
+cargo test -p calimero-node --test scenarios -- apps/kv-store/   # kv-store's scenarios
+cargo build --release -p merod -p meroctl
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+python3 -I crates/node/tests/fault/suite.py --only frozen-leader
+```
+
+See [Testing strategy](/contribute/testing/#scenarios) for the file format and
+every step.
+
+## 5. Next
 
 - [Writing apps](/cloud/apps/) for what an app sees on a cluster, and
   [Build](/build/) for the SDK.
 - [Install & first run](/operate/install/) and [Deployment](/operate/deployment/)
   to run real nodes.
-- [Testing strategy](/contribute/testing/) for the in-process cluster tests and
-  multi-process scenarios.
+- [Testing strategy](/contribute/testing/) for the in-process cluster tests, the
+  scenarios and the process suite.

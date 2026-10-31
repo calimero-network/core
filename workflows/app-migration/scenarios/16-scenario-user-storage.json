@@ -1,0 +1,263 @@
+{
+  "name": "16 — Scenario \"user-storage\" (v1 → v2 carry-through, 2-node)",
+  "description": "2-node per-context migration for a `UserStorage`-typed field. v1 holds `notes: UserStorage<LwwRegister<String>>` — a per-user keyed store where each member writes only their OWN slot (keyed by env::executor_id). Both nodes write a note under v1 (two distinct slots). v2 carries the store THROUGH the migrate and adds a `migration_note` register; the migrate does NOT re-insert (insert keys by the migrating node's own id and would diverge) — it carries every user's slot byte-for-byte.\nDiscriminating assertion: after BOTH nodes self-migrate, `note_count` must be 2 on each (both users' slots survived the migrate on every node), and each node's own `my_note` still returns the value it wrote under v1 — proving per-user keying round-trips through migrate and converges.\nPer-context upgrade on the subgroup (cascade=false).\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_present x2: v1 node logs",
+    "  assert_migration_complete x1: v1 group migration",
+    "  delete_context (unknown) x1: checks what the dropped steps did",
+    "  delete_namespace x1: v1 namespace deletion",
+    "  uninstall_application (unknown) x1: checks what the dropped steps did",
+    "  wait_for_sync x2: replication is synchronous: a read sees every committed write",
+    "Fixed in the migration (converter bugs): a cascade upgrade_group",
+    "upgrades every app in the namespace's teams; of get_migration_status",
+    "only the outputs that mean the same here are kept."
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "app-migration-userstore-1",
+    "app-migration-userstore-2"
+  ],
+  "steps": [
+    {
+      "name": "Install scenario-user-storage-v1 on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-user-storage-1.0.0.mpk",
+      "outputs": {
+        "app_v1": "package",
+        "app_v1_version": "version"
+      },
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Create namespace (v1) on node 1",
+      "type": "create_org",
+      "org_name": "Create namespace (v1) on node 1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Create Open subgroup under namespace",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "user-storage-scenario-subgroup",
+      "join": "invite",
+      "outputs": {
+        "group_id": "teamId"
+      },
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Mark subgroup as Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "join": "everyone",
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Create context in subgroup on node 1 (v1)",
+      "type": "deploy",
+      "account": "app-migration-userstore-1",
+      "package": "{{app_v1}}",
+      "version": "{{app_v1_version}}",
+      "app_name": "Create context in subgroup on node 1 (v1)",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Create namespace invitation for node 2",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "app-migration-userstore-1",
+      "outputs": {
+        "namespace_invitation": "token"
+      }
+    },
+    {
+      "name": "Node 2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{namespace_invitation}}",
+      "account": "app-migration-userstore-2"
+    },
+    {
+      "name": "Node 2 materialises subgroup membership via inheritance",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-userstore-2"
+    },
+    {
+      "name": "Node 1 writes its note",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_note",
+      "args": {
+        "value": "note-from-node-1"
+      },
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Node 1 sets title",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_title",
+      "args": {
+        "title": "user-doc"
+      },
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Node 2 writes its own note (second per-user slot)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_note",
+      "args": {
+        "value": "note-from-node-2"
+      },
+      "account": "app-migration-userstore-2"
+    },
+    {
+      "name": "Assert v1 shape on node 1 (two user slots present)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-userstore-1",
+      "outputs": {
+        "v1_schema": "rpc"
+      }
+    },
+    {
+      "name": "Assert v1 schema shape",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v1_schema}}, {\"output\": {\"schema_version\": \"1.0.0\", \"title\": \"user-doc\", \"note_count\": 2}})"
+      ]
+    },
+    {
+      "name": "Negative — migration_note is not exported by v1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "migration_note",
+      "args": {},
+      "account": "app-migration-userstore-1",
+      "expected_failure": true
+    },
+    {
+      "name": "Install scenario-user-storage-v2 on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-user-storage-2.0.0.mpk",
+      "outputs": {
+        "app_v2": "package",
+        "app_v2_version": "version"
+      },
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Assert both versions share one application id (bundle same-id)",
+      "type": "json_assert",
+      "statements": [
+        "equal(\"{{app_v1}}\", \"{{app_v2}}\")"
+      ]
+    },
+    {
+      "name": "Upgrade subgroup v1 → v2 (per-context)",
+      "type": "upgrade_app",
+      "app": "{{ctx_id}}",
+      "version": "{{app_v2_version}}",
+      "account": "app-migration-userstore-1"
+    },
+    {
+      "name": "Wait for upgrade + migration to apply + log flush",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Read post-migration schema_info on node 1 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-userstore-1",
+      "outputs": {
+        "v2_schema_node1": "rpc"
+      }
+    },
+    {
+      "name": "Read post-migration schema_info on node 2 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-userstore-2",
+      "outputs": {
+        "v2_schema_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert v2 schema on node 1 (both user slots preserved + note seeded)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_node1}}, {\"output\": {\"schema_version\": \"2.0.0\", \"title\": \"user-doc\", \"note_count\": 2, \"migration_note\": \"migrated-v1-to-v2\"}})"
+      ]
+    },
+    {
+      "name": "Assert v2 schema on node 2 (same shape — migration reached node 2)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_node2}}, {\"output\": {\"schema_version\": \"2.0.0\", \"title\": \"user-doc\", \"note_count\": 2, \"migration_note\": \"migrated-v1-to-v2\"}})"
+      ]
+    },
+    {
+      "name": "Node 1 reads its own note post-migrate",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "my_note",
+      "args": {},
+      "account": "app-migration-userstore-1",
+      "outputs": {
+        "my_note_node1": "rpc"
+      }
+    },
+    {
+      "name": "Node 2 reads its own note post-migrate",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "my_note",
+      "args": {},
+      "account": "app-migration-userstore-2",
+      "outputs": {
+        "my_note_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert each node kept its own per-user slot through migrate",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{my_note_node1}}, {\"output\": \"note-from-node-1\"})",
+        "json_equal({{my_note_node2}}, {\"output\": \"note-from-node-2\"})"
+      ]
+    },
+    {
+      "name": "Delete subgroup",
+      "type": "team_delete",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-userstore-1"
+    }
+  ]
+}

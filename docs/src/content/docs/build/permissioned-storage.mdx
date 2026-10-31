@@ -105,7 +105,7 @@ set, which the node checks like any other rotation: the capability that
 
 ## Group-writable storage in practice
 
-From `apps/kv-store-with-shared-storage`. A `SharedStorage<T>` field guards
+From `apps/wasmer-fixtures/kv-store-with-shared-storage`. A `SharedStorage<T>` field guards
 **everything inside it**: when the wrapper holds a collection, every entry
 inherits the `SharedMember` stamp, so a non-writer's write to *any* entry is
 refused, not just one to the wrapper.
@@ -150,9 +150,9 @@ impl KvStore {
 
 ## User-owned and write-once storage
 
-From `apps/kv-store-with-user-and-frozen-storage`. `UserStorage<T>` gives each
-identity its own slot keyed by `account_id()`; `FrozenStorage<T>` is
-content-addressed and immutable.
+`UserStorage<T>` gives each identity its own slot keyed by `account_id()`;
+`FrozenStorage<T>` is content-addressed and immutable. This is the v1 shape of
+`apps/kv-store-with-user-and-frozen-storage`:
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
@@ -180,6 +180,37 @@ impl KvStore {
 }
 ```
 
+The app itself is now on the component SDK (`calimero-app-sdk`), where both
+rules are a table plus a check: a per-account row is keyed by the caller's
+account, so a setter has no way to name anyone else's, and a frozen row is keyed
+by the SHA-256 of its content (hashed in the guest with `sha2`), inserted once
+and never changed:
+
+```rust
+#[derive(Record)]
+#[table(key = "account")]
+pub struct UserValue { pub account: String, pub value: String }
+
+#[derive(Record)]
+#[table(key = "hash")]
+pub struct Frozen { pub hash: String, pub value: String }
+
+pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
+    let account = guards::require_member()?; // the caller; never an argument
+    self.user_simple.upsert(UserValue { account, value })?;
+    Ok(())
+}
+
+pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
+    guards::require_member()?;
+    let hash = content_hash(&value); // hex SHA-256 of v1's borsh bytes
+    if !self.frozen.contains(&hash)? {
+        self.frozen.insert(Frozen { hash: hash.clone(), value })?;
+    }
+    Ok(hash)
+}
+```
+
 ## `AuthoredMap` vs `UserStorage`
 
 Both attach an identity to data, but they answer different questions.
@@ -193,7 +224,7 @@ Both attach an identity to data, but they answer different questions.
 
 ## `AccessControl`: named roles
 
-From `apps/components-demo`. The wrappers above bind capabilities to **keys** (a
+The wrappers above bind capabilities to **keys** (a
 writer set, an owner, per-key `OpMask`s). `AccessControl` adds a layer of
 indirection on top: capabilities bind to **named roles** (`"editor"`,
 `"moderator"`, …) and accounts are granted membership in those roles — the same
@@ -297,6 +328,29 @@ per-key masks you re-grant every account when a policy changes; with
 indirection is worth it when several objects share one role policy, or when
 membership churns; for a single object with a fixed writer set, the plain wrappers
 are simpler.
+
+### On the component SDK
+
+`apps/components-demo` shows all three patterns (an owned cell, a writer set, a
+role registry) on the component SDK (`calimero-app-sdk`). There is no merge
+plane to enforce them: every write runs on the app's leader and is replicated as
+a log entry, so a check in the method against `env::caller()` is the whole
+boundary. Each pattern is a table and that check:
+
+```rust
+#[derive(Record)]
+#[table(key = ["role", "account"])]
+pub struct Grant { pub role: String, pub account: String }
+
+pub fn grant_role(&mut self, role: String, who: String) -> app::Result<()> {
+    let me = guards::require_member()?;
+    if !self.admins.contains(&me)? {
+        app::bail!(Error::NotAdmin); // a refused call writes nothing anywhere
+    }
+    self.roles.upsert(Grant { role, account: who })?;
+    Ok(())
+}
+```
 
 ## The #1 gotcha
 

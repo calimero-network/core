@@ -184,7 +184,7 @@ async fn confirm_methods_need_a_fresh_passkey() {
 
     // An API key without allowConfirm cannot call it at all.
     let (_id, key) = alice
-        .create_api_key(json!({ "label": "agent" }))
+        .create_api_key(json!({ "label": "agent" }), &mut pk)
         .await
         .unwrap();
     let agent = c.client(2);
@@ -203,7 +203,7 @@ async fn confirm_methods_need_a_fresh_passkey() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn organizations_gate_apps_and_api_keys_are_scoped() {
     let c = Cluster::start(3).await;
-    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
     let (bob, _bpk) = signed_up(&c, 1, "bob").await;
     let (carol, _cpk) = signed_up(&c, 2, "carol").await;
     let bob_id = bob.me().await.unwrap()["accountId"]
@@ -226,9 +226,10 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
         .unwrap()
         .to_owned();
     let invite = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/invites"),
             json!({ "role": "member", "teams": [team] }),
+            &mut apk,
         )
         .await
         .unwrap()["token"]
@@ -272,7 +273,7 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
 
     // Removing bob from the org cuts him off at once.
     let _r = alice
-        .delete(&format!("orgs/{org}/members/{bob_id}"))
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut apk)
         .await
         .unwrap();
     for _ in 0..20 {
@@ -293,7 +294,7 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
 
     // A read-only API key reads but does not write.
     let (_id, key) = alice
-        .create_api_key(json!({ "readOnly": true, "apps": [app] }))
+        .create_api_key(json!({ "readOnly": true, "apps": [app] }), &mut apk)
         .await
         .unwrap();
     let agent = c.client(2);
@@ -487,9 +488,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
     // A follower names the leader instead of failing opaquely.
     let err = ops(follower)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": new }),
+            &common::operator_sign,
         )
         .await
         .unwrap_err();
@@ -502,9 +504,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
 
     let moved = ops(leader)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": new }),
+            &common::operator_sign,
         )
         .await
         .unwrap();
@@ -551,14 +554,17 @@ async fn a_failed_init_is_reported_not_hidden() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn quotas_are_enforced_by_the_log() {
     let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
     let mut quotas = ops.get("ops/quotas").await.unwrap();
     assert_eq!(quotas["maxAppsPerAccount"], json!(100));
     quotas["maxAppsPerAccount"] = json!(1);
     quotas["maxApiKeysPerAccount"] = json!(1);
-    let _ok = ops.post("ops/quotas", quotas).await.unwrap();
+    let _ok = ops
+        .post_operator_signed("ops/quotas", quotas, &common::operator_sign)
+        .await
+        .unwrap();
 
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let _first = alice.create_app("one", &bundle, json!({})).await.unwrap();
@@ -568,8 +574,8 @@ async fn quotas_are_enforced_by_the_log() {
         .unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 
-    let _key = alice.create_api_key(json!({})).await.unwrap();
-    let err = alice.create_api_key(json!({})).await.unwrap_err();
+    let _key = alice.create_api_key(json!({}), &mut pk).await.unwrap();
+    let err = alice.create_api_key(json!({}), &mut pk).await.unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
@@ -583,7 +589,7 @@ async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn apps_see_the_callers_organization_role_and_teams() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let str_of = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = str_of(
@@ -602,9 +608,10 @@ async fn apps_see_the_callers_organization_role_and_teams() {
     );
     let invite = str_of(
         alice
-            .post(
+            .post_confirmed(
                 &format!("orgs/{org}/invites"),
                 json!({ "role": "member", "teams": [team] }),
+                &mut a,
             )
             .await
             .unwrap(),
@@ -648,7 +655,10 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .unwrap()
         .to_owned();
     let _ok = alice
-        .delete(&format!("orgs/{org}/teams/{team}/members/{alice_id}"))
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{team}/members/{alice_id}"),
+            &mut a,
+        )
         .await
         .unwrap();
     let _ok = bob
@@ -745,8 +755,8 @@ async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client:
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn teams_work_like_v1_subgroups() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = s(
         alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
@@ -754,7 +764,11 @@ async fn teams_work_like_v1_subgroups() {
     );
     let token = s(
         alice
-            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .post_confirmed(
+                &format!("orgs/{org}/invites"),
+                json!({ "role": "member" }),
+                &mut a,
+            )
             .await
             .unwrap(),
         "token",
@@ -800,15 +814,16 @@ async fn teams_work_like_v1_subgroups() {
     // Removed from an open folder, Bob does not come back by inheritance;
     // added again, he is back.
     let _ok = alice
-        .delete(&format!("orgs/{org}/teams/{open}/members/{bob_id}"))
+        .delete_confirmed(&format!("orgs/{org}/teams/{open}/members/{bob_id}"), &mut a)
         .await
         .unwrap();
     let err = set(&bob, &open_app, "x").await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{open}/members"),
             json!({ "account": bob_id }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -827,9 +842,10 @@ async fn teams_work_like_v1_subgroups() {
     assert!(listed["teams"].get(&secret).is_none(), "{listed}");
     assert!(listed["teams"].get(&open).is_some(), "{listed}");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{secret}/members"),
             json!({ "account": bob_id, "role": "member" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -841,9 +857,10 @@ async fn teams_work_like_v1_subgroups() {
     let child_app = app_in(child.clone()).await;
     set(&bob, &child_app, "inherited").await.unwrap();
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{child}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -851,7 +868,10 @@ async fn teams_work_like_v1_subgroups() {
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
     // Leaving does not shed the role: he does not come back by inheritance.
     let _ok = bob
-        .delete(&format!("orgs/{org}/teams/{child}/members/{bob_id}"))
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{child}/members/{bob_id}"),
+            &mut b,
+        )
         .await
         .unwrap();
     assert!(bob
@@ -864,9 +884,10 @@ async fn teams_work_like_v1_subgroups() {
         .await
         .is_err());
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{child}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -928,9 +949,10 @@ async fn teams_work_like_v1_subgroups() {
         .unwrap_err();
     assert_eq!(err.code(), Some("REJECTED"), "{err}");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/capabilities"),
             json!({ "capabilities": 37 }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -961,9 +983,9 @@ async fn teams_work_like_v1_subgroups() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_passkey_is_another_device_of_the_same_account() {
     let c = Cluster::start(3).await;
-    let (laptop, _pk) = signed_up(&c, 0, "alice").await;
+    let (laptop, mut pk) = signed_up(&c, 0, "alice").await;
     let mut phone_key = SoftAuthenticator::new("localhost", ORIGIN);
-    let phone_cred = laptop.add_passkey(&mut phone_key).await.unwrap();
+    let phone_cred = laptop.add_passkey(&mut phone_key, &mut pk).await.unwrap();
     let phone = c.client(1);
     let _s = phone.sign_in(&mut phone_key).await.unwrap();
     let (a, b) = (laptop.me().await.unwrap(), phone.me().await.unwrap());
@@ -1121,7 +1143,7 @@ async fn entry_timestamps_never_go_backwards() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn removed_member_stops_receiving_org_events() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
@@ -1132,7 +1154,11 @@ async fn removed_member_stops_receiving_org_events() {
     for member in [&bob, &carol] {
         let token = s(
             alice
-                .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+                .post_confirmed(
+                    &format!("orgs/{org}/invites"),
+                    json!({ "role": "member" }),
+                    &mut a,
+                )
                 .await
                 .unwrap(),
             "token",
@@ -1165,7 +1191,7 @@ async fn removed_member_stops_receiving_org_events() {
     }
 
     let _r = alice
-        .delete(&format!("orgs/{org}/members/{bob_id}"))
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
         .await
         .unwrap();
     // Every replica has applied the removal before the next event.
@@ -2091,7 +2117,7 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_only_members_emit_only_call_is_refused() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = s(
@@ -2100,7 +2126,11 @@ async fn a_read_only_members_emit_only_call_is_refused() {
     );
     let token = s(
         alice
-            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .post_confirmed(
+                &format!("orgs/{org}/invites"),
+                json!({ "role": "member" }),
+                &mut a,
+            )
             .await
             .unwrap(),
         "token",
@@ -2121,9 +2151,10 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         "teamId",
     );
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{team}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -2256,7 +2287,11 @@ async fn the_leader_checks_upgrade_authority_again() {
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
     let token = alice
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut alice_pk,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -2347,7 +2382,7 @@ async fn the_leader_checks_upgrade_authority_again() {
     );
 }
 
-/// The core-module fixture (`apps/kv-store`, SDK 0.12), which runs on wasmer.
+/// The core-module fixture (`apps/wasmer-fixtures/kv-store`, SDK 0.12), which runs on wasmer.
 fn wasmer_kv() -> Vec<u8> {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm");
@@ -2963,7 +2998,7 @@ async fn a_component_sees_no_organization_but_its_own() {
     use calimero_node::component::SysDirectory;
 
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (carol, _c) = signed_up(&c, 1, "carol").await;
     let carol_id = carol.me().await.unwrap()["accountId"]
         .as_str()
@@ -2974,7 +3009,11 @@ async fn a_component_sees_no_organization_but_its_own() {
         .unwrap()
         .to_owned();
     let token = alice
-        .post(&format!("orgs/{acme}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{acme}/invites"),
+            json!({ "role": "member" }),
+            &mut a,
+        )
         .await
         .unwrap()["token"]
         .as_str()

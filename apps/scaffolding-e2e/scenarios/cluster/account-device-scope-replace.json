@@ -1,0 +1,104 @@
+{
+  "name": "E2E Account - Replacing A Device's Application Scope",
+  "description": "Narrowing a paired device to one application takes the other application's namespace away from it, widening back to `all` gives it back, and the device holding the account root can never be narrowed at all.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  account_rescope (unknown) x3: checks what the dropped steps did",
+    "  assert_api_response x6: v1 admin API",
+    "  login (unknown) x2: checks what the dropped steps did"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "scope-replace-node-1",
+    "scope-replace-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install app A (the bundle) on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_a_bundle": "hash"
+      },
+      "account": "scope-replace-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_a": "com.calimero.scaffolding-e2e-multi"
+      }
+    },
+    {
+      "name": "Install app B (the raw wasm) on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_b_bundle": "hash"
+      },
+      "account": "scope-replace-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_b": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Two applications, not one installed twice",
+      "type": "assert",
+      "statements": [
+        "is_set({{app_a}})",
+        "is_set({{app_b}})",
+        "{{app_a}} != {{app_b}}"
+      ]
+    },
+    {
+      "name": "Node-1 creates namespace A1, targeting app A",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace A1, targeting app A",
+      "outputs": {
+        "ns_a1": "orgId"
+      },
+      "account": "scope-replace-node-1"
+    },
+    {
+      "name": "Node-1 creates namespace B1, targeting app B",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace B1, targeting app B",
+      "outputs": {
+        "ns_b1": "orgId"
+      },
+      "account": "scope-replace-node-1"
+    },
+    {
+      "name": "Node-1 registers a context in namespace A1",
+      "type": "deploy",
+      "account": "scope-replace-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "store-a",
+      "org": "{{ns_a1}}"
+    },
+    {
+      "name": "What node-1 speaks as",
+      "type": "whoami",
+      "outputs": {
+        "alice_device": "passkeyId",
+        "alice_root": "publicKey"
+      },
+      "account": "scope-replace-node-1"
+    },
+    {
+      "name": "Pair node-2 onto Alice's account, scoped to every application",
+      "type": "add_device",
+      "account": "scope-replace-node-1",
+      "device": "scope-replace-node-2",
+      "outputs": {
+        "paired_device": "passkeyId"
+      }
+    }
+  ]
+}

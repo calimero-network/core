@@ -3,7 +3,7 @@
 # on PATH and then invoke the tool as `cargo mero <cmd>`:
 #
 #   PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-#   cargo mero build --manifest-path apps/kv-store/Cargo.toml
+#   cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 #
 # CI's setup-cargo-mero action restores a cargo-mero built from these exact sources
 # and sets CARGO_MERO_BIN_DIR to it; that directory is handed back without building.

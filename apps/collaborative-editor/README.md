@@ -234,33 +234,20 @@ Emitted when the document title is changed.
 
 ## Testing
 
-Run the end-to-end workflow test:
+Its end-to-end tests are cluster scenarios,
+`scenarios/cluster/collaborative-editor.json` and
+`collaborative-editor-concurrent.json`, run on an in-process 3-node cluster:
 
 ```bash
-# From the e2e-tests directory
-cargo run -- workflows/collaborative-editor.yml
+cargo test -p calimero-node --test scenarios -- apps/collaborative-editor/
 ```
 
-The workflow tests:
+They test:
 - Basic insert/append operations
 - Delete operations
 - Text replacement
 - Concurrent edits from multiple nodes
 - CRDT convergence properties
-
-To run tests locally, use merobox directly:
-
-```bash
-# Build the app first
-cargo mero build
-
-# Run the workflow test
-merobox bootstrap run workflows/collaborative-editor.yml \
-  --no-docker \
-  --binary-path ../../target/debug/merod \
-  --e2e-mode
-```
-
 - Title management
 - Document statistics
 - Error handling (invalid positions, ranges, etc.)

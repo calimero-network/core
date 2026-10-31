@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use calimero_client::Client;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
@@ -128,32 +129,45 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
         }
         OpsCmd::Placement => client.get("ops/placement").await?,
         OpsCmd::AddNode { id, addr, zone } => {
-            client
-                .post("ops/nodes", json!({ "id": id, "addr": addr, "zone": zone }))
-                .await?
+            let body = json!({ "id": id, "addr": addr, "zone": zone });
+            decide_at(env, client, Some(body), "ops/nodes").await?
         }
-        OpsCmd::RemoveNode { id } => client.delete(&format!("ops/nodes/{id}")).await?,
+        OpsCmd::RemoveNode { id } => {
+            // Node removal runs on the system leader.
+            let path = format!("ops/nodes/{id}");
+            match decide_at(env, client, None, &path).await {
+                Err(e) => match leader_of(&e) {
+                    Some(leader) => {
+                        let at = env.at(&leader)?;
+                        at.use_api_key(token).await;
+                        decide_at(env, &at, None, &path).await?
+                    }
+                    None => return Err(e),
+                },
+                Ok(v) => v,
+            }
+        }
         OpsCmd::Move { context, replicas } => {
             let path = format!("ops/apps/{context}/replicas");
             let body = json!({ "replicas": replicas });
-            match client.post(&path, body.clone()).await {
+            match decide_at(env, client, Some(body.clone()), &path).await {
                 // Replica moves run on the context's leader.
-                Err(e) if e.code() == Some("NOT_LEADER") => {
-                    let leader = e
-                        .details()
-                        .and_then(|d| d["leaderUrl"].as_str())
-                        .ok_or_else(|| eyre::eyre!("{e}"))?
-                        .to_owned();
-                    let at = env.at(&leader)?;
-                    at.use_api_key(token).await;
-                    at.post(&path, body).await?
-                }
-                other => other?,
+                Err(e) => match leader_of(&e) {
+                    Some(leader) => {
+                        let at = env.at(&leader)?;
+                        at.use_api_key(token).await;
+                        decide_at(env, &at, Some(body), &path).await?
+                    }
+                    None => return Err(e),
+                },
+                Ok(v) => v,
             }
         }
         OpsCmd::Backup => client.post("ops/backup", json!({})).await?,
         OpsCmd::Quotas => client.get("ops/quotas").await?,
-        OpsCmd::SetQuotas { quotas } => client.post("ops/quotas", json_arg(&quotas)?).await?,
+        OpsCmd::SetQuotas { quotas } => {
+            decide_at(env, client, Some(json_arg(&quotas)?), "ops/quotas").await?
+        }
         OpsCmd::Release { version, withdraw } => {
             decide(
                 env,
@@ -239,28 +253,47 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
 /// Send an operator decision: when the node asks for the operator's
 /// signature (`428 OPERATOR_SIGNATURE_REQUIRED`, naming the bytes to sign),
 /// sign them with `--operator-key-file` and send it again with the proof.
-async fn decide(env: &Env, path: &str, mut body: Value) -> eyre::Result<Value> {
+async fn decide(env: &Env, path: &str, body: Value) -> eyre::Result<Value> {
+    decide_at(env, &env.client, Some(body), path).await
+}
+
+/// [`decide`] through `client` (another node of the cluster, for a decision
+/// that runs on a leader): a POST of `body`, or a DELETE without one.
+async fn decide_at(
+    env: &Env,
+    client: &Client,
+    body: Option<Value>,
+    path: &str,
+) -> eyre::Result<Value> {
     use ed25519_dalek::Signer;
-    match env.client.post(path, body.clone()).await {
-        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
-            let file = env.operator_key_file.as_ref().ok_or_else(|| {
-                eyre::eyre!("{e}: pass --operator-key-file (the operator's Ed25519 key)")
-            })?;
-            let seed: [u8; 32] = hex::decode(std::fs::read_to_string(file)?.trim())?
-                .try_into()
-                .map_err(|_| eyre::eyre!("{}: not a 32-byte hex key", file.display()))?;
-            let details = e.details().cloned().unwrap_or_default();
-            let message = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                details["message"].as_str().unwrap_or_default(),
-            )?;
-            let signature = ed25519_dalek::SigningKey::from_bytes(&seed).sign(&message);
-            body["operatorProof"] = json!({
-                "nonce": details["nonce"],
-                "signature": hex::encode(signature.to_bytes()),
-            });
-            Ok(env.client.post(path, body).await?)
-        }
-        other => Ok(other?),
+    let Some(file) = env.operator_key_file.as_ref() else {
+        let out = match body {
+            Some(body) => client.post(path, body).await,
+            None => client.delete(path).await,
+        };
+        return match out {
+            Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => Err(eyre::eyre!(
+                "{e}: pass --operator-key-file (the operator's Ed25519 key)"
+            )),
+            other => Ok(other?),
+        };
+    };
+    let seed: [u8; 32] = hex::decode(std::fs::read_to_string(file)?.trim())?
+        .try_into()
+        .map_err(|_| eyre::eyre!("{}: not a 32-byte hex key", file.display()))?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let sign = |message: &[u8]| key.sign(message).to_bytes().to_vec();
+    Ok(match body {
+        Some(body) => client.post_operator_signed(path, body, &sign).await?,
+        None => client.delete_operator_signed(path, &sign).await?,
+    })
+}
+
+/// The leader a `421 NOT_LEADER` names, if `e` is one.
+fn leader_of(e: &eyre::Report) -> Option<String> {
+    let e = e.downcast_ref::<calimero_client::Error>()?;
+    if e.code() != Some("NOT_LEADER") {
+        return None;
     }
+    e.details()?["leaderUrl"].as_str().map(str::to_owned)
 }

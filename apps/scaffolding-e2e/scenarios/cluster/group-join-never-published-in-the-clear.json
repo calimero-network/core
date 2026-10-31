@@ -1,0 +1,113 @@
+{
+  "name": "E2E Scaffolding - No Join Is Ever Published In The Clear",
+  "description": "End-to-end coverage for #3904 / #3910: an invitation join must never reach the namespace gossip topic as a cleartext `NamespaceOp::Root`.\n`RootOp::MemberJoined` / `MemberJoinedAt` name an account, the group it joined and when. Topic subscription is not authorization-gated, so a cleartext join lets anyone who knows a namespace id watch a private group's membership assemble in real time. Every other root op is sealed; these two were the remaining hole, and #3910 closed it — a joiner holding the covering key seals its own join, and one that does not hands the signed op to a keyholder that publishes it as `root_relay_sealed`.\nWHY THIS MARKER\nThe decisive signal is the `op_kind` field on governance-store's \"namespace governance op published\" line, because that label comes from `NamespaceOp::op_kind_label` — i.e. from the wire variant actually handed to the publisher. A sealed join publishes as `root_sealed`, `root_sealed_for_group` or `root_relay_sealed`; the labels `member_joined` / `member_joined_at` are emitted ONLY for a cleartext `NamespaceOp::Root(RootOp::MemberJoined*)`. Asserting those two are absent is therefore a direct test of the wire form, and it fails the moment anyone reintroduces a cleartext-publish fallback in `join_group`.\nDeliberately NOT asserted on the log line #3910 removed. That PR deleted the `\"publishing this join in the clear\"` arm outright, so an `assert_log_absent` on that string would pass while testing nothing. The failure mode worth guarding is a FUTURE fallback, which would carry a new message but the same `op_kind`.\nWHY THE PATTERNS MATCH THE QUOTED VALUE AND NOT `op_kind=\"...\"`\nBecause a raw node log carries ANSI escapes BETWEEN a field name and its value, so `op_kind=\"member_joined_at\"` matches nothing at all — and for an `assert_log_absent` that is not a loud failure, it is a silently vacuous pass, which is precisely the shape of gate this scenario exists to avoid becoming. The projection-coverage gate in `e2e-rust-apps.yml` hit this and now `sed`s the escapes out before grepping; merobox's log asserts grep the container output as-is, so the pattern has to stay inside one token. The Debug-rendered value `\"member_joined_at\"` — quotes included — is contiguous, and the quotes are what keep it from also matching `\"member_joined_at_...\"` or `\"root_sealed\"` from matching `\"root_sealed_for_group\"`.\nThe positive assertion is on the JOINER, not on node-1, and that distinction is easy to get wrong: these labels exist on the PUBLISH path only. A receiving node logs a different `op_kind` entirely — `add` / `join` / `remove`, from `MembershipOpKind::label` in `apply_signed_namespace_op.rs`. So node-1 has no `root_sealed*` line for a join it merely received, and asserting there would have matched node-1's own `GroupCreated` / `KeyDelivery` publishes instead — passing without ever testing a join.\nTWO THINGS THIS DOES NOT COVER, stated rather than left to be discovered.\n1. The RELAY path itself. Reaching it needs an admitter that endorses a join\n   while holding no key for the covering group, and merobox has no\n   declarative way to produce a keyless-but-endorsing responder — every node\n   here is keyed by the time it answers. So `root_relay_sealed` is not\n   asserted present. What is asserted is the property that has to hold on\n   every path, relay included: no join is ever in the clear. The relay\n   branch's own gate is covered by the unit tests in\n   `crates/node/src/sync/manager/relay_sealed_join.rs`.\n2. The SUBGROUP-targeted invitation join (`root_sealed_for_group`, #3858 /\n   #3859). `POST /admin-api/namespaces/:id/invite` refuses a non-root group\n   — *\"namespace_id must reference a root group (namespace)\"* — so a\n   subgroup invitation is only reachable through the `recursive` flag, which\n   the merobox `create_namespace_invitation` step does not expose. An\n   admin-push `add_group_members` is not a substitute: that publishes a\n   `MemberAdded` GroupOp, not a join, so it would exercise none of this.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_absent x2: v1 node logs",
+    "  assert_log_present x1: v1 node logs",
+    "  login (unknown) x2: checks what the dropped steps did"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "e2e-node-1",
+    "e2e-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Assert application installed",
+      "type": "assert",
+      "statements": [
+        "is_set({{app_id}})"
+      ]
+    },
+    {
+      "name": "Create namespace on node-1",
+      "type": "create_org",
+      "org_name": "Create namespace on node-1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Assert namespace created",
+      "type": "assert",
+      "statements": [
+        "is_set({{namespace_id}})"
+      ]
+    },
+    {
+      "name": "Invite node-2 to the namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invite_node2": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins the namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node2}}",
+      "account": "e2e-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-2",
+      "outputs": {
+        "identity_node2": "publicKey",
+        "account_node2": "publicKey"
+      }
+    },
+    {
+      "name": "Assert node-2 was admitted",
+      "type": "assert",
+      "statements": [
+        "is_set({{identity_node2}})",
+        "is_set({{account_node2}})"
+      ]
+    },
+    {
+      "name": "Wait for namespace governance to settle",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "List namespace members from node-1",
+      "type": "team_list",
+      "org": "{{namespace_id}}",
+      "account": "e2e-node-1",
+      "outputs": {
+        "ns_members": "members"
+      }
+    },
+    {
+      "name": "Assert the join converged on the admitter",
+      "type": "assert",
+      "statements": [
+        "is_set({{ns_members}})",
+        "contains({{ns_members}}, {{account_node2}})"
+      ]
+    }
+  ]
+}

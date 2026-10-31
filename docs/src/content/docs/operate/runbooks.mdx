@@ -29,8 +29,13 @@ learner of the system group once it is registered.
 2. Register it:
 
    ```bash
-   meroctl ops add-node 4 https://n4.eu1.example.com/ [--zone eu1-b]
+   meroctl --operator-key-file operator.key ops add-node 4 https://n4.eu1.example.com/ [--zone eu1-b]
    ```
+
+   Registering a node is an operator decision: the node answers `428
+   OPERATOR_SIGNATURE_REQUIRED` and meroctl signs it with the operator key, as
+   it does for `ops remove-node`, `ops move` and `ops set-quotas`. Only the
+   nodes in the first leader's `--peers` are registered without it, at genesis.
 
 3. The system leader adds it as a learner; the log shows `a registered node
    joined the system group`. `meroctl ops status` lists it under the system
@@ -90,12 +95,12 @@ and grow:
    app's leader). The node refuses to be removed while an app keeps a replica on it.
 
 2. Remove it, against the system leader (another node answers `421 NOT_LEADER`
-   with `details.leaderUrl`): `meroctl --ops-token T ops remove-node ID`
+   with `details.leaderUrl`): `meroctl --ops-token T --operator-key-file F ops remove-node ID`
    (`DELETE /ops/nodes/{id}`). It leaves the directory and the system group; a
    registered learner takes its vote while fewer than 3 voters are left.
 
-3. Stop the process and retire its data disk. The other nodes do not register it
-   again from their `--peers`; only `ops add-node` brings it back.
+3. Stop the process and retire its data disk. Only a signed `ops add-node`
+   brings it back.
 
 </Steps>
 

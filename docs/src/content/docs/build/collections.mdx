@@ -68,12 +68,13 @@ choosing a data structure, a cost and a write rule, not a merge.
 
 - **`UnorderedMap` / `UnorderedSet`** — your defaults. Each entry is its own
   entity, so a call that sets one key writes only that entry; a
-  `UnorderedMap<String, LwwRegister<String>>` is the pattern `apps/kv-store` uses.
+  `UnorderedMap<String, LwwRegister<String>>` is the pattern `apps/wasmer-fixtures/kv-store` uses.
 - **`SortedMap` / `SortedSet`** — the unordered pair with reads in key order:
   `range(a..b)`, `prefix(p)`, `page(offset, limit)`, `first()`, and `last()`.
   A cluster node keeps no ordered index, so each of these reads loads and sorts
   every entry ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
-  See `apps/sorted-kv-store`.
+  `apps/sorted-kv-store` and `apps/sorted-set-store` make the same reads on the
+  component SDK, through a `Table`'s cursor.
 - **`IndexedMap`** — an `UnorderedMap` whose value type declares what it is
   looked up by, so a list view is a query by field. Derive the declaration and
   query by index name:
@@ -101,9 +102,9 @@ choosing a data structure, a cost and a write rule, not a merge.
   switching a field from `UnorderedMap` to `IndexedMap` needs no migration. A
   cluster node keeps no secondary index, so each query scans every entry,
   `O(n)` ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
-  See `apps/indexed-issue-tracker`,
-  and `apps/indexed-forum` for a compound index over a list and `IndexedMap`
-  beside authored and set collections.
+  On the component SDK a `Table` declares the same lookups as replicated
+  indexes (`#[table(index(..), count(..))]`): see `apps/indexed-issue-tracker`,
+  and `apps/indexed-forum` for compound and optional-field indexes.
 - **`Vector`** — append + index. `push` assigns each element a stable id, so
   iteration order is preserved across reloads.
 - **`LwwRegister<T>`** — wrap any scalar. This is how you store a `String`,
@@ -202,8 +203,8 @@ let mut scores: UnorderedMap<u64, LwwRegister<String>> = UnorderedMap::new();
 ```
 
 The fix is a thin **newtype** that wraps an already-byte-encodable representation and
-forwards `AsRef<[u8]>` to it. This is the `apps/custom-key-store` pattern — and it is
-also where you put key normalization or validation:
+forwards `AsRef<[u8]>` to it. It is also where you put key normalization or
+validation:
 
 ```rust
 #[derive(Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -231,6 +232,35 @@ The same shape works for an id newtype over `[u8; 32]`. For a numeric key, wrap 
 matches numeric order; see [Modeling your state](/build/state-modeling/) for why
 little-endian keys sort incorrectly.
 
+On the component SDK a key is a tuple of typed parts (string, int, bytes, bool,
+none) rather than raw bytes, so the newtype says which part it is by
+implementing `ToKeyPart`; a struct without it is rejected at compile time the
+same way. `apps/custom-key-store` is this pattern there, with the normalization
+in the constructor:
+
+```rust
+use calimero_app_sdk::prelude::*;
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Slug(String);
+
+impl Slug {
+    fn new(raw: &str) -> Self { Self(raw.trim().to_lowercase()) }
+}
+
+impl ToKeyPart for Slug {          // one string key part: slugs sort as their strings
+    fn to_key_part(&self) -> KeyPart { KeyPart::Str(self.0.clone()) }
+}
+
+#[app::state(version = 1)]
+pub struct CustomKeyStore {
+    pages: UnorderedMap<Slug, String>,
+}
+```
+
+An id over `[u8; 32]` maps to a bytes part and a `u64` to an int part, which
+sorts numerically with no byte-order trick.
+
 ## Access-controlled collections
 
 These add a write rule to a collection. The rule is checked when the run
@@ -256,8 +286,7 @@ field, not only the ones that remember to check.
   `owner_of` and `owned_by_me` added. `Authored<C>` is `Guarded<C, Owner>`: one
   entry carries one stamp, so the write policy is a type parameter rather than
   wrappers that nest. `Authored<IndexedMap>` stores exactly an `AuthoredMap`'s
-  bytes, so switching a field between them needs no migration. See
-  `apps/indexed-forum`.
+  bytes, so switching a field between them needs no migration.
 
 - **`AuthoredMap<K, V>` / `AuthoredVector<V>`** — *per-entry ownership*.
   `AuthoredMap` is `Authored<UnorderedMap<K, V>>` under its original name. Anyone
@@ -283,15 +312,19 @@ field, not only the ones that remember to check.
   collection per topic, per channel) so a flood in one shard costs only its
   readers.
 
-  Worked example in `apps/authored-sorted-kv-store`, with
-  `workflows/authored-sorted-kv-store.yml` checking that authored state is read
-  back by another account and that the owner gate refuses that account's edit.
+  `apps/authored-sorted-kv-store` is the same noticeboard on the component SDK:
+  a `Table` whose `byTopic` index is the slice, and an author check in `edit` /
+  `retract` against `env::caller()`. Its `scenarios/authored-sorted-kv-store.json`
+  drives the properties: the owner gate refused to the *other* account, two
+  authors on one `seq`, and a flood under an unread topic leaving the slice
+  unchanged.
   </Aside>
 
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
   only write its own slot (`insert` targets `env::account_id()`); reads are
   unrestricted (`get` for the current user, `get_for_user(key)` for any). Use for
-  per-user preferences or state. See `apps/kv-store-with-user-and-frozen-storage`.
+  per-user preferences or state. `apps/kv-store-with-user-and-frozen-storage`
+  shows the same rule on the component SDK: a table keyed by the caller's account.
 
 - **`SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>`** —
   *writer-set guarded*. The value lives behind a set of authorized writer
@@ -301,7 +334,7 @@ field, not only the ones that remember to check.
   per-operation granularity (read / write / delete / admin). Writers are
   rotatable (`rotate_writers`), and the node checks each rotation after the run
   against the writer set it replaces. See
-  `apps/kv-store-with-shared-storage`.
+  `apps/wasmer-fixtures/kv-store-with-shared-storage`.
 
 - **`AccessControl`** — a role registry built on `SharedStorage` whose writer set
   is the admin tier. Admins grant/revoke named roles (`grant(role, who)`,
@@ -316,15 +349,18 @@ field, not only the ones that remember to check.
   contests). `status` is `Free`, `Pending`, `Owned`, `Lost` or `Contested`, and
   `owner_of` is `Some` only once a verdict names an owner. See
   [choosing a collection](/build/choosing-state/#unique-names-registry),
-  `apps/name-registry` (`Tee`) and `apps/name-registry-admin` (`Admin`).
+  and `apps/name-registry` (`Tee`). `apps/name-registry-admin` is the `Admin`
+  rules on the component SDK: claim, verdict and admin tables, an admin check in
+  `resolve`, and the first claim the log applied winning.
 
 ## Immutable / content-addressed
 
 - **`FrozenStorage<T>`** — a map whose key is the `SHA256` of the value. Entries
   are immutable: no overwrite, no remove. `insert(value)` returns the hash;
   inserting identical content again stores nothing new. Use for
-  archives, static assets, or any content-addressed immutable data. See
-  `apps/kv-store-with-user-and-frozen-storage`.
+  archives, static assets, or any content-addressed immutable data.
+  `apps/kv-store-with-user-and-frozen-storage` shows the same rule on the
+  component SDK: a table keyed by a SHA-256 the guest computes, never updated.
 
 - **`ContentAddressed<C>`** — the same rule over any keyed collection with
   `[u8; 32]` keys: `ContentAddressed<IndexedMap<[u8; 32], Event>>` is an

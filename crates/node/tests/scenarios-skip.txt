@@ -1,0 +1,3 @@
+# Scenarios `cargo test -p calimero-node --test scenarios` reports ignored, one per line:
+#   <path relative to the repository root> <why it cannot pass yet>
+# `-- --include-ignored` (or SCENARIO_INCLUDE_SKIPPED=1) runs them anyway.

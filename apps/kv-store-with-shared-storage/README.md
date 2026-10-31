@@ -1,24 +1,33 @@
-# KV Store with SharedStorage
+# kv-store-with-shared-storage
 
-Demonstrates the `SharedStorage<T>` primitive (issue #2197): a single-slot
-group-writable storage with a mutable writer set.
+A shared value and a shared map, each writable only by the accounts in its own writer
+set, on the component SDK. v1 expressed this with `SharedStorage<T>`, a collection whose
+writer set storage checked on every node; here a writer set is rows of the `writers`
+table (`(field, account)`, a count per field) and every write checks the caller against
+it first. The app owner, who runs `init`, is the first writer of both fields.
 
-The app holds a `SharedStorage<LwwRegister<String>>` — a single-slot
-register writable by any signer in the writer set. Authority lives at
-the collection level (one writer set governs the whole value), unlike
-`AuthoredMap` which authors per entry. Rotations are signed by a
-current writer.
+The wasmer `SharedStorage` build, which `calimero-node`'s `shared_storage` test runs, is
+[`../wasmer-fixtures/kv-store-with-shared-storage`](../wasmer-fixtures/kv-store-with-shared-storage).
 
-## Methods
+## ABI
 
-- `set_shared(value)` — replace the single-slot value (writer-only)
-- `get_shared()` — read (anyone)
-- `rotate_writers(new_writers)` — replace the writer set (current writer only)
+| Method | Kind | Params | Returns | Notes |
+| --- | --- | --- | --- | --- |
+| `setShared` | call | `value` | | writers of the value; `SharedSet` |
+| `getShared` | view | | `string` | `""` before the first write |
+| `mapSet` | call | `key, value` | | writers of the map |
+| `mapGet` | view | `key` | `string \| null` | |
+| `myAccount` | view | | `string` | the caller's account, as a writer set names it |
+| `rotateWriters` | call | `newWriters: [string]` | | writers of the value; replaces the value's set only (the map keeps its own); `WritersRotated { count }` |
+| `tryRotateWriters` | call | `newWriters` | `bool` | `false` instead of `NotWriter` |
+| `writerCount` | view | | `u64` | the value's writers |
 
-## Building
+Errors: `NotWriter { field }` (`"value"` or `"map"`), `NoWriters`, `TooManyWriters { max }`.
 
-```bash
-cargo mero build
-```
+## Tests
 
-Produces `res/kv_store_with_shared_storage.wasm`.
+`cargo test` runs `tests/harness.rs` (v1's tests and the refusals) and
+`scenarios/shared-storage.json`, the merobox workflow `test_shared_storage.yml` as a
+scenario, in the org of `shared-storage.org.json`. `scenarios/forged-writes.json`
+replays v1's forged writes and rotation (a non-writer setting the value or the map,
+or rotating the value's writers) as calls, each refused by the writer check.

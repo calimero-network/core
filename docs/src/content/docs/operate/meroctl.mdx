@@ -41,7 +41,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade` and `ops upgrade-namespace` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move` and `ops set-quotas` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -58,8 +58,13 @@ which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
 That holds for `context update`, `context transfer`, `namespace delete`, `namespace outbound`,
-`namespace approve-release`, `account outbound`, `account approve-release`,
-`group upgrade trigger` and `group upgrade retry`.
+`namespace approve-release`, `namespace invite`, `namespace leave`,
+`namespace members add`, `namespace members remove`, `namespace capabilities`,
+`account outbound`, `account approve-release`, `account api-key create`,
+`account device revoke`, `group members add`, `group members remove`,
+`group settings`, `group leave`, `group upgrade trigger` and
+`group upgrade retry`. `account device add` takes `--approve-with FILE`, a
+passkey file the account already has.
 
 ## node
 
@@ -230,9 +235,9 @@ The signed-in account.
 | `account show` | `GET /auth/me` | The account, its devices, organizations and approvals. |
 | `account usage` | `GET /auth/usage` | What it uses against its quotas. |
 | `account device list` (`ls`) | `GET /auth/me` | Its devices (passkeys) and the current one. |
-| `account device add --dev-passkey FILE [--origin URL]` | `/auth/passkeys/add/*` | Add a device: a new file passkey (development clusters). `FILE` must not exist. |
+| `account device add --dev-passkey FILE --approve-with EXISTING [--origin URL]` | `/auth/passkeys/add/*` | Add a device: a new file passkey (development clusters), approved with a passkey file the account already has. `FILE` must not exist. |
 | `account device label CREDENTIAL LABEL` | `POST /auth/passkeys/{cred}` | Name a device; `""` clears the name. |
-| `account device revoke CREDENTIAL` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. |
+| `account device revoke CREDENTIAL [--dev-passkey FILE]` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. Approved with a passkey. |
 | `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
 | `account api-key revoke KEY_ID` | `DELETE /auth/apikeys/{key}` | Revoke one. |

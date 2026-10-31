@@ -60,13 +60,10 @@ jobs:
       - name: Check every rust-cache group hashes one environment
         run: python3 scripts/check-rust-cache-groups.py
 
-      # Fails when a merobox workflow under workflows/ or apps/*/workflows/ is
-      # run by no e2e.yml shard and is not marked not_applicable with a reason.
-      - name: Test the scenario-coverage check
-        run: python3 scripts/tests/check-scenario-coverage-test.py
-
-      - name: Check every merobox workflow runs somewhere
-        run: python3 scripts/check-scenario-coverage.py
+      # Every scenario file on disk is discovered by the runner or excluded with a reason.
+      # The runner checks the same when it runs (e2e.yml), but only this job is required.
+      - name: Check every scenario file runs
+        run: python3 scripts/check-scenario-discovery.py
 
       - name: Decide which jobs this change reaches
         id: decide
@@ -211,11 +208,12 @@ jobs:
       # The node's cluster tests and meroctl's run real app wasm: plain builds
       # (read from target/wasm32-unknown-unknown/app-release) and cargo-mero builds,
       # whose embedded ABI the node reads (read from apps/<app>/res).
-      # crates/node/AGENTS.md "Commands" lists the same set.
+      # crates/node/AGENTS.md "Commands" lists the same set. The org-gated built here
+      # is the wasmer fixture (apps/wasmer-fixtures/org-gated).
       - name: Build the node test fixtures
         run: |
           cargo build -p kv-store -p org-gated -p outbound-probe --target wasm32-unknown-unknown --profile app-release
-          for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
+          for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
             migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
             migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
             migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
@@ -238,13 +236,28 @@ jobs:
 
       - name: Cargo test (standalone v2 apps)
         if: ${{ !cancelled() }}
-        # Rooms and the v2 fixtures are workspaces of their own, so the workspace run above
-        # never reaches their harness tests. One target dir serves the three.
+        # Apps on the component SDK are workspaces of their own, so the workspace run above
+        # never reaches their harness tests. Each is found by its calimero-app-sdk dependency;
+        # one target dir serves them all.
         env:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
-          for app in apps/rooms apps/v2-fixtures/kv apps/v2-fixtures/org-gated; do
-            cargo test --manifest-path "$app/Cargo.toml"
+          for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
+            cargo test --manifest-path "$manifest"
+          done
+
+      # The same crates as the guests they ship: clippy on the host (tests included) and on
+      # wasm32-wasip2, and the release component build the node loads.
+      - name: Clippy and wasm32-wasip2 build (standalone v2 apps)
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_TARGET_DIR: target/standalone-apps
+        run: |
+          set -euo pipefail
+          for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
+            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
+            cargo clippy --manifest-path "$manifest" --target wasm32-wasip2 -- -D warnings
+            cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
           done
 
   rust-features:
@@ -400,7 +413,7 @@ jobs:
         env:
           WASM_PROFILING: "true"
         run: |
-          cargo mero build --manifest-path apps/kv-store/Cargo.toml
+          cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
           cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
           cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 

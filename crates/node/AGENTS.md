@@ -88,13 +88,40 @@ is its command line.
   whichever organization keeps it. `BindPublisher` carries a passkey consent
   over the key's current binding generation; `SetReleaseDeadline` the
   operator's signature (`cluster / __release_deadline / { version, after }`;
-  `after: null` lifts it). The consent page (`consent_page::act`) logs the same
+  `after: null` lifts it). Credentials and memberships carry the person's
+  consent too (`account:<a>`: `__add_passkey { credentialId, publicKey }`,
+  signed by a passkey the account already has; `__remove_passkey
+  { credentialId }`; `__create_api_key`, `system::api_key_args`, the key's
+  hash included; `org:<org>`: `__set_org_role { account, role }`,
+  `__remove_member { account }`, `__set_team_member { team, account, lead,
+  role, capabilities }`, `__remove_team_member { team, account }`,
+  `__set_capabilities { team, account, capabilities }`,
+  `__set_default_capabilities { capabilities }`, `__create_invite`,
+  `system::invite_args`). A step-up whose arguments the node makes (an API
+  key, an invite token, the registered credential) goes through
+  `api::consent_minted`: the first request keeps them, and what the retry
+  needs but must not log (`Pending::Confirm::carry`), with the challenge.
+  Invites are kept under the token's Ed25519 public key
+  (`proof::invite_key`); `RedeemInvite` carries the token key's signature
+  (`proof::sign_invite_redeem`), so a node that only saw the log cannot
+  redeem one. The fleet carries the operator's signature (`cluster /
+  __register_node { id, addr, zone }`, `__remove_node { id }`,
+  `__set_quotas { quotas }`; `<app> / __set_replicas { replicas }`, one
+  signature for both of a move's writes: the union applies with it unspent,
+  the target spends it). The configured peers come with `Genesis { nodes }`;
+  `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
   consent as the API, its assertion made on the node's own origin (`apply`
   checks the signature and the statement, not the origin). Tests run
   commands' own authority rules through `run_authorized` (`run_unproven` with
   the new-work refusal). Test clusters start with the harness's
-  operator key (`ops_signed` signs like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
-  `operator_decisions_need_the_operator_signature`, `system::tests`.
+  operator key (`ops_signed` and `ops_signed_delete` sign like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
+  `forged_credentials_memberships_and_redemptions_are_refused`,
+  `operator_decisions_need_the_operator_signature`,
+  `credentials_memberships_and_the_fleet_are_approved_where_they_are_made`,
+  `system::tests` (`credentials_need_the_accounts_own_passkey`,
+  `memberships_need_the_actors_passkey`, `invites_are_redeemed_with_the_tokens_key`,
+  `the_fleet_and_quotas_need_the_operators_signature`,
+  `a_replica_move_is_signed_once_over_its_target`).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -329,7 +356,7 @@ is its command line.
   then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
   Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
   `membership::tests`.
-- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` records it; only the operator's signed `/ops/nodes` registers it again. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
@@ -403,7 +430,7 @@ is its command line.
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
   client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
   that did commit. System-log forwards keep the long timeout: some system commands
-  are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
+  are not idempotent yet. Regression: `frozen-leader` in `tests/fault/suite.py`.
 - **Leader races**: `Group::propose` takes no leadership round before a call's
   append, so a deposed leader may run a call on stale state; its entry never
   commits, or commits as a no-op (`base_index` ≠ the app's last entry,
@@ -783,7 +810,7 @@ running cluster, event audiences, search indexes that survive a restart (rebuilt
 ```bash
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
 # fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
-for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
+for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
   migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
   migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
   migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
@@ -792,10 +819,20 @@ cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
 # tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
-# A4, the fault test (merod run --dev processes on ports 7600-7699, above the merobox
-# workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
+# every scenario file on an in-process cluster (runner: tests/harness/scenario.rs): apps/*/scenarios/*.json
+# (+ <name>.org.json), apps/*/scenarios/cluster/**/*.json, workflows/**/scenarios/**/*.json;
+# tests/scenarios-skip.txt lists the ones reported, not run (docs: contribute/testing#scenarios)
+cargo test -p calimero-node --test scenarios [-- FILTER]   # SCENARIO_FILTER, SCENARIO_SHARD=k/n
+# A4, the fault test (merod run --dev processes on ports 7600-7699, shifted by
+# WORKFLOW_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
+# the process suite (tests/fault/README.md): crash/freeze/restart, frozen leader, orgs and
+# keys, signed packages, rolling upgrade under load, the kv-store soak; kv_store.wasm (the
+# wasmer apps/wasmer-fixtures/kv-store) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [--nightly]
+python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
+python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help

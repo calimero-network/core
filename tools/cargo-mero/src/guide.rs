@@ -21,7 +21,7 @@ Signing:
   cargo mero bundle --key key.json --no-icon    sign with it (CI: export MERO_SIGN_KEY=...)
   cargo mero bundle --dev --no-icon             well-known dev key: fine locally, REFUSED by the registry
 
-Next steps: e2e-test networked flows with merobox (https://github.com/calimero-network/merobox).
+Next steps: test the app with scenario files and a cluster (https://calimero-network.github.io/core/build/testing/).
 Full docs: https://calimero-network.github.io/core/
 ";
 

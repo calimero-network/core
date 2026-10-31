@@ -1,454 +1,185 @@
-#![allow(clippy::len_without_is_empty)]
+//! A string key-value store shared by every member of the app's organization: the
+//! component SDK's basic example. State is one table of entries keyed by their key and a
+//! counter of how many there are; every change emits an event to everyone the app reaches.
+//!
+//! Method names and arguments are the ABI's camelCase ones (`updateIfExists`,
+//! `getOrInsert`, `getResult`, ..). The wasmer build of the same store, which the node's
+//! own tests run, is `apps/wasmer-fixtures/kv-store`.
 
-use std::collections::BTreeMap;
+use calimero_app_sdk::prelude::*;
 
-use calimero_sdk::app;
-use calimero_sdk::serde::Serialize;
-use calimero_storage::collections::unordered_map::Entry;
-use calimero_storage::collections::{LwwRegister, UnorderedMap};
-use thiserror::Error;
+/// One stored value.
+#[derive(Record)]
+#[table(key = "key")]
+pub struct Entry {
+    /// The key it is stored under; any string, the empty string included.
+    pub key: String,
+    /// The value.
+    pub value: String,
+}
 
-/// A string-to-string map shared by every member of the context.
-#[app::state(emits = for<'a> Event<'a>)]
+/// The store.
+#[app::state(version = 1)]
 pub struct KvStore {
-    /// Every stored value by key; concurrent writes to one key keep the latest.
-    items: UnorderedMap<String, LwwRegister<String>>,
+    /// Every value by key. The leader applies one write at a time, so a later write to a
+    /// key replaces an earlier one.
+    entries: Table<Entry>,
+    /// How many keys `entries` holds.
+    size: Counter,
+}
+
+/// A typed failure, `{code, fields}` on the wire.
+#[app::error]
+pub enum Error {
+    /// No value is stored under `key`.
+    NotFound { key: String },
 }
 
 /// A change to the store, emitted after the write that caused it.
 #[app::event]
-pub enum Event<'a> {
+pub enum Event {
     /// A new key was stored.
-    Inserted {
-        /// The key that was added.
-        key: &'a str,
-        /// The value stored under it.
-        value: &'a str,
-    },
+    Inserted { key: String, value: String },
     /// An existing key's value was replaced.
-    Updated {
-        /// The key whose value changed.
-        key: &'a str,
-        /// The value it now holds.
-        value: &'a str,
-    },
+    Updated { key: String, value: String },
     /// A key and its value were removed.
-    Removed {
-        /// The key that was removed.
-        key: &'a str,
-    },
+    Removed { key: String },
     /// Every key was removed from a non-empty store.
     Cleared,
 }
 
-/// A typed failure returned as `{"kind": ..., "data": ...}`.
-#[derive(Debug, Error, Serialize)]
-#[serde(crate = "calimero_sdk::serde")]
-#[serde(tag = "kind", content = "data")]
-pub enum Error<'a> {
-    /// No value is stored under the key carried in `data`.
-    #[error("key not found: {0}")]
-    NotFound(&'a str),
-}
+/// The most entries one `entries` call lists, and one `clear` pass removes.
+const PAGE: u32 = 1000;
 
 #[app::logic]
+#[allow(clippy::len_without_is_empty)]
 impl KvStore {
-    /// Creates the empty store. The node runs it once, when the context is created.
-    ///
-    /// # Errors
-    ///
-    /// Fails with `Cannot initialize over already existing state.` when the
-    /// context already has a store.
+    /// Creates the empty store. The node runs it once, when the app is created.
     #[app::init]
-    pub fn init() -> KvStore {
-        KvStore {
-            items: UnorderedMap::new(),
-        }
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
     }
 
-    /// Stores `value` under `key`, replacing any value already there.
-    ///
-    /// Emits `Inserted` for a new key and `Updated` for an existing one.
-    /// Concurrent writes to the same key from different members converge to the
-    /// latest write.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to write. Any string, including the empty string.
-    /// * `value` - The value to store.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting", "value": "hello"}
-    /// ```
+    /// Stores `value` under `key`, replacing any value already there. Emits `Inserted`
+    /// for a new key and `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-        app::log!("Setting key: {:?} to value: {:?}", key, value);
-
-        if self.items.contains(&key)? {
-            app::emit!(Event::Updated {
-                key: &key,
-                value: &value,
-            });
+        env::log(&format!("set {key:?} = {value:?}"));
+        let event = if self.entries.contains(&key)? {
+            Event::Updated {
+                key: key.clone(),
+                value: value.clone(),
+            }
         } else {
-            app::emit!(Event::Inserted {
-                key: &key,
-                value: &value,
-            });
-        }
-
-        self.items.insert(key, value.into())?;
-
+            self.size.add(1)?;
+            Event::Inserted {
+                key: key.clone(),
+                value: value.clone(),
+            }
+        };
+        self.entries.upsert(Entry { key, value })?;
+        env::emit(event, Audience::All)?;
         Ok(())
     }
 
-    /// Replaces the value under `key` only if the key already exists, and returns
-    /// whether it did.
-    ///
-    /// Emits `Updated` when the value is replaced.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to update. It must already exist for anything to change.
-    /// * `value` - The new value.
-    ///
-    /// # Returns
-    ///
-    /// `true` when `key` existed and now holds `value`; `false` when `key` was
-    /// absent, in which case nothing was written.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting", "value": "hi"}
-    /// ```
+    /// Replaces the value under `key` only if the key exists, and says whether it did:
+    /// `false` writes nothing. Emits `Updated` when the value is replaced.
     pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bool> {
-        // Demonstrates `get_mut`: the guard persists the change, with a new
-        // timestamp, when it is dropped.
-        app::log!("Updating if exists: {:?} -> {:?}", key, value);
-
-        if let Some(mut v) = self.items.get_mut(&key)? {
-            // Modifying the LwwRegister via the guard
-            // This updates the value and timestamp in-place
-            v.set(value.clone());
-
-            app::emit!(Event::Updated {
-                key: &key,
-                value: &value,
-            });
-            return Ok(true);
+        let updated = self.entries.update(&key, |e| e.value.clone_from(&value))?;
+        if updated {
+            env::emit(Event::Updated { key, value }, Audience::All)?;
         }
-
-        Ok(false)
+        Ok(updated)
     }
 
-    /// Returns the value under `key`, first storing `value` there if the key is
-    /// absent.
-    ///
-    /// An existing value is returned unchanged and `value` is ignored. Emits
-    /// `Inserted` only when the key was absent.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to read, or to create when absent.
-    /// * `value` - The value to store when `key` is absent.
-    ///
-    /// # Returns
-    ///
-    /// The value `key` holds after the call: the existing value when `key` was
-    /// present, otherwise `value`.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting", "value": "hello"}
-    /// ```
-    #[app::idempotent]
+    /// The value under `key`, first storing `value` there if the key is absent (an
+    /// existing value is returned unchanged). Emits `Inserted` only when it stores.
     pub fn get_or_insert(&mut self, key: String, value: String) -> app::Result<String> {
-        // Demonstrates the `entry` API combined with `or_insert`.
-        app::log!("Get or insert: {:?} -> {:?}", key, value);
-
-        let entry = self.items.entry(key.clone())?;
-
-        // Check if vacant to emit event, without consuming the entry
-        if let Entry::Vacant(_) = &entry {
-            app::emit!(Event::Inserted {
-                key: &key,
-                value: &value,
-            });
+        if let Some(e) = self.entries.get(&key)? {
+            return Ok(e.value);
         }
-
-        // Use the high-level API to handle the insertion or retrieval
-        let val = entry.or_insert(LwwRegister::new(value))?;
-
-        Ok(val.get().clone())
-    }
-
-    /// Returns every key with its value, as a JSON object ordered by key.
-    ///
-    /// # Returns
-    ///
-    /// A JSON object mapping every key to its value, ordered by key; `{}` when the
-    /// store is empty.
-    pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
-        app::log!("Getting all entries");
-
-        Ok(self
-            .items
-            .entries()?
-            .map(|(k, v)| (k, v.get().clone()))
-            .collect())
-    }
-
-    /// Returns the number of keys in the store.
-    ///
-    /// # Returns
-    ///
-    /// The number of keys in the store; `0` when it is empty.
-    pub fn len(&self) -> app::Result<usize> {
-        app::log!("Getting the number of entries");
-
-        Ok(self.items.len()?)
-    }
-
-    /// Returns the value under `key`, or `null` when the key is absent.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to read.
-    ///
-    /// # Returns
-    ///
-    /// The value stored under `key`, or `null` when `key` is absent.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting"}
-    /// ```
-    pub fn get(&self, key: &str) -> app::Result<Option<String>> {
-        app::log!("Getting key: {:?}", key);
-
-        Ok(self.items.get(key)?.map(|v| v.get().clone()))
-    }
-
-    /// Returns the value under `key`, aborting the call when the key is absent.
-    ///
-    /// Kept to show what a guest panic looks like; use `get` or `get_result`.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to read. It must exist.
-    ///
-    /// # Returns
-    ///
-    /// The value stored under `key`.
-    ///
-    /// # Errors
-    ///
-    /// Fails with a guest panic (`key not found`) when `key` is absent.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting"}
-    /// ```
-    pub fn get_unchecked(&self, key: &str) -> app::Result<String> {
-        app::log!("Getting key without checking: {:?}", key);
-
-        // this panics, which we do not recommend
-        Ok(self.items.get(key)?.expect("key not found").get().clone())
-    }
-
-    /// Returns the value under `key`, failing with a typed error when it is absent.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to read.
-    ///
-    /// # Returns
-    ///
-    /// The value stored under `key`.
-    ///
-    /// # Errors
-    ///
-    /// Fails with `{"kind": "NotFound", "data": "<key>"}` when `key` is absent.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting"}
-    /// ```
-    pub fn get_result(&self, key: &str) -> app::Result<String> {
-        app::log!("Getting key, possibly failing: {:?}", key);
-
-        let Some(value) = self.get(key)? else {
-            app::bail!(Error::NotFound(key));
-        };
-
+        self.entries.insert(Entry {
+            key: key.clone(),
+            value: value.clone(),
+        })?;
+        self.size.add(1)?;
+        env::emit(
+            Event::Inserted {
+                key,
+                value: value.clone(),
+            },
+            Audience::All,
+        )?;
         Ok(value)
     }
 
-    /// Removes `key` and returns the value it held, or `null` when it was absent.
-    ///
-    /// Emits `Removed` only when a value was actually removed.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to remove.
-    ///
-    /// # Returns
-    ///
-    /// The value `key` held before the call, or `null` when `key` was absent.
-    ///
-    /// # Examples
-    ///
-    /// ```json
-    /// {"key": "greeting"}
-    /// ```
-    #[app::destructive]
-    #[app::idempotent]
-    pub fn remove(&mut self, key: &str) -> app::Result<Option<String>> {
-        app::log!("Removing key: {:?}", key);
-
-        // Only emit `Removed` when a value was actually present - emitting for
-        // an absent key would broadcast a change that never happened.
-        let removed = self.items.remove(key)?.map(|v| v.get().clone());
-        if removed.is_some() {
-            app::emit!(Event::Removed { key });
-        }
-
-        Ok(removed)
+    /// Every key with its value, as a JSON object ordered by key (up to 1000 keys);
+    /// `{}` when the store is empty.
+    #[app::view]
+    pub fn entries(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self.entries.scan(FindOpts::default().limit(PAGE))?;
+        Ok(page.items.into_iter().map(|e| (e.key, e.value)).collect())
     }
 
-    /// Removes every key.
-    ///
-    /// Emits `Cleared` only when the store was not already empty.
-    #[app::destructive]
-    #[app::idempotent]
+    /// The number of keys; `"0"` when the store is empty.
+    #[app::view]
+    pub fn len(&self) -> app::Result<u64> {
+        Ok(self.size.get()?)
+    }
+
+    /// The value under `key`, or `null` when it is absent.
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.entries.get(&key)?.map(|e| e.value))
+    }
+
+    /// The value under `key`; a missing key aborts the run (a trap, not an app error).
+    /// Kept to show what a guest panic looks like: use `get` or `getResult`.
+    #[app::view]
+    pub fn get_unchecked(&self, key: String) -> app::Result<String> {
+        #[allow(clippy::expect_used, reason = "this method exists to show a panic")]
+        let entry = self.entries.get(&key)?.expect("key not found");
+        Ok(entry.value)
+    }
+
+    /// The value under `key`; `NotFound { key }` when it is absent.
+    #[app::view]
+    pub fn get_result(&self, key: String) -> app::Result<String> {
+        match self.entries.get(&key)? {
+            Some(e) => Ok(e.value),
+            None => Err(Error::NotFound { key }.into()),
+        }
+    }
+
+    /// Removes `key` and returns the value it held, or `null` when it was absent. Emits
+    /// `Removed` only when a value was removed.
+    pub fn remove(&mut self, key: String) -> app::Result<Option<String>> {
+        let Some(old) = self.entries.get(&key)? else {
+            return Ok(None);
+        };
+        self.entries.remove(&key)?;
+        self.size.add(-1)?;
+        env::emit(Event::Removed { key }, Audience::All)?;
+        Ok(Some(old.value))
+    }
+
+    /// Removes every key, as any member may (v1's `clear`, no confirmation). Emits
+    /// `Cleared` only when the store was not already empty.
     pub fn clear(&mut self) -> app::Result<()> {
-        app::log!("Clearing all entries");
-
-        // Only emit `Cleared` when the map had entries, and only after the
-        // clear succeeds.
-        let was_non_empty = !self.items.is_empty()?;
-        self.items.clear()?;
-        if was_non_empty {
-            app::emit!(Event::Cleared);
+        let mut removed = false;
+        loop {
+            let page = self.entries.scan(FindOpts::default().limit(PAGE))?;
+            if page.items.is_empty() {
+                break;
+            }
+            for e in page.items {
+                self.entries.remove(&e.key)?;
+                self.size.add(-1)?;
+                removed = true;
+            }
         }
-
+        if removed {
+            env::emit(Event::Cleared, Audience::All)?;
+        }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use calimero_sdk::testing::TestHost;
-    use calimero_storage::testing::converge_app;
-
-    use super::*;
-
-    #[test]
-    fn a_script_run_beside_test_host() {
-        converge_app(KvStore::init)
-            .replicas(2)
-            .ops(|s| {
-                let _ = s.set("a".into(), "1".into());
-            })
-            .invariant("the key is present", |s| s.len().unwrap_or(0) == 1)
-            .assert_all_replicas_equal();
-    }
-
-    #[test]
-    fn set_get_len_remove() {
-        let mut app = TestHost::new(KvStore::init);
-
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
-        assert_eq!(app.view(|s| s.len()).unwrap(), 1);
-
-        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
-        assert_eq!(app.view(|s| s.get("k")).unwrap(), None);
-        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
-    }
-
-    #[test]
-    fn entries_and_clear() {
-        let mut app = TestHost::new(KvStore::init);
-
-        app.call(|s| s.set("a".into(), "1".into())).unwrap();
-        app.call(|s| s.set("b".into(), "2".into())).unwrap();
-
-        let entries = app.view(|s| s.entries()).unwrap();
-        assert_eq!(entries.get("a"), Some(&"1".to_owned()));
-        assert_eq!(entries.get("b"), Some(&"2".to_owned()));
-
-        app.call(|s| s.clear()).unwrap();
-        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
-    }
-
-    #[test]
-    fn update_if_exists_and_get_or_insert() {
-        let mut app = TestHost::new(KvStore::init);
-
-        // Nothing to update yet.
-        assert!(!app
-            .call(|s| s.update_if_exists("k".into(), "v".into()))
-            .unwrap());
-
-        // Inserts on first call, returns the existing value afterwards.
-        assert_eq!(
-            app.call(|s| s.get_or_insert("k".into(), "first".into()))
-                .unwrap(),
-            "first".to_owned()
-        );
-        assert_eq!(
-            app.call(|s| s.get_or_insert("k".into(), "second".into()))
-                .unwrap(),
-            "first".to_owned()
-        );
-
-        // Now the key exists, so the update lands.
-        assert!(app
-            .call(|s| s.update_if_exists("k".into(), "v".into()))
-            .unwrap());
-        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
-    }
-
-    #[test]
-    fn set_emits_event() {
-        let mut app = TestHost::new(KvStore::init);
-
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        assert_eq!(app.events().len(), 1);
-    }
-
-    #[test]
-    fn remove_absent_and_clear_empty_emit_nothing() {
-        let mut app = TestHost::new(KvStore::init);
-
-        // Removing a key that was never set must not broadcast a change.
-        assert_eq!(app.call(|s| s.remove("missing")).unwrap(), None);
-        assert!(app.events().is_empty());
-
-        // Clearing an already-empty store likewise emits nothing.
-        app.call(|s| s.clear()).unwrap();
-        assert!(app.events().is_empty());
-
-        // A real removal still emits exactly one `Removed` event.
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        let _ = app.take_events();
-        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
-        let events = app.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, "Removed");
-
-        // And a real clear (non-empty store) emits exactly one `Cleared`.
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        let _ = app.take_events();
-        app.call(|s| s.clear()).unwrap();
-        let events = app.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, "Cleared");
     }
 }

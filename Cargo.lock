@@ -457,15 +457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "authored-sorted-kv-store"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2076,14 +2067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "components-demo"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2665,14 +2648,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "custom-key-store"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
 ]
 
 [[package]]
@@ -4613,24 +4588,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
 
 [[package]]
-name = "indexed-forum"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "indexed-issue-tracker"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4998,15 +4955,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kv-store-init"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "kv-store-with-handlers"
 version = "0.0.0"
 dependencies = [
@@ -5021,16 +4969,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "kv-store-with-user-and-frozen-storage"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "hex",
  "thiserror 2.0.21",
 ]
 
@@ -5829,7 +5767,6 @@ dependencies = [
 name = "meroctl"
 version = "0.0.0"
 dependencies = [
- "base64 0.23.1",
  "calimero-build-utils",
  "calimero-bundle",
  "calimero-client",
@@ -6098,15 +6035,6 @@ checksum = "a8afc6df942f4c022d70c5725e18df1a705773870e5b7f96fde94ca0334ce77a"
 
 [[package]]
 name = "name-registry"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "name-registry-admin"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",
@@ -6872,15 +6800,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "permissions-showcase"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
 
 [[package]]
 name = "petgraph"
@@ -9370,23 +9289,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sorted-kv-store"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "sorted-set-store"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9863,24 +9765,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "vmm-sys-util",
-]
-
-[[package]]
-name = "team-metrics-custom"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "serial_test",
-]
-
-[[package]]
-name = "team-metrics-macro"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "serial_test",
 ]
 
 [[package]]

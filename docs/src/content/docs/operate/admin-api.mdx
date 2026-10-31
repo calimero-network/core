@@ -102,9 +102,9 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration }` → a session | `login` |
 | `POST /auth/passkey/login/begin` | anyone | Start a sign-in | `login` |
 | `POST /auth/passkey/login/finish` | anyone | `{ challengeId, assertion }` → a session | `login` |
-| `POST /auth/passkeys/add/begin`, `/finish` | account holder | Add a passkey (a device) | `account device add` |
+| `POST /auth/passkeys/add/begin`, `/finish` | account holder | Add a passkey (a device): `/finish { challengeId, registration, confirm? }` answers `412` and is sent again with `confirm` signed by a passkey the account already has | `account device add` |
 | `POST /auth/passkeys/{cred}` | account holder | `{ label }`: name a device | `account device label` |
-| `DELETE /auth/passkeys/{cred}` | account holder | Remove a device; its sessions end | `account device revoke` |
+| `DELETE /auth/passkeys/{cred}` | account holder | Remove a device; its sessions end. `412` first; the retry's JSON body is `{ confirm }` | `account device revoke` |
 | `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and refresh token | (automatic) |
 | `POST /auth/logout` | session | End this session | |
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
@@ -113,7 +113,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
-| `POST /auth/apikeys` | account holder | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs? }` → `{ keyId, key }` | `account api-key create` |
+| `POST /auth/apikeys` | account holder (a passkey session) | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs?, confirm? }` → `{ keyId, key }`, approved with a passkey (`412` first) | `account api-key create` |
 | `GET /auth/apikeys` | account holder | The account's keys | `account api-key list` |
 | `DELETE /auth/apikeys/{key}` | account holder | Revoke a key | `account api-key revoke` |
 | `POST /auth/releases` | account holder | `{ version, approved, confirm? }`: approve a mero-tee release for the account's own apps (where the owner holds release approvals) | `account approve-release` |
@@ -175,18 +175,18 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
-| `POST /orgs/{org}/members` | session | `{ account, role }`; `owner` moves ownership | `namespace members add` |
-| `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave | `namespace members remove`, `namespace leave` |
+| `POST /orgs/{org}/members` | session | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
+| `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
-| `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities }` | `namespace capabilities`, `group settings` |
-| `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses? }` → a token | `namespace invite` |
-| `POST /invites/{token}/redeem` | session | Join | `namespace join` |
+| `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
+| `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, confirm? }` → a token. `412` first | `namespace invite` |
+| `POST /invites/{token}/redeem` | session | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |
 | `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }` | `namespace create-group` |
 | `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
 | `POST /orgs/{org}/teams/{team}` | session | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
 | `DELETE /orgs/{org}/teams/{team}` | session | Delete with the teams and apps below | `group delete` |
-| `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities? }` | `group members add` |
-| `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave | `group members remove`, `group leave` |
+| `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities?, confirm? }`. `412` first | `group members add` |
+| `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
 | `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
 | `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |
@@ -209,11 +209,11 @@ there.
 | `GET /ops/placement` | `{ fresh, apps: [{ app, group, replicas }], nodes: [{ id, zone, release, apps }] }`: where every app's replicas are, ids and counts only, read after a read index (`fresh`: this node caught up with the system leader); `release` is the node's attested release, `null` when unknown | `ops placement` |
 | `GET /ops/apps[?after=ID&limit=N]` | `{ fresh, governance, apps: [{ app, group, scope, bundle, package, publisher: { signer, org }, upgradesHeldBy, releasesApprovedBy, lastUpgrade, approvedReleases, replicas: [{ node, release, approved }] }], next }`: what each app runs and which releases may hold it; `package` only for a release the operator installed, the upgrade's actor by kind only ([What runs where](/protocol/operator/#what-runs-where)) | |
 | `GET /ops/orgs[?after=ID&limit=N]` | `{ fresh, governance, orgs: [{ org, approvedReleases }], next }` | |
-| `POST /ops/nodes` | `{ id, addr, zone? }`: register a node; the system leader adds it as a learner, and promotes caught-up learners while fewer than 3 voters are left (straight to 3, never 2) | `ops add-node` |
-| `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`) | `ops remove-node` |
-| `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …] }`: move an app (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |
+| `POST /ops/nodes` | `{ id, addr, zone?, operatorProof? }`: register a node, signed with the operator key (`428 OPERATOR_SIGNATURE_REQUIRED` first, over `cluster / __register_node / { id, addr, zone }`); the nodes in the first leader's `--peers` are registered at genesis; the system leader adds it as a learner, and promotes caught-up learners while fewer than 3 voters are left (straight to 3, never 2) | `ops add-node` |
+| `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`), signed (`428` first, `__remove_node / { id }`; the retry's JSON body is `{ operatorProof }`) | `ops remove-node` |
+| `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …], operatorProof? }`: move an app, signed (`428` first, `<app> / __set_replicas / { replicas }`, the target sorted; asked before the leader redirect, so the signed body goes to the leader as it is) (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |
 | `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
-| `GET /ops/quotas`, `POST /ops/quotas` | Read or replace the per-account quotas | `ops quotas`, `ops set-quotas` |
+| `GET /ops/quotas`, `POST /ops/quotas` | Read or change the per-account quotas; a change is signed (`428` first, `cluster / __set_quotas / { quotas }` with every limit after the change; `operatorProof` sits beside the limits) | `ops quotas`, `ops set-quotas` |
 | `POST /ops/releases` | `{ version, approved }`, where the operator holds release approvals | `ops release` |
 | `POST /ops/outbound` | `{ package, prefixes, replace }`, where the operator holds outbound approvals | `ops outbound` |
 | `POST /ops/packages`, `POST /ops/packages/install`, `GET /ops/packages` | Install (upload or registry) and list the releases the operator upgrades to | `ops install`, `ops packages` |
