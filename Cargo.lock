@@ -1040,9 +1040,11 @@ version = "0.0.0"
 dependencies = [
  "calimero-app-host",
  "ciborium",
+ "hex",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
 
@@ -1058,10 +1060,12 @@ dependencies = [
  "calimero-app-sdk-macros",
  "ciborium",
  "eyre",
+ "hex",
  "proptest",
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "trybuild",

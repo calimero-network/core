@@ -28,7 +28,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
         .select_world(&[pkg], Some("app"))
         .expect("world app exists");
     let world = &resolve.worlds[world_id];
-    assert_eq!(WORLD, "calimero:app/app@0.5.0");
+    assert_eq!(WORLD, "calimero:app/app@0.5.1");
 
     let mut imports = BTreeSet::new();
     for item in world.imports.values() {
@@ -43,7 +43,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
     }
     let expected: BTreeSet<String> = allowed_imports().iter().map(|s| s.to_string()).collect();
     assert_eq!(imports, expected);
-    assert_eq!(allowed_imports().len(), 19);
+    assert_eq!(allowed_imports().len(), 20);
 
     let exports: Vec<_> = world.exports.keys().map(|k| format!("{k:?}")).collect();
     assert_eq!(exports.len(), 1, "exports: {exports:?}");

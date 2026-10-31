@@ -1,8 +1,12 @@
 //! Error types: the app-facing [`AppError`] and the SDK's own [`StorageError`] and [`TableError`].
 
+use std::io;
+
 use serde_json::json;
 use serde_json::Value;
 use thiserror::Error;
+
+use crate::files::FileIoError;
 
 /// A typed app error: a code plus fields, as the ABI declares them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,6 +122,17 @@ pub enum TableError {
 impl From<StorageError> for AppError {
     fn from(e: StorageError) -> Self {
         AppError::with_fields("Storage", json!({ "message": e.to_string() }))
+    }
+}
+
+impl From<io::Error> for AppError {
+    fn from(e: io::Error) -> Self {
+        let code = if e.get_ref().is_some_and(|i| i.is::<FileIoError>()) {
+            "Files"
+        } else {
+            "Io"
+        };
+        AppError::with_fields(code, json!({ "message": e.to_string() }))
     }
 }
 

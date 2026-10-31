@@ -15,10 +15,12 @@ use std::sync::{Arc, OnceLock};
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
     stored_key as host_key, Audience as HostAudience, Budget, Caller as HostCaller, Engine,
-    HostCore, Invocation, InvocationKind, MethodKind, OrgRole, Outcome, Prepared, Status, TimerCtx,
-    TrapKind, Usage,
+    HostCore, Invocation, InvocationKind, MemoryFiles, MethodKind, OrgRole, Outcome, Prepared,
+    Status, TimerCtx, TrapKind, Usage,
 };
 use serde_json::Value;
+
+use crate::files::FileId;
 
 pub use directory::{Org, ORG_ID, OWNER};
 pub use scenario::run_scenario;
@@ -73,6 +75,7 @@ pub struct TestApp {
     last_tick: BTreeMap<String, u64>,
     events: Vec<Logged>,
     usage: Usage,
+    files: MemoryFiles,
 }
 
 /// One engine and compile cache for the whole test process: compiled components are keyed by
@@ -119,6 +122,7 @@ impl TestApp {
             last_tick: BTreeMap::new(),
             events: Vec::new(),
             usage: Usage::default(),
+            files: MemoryFiles::default(),
         };
         let owner = HostCaller::Account(OWNER.to_owned());
         let res = app.run(InvocationKind::Init, owner, "init", Vec::new(), None);
@@ -262,6 +266,18 @@ impl TestApp {
         self.usage
     }
 
+    /// Puts a file in the app's store, as if a committed run had made it; returns its id.
+    #[must_use]
+    pub fn add_file(&self, bytes: &[u8]) -> FileId {
+        FileId::from(self.files.insert(bytes))
+    }
+
+    /// The content of a file the app holds.
+    #[must_use]
+    pub fn file(&self, id: &FileId) -> Option<Vec<u8>> {
+        self.files.get(id.as_str())
+    }
+
     /// The state as deterministic CBOR (RFC 8949 4.2.1): a map of stored key (generation
     /// prefix included) to value, both byte strings, ordered by their encoded bytes.
     ///
@@ -351,7 +367,8 @@ impl TestApp {
             Arc::new(HarnessDir(self.org.clone())),
         )
         // SAFETY: the harness builds timer slots exactly for timer invocations.
-        .expect("harness builds valid invocations");
+        .expect("harness builds valid invocations")
+        .with_files(Arc::new(self.files.clone()));
         let budget = if is_view {
             Budget::view()
         } else {
@@ -397,6 +414,7 @@ impl TestApp {
                     events.push((e, data));
                 }
                 if !is_view {
+                    self.files.apply(&out.new_files, &out.deleted_files);
                     for w in out.diff {
                         match w.value {
                             Some(v) => self.state.insert(w.key, v),

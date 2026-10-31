@@ -18,7 +18,7 @@
 
 Every object's keys are written in sorted order (`types::canonical`, never `serde_json::Map` order), so the bytes do not depend on serde_json's `preserve_order`, which the core workspace unifies in through dcap-qvl; the unit tests turn that feature on to prove it.
 
-`{"abiVersion":1,"world":"calimero:app@0.5.0","state":{"version":N},"methods":{name:{"kind":"init|call|view|timer","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
+`{"abiVersion":1,"world":"calimero:app@0.5.1","state":{"version":N},"methods":{name:{"kind":"init|call|view|timer","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
 
 ## Rules
 

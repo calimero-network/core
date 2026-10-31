@@ -4,17 +4,18 @@
 pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");
 
 /// The fully qualified world every app component targets.
-pub const WORLD: &str = "calimero:app/app@0.5.0";
+pub const WORLD: &str = "calimero:app/app@0.5.1";
 
 const ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.0",
-    "calimero:app/storage@0.5.0",
-    "calimero:app/context@0.5.0",
-    "calimero:app/events@0.5.0",
-    "calimero:app/blobs@0.5.0",
-    "calimero:app/xcall@0.5.0",
-    "calimero:app/action@0.5.0",
-    "calimero:app/rebuild@0.5.0",
+    "calimero:app/types@0.5.1",
+    "calimero:app/storage@0.5.1",
+    "calimero:app/context@0.5.1",
+    "calimero:app/events@0.5.1",
+    "calimero:app/blobs@0.5.1",
+    "calimero:app/files@0.5.1",
+    "calimero:app/xcall@0.5.1",
+    "calimero:app/action@0.5.1",
+    "calimero:app/rebuild@0.5.1",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",

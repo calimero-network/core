@@ -1,0 +1,14 @@
+[package]
+name = "files-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sha2 = "0.11"
+wit-bindgen = "=0.63.0"
+
+[workspace]
