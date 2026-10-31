@@ -3,7 +3,7 @@
 //!
 //! `fixtures/datadir-a09547b2b.tar.gz` is one node's data directory as
 //! the node at `a09547b2b` wrote it (its own `calimero-node`, run in
-//! process: one node on port 39517, storage key `[42; 32]`, a `kv-store` app with
+//! process: one node, storage key `[42; 32]`, a `kv-store` app with
 //! `a = 1` and `b = 2`); `fixture.json` inside it names the app, its bundle and
 //! its owner. Neither its directory record nor its group's state names an executor.
 
@@ -15,6 +15,8 @@ use calimero_node::node::{CallRequest, ViewRequest};
 use calimero_node::types::{Caller, Executor};
 use calimero_node::{run, Config};
 use serde_json::{json, Value};
+
+mod common;
 
 fn config(dir: &std::path::Path, port: u16) -> Config {
     let url = format!("http://127.0.0.1:{port}/");
@@ -77,9 +79,8 @@ async fn a_data_directory_from_before_components_opens_and_its_apps_run_on_wasme
         serde_json::from_slice(&std::fs::read(dir.join("fixture.json")).unwrap()).unwrap();
     let app = fixture["app"].as_str().unwrap().to_owned();
     let owner = fixture["owner"].as_str().unwrap().to_owned();
-    let port = u16::try_from(fixture["port"].as_u64().unwrap()).unwrap();
-
-    let r = run(config(&dir, port)).await.unwrap();
+    // The fixture's own port is in the ephemeral range, where a parallel test may hold it.
+    let r = run(config(&dir, common::free_port())).await.unwrap();
     let node = &r.node;
     let record = node.app(&app).await.unwrap();
     assert_eq!(record.bundle, fixture["bundle"].as_str().unwrap());
