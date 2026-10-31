@@ -192,6 +192,20 @@ already signs operator decisions:
 | Shared | Every Calimero Cloud workspace (granted on its first deploy there) | Anyone who signs up, through a deployment's offers |
 | Dedicated | Only the workspace that owns the cluster; mdma refuses a grant for any other | Anyone who signs up, through the owner's deployments |
 | Self-run (`deployments: open`) | Any account, as today | Any account |
+- **A dedicated cluster is handed to its owner.** It starts with
+  `deployers: owner` in its genesis governance (next to `deployments: granted`).
+  Once the cluster runs, the owner signs up there with their own passkey, and
+  mdma signs a one-time `SetClusterOwner { owner }` (the owner's account or
+  team org) with the operator key; core refuses a second one. From then on
+  `GrantDeployer` and `RevokeDeployer` there need the owner's passkey (or a
+  `MANAGE_APPLICATION` holder in the owner org), and an operator signature is
+  refused. The console grants the owner's own team in the same step. Because
+  governance is bound into every receipt-key quote (`receipt_key_binding`), the
+  owner's client can verify that the cluster says `deployers: owner` and names
+  them, without trusting mdma, and can list every grant, so one made before the
+  claim (minutes, while the cluster starts) is visible and revocable.
+- An existing cluster switches to `granted` with a one-way, operator-signed
+  `SetDeploymentsGranted`, so the shared cluster need not be recreated.
 - A grant does not let mdma act inside a deployment: offering, withdrawing and
   transferring still need a manager's passkey (section 8). The operator can stop
   new deployments; it cannot run or change an existing one.
@@ -301,10 +315,9 @@ until recovery exists. So:
 6. **Customer org names in the listing**: shown (proposed, the customer consented
    to that deployer), or ids only.
 7. **Can a dedicated cluster's owner hold deployer grants without trusting
-   Calimero?** As proposed, mdma signs the grants, so the owner trusts mdma not
-   to grant someone else. An alternative is a genesis governance value naming
-   the owner (`deployers: owner`), whose own passkey grants deployers there.
-   Proposed: operator grants first, the owner option with dedicated self-service.
+   Calimero?** Decided: yes, `deployers: owner` and `SetClusterOwner` (section 5).
+   Calimero keeps infrastructure control (it can stop or delete the VMs under
+   the hosting contract), not who deploys.
 
 ## 12. Phases
 
@@ -312,7 +325,7 @@ until recovery exists. So:
 | --- | --- | --- |
 | 0 | #4791: memberships, invites, passkeys proven at apply | #4738 merged |
 | 1 | `Deployment`, `CreateDeployment`, `OfferApp`, `WithdrawApp`; records from before migrate to one `Owner::Account` deployment per installer, offering the releases it installed | Phase 0 |
-| 1b | `GrantDeployer`, `RevokeDeployer`, `deployments: granted` at genesis; mdma signs grants (dedicated: owner only) | Phase 1 |
+| 1b | `GrantDeployer`, `RevokeDeployer`, `SetDeploymentsGranted`, `SetClusterOwner`; `deployments` and `deployers` in governance; installs gated on `granted` clusters. Independent of phases 0 and 1: grants gate installs until deployments exist, then `CreateDeployment` and `OfferApp` | none |
 | 2 | `/app/{app}/` and `/d/{deployment}/`; `deployments` in `/.well-known/calimero.json`; `GET /deployments/{id}` | Phase 1 |
 | 3 | `AppRecord::deployment`, the consent text, `GET /deployments/{id}/orgs`; mero-js passes the deployment | Phase 1 |
 | 4 | Transfer and the lockout guard | Phase 1 |
