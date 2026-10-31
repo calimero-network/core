@@ -35,7 +35,7 @@ meroctl context create --bundle <hash> --name kv --alias kv
 meroctl call --context kv set --args '{"key":"a","value":"1"}'
 meroctl call --context kv get --args '{"key":"a"}' --view
 meroctl context watch kv
-meroctl account api-key create --context kv --read-only
+meroctl account api-key create --context kv --read-only --dev-passkey ./dev-passkey.json
 ```
 
 In `meroctl`, an `app` is a signed package, a `context` an app instance, a

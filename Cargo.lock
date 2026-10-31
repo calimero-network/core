@@ -5768,7 +5768,6 @@ dependencies = [
 name = "meroctl"
 version = "0.0.0"
 dependencies = [
- "base64 0.23.1",
  "calimero-build-utils",
  "calimero-bundle",
  "calimero-client",

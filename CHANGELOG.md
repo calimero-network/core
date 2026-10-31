@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Security
+
+The next phase of gating the system group (`docs/specs/gate-system-group.md`,
+section 5.6): every command that grants access to data now carries a proof
+that `apply` checks on every node, so an entry a system leader forged (a node
+on an unapproved release may lead, decision 7) is refused on every replica.
+**Hard cutover**: no interop with earlier nodes or log entries; clusters are
+recreated, and clients must answer the new `412`/`428` step-ups.
+
+- **Credentials** carry the account's passkey consent: `AddPasskey`
+  (`account:<a> / __add_passkey / { credentialId, publicKey }`, signed by a
+  passkey the account already has), `RemovePasskey` (`__remove_passkey /
+  { credentialId }`) and `CreateApiKey` (`__create_api_key`, binding the
+  key's hash and every field of its record). `POST /auth/passkeys/add/finish`,
+  `DELETE /auth/passkeys/{cred}` and `POST /auth/apikeys` answer `412
+  CONFIRM_REQUIRED` first; an API key never creates another.
+- **Memberships** carry the actor's passkey consent (`org:<org>`):
+  `SetOrgRole`, `RemoveOrgMember` (leaving too), `SetTeamMember`,
+  `RemoveTeamMember`, `SetCapabilities`, `SetDefaultCapabilities` and
+  `CreateInvite`; their routes answer `412` first, and the `DELETE` routes take
+  `{ confirm }` as a JSON body.
+- **Invites** are stored under the token's Ed25519 public key
+  (`seed = SHA-256("calimero.invite.v1\0" || token)`), never its hash; a
+  redemption is signed with the token's key by the node the redeemer gave it
+  to, so a node that only sees the log cannot redeem an invite.
+- **The fleet** carries the operator's signature: `RegisterNode`,
+  `RemoveNode`, `SetQuotas` and `SetReplicas` (one signature over a move's
+  target covers both of its writes). `POST /ops/nodes`, `DELETE
+  /ops/nodes/{id}`, `POST /ops/quotas` and `POST /ops/apps/{app}/replicas`
+  answer `428 OPERATOR_SIGNATURE_REQUIRED` first. The nodes a cluster starts
+  with are registered by `Genesis`; the first leader no longer writes
+  unsigned `RegisterNode` entries for `--peers`.
+- `calimero-client`: `add_passkey` takes the approving passkey,
+  `create_api_key` a passkey, and `remove_passkey`, `post_operator_signed`
+  and `delete_operator_signed` are new. `meroctl` signs the new operator
+  routes with `--operator-key-file` and takes `--dev-passkey` (and
+  `account device add --approve-with`) on the new step-ups.
+
 ### Changed
 
 - **Sixteen example apps are on the component SDK** (`calimero-app-sdk`,

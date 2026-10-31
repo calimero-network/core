@@ -67,26 +67,32 @@ pub fn operator_public() -> String {
 pub async fn ops_signed(
     client: &Client,
     path: &str,
-    mut body: serde_json::Value,
+    body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    client
+        .post_operator_signed(path, body, &operator_sign)
+        .await
+}
+
+/// DELETE an operator decision (removing a node), signed as [`ops_signed`].
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error type, as its `delete` returns it"
+)]
+pub async fn ops_signed_delete(
+    client: &Client,
+    path: &str,
+) -> Result<serde_json::Value, calimero_client::Error> {
+    client.delete_operator_signed(path, &operator_sign).await
+}
+
+/// The operator key's signature over `message`.
+pub fn operator_sign(message: &[u8]) -> Vec<u8> {
     use ed25519_dalek::Signer;
-    match client.post(path, body.clone()).await {
-        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
-            let d = e.details().cloned().unwrap_or_default();
-            let message = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                d["message"].as_str().unwrap_or_default(),
-            )
-            .unwrap_or_default();
-            let signature = ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED).sign(&message);
-            body["operatorProof"] = serde_json::json!({
-                "nonce": d["nonce"],
-                "signature": hex::encode(signature.to_bytes()),
-            });
-            client.post(path, body).await
-        }
-        other => other,
-    }
+    ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED)
+        .sign(message)
+        .to_bytes()
+        .to_vec()
 }
 
 pub fn free_port() -> u16 {

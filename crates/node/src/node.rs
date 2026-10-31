@@ -1544,31 +1544,29 @@ impl Node {
     /// Bring hosted groups in line with the system state.
     pub async fn reconcile(&self) {
         // The cluster's first leader fixes its governance and registers the
-        // configured peers.
+        // configured peers, with genesis. Every later node joins only through
+        // the operator's signed `/ops/nodes` (`RegisterNode` carries the
+        // operator's signature, checked where it applies).
         if self.system.status().is_leader {
             if self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
-                let _r = self
-                    .sys_write(&SystemCmd::Genesis {
-                        governance: self.config.governance.clone(),
-                        release: Some(self.own_release()),
-                        operator_key: self.operator_key(),
-                    })
-                    .await;
-            }
-            let missing: Vec<NodeRecord> = self.sys(|s| {
-                self.config
+                let nodes: Vec<NodeRecord> = self
+                    .config
                     .peers
                     .iter()
-                    .filter(|(id, _)| !s.nodes.contains_key(id) && !s.removed_nodes.contains(id))
                     .map(|(id, addr)| NodeRecord {
                         id: *id,
                         addr: addr.clone(),
                         zone: String::new(),
                     })
-                    .collect()
-            });
-            for node in missing {
-                let _r = self.sys_write(&SystemCmd::RegisterNode { node }).await;
+                    .collect();
+                let _r = self
+                    .sys_write(&SystemCmd::Genesis {
+                        governance: self.config.governance.clone(),
+                        release: Some(self.own_release()),
+                        operator_key: self.operator_key(),
+                        nodes,
+                    })
+                    .await;
             }
             self.admit_registered_nodes();
             self.promote_learners();

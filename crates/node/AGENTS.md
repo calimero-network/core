@@ -88,13 +88,40 @@ is its command line.
   whichever organization keeps it. `BindPublisher` carries a passkey consent
   over the key's current binding generation; `SetReleaseDeadline` the
   operator's signature (`cluster / __release_deadline / { version, after }`;
-  `after: null` lifts it). The consent page (`consent_page::act`) logs the same
+  `after: null` lifts it). Credentials and memberships carry the person's
+  consent too (`account:<a>`: `__add_passkey { credentialId, publicKey }`,
+  signed by a passkey the account already has; `__remove_passkey
+  { credentialId }`; `__create_api_key`, `system::api_key_args`, the key's
+  hash included; `org:<org>`: `__set_org_role { account, role }`,
+  `__remove_member { account }`, `__set_team_member { team, account, lead,
+  role, capabilities }`, `__remove_team_member { team, account }`,
+  `__set_capabilities { team, account, capabilities }`,
+  `__set_default_capabilities { capabilities }`, `__create_invite`,
+  `system::invite_args`). A step-up whose arguments the node makes (an API
+  key, an invite token, the registered credential) goes through
+  `api::consent_minted`: the first request keeps them, and what the retry
+  needs but must not log (`Pending::Confirm::carry`), with the challenge.
+  Invites are kept under the token's Ed25519 public key
+  (`proof::invite_key`); `RedeemInvite` carries the token key's signature
+  (`proof::sign_invite_redeem`), so a node that only saw the log cannot
+  redeem one. The fleet carries the operator's signature (`cluster /
+  __register_node { id, addr, zone }`, `__remove_node { id }`,
+  `__set_quotas { quotas }`; `<app> / __set_replicas { replicas }`, one
+  signature for both of a move's writes: the union applies with it unspent,
+  the target spends it). The configured peers come with `Genesis { nodes }`;
+  `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
   consent as the API, its assertion made on the node's own origin (`apply`
   checks the signature and the statement, not the origin). Tests run
   commands' own authority rules through `run_authorized` (`run_unproven` with
   the new-work refusal). Test clusters start with the harness's
-  operator key (`ops_signed` signs like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
-  `operator_decisions_need_the_operator_signature`, `system::tests`.
+  operator key (`ops_signed` and `ops_signed_delete` sign like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
+  `forged_credentials_memberships_and_redemptions_are_refused`,
+  `operator_decisions_need_the_operator_signature`,
+  `credentials_memberships_and_the_fleet_are_approved_where_they_are_made`,
+  `system::tests` (`credentials_need_the_accounts_own_passkey`,
+  `memberships_need_the_actors_passkey`, `invites_are_redeemed_with_the_tokens_key`,
+  `the_fleet_and_quotas_need_the_operators_signature`,
+  `a_replica_move_is_signed_once_over_its_target`).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -299,7 +326,7 @@ is its command line.
   then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
   Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
   `membership::tests`.
-- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` records it; only the operator's signed `/ops/nodes` registers it again. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is

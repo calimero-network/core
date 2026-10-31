@@ -155,3 +155,66 @@ pub fn verify_operator(
 fn used(kind: &[u8], signed: &[u8]) -> String {
     hex::encode(sha256(&[kind, b"\0", signed].concat()))
 }
+
+/// What an invite's key is derived from, before the token.
+pub const INVITE_DOMAIN: &[u8] = b"calimero.invite.v1\0";
+
+/// What a redemption's signature covers, before the invite and the account.
+pub const INVITE_REDEEM_DOMAIN: &[u8] = b"calimero.invite-redeem.v1\0";
+
+/// The Ed25519 key an invite token stands for: its seed is
+/// `SHA-256("calimero.invite.v1\0" || token)`. The log keeps only the public
+/// half ([`invite_key`]), so a node that sees the log, and not the token,
+/// cannot redeem the invite.
+#[must_use]
+pub fn invite_signing_key(token: &str) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&sha256(&[INVITE_DOMAIN, token.as_bytes()].concat()))
+}
+
+/// An invite token's public key, hex: what `CreateInvite` records.
+#[must_use]
+pub fn invite_key(token: &str) -> String {
+    hex::encode(invite_signing_key(token).verifying_key().to_bytes())
+}
+
+/// The bytes a redemption signs: `"calimero.invite-redeem.v1\0" || invite_key
+/// || 0 || account || 0 || now` (the key hex, `now` in decimal Unix seconds).
+#[must_use]
+pub fn invite_redeem_message(invite_key: &str, account: &str, now: u64) -> Vec<u8> {
+    let mut m = INVITE_REDEEM_DOMAIN.to_vec();
+    m.extend_from_slice(invite_key.as_bytes());
+    m.push(0);
+    m.extend_from_slice(account.as_bytes());
+    m.push(0);
+    m.extend_from_slice(now.to_string().as_bytes());
+    m
+}
+
+/// The redemption signature (hex) the node that received `token` makes for
+/// `account` at `now`.
+#[must_use]
+pub fn sign_invite_redeem(token: &str, account: &str, now: u64) -> String {
+    use ed25519_dalek::Signer;
+    let message = invite_redeem_message(&invite_key(token), account, now);
+    hex::encode(invite_signing_key(token).sign(&message).to_bytes())
+}
+
+/// Check that `signature` redeems the invite whose public key is
+/// `invite_key` for `account` at `now`, and answer what marks it used.
+///
+/// # Errors
+/// A signature that is missing, malformed or not made with the invite's key.
+pub fn verify_invite_redeem(
+    invite_key: &str,
+    account: &str,
+    now: u64,
+    signature: &str,
+) -> Result<String, &'static str> {
+    let public = hex::decode(invite_key).map_err(|_| "a malformed invite key")?;
+    let signature = hex::decode(signature).map_err(|_| "the redemption carries no signature")?;
+    let message = invite_redeem_message(invite_key, account, now);
+    UnparsedPublicKey::new(&ED25519, &public)
+        .verify(&message, &signature)
+        .map_err(|_| "the redemption is not signed with the invite's key")?;
+    Ok(used(b"invite", &message))
+}

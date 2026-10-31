@@ -90,12 +90,15 @@ class Account:
         self.home.mkdir(parents=True, exist_ok=True)
         self.cli("login", "--dev-passkey", str(self.passkey), "--name", self.name, "--origin", ORIGIN)
         self.id = self.cli("whoami")["accountId"]
-        self.key = self.cli("account", "api-key", "create", "--label", f"suite-{self.name}")["key"]
+        self.key = self.cli("account", "api-key", "create", "--label", f"suite-{self.name}",
+                            "--dev-passkey", str(self.passkey))["key"]
         return self
 
     def raw(self, method, path, body=None):
+        """Any route as this account; a `412 CONFIRM_REQUIRED` (invites, members) is
+        answered with its passkey, as the person would."""
         args = ["raw", method, path] + ([json.dumps(body)] if body is not None else [])
-        return self.cli(*args)
+        return self.cli(*args, "--dev-passkey", str(self.passkey))
 
     def order(self, node=None):
         if node is not None:
@@ -261,8 +264,10 @@ def orgs_and_keys(ctx, cl):
     # clear needs a fresh passkey assertion: refused without, done with alice's passkey.
     expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("call", "--context", app, "clear"))
     alice.cli("call", "--context", app, "clear", "--dev-passkey", str(alice.passkey))
+    # Minting a key needs a passkey assertion too: refused without, made with alice's.
+    expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("account", "api-key", "create", "--label", "service"))
     key = alice.cli("account", "api-key", "create", "--label", "service", "--read-only",
-                    "--context", app)["key"]
+                    "--context", app, "--dev-passkey", str(alice.passkey))["key"]
     got = alice.view(app, "len", key=key)["result"]
     check(got == 0, f"len through the read-only key: {got!r}, want 0")
     expect_refused("FORBIDDEN", lambda: alice.call(app, "set", {"key": "x", "value": "y"}, key=key))
