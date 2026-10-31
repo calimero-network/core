@@ -266,10 +266,13 @@ impl<S: Store> Text<S> {
         let tree = self.load()?;
         let after = match index.checked_sub(1) {
             None => None,
-            Some(i) => Some(live_at(&tree, i).ok_or(StorageError::OutOfBounds {
-                index,
-                len: self.len()?,
-            })?),
+            Some(i) => {
+                let Some(id) = live_at(&tree, i) else {
+                    let len = self.len()?;
+                    return Err(StorageError::OutOfBounds { index, len });
+                };
+                Some(id)
+            }
         };
         self.insert_in(&tree, after, text)
     }
