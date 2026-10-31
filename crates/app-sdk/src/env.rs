@@ -154,6 +154,17 @@ pub fn emit_raw<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience)
     backend::emit(name, data, audience)
 }
 
+/// Blob `id`'s metadata, if the app holds it (R8). Prefer [`crate::BlobRef::info`].
+pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
+    backend::blob_info(id)
+}
+
+/// A download grant for blob `id`, valid `ttl_seconds` from the run's clock. Prefer
+/// [`crate::BlobRef::grant`].
+pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
+    backend::blob_grant(id, ttl_seconds)
+}
+
 /// The tick this timer method runs for; none in any other invocation.
 pub fn timer() -> Option<TimerInfo> {
     TIMER.with(Cell::get)

@@ -3,7 +3,7 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-host` (`publish = false`, prototype); engine-neutral, no wasmtime
-- **Entry**: `src/lib.rs`; `core.rs` (`HostCore`), `engine.rs` (`Engine`, `Prepared`), `abi.rs`, `overlay.rs`, `state.rs` (`StateView`, `stored_key`), `time.rs`, `types.rs`
+- **Entry**: `src/lib.rs`; `core.rs` (`HostCore`), `blobs.rs` (`BlobHost`, `blob_refs`, `BLOB_REF_TAG`), `engine.rs` (`Engine`, `Prepared`), `abi.rs`, `overlay.rs`, `state.rs` (`StateView`, `stored_key`), `time.rs`, `types.rs`
 - **Spec**: `docs/specs/app-runtime-v0.14.md` sections 3-5, D16, D19, D39, D44, D46, D47
 
 ## What This Crate Does
@@ -14,7 +14,8 @@
 
 - `HostCore` is `Send + 'static` (a wasmtime `Store`'s data): `HostCore::new(app_id, Arc<dyn StateView>, applied_index, Invocation, Arc<dyn Directory>)` owns or shares its inputs and returns `Err(InvalidInvocation)` for a `Timer` without `TimerCtx` or a `TimerCtx` on any other kind.
 - Every refusal is `Err(HostDenied)`; the engine turns it into `Trap(HostDenied)`.
-- State writes (`put`, `delete`, `add`), `emit` and `unique_id`: call, timer, init, xcall delivery only. Reads: everything but actions. `start_action`: calls and timers, and returns `Err("actions are not enabled")` in this milestone. xcall, blobs, `action.*` and `rebuild.*` are refused in this milestone.
+- State writes (`put`, `delete`, `add`), `emit` and `unique_id`: call, timer, init, xcall delivery only. Reads: everything but actions. `start_action`: calls and timers, and returns `Err("actions are not enabled")` in this milestone. xcall, `action.*` and `rebuild.*` are refused in this milestone.
+- Blobs (R8): `HostCore::with_blobs(Arc<dyn BlobHost>)` gives a run the node's record of the app's blobs (default `NoBlobs`: none). `blobs_info` and `blobs_grant` in every kind but actions and migrations (`HostDenied`); `info` of an unknown or malformed id is `None`; `grant` refuses an unknown blob and a TTL outside 1..=`MAX_GRANT_TTL_SECS` (86,400) and expires at `wall_ms() + ttl`. `storage_put` refuses (`HostDenied("unknown blob")`) a value holding a `BlobRef` (CBOR tag `BLOB_REF_TAG` = 0xCA1B around 32 bytes, found by `blob_refs`) to a blob `info` does not know; the node counts the references at apply.
 - At most `MAX_WRITES` (10,000) writes per run; a refused write is not counted.
 - Keys are at most `MAX_KEY_BYTES` (1 KiB, before the generation prefix): `storage_get/put/delete/add` and `range_open` bounds over it are `HostDenied`. Values have no separate cap: `MAX_RUN_BYTES` (1 MiB, Ruling 37) bounds what one run writes, counted at each host call (key + value of every `put` and `add`, the key of every `delete`, each overwrite again, and the name, data and audience strings (every account, the team or org id) of every event, Ruling 43); the call that would pass it is `HostDenied("entry too large")` before the bytes are kept (the canonical ABI's lift of one argument, bounded by guest memory, is transient), so the overlay and the events never hold more. The executor still checks the encoded entry against 1 MiB.
 - `unique_id()` is `"<id_term>.<id_seq>.<n>"`: `Invocation.id_term` is the leader's Raft term while it runs the call, `id_seq` the leader's per-term execution counter (assigned by the executor, incremented for every execution including re-runs, never repeated within a term), `n` counts from 0 per run. The log index is not used: it is assigned only at proposal, so two runs on the same base could share it.

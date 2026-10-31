@@ -274,6 +274,8 @@ pub(crate) mod rows {
     /// A component's idempotency keys per class in the order they were recorded:
     /// `q ‖ class ‖ n` (D74).
     pub const CORDER: u8 = b'q';
+    /// A component's blobs (R8, `crate::component::blobs`): its record of each, by SHA-256.
+    pub const CBLOB: u8 = b'b';
 
     pub fn corder(class: u8, n: u64) -> Vec<u8> {
         let mut k = vec![CORDER, class];
@@ -561,6 +563,9 @@ impl AppMachine {
     /// Whether `id` (hex) is a blob of this app.
     #[must_use]
     pub fn holds_blob(&self, id: &[u8; 32]) -> bool {
+        if self.state.executor() == Some(crate::types::Executor::Component) {
+            return self.state.component.blobs.records.contains_key(id);
+        }
         self.state.kv.get(&blob_key(id)).is_some()
     }
 
@@ -575,13 +580,16 @@ impl AppMachine {
     /// a scan of its whole state.
     #[must_use]
     pub fn storage_stats(&self) -> StorageStats {
-        // A component's storage is its own keyspace, in memory: no blob marks (R8).
+        // A component's storage is its own keyspace, in memory; its blobs are host
+        // records beside it (R8).
         if self.state.executor() == Some(crate::types::Executor::Component) {
             let kv = &self.state.component.kv;
+            let blobs = &self.state.component.blobs.records;
             return StorageStats {
                 keys: kv.len() as u64,
                 bytes: kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum(),
-                ..StorageStats::default()
+                blobs: blobs.iter().map(|(id, r)| (*id, r.size)).collect(),
+                blob_bytes: blobs.values().map(|r| r.size).sum(),
             };
         }
         let prefix = blob_key(&[0; 32]);
@@ -779,6 +787,7 @@ impl Machine for AppMachine {
         self.state.set_head(head);
         // A component's storage, in memory again from its rows.
         self.state.component.kv = crate::component::Kv::default();
+        self.state.component.blobs = crate::component::blobs::BlobTable::default();
         if self.state.executor() == Some(crate::types::Executor::Component) {
             if let Some(state) = self.state.kv.state.clone() {
                 self.state.component.load(&state)?;

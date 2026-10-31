@@ -30,6 +30,7 @@ use tracing::debug;
 
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
+use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
 use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
@@ -204,7 +205,10 @@ fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
         ComponentCmd::Call(entry) => entry.outcome = denied,
         ComponentCmd::Tick(entry) => entry.outcome = denied,
         ComponentCmd::Init { outcome, .. } => **outcome = denied,
-        ComponentCmd::Upgrade { .. } => {}
+        ComponentCmd::Upgrade { .. }
+        | ComponentCmd::Blob { .. }
+        | ComponentCmd::BlobForget { .. }
+        | ComponentCmd::BlobsCollected { .. } => {}
     }
     serde_json::to_vec(&cmd).unwrap_or_default()
 }
@@ -337,19 +341,34 @@ impl Node {
         self.config.budget.unwrap_or_else(Budget::call)
     }
 
-    /// Run one invocation of `app_id` against `state` at `applied`.
+    /// The key download grants of every app are MACed with (R8).
+    #[must_use]
+    pub fn blob_grant_key(&self) -> [u8; 32] {
+        grant_key(self.cluster_key())
+    }
+
+    /// Run one invocation of `app_id` against `state` and its blobs at `applied`.
     fn run_component(
         &self,
         prepared: &Prepared,
         app_id: &str,
-        state: Arc<dyn calimero_app_host::StateView>,
+        (state, blobs): (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
     ) -> Outcome {
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        let blobs = Arc::new(RunBlobs {
+            app_id: app_id.to_owned(),
+            records: blobs,
+            key: self.blob_grant_key(),
+        });
         match HostCore::new(app_id, state, applied, invocation, directory) {
-            Ok(host) => Outcome::from_host(self.wasm.invoke(prepared, host, self.budget())),
+            Ok(host) => Outcome::from_host(self.wasm.invoke(
+                prepared,
+                host.with_blobs(blobs),
+                self.budget(),
+            )),
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
         }
     }
@@ -363,7 +382,7 @@ impl Node {
         meter: &Meter,
         prepared: &Prepared,
         app_id: &str,
-        state: Arc<dyn calimero_app_host::StateView>,
+        state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
     ) -> Outcome {
@@ -444,7 +463,7 @@ impl Node {
                         &meter,
                         prepared,
                         &app.app_id,
-                        m.view(),
+                        (m.view(), m.blob_view()),
                         applied,
                         Invocation {
                             kind: InvocationKind::Init,
@@ -542,6 +561,10 @@ impl Node {
         }) else {
             return;
         };
+        let collect = g.read_local(|m, _| m.state.component.head.collect.clone());
+        if !collect.is_empty() {
+            self.collect_component_blobs(g, collect).await;
+        }
         let Ok(prepared) = self.prepared_for(&bundle).await else {
             return;
         };
@@ -592,7 +615,7 @@ impl Node {
                     &meter,
                     prepared,
                     app_id,
-                    m.view(),
+                    (m.view(), m.blob_view()),
                     applied,
                     Invocation {
                         kind: InvocationKind::Timer,
@@ -709,7 +732,7 @@ impl Node {
                     &meter,
                     &prepared,
                     &req.app_id,
-                    m.view(),
+                    (m.view(), m.blob_view()),
                     applied,
                     Invocation {
                         kind: InvocationKind::Call,
@@ -924,7 +947,7 @@ impl Node {
         let (bundle, state, applied, ts_ms) = g.read_local(|m, applied| {
             (
                 m.component_bundle(),
-                m.view(),
+                (m.view(), m.blob_view()),
                 applied,
                 m.state.component.head.last_ts_ms,
             )
@@ -973,6 +996,71 @@ impl Node {
             result: out.result,
             error: out.error,
         })
+    }
+
+    /// A component's blob command (R8) on this node, the app group's leader: an upload
+    /// (`__blob { id, size, mime }`) or its owner's delete (`__blob_forget { id }`), which
+    /// only the API builds (`CallRequest::host`), after judging who may.
+    pub(super) async fn component_blob_cmd(
+        &self,
+        g: &Group<AppMachine>,
+        req: &CallRequest,
+    ) -> Result<crate::app::Applied, WriteError> {
+        let id = req.args["id"].as_str().unwrap_or_default().to_owned();
+        let upload = req.method == "__blob";
+        let p = g
+            .propose_led(|m, _, _| {
+                let cmd = if upload {
+                    ComponentCmd::Blob {
+                        id: id.clone(),
+                        size: req.args["size"].as_u64().unwrap_or_default(),
+                        mime: req.args["mime"].as_str().unwrap_or_default().to_owned(),
+                        ts_ms: self.stamp(m),
+                    }
+                } else {
+                    ComponentCmd::BlobForget { id: id.clone() }
+                };
+                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
+            })
+            .await?;
+        let a: Applied = serde_json::from_slice(&p.output)
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        Ok(to_wasmer_applied(a))
+    }
+
+    /// The content type a component app's blob was uploaded with, from this node's replica
+    /// (`None` when it does not host the app or the app does not hold the blob).
+    #[must_use]
+    pub fn blob_mime(&self, app: &AppRecord, id: &[u8; 32]) -> Option<String> {
+        self.app_group(app.group)?.read_local(|m, _| {
+            m.state
+                .component
+                .blobs
+                .records
+                .get(id)
+                .map(|r| r.mime.clone())
+        })
+    }
+
+    /// Collect the bytes of blobs the app forgot (idle past their time, R8), at most
+    /// [`COLLECT_BATCH`] a round, and log that they are done. `collect_blob` keeps the bytes
+    /// another app still holds.
+    async fn collect_component_blobs(&self, g: &Group<AppMachine>, queued: Vec<String>) {
+        let ids: Vec<String> = queued.into_iter().take(COLLECT_BATCH).collect();
+        for id in &ids {
+            if let Ok(raw) = hex::decode(id) {
+                if let Ok(raw) = <[u8; 32]>::try_from(raw.as_slice()) {
+                    self.collect_blob(&raw).await;
+                }
+            }
+        }
+        let cmd = ComponentCmd::BlobsCollected { ids };
+        if let Err(e) = g
+            .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
+            .await
+        {
+            debug!(error = %e, "collected blobs not logged; collected again next round");
+        }
     }
 
     /// Switch a component app to another component, code only, on this node, the

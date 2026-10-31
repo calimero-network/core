@@ -9,6 +9,7 @@ use ciborium::Value;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
+use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::overlay::{Cursor, Overlay};
 use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
@@ -59,7 +60,6 @@ pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
 const ACTIONS_DISABLED: &str = "actions are not enabled";
 const XCALL_DISABLED: &str = "xcall is not enabled";
-const BLOBS_DISABLED: &str = "blobs are not enabled";
 const LOG_TRUNCATED: &str = "[log truncated]";
 
 /// A range cursor handed to the guest; the WIT `cursor` resource maps onto it.
@@ -76,6 +76,7 @@ pub struct HostCore {
     applied_index: u64,
     inv: Invocation,
     dir: Arc<dyn Directory>,
+    blobs: Arc<dyn BlobHost>,
     overlay: Overlay,
     writes: u32,
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
@@ -113,6 +114,7 @@ impl HostCore {
             applied_index,
             inv,
             dir,
+            blobs: Arc::new(NoBlobs),
             overlay: Overlay::default(),
             writes: 0,
             run_bytes: 0,
@@ -125,6 +127,13 @@ impl HostCore {
             next_cursor: 0,
             peak_buffered: 0,
         })
+    }
+
+    /// The app's blobs as the node records them (R8); without it the app has none.
+    #[must_use]
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobHost>) -> Self {
+        self.blobs = blobs;
+        self
     }
 
     /// The invocation being run; the engine reads kind, method and args from it.
@@ -144,6 +153,7 @@ impl HostCore {
     pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
         check_key(key)?;
+        self.check_blob_refs(value)?;
         self.charge(key.len().saturating_add(value.len()))?;
         self.overlay
             .put(stored_key(GENERATION, key), value.to_vec());
@@ -423,12 +433,28 @@ impl HostCore {
         Err(HostDenied::new(XCALL_DISABLED))
     }
 
-    pub fn blobs_info(&self, _id: &str) -> Result<Option<BlobInfo>, HostDenied> {
-        Err(HostDenied::new(BLOBS_DISABLED))
+    /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
+    /// Every kind but actions (which read through views) and migrations.
+    pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
+        self.may_use_blobs("blobs.info")?;
+        Ok(parse_blob_id(id).and_then(|id| self.blobs.info(&id)))
     }
 
-    pub fn blobs_grant(&mut self, _id: &str, _ttl_seconds: u32) -> Result<String, HostDenied> {
-        Err(HostDenied::new(BLOBS_DISABLED))
+    /// A download grant for one of the app's blobs, valid for `ttl_seconds` (1 to
+    /// [`MAX_GRANT_TTL_SECS`]) from the run's wall clock. An unknown blob or a TTL out of
+    /// range is refused: the WIT result has no error case.
+    pub fn blobs_grant(&mut self, id: &str, ttl_seconds: u32) -> Result<String, HostDenied> {
+        self.may_use_blobs("blobs.grant")?;
+        if ttl_seconds == 0 || ttl_seconds > MAX_GRANT_TTL_SECS {
+            return Err(HostDenied::new("grant ttl out of range"));
+        }
+        let Some(id) = parse_blob_id(id).filter(|id| self.blobs.info(id).is_some()) else {
+            return Err(HostDenied::new("unknown blob"));
+        };
+        let expires_ms = self
+            .wall_ms()
+            .saturating_add(u64::from(ttl_seconds).saturating_mul(1_000));
+        Ok(self.blobs.grant(&id, expires_ms))
     }
 
     pub fn action_key(&self) -> Result<String, HostDenied> {
@@ -528,6 +554,29 @@ impl HostCore {
     fn may_read(&self) -> Result<(), HostDenied> {
         if self.inv.kind == InvocationKind::Action {
             return Err(self.denied("storage"));
+        }
+        Ok(())
+    }
+
+    /// Blobs are read by every kind but actions and migrations.
+    fn may_use_blobs(&self, what: &str) -> Result<(), HostDenied> {
+        if matches!(
+            self.inv.kind,
+            InvocationKind::Action | InvocationKind::Migrate
+        ) {
+            return Err(self.denied(what));
+        }
+        Ok(())
+    }
+
+    /// A value may refer only to the app's own blobs (R8): retention follows the
+    /// references, so one to a blob the app does not hold would keep nothing alive.
+    fn check_blob_refs(&self, value: &[u8]) -> Result<(), HostDenied> {
+        if blob_refs(value)
+            .iter()
+            .any(|id| self.blobs.info(id).is_none())
+        {
+            return Err(HostDenied::new("unknown blob"));
         }
         Ok(())
     }

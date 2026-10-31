@@ -13,6 +13,7 @@ use calimero_app_host::{
     MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
     MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
+use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 use serde_json::json;
 
 struct NoDirectory;
@@ -411,8 +412,12 @@ fn disabled_interfaces_refuse() {
         host.xcall_send("other", "m", b""),
         Err(HostDenied(_))
     ));
-    assert!(matches!(host.blobs_info("b"), Err(HostDenied(_))));
-    assert!(matches!(host.blobs_grant("b", 60), Err(HostDenied(_))));
+    // Without the node's blob store an app has no blobs.
+    assert_eq!(host.blobs_info(&"ab".repeat(32)), Ok(None));
+    assert!(matches!(
+        host.blobs_grant(&"ab".repeat(32), 60),
+        Err(HostDenied(_))
+    ));
     assert!(matches!(host.action_key(), Err(HostDenied(_))));
     assert!(matches!(host.action_view("m", b""), Err(HostDenied(_))));
     assert!(matches!(host.action_call("m", b""), Err(HostDenied(_))));
@@ -1091,4 +1096,74 @@ fn single_entry_batches_merge_puts_and_tombstones() {
     let mut reversed = expected;
     reversed.reverse();
     assert_eq!(drain_one_by_one(&mut host, true), reversed);
+}
+
+/// One blob, `[9; 32]`, granted as `"<hex>@<expires_ms>"`.
+struct OneBlob;
+
+impl BlobHost for OneBlob {
+    fn info(&self, id: &[u8; 32]) -> Option<BlobInfo> {
+        (*id == [9; 32]).then(|| BlobInfo {
+            size: 3,
+            sha256: vec![9; 32],
+            mime: "text/plain".to_owned(),
+        })
+    }
+    fn grant(&self, _id: &[u8; 32], expires_ms: u64) -> String {
+        format!("grant@{expires_ms}")
+    }
+}
+
+fn blob_ref(id: [u8; 32]) -> Vec<u8> {
+    let mut out = Vec::new();
+    ciborium::into_writer(
+        &ciborium::Value::Tag(BLOB_REF_TAG, Box::new(ciborium::Value::Bytes(id.to_vec()))),
+        &mut out,
+    )
+    .unwrap();
+    out
+}
+
+#[test]
+fn blobs_answer_from_the_nodes_record_and_grants_expire_from_the_run_clock() {
+    let state = base(&[]);
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::View,
+        InvocationKind::Timer,
+    ] {
+        let mut i = inv(kind);
+        if kind == InvocationKind::Timer {
+            i.timer = Some(TimerCtx {
+                scheduled_ms: 1_000,
+                previous_ms: None,
+            });
+        }
+        let mut host = core_for(&state, &i).with_blobs(Arc::new(OneBlob));
+        let id = "09".repeat(32);
+        assert_eq!(host.blobs_info(&id).unwrap().unwrap().size, 3);
+        assert_eq!(host.blobs_info(&"08".repeat(32)), Ok(None));
+        assert_eq!(host.blobs_info("not hex"), Ok(None));
+        assert_eq!(host.blobs_grant(&id, 60).unwrap(), "grant@61000");
+        assert!(host.blobs_grant(&id, 0).is_err());
+        assert!(host.blobs_grant(&id, MAX_GRANT_TTL_SECS + 1).is_err());
+        assert!(host.blobs_grant(&"08".repeat(32), 60).is_err());
+    }
+    for kind in [InvocationKind::Action, InvocationKind::Migrate] {
+        let host = core_for(&state, &inv(kind)).with_blobs(Arc::new(OneBlob));
+        assert!(host.blobs_info(&"09".repeat(32)).is_err(), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_value_may_refer_only_to_the_apps_own_blobs() {
+    let state = base(&[]);
+    let mut host = core_for(&state, &inv(InvocationKind::Call)).with_blobs(Arc::new(OneBlob));
+    host.storage_put(b"held", &blob_ref([9; 32])).unwrap();
+    assert!(matches!(
+        host.storage_put(b"other", &blob_ref([8; 32])),
+        Err(HostDenied(_))
+    ));
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.diff.len(), 1);
 }

@@ -14,16 +14,38 @@ use std::sync::{Arc, OnceLock};
 
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
-    stored_key as host_key, Audience as HostAudience, Budget, Caller as HostCaller, Engine,
-    HostCore, Invocation, InvocationKind, MethodKind, OrgRole, Outcome, Prepared, Status, TimerCtx,
-    TrapKind, Usage,
+    blob_refs, stored_key as host_key, Audience as HostAudience, BlobHost, BlobInfo, Budget,
+    Caller as HostCaller, Engine, HostCore, Invocation, InvocationKind, MethodKind, OrgRole,
+    Outcome, Prepared, Status, TimerCtx, Usage,
 };
 use serde_json::Value;
 
+pub use calimero_app_host::TrapKind;
 pub use directory::{Org, ORG_ID, OWNER};
 pub use scenario::run_scenario;
 
 use directory::HarnessDir;
+
+/// The harness's blobs (R8): what `upload_blob` recorded; a grant is `"<id>.<expires_ms>"`.
+struct HarnessBlobs(BTreeMap<[u8; 32], BlobInfo>);
+
+impl BlobHost for HarnessBlobs {
+    fn info(&self, id: &[u8; 32]) -> Option<BlobInfo> {
+        self.0.get(id).cloned()
+    }
+
+    fn grant(&self, id: &[u8; 32], expires_ms: u64) -> String {
+        format!("{}.{expires_ms}", hex32(id))
+    }
+}
+
+fn hex32(id: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    id.iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
 
 /// Why an invocation did not return a value.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +95,7 @@ pub struct TestApp {
     last_tick: BTreeMap<String, u64>,
     events: Vec<Logged>,
     usage: Usage,
+    blobs: BTreeMap<[u8; 32], BlobInfo>,
 }
 
 /// One engine and compile cache for the whole test process: compiled components are keyed by
@@ -119,6 +142,7 @@ impl TestApp {
             last_tick: BTreeMap::new(),
             events: Vec::new(),
             usage: Usage::default(),
+            blobs: BTreeMap::new(),
         };
         let owner = HostCaller::Account(OWNER.to_owned());
         let res = app.run(InvocationKind::Init, owner, "init", Vec::new(), None);
@@ -256,6 +280,31 @@ impl TestApp {
         self.org.remove(account);
     }
 
+    /// Uploads a blob as a client would (`POST /apps/{app}/blobs`): the app holds it from
+    /// now on and runs may refer to it. Returns its id (64 lowercase hex digits).
+    pub fn upload_blob(&mut self, bytes: &[u8], mime: &str) -> String {
+        use sha2::Digest as _;
+        let sha: [u8; 32] = sha2::Sha256::digest(bytes).into();
+        let _prev = self.blobs.insert(
+            sha,
+            BlobInfo {
+                size: bytes.len() as u64,
+                sha256: sha.to_vec(),
+                mime: mime.to_owned(),
+            },
+        );
+        hex32(&sha)
+    }
+
+    /// How many stored values refer to blob `id` (hex): what the node's retention counts.
+    #[must_use]
+    pub fn blob_refs(&self, id: &str) -> usize {
+        self.state
+            .values()
+            .map(|v| blob_refs(v).iter().filter(|r| hex32(r) == id).count())
+            .sum()
+    }
+
     /// The usage of the last invocation.
     #[must_use]
     pub fn last_usage(&self) -> Usage {
@@ -351,7 +400,8 @@ impl TestApp {
             Arc::new(HarnessDir(self.org.clone())),
         )
         // SAFETY: the harness builds timer slots exactly for timer invocations.
-        .expect("harness builds valid invocations");
+        .expect("harness builds valid invocations")
+        .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())));
         let budget = if is_view {
             Budget::view()
         } else {

@@ -2836,21 +2836,161 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     );
     assert_eq!(storage["blobs"], json!(0));
 
-    let refused = |e: calimero_client::Error| match e {
-        calimero_client::Error::Api { status, code, .. } => (status, code),
-        other => panic!("{other:?}"),
-    };
+    // The blob routes answer for a component (R8): nothing uploaded yet.
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
     let id = "00".repeat(32);
-    let e = alice.list_blobs(&app).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
     let e = alice.blob_info(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
     let e = alice.download_blob(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
-    let e = alice.delete_blob(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
-    let e = alice.upload_blob(&app, b"x".to_vec()).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
+/// R8: a component's blob is uploaded through the node, referred to from state by a
+/// typed `BlobRef`, read and granted from runs, and held for as long as state refers
+/// to it; once idle past its time every replica forgets it and the bytes go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_components_blobs_are_held_by_references_and_granted() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+
+    let up = alice
+        .upload_blob_as(&app, "text/plain", b"hello".to_vec())
+        .await
+        .unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    assert_eq!(up["size"], json!(5));
+    assert_eq!(alice.blob_info(&app, &id).await.unwrap()["size"], json!(5));
+    let r = alice
+        .call(
+            &app,
+            "attach",
+            json!({ "name": "greeting", "blob": id }),
+            None,
+        )
+        .await
+        .unwrap();
+    for i in 0..3 {
+        applied_past(&c, i, &app, r.index - 1).await;
+    }
+    assert_eq!(
+        strong_view(&alice, &app, "file", json!({ "name": "greeting" })).await,
+        json!({ "id": id, "size": "5", "mime": "text/plain" })
+    );
+    assert_eq!(alice.download_blob(&app, &id).await.unwrap(), b"hello");
+
+    // A grant from a run downloads without a session, on any node, until it expires.
+    let grant = strong_view(
+        &alice,
+        &app,
+        "share",
+        json!({ "name": "greeting", "ttl": 60 }),
+    )
+    .await;
+    let grant = grant.as_str().unwrap().to_owned();
+    let anonymous = c.client(2);
+    assert_eq!(
+        anonymous
+            .download_blob_granted(&app, &id, &grant)
+            .await
+            .unwrap(),
+        b"hello"
+    );
+    let e = anonymous.download_blob(&app, &id).await.unwrap_err();
+    assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
+    let forged = format!("9{grant}");
+    let e = anonymous
+        .download_blob_granted(&app, &id, &forged)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+
+    // A value may refer only to a blob the app holds.
+    let e = alice
+        .call(
+            &app,
+            "attach",
+            json!({ "name": "x", "blob": "11".repeat(32) }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+
+    // An upload nobody refers to, and the referred one once detached, go after their
+    // idle time; the referred one stays until then.
+    let idle = alice
+        .upload_blob_as(&app, "text/plain", b"never attached".to_vec())
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.advance_all(2 * 3_600_000);
+    let _r = alice
+        .call(&app, "set", json!({ "key": "tick", "value": "1" }), None)
+        .await
+        .unwrap();
+    let e = alice.blob_info(&app, &idle).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    assert_eq!(alice.blob_info(&app, &id).await.unwrap()["size"], json!(5));
+    let _r = alice
+        .call(&app, "detach", json!({ "name": "greeting" }), None)
+        .await
+        .unwrap();
+    c.advance_all(2 * 3_600_000);
+    let _r = alice
+        .call(&app, "set", json!({ "key": "tick", "value": "2" }), None)
+        .await
+        .unwrap();
+    let mut gone = false;
+    for _ in 0..50 {
+        if alice.list_blobs(&app).await.unwrap()["blobs"] == json!([])
+            && alice.download_blob(&app, &id).await.is_err()
+        {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "an idle blob stayed");
+    // The bytes left every node's store too (the leader collected them).
+    for _ in 0..50 {
+        if c.nodes.iter().flatten().all(|r| {
+            r.node.engine.get_blob(&id).ok().flatten().is_none()
+                && r.node.engine.get_blob(&idle).ok().flatten().is_none()
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the bytes of a forgotten blob stayed in a store");
+}
+
+/// R8: the owner deletes a component's blob; it is gone whatever refers to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_deletes_a_components_blob() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let id = alice.upload_blob(&app, b"bytes".to_vec()).await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .call(&app, "attach", json!({ "name": "f", "blob": id }), None)
+        .await
+        .unwrap();
+    let _d = alice.delete_blob(&app, &id).await.unwrap();
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
+    assert_eq!(
+        strong_view(&alice, &app, "file", json!({ "name": "f" })).await,
+        json!(null)
+    );
+    let e = alice.download_blob(&app, &id).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
 /// The engine tests' `spin` guest (`crates/app-engine-wasmtime/tests/guests/spin`): its
@@ -3068,8 +3208,8 @@ async fn a_component_sees_no_organization_but_its_own() {
 }
 
 /// Review nit: the blob routes judge access first. A caller who can't reach a private
-/// component app gets `404` on every blob route (as on any route), never the `409`
-/// that would tell them it exists and is a component.
+/// component app gets `404` on every blob route (as on any route), never an answer
+/// that would tell them it exists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
     let c = Cluster::start(3).await;
@@ -3108,11 +3248,8 @@ async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
         not_found,
         "upload"
     );
-    // Its owner still gets the component's answer.
-    assert_eq!(
-        status(alice.list_blobs(&app).await.unwrap_err()),
-        (409, "NOT_SUPPORTED".to_owned())
-    );
+    // Its owner gets the app's blobs (R8).
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
 }
 
 /// Review nit (D70): a same-key retry is answered from its record even when an upgrade

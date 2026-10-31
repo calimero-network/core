@@ -4,6 +4,7 @@
 //! [`Engine`] only maps the WIT world onto it and enforces the [`Budget`].
 
 mod abi;
+mod blobs;
 mod core;
 mod engine;
 mod overlay;
@@ -12,6 +13,7 @@ mod time;
 mod types;
 
 pub use abi::{Abi, MethodAbi, MethodKind, SUPPORTED_ABI_VERSIONS};
+pub use blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 pub use core::{
     CursorId, HostCore, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG,
     EMIT_NAME_TOO_LONG, EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM,

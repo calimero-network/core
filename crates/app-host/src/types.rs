@@ -192,7 +192,7 @@ impl HostDenied {
     }
 }
 
-/// A blob's metadata. Mirrors the WIT `blob-info`; blobs are not enabled in this milestone.
+/// A blob's metadata. Mirrors the WIT `blob-info`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobInfo {
     pub size: u64,

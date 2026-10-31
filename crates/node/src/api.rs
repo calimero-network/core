@@ -4814,10 +4814,20 @@ async fn blob_upload(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
-    // After the gate: one who can't reach the app learns nothing of it (404).
-    no_component_blobs(&app)?;
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
+    }
+    // A component records the upload's content type, and holds a bounded number (R8).
+    let mime = blob_mime(&headers)?;
+    if app.executor == crate::types::Executor::Component
+        && node.storage_stats(&app).await?.blobs.len()
+            >= crate::component::blobs::MAX_COMPONENT_BLOBS
+    {
+        return Err(ApiError::new(
+            429,
+            "QUOTA_EXCEEDED",
+            "the app holds as many blobs as it may",
+        ));
     }
     let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
@@ -4825,7 +4835,7 @@ async fn blob_upload(
         .call(&CallRequest::host(
             app_id,
             "__blob",
-            json!({ "id": id, "size": size }),
+            json!({ "id": id, "size": size, "mime": mime }),
             p.caller,
         ))
         .await?;
@@ -4835,18 +4845,62 @@ async fn blob_upload(
     Ok(Json(out))
 }
 
-/// Download one of an app's blobs.
+/// A blob's content type as the uploader gave it (`Content-Type`, default
+/// `application/octet-stream`): printable ASCII, at most `MAX_BLOB_MIME_BYTES`.
+fn blob_mime(headers: &HeaderMap) -> Result<String, ApiError> {
+    let Some(v) = headers.get(axum::http::header::CONTENT_TYPE) else {
+        return Ok("application/octet-stream".to_owned());
+    };
+    let mime = v.to_str().unwrap_or_default();
+    if mime.is_empty()
+        || mime.len() > crate::component::blobs::MAX_BLOB_MIME_BYTES
+        || !mime.bytes().all(|b| b == b' ' || b.is_ascii_graphic())
+    {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "unusable content type",
+        ));
+    }
+    Ok(mime.to_owned())
+}
+
+/// `?grant=` on a download: a component's run handed it out (R8).
+#[derive(Deserialize)]
+struct BlobGrant {
+    grant: Option<String>,
+}
+
+/// Download one of an app's blobs: as one who reaches the app, or, for a component, with a
+/// grant one of its runs handed out (no session needed).
 async fn blob_download(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, id)): Path<(String, String)>,
+    Query(q): Query<BlobGrant>,
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "__blob", false).await?;
-    // After the gate: one who can't reach the app learns nothing of it (404).
-    no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
+    let component = app.executor == crate::types::Executor::Component;
+    match q.grant.as_deref() {
+        // A bad or expired grant answers as a missing blob: it proves nothing.
+        Some(grant)
+            if !component
+                || !crate::component::blobs::grant_valid(
+                    &node.blob_grant_key(),
+                    &app.app_id,
+                    &raw,
+                    grant,
+                    node.app_clock().now_ms(),
+                ) =>
+        {
+            return Err(ApiError::not_found("no such blob in this app"));
+        }
+        Some(_) => {}
+        None => {
+            let _p = gate(&node, &headers, &app, "__blob", false).await?;
+        }
+    }
     // The app's leader decides: a replica that has not applied a delete yet
     // still holds the mark and the bytes.
     match node.blob_held_strong(&app, &raw).await {
@@ -4863,23 +4917,13 @@ async fn blob_download(
         Some(b) => b,
         None => node.fetch_blob(&hex_id).await?,
     };
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        bytes,
-    )
-        .into_response())
-}
-
-/// The blob routes are the wasmer executor's: a component has no blobs until R8.
-fn no_component_blobs(app: &crate::types::AppRecord) -> Result<(), ApiError> {
-    if app.executor == crate::types::Executor::Component {
-        return Err(ApiError::new(
-            409,
-            "NOT_SUPPORTED",
-            "this app is a component: blobs are not available to it yet (R8)",
-        ));
-    }
-    Ok(())
+    let mime = if component {
+        node.blob_mime(&app, &raw)
+            .unwrap_or_else(|| "application/octet-stream".to_owned())
+    } else {
+        "application/octet-stream".to_owned()
+    };
+    Ok(([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response())
 }
 
 /// Whether `account` may manage `app`'s data (its owner, or an admin of its
@@ -4904,8 +4948,6 @@ async fn blob_list(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
-    // After the gate: one who can't reach the app learns nothing of it (404).
-    no_component_blobs(&app)?;
     let stats = node.storage_stats(&app).await?;
     Ok(Json(json!({
         "blobs": stats.blobs.iter().map(|(id, size)| blob_json(id, *size)).collect::<Vec<_>>(),
@@ -4921,8 +4963,6 @@ async fn blob_info(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
-    // After the gate: one who can't reach the app learns nothing of it (404).
-    no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
     let stats = node.storage_stats(&app).await?;
     let size = stats
@@ -4945,8 +4985,6 @@ async fn blob_delete(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
-    // After the gate: one who can't reach the app learns nothing of it (404).
-    no_component_blobs(&app)?;
     if !manages_app(&node, &app, p.caller.account()) {
         return Err(ApiError::forbidden(
             "only the app's owner or an org admin deletes its blobs",

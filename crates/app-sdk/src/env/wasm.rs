@@ -1,5 +1,6 @@
 //! The guest side of `env`: calls through the `calimero:app` and `wasi` imports.
 
+use crate::bindings::calimero::app::blobs;
 use crate::bindings::calimero::app::context;
 use crate::bindings::calimero::app::events;
 use crate::bindings::calimero::app::types;
@@ -83,4 +84,16 @@ pub fn emit(name: &str, data: Vec<u8>, audience: Audience) -> Result<()> {
 fn no_org() -> Result<String> {
     context::org()
         .ok_or_else(|| AppError::with_fields("Emit", json!({ "message": "the app has no org" })))
+}
+
+pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
+    blobs::info(id).map(|i| crate::BlobInfo {
+        size: i.size,
+        sha256: i.sha256,
+        mime: i.mime,
+    })
+}
+
+pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
+    blobs::grant(id, ttl_seconds)
 }
