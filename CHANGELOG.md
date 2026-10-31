@@ -2,8 +2,20 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.7] - 2026-10-31
+
 ### Added
 
+- **Plain collections in the component SDK** (`calimero-app-sdk`): `Cell<T>`
+  (one value), `Set<T>`, `Vector<T>`, `Frozen<T>` (write-once, by content
+  hash) and `PerUser<T>` (the caller's own value), and `UnorderedMap` gains
+  ordered reads (`range`, `prefix`, `first`, `last`, `page`), a stored `len`
+  and `clear`. One leader orders every write, so none of them is a CRDT.
+  Rich text stays one: `Text` (Fugue) and `RichText` (text with marks).
+  kv-store, kv-store-init, org-gated, sorted-kv-store, sorted-set-store,
+  team-metrics and kv-store-with-user-and-frozen-storage use them; their state
+  layout changed (no migration). `#[app::state]` lists each field's kind in the
+  ABI's `state` (#4813).
 - **Deployments.** An owner's (an account's, or an organization's) list of
   the apps it offers on a cluster, each naming one installed release. Its
   managers (the account; the organization's org-wide `MANAGE_APPLICATION`
