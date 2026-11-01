@@ -154,6 +154,44 @@ async fn a_session_outlives_the_node_that_issued_it() {
         .expect("a write through a survivor with the stopped issuer's session");
 }
 
+/// A system write waits for a leader until its deadline (`SYSTEM_WRITE_TIMEOUT`), not
+/// for a fixed number of tries. The system leader and one more node stop, so the one
+/// left has no leader; a write sent there then commits once a stopped node is back,
+/// about 8 s later. Before, it gave up after 50 tries of 150 ms with `503 the system
+/// group has no leader`, which a client signing in right after a node died saw
+/// (calimero-client-py `test_keeps_serving_after_a_node_dies`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_system_write_waits_for_a_leader_until_its_deadline() {
+    let mut c = Cluster::start(3).await;
+    let (_alice, _pk) = signed_up(&c, 0, "alice").await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .expect("a system leader");
+    let survivor = (leader + 1) % 3;
+    let other = (leader + 2) % 3;
+    c.stop(leader).await;
+    c.stop(other).await;
+    let node = std::sync::Arc::clone(&c.nodes[survivor].as_ref().unwrap().node);
+    let started = std::time::Instant::now();
+    // A second genesis: refused when it applies, which proves it reached a leader.
+    let write = tokio::spawn(async move {
+        node.sys_write(&calimero_node::system::SystemCmd::Genesis {
+            governance: calimero_node::system::Governance::default(),
+            release: None,
+            operator_key: None,
+            nodes: Vec::new(),
+        })
+        .await
+    });
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    c.restart(other).await;
+    let e = write
+        .await
+        .unwrap()
+        .expect_err("a second genesis is refused");
+    assert_eq!(e.code, "REJECTED", "after {:?}: {e:?}", started.elapsed());
+}
+
 /// A node's sessions survive its restart on the same data directory (a crash,
 /// or a rolling upgrade of its binary): the key it signs them with is kept,
 /// wrapped under its K_r, and attested again at start (merobox
