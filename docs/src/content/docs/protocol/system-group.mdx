@@ -153,8 +153,10 @@ three strengths:
 
 `Node::sys_write` appends through the system leader: locally if this node
 leads, else by posting the command to the leader's `internal/system` route over
-the [peer sealed channel](/protocol/networking/#between-nodes). It retries for
-about 8 seconds to ride out an election. A follower that receives
+the [peer sealed channel](/protocol/networking/#between-nodes). It retries
+until its 10-second deadline (`SYSTEM_WRITE_TIMEOUT`) to ride out an election,
+then answers `503 UNAVAILABLE` naming the group's leader, voters and the nodes
+behind it. A follower that receives
 `internal/system` refuses rather than forwarding again.
 
 Some system commands are not idempotent yet, so a forwarded system write keeps
