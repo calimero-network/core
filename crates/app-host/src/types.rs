@@ -176,6 +176,9 @@ pub struct Outcome {
     pub actions: Vec<crate::action::ActionStart>,
     /// The owner-only app log (stdout, stderr, `log`); kept whatever the status.
     pub logs: Vec<String>,
+    /// A logged run's outbound requests and their responses, for its log entry (D76);
+    /// kept whatever the status, since they left the node. Empty for views and actions.
+    pub http: Vec<crate::action::HttpExchange>,
     pub usage: Usage,
 }
 

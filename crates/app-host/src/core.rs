@@ -10,8 +10,8 @@ use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
 use crate::action::{
-    subcall_key, ActionHost, ActionStart, HttpHost, HttpRequest, HttpResponse, NoHttp,
-    MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
+    subcall_key, ActionHost, ActionStart, HttpExchange, HttpHost, HttpRequest, HttpResponse,
+    NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
 };
 use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::overlay::{Cursor, Overlay};
@@ -106,6 +106,8 @@ pub struct HostCore {
     occurrences: BTreeMap<(String, Vec<u8>), u32>,
     subcalls: u32,
     http_requests: u32,
+    /// A logged run's outbound exchanges, for its entry (D76).
+    http_log: Vec<HttpExchange>,
     overlay: Overlay,
     writes: u32,
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
@@ -155,6 +157,7 @@ impl HostCore {
             occurrences: BTreeMap::new(),
             subcalls: 0,
             http_requests: 0,
+            http_log: Vec::new(),
             overlay: Overlay::default(),
             writes: 0,
             run_bytes: 0,
@@ -707,24 +710,36 @@ impl HostCore {
         Ok(host.call(method, args, &key))
     }
 
-    /// Sends an action's outgoing HTTP request through the node's gate (S9). Anything but
-    /// an action traps `HostDenied`; past [`MAX_HTTP_REQUESTS`] or a body over
-    /// [`MAX_HTTP_BODY_BYTES`] the request is not sent and the guest gets the error.
+    /// Sends a run's outgoing HTTP request through the node's gate (S9, D76): actions,
+    /// calls, timers and deliveries; views, `init` and migrations trap `HostDenied`. Past
+    /// [`MAX_HTTP_REQUESTS`] or a body over [`MAX_HTTP_BODY_BYTES`] the request is not sent
+    /// and the guest gets the error. A logged run records the exchange for its entry
+    /// ([`HttpExchange`]), so followers and replays read it and never fetch again.
     pub fn http_send(
         &mut self,
         request: &HttpRequest,
     ) -> Result<Result<HttpResponse, String>, HostDenied> {
-        if self.inv.kind != InvocationKind::Action {
-            return Err(HostDenied::new("outgoing http is only allowed in actions"));
+        let logged = matches!(
+            self.inv.kind,
+            InvocationKind::Call | InvocationKind::Timer | InvocationKind::XcallDeliver
+        );
+        if !logged && self.inv.kind != InvocationKind::Action {
+            return Err(HostDenied::new(
+                "outgoing http is not allowed in views, init or migrations",
+            ));
         }
         if self.http_requests >= MAX_HTTP_REQUESTS {
-            return Ok(Err("too many requests in one action run".to_owned()));
+            return Ok(Err("too many requests in one run".to_owned()));
         }
         if request.body.len() > MAX_HTTP_BODY_BYTES {
             return Ok(Err("request body too large".to_owned()));
         }
         self.http_requests += 1;
-        Ok(self.http.send(request))
+        let response = self.http.send(request);
+        if logged {
+            self.http_log.push(HttpExchange::record(request, &response));
+        }
+        Ok(response)
     }
 
     fn action_host(&self) -> Result<Arc<dyn ActionHost>, HostDenied> {
@@ -790,6 +805,7 @@ impl HostCore {
             xcalls: if ok { self.xcalls } else { Vec::new() },
             actions: if ok { self.started } else { Vec::new() },
             logs: self.logs,
+            http: self.http_log,
             usage: Usage {
                 writes: self.writes,
                 ..usage
