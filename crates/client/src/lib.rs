@@ -48,7 +48,7 @@ enum Payload {
     Empty,
     Json(Value),
     Bytes {
-        content_type: &'static str,
+        content_type: std::borrow::Cow<'static, str>,
         bytes: bytes::Bytes,
     },
 }
@@ -411,7 +411,7 @@ impl Client {
                 content_type,
                 bytes,
             } => req
-                .header("content-type", *content_type)
+                .header("content-type", &**content_type)
                 .body(bytes.clone()),
         };
         let req = req.build().map_err(eyre::Report::from)?;
@@ -583,11 +583,11 @@ impl Client {
     async fn upload(
         &self,
         path: &str,
-        content_type: &'static str,
+        content_type: impl Into<std::borrow::Cow<'static, str>>,
         bytes: Vec<u8>,
     ) -> Result<Value> {
         let payload = Payload::Bytes {
-            content_type,
+            content_type: content_type.into(),
             bytes: bytes.into(),
         };
         answer(self.send_payload(Method::POST, path, payload).await?).await
@@ -687,7 +687,36 @@ impl Client {
         .await
     }
 
-    /// One of an app's blobs, by id (base58 or hex).
+    /// Upload a blob with its content type; a component app records it (R8) and serves
+    /// downloads with it.
+    pub async fn upload_blob_as(&self, app: &str, mime: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.upload(&format!("apps/{app}/blobs"), mime.to_owned(), bytes)
+            .await
+    }
+
+    /// Download a component app's blob with a grant one of its runs handed out
+    /// (`blobs.grant`); no session needed.
+    pub async fn download_blob_granted(&self, app: &str, id: &str, grant: &str) -> Result<Vec<u8>> {
+        let resp = self
+            .send(
+                Method::GET,
+                &format!(
+                    "apps/{}/blobs/{}?grant={}",
+                    path_segment(app),
+                    path_segment(id),
+                    path_segment(grant)
+                ),
+                None,
+            )
+            .await?;
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            let v: Value = resp.json().await.unwrap_or(Value::Null);
+            return Err(api_error(status, &v));
+        }
+        Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
+    }
+
     /// The app's blobs: `{ blobs: [{ blobId, id, size }] }`.
     pub async fn list_blobs(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/blobs", path_segment(app))).await

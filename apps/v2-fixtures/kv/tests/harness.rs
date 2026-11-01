@@ -175,3 +175,33 @@ fn beat_records_its_slot_and_fails_inside_a_fail_window() {
         ])
     );
 }
+
+#[test]
+fn blobs_are_referenced_from_state_and_granted() {
+    let mut t = app();
+    let id = t.upload_blob(b"hello", "text/plain");
+    t.as_("owner")
+        .call("attach", json!({ "name": "greeting", "blob": id }))
+        .unwrap();
+    assert_eq!(t.blob_refs(&id), 1);
+    let file = t
+        .as_("owner")
+        .view("file", json!({ "name": "greeting" }))
+        .unwrap();
+    assert_eq!(file, json!({ "id": id, "size": "5", "mime": "text/plain" }));
+    let grant = t
+        .as_("owner")
+        .view("share", json!({ "name": "greeting", "ttl": 60 }))
+        .unwrap();
+    assert!(grant.as_str().unwrap().starts_with(&id), "{grant}");
+    // A blob the app does not hold cannot be referenced.
+    let e = t
+        .as_("owner")
+        .call("attach", json!({ "name": "x", "blob": "00".repeat(32) }))
+        .unwrap_err();
+    assert_eq!(e, Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied));
+    t.as_("owner")
+        .call("detach", json!({ "name": "greeting" }))
+        .unwrap();
+    assert_eq!(t.blob_refs(&id), 0);
+}

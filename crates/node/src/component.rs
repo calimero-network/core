@@ -16,7 +16,9 @@
 //! `StateView` (ordered `range` scans), and `apply` copies it only while a run still
 //! holds the previous one. The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
-//! `last_ts_ms`, idempotency) are never keys the app sees (D39).
+//! `last_ts_ms`, idempotency, blob records) are never keys the app sees (D39).
+
+pub mod blobs;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Weak};
@@ -27,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::{rows, AppMachine, Status, Write};
+use crate::component::blobs::{ref_deltas, BlobTable, MAX_COLLECT_QUEUE};
 use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
@@ -221,6 +224,24 @@ pub enum ComponentCmd {
     /// executors is refused before it is proposed.
     #[serde(rename = "componentUpgrade")]
     Upgrade { bundle: String, base_index: u64 },
+    /// A blob uploaded for the app (R8; its bytes are in the blob store already): the
+    /// app holds it, idle until a value refers to it ([`blobs`]).
+    #[serde(rename = "componentBlob")]
+    Blob {
+        /// Its SHA-256, hex.
+        id: String,
+        size: u64,
+        mime: String,
+        /// The entry timestamp (D16): its idle time starts here.
+        ts_ms: u64,
+    },
+    /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
+    #[serde(rename = "componentBlobForget")]
+    BlobForget { id: String },
+    /// The leader collected the bytes of blobs the app forgot (idle past their time):
+    /// they leave the queue.
+    #[serde(rename = "componentBlobsCollected")]
+    BlobsCollected { ids: Vec<String> },
 }
 
 impl ComponentCmd {
@@ -343,6 +364,10 @@ pub struct ComponentHead {
     /// recorded (D74).
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
+    /// Blobs the app forgot (idle past their time, R8) whose bytes the leader has yet to
+    /// collect, hex; at most [`MAX_COLLECT_QUEUE`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collect: Vec<String>,
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -353,6 +378,8 @@ pub struct ComponentState {
     /// The app's data, stored keys (generation prefix included). Shared with
     /// running calls and views as their `StateView` (D46).
     pub kv: Kv,
+    /// The blobs the app holds (R8), host records.
+    pub blobs: BlobTable,
 }
 
 impl ComponentState {
@@ -364,7 +391,19 @@ impl ComponentState {
             Ok(true)
         })?;
         self.kv = Arc::new(kv);
-        Ok(())
+        self.blobs.load(state)
+    }
+
+    /// Forget the blobs idle past their time at `now_ms` and queue their bytes for the
+    /// leader to collect.
+    fn expire_blobs(&mut self, tx: &mut StateTx<'_>, now_ms: u64) {
+        for id in self.blobs.expire(tx, now_ms) {
+            self.head.collect.push(hex::encode(id));
+        }
+        let over = self.head.collect.len().saturating_sub(MAX_COLLECT_QUEUE);
+        if over > 0 {
+            let _dropped = self.head.collect.drain(..over);
+        }
     }
 }
 
@@ -419,6 +458,12 @@ impl AppMachine {
         Arc::clone(&self.state.component.kv) as Arc<dyn host::StateView>
     }
 
+    /// The blobs a component's run sees (R8): the current records, shared.
+    #[must_use]
+    pub fn blob_view(&self) -> blobs::Blobs {
+        Arc::clone(&self.state.component.blobs.records)
+    }
+
     /// Whether `slot` of `timer` was already applied.
     #[must_use]
     pub fn tick_applied(&self, timer: &str, slot: u64) -> bool {
@@ -446,19 +491,25 @@ impl AppMachine {
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         if outcome.status == Status::Ok {
             if !outcome.diff.is_empty() {
+                // References to blobs move with the values that hold them (R8).
+                let mut deltas = BTreeMap::new();
                 let kv = Arc::make_mut(&mut c.kv);
                 for w in &outcome.diff {
                     match &w.value {
                         Some(v) => {
                             tx.put_hidden(rows::CKV, &w.key.0, &v.0);
-                            let _prev = kv.insert(w.key.0.clone(), v.0.clone());
+                            let prev = kv.insert(w.key.0.clone(), v.0.clone());
+                            ref_deltas(&mut deltas, prev.as_deref(), Some(&v.0));
                         }
                         None => {
                             tx.delete_hidden(rows::CKV, &w.key.0);
-                            let _prev = kv.remove(&w.key.0);
+                            let prev = kv.remove(&w.key.0);
+                            ref_deltas(&mut deltas, prev.as_deref(), None);
                         }
                     }
                 }
+                deltas.retain(|_, d| *d != 0);
+                c.blobs.count(tx, &deltas, ts_ms);
             }
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
@@ -588,7 +639,13 @@ impl AppMachine {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
-            Ok(ComponentCmd::Upgrade { .. }) | Err(_) => None,
+            Ok(ComponentCmd::Blob { ts_ms, .. }) => Some(*ts_ms),
+            Ok(
+                ComponentCmd::Upgrade { .. }
+                | ComponentCmd::BlobForget { .. }
+                | ComponentCmd::BlobsCollected { .. },
+            )
+            | Err(_) => None,
         };
         match &cmd {
             Ok(ComponentCmd::Init {
@@ -660,6 +717,31 @@ impl AppMachine {
                 a
             }
             Ok(ComponentCmd::Tick(tick)) => self.apply_tick(tx, index, &tick),
+            Ok(ComponentCmd::Blob {
+                id,
+                size,
+                mime,
+                ts_ms,
+            }) => {
+                let c = &mut self.state.component;
+                c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
+                let held =
+                    parse_hex32(&id).is_some_and(|raw| c.blobs.upload(tx, raw, size, &mime, ts_ms));
+                host_answer(index, held, "the app holds too many blobs")
+            }
+            Ok(ComponentCmd::BlobForget { id }) => {
+                let c = &mut self.state.component;
+                let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget(tx, &raw));
+                host_answer(index, held, "no such blob in this app")
+            }
+            Ok(ComponentCmd::BlobsCollected { ids }) => {
+                self.state
+                    .component
+                    .head
+                    .collect
+                    .retain(|id| !ids.contains(id));
+                host_answer(index, true, "")
+            }
             Err(e) => Applied {
                 index,
                 status: Status::Trap,
@@ -671,7 +753,37 @@ impl AppMachine {
             },
         };
         self.expire_component(tx, entry_ts_ms);
+        if let Some(now) =
+            idempotency::expiry_now(self.state.component.head.last_ts_ms, entry_ts_ms)
+        {
+            self.state.component.expire_blobs(tx, now);
+        }
         serde_json::to_vec(&applied).unwrap_or_default()
+    }
+}
+
+/// A blob id as the host commands carry it (hex).
+fn parse_hex32(id: &str) -> Option<[u8; 32]> {
+    hex::decode(id)
+        .ok()
+        .and_then(|raw| <[u8; 32]>::try_from(raw.as_slice()).ok())
+}
+
+/// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
+/// `AppError` with `why`.
+fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
+    Applied {
+        index,
+        status: if ok { Status::Ok } else { Status::AppError },
+        result: Value::Null,
+        error: if ok {
+            Value::Null
+        } else {
+            Value::String(why.to_owned())
+        },
+        events: Vec::new(),
+        conflict: false,
+        timeout: false,
     }
 }
 

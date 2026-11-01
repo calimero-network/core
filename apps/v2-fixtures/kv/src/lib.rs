@@ -39,6 +39,16 @@ pub struct Kv {
     beat_count: Counter,
     /// `failUntil` and `stallUntil`, app times in ms as decimal strings.
     beat_faults: UnorderedMap<String, String>,
+    /// Uploaded blobs by name (R8): a typed reference keeps the blob alive.
+    files: UnorderedMap<String, BlobRef>,
+}
+
+/// A file as `file` lists it (D20: the size as a decimal string).
+#[derive(serde::Serialize)]
+pub struct FileOut {
+    pub id: String,
+    pub size: String,
+    pub mime: String,
 }
 
 #[app::error]
@@ -174,6 +184,37 @@ impl Kv {
         self.beat_faults
             .insert(&"stallUntil".to_owned(), &until.to_string())?;
         Ok(until)
+    }
+
+    /// Names an uploaded blob `name`: state refers to it from now on.
+    pub fn attach(&mut self, name: String, blob: BlobRef) -> app::Result<()> {
+        self.files.insert(&name, &blob)?;
+        Ok(())
+    }
+
+    /// Drops the name; the blob goes once nothing refers to it.
+    pub fn detach(&mut self, name: String) -> app::Result<bool> {
+        Ok(self.files.remove(&name)?.is_some())
+    }
+
+    /// The blob named `name`, with what the node recorded of it; `null` if the name is
+    /// unknown or the blob was deleted.
+    #[app::view]
+    pub fn file(&self, name: String) -> app::Result<Option<FileOut>> {
+        let Some(blob) = self.files.get(&name)? else {
+            return Ok(None);
+        };
+        Ok(blob.info().map(|i| FileOut {
+            id: blob.id(),
+            size: i.size.to_string(),
+            mime: i.mime,
+        }))
+    }
+
+    /// A download grant for the blob named `name`, valid `ttl` seconds.
+    #[app::view]
+    pub fn share(&self, name: String, ttl: u32) -> app::Result<Option<String>> {
+        Ok(self.files.get(&name)?.map(|b| b.grant(ttl)))
     }
 
     /// The value of `key`, or `null`.

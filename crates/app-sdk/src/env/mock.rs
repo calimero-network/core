@@ -33,6 +33,8 @@ pub struct MockState {
     pub id_prefix: String,
     /// Events emitted: name, JSON data, audience.
     pub events: Vec<(String, Vec<u8>, Audience)>,
+    /// The app's blobs by id (hex), as the node would record them at upload.
+    pub blobs: HashMap<String, crate::BlobInfo>,
 }
 
 impl Default for MockState {
@@ -49,6 +51,7 @@ impl Default for MockState {
             unique_n: 0,
             id_prefix: "1.1".into(),
             events: Vec::new(),
+            blobs: HashMap::new(),
         }
     }
 }
@@ -126,4 +129,18 @@ pub fn emit(name: &str, data: Vec<u8>, audience: Audience) -> Result<()> {
     }
     with_mut(|s| s.events.push((name.to_owned(), data, audience)));
     Ok(())
+}
+
+pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
+    read(|s| s.blobs.get(id).cloned())
+}
+
+/// `"grant:<id>:<ttl>"`; panics, as the host traps, for an unknown blob or a TTL out of range.
+pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
+    // SAFETY: mirrors the host's trap (`HostDenied`), which ends the run.
+    assert!(
+        (1..=86_400).contains(&ttl_seconds) && blob_info(id).is_some(),
+        "host denied: unknown blob or grant ttl out of range"
+    );
+    format!("grant:{id}:{ttl_seconds}")
 }

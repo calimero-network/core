@@ -68,6 +68,7 @@ calimero-app-build.workspace = true
 # and the log can lose its unsynced writes on a stop (the D52 restart test).
 calimero-node = { workspace = true, features = ["testing"] }
 calimero-client = { workspace = true, features = ["testing"] }
+ciborium.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true

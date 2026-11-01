@@ -526,10 +526,10 @@ impl Transport for PeerTransport {
 }
 
 /// What the wasmer path answers a component app that reaches it: its
-/// commands (blobs, follow-ups, xcalls) are the wasmer executor's; a component
-/// has no blobs until R8 and no xcalls until D25.
+/// commands (follow-ups, xcalls) are the wasmer executor's; a component's blobs
+/// are its own host records (R8) and it has no xcalls until D25.
 pub const COMPONENT_REFUSES: &str =
-    "this app is a component: the wasmer executor's commands (blobs, xcalls, follow-ups) do not reach it";
+    "this app is a component: the wasmer executor's commands (xcalls, follow-ups) do not reach it";
 
 /// The error of a call a read-only member made that would have written.
 pub const READ_ONLY: &str = "read-only in this team: the call would write";
@@ -2280,8 +2280,12 @@ impl Node {
             return self.upgrade_local(g, req).await;
         }
         // Everything below runs a wasmer app's code or writes its keyspace; a
-        // component's calls are `call_component`'s, and its blobs wait for R8.
-        if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
+        // component's calls are `call_component`'s, and its blobs its own host records.
+        let component = g.read_local(|m, _| m.state.executor()) == Some(Kind::Component);
+        if component && req.host && matches!(req.method.as_str(), "__blob" | "__blob_forget") {
+            return self.component_blob_cmd(g, req).await;
+        }
+        if component {
             return Ok(Applied {
                 index: g.applied(),
                 status: Status::AppError,

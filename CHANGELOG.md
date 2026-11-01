@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Blobs for component apps** (R8). The blob routes (`POST/GET/DELETE
+  /apps/{app}/blobs[/{id}]`) answer for `calimero:app` components instead of
+  `409 NOT_SUPPORTED`. State refers to a blob through a typed `BlobRef`
+  (`calimero-app-sdk`; CBOR tag 51,739 around its SHA-256), and the node keeps a
+  blob while state refers to it, plus one hour after its upload or its last
+  reference (host-tracked retention), then collects the bytes. Runs read a
+  blob's size, hash and content type (`BlobRef::info`) and hand out download
+  grants (`BlobRef::grant`, up to 24 h) that `GET
+  /apps/{app}/blobs/{id}?grant=` takes without a session. Uploads keep their
+  `Content-Type`. The harness gains `upload_blob` and `blob_refs`.
+
 ## [1.0.0-rc.7] - 2026-10-31
 
 ### Added

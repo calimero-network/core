@@ -499,7 +499,8 @@ is its command line.
   meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
 - **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
   sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
-- **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`): bytes live in the
+- **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`; a component's: see
+  "Component executor"): bytes live in the
   cluster's blob store (`hex(SHA-256)`, a majority before the answer, a missing one
   fetched from a peer), and the app's state marks which are its own
   (`app::blob_key`). A run's blob host is `services::AppBlobs`: a run writes blobs
@@ -790,10 +791,27 @@ API and system group. What differs from the wasmer path:
   for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
-  `/apps/{app}/storage` counts its keys and bytes; the blob routes answer
-  `409 NOT_SUPPORTED` (R8). The host refuses blobs, search, xcall, event handlers,
-  TEE runs and outbound HTTPS to a component; a wasmer app's
+  `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses search,
+  xcall, event handlers, TEE runs and outbound HTTPS to a component; a wasmer app's
   xcall into a component is refused (`node::COMPONENT_REFUSES`).
+- **Blobs** (R8, `component/blobs.rs`): the same store and routes as a wasmer app's
+  (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
+  app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
+  hidden rows `rows::CBLOB`, in memory as `BlobTable`), not a mark in its keyspace.
+  Upload (`POST /apps/{app}/blobs`, `Content-Type` kept as the mime, at most
+  `MAX_BLOB_MIME_BYTES`) commits `componentBlob`; the owner's delete
+  `componentBlobForget` (both through `CallRequest::host`, `Node::component_blob_cmd`).
+  A `BlobRef` in a stored value is CBOR tag `calimero_app_host::BLOB_REF_TAG`; `apply`
+  counts references from each diff and the values it replaces (`ref_deltas`), so every
+  replica agrees; a blob with none is held `BLOB_IDLE_MS` (1 h) from its upload or its
+  last reference, then forgotten against entry timestamps (`expiry_now`, at most
+  `BLOB_EXPIRY_STEP` per entry) and queued in `ComponentHead::collect`; the leader's
+  timer poll collects the bytes (`collect_blob`) and logs `componentBlobsCollected`.
+  Runs see the records through `RunBlobs` (`HostCore::with_blobs`): `info`, and `grant`
+  = `<expiresMs>.<HMAC>` under `grant_key(K_c)`, which `GET /apps/{app}/blobs/{id}?grant=`
+  takes without a session (a bad one is `404`). At most `MAX_COMPONENT_BLOBS` per app
+  (`429`). Tests: `a_components_blobs_are_held_by_references_and_granted`,
+  `an_owner_deletes_a_components_blob`.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are

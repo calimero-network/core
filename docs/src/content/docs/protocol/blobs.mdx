@@ -75,6 +75,38 @@ bytes (`Node::collect_blob`): it deletes them on every node unless
 Known window: if the same content is uploaded to another app between that check
 and the deletion, the other app's mark survives but its bytes are gone.
 
+## Component apps (`calimero:app`)
+
+A component app (the v2 SDK, `calimero-app-sdk`) keeps its blobs in the same
+store, with the same upload, download, list and delete routes. What differs is
+which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
+
+- **Host records, not marks.** The node records each of the app's blobs
+  (`size`, the uploader's `Content-Type`, a reference count) as host-owned rows
+  of the app's group (`rows::CBLOB`, D39), outside the keyspace the app writes.
+  An upload commits `componentBlob { id, size, mime, tsMs }`; the owner's (or an
+  org admin's) delete commits `componentBlobForget`.
+- **Typed references.** State refers to a blob through a `BlobRef`, which both
+  SDKs store as CBOR tag 51,739 (`0xCA1B`) around the blob's 32-byte SHA-256 and
+  send in JSON as the 64-hex-digit id. A run that stores a reference to a blob
+  the app does not hold traps `HostDenied`.
+- **Host-tracked retention.** Every replica counts references from the diffs it
+  applies and the values they replace. A blob nothing refers to is held for one
+  hour after its upload or after its last reference went (`BLOB_IDLE_MS`), so a
+  client uploads first and attaches it with a later call. After that the app
+  forgets it, judged against entry timestamps so every replica forgets it in the
+  same entry; the leader then collects the bytes as above and logs
+  `componentBlobsCollected`.
+- **No bytes in runs.** The WIT `blobs` interface has `info` (size, SHA-256,
+  content type; none for a blob the app does not hold) and `grant(id, ttl)`.
+  Calls, views, timers, `init` and xcall deliveries may use them; actions and
+  migrations may not.
+- **Grants.** `grant` returns `<expiresMs>.<mac>`, an HMAC under a key derived
+  from the cluster key over the app, the blob and the expiry (the run's clock
+  plus 1 s to 24 h). `GET /apps/{app}/blobs/{id}?grant=<grant>` downloads with
+  no session on any node, until it expires; a bad or expired grant answers
+  `404`. Downloads carry the recorded content type.
+
 ## Limits
 
 | Limit | Value |
@@ -84,3 +116,7 @@ and the deletion, the other app's mark survives but its bytes are gone.
 | One read or write chunk | 10 MiB |
 | All blobs one run writes | 512 MiB |
 | A run waiting for a missing blob | 5 s |
+| Blobs one component app holds | 100,000 (`429 QUOTA_EXCEEDED` past it) |
+| A component blob's content type | 127 bytes, printable ASCII |
+| A component blob held with no reference | 1 hour |
+| A grant | 1 s to 24 h |
