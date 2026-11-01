@@ -371,11 +371,15 @@ impl Node {
         state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
+        run_key: Option<String>,
     ) -> Outcome {
-        self.run_with(prepared, app_id, state, applied, invocation, None)
+        self.run_with(prepared, app_id, state, applied, invocation, run_key, None)
     }
 
     /// [`Self::run_component`], with the app's search index for a view (spec section 7).
+    /// With `run_key` (the run's own key: a call's caller and idempotency key, a tick's
+    /// slot), the run reaches other apps synchronously through [`NodeXcall`].
+    #[allow(clippy::too_many_arguments)]
     fn run_with(
         &self,
         prepared: &Prepared,
@@ -383,8 +387,19 @@ impl Node {
         (state, blobs): (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
+        run_key: Option<String>,
         search: Option<Arc<dyn calimero_app_host::SearchHost>>,
     ) -> Outcome {
+        let xcalls = run_key.and_then(|key| {
+            let node = self.this.lock().ok()?.upgrade()?;
+            let handle = tokio::runtime::Handle::try_current().ok()?;
+            Some(Arc::new(NodeXcall {
+                node,
+                source: app_id.to_owned(),
+                key,
+                handle,
+            }) as Arc<dyn calimero_app_host::XcallHost>)
+        });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
         let blobs = Arc::new(RunBlobs {
@@ -399,6 +414,10 @@ impl Node {
                     Some(search) => host.with_search(search),
                     None => host,
                 };
+                let host = match xcalls {
+                    Some(xcalls) => host.with_xcall_host(xcalls),
+                    None => host,
+                };
                 Outcome::from_host(self.wasm.invoke(prepared, host, self.budget()))
             }
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
@@ -409,6 +428,7 @@ impl Node {
     /// `init`), which runs inside `Group::propose_led`, on the machine's read lock,
     /// for up to its deadline: off the async workers ([`Node::metered`], which
     /// adds what it took to `meter`'s app).
+    #[allow(clippy::too_many_arguments)]
     fn run_logged(
         &self,
         meter: &Meter,
@@ -417,9 +437,10 @@ impl Node {
         state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
+        run_key: Option<String>,
     ) -> Outcome {
         self.metered(meter, || {
-            self.run_component(prepared, app_id, state, applied, invocation)
+            self.run_component(prepared, app_id, state, applied, invocation, run_key)
         })
     }
 
@@ -508,6 +529,7 @@ impl Node {
                             seed: calimero_identity::random::<32>(),
                             timer: None,
                         },
+                        None,
                     ),
                     Err(why) => Outcome::trap(TrapKind::Fault, why),
                 };
@@ -665,6 +687,7 @@ impl Node {
                             previous_ms,
                         }),
                     },
+                    Some(format!("tick:{timer}:{slot}")),
                 );
                 if outcome.is_timeout() {
                     debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
@@ -727,12 +750,17 @@ impl Node {
         };
         // A delivered xcall only within one organization (or one owner's personal apps),
         // judged again here on this replica's system state.
-        if let Some(from) = &req.xcall {
-            if !self.sys(|s| same_boundary(s, &from.source, &req.app_id)) {
+        let source = req
+            .xcall
+            .as_ref()
+            .map(|from| from.source.as_str())
+            .or(req.sync_from.as_deref());
+        if let Some(source) = source {
+            if !self.sys(|s| same_boundary(s, source, &req.app_id)) {
                 return Err(LocalError::Refused(app_refusal("Forbidden")));
             }
         }
-        let kind = if req.xcall.is_some() {
+        let kind = if source.is_some() {
             InvocationKind::XcallDeliver
         } else {
             InvocationKind::Call
@@ -824,6 +852,13 @@ impl Node {
                             seed: calimero_identity::random::<32>(),
                             timer: None,
                         },
+                        // The caller is part of the key: two callers' calls under the same
+                        // key are two calls of the target.
+                        Some(format!(
+                            "call:{}:{}",
+                            serde_json::to_string(&req.caller).unwrap_or_default(),
+                            req.idempotency_key.as_deref().unwrap_or_default()
+                        )),
                     )
                 };
                 // A timeout is not logged and does not spend the key (D23).
@@ -1069,7 +1104,15 @@ impl Node {
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
-                node.run_with(&prepared, &app_id, state, applied, invocation, search)
+                node.run_with(
+                    &prepared,
+                    &app_id,
+                    state,
+                    applied,
+                    invocation,
+                    Some("view".to_owned()),
+                    search,
+                )
             })
         })
         .await
@@ -1238,6 +1281,12 @@ impl Node {
             key: record.id.clone(),
             handle: tokio::runtime::Handle::current(),
         });
+        let xcalls = Arc::new(NodeXcall {
+            node: Arc::clone(self),
+            source: app_id.to_owned(),
+            key: format!("action:{}", record.id),
+            handle: tokio::runtime::Handle::current(),
+        });
         let meter = self.meter(app_id, &prepared.hash);
         let http = Arc::new(NodeHttp(self.outbound_for(
             app_id,
@@ -1269,11 +1318,15 @@ impl Node {
                     invocation,
                     directory,
                 ) {
-                    Ok(host) => Outcome::from_host(wasm.invoke(
-                        &prepared,
-                        host.with_action(runner).with_http(http),
-                        budget,
-                    )),
+                    Ok(host) => Outcome::from_host(
+                        wasm.invoke(
+                            &prepared,
+                            host.with_action(runner)
+                                .with_http(http)
+                                .with_xcall_host(xcalls),
+                            budget,
+                        ),
+                    ),
                     Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
                 }
             })
@@ -1622,6 +1675,128 @@ impl calimero_app_host::ActionHost for NodeAction {
             Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
             Some(Err(e)) => Err(e.message),
             None => Err("the node is shutting down".into()),
+        }
+    }
+}
+
+/// How long a run waits for another app's synchronous answer. Past it the run is told the
+/// call timed out; a call may still commit in the target, and the run's retry replays it.
+pub const SYNC_XCALL_WAIT: Duration = Duration::from_secs(3);
+
+/// What a component run reaches in other apps (`xcall.call`, `xcall.view`): views and
+/// calls of a component app in the same organization (or of the same owner), as
+/// `Caller::App(source)`, run on the async runtime while the run's thread waits at most
+/// [`SYNC_XCALL_WAIT`]. The target runs a call as a delivery, so it reaches no further.
+///
+/// Two apps calling each other at the same moment each hold their own call while they
+/// wait for the other's: both wait out [`SYNC_XCALL_WAIT`] and are told it timed out.
+struct NodeXcall {
+    node: Arc<Node>,
+    source: String,
+    key: String,
+    handle: tokio::runtime::Handle,
+}
+
+/// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
+/// the app error it is (`{code, fields}`), anything else as `{message, error}`.
+fn refusal_text(e: &ApiError) -> String {
+    if e.details.get("code").is_some() {
+        return e.details.to_string();
+    }
+    json!({ "message": e.message, "error": e.code }).to_string()
+}
+
+/// A refusal or failure for the guest, as the JSON text `xcall.*` returns.
+fn xcall_failure(message: &str) -> String {
+    json!({ "message": message }).to_string()
+}
+
+impl NodeXcall {
+    /// The target's canonical id, if this run may reach it: another component app, in the
+    /// caller's boundary (`same_boundary`).
+    fn target(&self, app: &str) -> Result<String, String> {
+        let target = self.node.canonical_app_id(app);
+        if target == self.source {
+            return Err(xcall_failure(calimero_app_host::XCALL_SYNC_SELF));
+        }
+        let ok = self.node.sys(|s| {
+            s.apps
+                .get(&target)
+                .is_some_and(|a| a.executor == Executor::Component)
+                && same_boundary(s, &self.source, &target)
+        });
+        if !ok {
+            // One answer for missing, foreign and wasmer apps: nothing is revealed.
+            return Err(xcall_failure("no such app in this organization"));
+        }
+        Ok(target)
+    }
+
+    /// Run `fut` on the runtime and wait for it on this (blocking) thread.
+    fn wait<T: Send + 'static>(
+        &self,
+        fut: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Result<T, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(self.handle.spawn(async move {
+            let _sent = tx.send(fut.await);
+        }));
+        rx.recv_timeout(SYNC_XCALL_WAIT).map_err(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => xcall_failure("the xcall timed out"),
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                xcall_failure("the node is shutting down")
+            }
+        })
+    }
+}
+
+impl calimero_app_host::XcallHost for NodeXcall {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        let target = self.target(app)?;
+        let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let req = CallRequest {
+            idempotency_key: Some(key.to_owned()),
+            sync_from: Some(self.source.clone()),
+            ..CallRequest::new(
+                target,
+                method.to_owned(),
+                args,
+                Caller::App {
+                    app: self.source.clone(),
+                },
+            )
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.call_component(&req).await })? {
+            Ok(a) if a.timeout => Err(xcall_failure("the call timed out")),
+            Ok(a) if a.conflict => Err(xcall_failure("the call raced a leader change")),
+            Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
+            Err(e) => Err(refusal_text(&e)),
+        }
+    }
+
+    fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        let target = self.target(app)?;
+        let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let req = ViewRequest {
+            app_id: target,
+            method: method.to_owned(),
+            args,
+            caller: Caller::App {
+                app: self.source.clone(),
+            },
+            strong: true,
+            min_index: 0,
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.view(&req).await })? {
+            Ok(a) if a.timeout => Err(xcall_failure("the view timed out")),
+            Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
+            Err(e) => Err(refusal_text(&e)),
         }
     }
 }

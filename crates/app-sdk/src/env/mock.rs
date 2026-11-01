@@ -170,6 +170,17 @@ pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), St
     Ok(())
 }
 
+/// Synchronous xcalls reach other apps only from a component (the harness's `mock_app`).
+const NO_SYNC_XCALLS: &str = "synchronous xcalls run only in a component (use the testing harness)";
+
+pub fn xcall_call(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    Err(NO_SYNC_XCALLS.to_owned())
+}
+
+pub fn xcall_view(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    Err(NO_SYNC_XCALLS.to_owned())
+}
+
 /// Actions run only in a component on the engine (the harness); the host target has none.
 const NO_ACTIONS: &str = "actions run only in a component (use the testing harness)";
 

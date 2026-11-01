@@ -134,6 +134,14 @@ pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), St
     xcall::send(app, method, args)
 }
 
+pub fn xcall_call(app: &str, method: &str, args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    xcall::call(app, method, args)
+}
+
+pub fn xcall_view(app: &str, method: &str, args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    xcall::view(app, method, args)
+}
+
 pub fn start_action(method: &str, args: &[u8]) -> std::result::Result<String, String> {
     context::start_action(method, args)
 }

@@ -1417,3 +1417,108 @@ fn started_actions_leave_only_with_an_ok_run() {
     );
     assert!(out.actions.is_empty());
 }
+
+/// A node's reach into other apps, recording what it was asked.
+#[derive(Default)]
+struct OtherApps {
+    calls: std::sync::Mutex<Vec<(String, String, String)>>,
+}
+
+impl calimero_app_host::XcallHost for OtherApps {
+    fn key(&self) -> String {
+        "run-key".to_owned()
+    }
+    fn call(&self, app: &str, method: &str, _args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((app.to_owned(), method.to_owned(), key.to_owned()));
+        if method == "huge" {
+            return Ok(vec![
+                b' ';
+                calimero_app_host::MAX_SYNC_XCALL_RESULT_BYTES + 1
+            ]);
+        }
+        Ok(b"true".to_vec())
+    }
+    fn view(&self, app: &str, method: &str, _args: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(format!("\"{app}.{method}\"").into_bytes())
+    }
+}
+
+#[test]
+fn synchronous_xcalls_are_keyed_bounded_and_one_hop_deep() {
+    use calimero_app_host::{
+        sync_xcall_key, MAX_SYNC_XCALLS, XCALL_SYNC_SELF, XCALL_SYNC_TOO_MANY,
+        XCALL_SYNC_UNAVAILABLE,
+    };
+    let state = base(&[]);
+    let apps = Arc::new(OtherApps::default());
+    let with = |kind| {
+        core_for(&state, &inv(kind))
+            .with_xcall_host(Arc::clone(&apps) as Arc<dyn calimero_app_host::XcallHost>)
+    };
+    let mut call = with(InvocationKind::Call);
+    assert_eq!(
+        call.xcall_call("captcha", "verify", b"{}"),
+        Ok(Ok(b"true".to_vec()))
+    );
+    call.xcall_call("captcha", "verify", b"{}")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        call.xcall_view("captcha", "status", b"{}"),
+        Ok(Ok(b"\"captcha.status\"".to_vec()))
+    );
+    // Identical calls get keys by occurrence, so a re-run of the caller replays both.
+    let calls = apps.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls[0].2,
+        sync_xcall_key("run-key", "captcha", "verify", b"{}", 0)
+    );
+    assert_eq!(
+        calls[1].2,
+        sync_xcall_key("run-key", "captcha", "verify", b"{}", 1)
+    );
+    // Soft refusals: the app itself, a reserved method, an oversized answer.
+    assert_eq!(
+        call.xcall_call("app", "verify", b"{}"),
+        Ok(Err(XCALL_SYNC_SELF.to_owned()))
+    );
+    assert!(call
+        .xcall_call("captcha", "__upgrade", b"{}")
+        .unwrap()
+        .is_err());
+    assert!(call.xcall_call("captcha", "huge", b"{}").unwrap().is_err());
+    // Past the per-run cap.
+    let mut busy = with(InvocationKind::Call);
+    for _ in 0..MAX_SYNC_XCALLS {
+        busy.xcall_view("captcha", "status", b"{}")
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(
+        busy.xcall_view("captcha", "status", b"{}"),
+        Ok(Err(XCALL_SYNC_TOO_MANY.to_owned()))
+    );
+    // Actions call (timers too, like calls); views only read; a delivered xcall, init and a
+    // migration reach nothing.
+    assert!(with(InvocationKind::Action)
+        .xcall_call("captcha", "verify", b"{}")
+        .is_ok());
+    assert!(with(InvocationKind::View)
+        .xcall_call("captcha", "verify", b"{}")
+        .is_err());
+    assert!(with(InvocationKind::View)
+        .xcall_view("captcha", "status", b"{}")
+        .is_ok());
+    for kind in [InvocationKind::XcallDeliver, InvocationKind::Init] {
+        assert!(with(kind).xcall_call("captcha", "verify", b"{}").is_err());
+        assert!(with(kind).xcall_view("captcha", "status", b"{}").is_err());
+    }
+    // Without the node's host, the guest is told so.
+    assert_eq!(
+        core_for(&state, &inv(InvocationKind::Call)).xcall_call("captcha", "verify", b"{}"),
+        Ok(Err(XCALL_SYNC_UNAVAILABLE.to_owned()))
+    );
+}

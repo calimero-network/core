@@ -40,6 +40,16 @@
   The engine serves `wasi:http` over bounded in-memory buffers (calls and
   views still cannot send). The harness gains `action`, `mock_http` and
   `run_started_actions`.
+- **Synchronous xcalls for component apps**. `env::xcall_call(app, method,
+  &args)` runs another app's method as one call in that app's own log and
+  hands its result back to the running call, timer or action;
+  `env::xcall_view` reads another app's latest state (views too). Same
+  organization (or owner) and `allow(app = ..)`, as for `env::xcall`; one hop
+  deep; at most 16 per run; not atomic with the caller, but a re-run of the
+  caller replays the target's answer (its key is derived from the caller's).
+  WIT `xcall` gains `call` and `view`. Example: `apps/v2-fixtures/captcha`, a
+  captcha service other apps verify answers with in the same request. The
+  harness gains `mock_app`.
 
 ## [1.0.0-rc.7] - 2026-10-31
 

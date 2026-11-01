@@ -94,6 +94,12 @@ pub struct HostCore {
     search: Arc<dyn SearchHost>,
     action: Option<Arc<dyn ActionHost>>,
     http: Arc<dyn HttpHost>,
+    /// Other apps this run may reach synchronously; `None`: it reaches none.
+    xcall_host: Option<Arc<dyn crate::xcall::XcallHost>>,
+    /// Synchronous xcalls made so far ([`crate::MAX_SYNC_XCALLS`]).
+    sync_xcalls: u32,
+    /// Per (app, method, args hash), the synchronous calls made so far.
+    sync_occurrences: BTreeMap<(String, String, Vec<u8>), u32>,
     /// Actions this run started (D17).
     started: Vec<ActionStart>,
     /// Per (method, args hash), the calls this action made so far (D27).
@@ -142,6 +148,9 @@ impl HostCore {
             search: Arc::new(NoSearch),
             action: None,
             http: Arc::new(NoHttp),
+            xcall_host: None,
+            sync_xcalls: 0,
+            sync_occurrences: BTreeMap::new(),
             started: Vec::new(),
             occurrences: BTreeMap::new(),
             subcalls: 0,
@@ -180,6 +189,14 @@ impl HostCore {
     #[must_use]
     pub fn with_action(mut self, action: Arc<dyn ActionHost>) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    /// The other apps this run may reach synchronously (`xcall.call`, `xcall.view`);
+    /// without it every one is refused with [`crate::XCALL_SYNC_UNAVAILABLE`].
+    #[must_use]
+    pub fn with_xcall_host(mut self, host: Arc<dyn crate::xcall::XcallHost>) -> Self {
+        self.xcall_host = Some(host);
         self
     }
 
@@ -527,6 +544,90 @@ impl HostCore {
         Ok(Ok(()))
     }
 
+    /// Runs `method` of `app` synchronously, as one logged call of that app under a key
+    /// derived from this run's (see [`crate::sync_xcall_key`]), and hands back its JSON
+    /// result. Calls, timers and actions (`HostDenied` elsewhere: a delivered xcall makes
+    /// none, so chains are one hop). A malformed target, the app itself, more than
+    /// [`crate::MAX_SYNC_XCALLS`], arguments over [`crate::MAX_SYNC_XCALL_ARGS_BYTES`], an
+    /// answer over [`crate::MAX_SYNC_XCALL_RESULT_BYTES`] or the target's failure is the
+    /// WIT result's error.
+    pub fn xcall_call(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
+        if !matches!(
+            self.inv.kind,
+            InvocationKind::Call | InvocationKind::Timer | InvocationKind::Action
+        ) {
+            return Err(self.denied("xcall.call"));
+        }
+        let host = match self.sync_target(app, method, args) {
+            Ok(host) => host,
+            Err(e) => return Ok(Err(e)),
+        };
+        let n = self
+            .sync_occurrences
+            .entry((app.to_owned(), method.to_owned(), sha_args(args)))
+            .or_insert(0);
+        let key = crate::xcall::sync_xcall_key(&host.key(), app, method, args, *n);
+        *n += 1;
+        Ok(bounded(host.call(app, method, args, &key)))
+    }
+
+    /// Runs view `method` of `app` on its latest committed state and hands back its JSON
+    /// result. Calls, timers, views and actions (`HostDenied` elsewhere); refusals as for
+    /// [`Self::xcall_call`].
+    pub fn xcall_view(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
+        if !matches!(
+            self.inv.kind,
+            InvocationKind::Call
+                | InvocationKind::Timer
+                | InvocationKind::Action
+                | InvocationKind::View
+        ) {
+            return Err(self.denied("xcall.view"));
+        }
+        let host = match self.sync_target(app, method, args) {
+            Ok(host) => host,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(bounded(host.view(app, method, args)))
+    }
+
+    /// The checks every synchronous xcall makes before it reaches the node, and its count.
+    fn sync_target(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Arc<dyn crate::xcall::XcallHost>, String> {
+        let bad = |s: &str| s.is_empty() || s.len() > MAX_XCALL_NAME_BYTES;
+        if bad(app) || bad(method) || method.starts_with("__") {
+            return Err(XCALL_BAD_TARGET.to_owned());
+        }
+        if app == self.app_id {
+            return Err(crate::xcall::XCALL_SYNC_SELF.to_owned());
+        }
+        if args.len() > crate::xcall::MAX_SYNC_XCALL_ARGS_BYTES {
+            return Err("xcall arguments too large".to_owned());
+        }
+        let Some(host) = self.xcall_host.clone() else {
+            return Err(crate::xcall::XCALL_SYNC_UNAVAILABLE.to_owned());
+        };
+        if self.sync_xcalls >= crate::xcall::MAX_SYNC_XCALLS {
+            return Err(crate::xcall::XCALL_SYNC_TOO_MANY.to_owned());
+        }
+        self.sync_xcalls += 1;
+        Ok(host)
+    }
+
     /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
@@ -788,6 +889,16 @@ impl HostCore {
         } else {
             HostDenied::new("rebuild is only available while migrating")
         }
+    }
+}
+
+/// A synchronous xcall's answer, refused past [`crate::MAX_SYNC_XCALL_RESULT_BYTES`].
+fn bounded(answer: Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
+    match answer {
+        Ok(out) if out.len() > crate::xcall::MAX_SYNC_XCALL_RESULT_BYTES => {
+            Err("xcall answer too large".to_owned())
+        }
+        other => other,
     }
 }
 

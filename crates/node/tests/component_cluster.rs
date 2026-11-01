@@ -3359,6 +3359,104 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     );
 }
 
+/// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha
+/// service, another app of the same owner, inside its own call, and writes only if it
+/// passed. The challenge is spent in the captcha app's own log; a second use fails; an
+/// app of another owner cannot reach the service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let captcha_bundle = alice.upload_bundle(wasm("captcha")).await.unwrap();
+    let captcha = alice
+        .create_app("captcha", &captcha_bundle, json!({}))
+        .await
+        .unwrap();
+    let kv_bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let forms = alice
+        .create_app("forms", &kv_bundle, json!({}))
+        .await
+        .unwrap();
+
+    let puzzle = alice
+        .call(&captcha, "challenge", json!({}), None)
+        .await
+        .unwrap()
+        .result;
+    let id = puzzle["id"].as_str().unwrap().to_owned();
+    let answer = strong_view(&alice, &captcha, "answerOf", json!({ "id": id })).await;
+    let answer = answer.as_str().unwrap().to_owned();
+    let human = |value: &str, answer: &str| json!({ "key": "k", "value": value, "captcha": captcha, "challenge": id, "answer": answer });
+
+    // A person cannot spend a challenge directly.
+    let e = alice
+        .call(
+            &captcha,
+            "verify",
+            json!({ "id": id, "answer": answer }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "AppsOnly", "{e}");
+
+    // The forms app's call verifies in the captcha app, then writes, in one request.
+    let _r = alice
+        .call(&forms, "setHuman", human("v", &answer), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+    // The captcha app logged the spend; a view through `xcall.view` sees it.
+    assert_eq!(
+        strong_view(&alice, &captcha, "status", json!({ "id": id })).await,
+        json!("spent")
+    );
+    assert_eq!(
+        strong_view(
+            &alice,
+            &forms,
+            "captchaStatus",
+            json!({ "captcha": captcha, "challenge": id })
+        )
+        .await,
+        json!("spent")
+    );
+
+    // A spent challenge does not pass again, and nothing is written.
+    let e = alice
+        .call(&forms, "setHuman", human("v2", &answer), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "CaptchaFailed", "{e}");
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+
+    // Another owner's app cannot reach the service.
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bobs_bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let bobs = bob
+        .create_app("forms", &bobs_bundle, json!({}))
+        .await
+        .unwrap();
+    let e = bob
+        .call(&bobs, "setHuman", human("x", &answer), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "XcallFailed", "{e}");
+    assert!(
+        e.details().unwrap()["fields"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no such app"),
+        "{e}"
+    );
+}
+
 /// R8: the owner deletes a component's blob; it is gone whatever refers to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_owner_deletes_a_components_blob() {
