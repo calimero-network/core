@@ -836,9 +836,11 @@ impl Node {
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
         // Long enough to ride out a system leader election, and never longer
-        // than `SYSTEM_WRITE_TIMEOUT` in all.
+        // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
+        // count of tries, which a leaderless group used up in about 7.5 s
+        // (`a_system_write_waits_for_a_leader_until_its_deadline`).
         let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
-        for attempt in 0..50 {
+        for attempt in 0_u32.. {
             let Ok(written) =
                 tokio::time::timeout_at(deadline, self.system.write(bytes.clone())).await
             else {
@@ -877,7 +879,7 @@ impl Node {
                 return Err(self.system_stalled());
             }
         }
-        Err(ApiError::unavailable("the system group has no leader"))
+        Err(self.system_stalled())
     }
 
     /// The `503` of a system write that did not commit in
