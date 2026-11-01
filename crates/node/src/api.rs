@@ -2265,6 +2265,9 @@ struct IntentBody {
     idempotency_key: Option<String>,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// A component's `captcha` method: the client's solved Turnstile token.
+    #[serde(default)]
+    captcha: Option<String>,
 }
 
 /// For confirm methods: the 412 that asks for a passkey, or the consent to log.
@@ -2532,13 +2535,8 @@ async fn component_intents(
     body: IntentBody,
 ) -> Result<Response, ApiError> {
     let app_id = app.app_id.clone();
-    let method = node
-        .prepared_for(&node.running_bundle(app))
-        .await?
-        .abi
-        .methods
-        .get(&body.method)
-        .cloned();
+    let prepared = node.prepared_for(&node.running_bundle(app)).await?;
+    let method = prepared.abi.methods.get(&body.method).cloned();
     let caller = p.caller.clone();
     // A declared view runs as one, whichever way it is invoked: it
     // reads the latest state and writes nothing.
@@ -2578,15 +2576,43 @@ async fn component_intents(
         None
     };
     let unconfirmed = consent_value.is_none();
+    // A captcha is checked after the passkey: a confirm method's first request only asks
+    // for one, and a token is spent by its check.
+    let captcha = match method.as_ref().and_then(|m| m.captcha) {
+        Some(provider) => {
+            node.verify_captcha(
+                &app_id,
+                &prepared.hash,
+                provider,
+                &p.caller,
+                body.captcha.as_deref(),
+                body.idempotency_key.as_deref(),
+            )
+            .await?;
+            true
+        }
+        None => false,
+    };
     let (method_name, args) = (body.method.clone(), body.args.clone());
     let applied = match node
         .call_component(&CallRequest {
             idempotency_key: body.idempotency_key,
             consent: consent_value,
+            captcha,
             ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller.clone())
         })
         .await
     {
+        // The replica that runs it found a captcha method this node's ABI did not know
+        // (it was stale): the client solves one and retries.
+        Err(e) if !captcha && e.details["code"] == "CaptchaRequired" => {
+            return Err(ApiError::new(
+                400,
+                "CAPTCHA_REQUIRED",
+                "this method needs a solved Turnstile challenge: send its token as `captcha`",
+            )
+            .with_details(json!({ "provider": "turnstile" })));
+        }
         // The replica that runs it found a confirm method this node's ABI did not
         // know (it was stale): the step-up is the usual `412 CONFIRM_REQUIRED` with
         // a challenge (SDK reference), as on the wasmer path.

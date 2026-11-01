@@ -116,6 +116,13 @@ impl Kv {
         Ok(())
     }
 
+    /// Sets `key` as `set` does, for a client that solved a Turnstile challenge: the node
+    /// verifies its token before the call runs.
+    #[app::captcha(turnstile)]
+    pub fn set_human(&mut self, key: String, value: String) -> app::Result<()> {
+        self.set(key, value)
+    }
+
     /// Sets `key` without an event (for values over the 16 KiB event limit).
     pub fn put(&mut self, key: String, value: String) -> app::Result<()> {
         let _event = self.upsert(&key, &value)?;

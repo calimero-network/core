@@ -14,7 +14,7 @@ mod state;
 mod time;
 mod types;
 
-pub use abi::{Abi, MethodAbi, MethodKind, SUPPORTED_ABI_VERSIONS};
+pub use abi::{Abi, Captcha, MethodAbi, MethodKind, SUPPORTED_ABI_VERSIONS};
 pub use action::{
     subcall_key, ActionHost, ActionStart, HttpHost, HttpRequest, HttpResponse, NoHttp,
     MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,

@@ -40,6 +40,18 @@
   The engine serves `wasi:http` over bounded in-memory buffers (calls and
   views still cannot send). The harness gains `action`, `mock_http` and
   `run_started_actions`.
+- **Turnstile captcha for component calls**. `#[app::captcha(turnstile)]`
+  marks a call or action that a client may start only with a solved Cloudflare
+  Turnstile token (`captcha` in the `/intents` body; `Client::call_with_captcha`).
+  The node verifies it with Cloudflare before the call runs, as the app through
+  its outbound gate (the signed release declares the siteverify URL, the owner
+  approves it, the operator holds `TURNSTILE_SECRET`), and the leader refuses
+  the call without that verdict. Answers: `400 CAPTCHA_REQUIRED`, `403
+  CAPTCHA_FAILED` (with Turnstile's `errorCodes`), `503 CAPTCHA_UNAVAILABLE`.
+  A retry with the same idempotency key passes again. An app with such a method
+  embeds `abiVersion` 2, which nodes before this refuse. `[outbound.testing]
+  turnstile` answers the siteverify URL in-process with Cloudflare's test-secret
+  behaviour.
 
 ## [1.0.0-rc.7] - 2026-10-31
 

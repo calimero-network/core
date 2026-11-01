@@ -237,6 +237,36 @@ cluster with outbound off) cover every gate this way:
 cargo test -p calimero-node --test scenarios -- outbound-probe
 ```
 
+## A captcha on a component app
+
+A `calimero:app` component never calls out from a call (only its actions
+do), so it does not check a captcha itself. It marks the method, and the node
+checks the token before the call runs, in the same request:
+
+```rust
+#[app::captcha(turnstile)]
+pub fn submit(&mut self, form: String, answer: String) -> app::Result<()> {
+    // Runs only for a client whose Turnstile token the node verified.
+    self.answers.insert(&form, &answer)?;
+    Ok(())
+}
+```
+
+The client sends the widget's token as `captcha` next to the method and its
+arguments (`POST /apps/{app}/intents { method, args, idempotencyKey, captcha }`;
+`Client::call_with_captcha` in Rust). The node posts it to Turnstile's
+siteverify as the app, through the gates above: declare
+`https://challenges.cloudflare.com/turnstile/v0/siteverify` under `outbound`
+in the signed manifest, approve it, and the operator allows
+`challenges.cloudflare.com` and binds `TURNSTILE_SECRET` (the site's secret
+key, as in the configuration above) to the package and signer. Without a token
+the answer is `400 CAPTCHA_REQUIRED`; a token Turnstile refuses is `403
+CAPTCHA_FAILED` with its `errorCodes`; a gate that fails is `503
+CAPTCHA_UNAVAILABLE` with the reason. A retry with the same idempotency key
+passes again; a token used for another call fails as `timeout-or-duplicate`.
+The app's own actions, xcalls and timers call the method without a token.
+Protocol detail: [Captcha (component apps)](/protocol/execution/#captcha-component-apps).
+
 ## Where it stops
 
 - A request never runs in a view. Read the answer back from state.

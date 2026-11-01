@@ -169,6 +169,7 @@ fn abi_check(
     view: bool,
     consented: bool,
     from_action: bool,
+    captcha_ok: bool,
 ) -> Result<(), ApiError> {
     if super::reserved_method(method) {
         return Err(app_refusal("UnknownMethod"));
@@ -202,6 +203,13 @@ fn abi_check(
         Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
         // A delivered xcall reaches only a method that allows its source (D13).
         Caller::App { app } if !m.allows_app(app) => Err(app_refusal("Forbidden")),
+        // A client's call of a `captcha` method only after the API verified its token;
+        // the app's own runs (actions, xcalls, timers) are not clients.
+        Caller::Account { .. } | Caller::ApiKey { .. } | Caller::Public
+            if m.captcha.is_some() && !view && !from_action && !captcha_ok =>
+        {
+            Err(app_refusal("CaptchaRequired"))
+        }
         _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
         _ => Ok(()),
     }
@@ -781,6 +789,7 @@ impl Node {
                     false,
                     req.consent.is_some(),
                     req.action.is_some(),
+                    req.captcha,
                 ) {
                     refused = Some(e);
                     return Proposal::Reply(Vec::new());
@@ -895,9 +904,12 @@ impl Node {
         caller: &Caller,
         view: bool,
         consented: bool,
+        captcha_ok: bool,
     ) -> Result<(), ApiError> {
         let prepared = self.prepared_for(&self.running_bundle(app)).await?;
-        abi_check(&prepared, method, caller, view, consented, false)
+        abi_check(
+            &prepared, method, caller, view, consented, false, captcha_ok,
+        )
     }
 
     /// The bundle `app` runs: the app group's own record on this replica, else (this
@@ -937,8 +949,15 @@ impl Node {
         }
         let app = self.app(&req.app_id).await?;
         if !came_keyed {
-            self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                false,
+                req.consent.is_some(),
+                req.captcha,
+            )
+            .await?;
         }
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
@@ -1029,7 +1048,15 @@ impl Node {
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        abi_check(
+            &prepared,
+            &req.method,
+            &req.caller,
+            true,
+            false,
+            false,
+            false,
+        )?;
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
         let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {

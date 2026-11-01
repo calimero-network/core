@@ -6,12 +6,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 use calimero_app_host::{
-    stored_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
-    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
-    Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
-    EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION, MAX_AUDIENCE_ACCOUNTS,
-    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
-    MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    stored_key, Abi, Audience, Caller, Captcha, Directory, Event, HostCore, HostDenied,
+    InvalidInvocation, Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError,
+    Status, TimerCtx, Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG,
+    EMIT_NAME_TOO_LONG, EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION,
+    MAX_AUDIENCE_ACCOUNTS, MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES,
+    MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use calimero_app_host::{
     subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, ACTION_WALL_CLOCK,
@@ -512,6 +512,8 @@ fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
         json!({ "abiVersion": 1, "methods": { "t": { "kind": "timer", "every": 5 } } }),
         json!({ "abiVersion": 1, "methods": { "x": { "kind": "migrate" } } }),
         json!({ "abiVersion": 1, "methods": { "x": { "kind": "action", "allowAction": 1 } } }),
+        json!({ "abiVersion": 2, "methods": { "x": { "kind": "call", "captcha": "hcaptcha" } } }),
+        json!({ "abiVersion": 2, "methods": { "x": { "kind": "view", "captcha": "turnstile" } } }),
     ] {
         assert!(
             matches!(Abi::from_json(&bad), Err(PrepareError::BadAbi(_))),
@@ -522,16 +524,29 @@ fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
 
 #[test]
 fn abi_version_is_required_and_checked() {
-    assert_eq!(SUPPORTED_ABI_VERSIONS, &[1]);
+    assert_eq!(SUPPORTED_ABI_VERSIONS, &[1, 2]);
     assert!(Abi::from_json(&json!({ "abiVersion": 1, "methods": {} })).is_ok());
     assert!(matches!(
-        Abi::from_json(&json!({ "abiVersion": 2, "methods": {} })),
-        Err(PrepareError::UnsupportedAbiVersion(2))
+        Abi::from_json(&json!({ "abiVersion": 3, "methods": {} })),
+        Err(PrepareError::UnsupportedAbiVersion(3))
     ));
     assert!(matches!(
         Abi::from_json(&json!({ "methods": {} })),
         Err(PrepareError::MissingAbiVersion)
     ));
+}
+
+#[test]
+fn a_captcha_is_read_for_calls_and_actions() {
+    let abi = Abi::from_json(&json!({ "abiVersion": 2, "methods": {
+        "sign": { "kind": "call", "captcha": "turnstile" },
+        "fetch": { "kind": "action", "captcha": "turnstile" },
+        "plain": { "kind": "call", "captcha": null },
+    } }))
+    .unwrap();
+    assert_eq!(abi.methods["sign"].captcha, Some(Captcha::Turnstile));
+    assert_eq!(abi.methods["fetch"].captcha, Some(Captcha::Turnstile));
+    assert_eq!(abi.methods["plain"].captcha, None);
 }
 
 fn keys(batch: Vec<KeyValue>) -> Vec<Vec<u8>> {

@@ -21,6 +21,9 @@ use crate::types::{
 const WORLD: &str = "calimero:app@0.5.0";
 /// The ABI version this SDK writes (D51).
 const ABI_VERSION: u64 = 1;
+/// The ABI version of an app with a `captcha` method: a field nodes must enforce (D51), so
+/// a node that reads only version 1 refuses the bundle instead of running it unguarded.
+const ABI_VERSION_CAPTCHA: u64 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -44,6 +47,8 @@ struct Attrs {
     every: Option<String>,
     allow_system: bool,
     allow_apps: Vec<String>,
+    /// `captcha(turnstile)`: the provider a client's call must be verified with.
+    captcha: Option<String>,
 }
 
 struct Method {
@@ -94,6 +99,21 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
             "view" => attrs.view = true,
             "action" => attrs.action = true,
             "confirm" => attrs.confirm = true,
+            "captcha" => {
+                let mut provider = None;
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("turnstile") && provider.is_none() {
+                        provider = Some("turnstile".to_owned());
+                        Ok(())
+                    } else {
+                        Err(meta.error("expected `turnstile`"))
+                    }
+                })?;
+                attrs.captcha = Some(
+                    provider
+                        .ok_or_else(|| syn::Error::new_spanned(&attr, "expected `turnstile`"))?,
+                );
+            }
             "public" => {
                 attrs.public = true;
                 if matches!(attr.meta, syn::Meta::List(_)) {
@@ -162,7 +182,8 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
             || attrs.public
             || attrs.every.is_some()
             || attrs.action
-            || attrs.action_only;
+            || attrs.action_only
+            || attrs.captcha.is_some();
         if any || attrs.allow_system || !attrs.allow_apps.is_empty() {
             return Err(syn::Error::new_spanned(
                 &f.sig.ident,
@@ -233,6 +254,9 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         }
         Kind::View if receiver_mut != Some(false) => return fail("a view takes `&self`"),
         Kind::View if attrs.confirm => return fail("a `confirm` method never runs as a view"),
+        Kind::Init | Kind::View | Kind::Timer if attrs.captcha.is_some() => {
+            return fail("`captcha` is for calls and actions: a client starts nothing else")
+        }
         Kind::Timer if receiver_mut.is_none() => return fail("a timer takes `&mut self`"),
         Kind::Timer if !params.is_empty() => return fail("a timer takes no arguments"),
         Kind::Call if receiver_mut.is_none() => {
@@ -307,6 +331,9 @@ fn abi_entry(m: &Method) -> Value {
     }
     if m.attrs.action_only {
         let _ = entry.insert("allowAction".into(), true.into());
+    }
+    if let Some(captcha) = &m.attrs.captcha {
+        let _ = entry.insert("captcha".into(), captcha.clone().into());
     }
     Value::Object(entry)
 }
@@ -411,7 +438,12 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
         }
     }
     // Top-level keys in sorted order, like every object below them (`canonical`).
-    let head = format!("{{\"abiVersion\":{ABI_VERSION},\"errors\":");
+    let version = if methods.iter().any(|m| m.attrs.captcha.is_some()) {
+        ABI_VERSION_CAPTCHA
+    } else {
+        ABI_VERSION
+    };
+    let head = format!("{{\"abiVersion\":{version},\"errors\":");
     let methods_json = format!(
         ",\"methods\":{},\"state\":",
         canonical(&Value::Object(abi_methods))
@@ -571,5 +603,30 @@ mod tests {
             impl S { #[app::view] #[app::public(rate = "10/min")] pub fn m(&self) -> Result<()> { Ok(()) } }
         })
         .unwrap();
+    }
+
+    #[test]
+    fn a_captcha_method_writes_its_provider_and_abi_version_2() {
+        let plain = expand(parse_quote! {
+            impl S { pub fn m(&mut self) -> Result<()> { Ok(()) } }
+        })
+        .unwrap()
+        .to_string();
+        assert!(plain.contains(r#"abiVersion\":1"#), "{plain}");
+        let out = expand(parse_quote! {
+            impl S { #[app::captcha(turnstile)] pub fn m(&mut self) -> Result<()> { Ok(()) } }
+        })
+        .unwrap()
+        .to_string();
+        assert!(out.contains(r#"abiVersion\":2"#), "{out}");
+        assert!(out.contains(r#"\"captcha\":\"turnstile\""#), "{out}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::captcha(recaptcha)] pub fn m(&mut self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("turnstile"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::view] #[app::captcha(turnstile)] pub fn m(&self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("calls and actions"), "{msg}");
     }
 }

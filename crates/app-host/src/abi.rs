@@ -8,7 +8,9 @@ use serde_json::{Map, Value};
 use crate::engine::PrepareError;
 
 /// ABI versions this host reads. A bundle declares its own in `abiVersion`.
-pub const SUPPORTED_ABI_VERSIONS: &[u64] = &[1];
+/// Version 2 adds `captcha`, which nodes must enforce (D51): a node that reads only 1
+/// refuses such a bundle instead of running the method unguarded.
+pub const SUPPORTED_ABI_VERSIONS: &[u64] = &[1, 2];
 
 /// What a method is for; timers are the only methods with an interval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +21,13 @@ pub enum MethodKind {
     Timer,
     /// Runs outside the log on the leader, with outbound HTTP (D12); started, never called.
     Action,
+}
+
+/// The human check a method needs before a client's call runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Captcha {
+    /// Cloudflare Turnstile: the node verifies the client's token with Cloudflare.
+    Turnstile,
 }
 
 /// One method's attributes.
@@ -38,6 +47,9 @@ pub struct MethodAbi {
     pub allow_apps: Vec<String>,
     /// `allow(action)`: called only by this app's actions, never directly by clients.
     pub action_only: bool,
+    /// A client's call needs a solved captcha, which the node verifies first. Calls and
+    /// actions only.
+    pub captcha: Option<Captcha>,
 }
 
 impl MethodAbi {
@@ -112,8 +124,19 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
             "{name}: `every` is required on timers and refused elsewhere"
         )));
     }
+    let captcha = match fields.get("captcha") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(c)) if c == "turnstile" => Some(Captcha::Turnstile),
+        Some(other) => return Err(bad(format!("{name}: unknown captcha {other}"))),
+    };
+    if captcha.is_some() && !matches!(kind, MethodKind::Call | MethodKind::Action) {
+        return Err(bad(format!(
+            "{name}: `captcha` is for calls and actions only"
+        )));
+    }
     Ok(MethodAbi {
         kind,
+        captcha,
         confirm: flag(fields, "confirm", name)?,
         public: flag(fields, "public", name)?,
         every,

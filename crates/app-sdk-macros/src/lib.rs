@@ -75,4 +75,4 @@ macro_rules! method_attribute {
     )*};
 }
 
-method_attribute!(init, view, confirm, public, every, allow);
+method_attribute!(init, view, confirm, captcha, public, every, allow);

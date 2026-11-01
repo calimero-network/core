@@ -22,8 +22,13 @@ scoped by package, signer and host, and are redacted from the response.
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
+- `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, which the node posts a
+  client's token to, as the app, before a `captcha(turnstile)` method runs.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
-  in-process (cluster tests and scenarios) and takes literal secrets.
+  in-process (cluster tests and scenarios) and takes literal secrets; `turnstile`
+  answers `TURNSTILE_VERIFY_URL` in-process as Cloudflare answers its test secrets
+  (`1x…AA` passes, `2x…AA` fails, `3x…AA` duplicate), spending each token once
+  unless a check repeats its idempotency key.
 
 ```bash
 cargo test -p calimero-outbound --features outbound-testing

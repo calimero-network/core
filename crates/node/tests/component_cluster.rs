@@ -3256,6 +3256,7 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         hosts: vec!["echo.outbound.test".to_owned()],
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
+            turnstile: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -3357,6 +3358,110 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         failures["explode"].as_str().unwrap().contains("BeatFailed"),
         "{failures}"
     );
+}
+
+/// A `captcha(turnstile)` method runs for a client only once the node verified its token
+/// with Turnstile, through the app's own outbound gate: declared in the signed release,
+/// approved by the owner, the operator's host and secret. A token is spent by its check;
+/// the same call retried with its key passes again and replays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_captcha_method_runs_only_with_a_token_turnstile_accepts() {
+    const PACKAGE: &str = "com.calimero.v2-kv-captcha";
+    const HOST: &str = "challenges.cloudflare.com";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            turnstile: true,
+            secrets: [(
+                "TURNSTILE_SECRET".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    // Cloudflare's test secret that passes every unspent token.
+                    value: "1x0000000000000000000000000000000AA".to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+            ..calimero_outbound::OutboundTestSettings::default()
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _ = alice
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[calimero_outbound::TURNSTILE_VERIFY_URL],
+        ))
+        .await
+        .unwrap();
+    let app = alice
+        .post("apps", json!({ "name": "kv", "package": PACKAGE }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let args = json!({ "key": "k", "value": "human" });
+
+    // No token: refused before anything runs.
+    let e = alice
+        .call(&app, "setHuman", args.clone(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CAPTCHA_REQUIRED"), "{e}");
+
+    // The owner has not approved the check's URL yet: the node cannot verify.
+    let e = alice
+        .call_with_captcha(&app, "setHuman", args.clone(), "tok-0", Some("k-0"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CAPTCHA_UNAVAILABLE"), "{e}");
+    let reason = e.details().unwrap()["reason"].as_str().unwrap().to_owned();
+    assert!(reason.contains("NotApproved"), "{reason}");
+    assert_eq!(
+        strong_view(&alice, &app, "get", json!({ "key": "k" })).await,
+        json!(null)
+    );
+
+    let _ = alice
+        .approve_outbound(None, PACKAGE, None, false, &mut pk)
+        .await
+        .unwrap();
+    let first = alice
+        .call_with_captcha(&app, "setHuman", args.clone(), "tok-1", Some("k-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        strong_view(&alice, &app, "get", json!({ "key": "k" })).await,
+        json!("human")
+    );
+    // A retry with the same key checks the same token again and replays the logged call.
+    let again = alice
+        .call_with_captcha(&app, "setHuman", args.clone(), "tok-1", Some("k-1"))
+        .await
+        .unwrap();
+    assert_eq!(again.index, first.index);
+    // Another call cannot reuse the spent token.
+    let e = alice
+        .call_with_captcha(&app, "setHuman", args.clone(), "tok-1", Some("k-2"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CAPTCHA_FAILED"), "{e}");
+    assert_eq!(
+        e.details().unwrap()["errorCodes"],
+        json!(["timeout-or-duplicate"])
+    );
+    // A method without `captcha` needs no token.
+    let _r = alice.call(&app, "set", args, None).await.unwrap();
 }
 
 /// R8: the owner deletes a component's blob; it is gone whatever refers to it.

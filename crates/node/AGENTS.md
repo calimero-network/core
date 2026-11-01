@@ -859,6 +859,20 @@ API and system group. What differs from the wasmer path:
   `onActionFailed` as the starter. A new leader resumes what is pending; an end that
   another leader logged first changes nothing. Test:
   `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`.
+- **Captcha** (`node/captcha.rs`, `Node::verify_captcha`): a method whose ABI says
+  `"captcha": "turnstile"` runs for a client (account, API key, anonymous) only once the
+  node the client reached verified the `/intents` body's `captcha` token: after any
+  `confirm` step, `component_intents` posts it to `calimero_outbound::TURNSTILE_VERIFY_URL`
+  through `outbound_for` (the signed release declares the URL, the owner approved it, the
+  operator allows the host and scopes `TURNSTILE_SECRET` to the package and signer; the
+  body names `{{secret:TURNSTILE_SECRET}}`), with Turnstile's `idempotency_key` derived
+  from the app, the caller and the call's key (a retry passes again; another call with a
+  spent token fails). Then `CallRequest::captcha` carries the verdict, and `abi_check`
+  refuses a client's call without it (`CaptchaRequired`; the API answers `400
+  CAPTCHA_REQUIRED`). Answers: `400 CAPTCHA_REQUIRED`, `403 CAPTCHA_FAILED` (`errorCodes`;
+  a token past `MAX_CAPTCHA_TOKEN_BYTES` too), `503 CAPTCHA_UNAVAILABLE` (`reason`: a
+  gate, a wrong secret, Cloudflare unreachable). Actions' calls, xcalls and timers need no
+  token. Test: `a_captcha_method_runs_only_with_a_token_turnstile_accepts`.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are

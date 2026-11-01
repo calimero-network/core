@@ -63,7 +63,7 @@ idempotency key (the caller's, else a new `node:c-…` key, which the node keeps
 in its short-lived class, 10 minutes) and sends the call again with that key
 while the node answers `503` or cannot be reached (`Error::is_unavailable`;
 200 ms doubling to 2 s, 6 retries). A call that did commit is answered from its
-record. Confirm calls (`call_confirmed`) are not retried: their challenge is
+record. `call_with_captcha` sends a solved Turnstile token as `captcha` with the call (a component's `captcha(turnstile)` method) and is retried like `call`, with the same idempotency key, which Turnstile honours. Confirm calls (`call_confirmed`) are not retried: their challenge is
 single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
 `crates/node/tests/cluster.rs`.
 

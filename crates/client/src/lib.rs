@@ -1144,6 +1144,29 @@ impl Client {
         Ok(serde_json::from_value(v).map_err(eyre::Report::from)?)
     }
 
+    /// Call a component's `captcha(turnstile)` method with `token`, what the Turnstile
+    /// widget gave the client once its challenge was solved. A token is spent by its first
+    /// check; a retry with the same `idempotency_key` passes again.
+    pub async fn call_with_captcha(
+        &self,
+        app: &str,
+        method: &str,
+        args: Value,
+        token: &str,
+        idempotency_key: Option<&str>,
+    ) -> Result<CallResult> {
+        let key = idempotency_key.map_or_else(new_call_key, str::to_owned);
+        let body = json!({
+            "method": method,
+            "args": args,
+            "idempotencyKey": key,
+            "captcha": token,
+        });
+        let path = format!("apps/{app}/intents");
+        let v = retry_unavailable(|| self.post(&path, body.clone())).await?;
+        Ok(serde_json::from_value(v).map_err(eyre::Report::from)?)
+    }
+
     /// Call a `confirm` method: the node asks for a passkey assertion over the
     /// exact call, which `passkey` provides.
     pub async fn call_confirmed(

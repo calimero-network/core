@@ -28,6 +28,7 @@ use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
 use crate::usage::{Kind as RunKind, Meter, Usage};
 
+mod captcha;
 mod component;
 
 pub use component::{
@@ -216,6 +217,10 @@ pub struct CallRequest {
     /// by the node's action runner; reaches `allow(action)` methods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// A component's `captcha` method: the node the client reached verified its token
+    /// (`Node::verify_captcha`). Set only there; peers pass it along on `internal/call`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub captcha: bool,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -248,6 +253,7 @@ impl CallRequest {
             host: false,
             xcall: None,
             action: None,
+            captcha: false,
         }
     }
 
@@ -2945,7 +2951,7 @@ impl Node {
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
         if app.executor == Kind::Component {
-            self.abi_gate(&app, &req.method, &req.caller, true, false)
+            self.abi_gate(&app, &req.method, &req.caller, true, false, false)
                 .await?;
         }
         // Like calls, ride out an election (e.g. right after the leader moved off).

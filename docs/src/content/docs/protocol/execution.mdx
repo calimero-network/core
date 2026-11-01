@@ -168,6 +168,40 @@ A `calimero:app` component never calls out from a call or a view (spec
   event to the starter and runs the app's `onActionFailed` as the starter. A
   new leader resumes every action that has not ended, with the same key.
 
+## Captcha (component apps)
+
+A call or an action a client starts can require a solved
+[Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/) challenge:
+`#[app::captcha(turnstile)]` on the method writes `"captcha": "turnstile"` in
+the ABI (`abiVersion` 2, so a node that cannot enforce it refuses the bundle).
+The client sends the widget's token as `captcha` in the `/intents` body
+(`calimero-client`: `call_with_captcha`).
+
+The node the client reached checks the token before the call goes to the
+leader, so it runs in the same request:
+
+1. no token: `400 CAPTCHA_REQUIRED`;
+2. the node posts it to `https://challenges.cloudflare.com/turnstile/v0/siteverify`
+   as the app, through the same outbound gate as above: the signed release
+   declares that URL under `outbound`, the owner approved it, the operator
+   allows `challenges.cloudflare.com` and holds the site's secret key as the
+   secret `TURNSTILE_SECRET` for the app's package and signer. The node writes
+   `{{secret:TURNSTILE_SECRET}}` in the form; the app never sees the secret.
+   A gate that fails, a wrong secret or an unreachable Cloudflare is
+   `503 CAPTCHA_UNAVAILABLE` with the reason;
+3. Turnstile refuses the token: `403 CAPTCHA_FAILED` with its `errorCodes`;
+4. it passes: the call carries the verdict to the leader, which refuses a
+   client's call of the method without it (`CaptchaRequired`, the same check
+   against the bundle it runs).
+
+Turnstile spends a token on its first check. The node sends a UUID derived from
+the app, the caller and the call's idempotency key as Turnstile's
+`idempotency_key`, so a retry of the same call passes again and replays the
+logged answer, while another call with the same token fails with
+`timeout-or-duplicate`. The app's own runs (actions' calls, xcalls, timers) are
+not clients and need no token. The check runs after a `confirm` method's
+passkey step, so the token is not spent on the first, unconfirmed request.
+
 ## Determinism is not what converges
 
 Only the leader runs, so `time_now`, `random_bytes`, outbound responses and search

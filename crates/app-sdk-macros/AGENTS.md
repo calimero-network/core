@@ -18,7 +18,7 @@
 
 Every object's keys are written in sorted order (`types::canonical`, never `serde_json::Map` order), so the bytes do not depend on serde_json's `preserve_order`, which the core workspace unifies in through dcap-qvl; the unit tests turn that feature on to prove it.
 
-`{"abiVersion":1,"world":"calimero:app@0.5.0","state":{"fields":{field:kind},"search":{field:[textField,..]},"version":N},"methods":{name:{"kind":"init|call|view|timer|action","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"][,"allowAction"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
+`{"abiVersion":1|2,"world":"calimero:app@0.5.0","state":{"fields":{field:kind},"search":{field:[textField,..]},"version":N},"methods":{name:{"kind":"init|call|view|timer|action","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"][,"allowAction"][,"captcha"]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only (the host refuses it elsewhere). Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
 
 ## Rules
 
@@ -26,6 +26,7 @@ Every object's keys are written in sorted order (`types::canonical`, never `serd
 - `#[app::error]` / `#[app::event]` must be in the `#[app::logic]` module: their ABI constants shadow the glob-imported `__private::abi_defaults` there. Elsewhere, the ABI silently lists none. A second enum of either kind in one module is refused (the constant is defined twice).
 - A field the host enforces needs an `abiVersion` bump (D51); free-form keys (`params`, `returns`, `errors`, `events`) are ignored by nodes.
 - `#[app::action]` (D12): no `self`, first parameter `ctx: &mut ActionCtx` (not an argument; the dispatcher passes `ActionCtx::current()`), ABI kind `action`; no `confirm`, `public` or `allow(action)` on it. `#[app::allow(action)]` writes `"allowAction": true`: only the app's own actions call the method (the node refuses clients, `Forbidden`).
+- `#[app::captcha(turnstile)]` on a call or action writes `"captcha": "turnstile"`, and the app's ABI is then `abiVersion` 2 (D51: a node that cannot enforce it refuses the bundle); refused on `init`, views and timers, and for any other provider. Others stay `abiVersion` 1.
 - Not in this version: `#[app::migrate]`, `#[app::on_*]`, typed `Index::..` enums (indexes are named by camelCase strings).
 
 ## Verify
