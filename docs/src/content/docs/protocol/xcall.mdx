@@ -107,6 +107,44 @@ and deliveries, at most 100 per run. It is an outbox, not a follow-up:
 A wasmer app's xcall into a component, and a component's into a wasmer app,
 are refused.
 
+### Synchronous xcalls
+
+A component's call can also wait for another app's answer in the same request
+(WIT `xcall.call` and `xcall.view`; `env::xcall_call(app, method, &args)` and
+`env::xcall_view(..)` in the SDK). A captcha check is the typical use: the forms
+app's call asks the captcha app whether the answer is right, and writes only if
+it is. Example: `apps/v2-fixtures/captcha` and the kv fixture's `setHuman`.
+
+- **A call is the target's own entry.** The node running the caller's call
+  (on its leader, while that call waits) runs the target's method through the
+  target's leader as `Caller::App(source)`, `kind = xcall-deliver`, logged in
+  the target's log. The caller's run gets the JSON result, or the failure as
+  `XcallFailed { code, fields }` (the target's app error) or
+  `XcallFailed { message }` (a refusal, a timeout).
+- **Not atomic.** The target's entry commits first, whatever the caller does
+  next. A failed caller does not undo it, so a target method should be one that
+  is right to have run (spending a captcha challenge is, whether the answer was
+  right or not).
+- **Replays, not repeats.** The target's idempotency key is derived from the
+  caller's run (its caller and idempotency key, a tick's slot, an action's id),
+  the target, the method, the arguments and how many identical calls came
+  before in the run. A re-run of the caller (a client's retry, a leader race)
+  gets the target's recorded answer.
+- **A view** reads the target's latest committed state (a strong view) and
+  writes nothing; a view may make one too.
+- **Who may be reached.** As above: a component app in the same organization,
+  or of the same owner, other than the caller, whose method allows the source
+  (`allow(app = ..)`). Anything else is one answer, `no such app in this
+  organization`, so nothing is revealed.
+- **Bounds.** Calls, timers and actions call; views only read; a delivered
+  xcall, `init` and a migration make none, so a chain is one hop. At most 16
+  per run, 512 KiB of arguments, 1 MiB of answer; the node waits 3 s for each
+  (`SYNC_XCALL_WAIT`). The caller's own wall-clock budget still applies: a call
+  past it times out (not logged), and its retry replays what the target
+  committed.
+- **Two apps calling each other at once** each hold their own call while they
+  wait for the other's. Both wait out the 3 s and are told the xcall timed out.
+
 ## Timers
 
 `#[app::tee(every = "…")]` methods are driven by the same loop. The leader

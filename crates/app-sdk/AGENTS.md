@@ -53,6 +53,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - `#[app::error]` and `#[app::event]` must live in the `#[app::logic]` module (their ABI constants are picked up there; elsewhere the ABI lists none), and one module takes one of each: a second `#[app::error]` enum in a module is refused (`__CALIMERO_ABI_ERRORS` defined twice, pinned by `tests/ui/second_error.rs`).
 - Actions (D12, D17, D27): `ActionCtx::{key, view, call, fetch}` over the WIT `action` interface and `wasi:http` (`fetch` writes the body and finishes it before `handle`, then reads the response whole; `Request::get/post/header`, `Response::json/text`); errors are `ActionView`, `ActionCall`, `Fetch`. `env::start_action(method, &args)` (calls and timers) returns the action's key; a refusal is `StartAction`. On the host target (`env::mock`) actions answer an error: they run only in a component.
 - `env::xcall(app, method, &args)` (D25) sends JSON args through the WIT `xcall.send`; a host soft error is `AppError` `Xcall { message }`.
+- `env::xcall_call::<T>(app, method, &args)` and `env::xcall_view::<T>(..)` (WIT `xcall.call`/`xcall.view`): the target's JSON result decoded as `T` (`BadOutput` otherwise); a failure is `AppError` `XcallFailed` whose fields are the failure's JSON object (the target's `{code, fields}`, or `{message}`). On the host target (`env::mock`) they answer an error: they run only in a component.
 - `env::emit(event, audience)` takes an `#[app::event]` value (spec); `env::emit_raw(name, data, audience)` takes any serde value.
 - `env::mock` (host target) is the stand-in for the host in tests.
 
@@ -85,6 +86,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - Search: the harness answers `Table::search` with a scan of the table's records (every query word contained, case-insensitive, in a declared text field; score 1.0, key order), not the node's ranked index.
 - Xcalls: `t.take_xcalls()` hands out what logged `Ok` runs sent (`SentXcall { app, method, args }`), oldest first; `t.deliver(from, method, args)` runs one as `kind = xcall-deliver` from `Caller::App(from)`, after the node's check that the method allows `from` (`Forbidden`). Retries and watermarks are the node's.
 - Actions: `t.as_(a).action(method, args)` starts and runs one at once as `a`; a call of an action method only starts it (`{"actionId"}`), and `t.run_started_actions()` runs those and the ones `start_action` queued, each as its starter. The action's views and calls run on the harness itself (lent to the run, `HarnessAction`), with the node's checks (`allow(action)` reachable only from an action); its HTTP goes to `t.mock_http(host, handler)` (`HttpRequest` → `HttpResponse`), a host without one fails the fetch. Retries, the D27 replay of sub-call keys and the 10 s budget are the node's.
+- Synchronous xcalls: `t.mock_app(app, handler)` answers the app's `xcall_call`/`xcall_view` to `app` (`OtherAppCall { view, method, args, key }` → `Ok(result)` or `Err(failure JSON)`); an app without one fails the xcall. The target's checks and its replay of keys are the node's.
 - Not yet: migrations (`upgrade_to`).
 
 ## Verify

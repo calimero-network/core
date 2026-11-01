@@ -83,8 +83,25 @@ pub struct FileOut {
 
 #[app::error]
 pub enum Error {
-    NotFound { key: String },
+    NotFound {
+        key: String,
+    },
     BeatFailed,
+    /// The captcha service did not accept the answer.
+    CaptchaFailed,
+}
+
+/// `{ id }`.
+#[derive(serde::Serialize)]
+struct IdArg<'a> {
+    id: &'a str,
+}
+
+/// `verify`'s arguments in the captcha service (`apps/v2-fixtures/captcha`).
+#[derive(serde::Serialize)]
+struct Verify<'a> {
+    id: &'a str,
+    answer: &'a str,
 }
 
 #[app::event]
@@ -114,6 +131,38 @@ impl Kv {
         let event = self.upsert(&key, &value)?;
         env::emit(event, Audience::All)?;
         Ok(())
+    }
+
+    /// Sets `key` as `set` does, once the captcha service `captcha` (another app of the
+    /// organization) accepted `answer` to its challenge `challenge`: a synchronous xcall,
+    /// in this same call, before anything is written.
+    pub fn set_human(
+        &mut self,
+        key: String,
+        value: String,
+        captcha: String,
+        challenge: String,
+        answer: String,
+    ) -> app::Result<()> {
+        let solved: bool = env::xcall_call(
+            &captcha,
+            "verify",
+            &Verify {
+                id: &challenge,
+                answer: &answer,
+            },
+        )?;
+        if !solved {
+            app::bail!(Error::CaptchaFailed);
+        }
+        self.set(key, value)
+    }
+
+    /// The state of challenge `challenge` in the captcha service `captcha`, read through
+    /// a synchronous `xcall.view`.
+    #[app::view]
+    pub fn captcha_status(&self, captcha: String, challenge: String) -> app::Result<String> {
+        env::xcall_view(&captcha, "status", &IdArg { id: &challenge })
     }
 
     /// Sets `key` without an event (for values over the 16 KiB event limit).
@@ -249,13 +298,27 @@ impl Kv {
 
     /// Sends `setFromApp { key, value }` to app `app` (D25).
     pub fn relay(&mut self, app: String, key: String, value: String) -> app::Result<()> {
-        env::xcall(&app, "setFromApp", &SetArgs { key: &key, value: &value })?;
+        env::xcall(
+            &app,
+            "setFromApp",
+            &SetArgs {
+                key: &key,
+                value: &value,
+            },
+        )?;
         Ok(())
     }
 
     /// Sends `set { key, value }` to app `app`, which takes no xcalls.
     pub fn relay_to_set(&mut self, app: String, key: String, value: String) -> app::Result<()> {
-        env::xcall(&app, "set", &SetArgs { key: &key, value: &value })?;
+        env::xcall(
+            &app,
+            "set",
+            &SetArgs {
+                key: &key,
+                value: &value,
+            },
+        )?;
         Ok(())
     }
 
@@ -268,7 +331,12 @@ impl Kv {
 
     /// The platform's report of an xcall it dead-lettered (D29).
     #[app::allow(system)]
-    pub fn on_xcall_failed(&mut self, app: String, method: String, reason: String) -> app::Result<()> {
+    pub fn on_xcall_failed(
+        &mut self,
+        app: String,
+        method: String,
+        reason: String,
+    ) -> app::Result<()> {
         self.xcall_failures
             .insert(&method, &format!("{app}|{reason}"))?;
         Ok(())
@@ -277,7 +345,9 @@ impl Kv {
     /// What `onXcallFailed` was told, by method.
     #[app::view]
     pub fn xcall_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
-        let page = self.xcall_failures.page(FindOpts::default().limit(LIST_LIMIT))?;
+        let page = self
+            .xcall_failures
+            .page(FindOpts::default().limit(LIST_LIMIT))?;
         Ok(page.items.into_iter().collect())
     }
 
@@ -299,7 +369,13 @@ impl Kv {
         .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
         let response = ctx.fetch(&request)?;
         let summary = format!("{} {}", response.status, response.text());
-        ctx.call::<(), _>("applyEnrichment", &SetArgs { key: &key, value: &summary })?;
+        ctx.call::<(), _>(
+            "applyEnrichment",
+            &SetArgs {
+                key: &key,
+                value: &summary,
+            },
+        )?;
         Ok(())
     }
 
@@ -337,7 +413,9 @@ impl Kv {
     /// What `onActionFailed` was told, by method.
     #[app::view]
     pub fn action_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
-        let page = self.action_failures.page(FindOpts::default().limit(LIST_LIMIT))?;
+        let page = self
+            .action_failures
+            .page(FindOpts::default().limit(LIST_LIMIT))?;
         Ok(page.items.into_iter().collect())
     }
 

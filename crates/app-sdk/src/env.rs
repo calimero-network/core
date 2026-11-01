@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::io::Write;
 use std::time::SystemTime;
 
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
 
@@ -170,6 +171,76 @@ pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result
         .map_err(|e| AppError::with_fields("Xcall", json!({ "message": e.to_string() })))?;
     backend::xcall(app, method, &args)
         .map_err(|message| AppError::with_fields("Xcall", json!({ "message": message })))
+}
+
+/// Call `method` of app `app` synchronously and decode its JSON result: the target runs it
+/// as one call in its own log, as `Caller::App(<this app>)`, before this run continues.
+/// The target must be in the same organization (or, for a personal app, have the same
+/// owner), a component app other than this one, and its method must
+/// `allow(app = "<this app>")` or `allow(app = "*")`. Calls, timers and actions only; a
+/// delivered xcall makes none.
+///
+/// Not atomic: the target's call commits whatever this run does next, so a target method
+/// should be safe to have run (a captcha's `verify` spends the challenge either way). A
+/// re-run of this call (a client's retry, a leader change) replays the target's answer:
+/// the target's key is derived from this run's, the target, the method, the arguments
+/// and how many identical calls came before in the run.
+///
+/// # Errors
+///
+/// `XcallFailed` with the fields of the failure: the target's app error (`code`,
+/// `fields`), a refusal or a timeout (`message`); `BadOutput` when the result is not a `T`.
+pub fn xcall_call<T: DeserializeOwned, A: Serialize + ?Sized>(
+    app: &str,
+    method: &str,
+    args: &A,
+) -> Result<T> {
+    let args = sync_args(args)?;
+    decode_sync(backend::xcall_call(app, method, &args))
+}
+
+/// Run view `method` of app `app` on its latest committed state and decode its JSON
+/// result, with the checks of [`xcall_call`]. Calls, timers, views and actions.
+///
+/// # Errors
+///
+/// As [`xcall_call`].
+pub fn xcall_view<T: DeserializeOwned, A: Serialize + ?Sized>(
+    app: &str,
+    method: &str,
+    args: &A,
+) -> Result<T> {
+    let args = sync_args(args)?;
+    decode_sync(backend::xcall_view(app, method, &args))
+}
+
+fn sync_args<A: Serialize + ?Sized>(args: &A) -> Result<Vec<u8>> {
+    serde_json::to_vec(args)
+        .map_err(|e| AppError::with_fields("BadArgs", json!({ "message": e.to_string() })))
+}
+
+/// A synchronous xcall's answer: the result decoded, or `XcallFailed` with the failure's
+/// JSON fields (a message that is not a JSON object becomes `{"message": ..}`).
+fn decode_sync<T: DeserializeOwned>(answer: std::result::Result<Vec<u8>, String>) -> Result<T> {
+    match answer {
+        Ok(out) => {
+            let out = if out.is_empty() {
+                b"null".to_vec()
+            } else {
+                out
+            };
+            serde_json::from_slice(&out).map_err(|e| {
+                AppError::with_fields("BadOutput", json!({ "message": e.to_string() }))
+            })
+        }
+        Err(message) => {
+            let fields = match serde_json::from_str::<serde_json::Value>(&message) {
+                Ok(v @ serde_json::Value::Object(_)) => v,
+                _ => json!({ "message": message }),
+            };
+            Err(AppError::with_fields("XcallFailed", fields))
+        }
+    }
 }
 
 /// Start the `#[app::action]` `method` with `args` (D17): logged as started with this run's

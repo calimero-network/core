@@ -13,6 +13,7 @@ mod search;
 mod state;
 mod time;
 mod types;
+mod xcall;
 
 pub use abi::{Abi, MethodAbi, MethodKind, SUPPORTED_ABI_VERSIONS};
 pub use action::{
@@ -37,4 +38,8 @@ pub use types::{
     Audience, BlobInfo, Budget, Caller, Directory, Event, HostDenied, InvalidInvocation,
     Invocation, InvocationKind, OrgRole, Outcome, Status, TimerCtx, TrapKind, Usage, Write, Xcall,
     ACTION_WALL_CLOCK, CALL_WALL_CLOCK, DEFAULT_FUEL, DEFAULT_MEMORY_PAGES,
+};
+pub use xcall::{
+    sync_xcall_key, XcallHost, MAX_SYNC_XCALLS, MAX_SYNC_XCALL_ARGS_BYTES,
+    MAX_SYNC_XCALL_RESULT_BYTES, XCALL_SYNC_SELF, XCALL_SYNC_TOO_MANY, XCALL_SYNC_UNAVAILABLE,
 };
