@@ -49,6 +49,47 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+/// Bytes of a request's or a response's body a logged run's entry records ([`HttpExchange`]).
+pub const MAX_RECORDED_BODY_BYTES: usize = 64 * 1024;
+
+/// One outbound request of a logged run (a call, a timer, a delivery) and what came back,
+/// as the run's log entry records it: the request as the app made it (secret placeholders,
+/// never secrets), the response as the gate handed it back (secrets redacted). Bodies are
+/// cut to [`MAX_RECORDED_BODY_BYTES`], with their full length.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpExchange {
+    pub request: HttpRequest,
+    /// The request body's length before it was cut.
+    pub request_body_len: usize,
+    /// The response, or why there was none (refused by the gate, timed out, unreachable).
+    pub response: Result<HttpResponse, String>,
+    /// The response body's length before it was cut; 0 without a response.
+    pub response_body_len: usize,
+}
+
+impl HttpExchange {
+    /// The record of `request` and `response`, bodies cut for the log.
+    #[must_use]
+    pub fn record(request: &HttpRequest, response: &Result<HttpResponse, String>) -> Self {
+        let cut = |body: &[u8]| body[..body.len().min(MAX_RECORDED_BODY_BYTES)].to_vec();
+        Self {
+            request: HttpRequest {
+                body: cut(&request.body),
+                ..request.clone()
+            },
+            request_body_len: request.body.len(),
+            response: response
+                .as_ref()
+                .map_err(Clone::clone)
+                .map(|r| HttpResponse {
+                    body: cut(&r.body),
+                    ..r.clone()
+                }),
+            response_body_len: response.as_ref().map_or(0, |r| r.body.len()),
+        }
+    }
+}
+
 /// The node's gate for an action's outbound requests (S9): declared hosts, the owner's
 /// approval, secrets (R14).
 pub trait HttpHost: Send + Sync {

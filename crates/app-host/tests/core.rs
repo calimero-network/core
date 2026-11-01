@@ -1358,7 +1358,7 @@ fn get(url: &str) -> HttpRequest {
 }
 
 #[test]
-fn an_action_reads_through_views_writes_through_keyed_calls_and_alone_sends_http() {
+fn actions_send_http_and_calls_record_what_they_send() {
     let state = base(&[(b"k", b"v")]);
     let runner = Arc::new(Runner::default());
     let mut action = core_for(&state, &inv(InvocationKind::Action))
@@ -1384,15 +1384,50 @@ fn an_action_reads_through_views_writes_through_keyed_calls_and_alone_sends_http
         .unwrap();
     assert_eq!(sent.body, b"https://enrich.test/v1");
 
-    // A call has no action context and sends no HTTP (S9).
+    // An action's exchanges are not recorded: it has no entry of its own.
+    let out = action.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(out.http.is_empty());
+
+    // A call has no action context; it sends HTTP (D76) and records the exchange for its
+    // entry, whatever its status. Views and `init` send none (S9).
     let mut call = core_for(&state, &inv(InvocationKind::Call))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));
     assert!(call.action_key().is_err());
     assert!(call.action_call("apply", b"{}").is_err());
-    assert!(call.http_send(&get("https://enrich.test/v1")).is_err());
+    let mut big = get("https://enrich.test/v1");
+    big.method = "POST".into();
+    big.body = vec![b'x'; calimero_app_host::MAX_RECORDED_BODY_BYTES + 10];
+    assert_eq!(
+        call.http_send(&big).unwrap().unwrap().body,
+        b"https://enrich.test/v1"
+    );
+    let out = call.finish(
+        Status::AppError {
+            code: "Nope".into(),
+            message: String::new(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert_eq!(out.http.len(), 1);
+    assert_eq!(
+        out.http[0].request.body.len(),
+        calimero_app_host::MAX_RECORDED_BODY_BYTES
+    );
+    assert_eq!(
+        out.http[0].request_body_len,
+        calimero_app_host::MAX_RECORDED_BODY_BYTES + 10
+    );
+    assert_eq!(out.http[0].response.as_ref().unwrap().status, 200);
+    for kind in [InvocationKind::View, InvocationKind::Init] {
+        let mut run = core_for(&state, &inv(kind)).with_http(Arc::new(Echo));
+        assert!(
+            run.http_send(&get("https://enrich.test/v1")).is_err(),
+            "{kind:?}"
+        );
+    }
     let mut view = core_for(&state, &inv(InvocationKind::View)).with_http(Arc::new(Echo));
-    assert!(view.http_send(&get("https://enrich.test/v1")).is_err());
     assert!(view.start_action("enrich", b"{}").is_err());
     assert_eq!(ACTION_WALL_CLOCK, Duration::from_secs(10));
 }

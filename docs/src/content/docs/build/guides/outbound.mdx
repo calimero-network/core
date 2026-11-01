@@ -237,6 +237,29 @@ cluster with outbound off) cover every gate this way:
 cargo test -p calimero-node --test scenarios -- outbound-probe
 ```
 
+## From a component app's call
+
+A component app (`calimero:app`, the v2 SDK) sends from a call, a timer or a
+delivered xcall with `env::fetch`, through the same gates. The request goes out
+once, from the leader, and the call's log entry records it and the response,
+so a retry with the same idempotency key replays the answer instead of fetching
+again (what a single-use token like Turnstile's needs):
+
+```rust
+let request = Request::post(
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    format!("secret={{{{secret:TURNSTILE_SECRET}}}}&response={token}"),
+)
+.header("Content-Type", "application/x-www-form-urlencoded");
+let passed = env::fetch(&request).is_ok_and(|r| r.status == 200 /* and success */);
+```
+
+The node waits at most 1.5 s for the answer; a timeout or a refusal comes back
+as an error the call handles. Example: `apps/v2-fixtures/captcha`
+(`verifyTurnstile`), a captcha service other apps call synchronously
+([Synchronous xcalls](/protocol/xcall/#synchronous-xcalls)). Protocol detail:
+[Outbound HTTP from component calls](/protocol/execution/#outbound-http-from-component-calls).
+
 ## Where it stops
 
 - A request never runs in a view. Read the answer back from state.

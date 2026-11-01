@@ -795,7 +795,8 @@ impl TestApp {
         .expect("harness builds valid invocations")
         .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
         .with_search(search)
-        .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())));
+        .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())))
+        .with_http(Arc::new(HarnessHttp(self.http.clone())));
         let budget = if is_view {
             Budget::view()
         } else {

@@ -6,9 +6,26 @@
 //!
 //! The puzzle is a sum, to keep the example small; a real service would render an image
 //! or ask a question from a set, with the answer kept here and never returned.
+//!
+//! `verifyTurnstile` checks a Cloudflare Turnstile token instead, with an outbound request
+//! from the call itself (D76): the signed release declares `TURNSTILE_VERIFY_URL` under
+//! `outbound`, its owner approves it, and the node's operator holds the site's secret as
+//! `TURNSTILE_SECRET` for this package, which the node fills in and the app never sees.
+//! The exchange is recorded in this app's log entry, so a retry of the same call replays
+//! the answer and never spends the token twice.
 
 use calimero_app_sdk::env::Caller;
 use calimero_app_sdk::prelude::*;
+use calimero_app_sdk::Request;
+
+/// Cloudflare Turnstile's token check.
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+/// What Turnstile answers (the fields used here).
+#[derive(serde::Deserialize)]
+struct Siteverify {
+    success: bool,
+}
 
 #[derive(Record)]
 #[table(key = "id")]
@@ -90,6 +107,30 @@ impl Captcha {
         Ok(solved)
     }
 
+    /// Whether Cloudflare Turnstile accepts `token`: one request to its siteverify from this
+    /// call, with the site's secret filled in by the node. For apps of the organization
+    /// (`env::xcall_call`), like `verify`. A token is spent by its first check; an
+    /// unreachable Turnstile is `false`, never a pass.
+    #[app::allow(app = "*")]
+    pub fn verify_turnstile(&mut self, token: String) -> app::Result<bool> {
+        if !matches!(env::caller(), Caller::App(_)) {
+            app::bail!(Error::AppsOnly);
+        }
+        let body = format!(
+            "secret={{{{secret:TURNSTILE_SECRET}}}}&response={}",
+            form_escape(&token)
+        );
+        let request = Request::post(TURNSTILE_VERIFY_URL, body)
+            .header("Content-Type", "application/x-www-form-urlencoded");
+        let Ok(response) = env::fetch(&request) else {
+            return Ok(false);
+        };
+        Ok(response.status == 200
+            && response
+                .json::<Siteverify>()
+                .is_ok_and(|answer| answer.success))
+    }
+
     /// `"open"`, `"spent"`, `"expired"` or `"unknown"`, for any app of the organization
     /// (`env::xcall_view`) and for signed-in members.
     #[app::view]
@@ -113,4 +154,18 @@ impl Captcha {
         }
         Ok(self.challenges.get(&id)?.map(|c| c.answer))
     }
+}
+
+/// `text` as an `application/x-www-form-urlencoded` value.
+fn form_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

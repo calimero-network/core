@@ -243,6 +243,22 @@ fn decode_sync<T: DeserializeOwned>(answer: std::result::Result<Vec<u8>, String>
     }
 }
 
+/// Send `request` over `wasi:http` from a call, a timer or a delivery (D76), as an action's
+/// `ctx.fetch` does: only to a URL under a prefix the app's signed manifest declares and its
+/// owner approved, with `{{secret:NAME}}` filled in by the node (R14), at most one request
+/// per run and within the call's time budget. The exchange is recorded in the call's log
+/// entry: followers and a retry with the same idempotency key read the recorded answer and
+/// never fetch again. Views, `init` and migrations cannot send (the run traps).
+///
+/// # Errors
+///
+/// `Fetch` with the reason it was not sent or failed (refused by the gate, timed out,
+/// unreachable): the app decides what that means.
+pub fn fetch(request: &crate::action::Request) -> Result<crate::action::Response> {
+    backend::fetch(request)
+        .map_err(|message| AppError::with_fields("Fetch", json!({ "message": message })))
+}
+
 /// Start the `#[app::action]` `method` with `args` (D17): logged as started with this run's
 /// entry, only if the run succeeds, then run by the leader outside the log with this run's
 /// caller. Calls and timers only. Returns the action's key.

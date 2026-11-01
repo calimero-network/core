@@ -3256,6 +3256,7 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         hosts: vec!["echo.outbound.test".to_owned()],
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
+            turnstile: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {
@@ -3454,6 +3455,123 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
             .unwrap()
             .contains("no such app"),
         "{e}"
+    );
+}
+
+/// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
+/// service (a signed release declaring Turnstile's siteverify) inside its call; the
+/// service checks the token with Turnstile from its own call, through the outbound gate
+/// (declared, approved, the operator's host and secret), and the forms app writes only
+/// on a pass. A spent token does not pass again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
+    const PACKAGE: &str = "com.calimero.captcha";
+    const HOST: &str = "challenges.cloudflare.com";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            turnstile: true,
+            secrets: [(
+                "TURNSTILE_SECRET".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    // Cloudflare's test secret that passes every unspent token.
+                    value: "1x0000000000000000000000000000000AA".to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+            ..calimero_outbound::OutboundTestSettings::default()
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _ = alice
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &wasm("captcha"),
+            &publisher,
+            &[calimero_outbound::TURNSTILE_VERIFY_URL],
+        ))
+        .await
+        .unwrap();
+    let captcha = alice
+        .post("apps", json!({ "name": "captcha", "package": PACKAGE }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let kv_bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let forms = alice
+        .create_app("forms", &kv_bundle, json!({}))
+        .await
+        .unwrap();
+    let human = |value: &str, token: &str| json!({ "key": "k", "value": value, "captcha": captcha, "token": token });
+
+    // Not approved yet: the service's request is refused, the token is not passed.
+    let e = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v", "tok-0"),
+            Some("k-0"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "CaptchaFailed", "{e}");
+
+    // Approved: Turnstile accepts the token, checked from the service's own call, and
+    // the forms app writes in the same request.
+    let _ = alice
+        .approve_outbound(None, PACKAGE, None, false, &mut pk)
+        .await
+        .unwrap();
+    let first = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v", "tok-1"),
+            Some("k-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+    // The same call again replays its logged answer.
+    let again = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v", "tok-1"),
+            Some("k-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.index, first.index);
+    // Another call with the spent token: Turnstile answers "timeout-or-duplicate".
+    let e = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v2", "tok-1"),
+            Some("k-2"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "CaptchaFailed", "{e}");
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
     );
 }
 

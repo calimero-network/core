@@ -343,6 +343,10 @@ pub trait Transport: Send + Sync + fmt::Debug {
     fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)>;
 }
 
+/// Cloudflare Turnstile's token check. The node posts a client's token here, through
+/// the app's own outbound gate, before it runs a `captcha(turnstile)` method.
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
 /// The node's outbound policy: the operator's hosts and secrets.
 #[derive(Debug)]
 pub struct OutboundService {
