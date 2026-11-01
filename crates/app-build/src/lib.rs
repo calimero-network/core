@@ -20,10 +20,23 @@ use wasmparser::Payload;
 pub const ABI_SECTION: &str = "calimero:abi";
 
 const TARGET: &str = "wasm32-wasip2";
+const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
 const HEADER_LEN: usize = 8;
 const SECTION_CUSTOM: u8 = 0;
 const SECTION_MODULE: u8 = 1;
 const SECTION_COMPONENT: u8 = 4;
+
+/// Opens `path` (creating it) and takes an exclusive lock, released when the file drops.
+fn lock_exclusive(path: &Path) -> EyreResult<std::fs::File> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
+    FileExt::lock_exclusive(&lock).map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
+    Ok(lock)
+}
 
 /// A built component and what was read out of it.
 #[derive(Debug)]
@@ -35,6 +48,9 @@ pub struct Built {
 
 /// Builds the crate at `crate_dir` into `target_dir` and returns the component.
 pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
+    // Builds into one target dir race on its artifacts across threads and processes.
+    std::fs::create_dir_all(target_dir)?;
+    let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
     let output = Command::new("cargo")
         .args(["build", "--release", "--target", TARGET])
         .args(["--message-format", "json-render-diagnostics"])
@@ -100,14 +116,7 @@ pub fn build_component_cached(
     // the lock, since the first build may have changed what it hashes.
     let target_dir = cache_dir.join("target").join(name);
     std::fs::create_dir_all(&target_dir)?;
-    let lock_path = cache_dir.join("target").join(format!("{name}.build.lock"));
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|e| eyre::eyre!("{}: {e}", lock_path.display()))?;
-    FileExt::lock_exclusive(&lock).map_err(|e| eyre::eyre!("{}: {e}", lock_path.display()))?;
+    let lock = lock_exclusive(&cache_dir.join("target").join(format!("{name}.build.lock")))?;
     let key = cache_key(crate_dir, also_hash)?;
     let cached = cached(&key);
     if let Ok(bytes) = std::fs::read(&cached) {
