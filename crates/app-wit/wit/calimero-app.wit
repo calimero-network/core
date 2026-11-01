@@ -67,6 +67,16 @@ interface blobs {
   grant: func(id: blob-id, ttl-seconds: u32) -> string;
 }
 
+// Full-text search over a table's declared fields (spec section 7, R2): the host keeps the
+// index from the app's state and answers views only. Not in the spec's section 4 world,
+// which names the index but no interface to query it.
+interface search {
+  enum search-mode { words, prefix, substring, fuzzy }
+  record search-hit { key: list<u8>, score: f32, snippet: string }
+  record search-page { hits: list<search-hit>, next: option<u32>, total: u64 }
+  query: func(table: string, text: string, mode: search-mode, cursor: u32, limit: u32) -> result<search-page, string>;
+}
+
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
 }
@@ -84,6 +94,7 @@ world app {
   import context;
   import events;
   import blobs;
+  import search;
   import xcall;
   import action;
 

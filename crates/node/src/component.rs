@@ -19,6 +19,8 @@
 //! `last_ts_ms`, idempotency, blob records) are never keys the app sees (D39).
 
 pub mod blobs;
+pub mod search;
+pub mod xcall;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Weak};
@@ -30,6 +32,7 @@ use serde_json::{json, Value};
 
 use crate::app::{rows, AppMachine, Status, Write};
 use crate::component::blobs::{ref_deltas, BlobTable, MAX_COLLECT_QUEUE};
+use crate::component::xcall::{XcallFrom, XcallHead, XcallOut};
 use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
@@ -59,6 +62,9 @@ pub struct Outcome {
     /// The owner-only app log (spec section 5); kept whatever the status.
     #[serde(default)]
     pub logs: Vec<String>,
+    /// The xcalls the run sent (D25); empty unless `Ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub xcalls: Vec<XcallOut>,
 }
 
 /// The name a trap kind has on the wire (the spec's names).
@@ -92,7 +98,7 @@ impl Outcome {
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
         let mut outcome = match out.status {
-            host::Status::Ok => Self::ok(out.result, out.diff, out.events),
+            host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls),
             host::Status::AppError { code, message } => Self {
                 status: Status::AppError,
                 error: json!({
@@ -107,7 +113,12 @@ impl Outcome {
         outcome
     }
 
-    fn ok(result: Vec<u8>, diff: Vec<host::Write>, events: Vec<host::Event>) -> Self {
+    fn ok(
+        result: Vec<u8>,
+        diff: Vec<host::Write>,
+        events: Vec<host::Event>,
+        xcalls: Vec<host::Xcall>,
+    ) -> Self {
         let result = if result.is_empty() {
             Value::Null
         } else {
@@ -127,6 +138,22 @@ impl Outcome {
                 audience: e.audience.into(),
             });
         }
+        let mut sent = Vec::with_capacity(xcalls.len());
+        for x in xcalls {
+            let args = if x.args.is_empty() {
+                Value::Null
+            } else {
+                let Ok(args) = serde_json::from_slice(&x.args) else {
+                    return Self::trap(host::TrapKind::Fault, "xcall args are not JSON");
+                };
+                args
+            };
+            sent.push(XcallOut {
+                app: x.app,
+                method: x.method,
+                args,
+            });
+        }
         Self {
             status: Status::Ok,
             result,
@@ -140,6 +167,7 @@ impl Outcome {
                 .collect(),
             events: out,
             logs: Vec::new(),
+            xcalls: sent,
         }
     }
 
@@ -173,6 +201,9 @@ pub struct CallEntry {
     pub id_term: u64,
     pub id_seq: u64,
     pub outcome: Outcome,
+    /// A delivered xcall (D25): which message of which source app it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xcall: Option<XcallFrom>,
 }
 
 /// A timer tick as recorded in the log (D34).
@@ -238,6 +269,15 @@ pub enum ComponentCmd {
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
     #[serde(rename = "componentBlobForget")]
     BlobForget { id: String },
+    /// The leader finished with the outbox's head message (D25, D29): delivered, or
+    /// dead-lettered with `dead`'s reason.
+    #[serde(rename = "componentXcallDone")]
+    XcallDone {
+        seq: u64,
+        #[serde(default)]
+        dead: Option<String>,
+        ts_ms: u64,
+    },
     /// The leader collected the bytes of blobs the app forgot (idle past their time):
     /// they leave the queue.
     #[serde(rename = "componentBlobsCollected")]
@@ -368,6 +408,9 @@ pub struct ComponentHead {
     /// collect, hex; at most [`MAX_COLLECT_QUEUE`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collect: Vec<String>,
+    /// The xcall outbox, dead letters and the watermarks of the apps that send here.
+    #[serde(default)]
+    pub xcall: XcallHead,
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -464,6 +507,30 @@ impl AppMachine {
         Arc::clone(&self.state.component.blobs.records)
     }
 
+    /// The outbox's message `seq`, if it is still there.
+    #[must_use]
+    pub fn outgoing(&self, seq: u64) -> Option<xcall::Outgoing> {
+        let raw = self
+            .state
+            .kv
+            .group()?
+            .get_hidden(rows::COUT, &xcall::outbox_key(seq))?;
+        serde_json::from_slice(&raw).ok()
+    }
+
+    /// The app's dead letters, oldest first (D29).
+    #[must_use]
+    pub fn dead_letters(&self) -> Vec<xcall::DeadLetter> {
+        let h = &self.state.component.head.xcall;
+        let Some(group) = self.state.kv.group() else {
+            return Vec::new();
+        };
+        (h.dead_first..h.dead_next)
+            .filter_map(|n| group.get_hidden(rows::CDEAD, &xcall::dead_key(n)))
+            .filter_map(|raw| serde_json::from_slice(&raw).ok())
+            .collect()
+    }
+
     /// Whether `slot` of `timer` was already applied.
     #[must_use]
     pub fn tick_applied(&self, timer: &str, slot: u64) -> bool {
@@ -487,6 +554,7 @@ impl AppMachine {
         if base_index != self.state.last_index {
             return Applied::conflict(index, "conflict: retry");
         }
+        let mut touched = Vec::new();
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         if outcome.status == Status::Ok {
@@ -495,6 +563,10 @@ impl AppMachine {
                 let mut deltas = BTreeMap::new();
                 let kv = Arc::make_mut(&mut c.kv);
                 for w in &outcome.diff {
+                    // Search catches up from the records an entry touched.
+                    if search::record_table(&w.key.0).is_some() {
+                        touched.push(hex::encode(&w.key.0));
+                    }
                     match &w.value {
                         Some(v) => {
                             tx.put_hidden(rows::CKV, &w.key.0, &v.0);
@@ -510,6 +582,14 @@ impl AppMachine {
                 }
                 deltas.retain(|_, d| *d != 0);
                 c.blobs.count(tx, &deltas, ts_ms);
+            }
+            self.note_touched(index, touched);
+            if !outcome.xcalls.is_empty() {
+                self.state
+                    .component
+                    .head
+                    .xcall
+                    .send(tx, &outcome.xcalls, ts_ms);
             }
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
@@ -639,7 +719,9 @@ impl AppMachine {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
-            Ok(ComponentCmd::Blob { ts_ms, .. }) => Some(*ts_ms),
+            Ok(ComponentCmd::Blob { ts_ms, .. } | ComponentCmd::XcallDone { ts_ms, .. }) => {
+                Some(*ts_ms)
+            }
             Ok(
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
@@ -714,6 +796,10 @@ impl AppMachine {
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
                 }
+                // Whatever its status, a delivered xcall was answered (D29).
+                if let (Some(from), false) = (&call.xcall, a.conflict) {
+                    self.state.component.head.xcall.delivered(from);
+                }
                 a
             }
             Ok(ComponentCmd::Tick(tick)) => self.apply_tick(tx, index, &tick),
@@ -733,6 +819,13 @@ impl AppMachine {
                 let c = &mut self.state.component;
                 let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget(tx, &raw));
                 host_answer(index, held, "no such blob in this app")
+            }
+            Ok(ComponentCmd::XcallDone { seq, dead, ts_ms }) => {
+                let head = self.outgoing(seq);
+                let c = &mut self.state.component;
+                c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
+                let done = c.head.xcall.done(tx, head, seq, dead.as_deref(), ts_ms);
+                host_answer(index, done, "not the outbox's head")
             }
             Ok(ComponentCmd::BlobsCollected { ids }) => {
                 self.state
@@ -983,6 +1076,7 @@ mod tests {
                 diff,
                 ..Outcome::default()
             },
+            xcall: None,
         })))
         .unwrap()
     }

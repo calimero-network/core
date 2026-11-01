@@ -14,6 +14,20 @@
   grants (`BlobRef::grant`, up to 24 h) that `GET
   /apps/{app}/blobs/{id}?grant=` takes without a session. Uploads keep their
   `Content-Type`. The harness gains `upload_blob` and `blob_refs`.
+- **Full-text search for component apps** (spec section 7). A table declares
+  its text fields with `#[table(search = [..])]` (listed in the state ABI's
+  `search`); the node indexes its records with `calimero-search`, derived from
+  state and brought up to date before each view, and views query it with
+  `Table::search` through a new WIT `search` interface (views only).
+- **xcall for component apps** (D13, D25, D29). `env::xcall(app, method,
+  &args)` queues a message in the app's outbox; the leader delivers it after
+  the entry commits, in order, as `Caller::App(source)` to a method that
+  `allow(app = ..)`s the source (`"*"`: any app), within one organization.
+  Targets deduplicate by a per-source watermark; timeouts are retried for an
+  hour, then (or at once for a missing target or another organization's app)
+  the message is dead-lettered and the source's `onXcallFailed` runs. `GET
+  /apps/{app}/xcalls` lists what waits and the dead letters. The harness gains
+  `take_xcalls` and `deliver`.
 
 ## [1.0.0-rc.7] - 2026-10-31
 

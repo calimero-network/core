@@ -177,6 +177,7 @@ fn abi_lists_every_method_with_its_attributes() {
                 "nextId": "counter",
                 "titles": "unorderedMap",
             },
+            "search": { "blobs": [], "bookings": [], "nextId": [], "titles": [] },
             "version": 3,
         })
     );

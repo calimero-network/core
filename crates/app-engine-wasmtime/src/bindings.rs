@@ -27,9 +27,9 @@ wasmtime::component::bindgen!({
     require_store_data_send: true,
 });
 
-use self::calimero::app::{action, blobs, context, events, rebuild, storage, types, xcall};
+use self::calimero::app::{action, blobs, context, events, rebuild, search, storage, types, xcall};
 
-/// Links the eight `calimero:app` interfaces onto `StoreData`.
+/// Links the nine `calimero:app` interfaces onto `StoreData`.
 pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     let l = linker;
     types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -38,6 +38,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     context::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     events::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     blobs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    search::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     Ok(())
@@ -262,6 +263,44 @@ impl blobs::Host for StoreData {
     }
 }
 
+impl search::Host for StoreData {
+    fn query(
+        &mut self,
+        table: String,
+        text: String,
+        mode: search::SearchMode,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<std::result::Result<search::SearchPage, String>> {
+        let query = host::SearchQuery {
+            table,
+            text,
+            mode: match mode {
+                search::SearchMode::Words => host::SearchMode::Words,
+                search::SearchMode::Prefix => host::SearchMode::Prefix,
+                search::SearchMode::Substring => host::SearchMode::Substring,
+                search::SearchMode::Fuzzy => host::SearchMode::Fuzzy,
+            },
+            cursor,
+            limit,
+        };
+        let page = self.host.search_query(&query).map_err(denied)?;
+        Ok(page.map(|p| search::SearchPage {
+            hits: p
+                .hits
+                .into_iter()
+                .map(|h| search::SearchHit {
+                    key: h.key,
+                    score: h.score,
+                    snippet: h.snippet,
+                })
+                .collect(),
+            next: p.next,
+            total: p.total,
+        }))
+    }
+}
+
 impl xcall::Host for StoreData {
     fn send(
         &mut self,
@@ -269,10 +308,7 @@ impl xcall::Host for StoreData {
         method: String,
         args: Vec<u8>,
     ) -> Result<std::result::Result<(), String>> {
-        self.host
-            .xcall_send(&app, &method, &args)
-            .map(Ok)
-            .map_err(denied)
+        self.host.xcall_send(&app, &method, &args).map_err(denied)
     }
 }
 

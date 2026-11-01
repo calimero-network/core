@@ -205,3 +205,62 @@ fn blobs_are_referenced_from_state_and_granted() {
         .unwrap();
     assert_eq!(t.blob_refs(&id), 0);
 }
+
+#[test]
+fn notes_are_found_by_their_declared_fields() {
+    let mut t = app();
+    for (id, title, body) in [
+        ("1", "Groceries", "milk and eggs"),
+        ("2", "Trip", "pack the eggs carefully"),
+        ("3", "Work", "secret plans"),
+    ] {
+        t.as_("owner")
+            .call("note", json!({ "id": id, "title": title, "body": body }))
+            .unwrap();
+    }
+    let mut found = t
+        .as_("owner")
+        .view("findNotes", json!({ "text": "eggs" }))
+        .unwrap();
+    found.as_array_mut().unwrap().sort_by_key(|v| v.to_string());
+    assert_eq!(found, json!(["1", "2"]));
+    // Search is for views: the same method run as a call traps.
+    assert_eq!(
+        t.as_("owner")
+            .call("findNotes", json!({ "text": "eggs" }))
+            .unwrap_err(),
+        Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied)
+    );
+    t.as_("owner").call("dropNote", json!({ "id": "1" })).unwrap();
+    assert_eq!(
+        t.as_("owner")
+            .view("findNotes", json!({ "text": "eggs" }))
+            .unwrap(),
+        json!(["2"])
+    );
+}
+
+#[test]
+fn xcalls_leave_only_with_an_ok_run_and_reach_only_methods_that_allow_the_source() {
+    let mut t = app();
+    t.as_("owner")
+        .call("relay", json!({ "app": "other", "key": "k", "value": "v" }))
+        .unwrap();
+    let sent = t.take_xcalls();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].app, "other");
+    assert_eq!(sent[0].method, "setFromApp");
+    assert_eq!(sent[0].args, json!({ "key": "k", "value": "v" }));
+    // Delivered here as if from another app: `allow(app = "*")` takes it.
+    t.deliver("app-a", "setFromApp", json!({ "key": "k", "value": "v" }))
+        .unwrap();
+    assert_eq!(
+        t.as_("owner").view("get", json!({ "key": "k" })).unwrap(),
+        json!("v")
+    );
+    // `set` allows no app.
+    let e = t
+        .deliver("app-a", "set", json!({ "key": "k", "value": "w" }))
+        .unwrap_err();
+    assert!(matches!(e, Failure::App { ref code, .. } if code == "Forbidden"), "{e:?}");
+}

@@ -10,6 +10,15 @@ pub struct Entry {
     pub value: String,
 }
 
+/// A note, full-text searchable by title and body (spec section 7).
+#[derive(Record)]
+#[table(key = "id", search = ["title", "body"])]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
 /// One tick of `beat`, in the order the ticks were applied.
 #[derive(Record)]
 #[table(key = "n")]
@@ -41,6 +50,16 @@ pub struct Kv {
     beat_faults: UnorderedMap<String, String>,
     /// Uploaded blobs by name (R8): a typed reference keeps the blob alive.
     files: UnorderedMap<String, BlobRef>,
+    notes: Table<Note>,
+    /// What `onXcallFailed` was told, by method: `"<app>|<reason>"`.
+    xcall_failures: UnorderedMap<String, String>,
+}
+
+/// `setFromApp`'s arguments, as an xcall sends them.
+#[derive(serde::Serialize)]
+struct SetArgs<'a> {
+    key: &'a str,
+    value: &'a str,
 }
 
 /// A file as `file` lists it (D20: the size as a decimal string).
@@ -215,6 +234,58 @@ impl Kv {
     #[app::view]
     pub fn share(&self, name: String, ttl: u32) -> app::Result<Option<String>> {
         Ok(self.files.get(&name)?.map(|b| b.grant(ttl)))
+    }
+
+    /// Sends `setFromApp { key, value }` to app `app` (D25).
+    pub fn relay(&mut self, app: String, key: String, value: String) -> app::Result<()> {
+        env::xcall(&app, "setFromApp", &SetArgs { key: &key, value: &value })?;
+        Ok(())
+    }
+
+    /// Sends `set { key, value }` to app `app`, which takes no xcalls.
+    pub fn relay_to_set(&mut self, app: String, key: String, value: String) -> app::Result<()> {
+        env::xcall(&app, "set", &SetArgs { key: &key, value: &value })?;
+        Ok(())
+    }
+
+    /// Sets `key` from another app's xcall.
+    #[app::allow(app = "*")]
+    pub fn set_from_app(&mut self, key: String, value: String) -> app::Result<()> {
+        let _event = self.upsert(&key, &value)?;
+        Ok(())
+    }
+
+    /// The platform's report of an xcall it dead-lettered (D29).
+    #[app::allow(system)]
+    pub fn on_xcall_failed(&mut self, app: String, method: String, reason: String) -> app::Result<()> {
+        self.xcall_failures
+            .insert(&method, &format!("{app}|{reason}"))?;
+        Ok(())
+    }
+
+    /// What `onXcallFailed` was told, by method.
+    #[app::view]
+    pub fn xcall_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self.xcall_failures.page(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page.items.into_iter().collect())
+    }
+
+    /// Writes note `id`.
+    pub fn note(&mut self, id: String, title: String, body: String) -> app::Result<()> {
+        self.notes.upsert(Note { id, title, body })?;
+        Ok(())
+    }
+
+    /// Removes note `id`.
+    pub fn drop_note(&mut self, id: String) -> app::Result<bool> {
+        Ok(self.notes.remove(&id)?)
+    }
+
+    /// The ids of the notes matching `text`, best first.
+    #[app::view]
+    pub fn find_notes(&self, text: String) -> app::Result<Vec<String>> {
+        let found = self.notes.search(&text, SearchOpts::default().limit(50))?;
+        Ok(found.items.into_iter().map(|f| f.record.id).collect())
     }
 
     /// The value of `key`, or `null`.

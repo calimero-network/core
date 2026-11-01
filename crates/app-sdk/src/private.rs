@@ -124,7 +124,8 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
             Caller::Account(_) | Caller::ApiKey { .. } => {}
             Caller::System if m.allow_system => {}
             Caller::Public if m.public => {}
-            Caller::App(app) if m.allow_apps.contains(&app.as_str()) => {}
+            // `allow(app = "*")`: any app the platform delivers from (its own organization).
+            Caller::App(app) if m.allow_apps.iter().any(|a| *a == "*" || *a == app) => {}
             Caller::Public => return Err(AppError::login_required()),
             Caller::System | Caller::App(_) => return Err(AppError::forbidden()),
         }

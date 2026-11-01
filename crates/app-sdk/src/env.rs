@@ -154,6 +154,24 @@ pub fn emit_raw<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience)
     backend::emit(name, data, audience)
 }
 
+/// Send `args` (serialized as JSON) to `method` of app `app` (D25): the message waits in
+/// this run's outbox and the platform delivers it after the entry commits, only if the run
+/// succeeds, at least once and in order per sending app, as `Caller::App(<this app>)`. The
+/// target app must be in the same organization (or, for a personal app, have the same
+/// owner) and its method must `allow(app = "<this app>")` or `allow(app = "*")`. Calls,
+/// timers, `init` and deliveries only.
+///
+/// # Errors
+///
+/// `Xcall` with the host's reason: more than 100 xcalls in one run, an empty or overlong
+/// app id or method, or a reserved (`__`) method.
+pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result<()> {
+    let args = serde_json::to_vec(args)
+        .map_err(|e| AppError::with_fields("Xcall", json!({ "message": e.to_string() })))?;
+    backend::xcall(app, method, &args)
+        .map_err(|message| AppError::with_fields("Xcall", json!({ "message": message })))
+}
+
 /// Blob `id`'s metadata, if the app holds it (R8). Prefer [`crate::BlobRef::info`].
 pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
     backend::blob_info(id)
@@ -163,6 +181,18 @@ pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
 /// [`crate::BlobRef::grant`].
 pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
     backend::blob_grant(id, ttl_seconds)
+}
+
+/// Query the host's full-text index of `table` (views only). Prefer
+/// [`crate::Table::search`], which reads the records back.
+pub fn search_query(
+    table: &str,
+    text: &str,
+    mode: crate::SearchMode,
+    cursor: u32,
+    limit: u32,
+) -> std::result::Result<crate::search::RawPage, String> {
+    backend::search_query(table, text, mode, cursor, limit)
 }
 
 /// The tick this timer method runs for; none in any other invocation.

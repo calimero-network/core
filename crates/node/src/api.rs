@@ -5006,6 +5006,36 @@ async fn blob_delete(
     Ok(Json(json!({ "index": a.index })))
 }
 
+/// A component app's xcalls (D25, D29): messages waiting in its outbox and its dead
+/// letters, newest last. The app's owner's or an org admin's, from a replica.
+async fn app_xcalls(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its xcalls",
+        ));
+    }
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::new(
+            409,
+            "NOT_SUPPORTED",
+            "this app runs on wasmer: its xcalls are follow-ups",
+        ));
+    }
+    let g = node
+        .hosted(&app.app_id)
+        .ok_or_else(|| ApiError::unavailable("ask a node that hosts the app"))?;
+    let (pending, dead) =
+        g.read_local(|m, _| (m.state.component.head.xcall.pending(), m.dead_letters()));
+    Ok(Json(json!({ "pending": pending, "deadLetters": dead })))
+}
+
 /// What the app's storage holds: keys, bytes, blobs.
 async fn app_storage(
     State(node): State<Arc<Node>>,
@@ -7194,6 +7224,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))
+        .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
         .route("/orgs/{org}/metadata", post(org_metadata))

@@ -71,6 +71,14 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
         parts.push(quote! { <#ty as ::calimero_app_sdk::app::StateField>::KIND });
         parts.push(quote! { "\"" });
     }
+    // `"search":{"<name>":[field,..],..}`: every field's `StateField::SEARCH` (an empty list
+    // for anything but a searchable table; the host skips those).
+    parts.push(quote! { "},\"search\":{" });
+    for (i, (field, ty)) in kinds.iter().enumerate() {
+        let open = format!("{}\"{field}\":", if i == 0 { "" } else { "," });
+        parts.push(quote! { #open });
+        parts.push(quote! { <#ty as ::calimero_app_sdk::app::StateField>::SEARCH });
+    }
     let close = format!("}},\"version\":{version}}}");
     parts.push(quote! { #close });
     Ok(quote! {

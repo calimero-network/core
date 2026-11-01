@@ -87,6 +87,9 @@ pub enum StorageError {
     /// A page cursor is not one this SDK produced.
     #[error("malformed cursor")]
     BadCursor,
+    /// The host refused a search: no search fields on the table, or a bad query.
+    #[error("search: {0}")]
+    Search(String),
     /// A table has no index, unique constraint or count of this name.
     #[error("table has no `{0}`")]
     UnknownName(String),

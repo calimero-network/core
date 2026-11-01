@@ -31,12 +31,27 @@ pub struct MethodAbi {
     pub every: Option<Duration>,
     /// Accepts `Caller::System`.
     pub allow_system: bool,
+    /// The apps whose xcalls it accepts (`Caller::App`, D13); `"*"` is any app the
+    /// platform delivers from.
+    pub allow_apps: Vec<String>,
+}
+
+impl MethodAbi {
+    /// Whether a delivered xcall from `app` may run it (D13).
+    #[must_use]
+    pub fn allows_app(&self, app: &str) -> bool {
+        self.allow_apps.iter().any(|a| a == "*" || a == app)
+    }
 }
 
 /// The methods an app declares, by ABI (camelCase) name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Abi {
     pub methods: BTreeMap<String, MethodAbi>,
+    /// The tables whose records the host indexes for full-text search (spec section 7):
+    /// table (state field, camelCase) to its text fields, from `state.search`. Tables with
+    /// no fields are left out.
+    pub search: BTreeMap<String, Vec<String>>,
 }
 
 impl Abi {
@@ -63,7 +78,11 @@ impl Abi {
             .iter()
             .map(|(name, method)| Ok((name.clone(), method_abi(name, method)?)))
             .collect::<Result<_, PrepareError>>()?;
-        Ok(Self { methods })
+        let search = match top.get("state").and_then(|s| s.get("search")) {
+            None | Some(Value::Null) => BTreeMap::new(),
+            Some(search) => search_fields(search)?,
+        };
+        Ok(Self { methods, search })
     }
 }
 
@@ -94,7 +113,41 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         public: flag(fields, "public", name)?,
         every,
         allow_system: flag(fields, "allowSystem", name)?,
+        allow_apps: match fields.get("allowApps") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(apps)) => apps
+                .iter()
+                .map(|a| {
+                    a.as_str()
+                        .filter(|a| !a.is_empty())
+                        .map(str::to_owned)
+                        .ok_or_else(|| bad(format!("{name}: allowApps holds {a}")))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(other) => return Err(bad(format!("{name}: allowApps is not a list: {other}"))),
+        },
     })
+}
+
+/// `state.search`: `{ table: [field, ..] }`, every field a non-empty string.
+fn search_fields(json: &Value) -> Result<BTreeMap<String, Vec<String>>, PrepareError> {
+    let mut out = BTreeMap::new();
+    for (table, fields) in object(json, "state.search")? {
+        let Some(fields) = fields.as_array() else {
+            return Err(bad(format!("search of {table} is not a list")));
+        };
+        let fields = fields
+            .iter()
+            .map(|f| match f.as_str() {
+                Some(f) if !f.is_empty() => Ok(f.to_owned()),
+                _ => Err(bad(format!("search of {table}: {f} is not a field name"))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !fields.is_empty() {
+            let _prev = out.insert(table.clone(), fields);
+        }
+    }
+    Ok(out)
 }
 
 /// `"<n>s"`, `"<n>m"` or `"<n>h"` with `n > 0`.

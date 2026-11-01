@@ -2968,6 +2968,204 @@ async fn a_components_blobs_are_held_by_references_and_granted() {
     panic!("the bytes of a forgotten blob stayed in a store");
 }
 
+/// Spec section 7: the host keeps a full-text index of a table's declared fields from the
+/// component's state, and views on any replica query it as of the state they read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn views_search_a_components_tables_as_they_change() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let mut last = 0;
+    for (id, title, body) in [
+        ("1", "Groceries", "milk and eggs"),
+        ("2", "Trip", "pack the eggs carefully"),
+        ("3", "Work", "quarterly plans"),
+    ] {
+        last = alice
+            .call(
+                &app,
+                "note",
+                json!({ "id": id, "title": title, "body": body }),
+                None,
+            )
+            .await
+            .unwrap()
+            .index;
+    }
+    let sorted = |v: Value| {
+        let mut ids: Vec<String> = serde_json::from_value(v).unwrap();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        sorted(strong_view(&alice, &app, "findNotes", json!({ "text": "eggs" })).await),
+        ["1", "2"]
+    );
+    // Every replica builds its own index from the state it applied.
+    for i in 0..3 {
+        let cl = c.client(i);
+        let _s = cl.sign_in(&mut pk).await.unwrap();
+        let v = cl
+            .view(
+                &app,
+                "findNotes",
+                json!({ "text": "quarterly" }),
+                Consistency::Stale { min_index: last },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!(["3"]), "node {i}");
+    }
+    // Updates and removals reach the index before the next view reads.
+    let _r = alice
+        .call(
+            &app,
+            "note",
+            json!({ "id": "3", "title": "Work", "body": "eggs too" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .call(&app, "dropNote", json!({ "id": "1" }), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        sorted(strong_view(&alice, &app, "findNotes", json!({ "text": "eggs" })).await),
+        ["2", "3"]
+    );
+    // A call of a declared view runs as a strong view, so it may search too.
+    let r = alice
+        .call(&app, "findNotes", json!({ "text": "eggs" }), None)
+        .await
+        .unwrap();
+    assert_eq!(sorted(r.result), ["2", "3"]);
+}
+
+/// D25/D29: a component's xcalls wait in its outbox and are delivered after the entry
+/// commits, in order, as `Caller::App(source)` to a method that allows it; one that can
+/// never be delivered (a missing target, another organization's app) is dead-lettered and
+/// the source's `onXcallFailed` is told; a target's refusal is its final answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let source = alice
+        .create_app("source", &bundle, json!({}))
+        .await
+        .unwrap();
+    let target = alice
+        .create_app("target", &bundle, json!({}))
+        .await
+        .unwrap();
+    let bobs = bob.create_app("bobs", &bundle, json!({})).await.unwrap();
+
+    for i in 0..5 {
+        let _r = alice
+            .call(
+                &source,
+                "relay",
+                json!({ "app": target, "key": "k", "value": format!("{i}") }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    // Delivered in order: the last value wins, and the outbox empties.
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        last = strong_view(&alice, &target, "get", json!({ "key": "k" })).await;
+        let pending = alice.app_xcalls(&source).await.unwrap()["pending"].clone();
+        if last == json!("4") && pending == json!(0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(last, json!("4"));
+    assert_eq!(
+        alice.app_xcalls(&source).await.unwrap()["deadLetters"],
+        json!([])
+    );
+
+    // The target refuses a method that allows no app: a final answer, no dead letter.
+    let _r = alice
+        .call(
+            &source,
+            "relayToSet",
+            json!({ "app": target, "key": "z", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    // A missing target and another owner's app are dead-lettered at once.
+    let _r = alice
+        .call(
+            &source,
+            "relay",
+            json!({ "app": "no-such-app", "key": "a", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .call(
+            &source,
+            "relay",
+            json!({ "app": bobs, "key": "b", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut dead = Vec::new();
+    for _ in 0..100 {
+        let x = alice.app_xcalls(&source).await.unwrap();
+        dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+        if dead.len() == 2 && x["pending"] == json!(0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(dead.len(), 2, "{dead:?}");
+    assert_eq!(dead[0]["app"], json!("no-such-app"));
+    assert!(dead[0]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("does not exist"));
+    assert_eq!(dead[1]["app"], json!(bobs));
+    assert!(dead[1]["reason"].as_str().unwrap().contains("organization"));
+    assert_eq!(
+        strong_view(&alice, &target, "get", json!({ "key": "z" })).await,
+        json!(null),
+        "a method that allows no app ran"
+    );
+    assert_eq!(
+        strong_view(&bob, &bobs, "get", json!({ "key": "b" })).await,
+        json!(null),
+        "another owner's app was reached"
+    );
+    // The source's onXcallFailed heard of the dead letters.
+    let mut failures = Value::Null;
+    for _ in 0..50 {
+        failures = strong_view(&alice, &source, "xcallFailures", json!({})).await;
+        if failures.as_object().is_some_and(|f| !f.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        failures["setFromApp"]
+            .as_str()
+            .is_some_and(|f| f.contains(&bobs)),
+        "{failures}"
+    );
+    // Only the owner reads them.
+    let e = bob.app_xcalls(&source).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
 /// R8: the owner deletes a component's blob; it is gone whatever refers to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_owner_deletes_a_components_blob() {

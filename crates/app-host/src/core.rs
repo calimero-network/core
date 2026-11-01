@@ -11,11 +11,14 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::overlay::{Cursor, Overlay};
+use crate::search::{
+    NoSearch, SearchHost, SearchPage, SearchQuery, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_BYTES,
+};
 use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
-    InvocationKind, OrgRole, Outcome, Status, Usage,
+    InvocationKind, OrgRole, Outcome, Status, Usage, Xcall,
 };
 
 /// Bytes of an app key (before the generation prefix). Values have no separate cap:
@@ -59,7 +62,13 @@ pub const EMIT_FOREIGN_ORG: &str = "audience names another org";
 pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
 const ACTIONS_DISABLED: &str = "actions are not enabled";
-const XCALL_DISABLED: &str = "xcall is not enabled";
+/// xcalls one run may send (D25).
+pub const MAX_XCALLS: usize = 100;
+/// Bytes of an xcall's target app id or method name.
+pub const MAX_XCALL_NAME_BYTES: usize = 128;
+/// `xcall.send`'s soft errors (the WIT `result<_, string>`).
+pub const XCALL_TOO_MANY: &str = "too many xcalls";
+pub const XCALL_BAD_TARGET: &str = "malformed xcall target";
 const LOG_TRUNCATED: &str = "[log truncated]";
 
 /// A range cursor handed to the guest; the WIT `cursor` resource maps onto it.
@@ -77,11 +86,13 @@ pub struct HostCore {
     inv: Invocation,
     dir: Arc<dyn Directory>,
     blobs: Arc<dyn BlobHost>,
+    search: Arc<dyn SearchHost>,
     overlay: Overlay,
     writes: u32,
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
     run_bytes: usize,
     events: Vec<Event>,
+    xcalls: Vec<Xcall>,
     logs: Vec<String>,
     log_bytes: usize,
     unique_ids: u64,
@@ -115,10 +126,12 @@ impl HostCore {
             inv,
             dir,
             blobs: Arc::new(NoBlobs),
+            search: Arc::new(NoSearch),
             overlay: Overlay::default(),
             writes: 0,
             run_bytes: 0,
             events: Vec::new(),
+            xcalls: Vec::new(),
             logs: Vec::new(),
             log_bytes: 0,
             unique_ids: 0,
@@ -133,6 +146,14 @@ impl HostCore {
     #[must_use]
     pub fn with_blobs(mut self, blobs: Arc<dyn BlobHost>) -> Self {
         self.blobs = blobs;
+        self
+    }
+
+    /// The node's search index of the app (spec section 7); without it no table is
+    /// searchable.
+    #[must_use]
+    pub fn with_search(mut self, search: Arc<dyn SearchHost>) -> Self {
+        self.search = search;
         self
     }
 
@@ -424,13 +445,38 @@ impl HostCore {
         }
     }
 
+    /// Queues an xcall in the run's outbox (D25): calls, timers, `init` and xcall
+    /// deliveries only, delivered after the entry commits and only if the run ends `Ok`.
+    /// A malformed target (empty, over [`MAX_XCALL_NAME_BYTES`], a reserved `__` method)
+    /// or more than [`MAX_XCALLS`] is the WIT result's error; the arguments count toward
+    /// [`MAX_RUN_BYTES`].
     pub fn xcall_send(
         &mut self,
-        _app: &str,
-        _method: &str,
-        _args: &[u8],
-    ) -> Result<(), HostDenied> {
-        Err(HostDenied::new(XCALL_DISABLED))
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<(), String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("xcall"));
+        }
+        if self.xcalls.len() >= MAX_XCALLS {
+            return Ok(Err(XCALL_TOO_MANY.to_owned()));
+        }
+        let bad = |s: &str| s.is_empty() || s.len() > MAX_XCALL_NAME_BYTES;
+        if bad(app) || bad(method) || method.starts_with("__") {
+            return Ok(Err(XCALL_BAD_TARGET.to_owned()));
+        }
+        self.charge(
+            app.len()
+                .saturating_add(method.len())
+                .saturating_add(args.len()),
+        )?;
+        self.xcalls.push(Xcall {
+            app: app.to_owned(),
+            method: method.to_owned(),
+            args: args.to_vec(),
+        });
+        Ok(Ok(()))
     }
 
     /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
@@ -455,6 +501,27 @@ impl HostCore {
             .wall_ms()
             .saturating_add(u64::from(ttl_seconds).saturating_mul(1_000));
         Ok(self.blobs.grant(&id, expires_ms))
+    }
+
+    /// Queries a table's full-text index (spec section 7): views only, the index brought
+    /// up to the state the view reads. A limit of 0 or past [`MAX_SEARCH_LIMIT`], and a
+    /// query over [`MAX_SEARCH_QUERY_BYTES`], are the WIT result's error.
+    pub fn search_query(
+        &self,
+        query: &SearchQuery,
+    ) -> Result<Result<SearchPage, String>, HostDenied> {
+        if self.inv.kind != InvocationKind::View {
+            return Err(self.denied("search"));
+        }
+        if query.limit == 0 || query.limit > MAX_SEARCH_LIMIT {
+            return Ok(Err(format!("limit must be 1 to {MAX_SEARCH_LIMIT}")));
+        }
+        if query.text.len() > MAX_SEARCH_QUERY_BYTES {
+            return Ok(Err(format!(
+                "a query is at most {MAX_SEARCH_QUERY_BYTES} bytes"
+            )));
+        }
+        Ok(self.search.query(query))
     }
 
     pub fn action_key(&self) -> Result<String, HostDenied> {
@@ -522,6 +589,7 @@ impl HostCore {
                 Vec::new()
             },
             events: if ok { self.events } else { Vec::new() },
+            xcalls: if ok { self.xcalls } else { Vec::new() },
             logs: self.logs,
             usage: Usage {
                 writes: self.writes,

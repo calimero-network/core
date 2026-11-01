@@ -8,11 +8,15 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.0` world verbatim from the spec and exposes `WIT_DIR`, `WORLD`, `allowed_imports()` (what the world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.0` world from the spec (plus `search`, below) and exposes `WIT_DIR`, `WORLD`, `allowed_imports()` (what the world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+
+## Beyond the spec's section 4
+
+- `interface search` (views only): spec section 7 says full-text search is a host-maintained index queried from views but its world names no interface for it; this one is ours, pending the spec's next version.
 
 ## Rules
 
-- Change the WIT only together with the spec; keep `allowed_imports()` in step with the world.
+- Change the WIT only together with the spec (or name the gap, as below); keep `allowed_imports()` in step with the world.
 - `wit/deps/sockets` is vendored only because `wasi:cli` and `wasi:http` reference it; it is not imported by the world.
 
 ## Verify

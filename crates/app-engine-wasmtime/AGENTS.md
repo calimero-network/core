@@ -3,7 +3,7 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-engine-wasmtime` (`publish = false`, prototype); wasmtime 50 (features: component-model, cranelift, parallel-compilation, pooling-allocator, runtime, std), wasmtime-wasi 50, ring (artifact MAC), subtle (its compare); no wasmtime-wasi-http
-- **Entry**: `src/lib.rs` (`WasmtimeEngine`, store data, limiter, import check); `bindings.rs` (`bindgen!` over `../app-wit/wit`, calimero interfaces onto `HostCore`), `wasi.rs` (WASI wiring), `cache.rs` (checked disk cache), `errors.rs` (trap classification)
+- **Entry**: `src/lib.rs` (`WasmtimeEngine`, store data, limiter, import check); `bindings.rs` (`bindgen!` over `../app-wit/wit`, the nine calimero interfaces, `search` included, onto `HostCore`), `wasi.rs` (WASI wiring), `cache.rs` (checked disk cache), `errors.rs` (trap classification)
 - **Spec**: `docs/specs/app-runtime-v0.14.md` sections 4-5, D8, D19, D43, D44, S1, S2, S6, S8
 
 ## What This Crate Does
