@@ -43,6 +43,7 @@ use wasmtime_wasi::WasiView;
 mod bindings;
 mod cache;
 mod errors;
+mod http;
 mod wasi;
 
 use bindings::AppPre;
@@ -207,9 +208,9 @@ impl Engine for WasmtimeEngine {
         }
 
         let compiled: Component = self.cache.load_or_compile(&self.engine, component)?;
-        let mut linker = self.linker.clone();
-        let pre = wasi::stub_http(&mut linker, &self.engine, &compiled)
-            .and_then(|()| linker.instantiate_pre(&compiled))
+        let pre = self
+            .linker
+            .instantiate_pre(&compiled)
             .and_then(AppPre::new)
             .map_err(|e| PrepareError::Compile(e.to_string()))?;
         Ok(Prepared {

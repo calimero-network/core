@@ -14,6 +14,7 @@
 #[doc(hidden)]
 pub mod bindings;
 
+pub mod action;
 pub mod app;
 pub mod blob;
 pub mod collections;
@@ -34,6 +35,7 @@ pub mod testing;
 #[path = "private.rs"]
 pub mod __private;
 
+pub use action::{ActionCtx, Request, Response};
 pub use blob::{BlobInfo, BlobRef};
 pub use collections::{
     CborSha256, Cell, ContentHash, Counter, Frozen, Mark, PerUser, RichText, Set, Span, Text,
@@ -55,8 +57,8 @@ pub use calimero_app_sdk_macros::Record;
 pub mod prelude {
     pub use crate::app::{self, AppEvent, AppState};
     pub use crate::{
-        env, guards, AppError, Audience, BlobRef, Caller, Cell, ContentHash, Counter, FindOpts,
-        Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText, SearchMode,
-        SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap, Vector,
+        env, guards, ActionCtx, AppError, Audience, BlobRef, Caller, Cell, ContentHash, Counter,
+        FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText,
+        SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap, Vector,
     };
 }

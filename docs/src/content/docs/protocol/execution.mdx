@@ -139,6 +139,35 @@ every gate holds:
 The request is made while the leader holds the group's propose lock, on its own
 thread. A run repeated after a leader race sends it again.
 
+## Actions (component apps)
+
+A `calimero:app` component never calls out from a call or a view (spec
+`app-runtime-v0.14` D12, S9). It calls out from an **action**: an
+`#[app::action]` method that runs outside the log, on the app's leader.
+
+- **Start** (D17). A client calls the action's method through `/intents`, or a
+  call or timer runs `env::start_action(method, &args)`. Either way an entry
+  logs that it started, under a key (`a.<term>.<seq>.<n>`), and the answer is
+  `{ "actionId" }`.
+- **Run**. The leader runs pending actions in a bounded pool, with a 10 s
+  budget and the starter as caller (D13). An action has no storage. It reads
+  with `ctx.view`, writes with `ctx.call`, and sends HTTP with `ctx.fetch`
+  over `wasi:http`. Each `ctx.call` is its own log entry under a key derived
+  from the action's key, the method, the arguments' hash and an occurrence
+  count (D27), so a retried action's calls replay. A method marked
+  `#[app::allow(action)]` is reachable only from the app's own actions.
+- **Outbound** (S9, R14). A request leaves only through the same gate as
+  above. The URL must sit under a prefix the signed release's manifest
+  declares, the owner must have approved it, the operator's hosts apply, and
+  there is one request per run. `{{secret:NAME}}` is filled in by the node and
+  redacted from the response. Bodies are bounded in-memory buffers, so a guest
+  cannot block a node thread.
+- **End** (D22). Success, or an app error, a fault or out-of-fuel, ends the
+  action at once. A timeout is retried with backoff, 5 attempts in all. The
+  end is logged. A failure sends an `ActionFailed { actionId, method, reason }`
+  event to the starter and runs the app's `onActionFailed` as the starter. A
+  new leader resumes every action that has not ended, with the same key.
+
 ## Determinism is not what converges
 
 Only the leader runs, so `time_now`, `random_bytes`, outbound responses and search

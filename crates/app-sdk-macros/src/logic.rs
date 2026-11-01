@@ -28,12 +28,16 @@ enum Kind {
     Call,
     View,
     Timer,
+    Action,
 }
 
 #[derive(Default)]
 struct Attrs {
     init: bool,
     view: bool,
+    action: bool,
+    /// `allow(action)`: called only by the app's own actions.
+    action_only: bool,
     confirm: bool,
     public: bool,
     rate: Option<String>,
@@ -88,6 +92,7 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
         match name.as_str() {
             "init" => attrs.init = true,
             "view" => attrs.view = true,
+            "action" => attrs.action = true,
             "confirm" => attrs.confirm = true,
             "public" => {
                 attrs.public = true;
@@ -125,12 +130,15 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                 if meta.path.is_ident("system") {
                     attrs.allow_system = true;
                     Ok(())
+                } else if meta.path.is_ident("action") {
+                    attrs.action_only = true;
+                    Ok(())
                 } else if meta.path.is_ident("app") {
                     let lit: LitStr = meta.value()?.parse()?;
                     attrs.allow_apps.push(lit.value());
                     Ok(())
                 } else {
-                    Err(meta.error("expected `system` or `app = \"<app id>\"`"))
+                    Err(meta.error("expected `system`, `action` or `app = \"<app id>\"`"))
                 }
             })?,
             other => {
@@ -149,7 +157,12 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
     let attrs = parse_attrs(f)?;
     let public = matches!(f.vis, Visibility::Public(_));
     if !public && !attrs.init {
-        let any = attrs.view || attrs.confirm || attrs.public || attrs.every.is_some();
+        let any = attrs.view
+            || attrs.confirm
+            || attrs.public
+            || attrs.every.is_some()
+            || attrs.action
+            || attrs.action_only;
         if any || attrs.allow_system || !attrs.allow_apps.is_empty() {
             return Err(syn::Error::new_spanned(
                 &f.sig.ident,
@@ -166,7 +179,16 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
 
     let mut receiver_mut = None;
     let mut params = Vec::new();
-    for arg in &sig.inputs {
+    // An action's first parameter is its context, `&mut ActionCtx`, not an argument.
+    let mut inputs = sig.inputs.iter().peekable();
+    if attrs.action {
+        match inputs.next() {
+            Some(FnArg::Typed(pt)) if matches!(&*pt.ty, Type::Reference(r) if r.mutability.is_some()) =>
+                {}
+            _ => return fail("an action takes `ctx: &mut ActionCtx` first and no `self`"),
+        }
+    }
+    for arg in inputs {
         match arg {
             FnArg::Receiver(r) => match &r.kind {
                 ReceiverKind::Reference(_, _, m) => receiver_mut = Some(m.is_some()),
@@ -191,12 +213,13 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         }
     }
 
-    let kind = match (attrs.init, attrs.view, attrs.every.is_some()) {
-        (true, false, false) => Kind::Init,
-        (false, true, false) => Kind::View,
-        (false, false, true) => Kind::Timer,
-        (false, false, false) => Kind::Call,
-        _ => return fail("`init`, `view` and `every` exclude each other"),
+    let kind = match (attrs.init, attrs.view, attrs.every.is_some(), attrs.action) {
+        (true, false, false, false) => Kind::Init,
+        (false, true, false, false) => Kind::View,
+        (false, false, true, false) => Kind::Timer,
+        (false, false, false, true) => Kind::Action,
+        (false, false, false, false) => Kind::Call,
+        _ => return fail("`init`, `view`, `every` and `action` exclude each other"),
     };
     match kind {
         Kind::Init if receiver_mut.is_some() => return fail("`init` takes no `self`"),
@@ -214,6 +237,12 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         Kind::Timer if !params.is_empty() => return fail("a timer takes no arguments"),
         Kind::Call if receiver_mut.is_none() => {
             return fail("an app method takes `&self` or `&mut self`")
+        }
+        Kind::Action if receiver_mut.is_some() => {
+            return fail("an action has no state access (D12): it takes no `self`")
+        }
+        Kind::Action if attrs.confirm || attrs.public || attrs.action_only => {
+            return fail("an action takes no `confirm`, `public` or `allow(action)`")
         }
         _ => {}
     }
@@ -248,6 +277,7 @@ fn abi_entry(m: &Method) -> Value {
         Kind::Call => "call",
         Kind::View => "view",
         Kind::Timer => "timer",
+        Kind::Action => "action",
     };
     let params: Vec<Value> = m
         .params
@@ -275,6 +305,9 @@ fn abi_entry(m: &Method) -> Value {
     if !m.attrs.allow_apps.is_empty() {
         let _ = entry.insert("allowApps".into(), m.attrs.allow_apps.clone().into());
     }
+    if m.attrs.action_only {
+        let _ = entry.insert("allowAction".into(), true.into());
+    }
     Value::Object(entry)
 }
 
@@ -296,6 +329,9 @@ fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
     let names: Vec<_> = m.params.iter().map(|(name, _)| name).collect();
     let rust = &m.rust;
     let call = match m.receiver_mut {
+        None if m.kind == Kind::Action => quote! {
+            <#state>::#rust(&mut ::calimero_app_sdk::ActionCtx::current(), #(#names),*)
+        },
         None => quote! { <#state>::#rust(#(#names),*) },
         Some(_) => quote! {
             {
@@ -389,6 +425,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             Kind::Call => quote!(Call),
             Kind::View => quote!(View),
             Kind::Timer => quote!(Timer),
+            Kind::Action => quote!(Action),
         };
         let public = m.attrs.public;
         let allow_system = m.attrs.allow_system;

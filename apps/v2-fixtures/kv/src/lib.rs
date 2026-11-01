@@ -2,6 +2,7 @@
 //! cluster tests call). Method names and arguments are the ABI's camelCase ones.
 
 use calimero_app_sdk::prelude::*;
+use calimero_app_sdk::Request;
 
 #[derive(Record)]
 #[table(key = "key")]
@@ -53,6 +54,16 @@ pub struct Kv {
     notes: Table<Note>,
     /// What `onXcallFailed` was told, by method: `"<app>|<reason>"`.
     xcall_failures: UnorderedMap<String, String>,
+    /// What the `enrich` action brought back, by key.
+    enrichments: UnorderedMap<String, String>,
+    /// What `onActionFailed` was told, by method.
+    action_failures: UnorderedMap<String, String>,
+}
+
+/// `{ key }`, as an action passes it on.
+#[derive(serde::Serialize)]
+struct KeyArg<'a> {
+    key: &'a str,
 }
 
 /// `setFromApp`'s arguments, as an xcall sends them.
@@ -267,6 +278,66 @@ impl Kv {
     #[app::view]
     pub fn xcall_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
         let page = self.xcall_failures.page(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page.items.into_iter().collect())
+    }
+
+    /// Starts the `enrich` action for `key` (D17); returns its key.
+    pub fn start_enrich(&mut self, key: String) -> app::Result<String> {
+        env::start_action("enrich", &KeyArg { key: &key })
+    }
+
+    /// An action (D12): reads `key` through a view, sends it to the echo host with the
+    /// action's key and a secret, and writes what came back through `applyEnrichment`.
+    #[app::action]
+    pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
+        let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
+        let request = Request::get(format!(
+            "https://echo.outbound.test/v1/enrich?v={}",
+            value.unwrap_or_default()
+        ))
+        .header("Idempotency-Key", &ctx.key())
+        .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
+        let response = ctx.fetch(&request)?;
+        let summary = format!("{} {}", response.status, response.text());
+        ctx.call::<(), _>("applyEnrichment", &SetArgs { key: &key, value: &summary })?;
+        Ok(())
+    }
+
+    /// An action that fails at once with an app error (D22).
+    #[app::action]
+    pub fn explode(_ctx: &mut ActionCtx) -> app::Result<()> {
+        app::bail!(Error::BeatFailed)
+    }
+
+    /// Only the app's own actions write here (`allow(action)`).
+    #[app::allow(action)]
+    pub fn apply_enrichment(&mut self, key: String, value: String) -> app::Result<()> {
+        self.enrichments.insert(&key, &value)?;
+        Ok(())
+    }
+
+    /// What `enrich` wrote for `key`.
+    #[app::view]
+    pub fn enrichment(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.enrichments.get(&key)?)
+    }
+
+    /// The platform's report of an action that failed for good (D22).
+    pub fn on_action_failed(
+        &mut self,
+        action_id: String,
+        method: String,
+        reason: String,
+    ) -> app::Result<()> {
+        self.action_failures
+            .insert(&method, &format!("{action_id}|{reason}"))?;
+        Ok(())
+    }
+
+    /// What `onActionFailed` was told, by method.
+    #[app::view]
+    pub fn action_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self.action_failures.page(FindOpts::default().limit(LIST_LIMIT))?;
         Ok(page.items.into_iter().collect())
     }
 
