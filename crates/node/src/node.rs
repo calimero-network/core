@@ -208,6 +208,10 @@ pub struct CallRequest {
     /// client's request; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host: bool,
+    /// A component app's delivered xcall (D25): which message of which source. Set only
+    /// by the source's leader; peers pass it along on `internal/call`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xcall: Option<crate::component::xcall::XcallFrom>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -238,6 +242,7 @@ impl CallRequest {
             input: None,
             trigger: None,
             host: false,
+            xcall: None,
         }
     }
 
@@ -373,6 +378,9 @@ pub struct Node {
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
+    /// Outbox messages this node failed to deliver as a source's leader (D29): per
+    /// (source app, seq), the attempts and the app time of the next one.
+    xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns and the sessions it
     /// issues. Made on the node's first start and kept in its data directory
@@ -651,6 +659,7 @@ impl Node {
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
+            xcall_retry: Mutex::new(HashMap::new()),
             transport: sealed,
             receipt_key,
             peers: Mutex::new(HashMap::new()),

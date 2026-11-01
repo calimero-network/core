@@ -742,6 +742,13 @@ impl Client {
         .await
     }
 
+    /// A component app's xcalls: `{ pending, deadLetters: [{ seq, app, method, reason,
+    /// atMs }] }` (its owner or an org admin).
+    pub async fn app_xcalls(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/xcalls", path_segment(app)))
+            .await
+    }
+
     /// What the app's storage holds: `{ keys, bytes, blobs, blobBytes }`.
     pub async fn app_storage(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/storage", path_segment(app)))

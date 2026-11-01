@@ -35,6 +35,8 @@ pub struct MockState {
     pub events: Vec<(String, Vec<u8>, Audience)>,
     /// The app's blobs by id (hex), as the node would record them at upload.
     pub blobs: HashMap<String, crate::BlobInfo>,
+    /// xcalls sent: target app, method, JSON arguments.
+    pub xcalls: Vec<(String, String, Vec<u8>)>,
     /// What `search_query` answers, by table; a table not listed is not searchable.
     pub search: HashMap<String, crate::search::RawPage>,
 }
@@ -55,6 +57,7 @@ impl Default for MockState {
             events: Vec::new(),
             blobs: HashMap::new(),
             search: HashMap::new(),
+            xcalls: Vec::new(),
         }
     }
 }
@@ -157,4 +160,12 @@ pub fn search_query(
 ) -> std::result::Result<crate::search::RawPage, String> {
     read(|s| s.search.get(table).cloned())
         .ok_or_else(|| format!("table {table:?} declares no search fields"))
+}
+
+pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), String> {
+    with_mut(|s| {
+        s.xcalls
+            .push((app.to_owned(), method.to_owned(), args.to_vec()))
+    });
+    Ok(())
 }

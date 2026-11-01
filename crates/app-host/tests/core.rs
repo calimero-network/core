@@ -15,6 +15,7 @@ use calimero_app_host::{
 };
 use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
+use calimero_app_host::{MAX_XCALLS, XCALL_BAD_TARGET, XCALL_TOO_MANY};
 use serde_json::json;
 
 struct NoDirectory;
@@ -409,10 +410,6 @@ fn disabled_interfaces_refuse() {
         host.start_action("enrich", b"{}"),
         Ok(Err("actions are not enabled".to_owned()))
     );
-    assert!(matches!(
-        host.xcall_send("other", "m", b""),
-        Err(HostDenied(_))
-    ));
     // Without the node's blob store an app has no blobs.
     assert_eq!(host.blobs_info(&"ab".repeat(32)), Ok(None));
     assert!(matches!(
@@ -1245,4 +1242,69 @@ fn the_abi_reads_search_fields_and_skips_empty_tables() {
         "state": { "search": { "notes": [1] } },
     }))
     .is_err());
+}
+
+#[test]
+fn xcalls_wait_in_the_outbox_and_go_only_with_an_ok_run() {
+    let state = base(&[]);
+    let mut host = core_for(&state, &inv(InvocationKind::Call));
+    assert_eq!(host.xcall_send("other", "deliver", b"{}"), Ok(Ok(())));
+    assert_eq!(
+        host.xcall_send("other", "__blob", b"{}"),
+        Ok(Err(XCALL_BAD_TARGET.to_owned()))
+    );
+    assert_eq!(
+        host.xcall_send("", "m", b"{}"),
+        Ok(Err(XCALL_BAD_TARGET.to_owned()))
+    );
+    for _ in 1..MAX_XCALLS {
+        host.xcall_send("other", "m", b"{}").unwrap().unwrap();
+    }
+    assert_eq!(
+        host.xcall_send("other", "m", b"{}"),
+        Ok(Err(XCALL_TOO_MANY.to_owned()))
+    );
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.xcalls.len(), MAX_XCALLS);
+    assert_eq!(out.xcalls[0].method, "deliver");
+
+    let mut failed = core_for(&state, &inv(InvocationKind::Call));
+    failed.xcall_send("other", "m", b"{}").unwrap().unwrap();
+    let out = failed.finish(
+        Status::AppError {
+            code: "No".into(),
+            message: "{}".into(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert!(out.xcalls.is_empty(), "a failed run sends nothing");
+
+    for kind in [
+        InvocationKind::View,
+        InvocationKind::Action,
+        InvocationKind::Migrate,
+    ] {
+        let mut host = core_for(&state, &inv(kind));
+        assert!(host.xcall_send("other", "m", b"{}").is_err(), "{kind:?}");
+    }
+    let mut delivery = core_for(&state, &inv(InvocationKind::XcallDeliver));
+    assert_eq!(delivery.xcall_send("other", "m", b"{}"), Ok(Ok(())));
+}
+
+#[test]
+fn the_abi_reads_which_apps_a_method_allows() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {
+            "fromAny": { "kind": "call", "allowApps": ["*"] },
+            "fromOne": { "kind": "call", "allowApps": ["app-a"] },
+            "fromNone": { "kind": "call" },
+        },
+    }))
+    .unwrap();
+    assert!(abi.methods["fromAny"].allows_app("anything"));
+    assert!(abi.methods["fromOne"].allows_app("app-a"));
+    assert!(!abi.methods["fromOne"].allows_app("app-b"));
+    assert!(!abi.methods["fromNone"].allows_app("app-a"));
 }

@@ -32,7 +32,7 @@ One leader applies every write in log order, so these are plain data structures,
 
 - Method lookup by ABI (camelCase) name; unknown → `AppError UnknownMethod`.
 - Kind: a view may run as a call (or xcall delivery); a call, timer or init method run as a view → `NotAView`; any other mismatch, and `action` / `migrate` (not in this version) → `WrongKind`.
-- Callers (D13), checked after the kind, except for `init` (runs as the owner): `System` needs `allow(system)` and `App(id)` needs `allow(app = id)`, else `Forbidden`; `Public` needs `public`, else `LoginRequired`. The host's checks come first (Rulings 32, 35): on a node, and in the harness, an anonymous caller reaches the guest only on a public app and only for a `public` method, otherwise the platform answers `401 UNAUTHENTICATED` before `handle` runs, so the guest-side `LoginRequired` is a backstop clients do not normally see.
+- Callers (D13), checked after the kind, except for `init` (runs as the owner): `System` needs `allow(system)` and `App(id)` needs `allow(app = id)` or `allow(app = "*")`, else `Forbidden`; `Public` needs `public`, else `LoginRequired`. The host's checks come first (Rulings 32, 35): on a node, and in the harness, an anonymous caller reaches the guest only on a public app and only for a `public` method, otherwise the platform answers `401 UNAUTHENTICATED` before `handle` runs, so the guest-side `LoginRequired` is a backstop clients do not normally see.
 - Args: a JSON object keyed by camelCase parameter names, empty args = `{}`, unknown keys refused; `u64`/`i64` (and `Option`) params are canonical decimal strings (no `+`, no leading zeros, no `-0`) and `Vec<u8>` (and `Option`) params base64url without padding (D20); anything malformed → `BadArgs` (`{"message": ..}`).
 - Timers: `#[app::every]` implies `allow(system)` (Ruling 26), so the ABI says `allowSystem: true` on every timer.
 - Timer ticks: for `kind = timer` the engine passes the tick as `args`, `{"scheduled":"<ms>","previous":"<ms>"|null}`; `handle` sets `env::timer()` from it (and clears it for every other kind).
@@ -51,6 +51,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - Queries read `limit + 1` entries through the cursor and no more.
 - `bindings.rs` declares the `handle` export but never exports it: the code `#[app::logic]` generates does, through `__private::bindings::__calimero_export_handle!` and `__private::Export<State>`.
 - `#[app::error]` and `#[app::event]` must live in the `#[app::logic]` module (their ABI constants are picked up there; elsewhere the ABI lists none), and one module takes one of each: a second `#[app::error]` enum in a module is refused (`__CALIMERO_ABI_ERRORS` defined twice, pinned by `tests/ui/second_error.rs`).
+- `env::xcall(app, method, &args)` (D25) sends JSON args through the WIT `xcall.send`; a host soft error is `AppError` `Xcall { message }`.
 - `env::emit(event, audience)` takes an `#[app::event]` value (spec); `env::emit_raw(name, data, audience)` takes any serde value.
 - `env::mock` (host target) is the stand-in for the host in tests.
 
@@ -81,6 +82,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - Size limits: writes and events past 1 MiB per run are refused inside the run by the same `HostCore` the node uses (`MAX_RUN_BYTES`); the node's final check of the encoded log entry (JSON, values base64) is not mirrored, so an entry within `MAX_RUN_BYTES` whose encoding passes 1 MiB passes here and traps `HostDenied` on a node.
 - Blobs: `t.upload_blob(bytes, mime)` records a blob as the node would on upload and returns its id; runs see it through `info`/`grant` (a grant is `"<id>.<expires_ms>"` here) and may store a `BlobRef` to it; `t.blob_refs(id)` counts the stored values referring to it. Idle expiry is the node's (not mirrored).
 - Search: the harness answers `Table::search` with a scan of the table's records (every query word contained, case-insensitive, in a declared text field; score 1.0, key order), not the node's ranked index.
+- Xcalls: `t.take_xcalls()` hands out what logged `Ok` runs sent (`SentXcall { app, method, args }`), oldest first; `t.deliver(from, method, args)` runs one as `kind = xcall-deliver` from `Caller::App(from)`, after the node's check that the method allows `from` (`Forbidden`). Retries and watermarks are the node's.
 - Not yet: actions, `mock_http`, migrations (`upgrade_to`).
 
 ## Verify

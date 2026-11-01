@@ -160,6 +160,18 @@ pub struct TestApp {
     events: Vec<Logged>,
     usage: Usage,
     blobs: BTreeMap<[u8; 32], BlobInfo>,
+    outbox: Vec<SentXcall>,
+}
+
+/// An xcall a logged run sent (D25), as the platform would deliver it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SentXcall {
+    /// The target app.
+    pub app: String,
+    /// The target method.
+    pub method: String,
+    /// The JSON arguments.
+    pub args: Value,
 }
 
 /// One engine and compile cache for the whole test process: compiled components are keyed by
@@ -207,6 +219,7 @@ impl TestApp {
             events: Vec::new(),
             usage: Usage::default(),
             blobs: BTreeMap::new(),
+            outbox: Vec::new(),
         };
         let owner = HostCaller::Account(OWNER.to_owned());
         let res = app.run(InvocationKind::Init, owner, "init", Vec::new(), None);
@@ -369,6 +382,28 @@ impl TestApp {
             .sum()
     }
 
+    /// The xcalls logged runs sent so far and the harness has not handed out yet, oldest
+    /// first; the node would deliver them in this order (D25).
+    pub fn take_xcalls(&mut self) -> Vec<SentXcall> {
+        std::mem::take(&mut self.outbox)
+    }
+
+    /// Delivers an xcall from app `from` (D13: `Caller::App(from)`, kind `xcall-deliver`),
+    /// after the node's checks: the method must exist, be a call or a view and allow `from`
+    /// (`allow(app = ..)`), else `Forbidden`.
+    ///
+    /// # Errors
+    ///
+    /// The delivery's `Failure`.
+    pub fn deliver(&mut self, from: &str, method: &str, args: Value) -> Result<Value, Failure> {
+        let caller = HostCaller::App(from.to_owned());
+        let args = args_bytes(&args);
+        if let Some(f) = self.gate(method, &caller, false, Some(&args)) {
+            return Err(f);
+        }
+        self.run(InvocationKind::XcallDeliver, caller, method, args, None)
+    }
+
     /// The usage of the last invocation.
     #[must_use]
     pub fn last_usage(&self) -> Usage {
@@ -516,7 +551,19 @@ impl TestApp {
                     })?;
                     events.push((e, data));
                 }
+                let mut sent = Vec::new();
+                for x in out.xcalls {
+                    let args = serde_json::from_slice(&x.args).map_err(|e| {
+                        Failure::BadOutput(format!("xcall {} args are not JSON: {e}", x.method))
+                    })?;
+                    sent.push(SentXcall {
+                        app: x.app,
+                        method: x.method,
+                        args,
+                    });
+                }
                 if !is_view {
+                    self.outbox.extend(sent);
                     for w in out.diff {
                         match w.value {
                             Some(v) => self.state.insert(w.key, v),
@@ -607,6 +654,7 @@ impl TestApp {
         }
         match caller {
             HostCaller::System if !m.allow_system => refuse("Forbidden"),
+            HostCaller::App(app) if !m.allows_app(app) => refuse("Forbidden"),
             _ if m.confirm && !view && !confirmed => Some(Failure::ConfirmRequired),
             _ => None,
         }

@@ -308,10 +308,7 @@ impl xcall::Host for StoreData {
         method: String,
         args: Vec<u8>,
     ) -> Result<std::result::Result<(), String>> {
-        self.host
-            .xcall_send(&app, &method, &args)
-            .map(Ok)
-            .map_err(denied)
+        self.host.xcall_send(&app, &method, &args).map_err(denied)
     }
 }
 

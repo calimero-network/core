@@ -73,6 +73,40 @@ target runs, and the target's answer is not handed back to it. If the origin
 needs to learn the outcome, the target can emit an event or call back with an
 xcall of its own.
 
+## Component apps (`calimero:app`)
+
+A component app (spec `app-runtime-v0.14` D13, D25, D29) sends with
+`env::xcall(app, method, &args)` (WIT `xcall.send`), in calls, timers, `init`
+and deliveries, at most 100 per run. It is an outbox, not a follow-up:
+
+- **Outbox.** An `Ok` entry's xcalls are appended to the source app's outbox,
+  host rows outside its keyspace (D39), each with a sequence number. A failed
+  run sends nothing. At most 10,000 wait; one past that is dead-lettered.
+- **In order, at least once.** The source's leader delivers the outbox head,
+  one message at a time: the target runs the method as `kind = xcall-deliver`
+  with `Caller::App(source)`, and the source's leader then logs
+  `componentXcallDone`. A new leader resumes from the head.
+- **Exactly once at the target** (D25). The target keeps, per source app, the
+  highest sequence number it applied (a watermark in its host records). A
+  message at or below it answers as delivered without running.
+- **Who may be reached.** Only an app in the source's organization, or another
+  personal app of the same owner, and only a method whose ABI allows the source:
+  `#[app::allow(app = "<app id>")]`, or `allow(app = "*")` for any app the node
+  delivers from. Anything else is refused (`Forbidden`) by the node before the
+  app runs.
+- **Retries and dead letters** (D29). A timeout or an unreachable target is
+  retried with backoff (200 ms doubling, at most 30 s) for up to an hour from
+  the send. Then, or at once for a missing target, one outside the organization,
+  or a wasmer app, the message goes to the source's dead letters (the newest
+  1,000), and the source's `onXcallFailed { app, method, reason }` runs if its
+  ABI has one with `allow(system)`. Anything the target answered (an app error,
+  a trap, a refusal) is final.
+- `GET /apps/{app}/xcalls` (the owner or an org admin): `{ pending,
+  deadLetters: [{ seq, app, method, reason, atMs }] }`.
+
+A wasmer app's xcall into a component, and a component's into a wasmer app,
+are refused.
+
 ## Timers
 
 `#[app::tee(every = "…")]` methods are driven by the same loop. The leader
