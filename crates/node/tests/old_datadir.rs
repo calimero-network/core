@@ -16,6 +16,15 @@ use calimero_node::types::{Caller, Executor};
 use calimero_node::{run, Config};
 use serde_json::{json, Value};
 
+/// A port nothing listens on now.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 fn config(dir: &std::path::Path, port: u16) -> Config {
     let url = format!("http://127.0.0.1:{port}/");
     Config {
@@ -77,7 +86,10 @@ async fn a_data_directory_from_before_components_opens_and_its_apps_run_on_wasme
         serde_json::from_slice(&std::fs::read(dir.join("fixture.json")).unwrap()).unwrap();
     let app = fixture["app"].as_str().unwrap().to_owned();
     let owner = fixture["owner"].as_str().unwrap().to_owned();
-    let port = u16::try_from(fixture["port"].as_u64().unwrap()).unwrap();
+    // The fixture was written on port 39517 (`fixture.json`'s `port`), which its store
+    // records, but a single node never dials itself. A free port keeps this test from
+    // failing when a test running in parallel holds that one.
+    let port = free_port();
 
     let r = run(config(&dir, port)).await.unwrap();
     let node = &r.node;
