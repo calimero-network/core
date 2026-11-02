@@ -13,6 +13,9 @@ use calimero_app_host::{
     MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
     MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
+use calimero_app_host::{
+    subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, ACTION_WALL_CLOCK,
+};
 use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
 use calimero_app_host::{MAX_XCALLS, XCALL_BAD_TARGET, XCALL_TOO_MANY};
@@ -406,9 +409,10 @@ fn disabled_interfaces_refuse() {
     let state = base(&[]);
     let call = inv(InvocationKind::Call);
     let mut host = core_for(&state, &call);
+    // A call starts an action; its key comes from the run's unique ids (D17, D52).
     assert_eq!(
         host.start_action("enrich", b"{}"),
-        Ok(Err("actions are not enabled".to_owned()))
+        Ok(Ok("a.3.42.0".to_owned()))
     );
     // Without the node's blob store an app has no blobs.
     assert_eq!(host.blobs_info(&"ab".repeat(32)), Ok(None));
@@ -506,7 +510,8 @@ fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
         json!({ "abiVersion": "1", "methods": {} }),
         json!({ "abiVersion": 0, "methods": {} }),
         json!({ "abiVersion": 1, "methods": { "t": { "kind": "timer", "every": 5 } } }),
-        json!({ "abiVersion": 1, "methods": { "x": { "kind": "action" } } }),
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": "migrate" } } }),
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": "action", "allowAction": 1 } } }),
     ] {
         assert!(
             matches!(Abi::from_json(&bad), Err(PrepareError::BadAbi(_))),
@@ -1307,4 +1312,108 @@ fn the_abi_reads_which_apps_a_method_allows() {
     assert!(abi.methods["fromOne"].allows_app("app-a"));
     assert!(!abi.methods["fromOne"].allows_app("app-b"));
     assert!(!abi.methods["fromNone"].allows_app("app-a"));
+}
+
+/// Records what an action asked of the node.
+#[derive(Default)]
+struct Runner {
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl ActionHost for Runner {
+    fn key(&self) -> String {
+        "a.1.1.0".to_owned()
+    }
+    fn view(&self, method: &str, _args: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(format!("\"{method}\"").into_bytes())
+    }
+    fn call(&self, method: &str, _args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), key.to_owned()));
+        Ok(b"null".to_vec())
+    }
+}
+
+struct Echo;
+
+impl HttpHost for Echo {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: request.url.clone().into_bytes(),
+        })
+    }
+}
+
+fn get(url: &str) -> HttpRequest {
+    HttpRequest {
+        method: "GET".into(),
+        url: url.into(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
+#[test]
+fn an_action_reads_through_views_writes_through_keyed_calls_and_alone_sends_http() {
+    let state = base(&[(b"k", b"v")]);
+    let runner = Arc::new(Runner::default());
+    let mut action = core_for(&state, &inv(InvocationKind::Action))
+        .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
+        .with_http(Arc::new(Echo));
+    assert!(action.storage_get(b"k").is_err(), "no state access (D12)");
+    assert_eq!(action.action_key().unwrap(), "a.1.1.0");
+    assert_eq!(
+        action.action_view("company", b"{}"),
+        Ok(Ok(b"\"company\"".to_vec()))
+    );
+    // The same call twice gets two keys; a retry would get the same two (D27).
+    action.action_call("apply", b"{}").unwrap().unwrap();
+    action.action_call("apply", b"{}").unwrap().unwrap();
+    action.action_call("apply", b"{\"x\":1}").unwrap().unwrap();
+    let calls = runner.calls.lock().unwrap().clone();
+    assert_eq!(calls[0].1, subcall_key("a.1.1.0", "apply", b"{}", 0));
+    assert_eq!(calls[1].1, subcall_key("a.1.1.0", "apply", b"{}", 1));
+    assert_eq!(calls[2].1, subcall_key("a.1.1.0", "apply", b"{\"x\":1}", 0));
+    let sent = action
+        .http_send(&get("https://enrich.test/v1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(sent.body, b"https://enrich.test/v1");
+
+    // A call has no action context and sends no HTTP (S9).
+    let mut call = core_for(&state, &inv(InvocationKind::Call))
+        .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
+        .with_http(Arc::new(Echo));
+    assert!(call.action_key().is_err());
+    assert!(call.action_call("apply", b"{}").is_err());
+    assert!(call.http_send(&get("https://enrich.test/v1")).is_err());
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_http(Arc::new(Echo));
+    assert!(view.http_send(&get("https://enrich.test/v1")).is_err());
+    assert!(view.start_action("enrich", b"{}").is_err());
+    assert_eq!(ACTION_WALL_CLOCK, Duration::from_secs(10));
+}
+
+#[test]
+fn started_actions_leave_only_with_an_ok_run() {
+    let state = base(&[]);
+    let mut host = core_for(&state, &inv(InvocationKind::Call));
+    let id = host.start_action("enrich", b"{}").unwrap().unwrap();
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.actions.len(), 1);
+    assert_eq!(out.actions[0].id, id);
+    let mut host = core_for(&state, &inv(InvocationKind::Call));
+    host.start_action("enrich", b"{}").unwrap().unwrap();
+    let out = host.finish(
+        Status::Trap {
+            kind: calimero_app_host::TrapKind::Fault,
+            detail: String::new(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert!(out.actions.is_empty());
 }

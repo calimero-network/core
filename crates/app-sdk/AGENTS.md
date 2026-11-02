@@ -3,7 +3,7 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-sdk` (`publish = false`, prototype); builds for the host (tests) and `wasm32-wasip2` (apps)
-- **Entry**: `src/lib.rs` (+ `prelude`); `blob.rs` (`BlobRef`, `BlobInfo`), `search.rs` (`SearchOpts`, `SearchMode`, `Found`, `SearchResults`), `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `commons.rs` (paged reads, counts, clears, checked keys shared by tables and collections), `collections.rs` (+ `collections/{map,counter,cell,set,vector,frozen,per_user,text,rich_text}.rs`), `env.rs` (+ `env/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
+- **Entry**: `src/lib.rs` (+ `prelude`); `action.rs` (`ActionCtx`, `Request`, `Response`), `blob.rs` (`BlobRef`, `BlobInfo`), `search.rs` (`SearchOpts`, `SearchMode`, `Found`, `SearchResults`), `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `commons.rs` (paged reads, counts, clears, checked keys shared by tables and collections), `collections.rs` (+ `collections/{map,counter,cell,set,vector,frozen,per_user,text,rich_text}.rs`), `env.rs` (+ `env/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
 - **Spec**: `docs/specs/app-runtime-v0.14.md` section 7, the SDK reference, D9, D10, D20, D47, D48, D50, D52
 
 ## What This Crate Does
@@ -31,7 +31,7 @@ One leader applies every write in log order, so these are plain data structures,
 ## The generated `handle` (`__private::handle`)
 
 - Method lookup by ABI (camelCase) name; unknown → `AppError UnknownMethod`.
-- Kind: a view may run as a call (or xcall delivery); a call, timer or init method run as a view → `NotAView`; any other mismatch, and `action` / `migrate` (not in this version) → `WrongKind`.
+- Kind: a view may run as a call (or xcall delivery); a call, timer or init method run as a view → `NotAView`; an action runs only as `kind = action`; any other mismatch, and `migrate` (not in this version) → `WrongKind`.
 - Callers (D13), checked after the kind, except for `init` (runs as the owner): `System` needs `allow(system)` and `App(id)` needs `allow(app = id)` or `allow(app = "*")`, else `Forbidden`; `Public` needs `public`, else `LoginRequired`. The host's checks come first (Rulings 32, 35): on a node, and in the harness, an anonymous caller reaches the guest only on a public app and only for a `public` method, otherwise the platform answers `401 UNAUTHENTICATED` before `handle` runs, so the guest-side `LoginRequired` is a backstop clients do not normally see.
 - Args: a JSON object keyed by camelCase parameter names, empty args = `{}`, unknown keys refused; `u64`/`i64` (and `Option`) params are canonical decimal strings (no `+`, no leading zeros, no `-0`) and `Vec<u8>` (and `Option`) params base64url without padding (D20); anything malformed → `BadArgs` (`{"message": ..}`).
 - Timers: `#[app::every]` implies `allow(system)` (Ruling 26), so the ABI says `allowSystem: true` on every timer.
@@ -51,6 +51,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - Queries read `limit + 1` entries through the cursor and no more.
 - `bindings.rs` declares the `handle` export but never exports it: the code `#[app::logic]` generates does, through `__private::bindings::__calimero_export_handle!` and `__private::Export<State>`.
 - `#[app::error]` and `#[app::event]` must live in the `#[app::logic]` module (their ABI constants are picked up there; elsewhere the ABI lists none), and one module takes one of each: a second `#[app::error]` enum in a module is refused (`__CALIMERO_ABI_ERRORS` defined twice, pinned by `tests/ui/second_error.rs`).
+- Actions (D12, D17, D27): `ActionCtx::{key, view, call, fetch}` over the WIT `action` interface and `wasi:http` (`fetch` writes the body and finishes it before `handle`, then reads the response whole; `Request::get/post/header`, `Response::json/text`); errors are `ActionView`, `ActionCall`, `Fetch`. `env::start_action(method, &args)` (calls and timers) returns the action's key; a refusal is `StartAction`. On the host target (`env::mock`) actions answer an error: they run only in a component.
 - `env::xcall(app, method, &args)` (D25) sends JSON args through the WIT `xcall.send`; a host soft error is `AppError` `Xcall { message }`.
 - `env::emit(event, audience)` takes an `#[app::event]` value (spec); `env::emit_raw(name, data, audience)` takes any serde value.
 - `env::mock` (host target) is the stand-in for the host in tests.
@@ -83,7 +84,8 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - Blobs: `t.upload_blob(bytes, mime)` records a blob as the node would on upload and returns its id; runs see it through `info`/`grant` (a grant is `"<id>.<expires_ms>"` here) and may store a `BlobRef` to it; `t.blob_refs(id)` counts the stored values referring to it. Idle expiry is the node's (not mirrored).
 - Search: the harness answers `Table::search` with a scan of the table's records (every query word contained, case-insensitive, in a declared text field; score 1.0, key order), not the node's ranked index.
 - Xcalls: `t.take_xcalls()` hands out what logged `Ok` runs sent (`SentXcall { app, method, args }`), oldest first; `t.deliver(from, method, args)` runs one as `kind = xcall-deliver` from `Caller::App(from)`, after the node's check that the method allows `from` (`Forbidden`). Retries and watermarks are the node's.
-- Not yet: actions, `mock_http`, migrations (`upgrade_to`).
+- Actions: `t.as_(a).action(method, args)` starts and runs one at once as `a`; a call of an action method only starts it (`{"actionId"}`), and `t.run_started_actions()` runs those and the ones `start_action` queued, each as its starter. The action's views and calls run on the harness itself (lent to the run, `HarnessAction`), with the node's checks (`allow(action)` reachable only from an action); its HTTP goes to `t.mock_http(host, handler)` (`HttpRequest` → `HttpResponse`), a host without one fails the fetch. Retries, the D27 replay of sub-call keys and the 10 s budget are the node's.
+- Not yet: migrations (`upgrade_to`).
 
 ## Verify
 

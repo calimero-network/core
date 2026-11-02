@@ -3166,6 +3166,199 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
+/// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
+/// URL prefixes `outbound` (S9), signed by `key`.
+fn mpk_declaring(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+) -> Vec<u8> {
+    use sha2::Digest;
+    let manifest = calimero_bundle::BundleManifest {
+        version: "1.0".to_owned(),
+        package: package.to_owned(),
+        app_version: version.to_owned(),
+        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
+            key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
+        metadata: None,
+        handlers: None,
+        build_info: None,
+        interfaces: None,
+        wasm: Some(calimero_bundle::BundleArtifact {
+            path: "app.wasm".to_owned(),
+            hash: hex::encode(sha2::Sha256::digest(wasm)),
+            size: wasm.len() as u64,
+        }),
+        abi: None,
+        links: None,
+        frontend: None,
+        frontend_aliases: Vec::new(),
+        upgrades: None,
+        outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        services: None,
+        signature: None,
+    };
+    let mut manifest = serde_json::to_value(&manifest).unwrap();
+    calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    for (name, bytes) in [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("app.wasm", wasm.to_vec()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+/// Polls view `method` until `done` holds of its result (at most 10 s).
+async fn eventually(
+    cl: &Client,
+    app: &str,
+    method: &str,
+    args: Value,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        last = strong_view(cl, app, method, args.clone()).await;
+        if done(&last) {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{method} never got there: {last}");
+}
+
+/// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
+/// through a view, calls out over `wasi:http` only to a prefix the signed manifest
+/// declares and the owner approved (with a secret the node fills in and redacts), and
+/// writes through a keyed call to an `allow(action)` method no client can call. One that
+/// fails (a refused request, an app error) fails for good and `onActionFailed` hears.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const PACKAGE: &str = "com.calimero.v2-kv";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec!["echo.outbound.test".to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: "s3cret-value".to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec!["echo.outbound.test".to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _ = alice
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+        ))
+        .await
+        .unwrap();
+    let app = alice
+        .post("apps", json!({ "name": "kv", "package": PACKAGE }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "acme", "value": "acme.com" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Not approved yet: the request is refused, the action fails, onActionFailed hears.
+    let started = alice
+        .call(&app, "enrich", json!({ "key": "acme" }), None)
+        .await
+        .unwrap();
+    let id = started.result["actionId"].as_str().unwrap().to_owned();
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    let failure = failures["enrich"].as_str().unwrap();
+    assert!(failure.starts_with(&id), "{failure}");
+    assert!(failure.contains("NotApproved"), "{failure}");
+
+    // Approved: the action calls out and writes what came back through its own call.
+    let _ = alice
+        .approve_outbound(None, PACKAGE, None, false, &mut pk)
+        .await
+        .unwrap();
+    let id = alice
+        .call(&app, "startEnrich", json!({ "key": "acme" }), None)
+        .await
+        .unwrap()
+        .result;
+    assert!(id.as_str().unwrap().starts_with("a."), "{id}");
+    let got = eventually(&alice, &app, "enrichment", json!({ "key": "acme" }), |v| {
+        v.is_string()
+    })
+    .await;
+    let got = got.as_str().unwrap();
+    assert!(got.starts_with("200 "), "{got}");
+    assert!(got.contains("/v1/enrich?v=acme.com"), "{got}");
+    // The secret went out and came back redacted.
+    assert!(!got.contains("s3cret-value"), "{got}");
+    assert!(got.contains("[redacted]"), "{got}");
+
+    // No client calls an `allow(action)` method, and a call or view never calls out.
+    let e = alice
+        .call(
+            &app,
+            "applyEnrichment",
+            json!({ "key": "acme", "value": "forged" }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+
+    // An app error fails an action at once (D22).
+    let _r = alice.call(&app, "explode", json!({}), None).await.unwrap();
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["explode"].is_string()
+    })
+    .await;
+    assert!(
+        failures["explode"].as_str().unwrap().contains("BeatFailed"),
+        "{failures}"
+    );
+}
+
 /// R8: the owner deletes a component's blob; it is gone whatever refers to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_owner_deletes_a_components_blob() {

@@ -264,3 +264,51 @@ fn xcalls_leave_only_with_an_ok_run_and_reach_only_methods_that_allow_the_source
         .unwrap_err();
     assert!(matches!(e, Failure::App { ref code, .. } if code == "Forbidden"), "{e:?}");
 }
+
+#[test]
+fn an_action_reads_through_views_fetches_and_writes_through_its_calls() {
+    use calimero_app_sdk::testing::HttpResponse;
+    let mut t = app();
+    t.as_("owner")
+        .call("set", json!({ "key": "acme", "value": "acme.com" }))
+        .unwrap();
+    t.mock_http("echo.outbound.test", |req| HttpResponse {
+        status: 200,
+        headers: Vec::new(),
+        body: format!("saw {}", req.url).into_bytes(),
+    });
+    t.as_("owner")
+        .action("enrich", json!({ "key": "acme" }))
+        .unwrap();
+    assert_eq!(
+        t.as_("owner")
+            .view("enrichment", json!({ "key": "acme" }))
+            .unwrap(),
+        json!("200 saw https://echo.outbound.test/v1/enrich?v=acme.com")
+    );
+    // Only the app's actions reach an `allow(action)` method.
+    let e = t
+        .as_("owner")
+        .call("applyEnrichment", json!({ "key": "acme", "value": "forged" }))
+        .unwrap_err();
+    assert!(matches!(e, Failure::App { ref code, .. } if code == "Forbidden"), "{e:?}");
+    // Started from a call, run later as its caller.
+    let started = t
+        .as_("owner")
+        .call("startEnrich", json!({ "key": "acme" }))
+        .unwrap();
+    assert!(started.as_str().unwrap().starts_with("a."), "{started}");
+    let ran = t.run_started_actions();
+    assert_eq!(ran.len(), 1);
+    assert!(ran[0].is_ok(), "{ran:?}");
+    // An app error fails an action at once (D22).
+    let e = t.as_("owner").action("explode", json!({})).unwrap_err();
+    assert!(matches!(e, Failure::App { ref code, .. } if code == "BeatFailed"), "{e:?}");
+    // A host with no mock: the fetch fails inside the action.
+    let mut bare = app();
+    let e = bare
+        .as_("owner")
+        .action("enrich", json!({ "key": "acme" }))
+        .unwrap_err();
+    assert!(matches!(e, Failure::App { ref code, .. } if code == "Fetch"), "{e:?}");
+}

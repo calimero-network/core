@@ -27,6 +27,8 @@ pub enum MethodKind {
     View,
     /// `#[app::every(..)]`.
     Timer,
+    /// `#[app::action]`: runs outside the log (D12), started, never called.
+    Action,
 }
 
 /// One exposed method.
@@ -51,7 +53,7 @@ pub enum Kind {
     Call,
     /// A read on any node.
     View,
-    /// An action (not in this SDK version).
+    /// An action (D12): outside the log, with outbound HTTP.
     Action,
     /// A timer tick; `args` carry the tick.
     Timer,
@@ -105,6 +107,7 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
         (Kind::View, MethodKind::View)
         | (Kind::Call | Kind::XcallDeliver, MethodKind::Call | MethodKind::View)
         | (Kind::Timer, MethodKind::Timer)
+        | (Kind::Action, MethodKind::Action)
         | (Kind::Init, MethodKind::Init) => {}
         (Kind::View, _) => return Err(AppError::new("NotAView")),
         _ => return Err(AppError::new("WrongKind")),

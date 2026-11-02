@@ -4,6 +4,7 @@
 //! [`Engine`] only maps the WIT world onto it and enforces the [`Budget`].
 
 mod abi;
+mod action;
 mod blobs;
 mod core;
 mod engine;
@@ -14,6 +15,10 @@ mod time;
 mod types;
 
 pub use abi::{Abi, MethodAbi, MethodKind, SUPPORTED_ABI_VERSIONS};
+pub use action::{
+    subcall_key, ActionHost, ActionStart, HttpHost, HttpRequest, HttpResponse, NoHttp,
+    MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
+};
 pub use blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 pub use core::{
     CursorId, HostCore, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG,
@@ -31,5 +36,5 @@ pub use state::{stored_key, KeyValue, StateView, GENERATION};
 pub use types::{
     Audience, BlobInfo, Budget, Caller, Directory, Event, HostDenied, InvalidInvocation,
     Invocation, InvocationKind, OrgRole, Outcome, Status, TimerCtx, TrapKind, Usage, Write, Xcall,
-    CALL_WALL_CLOCK, DEFAULT_FUEL, DEFAULT_MEMORY_PAGES,
+    ACTION_WALL_CLOCK, CALL_WALL_CLOCK, DEFAULT_FUEL, DEFAULT_MEMORY_PAGES,
 };

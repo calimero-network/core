@@ -168,6 +168,7 @@ fn abi_check(
     caller: &Caller,
     view: bool,
     consented: bool,
+    from_action: bool,
 ) -> Result<(), ApiError> {
     if super::reserved_method(method) {
         return Err(app_refusal("UnknownMethod"));
@@ -175,8 +176,18 @@ fn abi_check(
     let Some(m) = prepared.abi.methods.get(method) else {
         return Err(app_refusal("UnknownMethod"));
     };
-    if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+    // A call of an action starts it (D17); an action never runs as a view, nor is it
+    // started by an action, an xcall or the system.
+    let starts_action = m.kind == MethodKind::Action
+        && !view
+        && !from_action
+        && matches!(caller, Caller::Account { .. } | Caller::ApiKey { .. });
+    if !matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action {
         return Err(app_refusal("WrongKind"));
+    }
+    // `allow(action)`: only the app's own actions call it, never a client directly.
+    if m.action_only && !from_action {
+        return Err(app_refusal("Forbidden"));
     }
     if view && m.confirm {
         return Err(app_refusal("ConfirmNotAView"));
@@ -212,7 +223,8 @@ fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
         | ComponentCmd::BlobsCollected { .. }
-        | ComponentCmd::XcallDone { .. } => {}
+        | ComponentCmd::XcallDone { .. }
+        | ComponentCmd::ActionEnd { .. } => {}
     }
     serde_json::to_vec(&cmd).unwrap_or_default()
 }
@@ -569,7 +581,7 @@ impl Node {
 
     /// Propose the latest due slot of each of the app's timers not yet applied
     /// (one catch-up tick for a gap). Nothing runs before the app is initialized.
-    async fn tick_app(&self, g: &Group<AppMachine>) {
+    async fn tick_app(&self, g: &Arc<Group<AppMachine>>) {
         let Some((app_id, bundle, install, applied)) = g.read_local(|m, _| {
             let bundle = m.state.bundle.clone().filter(|_| m.state.initialized)?;
             Some((
@@ -589,6 +601,7 @@ impl Node {
             return;
         };
         self.deliver_xcalls(g, &app_id, &prepared).await;
+        self.run_actions(g, &app_id, &prepared);
         let now = self.clock.now_ms();
         for (timer, method) in &prepared.abi.methods {
             if method.kind != MethodKind::Timer {
@@ -767,6 +780,7 @@ impl Node {
                     &req.caller,
                     false,
                     req.consent.is_some(),
+                    req.action.is_some(),
                 ) {
                     refused = Some(e);
                     return Proposal::Reply(Vec::new());
@@ -774,24 +788,44 @@ impl Node {
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = self.run_logged(
-                    &meter,
-                    &prepared,
-                    &req.app_id,
-                    (m.view(), m.blob_view()),
-                    applied,
-                    Invocation {
-                        kind,
-                        method: req.method.clone(),
-                        args: args.clone(),
-                        caller: req.caller.to_host(),
-                        entry_ts_ms: ts_ms,
-                        id_term,
-                        id_seq,
-                        seed: calimero_identity::random::<32>(),
-                        timer: None,
-                    },
-                );
+                let starts_action = prepared
+                    .abi
+                    .methods
+                    .get(&req.method)
+                    .is_some_and(|m| m.kind == MethodKind::Action);
+                let outcome = if starts_action {
+                    // Started, not run here: logged as started, run by the runner (D17).
+                    let id = format!("a.{id_term}.{id_seq}.0");
+                    Outcome {
+                        status: Status::Ok,
+                        result: json!({ "actionId": id }),
+                        actions: vec![crate::component::action::ActionOut {
+                            id,
+                            method: req.method.clone(),
+                            args: req.args.clone(),
+                        }],
+                        ..Outcome::default()
+                    }
+                } else {
+                    self.run_logged(
+                        &meter,
+                        &prepared,
+                        &req.app_id,
+                        (m.view(), m.blob_view()),
+                        applied,
+                        Invocation {
+                            kind,
+                            method: req.method.clone(),
+                            args: args.clone(),
+                            caller: req.caller.to_host(),
+                            entry_ts_ms: ts_ms,
+                            id_term,
+                            id_seq,
+                            seed: calimero_identity::random::<32>(),
+                            timer: None,
+                        },
+                    )
+                };
                 // A timeout is not logged and does not spend the key (D23).
                 if outcome.is_timeout() {
                     let a = Applied::unlogged(applied, outcome);
@@ -863,7 +897,7 @@ impl Node {
         consented: bool,
     ) -> Result<(), ApiError> {
         let prepared = self.prepared_for(&self.running_bundle(app)).await?;
-        abi_check(&prepared, method, caller, view, consented)
+        abi_check(&prepared, method, caller, view, consented, false)
     }
 
     /// The bundle `app` runs: the app group's own record on this replica, else (this
@@ -995,7 +1029,7 @@ impl Node {
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false)?;
+        abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
         let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
@@ -1081,6 +1115,213 @@ impl Node {
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         Ok(to_wasmer_applied(a))
+    }
+
+    /// Start the app's pending actions this node is not running yet, as its leader, in the
+    /// node's worker pool (D17): each runs off the async workers and logs its end.
+    fn run_actions(&self, g: &Arc<Group<AppMachine>>, app_id: &str, prepared: &Prepared) {
+        let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let pending = g.read_local(|m, _| m.pending_actions());
+        let now = self.clock.now_ms();
+        for record in pending {
+            let key = (app_id.to_owned(), record.id.clone());
+            let waiting = self
+                .action_retry
+                .lock()
+                .ok()
+                .and_then(|r| r.get(&key).copied());
+            if waiting.is_some_and(|at| now < at) {
+                continue;
+            }
+            let started = self
+                .actions_running
+                .lock()
+                .is_ok_and(|mut running| running.insert(key.clone()));
+            if !started {
+                continue;
+            }
+            let Ok(permit) = Arc::clone(&self.action_slots).try_acquire_owned() else {
+                if let Ok(mut running) = self.actions_running.lock() {
+                    let _was = running.remove(&key);
+                }
+                return;
+            };
+            let (node, g, prepared) = (Arc::clone(&node), Arc::clone(g), prepared.clone());
+            drop(tokio::spawn(async move {
+                node.run_action(&g, &prepared, record).await;
+                drop(permit);
+                if let Ok(mut running) = node.actions_running.lock() {
+                    let _was = running.remove(&key);
+                }
+            }));
+        }
+    }
+
+    /// One attempt at an action (D12, D22), then its end logged: done; an attempt that
+    /// timed out (retried later, `MAX_ATTEMPTS` in all); or failed, which also runs the
+    /// app's `onActionFailed`.
+    async fn run_action(
+        self: &Arc<Self>,
+        g: &Group<AppMachine>,
+        prepared: &Prepared,
+        record: crate::component::action::ActionRecord,
+    ) {
+        use crate::component::action::{reason, retry_after_ms, MAX_ATTEMPTS};
+        let app_id = g.read_local(|m, _| m.app_id.clone());
+        let is_action = prepared
+            .abi
+            .methods
+            .get(&record.method)
+            .is_some_and(|m| m.kind == MethodKind::Action);
+        let (failed, retry) = if is_action {
+            let out = self.attempt_action(&app_id, prepared, &record).await;
+            match out.status {
+                Status::Ok => (None, false),
+                _ if out.is_timeout() && record.attempts + 1 < MAX_ATTEMPTS => (None, true),
+                _ if out.is_timeout() => (Some(format!("timed out {MAX_ATTEMPTS} times")), false),
+                _ => (Some(reason(&out.error.to_string())), false),
+            }
+        } else {
+            (Some("method removed".to_owned()), false)
+        };
+        let id = record.id.clone();
+        let ended = g
+            .propose_led(|m, _, _| {
+                // Ended already (another leader logged it): nothing to add.
+                if m.action_record(&id).is_none() {
+                    return Proposal::Reply(Vec::new());
+                }
+                Proposal::Append(
+                    serde_json::to_vec(&ComponentCmd::ActionEnd {
+                        id: id.clone(),
+                        failed: failed.clone(),
+                        retry,
+                        ts_ms: self.stamp(m),
+                    })
+                    .unwrap_or_default(),
+                )
+            })
+            .await;
+        let key = (app_id.clone(), id.clone());
+        if let Ok(mut r) = self.action_retry.lock() {
+            if retry {
+                let _prev = r.insert(key, self.clock.now_ms() + retry_after_ms(record.attempts));
+            } else {
+                let _was = r.remove(&key);
+            }
+        }
+        if let (Ok(p), Some(why)) = (ended, failed) {
+            if p.appended {
+                self.on_action_failed(&app_id, prepared, &record, &why)
+                    .await;
+            }
+        }
+    }
+
+    /// Run `record` once on the engine, off the async workers, as `kind = action` with
+    /// the starter's caller, storage off, views and calls through this node and outbound
+    /// HTTP through the gate (S9).
+    async fn attempt_action(
+        self: &Arc<Self>,
+        app_id: &str,
+        prepared: &Prepared,
+        record: &crate::component::action::ActionRecord,
+    ) -> Outcome {
+        let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
+        let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        let runner = Arc::new(NodeAction {
+            node: Arc::clone(self),
+            app_id: app_id.to_owned(),
+            caller: record.caller.clone(),
+            key: record.id.clone(),
+            handle: tokio::runtime::Handle::current(),
+        });
+        let meter = self.meter(app_id, &prepared.hash);
+        let http = Arc::new(NodeHttp(self.outbound_for(
+            app_id,
+            &prepared.hash,
+            self.usage.outbound(&meter.app, &meter.payer),
+        )));
+        let invocation = Invocation {
+            kind: InvocationKind::Action,
+            method: record.method.clone(),
+            args: args_bytes(&record.args),
+            caller: record.caller.to_host(),
+            entry_ts_ms: record.started_ms,
+            id_term: 0,
+            id_seq: 0,
+            seed: [0; 32],
+            timer: None,
+        };
+        let budget = Budget {
+            wall_clock: Budget::action().wall_clock,
+            ..self.budget()
+        };
+        let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
+        let ran = tokio::task::spawn_blocking(move || {
+            crate::usage::measure(|| {
+                match HostCore::new(
+                    &app,
+                    Arc::new(std::collections::BTreeMap::new()),
+                    0,
+                    invocation,
+                    directory,
+                ) {
+                    Ok(host) => Outcome::from_host(wasm.invoke(
+                        &prepared,
+                        host.with_action(runner).with_http(http),
+                        budget,
+                    )),
+                    Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
+                }
+            })
+        })
+        .await;
+        match ran {
+            Ok((out, run)) => {
+                self.usage.ran(&meter, run);
+                out
+            }
+            Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
+        }
+    }
+
+    /// The app's `onActionFailed`, if its ABI has a call by that name: told which action
+    /// failed and why, as the action's caller (D22). Best effort, once.
+    async fn on_action_failed(
+        &self,
+        app_id: &str,
+        prepared: &Prepared,
+        record: &crate::component::action::ActionRecord,
+        why: &str,
+    ) {
+        const HANDLER: &str = "onActionFailed";
+        if !prepared
+            .abi
+            .methods
+            .get(HANDLER)
+            .is_some_and(|m| m.kind == MethodKind::Call)
+        {
+            return;
+        }
+        let req = CallRequest {
+            idempotency_key: Some(format!(
+                "{}action-failed-{}",
+                crate::app::NODE_KEY_PREFIX,
+                record.id
+            )),
+            ..CallRequest::new(
+                app_id.to_owned(),
+                HANDLER.to_owned(),
+                json!({ "actionId": record.id, "method": record.method, "reason": why }),
+                record.caller.clone(),
+            )
+        };
+        if let Err(e) = self.call_component(&req).await {
+            debug!(app = %app_id, action = %record.id, error = %e.message, "onActionFailed did not run");
+        }
     }
 
     /// Deliver the head of `source`'s outbox, in order, at most [`DELIVER_BATCH`] messages
@@ -1302,6 +1543,131 @@ impl Node {
         let a = to_wasmer_applied(a);
         self.count_conflict(&a);
         Ok(a)
+    }
+}
+
+/// What an action reaches through the node (D12): views and calls of its own app, as
+/// its caller, run on the async runtime while the action's thread waits.
+struct NodeAction {
+    node: Arc<Node>,
+    app_id: String,
+    caller: Caller,
+    key: String,
+    handle: tokio::runtime::Handle,
+}
+
+impl NodeAction {
+    /// Run `fut` on the runtime and wait for it on this (blocking) thread.
+    fn wait<T: Send + 'static>(
+        &self,
+        fut: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(self.handle.spawn(async move {
+            let _sent = tx.send(fut.await);
+        }));
+        rx.recv().ok()
+    }
+}
+
+/// A run's answer as `action.view`/`action.call` return it: the JSON result, or the
+/// error as JSON text.
+fn answer_bytes(status: &Status, result: &Value, error: &Value) -> Result<Vec<u8>, String> {
+    if *status == Status::Ok {
+        Ok(serde_json::to_vec(result).unwrap_or_default())
+    } else {
+        Err(error.to_string())
+    }
+}
+
+impl calimero_app_host::ActionHost for NodeAction {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn view(&self, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        let args = parse_args(args)?;
+        let req = ViewRequest {
+            app_id: self.app_id.clone(),
+            method: method.to_owned(),
+            args,
+            caller: self.caller.clone(),
+            strong: true,
+            min_index: 0,
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.view(&req).await }) {
+            Some(Ok(a)) if a.timeout => Err("the view timed out".into()),
+            Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
+            Some(Err(e)) => Err(e.message),
+            None => Err("the node is shutting down".into()),
+        }
+    }
+
+    fn call(&self, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        let args = parse_args(args)?;
+        let req = CallRequest {
+            idempotency_key: Some(key.to_owned()),
+            action: Some(self.key.clone()),
+            ..CallRequest::new(
+                self.app_id.clone(),
+                method.to_owned(),
+                args,
+                self.caller.clone(),
+            )
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.call_component(&req).await }) {
+            Some(Ok(a)) if a.timeout => Err("the call timed out".into()),
+            Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
+            Some(Err(e)) => Err(e.message),
+            None => Err("the node is shutting down".into()),
+        }
+    }
+}
+
+fn parse_args(args: &[u8]) -> Result<Value, String> {
+    if args.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(args).map_err(|e| format!("arguments are not JSON: {e}"))
+}
+
+/// An action's outbound HTTP through the node's gate (S9, R14): the signed release's
+/// declared prefixes, the owner's approval, the operator's hosts, secrets filled in.
+struct NodeHttp(Option<Arc<dyn calimero_runtime::logic::OutboundHost>>);
+
+impl calimero_app_host::HttpHost for NodeHttp {
+    fn send(
+        &self,
+        request: &calimero_app_host::HttpRequest,
+    ) -> Result<calimero_app_host::HttpResponse, String> {
+        use calimero_primitives::outbound::{OutboundMethod, OutboundRequest, OutboundResponse};
+        let Some(gate) = &self.0 else {
+            return Err("this app declares no outbound hosts in a signed release".into());
+        };
+        let method = match request.method.as_str() {
+            "GET" => OutboundMethod::Get,
+            "POST" => OutboundMethod::Post,
+            "PUT" => OutboundMethod::Put,
+            "PATCH" => OutboundMethod::Patch,
+            "DELETE" => OutboundMethod::Delete,
+            other => return Err(format!("method {other} is not allowed")),
+        };
+        let out = OutboundRequest {
+            method,
+            url: request.url.clone(),
+            headers: request.headers.clone(),
+            body: request.body.clone(),
+        };
+        let bytes = borsh::to_vec(&out).map_err(|e| e.to_string())?;
+        let answer = gate.send(&bytes)?;
+        let response: OutboundResponse = borsh::from_slice(&answer).map_err(|e| e.to_string())?;
+        Ok(calimero_app_host::HttpResponse {
+            status: response.status,
+            headers: Vec::new(),
+            body: response.body,
+        })
     }
 }
 

@@ -17,6 +17,8 @@ pub enum MethodKind {
     Call,
     View,
     Timer,
+    /// Runs outside the log on the leader, with outbound HTTP (D12); started, never called.
+    Action,
 }
 
 /// One method's attributes.
@@ -34,6 +36,8 @@ pub struct MethodAbi {
     /// The apps whose xcalls it accepts (`Caller::App`, D13); `"*"` is any app the
     /// platform delivers from.
     pub allow_apps: Vec<String>,
+    /// `allow(action)`: called only by this app's actions, never directly by clients.
+    pub action_only: bool,
 }
 
 impl MethodAbi {
@@ -93,6 +97,7 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         Some("call") => MethodKind::Call,
         Some("view") => MethodKind::View,
         Some("timer") => MethodKind::Timer,
+        Some("action") => MethodKind::Action,
         other => return Err(bad(format!("{name}: unknown kind {other:?}"))),
     };
     let every = match fields.get("every") {
@@ -113,6 +118,7 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         public: flag(fields, "public", name)?,
         every,
         allow_system: flag(fields, "allowSystem", name)?,
+        action_only: flag(fields, "allowAction", name)?,
         allow_apps: match fields.get("allowApps") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(apps)) => apps

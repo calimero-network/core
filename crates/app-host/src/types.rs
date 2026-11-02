@@ -10,6 +10,8 @@ pub const DEFAULT_FUEL: u64 = 200_000_000;
 pub const DEFAULT_MEMORY_PAGES: u32 = 1_024;
 /// Epoch deadline for a call or a view (spec section 5).
 pub const CALL_WALL_CLOCK: Duration = Duration::from_secs(2);
+/// Epoch deadline for an action run (spec section 5, D12).
+pub const ACTION_WALL_CLOCK: Duration = Duration::from_secs(10);
 
 /// Which entry point of `handle` runs, mirroring the WIT `invocation-kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +81,15 @@ impl Budget {
             wall_clock: CALL_WALL_CLOCK,
             memory_pages: DEFAULT_MEMORY_PAGES,
             fuel: DEFAULT_FUEL,
+        }
+    }
+
+    /// The budget of an action run (D12): 10 s of wall clock; fuel and memory as a call.
+    #[must_use]
+    pub const fn action() -> Self {
+        Self {
+            wall_clock: ACTION_WALL_CLOCK,
+            ..Self::call()
         }
     }
 
@@ -161,6 +172,8 @@ pub struct Outcome {
     pub events: Vec<Event>,
     /// The xcalls the run sent; empty unless `Ok`.
     pub xcalls: Vec<Xcall>,
+    /// The actions the run started (D17); empty unless `Ok`.
+    pub actions: Vec<crate::action::ActionStart>,
     /// The owner-only app log (stdout, stderr, `log`); kept whatever the status.
     pub logs: Vec<String>,
     pub usage: Usage,

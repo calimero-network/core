@@ -212,6 +212,10 @@ pub struct CallRequest {
     /// by the source's leader; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xcall: Option<crate::component::xcall::XcallFrom>,
+    /// A component app's call made by one of its actions (D12): the action's key. Set only
+    /// by the node's action runner; reaches `allow(action)` methods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -243,6 +247,7 @@ impl CallRequest {
             trigger: None,
             host: false,
             xcall: None,
+            action: None,
         }
     }
 
@@ -381,6 +386,12 @@ pub struct Node {
     /// Outbox messages this node failed to deliver as a source's leader (D29): per
     /// (source app, seq), the attempts and the app time of the next one.
     xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
+    /// Actions this node is running as their app's leader, by (app, action key) (D17).
+    actions_running: Mutex<HashSet<(String, String)>>,
+    /// When an action that timed out may run again, app time (D22).
+    action_retry: Mutex<HashMap<(String, String), u64>>,
+    /// The action worker pool: at most `MAX_ACTION_WORKERS` runs at once.
+    action_slots: Arc<tokio::sync::Semaphore>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns and the sessions it
     /// issues. Made on the node's first start and kept in its data directory
@@ -660,6 +671,11 @@ impl Node {
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
             xcall_retry: Mutex::new(HashMap::new()),
+            actions_running: Mutex::new(HashSet::new()),
+            action_retry: Mutex::new(HashMap::new()),
+            action_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::component::action::MAX_ACTION_WORKERS,
+            )),
             transport: sealed,
             receipt_key,
             peers: Mutex::new(HashMap::new()),

@@ -18,6 +18,7 @@
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency, blob records) are never keys the app sees (D39).
 
+pub mod action;
 pub mod blobs;
 pub mod search;
 pub mod xcall;
@@ -31,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::{rows, AppMachine, Status, Write};
+use crate::component::action::{ActionOut, ActionRecord, ActionsHead};
 use crate::component::blobs::{ref_deltas, BlobTable, MAX_COLLECT_QUEUE};
 use crate::component::xcall::{XcallFrom, XcallHead, XcallOut};
 use crate::idempotency;
@@ -65,6 +67,9 @@ pub struct Outcome {
     /// The xcalls the run sent (D25); empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub xcalls: Vec<XcallOut>,
+    /// The actions the run started (D17); empty unless `Ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionOut>,
 }
 
 /// The name a trap kind has on the wire (the spec's names).
@@ -98,7 +103,7 @@ impl Outcome {
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
         let mut outcome = match out.status {
-            host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls),
+            host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls, out.actions),
             host::Status::AppError { code, message } => Self {
                 status: Status::AppError,
                 error: json!({
@@ -118,6 +123,7 @@ impl Outcome {
         diff: Vec<host::Write>,
         events: Vec<host::Event>,
         xcalls: Vec<host::Xcall>,
+        actions: Vec<host::ActionStart>,
     ) -> Self {
         let result = if result.is_empty() {
             Value::Null
@@ -154,6 +160,22 @@ impl Outcome {
                 args,
             });
         }
+        let mut started = Vec::with_capacity(actions.len());
+        for a in actions {
+            let args = if a.args.is_empty() {
+                Value::Null
+            } else {
+                let Ok(args) = serde_json::from_slice(&a.args) else {
+                    return Self::trap(host::TrapKind::Fault, "action args are not JSON");
+                };
+                args
+            };
+            started.push(ActionOut {
+                id: a.id,
+                method: a.method,
+                args,
+            });
+        }
         Self {
             status: Status::Ok,
             result,
@@ -168,6 +190,7 @@ impl Outcome {
             events: out,
             logs: Vec::new(),
             xcalls: sent,
+            actions: started,
         }
     }
 
@@ -269,6 +292,17 @@ pub enum ComponentCmd {
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
     #[serde(rename = "componentBlobForget")]
     BlobForget { id: String },
+    /// An action's attempt timed out (`retry`, D22), or the action ended: done, or failed
+    /// with `failed`'s reason.
+    #[serde(rename = "componentActionEnd")]
+    ActionEnd {
+        id: String,
+        #[serde(default)]
+        failed: Option<String>,
+        #[serde(default)]
+        retry: bool,
+        ts_ms: u64,
+    },
     /// The leader finished with the outbox's head message (D25, D29): delivered, or
     /// dead-lettered with `dead`'s reason.
     #[serde(rename = "componentXcallDone")]
@@ -411,6 +445,9 @@ pub struct ComponentHead {
     /// The xcall outbox, dead letters and the watermarks of the apps that send here.
     #[serde(default)]
     pub xcall: XcallHead,
+    /// The actions started and not ended (D17).
+    #[serde(default)]
+    pub actions: ActionsHead,
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -507,6 +544,59 @@ impl AppMachine {
         Arc::clone(&self.state.component.blobs.records)
     }
 
+    /// Pending action `id`, if it has not ended.
+    #[must_use]
+    pub fn action_record(&self, id: &str) -> Option<ActionRecord> {
+        let raw = self
+            .state
+            .kv
+            .group()?
+            .get_hidden(rows::CACT, &action::action_key(id))?;
+        serde_json::from_slice(&raw).ok()
+    }
+
+    /// The pending actions (D17), by id.
+    #[must_use]
+    pub fn pending_actions(&self) -> Vec<ActionRecord> {
+        self.state
+            .component
+            .head
+            .actions
+            .pending
+            .iter()
+            .filter_map(|id| self.action_record(id))
+            .collect()
+    }
+
+    /// An action failed for good (D22): an `ActionFailed` event to whoever started it.
+    fn action_failed(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        index: u64,
+        starter: &Caller,
+        id: &str,
+        method: &str,
+        why: &str,
+    ) {
+        let Some(account) = starter.account() else {
+            return;
+        };
+        self.push_event(
+            tx,
+            EventRecord {
+                index,
+                // After any event of the entry's own run.
+                seq: u32::MAX,
+                kind: "ActionFailed".to_owned(),
+                data: json!({ "actionId": id, "method": method, "reason": why }),
+                audience: Some(crate::types::Audience::Accounts {
+                    accounts: vec![account.to_owned()],
+                }),
+                caller: Some(account.to_owned()),
+            },
+        );
+    }
+
     /// The outbox's message `seq`, if it is still there.
     #[must_use]
     pub fn outgoing(&self, seq: u64) -> Option<xcall::Outgoing> {
@@ -549,8 +639,9 @@ impl AppMachine {
         base_index: u64,
         ts_ms: u64,
         outcome: &Outcome,
-        caller: Option<&str>,
+        starter: &Caller,
     ) -> Applied {
+        let caller = starter.account();
         if base_index != self.state.last_index {
             return Applied::conflict(index, "conflict: retry");
         }
@@ -590,6 +681,24 @@ impl AppMachine {
                     .head
                     .xcall
                     .send(tx, &outcome.xcalls, ts_ms);
+            }
+            if !outcome.actions.is_empty() {
+                let refused =
+                    self.state
+                        .component
+                        .head
+                        .actions
+                        .start(tx, &outcome.actions, starter, ts_ms);
+                for a in refused {
+                    self.action_failed(
+                        tx,
+                        index,
+                        starter,
+                        &a.id,
+                        &a.method,
+                        "too many pending actions",
+                    );
+                }
             }
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
@@ -682,7 +791,7 @@ impl AppMachine {
             tick.base_index,
             tick.ts_ms,
             &tick.outcome,
-            None,
+            &Caller::System,
         );
         if !a.conflict {
             let _prev = self
@@ -719,9 +828,11 @@ impl AppMachine {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
-            Ok(ComponentCmd::Blob { ts_ms, .. } | ComponentCmd::XcallDone { ts_ms, .. }) => {
-                Some(*ts_ms)
-            }
+            Ok(
+                ComponentCmd::Blob { ts_ms, .. }
+                | ComponentCmd::XcallDone { ts_ms, .. }
+                | ComponentCmd::ActionEnd { ts_ms, .. },
+            ) => Some(*ts_ms),
             Ok(
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
@@ -751,8 +862,14 @@ impl AppMachine {
                 if self.state.initialized || self.state.init_error.is_some() {
                     Applied::conflict(index, "already initialized")
                 } else {
-                    let a =
-                        self.apply_component_outcome(tx, index, base_index, ts_ms, &outcome, None);
+                    let a = self.apply_component_outcome(
+                        tx,
+                        index,
+                        base_index,
+                        ts_ms,
+                        &outcome,
+                        &Caller::System,
+                    );
                     if !a.conflict {
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
@@ -775,7 +892,7 @@ impl AppMachine {
                     base_index,
                     0,
                     &Outcome::default(),
-                    None,
+                    &Caller::System,
                 );
                 if !a.conflict {
                     // Taken before `init` applied: the entry names the executor.
@@ -791,7 +908,7 @@ impl AppMachine {
                     call.base_index,
                     call.ts_ms,
                     &call.outcome,
-                    call.caller.account(),
+                    &call.caller,
                 );
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
@@ -819,6 +936,29 @@ impl AppMachine {
                 let c = &mut self.state.component;
                 let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget(tx, &raw));
                 host_answer(index, held, "no such blob in this app")
+            }
+            Ok(ComponentCmd::ActionEnd {
+                id,
+                failed,
+                retry,
+                ts_ms,
+            }) => {
+                let c = &mut self.state.component;
+                c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
+                match self.action_record(&id) {
+                    None => host_answer(index, false, "no such pending action"),
+                    Some(record) if retry => {
+                        self.state.component.head.actions.retried(tx, record);
+                        host_answer(index, true, "")
+                    }
+                    Some(record) => {
+                        let _was = self.state.component.head.actions.ended(tx, &id);
+                        if let Some(why) = &failed {
+                            self.action_failed(tx, index, &record.caller, &id, &record.method, why);
+                        }
+                        host_answer(index, true, "")
+                    }
+                }
             }
             Ok(ComponentCmd::XcallDone { seq, dead, ts_ms }) => {
                 let head = self.outgoing(seq);

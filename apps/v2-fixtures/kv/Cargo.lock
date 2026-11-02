@@ -131,6 +131,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror",
 ]
 

@@ -172,6 +172,44 @@ pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result
         .map_err(|message| AppError::with_fields("Xcall", json!({ "message": message })))
 }
 
+/// Start the `#[app::action]` `method` with `args` (D17): logged as started with this run's
+/// entry, only if the run succeeds, then run by the leader outside the log with this run's
+/// caller. Calls and timers only. Returns the action's key.
+///
+/// # Errors
+///
+/// `StartAction` with the host's reason (more than 100 in one run, a reserved name).
+pub fn start_action<T: Serialize + ?Sized>(method: &str, args: &T) -> Result<String> {
+    let args = serde_json::to_vec(args)
+        .map_err(|e| AppError::with_fields("StartAction", json!({ "message": e.to_string() })))?;
+    backend::start_action(method, &args)
+        .map_err(|message| AppError::with_fields("StartAction", json!({ "message": message })))
+}
+
+pub(crate) fn backend_action_key() -> String {
+    backend::action_key()
+}
+
+pub(crate) fn backend_action_view(
+    method: &str,
+    args: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    backend::action_view(method, args)
+}
+
+pub(crate) fn backend_action_call(
+    method: &str,
+    args: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    backend::action_call(method, args)
+}
+
+pub(crate) fn backend_fetch(
+    request: &crate::action::Request,
+) -> std::result::Result<crate::action::Response, String> {
+    backend::fetch(request)
+}
+
 /// Blob `id`'s metadata, if the app holds it (R8). Prefer [`crate::BlobRef::info`].
 pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
     backend::blob_info(id)

@@ -28,6 +28,18 @@
   the message is dead-lettered and the source's `onXcallFailed` runs. `GET
   /apps/{app}/xcalls` lists what waits and the dead letters. The harness gains
   `take_xcalls` and `deliver`.
+- **Actions and outbound HTTP for component apps** (D12, D17, D22, D27, S9,
+  R14). `#[app::action] fn f(ctx: &mut ActionCtx, ..)` runs on the app's
+  leader outside the log, started by a client's call or `env::start_action`
+  and logged as started and ended; it reads with `ctx.view`, writes with
+  `ctx.call` (keyed so a retry replays), and calls out with `ctx.fetch` over
+  `wasi:http`, only to prefixes the signed manifest declares and the owner
+  approved, with `{{secret:NAME}}` filled in. Timeouts retry (5 attempts); a
+  failure sends `ActionFailed` to the starter and runs `onActionFailed`.
+  `#[app::allow(action)]` methods are callable only from the app's actions.
+  The engine serves `wasi:http` over bounded in-memory buffers (calls and
+  views still cannot send). The harness gains `action`, `mock_http` and
+  `run_started_actions`.
 
 ## [1.0.0-rc.7] - 2026-10-31
 

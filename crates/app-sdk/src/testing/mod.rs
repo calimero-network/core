@@ -19,9 +19,10 @@ use calimero_app_host::{
     Outcome, Prepared, SearchHit as HostHit, SearchHost, SearchPage, SearchQuery, Status, TimerCtx,
     Usage,
 };
+use calimero_app_host::{ActionHost, ActionStart, HttpHost};
 use serde_json::Value;
 
-pub use calimero_app_host::TrapKind;
+pub use calimero_app_host::{HttpRequest, HttpResponse, TrapKind};
 pub use directory::{Org, ORG_ID, OWNER};
 pub use scenario::run_scenario;
 
@@ -161,6 +162,89 @@ pub struct TestApp {
     usage: Usage,
     blobs: BTreeMap<[u8; 32], BlobInfo>,
     outbox: Vec<SentXcall>,
+    /// Actions logged runs started, with their caller (D17), not run yet.
+    started: Vec<(HostCaller, ActionStart)>,
+    next_action: u64,
+    http: BTreeMap<String, HttpHandler>,
+    /// Set while an action's sub-calls run: `allow(action)` methods are reachable.
+    in_action: bool,
+}
+
+/// What `mock_http` answers a host's requests with.
+pub type HttpHandler = Arc<dyn Fn(&HttpRequest) -> HttpResponse + Send + Sync>;
+
+/// An action's view of the app (D12): its sub-calls run on the harness itself, which the
+/// action lends out while it runs (`TestApp::action`).
+struct HarnessAction {
+    app: Arc<std::sync::Mutex<TestApp>>,
+    caller: HostCaller,
+    key: String,
+}
+
+impl HarnessAction {
+    fn with<R>(&self, f: impl FnOnce(&mut TestApp) -> R) -> R {
+        let mut app = self
+            .app
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        app.in_action = true;
+        let out = f(&mut app);
+        app.in_action = false;
+        out
+    }
+}
+
+fn failure_text(f: &Failure) -> String {
+    match f {
+        Failure::App { code, fields } => {
+            serde_json::json!({ "code": code, "fields": fields }).to_string()
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+impl ActionHost for HarnessAction {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn view(&self, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
+        self.with(|app| {
+            app.caller(self.caller.clone())
+                .view(method, args)
+                .map(|v| v.to_string().into_bytes())
+                .map_err(|f| failure_text(&f))
+        })
+    }
+
+    fn call(&self, method: &str, args: &[u8], _key: &str) -> Result<Vec<u8>, String> {
+        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
+        self.with(|app| {
+            app.caller(self.caller.clone())
+                .call(method, args)
+                .map(|v| v.to_string().into_bytes())
+                .map_err(|f| failure_text(&f))
+        })
+    }
+}
+
+/// `mock_http`'s handlers, by host.
+struct HarnessHttp(BTreeMap<String, HttpHandler>);
+
+impl HttpHost for HarnessHttp {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        let rest = request
+            .url
+            .split_once("://")
+            .map_or(request.url.as_str(), |(_, r)| r);
+        let host = rest.split(['/', ':', '?']).next().unwrap_or_default();
+        let handler = self
+            .0
+            .get(host)
+            .ok_or_else(|| format!("no mock for host {host} (t.mock_http)"))?;
+        Ok(handler(request))
+    }
 }
 
 /// An xcall a logged run sent (D25), as the platform would deliver it.
@@ -220,6 +304,10 @@ impl TestApp {
             usage: Usage::default(),
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
+            started: Vec::new(),
+            next_action: 0,
+            http: BTreeMap::new(),
+            in_action: false,
         };
         let owner = HostCaller::Account(OWNER.to_owned());
         let res = app.run(InvocationKind::Init, owner, "init", Vec::new(), None);
@@ -404,6 +492,123 @@ impl TestApp {
         self.run(InvocationKind::XcallDeliver, caller, method, args, None)
     }
 
+    /// Answers an action's HTTP requests to `host` (D12) with `handler`; a request to a
+    /// host without one fails in the action (`Fetch`).
+    pub fn mock_http(
+        &mut self,
+        host: &str,
+        handler: impl Fn(&HttpRequest) -> HttpResponse + Send + Sync + 'static,
+    ) {
+        let _prev = self.http.insert(host.to_owned(), Arc::new(handler));
+    }
+
+    /// Runs every action logged runs started so far (`start_action`, or a call of an
+    /// action), oldest first, each as the caller who started it; their results.
+    pub fn run_started_actions(&mut self) -> Vec<Result<Value, Failure>> {
+        let started = std::mem::take(&mut self.started);
+        started
+            .into_iter()
+            .map(|(caller, a)| self.action_as(caller, &a.id, &a.method, a.args))
+            .collect()
+    }
+
+    /// Runs `method` as an action (D12) for `caller`, with key `key`: no state access,
+    /// views and calls on this harness as `caller`, HTTP through `mock_http`. Retries and
+    /// the 10 s budget are the node's.
+    fn action_as(
+        &mut self,
+        caller: HostCaller,
+        key: &str,
+        method: &str,
+        args: Vec<u8>,
+    ) -> Result<Value, Failure> {
+        let inv = Invocation {
+            kind: InvocationKind::Action,
+            method: method.to_owned(),
+            args,
+            caller: caller.clone(),
+            entry_ts_ms: self.now_ms,
+            id_term: 0,
+            id_seq: 0,
+            seed: [0; 32],
+            timer: None,
+        };
+        let (engine, prepared) = (self.engine, self.prepared.clone());
+        let http = Arc::new(HarnessHttp(self.http.clone()));
+        let dir = Arc::new(HarnessDir(self.org.clone()));
+        // The action lends the harness to its own sub-calls while it runs.
+        let blank = self.blank();
+        let lent = Arc::new(std::sync::Mutex::new(std::mem::replace(self, blank)));
+        let runner = Arc::new(HarnessAction {
+            app: Arc::clone(&lent),
+            caller,
+            key: key.to_owned(),
+        });
+        let out = match HostCore::new(APP_ID, Arc::new(BTreeMap::new()), 0, inv, dir) {
+            Ok(host) => engine.invoke(
+                &prepared,
+                host.with_action(runner).with_http(http),
+                Budget::action(),
+            ),
+            Err(e) => {
+                *self = take_back(lent);
+                return Err(Failure::BadOutput(e.to_string()));
+            }
+        };
+        *self = take_back(lent);
+        self.usage = out.usage;
+        self.finish(true, None, out)
+    }
+
+    fn is_action(&self, method: &str) -> bool {
+        self.prepared
+            .abi
+            .methods
+            .get(method)
+            .is_some_and(|m| m.kind == MethodKind::Action)
+    }
+
+    /// Log the start of action `method` (D17) as a call would: its key, queued for
+    /// `run_started_actions`.
+    fn start(&mut self, caller: HostCaller, method: &str, args: Vec<u8>) -> Value {
+        self.seq += 1;
+        self.last_entry_ms = self.now_ms;
+        let id = format!("a.{TERM}.{}.0", self.seq);
+        self.started.push((
+            caller,
+            ActionStart {
+                id: id.clone(),
+                method: method.to_owned(),
+                args,
+            },
+        ));
+        serde_json::json!({ "actionId": id })
+    }
+
+    /// A harness with nothing in it, standing in while an action holds the real one.
+    fn blank(&self) -> Self {
+        Self {
+            engine: self.engine,
+            prepared: self.prepared.clone(),
+            state: BTreeMap::new(),
+            org: self.org.clone(),
+            now_ms: self.now_ms,
+            last_entry_ms: self.last_entry_ms,
+            seed: 0,
+            draws: 0,
+            seq: 0,
+            last_tick: BTreeMap::new(),
+            events: Vec::new(),
+            usage: Usage::default(),
+            blobs: BTreeMap::new(),
+            outbox: Vec::new(),
+            started: Vec::new(),
+            next_action: 0,
+            http: BTreeMap::new(),
+            in_action: false,
+        }
+    }
+
     /// The usage of the last invocation.
     #[must_use]
     pub fn last_usage(&self) -> Usage {
@@ -484,7 +689,7 @@ impl TestApp {
             kind,
             method: method.to_owned(),
             args,
-            caller,
+            caller: caller.clone(),
             entry_ts_ms,
             id_term: TERM,
             id_seq: self.seq,
@@ -526,6 +731,10 @@ impl TestApp {
             self.last_entry_ms = entry_before;
         } else if !is_view {
             self.last_entry_ms = self.now_ms;
+        }
+        if out.status == Status::Ok && !is_view {
+            self.started
+                .extend(out.actions.iter().cloned().map(|a| (caller.clone(), a)));
         }
         self.finish(is_view, emitter, out)
     }
@@ -643,8 +852,12 @@ impl TestApp {
         else {
             return refuse("UnknownMethod");
         };
-        if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+        let starts_action = m.kind == MethodKind::Action && !view && !self.in_action;
+        if !matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action {
             return refuse("WrongKind");
+        }
+        if m.action_only && !self.in_action {
+            return refuse("Forbidden");
         }
         if view && m.confirm {
             return refuse("ConfirmNotAView");
@@ -664,6 +877,18 @@ impl TestApp {
     #[must_use]
     pub fn stored_key(key: &[u8]) -> Vec<u8> {
         host_key(calimero_app_host::GENERATION, key)
+    }
+}
+
+/// The harness back from an action's runner, which dropped its handle when the run ended.
+fn take_back(lent: Arc<std::sync::Mutex<TestApp>>) -> TestApp {
+    match Arc::try_unwrap(lent) {
+        Ok(m) => m
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        // SAFETY: the engine drops the store, and with it the runner's handle, before
+        // `invoke` returns; nothing else holds one.
+        Err(_) => panic!("harness: an action's runner outlived its run"),
     }
 }
 
@@ -695,6 +920,10 @@ impl As<'_> {
         {
             return Err(f);
         }
+        // A call of an action starts it, as on a node (D17): logged, run later.
+        if self.app.is_action(method) {
+            return Ok(self.app.start(self.caller.clone(), method, args));
+        }
         self.app.run(
             InvocationKind::Call,
             self.caller.clone(),
@@ -702,6 +931,28 @@ impl As<'_> {
             args,
             None,
         )
+    }
+
+    /// Starts `method` as an action and runs it at once (spec section 10: `t.as_("bob")
+    /// .action("enrich_company", args)`), as this caller; its result.
+    ///
+    /// # Errors
+    ///
+    /// The node's refusals before it starts, or the action's `Failure`.
+    pub fn action(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
+        let args = args_bytes(&args);
+        if let Some(f) = self.app.gate(method, &self.caller, false, Some(&args)) {
+            return Err(f);
+        }
+        if !self.app.is_action(method) {
+            return Err(Failure::App {
+                code: "WrongKind".to_owned(),
+                fields: Value::Object(serde_json::Map::new()),
+            });
+        }
+        self.app.next_action += 1;
+        let key = format!("a.harness.{}", self.app.next_action);
+        self.app.action_as(self.caller.clone(), &key, method, args)
     }
 
     /// Runs a view: nothing is logged and nothing written.
