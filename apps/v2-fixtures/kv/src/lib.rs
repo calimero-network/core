@@ -91,6 +91,12 @@ pub enum Error {
     CaptchaFailed,
 }
 
+/// `{ token }`.
+#[derive(serde::Serialize)]
+struct TokenArg<'a> {
+    token: &'a str,
+}
+
 /// `{ id }`.
 #[derive(serde::Serialize)]
 struct IdArg<'a> {
@@ -152,6 +158,24 @@ impl Kv {
                 answer: &answer,
             },
         )?;
+        if !solved {
+            app::bail!(Error::CaptchaFailed);
+        }
+        self.set(key, value)
+    }
+
+    /// Sets `key` as `set` does, once the captcha service `captcha` accepted Cloudflare
+    /// Turnstile token `token`: the service checks it with Turnstile from its own call
+    /// (D76), all inside this one.
+    pub fn set_human_turnstile(
+        &mut self,
+        key: String,
+        value: String,
+        captcha: String,
+        token: String,
+    ) -> app::Result<()> {
+        let solved: bool =
+            env::xcall_call(&captcha, "verifyTurnstile", &TokenArg { token: &token })?;
         if !solved {
             app::bail!(Error::CaptchaFailed);
         }

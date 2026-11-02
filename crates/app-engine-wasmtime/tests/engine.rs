@@ -367,13 +367,13 @@ fn stdout_and_stderr_lines_go_to_the_log() {
 }
 
 #[test]
-fn outgoing_http_outside_actions_traps_host_denied() {
+fn outgoing_http_traps_in_views_and_is_recorded_in_calls() {
     let fx = fixture();
     let app = prepare(&fx, "clock_reader");
     let out = fx.engine.invoke(
         &app,
-        host(InvocationKind::Call, "fetch", b""),
-        Budget::call(),
+        host(InvocationKind::View, "fetch", b""),
+        Budget::view(),
     );
     assert_eq!(
         trap_kind(&out),
@@ -381,6 +381,16 @@ fn outgoing_http_outside_actions_traps_host_denied() {
         "{:?}",
         out.status
     );
+    // A call may send (D76); with no gate the request is refused (the guest's response
+    // future holds the error), and the entry records the attempt.
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "fetch", b""),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok);
+    assert_eq!(out.http.len(), 1);
+    assert!(out.http[0].response.is_err());
 }
 
 #[test]

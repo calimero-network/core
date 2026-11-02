@@ -2,6 +2,11 @@
 
 Oct 27, 2026 · @Xabi
 
+Changes proposed after v0.14, in this repository (for @Xabi to fold into the current spec; D76 is a placeholder number, after the D53–D75 that later versions use):
+
+- D76: calls, timers and xcall deliveries may make outbound HTTP, recorded in their log entry so followers and retries never fetch again; S9 reworded, D12 narrowed. This reverses v0.6's "`Outcome` loses its `outbound` field".
+- Section 4: `xcall` gains synchronous `call` and `view`, which wait for another app's answer within the run (one hop, not atomic with the caller); the SDK table gains `env::xcall_call`, `env::xcall_view` and `env::fetch`.
+
 Changes in v0.14, from the G1 contract review:
 
 - D49: range cursors read the state as of when they opened.
@@ -143,7 +148,7 @@ Added in v0.3, to settle the questions that would otherwise force a rewrite duri
 | D9 | Tables, indexes, uniqueness and counts live in the SDK, on the host's ordered key-value storage | Calls run one at a time, so guest-side checks are safe; the host interface stays small and language-neutral | Benchmarks show guest-side indexes are too slow |
 | D10 | One storage encoding for both SDKs: order-preserving tuple encoding for keys, deterministic CBOR for values. Calls stay `handle(method, args)` with JSON args per the ABI | Exports, admin tools, migrations and agent tools read any app's state whatever language wrote it; one interface for every app | — |
 | D11 | Migrations run in chunks across log entries when they exceed one entry's limits; writes get `503 MIGRATING` meanwhile, views keep serving. Since v0.10 the chunks build a new keyspace instead of rewriting records in place (D38) | The spec's single-entry `migrate()` can't exceed 10,000 writes or 8 MiB | — |
-| D12 | Outbound HTTP runs only in actions (`@app.action`): outside the log, 10 s budget, no direct state access; they write by calling normal methods, each its own entry | A call never waits on the network, so the log never stalls and the 2 s limit holds | — |
+| D12 | Outbound HTTP runs only in actions (`@app.action`): outside the log, 10 s budget, no direct state access; they write by calling normal methods, each its own entry. Narrowed by D76: calls, timers and deliveries may also make a recorded request within their own budget | A call never waits on the network, so the log never stalls and the 2 s limit holds | — |
 | D13 | Every invocation has an explicit caller: account or API key, `System` for timers and `migrate`, `App(source)` for delivered xcalls, the owner for `init`; actions pass on the caller who started them | Access checks must not quietly pass for timers or xcalls | — |
 | D14 | Free, Basic and Premium apps share a process, isolated by the wasmtime sandbox, per-app encryption keys, a fresh instance per call and Spectre mitigations; Enterprise gets dedicated clusters | Matches the spec's plans; the executor keeps engines movable into worker processes later | A sandbox escape in wasmtime, or a customer requirement for process isolation |
 
@@ -230,6 +235,12 @@ Added in v0.14:
 | D51 | The ABI carries `abiVersion` (1 today). Nodes refuse an unsupported version, ignore unknown keys and refuse bad values in known keys; a field nodes must enforce bumps the version | Refusing unknown keys would make every older node refuse apps from a newer SDK, even for optional metadata such as MCP tool descriptions |
 | D52 | `unique-id` is `<leader term>.<call seq>.<n>`: the leader's term, its per-term execution counter and the position in the run. This replaces D47's log index and position. An add is recorded in the log as its summed value | The entry index isn't known while a call runs, so index-based ids could repeat across concurrent runs or a leader change; summed values keep the log format simple to replay and verify |
 
+Proposed after v0.14:
+
+| # | Decision | Why |
+| --- | --- | --- |
+| D76 | Calls, timers and xcall deliveries may send outbound HTTP (`wasi:http`, the SDK's `env::fetch`), as actions do (D12). **Gating:** only to URLs under a prefix the signed manifest declares under `outbound` (D18), approved by the owner, to a host the operator allows; secrets (`{{secret:NAME}}`) are filled in by the host and redacted from the response, never visible to the app (R14); never from views, `init` or migrations (they trap `HostDenied`); one request per run, as the gate allows today. **Determinism:** the request runs once, on the leader, while it runs the call, before proposing. The entry records the exchange (`Outcome::http`: method, URL, headers and body as the app made them, with placeholders, never secrets; status, headers and body as the gate returned them; each body cut to 64 KiB with its full length), kept whatever the call's status. Followers apply the diff and never fetch; nothing re-runs the call from the log. **Idempotency:** a retry with the same idempotency key replays the recorded result and fetches nothing, which single-use tokens (Turnstile) need. A run the log never commits (a leader race, a `Timeout`, D23) recorded nothing, so its re-run fetches again; a remote side that must not see a request twice gets an idempotency key from the app. **Latency and failure:** a response is awaited at most 1.5 s (`CALL_FETCH_TIMEOUT`, inside the 2 s call budget) and bounded by the gate's size limits; a timeout, a refusal or an unreachable host is an error the app's `fetch` returns and the app decides on, never a trap the node retries, and the attempt is recorded. A call that overruns its own budget times out as any call does (D23). **xcall.call:** the target's request is recorded in the target's own entry; a synchronous target still makes no synchronous call onward. **Threat model:** the leader sees the response before it is logged, and a malicious leader could forge one. Attestation covers the code that made the request and the TLS connection it made (the measured image holds the HTTPS client and its trust roots), not the remote server's answer. This is the same trust as an action's request, whose answer reaches the log through the action's calls | Some checks belong in the same request as the write they guard: a captcha service verifying a Turnstile token before a form submit cannot hand the answer back through an action, which commits later. Recording the exchange keeps replicas identical and makes the request auditable, and the gate is the one actions already pass |
+
 ## 3. Runtime architecture
 
 The executor sees only an `Outcome`; engines translate the WIT contract into calls on one host core, which alone touches state and policy.
@@ -279,6 +290,7 @@ pub struct Outcome {
     pub events: Vec<Event>,      // empty unless status is Ok
     pub xcalls: Vec<Outbox>,     // empty unless status is Ok
     pub actions: Vec<ActionStart>, // ActionStarted records (D17); empty unless status is Ok
+    pub http: Vec<HttpExchange>, // outbound requests and responses of a logged run (D76); kept whatever the status
     pub usage: Usage,            // fuel and CPU time, for limits and billing
 }
 ```
@@ -287,7 +299,7 @@ Rules:
 
 - The host core is the only code that reads or writes state, applies access policy, or decides audiences.
 - An engine adapter is generated bindings plus limit wiring. It holds no app state between calls.
-- Any status other than `Ok` drops the diff, the events, the xcalls and any actions started. Except for a Timeout (D23), the call is still logged with its status and result, so its idempotency key is spent and a retry returns the same answer.
+- Any status other than `Ok` drops the diff, the events, the xcalls and any actions started. Except for a Timeout (D23), the call is still logged with its status and result, so its idempotency key is spent and a retry returns the same answer. Recorded HTTP exchanges stay (D76): the requests left the node.
 
 State access (D46): the host core reads app state through a `StateView` trait, `get` and `range` at an applied index, and never through a concrete map. Views get a view at the index they read; calls get the leader's latest. The in-memory map is the first implementation.
 
@@ -367,6 +379,11 @@ interface blobs {
 
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
+  // Synchronous: the target's call, committed in its own log before this run continues, under a key
+  // derived from this run's (a re-run replays it); not atomic with this run. Calls, timers, actions.
+  call: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
+  // Synchronous read of the target's latest committed state. Calls, timers, views, actions.
+  view: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
 }
 
 // Available only while handling kind = action (D12, D17)
@@ -397,7 +414,7 @@ world app {
   import wasi:cli/stderr@0.2.12;
   import wasi:cli/environment@0.2.12;
   import wasi:http/types@0.2.12;
-  import wasi:http/outgoing-handler@0.2.12; // usable in actions only (D12)
+  import wasi:http/outgoing-handler@0.2.12; // actions (D12); calls, timers and deliveries, recorded (D76)
 
   use types.{invocation-kind, app-error};
   export handle: func(kind: invocation-kind, method: string, args: list<u8>) -> result<list<u8>, app-error>;
@@ -420,7 +437,7 @@ Rules the host enforces, whatever the guest says:
 | `wasi:random/random` | Depends on the invocation kind: see Time and randomness in section 5 |
 | `wasi:cli/stdout`, `stderr` | The owner-only app log (spec §21); never operator-visible |
 | `wasi:cli/environment` | Empty: no variables, no arguments |
-| `wasi:http/outgoing-handler` | Only inside actions: hosts declared in the signed manifest, 10 s budget, at-least-once; a call or view that tries it traps HostDenied |
+| `wasi:http/outgoing-handler` | Actions: hosts declared in the signed manifest, 10 s budget, at-least-once. Calls, timers and deliveries: the same gate, one request, a 1.5 s response wait, the exchange recorded in the entry and never re-fetched (D76). A view, `init` or migration that tries it traps HostDenied |
 | `wasi:filesystem`, `wasi:sockets` | `wasi:sockets`: refused at install. `wasi:filesystem/{types, preopens}`: accepted only as host stubs that refuse, with no directories (D44) |
 
 Also imported, because the interfaces above depend on them: `wasi:io/streams`, `wasi:io/poll`, `wasi:io/error` and `wasi:http/types`, all pinned to 0.2.12 (D43). Move to WASI 0.3 once StarlingMonkey supports it; no one has checked 0.3 against this list yet.
@@ -680,7 +697,7 @@ The runtime must hold three properties: a call sees only its own app's state, no
 | S6 | Host panics become `Trap(Fault)`, never a node crash; the node stays up and the entry is logged | Fuzz host functions with malformed guest input |
 | S7 | Every engine is pinned per node release and inside the measured image; an engine security fix ships as a node release through the 2-of-3 approval | Release checklist |
 | S8 | Precompiled artifacts are checked against bundle hash, engine version and config before loading; never loaded from outside the node's encrypted store | Tampered-artifact test |
-| S9 | Outbound HTTP only from actions, which run on the leader, and only to hosts declared in the signed manifest; never from calls or views | Undeclared-host and view tests |
+| S9 | Outbound HTTP only from runs on the leader (actions, calls, timers, xcall deliveries), only to URLs the signed manifest declares, the owner approved and the operator allows, with secrets filled in by the host; never from views, `init` or migrations. A logged run's exchange is recorded in its entry and never re-fetched (D76) | Undeclared-host, unapproved, view and replay tests |
 | S10 | App logs and traps never contain arguments, results or account ids outside the owner-only log route | `check-no-user-data-at-info` as a CI gate on the runtime crates |
 
 Review findings that this spec closes by design: issue 1 (S3, S4), issue 6 (S5), issue 8 (writer rotation goes away with storage wrappers), issue 11 (xcall becomes an outbox in the WIT world, never silently dropped). The rest of the review's blockers sit outside the runtime and stay with the node work.
@@ -989,6 +1006,9 @@ Every host capability, with where it may be called; calling one from a disallowe
 | Applied index | `env::applied_index()` | `env.appliedIndex()` | u64 | all |
 | Emit event | `env::emit(e, audience)` | `env.emit(e, audience)` | — | call, timer, init, xcall delivery |
 | Cross-app call | `env::xcall(app, method, args)` | `env.xcall(app, method, args)` | —, delivered after commit | call, timer |
+| Synchronous cross-app call | `env::xcall_call(app, method, args)` | `env.xcallCall(app, method, args)` | the target's result; committed in the target's log first, not atomic with the caller; one hop | call, timer, action |
+| Synchronous cross-app read | `env::xcall_view(app, method, args)` | `env.xcallView(app, method, args)` | the target view's result, on its latest state | call, timer, view, action |
+| Outbound HTTP | `env::fetch(request)` (actions: `ctx.fetch`) | `fetch(…)` | the response; recorded in the entry (D76) | call, timer, xcall delivery, action |
 | App log | `env::log!(…)`, stdout | `console.log(…)` | owner-only log | all |
 | State | collections and tables | collections and tables | — | read: all except action; write: call, timer, init, xcall delivery; migrate writes through `rebuild` only |
 

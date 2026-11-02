@@ -371,14 +371,14 @@ impl Node {
         state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
-        run_key: Option<String>,
+        extras: RunExtras,
     ) -> Outcome {
-        self.run_with(prepared, app_id, state, applied, invocation, run_key, None)
+        self.run_with(prepared, app_id, state, applied, invocation, extras, None)
     }
 
     /// [`Self::run_component`], with the app's search index for a view (spec section 7).
-    /// With `run_key` (the run's own key: a call's caller and idempotency key, a tick's
-    /// slot), the run reaches other apps synchronously through [`NodeXcall`].
+    /// `extras` says what else the run reaches: other apps synchronously through
+    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (D76).
     #[allow(clippy::too_many_arguments)]
     fn run_with(
         &self,
@@ -387,10 +387,21 @@ impl Node {
         (state, blobs): (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
-        run_key: Option<String>,
+        extras: RunExtras,
         search: Option<Arc<dyn calimero_app_host::SearchHost>>,
     ) -> Outcome {
-        let xcalls = run_key.and_then(|key| {
+        let http = extras.outbound.then(|| {
+            let meter = self.meter(app_id, &prepared.hash);
+            Arc::new(TimedHttp {
+                inner: Arc::new(NodeHttp(self.outbound_for(
+                    app_id,
+                    &prepared.hash,
+                    self.usage.outbound(&meter.app, &meter.payer),
+                ))),
+                timeout: CALL_FETCH_TIMEOUT,
+            })
+        });
+        let xcalls = extras.key.and_then(|key| {
             let node = self.this.lock().ok()?.upgrade()?;
             let handle = tokio::runtime::Handle::try_current().ok()?;
             Some(Arc::new(NodeXcall {
@@ -418,6 +429,10 @@ impl Node {
                     Some(xcalls) => host.with_xcall_host(xcalls),
                     None => host,
                 };
+                let host = match http {
+                    Some(http) => host.with_http(http),
+                    None => host,
+                };
                 Outcome::from_host(self.wasm.invoke(prepared, host, self.budget()))
             }
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
@@ -437,10 +452,10 @@ impl Node {
         state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
-        run_key: Option<String>,
+        extras: RunExtras,
     ) -> Outcome {
         self.metered(meter, || {
-            self.run_component(prepared, app_id, state, applied, invocation, run_key)
+            self.run_component(prepared, app_id, state, applied, invocation, extras)
         })
     }
 
@@ -529,7 +544,7 @@ impl Node {
                             seed: calimero_identity::random::<32>(),
                             timer: None,
                         },
-                        None,
+                        RunExtras::default(),
                     ),
                     Err(why) => Outcome::trap(TrapKind::Fault, why),
                 };
@@ -687,7 +702,10 @@ impl Node {
                             previous_ms,
                         }),
                     },
-                    Some(format!("tick:{timer}:{slot}")),
+                    RunExtras {
+                        key: Some(format!("tick:{timer}:{slot}")),
+                        outbound: true,
+                    },
                 );
                 if outcome.is_timeout() {
                     debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
@@ -852,13 +870,18 @@ impl Node {
                             seed: calimero_identity::random::<32>(),
                             timer: None,
                         },
-                        // The caller is part of the key: two callers' calls under the same
-                        // key are two calls of the target.
-                        Some(format!(
-                            "call:{}:{}",
-                            serde_json::to_string(&req.caller).unwrap_or_default(),
-                            req.idempotency_key.as_deref().unwrap_or_default()
-                        )),
+                        RunExtras {
+                            // The caller is part of the key: two callers' calls under the
+                            // same key are two calls of the target.
+                            key: Some(format!(
+                                "call:{}:{}",
+                                serde_json::to_string(&req.caller).unwrap_or_default(),
+                                req.idempotency_key.as_deref().unwrap_or_default()
+                            )),
+                            // A read-only member's run reaches no outbound host, as on the
+                            // wasmer path.
+                            outbound: !read_only,
+                        },
                     )
                 };
                 // A timeout is not logged and does not spend the key (D23).
@@ -1110,7 +1133,10 @@ impl Node {
                     state,
                     applied,
                     invocation,
-                    Some("view".to_owned()),
+                    RunExtras {
+                        key: Some("view".to_owned()),
+                        outbound: false,
+                    },
                     search,
                 )
             })
@@ -1676,6 +1702,48 @@ impl calimero_app_host::ActionHost for NodeAction {
             Some(Err(e)) => Err(e.message),
             None => Err("the node is shutting down".into()),
         }
+    }
+}
+
+/// What a component run reaches besides its own state, by the kind of run.
+#[derive(Clone, Debug, Default)]
+struct RunExtras {
+    /// The run's own key (a call's caller and idempotency key, a tick's slot, a view's
+    /// placeholder): with one, the run reaches other apps synchronously ([`NodeXcall`]).
+    key: Option<String>,
+    /// The app's outbound gate (D76): calls (but a read-only member's), timers and
+    /// deliveries; never views or `init`.
+    outbound: bool,
+}
+
+/// How long a call, timer or delivery waits for one outbound response (D76): within the
+/// 2 s call budget (`calimero_app_host::Budget::call`), so a slow host costs the run an
+/// error it handles, not the log a stalled entry.
+pub const CALL_FETCH_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+/// [`NodeHttp`] for a logged run: the gate's answer, or a timeout after `timeout`. The
+/// request may still complete in the background; the run has moved on, and its entry
+/// records the timeout.
+struct TimedHttp {
+    inner: Arc<NodeHttp>,
+    timeout: Duration,
+}
+
+impl calimero_app_host::HttpHost for TimedHttp {
+    fn send(
+        &self,
+        request: &calimero_app_host::HttpRequest,
+    ) -> Result<calimero_app_host::HttpResponse, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (inner, request) = (Arc::clone(&self.inner), request.clone());
+        let _detached = std::thread::Builder::new()
+            .name("call-fetch".into())
+            .spawn(move || {
+                let _sent = tx.send(calimero_app_host::HttpHost::send(&*inner, &request));
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv_timeout(self.timeout)
+            .unwrap_or_else(|_| Err(format!("no response within {:?}", self.timeout)))
     }
 }
 

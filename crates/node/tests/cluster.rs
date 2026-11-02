@@ -3058,6 +3058,7 @@ async fn outbound_requests_need_the_owners_approval() {
         hosts: vec!["echo.outbound.test".to_owned()],
         testing: Some(calimero_outbound::OutboundTestSettings {
             echo: true,
+            turnstile: false,
             secrets: [(
                 "ECHO_KEY".to_owned(),
                 calimero_outbound::TestSecretSettings {

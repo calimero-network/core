@@ -50,6 +50,14 @@
   WIT `xcall` gains `call` and `view`. Example: `apps/v2-fixtures/captcha`, a
   captcha service other apps verify answers with in the same request. The
   harness gains `mock_app`.
+- **Outbound HTTP from component calls** (D76; S9 changed). Calls, timers and
+  xcall deliveries may send one request (`env::fetch`), through the same gate
+  as actions: a URL the signed manifest declares, the owner approved and the
+  operator allows, secrets filled in by the node. The exchange is recorded in
+  the call's log entry, so followers and keyed retries never fetch again; a
+  response is awaited at most 1.5 s, and a failure is an error the app
+  handles. Views, `init` and migrations still cannot send. The captcha example
+  gains `verifyTurnstile`.
 
 ## [1.0.0-rc.7] - 2026-10-31
 

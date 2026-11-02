@@ -141,9 +141,10 @@ thread. A run repeated after a leader race sends it again.
 
 ## Actions (component apps)
 
-A `calimero:app` component never calls out from a call or a view (spec
-`app-runtime-v0.14` D12, S9). It calls out from an **action**: an
-`#[app::action]` method that runs outside the log, on the app's leader.
+A `calimero:app` component calls out from an **action** (spec
+`app-runtime-v0.14` D12, S9): an `#[app::action]` method that runs outside the
+log, on the app's leader. A call can also make one recorded request itself
+(below), never a view.
 
 - **Start** (D17). A client calls the action's method through `/intents`, or a
   call or timer runs `env::start_action(method, &args)`. Either way an entry
@@ -167,6 +168,34 @@ A `calimero:app` component never calls out from a call or a view (spec
   end is logged. A failure sends an `ActionFailed { actionId, method, reason }`
   event to the starter and runs the app's `onActionFailed` as the starter. A
   new leader resumes every action that has not ended, with the same key.
+
+## Outbound HTTP from component calls
+
+A component's call, timer or xcall delivery may send one request itself
+(`env::fetch`; spec D76), for a check that belongs in the same request as the
+write it guards, such as a captcha service verifying a Turnstile token:
+
+- **The same gate as actions.** A URL the signed release declares under
+  `outbound`, the owner approved and the operator allows; `{{secret:NAME}}` is
+  filled in by the node and redacted from the response. Views, `init` and
+  migrations cannot send (`HostDenied`), nor can a read-only member's call.
+- **Once, recorded.** The leader sends it while it runs the call, before
+  proposing. The call's log entry records the exchange (`Outcome::http`: the
+  request as the app made it, with placeholders, and the response the gate
+  returned; bodies cut to 64 KiB), whatever the call's status. Followers apply
+  the diff and never fetch, and a retry with the same idempotency key replays
+  the recorded answer. A run the log never commits (a leader race, a timeout)
+  recorded nothing and sends again when it re-runs.
+- **Bounded.** The node waits at most 1.5 s for the response, inside the
+  call's 2 s budget; a timeout, a refusal or an unreachable host is an error
+  the app's `fetch` returns.
+- **Trust.** The leader sees the response before it is logged. Attestation
+  covers the code that made the request and its TLS connection, not the remote
+  server's answer: the same trust as an action's request.
+
+`apps/v2-fixtures/captcha`'s `verifyTurnstile` is the example; the kv
+fixture's `setHumanTurnstile` reaches it with a synchronous xcall, so the
+token is checked and the form written in one request.
 
 ## Determinism is not what converges
 

@@ -70,6 +70,58 @@ pub struct Outcome {
     /// The actions the run started (D17); empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionOut>,
+    /// The run's outbound requests and what came back (D76), kept whatever the status:
+    /// the entry is their record, so followers and replays never fetch again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub http: Vec<HttpRecord>,
+}
+
+/// One outbound request of a logged run and its response (D76), as the entry records it:
+/// the request as the app made it (secret placeholders, never secrets), the response as
+/// the outbound gate handed it back (secrets redacted); bodies cut to
+/// `calimero_app_host::MAX_RECORDED_BODY_BYTES`, with their full lengths.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpRecord {
+    pub method: String,
+    pub url: String,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub body: calimero_log::Bytes,
+    pub body_len: usize,
+    /// The response's status; `None` when there was none (`error` says why).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default)]
+    pub response_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub response_body: calimero_log::Bytes,
+    #[serde(default)]
+    pub response_body_len: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<host::HttpExchange> for HttpRecord {
+    fn from(x: host::HttpExchange) -> Self {
+        let (status, response_headers, response_body, error) = match x.response {
+            Ok(r) => (Some(r.status), r.headers, r.body, None),
+            Err(e) => (None, Vec::new(), Vec::new(), Some(e)),
+        };
+        Self {
+            method: x.request.method,
+            url: x.request.url,
+            headers: x.request.headers,
+            body: calimero_log::Bytes(x.request.body),
+            body_len: x.request_body_len,
+            status,
+            response_headers,
+            response_body: calimero_log::Bytes(response_body),
+            response_body_len: x.response_body_len,
+            error,
+        }
+    }
 }
 
 /// The name a trap kind has on the wire (the spec's names).
@@ -102,6 +154,7 @@ impl Outcome {
     #[must_use]
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
+        let http = out.http.into_iter().map(HttpRecord::from).collect();
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls, out.actions),
             host::Status::AppError { code, message } => Self {
@@ -115,6 +168,7 @@ impl Outcome {
             host::Status::Trap { kind, detail } => Self::trap(kind, &detail),
         };
         outcome.logs = logs;
+        outcome.http = http;
         outcome
     }
 
@@ -191,6 +245,7 @@ impl Outcome {
             logs: Vec::new(),
             xcalls: sent,
             actions: started,
+            http: Vec::new(),
         }
     }
 
@@ -1137,6 +1192,47 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D76: a logged run's outbound exchange is part of the outcome its entry carries,
+    /// whatever the status, and reads back from the entry's bytes as it was recorded.
+    #[test]
+    fn a_runs_outbound_exchange_is_recorded_in_its_entry() {
+        let request = host::HttpRequest {
+            method: "POST".into(),
+            url: "https://challenges.cloudflare.com/turnstile/v0/siteverify".into(),
+            headers: vec![("Content-Type".into(), "x".into())],
+            body: b"secret={{secret:TURNSTILE_SECRET}}&response=t".to_vec(),
+        };
+        let response = Ok(host::HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"success":true}"#.to_vec(),
+        });
+        let out = Outcome::from_host(host::Outcome {
+            status: host::Status::AppError {
+                code: "No".into(),
+                message: "{}".into(),
+            },
+            result: Vec::new(),
+            diff: Vec::new(),
+            events: Vec::new(),
+            xcalls: Vec::new(),
+            actions: Vec::new(),
+            logs: Vec::new(),
+            http: vec![host::HttpExchange::record(&request, &response)],
+            usage: host::Usage::default(),
+        });
+        let entry: Outcome = serde_json::from_slice(&serde_json::to_vec(&out).unwrap()).unwrap();
+        assert_eq!(entry.http.len(), 1);
+        let x = &entry.http[0];
+        assert_eq!(x.status, Some(200));
+        assert_eq!(x.response_body.0, br#"{"success":true}"#);
+        // The request as the app made it: the placeholder, never the secret.
+        assert!(String::from_utf8_lossy(&x.body.0).contains("{{secret:TURNSTILE_SECRET}}"));
+        // An outcome without one keeps its old bytes (no `http` key).
+        let plain = serde_json::to_value(Outcome::default()).unwrap();
+        assert!(plain.get("http").is_none());
+    }
 
     /// A machine on a real, empty group state (the log's store, in a temp dir).
     struct Rig {

@@ -318,7 +318,8 @@ is its command line.
   `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
   `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
-  re-run sends it again.
+  re-run sends it again. A component's calls, timers and deliveries get the same gate
+  (D76, "Component executor").
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, made on the node's first start and kept
   in `<data_dir>/signing-key` wrapped under K_r, `signing_key.rs`: a restart
@@ -859,7 +860,16 @@ API and system group. What differs from the wasmer path:
   `onActionFailed` as the starter. A new leader resumes what is pending; an end that
   another leader logged first changes nothing. Test:
   `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`.
-- **Synchronous xcalls** (`NodeXcall`): a run made with a key (`run_with`'s `run_key`: a
+- **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
+  read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
+  do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
+  then the app's fetch gets an error). The host core records each exchange
+  (`Outcome::http`, `component::HttpRecord`: the request with its placeholders, the
+  redacted response, bodies cut to 64 KiB with their lengths) in the call's entry,
+  whatever its status; followers never fetch, and a keyed retry replays. Tests:
+  `a_call_checks_a_turnstile_token_through_a_captcha_service`,
+  `a_runs_outbound_exchange_is_recorded_in_its_entry`.
+- **Synchronous xcalls** (`NodeXcall`): a run made with a key (`RunExtras::key`: a
   call's `call:<caller>:<idempotency key>`, a tick's `tick:<method>:<slot>`, an action's
   `action:<id>`, a view's placeholder) reaches other apps through `xcall.call`/`xcall.view`.
   The target must be another component app within `same_boundary` (any other answer is

@@ -13,7 +13,7 @@
 //!   `env_secrets` are, because a merobox node's environment cannot carry them.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use eyre::{bail, Result as EyreResult};
 use serde_json::json;
@@ -65,8 +65,15 @@ pub(super) fn apply(
             inner: Arc::clone(transport),
         });
     }
+    if testing.turnstile {
+        *transport = Arc::new(Turnstile {
+            inner: Arc::clone(transport),
+            spent: Mutex::default(),
+        });
+    }
     warn!(
         echo = testing.echo,
+        turnstile = testing.turnstile,
         secrets = testing.secrets.len(),
         "[outbound.testing] is on: a test build; .test hosts are answered in-process"
     );
@@ -102,6 +109,56 @@ impl Transport for Echo {
     }
 }
 
+/// Answers Turnstile's siteverify as Cloudflare does for its test secrets
+/// (developers.cloudflare.com/turnstile/troubleshooting/testing/), and hands every other
+/// request on.
+#[derive(Debug)]
+struct Turnstile {
+    inner: Arc<dyn Transport>,
+    /// Each token checked so far, with the idempotency key of its first check.
+    spent: Mutex<BTreeMap<String, Option<String>>>,
+}
+
+impl Transport for Turnstile {
+    fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
+        if request.url.as_str() != crate::TURNSTILE_VERIFY_URL {
+            return self.inner.send(request);
+        }
+        let form: BTreeMap<String, String> = url::form_urlencoded::parse(&request.body)
+            .into_owned()
+            .collect();
+        let field = |name: &str| form.get(name).cloned().unwrap_or_default();
+        let (secret, token) = (field("secret"), field("response"));
+        let key = form.get("idempotency_key").cloned();
+        let error = if token.is_empty() {
+            Some("missing-input-response")
+        } else {
+            match secret.as_str() {
+                "1x0000000000000000000000000000000AA" => None,
+                "2x0000000000000000000000000000000AA" => Some("invalid-input-response"),
+                "3x0000000000000000000000000000000AA" => Some("timeout-or-duplicate"),
+                _ => Some("invalid-input-secret"),
+            }
+        };
+        let error = error.or_else(|| {
+            let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+            match spent.get(&token) {
+                None => {
+                    let _ = spent.insert(token, key);
+                    None
+                }
+                Some(first) if first.is_some() && *first == key => None,
+                Some(_) => Some("timeout-or-duplicate"),
+            }
+        });
+        let answer = json!({
+            "success": error.is_none(),
+            "error-codes": error.into_iter().collect::<Vec<_>>(),
+        });
+        Ok((200, serde_json::to_vec(&answer)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_primitives::outbound::{OutboundMethod, OutboundRequest, OutboundResponse};
@@ -118,6 +175,7 @@ mod tests {
             hosts: vec!["echo.outbound.test".to_owned()],
             testing: Some(OutboundTestSettings {
                 echo: true,
+                turnstile: false,
                 secrets: if secrets {
                     [(
                         "ECHO_KEY".to_owned(),
@@ -192,5 +250,67 @@ mod tests {
         )]
         .into();
         assert!(OutboundService::from_settings(&both).is_err());
+    }
+
+    #[test]
+    fn turnstile_answers_as_cloudflare_does_for_its_test_secrets() {
+        const PASS: &str = "1x0000000000000000000000000000000AA";
+        let service = OutboundService::from_settings(&OutboundSettings {
+            enabled: true,
+            hosts: vec!["challenges.cloudflare.com".to_owned()],
+            testing: Some(OutboundTestSettings {
+                turnstile: true,
+                secrets: [(
+                    "TURNSTILE_SECRET".to_owned(),
+                    TestSecretSettings {
+                        value: PASS.to_owned(),
+                        packages: vec!["p".to_owned()],
+                        signers: vec!["s".to_owned()],
+                        hosts: vec!["challenges.cloudflare.com".to_owned()],
+                    },
+                )]
+                .into(),
+                ..OutboundTestSettings::default()
+            }),
+            ..OutboundSettings::default()
+        })
+        .unwrap()
+        .unwrap();
+        let url = crate::TURNSTILE_VERIFY_URL.to_owned();
+        let run = service
+            .for_run(
+                AppIdentity {
+                    package: "p".to_owned(),
+                    signer: "s".to_owned(),
+                },
+                vec![url.clone()],
+                Some(Approval {
+                    prefixes: vec![url.clone()],
+                    reviewed: vec![url.clone()],
+                }),
+                "ctx".to_owned(),
+            )
+            .unwrap();
+        let check = |token: &str, key: &str| {
+            let request = OutboundRequest {
+                method: OutboundMethod::Post,
+                url: url.clone(),
+                headers: Vec::new(),
+                body: format!(
+                    "secret={{{{secret:TURNSTILE_SECRET}}}}&response={token}&idempotency_key={key}"
+                )
+                .into_bytes(),
+            };
+            let answer = run.send(&borsh::to_vec(&request).unwrap()).unwrap();
+            let response: OutboundResponse = borsh::from_slice(&answer).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&response.body).unwrap()
+        };
+        assert_eq!(check("t1", "k1")["success"], true);
+        // The same check again (a retry) answers the same; another spends nothing new.
+        assert_eq!(check("t1", "k1")["success"], true);
+        let again = check("t1", "k2");
+        assert_eq!(again["success"], false);
+        assert_eq!(again["error-codes"][0], "timeout-or-duplicate");
+        assert_eq!(check("", "k3")["error-codes"][0], "missing-input-response");
     }
 }
