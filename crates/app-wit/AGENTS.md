@@ -13,6 +13,7 @@ Holds the `calimero:app@0.5.0` world from the spec (plus `search`, below) and ex
 ## Beyond the spec's section 4
 
 - `interface search` (views only): spec section 7 says full-text search is a host-maintained index queried from views but its world names no interface for it; this one is ours, pending the spec's next version.
+- `xcall.call` and `xcall.view` (synchronous xcalls): the spec's `xcall` has only `send`, the outbox. These wait for another app's answer in the same run (`docs/src/content/docs/protocol/xcall.mdx`, "Synchronous xcalls"); a node before them refuses a component that imports them (unknown import).
 
 ## Rules
 

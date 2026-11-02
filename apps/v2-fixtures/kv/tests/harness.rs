@@ -199,7 +199,10 @@ fn blobs_are_referenced_from_state_and_granted() {
         .as_("owner")
         .call("attach", json!({ "name": "x", "blob": "00".repeat(32) }))
         .unwrap_err();
-    assert_eq!(e, Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied));
+    assert_eq!(
+        e,
+        Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied)
+    );
     t.as_("owner")
         .call("detach", json!({ "name": "greeting" }))
         .unwrap();
@@ -231,7 +234,9 @@ fn notes_are_found_by_their_declared_fields() {
             .unwrap_err(),
         Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied)
     );
-    t.as_("owner").call("dropNote", json!({ "id": "1" })).unwrap();
+    t.as_("owner")
+        .call("dropNote", json!({ "id": "1" }))
+        .unwrap();
     assert_eq!(
         t.as_("owner")
             .view("findNotes", json!({ "text": "eggs" }))
@@ -262,7 +267,10 @@ fn xcalls_leave_only_with_an_ok_run_and_reach_only_methods_that_allow_the_source
     let e = t
         .deliver("app-a", "set", json!({ "key": "k", "value": "w" }))
         .unwrap_err();
-    assert!(matches!(e, Failure::App { ref code, .. } if code == "Forbidden"), "{e:?}");
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "Forbidden"),
+        "{e:?}"
+    );
 }
 
 #[test]
@@ -289,9 +297,15 @@ fn an_action_reads_through_views_fetches_and_writes_through_its_calls() {
     // Only the app's actions reach an `allow(action)` method.
     let e = t
         .as_("owner")
-        .call("applyEnrichment", json!({ "key": "acme", "value": "forged" }))
+        .call(
+            "applyEnrichment",
+            json!({ "key": "acme", "value": "forged" }),
+        )
         .unwrap_err();
-    assert!(matches!(e, Failure::App { ref code, .. } if code == "Forbidden"), "{e:?}");
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "Forbidden"),
+        "{e:?}"
+    );
     // Started from a call, run later as its caller.
     let started = t
         .as_("owner")
@@ -303,12 +317,65 @@ fn an_action_reads_through_views_fetches_and_writes_through_its_calls() {
     assert!(ran[0].is_ok(), "{ran:?}");
     // An app error fails an action at once (D22).
     let e = t.as_("owner").action("explode", json!({})).unwrap_err();
-    assert!(matches!(e, Failure::App { ref code, .. } if code == "BeatFailed"), "{e:?}");
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "BeatFailed"),
+        "{e:?}"
+    );
     // A host with no mock: the fetch fails inside the action.
     let mut bare = app();
     let e = bare
         .as_("owner")
         .action("enrich", json!({ "key": "acme" }))
         .unwrap_err();
-    assert!(matches!(e, Failure::App { ref code, .. } if code == "Fetch"), "{e:?}");
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "Fetch"),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn a_captcha_service_answers_in_the_same_call() {
+    let mut t = app();
+    t.mock_app("captcha", |c| {
+        Ok(match c.method.as_str() {
+            "verify" => {
+                assert!(!c.view && c.key.starts_with("xc:"), "{c:?}");
+                json!(c.args["answer"] == "7")
+            }
+            _ => json!("open"),
+        })
+    });
+    let human = |answer: &str| json!({ "key": "k", "value": "v", "captcha": "captcha", "challenge": "c1", "answer": answer });
+    let e = t.as_("owner").call("setHuman", human("8")).unwrap_err();
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "CaptchaFailed"),
+        "{e:?}"
+    );
+    assert_eq!(
+        t.as_("owner").view("get", json!({ "key": "k" })).unwrap(),
+        json!(null)
+    );
+    t.as_("owner").call("setHuman", human("7")).unwrap();
+    assert_eq!(
+        t.as_("owner").view("get", json!({ "key": "k" })).unwrap(),
+        json!("v")
+    );
+    assert_eq!(
+        t.as_("owner")
+            .view(
+                "captchaStatus",
+                json!({ "captcha": "captcha", "challenge": "c1" })
+            )
+            .unwrap(),
+        json!("open")
+    );
+    // An app without a mock fails the xcall, and the call with it.
+    let e = t
+        .as_("owner")
+        .call("setHuman", json!({ "key": "k", "value": "v", "captcha": "other", "challenge": "c1", "answer": "7" }))
+        .unwrap_err();
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "XcallFailed"),
+        "{e:?}"
+    );
 }

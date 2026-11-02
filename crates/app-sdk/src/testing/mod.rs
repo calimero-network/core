@@ -166,8 +166,74 @@ pub struct TestApp {
     started: Vec<(HostCaller, ActionStart)>,
     next_action: u64,
     http: BTreeMap<String, HttpHandler>,
+    /// `mock_app`'s handlers: the other apps synchronous xcalls reach.
+    apps: BTreeMap<String, AppHandler>,
     /// Set while an action's sub-calls run: `allow(action)` methods are reachable.
     in_action: bool,
+}
+
+/// What `mock_app` answers another app's synchronous xcalls with: the JSON result, or
+/// the failure as JSON (`{"code", "fields"}`, as a node reports the target's app error).
+pub type AppHandler = Arc<dyn Fn(&OtherAppCall) -> Result<Value, Value> + Send + Sync>;
+
+/// A synchronous xcall the app made, as `mock_app`'s handler sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OtherAppCall {
+    /// `true` for `xcall.view`, `false` for `xcall.call`.
+    pub view: bool,
+    /// The target method.
+    pub method: String,
+    /// The JSON arguments.
+    pub args: Value,
+    /// The key a node would log the call under (`xc:..`); empty for a view.
+    pub key: String,
+}
+
+/// `mock_app`'s handlers, by app.
+struct HarnessApps(BTreeMap<String, AppHandler>);
+
+impl HarnessApps {
+    fn answer(&self, app: &str, call: &OtherAppCall) -> Result<Vec<u8>, String> {
+        let handler = self
+            .0
+            .get(app)
+            .ok_or_else(|| format!("no mock for app {app} (t.mock_app)"))?;
+        handler(call)
+            .map(|v| v.to_string().into_bytes())
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl calimero_app_host::XcallHost for HarnessApps {
+    fn key(&self) -> String {
+        "harness".to_owned()
+    }
+
+    fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
+        self.answer(
+            app,
+            &OtherAppCall {
+                view: false,
+                method: method.to_owned(),
+                args,
+                key: key.to_owned(),
+            },
+        )
+    }
+
+    fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
+        self.answer(
+            app,
+            &OtherAppCall {
+                view: true,
+                method: method.to_owned(),
+                args,
+                key: String::new(),
+            },
+        )
+    }
 }
 
 /// What `mock_http` answers a host's requests with.
@@ -307,6 +373,7 @@ impl TestApp {
             started: Vec::new(),
             next_action: 0,
             http: BTreeMap::new(),
+            apps: BTreeMap::new(),
             in_action: false,
         };
         let owner = HostCaller::Account(OWNER.to_owned());
@@ -502,6 +569,18 @@ impl TestApp {
         let _prev = self.http.insert(host.to_owned(), Arc::new(handler));
     }
 
+    /// Answers the app's synchronous xcalls (`env::xcall_call`, `env::xcall_view`) to `app`
+    /// with `handler`; one to an app without a handler fails in the run. The target's own
+    /// checks (its organization, `allow(app = ..)`) and the replay of its keys are the
+    /// node's.
+    pub fn mock_app(
+        &mut self,
+        app: &str,
+        handler: impl Fn(&OtherAppCall) -> Result<Value, Value> + Send + Sync + 'static,
+    ) {
+        let _prev = self.apps.insert(app.to_owned(), Arc::new(handler));
+    }
+
     /// Runs every action logged runs started so far (`start_action`, or a call of an
     /// action), oldest first, each as the caller who started it; their results.
     pub fn run_started_actions(&mut self) -> Vec<Result<Value, Failure>> {
@@ -535,6 +614,7 @@ impl TestApp {
         };
         let (engine, prepared) = (self.engine, self.prepared.clone());
         let http = Arc::new(HarnessHttp(self.http.clone()));
+        let apps = Arc::new(HarnessApps(self.apps.clone()));
         let dir = Arc::new(HarnessDir(self.org.clone()));
         // The action lends the harness to its own sub-calls while it runs.
         let blank = self.blank();
@@ -547,7 +627,9 @@ impl TestApp {
         let out = match HostCore::new(APP_ID, Arc::new(BTreeMap::new()), 0, inv, dir) {
             Ok(host) => engine.invoke(
                 &prepared,
-                host.with_action(runner).with_http(http),
+                host.with_action(runner)
+                    .with_http(http)
+                    .with_xcall_host(apps),
                 Budget::action(),
             ),
             Err(e) => {
@@ -605,6 +687,7 @@ impl TestApp {
             started: Vec::new(),
             next_action: 0,
             http: BTreeMap::new(),
+            apps: BTreeMap::new(),
             in_action: false,
         }
     }
@@ -711,7 +794,8 @@ impl TestApp {
         // SAFETY: the harness builds timer slots exactly for timer invocations.
         .expect("harness builds valid invocations")
         .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
-        .with_search(search);
+        .with_search(search)
+        .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())));
         let budget = if is_view {
             Budget::view()
         } else {

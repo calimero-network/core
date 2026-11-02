@@ -859,6 +859,17 @@ API and system group. What differs from the wasmer path:
   `onActionFailed` as the starter. A new leader resumes what is pending; an end that
   another leader logged first changes nothing. Test:
   `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`.
+- **Synchronous xcalls** (`NodeXcall`): a run made with a key (`run_with`'s `run_key`: a
+  call's `call:<caller>:<idempotency key>`, a tick's `tick:<method>:<slot>`, an action's
+  `action:<id>`, a view's placeholder) reaches other apps through `xcall.call`/`xcall.view`.
+  The target must be another component app within `same_boundary` (any other answer is
+  one `no such app in this organization`). A call goes through `call_component` with the
+  host core's derived key, `Caller::App(source)` and `CallRequest::sync_from` (the target
+  checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
+  view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
+  (3 s) while the runtime runs it; two apps calling each other at once both time out.
+  Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
+  (`apps/v2-fixtures/captcha`).
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are

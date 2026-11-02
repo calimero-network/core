@@ -216,6 +216,11 @@ pub struct CallRequest {
     /// by the node's action runner; reaches `allow(action)` methods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// A component app's synchronous xcall: the calling app, which waits for the answer.
+    /// Set only by the node running the caller (`NodeXcall`); peers pass it along on
+    /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_from: Option<String>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -248,6 +253,7 @@ impl CallRequest {
             host: false,
             xcall: None,
             action: None,
+            sync_from: None,
         }
     }
 

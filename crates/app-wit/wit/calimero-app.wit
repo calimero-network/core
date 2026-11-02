@@ -79,6 +79,11 @@ interface search {
 
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
+  // Synchronous: the target's call, logged in its own log before this run continues, under a
+  // key derived from this run's; not atomic with this run. Calls, timers and actions.
+  call: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
+  // Synchronous read of the target's latest committed state. Calls, timers, views and actions.
+  view: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
 }
 
 // Available only while handling kind = action (D12, D17)

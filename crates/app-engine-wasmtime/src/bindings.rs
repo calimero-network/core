@@ -321,6 +321,24 @@ impl xcall::Host for StoreData {
     ) -> Result<std::result::Result<(), String>> {
         self.host.xcall_send(&app, &method, &args).map_err(denied)
     }
+
+    fn call(
+        &mut self,
+        app: String,
+        method: String,
+        args: Vec<u8>,
+    ) -> Result<std::result::Result<Vec<u8>, String>> {
+        self.host.xcall_call(&app, &method, &args).map_err(denied)
+    }
+
+    fn view(
+        &mut self,
+        app: String,
+        method: String,
+        args: Vec<u8>,
+    ) -> Result<std::result::Result<Vec<u8>, String>> {
+        self.host.xcall_view(&app, &method, &args).map_err(denied)
+    }
 }
 
 impl action::Host for StoreData {
