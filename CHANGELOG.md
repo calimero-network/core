@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.8] - 2026-11-02
+
 ### Added
 
 - **Blobs for component apps** (R8). The blob routes (`POST/GET/DELETE
@@ -58,6 +60,13 @@
   response is awaited at most 1.5 s, and a failure is an error the app
   handles. Views, `init` and migrations still cannot send. The captcha example
   gains `verifyTurnstile`.
+
+### Fixed
+
+- **System writes wait for a leader.** A write to the system group (sign-in,
+  memberships, deployments) now retries until its deadline instead of giving
+  up after about 8 s, so a slow election after a node dies no longer answers
+  `503 UNAVAILABLE: the system group has no leader` (#4821).
 
 ## [1.0.0-rc.7] - 2026-10-31
 
