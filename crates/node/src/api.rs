@@ -5057,9 +5057,15 @@ async fn blob_info(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    let p = gate(&node, &headers, &app, "__blob", false).await?;
     let raw = parse_blob_id(&id)?;
     let stats = node.storage_stats(&app).await?;
+    // A file is no blob to one who may not list files: its hash is the plaintext's.
+    if let Some((_, size, sha256)) = stats.files.iter().find(|(f, ..)| *f == raw) {
+        if node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
+            return Ok(Json(file_json(&raw, *size, sha256)));
+        }
+    }
     let size = stats
         .blobs
         .iter()

@@ -1345,3 +1345,36 @@ async fn only_members_and_above_list_the_files_of_a_public_app_of_an_organizatio
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_unknown_to_the_rest()
+{
+    let f = start().await;
+    let o = org_with_a_public_app(&f).await;
+    let plain = stream(5_000, 3);
+    let up = f.clients[0]
+        .upload_file(&o.app, plain.clone())
+        .await
+        .unwrap();
+    let id = up["id"].as_str().unwrap();
+
+    for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
+        let info = c.blob_info(&o.app, id).await.unwrap();
+        assert_eq!(info["size"], json!(5_000), "{who}");
+        assert_eq!(info["sha256"], json!(sha256_hex(&plain)), "{who}");
+        // Never the key or any content.
+        let mut keys: Vec<_> = info.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["blobId", "id", "sealed", "sha256", "size"], "{who}");
+    }
+    // A caller who may call the app but not list its files learns nothing of the file.
+    for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
+        let e = c.blob_info(&o.app, id).await.unwrap_err();
+        assert_eq!(status(e), (404, "NOT_FOUND".to_owned()), "{who}");
+    }
+    // Downloading it stays refused to everyone.
+    for c in [&o.member, &f.clients[0]] {
+        let e = c.download_blob(&o.app, id).await.unwrap_err();
+        assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
+    }
+}
