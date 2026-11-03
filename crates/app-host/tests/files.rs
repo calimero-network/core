@@ -244,7 +244,8 @@ fn a_file_over_the_per_file_cap_is_a_soft_error_and_writing_stops_there() {
         h.writer_write(w, b"x").unwrap().unwrap_err(),
         FILE_TOO_LARGE
     );
-    assert!(h.writer_finish(w).unwrap().is_ok());
+    assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_FAILED);
+    assert_eq!(h.writer_write(w, b"x").unwrap().unwrap_err(), FILE_FAILED);
 }
 
 #[test]
@@ -268,6 +269,30 @@ fn a_run_over_the_run_cap_is_a_soft_error() {
     assert_eq!(result.unwrap_err(), RUN_WROTE_TOO_MUCH);
     assert!(written <= MAX_RUN_FILE_BYTES);
     assert!(written + chunk.len() as u64 > MAX_RUN_FILE_BYTES);
+}
+
+#[test]
+fn a_write_refused_for_the_run_cap_fails_the_writer_so_finish_seals_nothing() {
+    let mut h = host(inv(InvocationKind::Call), Arc::new(CountingFiles));
+    let chunk = vec![0u8; 1024 * 1024];
+    let mut last = None;
+    while last.is_none() {
+        let w = h.files_create().unwrap().unwrap();
+        for _ in 0..MAX_FILE_BYTES / (1024 * 1024) {
+            if let Err(reason) = h.writer_write(w, &chunk).unwrap() {
+                assert_eq!(reason, RUN_WROTE_TOO_MUCH);
+                last = Some(w);
+                break;
+            }
+        }
+        if last.is_none() {
+            h.writer_close(w);
+        }
+    }
+    let w = last.unwrap();
+    assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_FAILED);
+    let out = finish(h, Status::Ok);
+    assert!(out.new_files.is_empty());
 }
 
 #[test]
@@ -421,10 +446,14 @@ fn a_refused_oversized_write_does_not_count_toward_the_run_cap() {
     }
     let rest = (MAX_FILE_BYTES % (1024 * 1024)) as usize;
     h.writer_write(first, &chunk[..rest]).unwrap().unwrap();
+    assert_eq!(
+        h.writer_write(first, &chunk).unwrap().unwrap_err(),
+        FILE_TOO_LARGE
+    );
     for _ in 0..8 {
         assert_eq!(
             h.writer_write(first, &chunk).unwrap().unwrap_err(),
-            FILE_TOO_LARGE
+            FILE_FAILED
         );
     }
     let second = h.files_create().unwrap().unwrap();

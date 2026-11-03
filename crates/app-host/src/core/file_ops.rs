@@ -104,11 +104,17 @@ impl HostCore {
             Sink::Finished => return Ok(Err(FILE_FINISHED.to_owned())),
             Sink::Failed => return Ok(Err(FILE_FAILED.to_owned())),
         };
-        if writer.bytes.saturating_add(len) > MAX_FILE_BYTES {
-            return Ok(Err(FILE_TOO_LARGE.to_owned()));
-        }
-        if written.saturating_add(len) > MAX_RUN_FILE_BYTES {
-            return Ok(Err(RUN_WROTE_TOO_MUCH.to_owned()));
+        let refused = if writer.bytes.saturating_add(len) > MAX_FILE_BYTES {
+            Some(FILE_TOO_LARGE)
+        } else if written.saturating_add(len) > MAX_RUN_FILE_BYTES {
+            Some(RUN_WROTE_TOO_MUCH)
+        } else {
+            None
+        };
+        if let Some(reason) = refused {
+            // A file missing bytes must not be sealable.
+            writer.sink = Sink::Failed;
+            return Ok(Err(reason.to_owned()));
         }
         if let Err(reason) = sink.write(bytes) {
             writer.sink = Sink::Failed;
