@@ -8,6 +8,8 @@ use super::*;
 use crate::job_wire::{sign_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage};
 
 const DIGEST: [u8; 32] = [9; 32];
+/// The sealed file every started run names, held from the start of a `World`.
+const INPUT: u8 = 0xab;
 
 type Edit = (&'static str, fn(&mut Report));
 type Refusal = (&'static str, &'static str, fn(&mut FinalEntry));
@@ -22,7 +24,8 @@ impl World {
     fn new() -> Self {
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
-        Self { r, last: 1 }
+        let _f = r.apply(2, &file_cmd(INPUT, 0, None));
+        Self { r, last: 2 }
     }
 
     fn push(&mut self, cmd: &ComponentCmd) -> Applied {
@@ -92,8 +95,11 @@ impl World {
         self.push(&ComponentCmd::ComputeFinal(Box::new(entry)))
     }
 
+    /// The blobs held besides the shared input.
     fn files(&self) -> Vec<String> {
-        held(&self.r)
+        let mut held = held(&self.r);
+        held.retain(|id| id != &fid(INPUT));
+        held
     }
 
     fn wrote(&self, key: &str) -> Option<Vec<u8>> {
@@ -115,8 +121,8 @@ fn started(run: &str) -> ComputeStart {
         method: "digest".into(),
         args: Bytes(b"{\"n\":1}".to_vec()),
         inputs: vec![RunInputRef {
-            id: "ab".repeat(32),
-            size: 7,
+            id: fid(INPUT),
+            size: 5,
             sha256: "cd".repeat(32),
         }],
         caps: RunCaps {
@@ -234,7 +240,7 @@ fn a_started_run_is_a_queued_record_and_an_active_id() {
         }
     );
     assert_eq!(rec.start_ts_ms, 1);
-    assert_eq!(rec.inputs[0].size, 7);
+    assert_eq!(rec.inputs[0].size, 5);
     assert_eq!(rec.caps.fuel, 5);
     assert!(!rec.cancel_requested && rec.attempts.is_empty() && rec.final_.is_none());
     assert_eq!(w.active(), ["r1"]);
@@ -1198,7 +1204,12 @@ fn a_run_started_by_init_is_recorded_with_inits_bundle_and_can_be_cancelled() {
     let mut r = Rig::new();
     let mut init: ComponentCmd = serde_json::from_slice(&init(0)).unwrap();
     if let ComponentCmd::Init { outcome, .. } = &mut init {
-        outcome.compute_starts = vec![started("boot")];
+        // The app holds no file yet when init runs.
+        let boot = ComputeStart {
+            inputs: Vec::new(),
+            ..started("boot")
+        };
+        outcome.compute_starts = vec![boot];
     }
     let a = r.apply(1, &serde_json::to_vec(&init).unwrap());
     assert!(!a.conflict, "{a:?}");
@@ -1563,4 +1574,79 @@ fn a_run_whose_acquire_was_refused_for_good_can_end_refused_only_before_any_atte
     let _a = w.assign("r2", &job_key(1));
     let late = leader(&w, "r2", refused);
     assert_eq!(why(&w.finish(late)), "the run was assigned");
+}
+
+/// A call at `ts_ms` that writes `write`.
+fn touch(w: &mut World, ts_ms: u64, write: Write) -> Applied {
+    let mut cmd: ComponentCmd =
+        serde_json::from_slice(&file_call(w.last, ts_ms, Status::Ok, vec![], vec![write])).unwrap();
+    if let ComponentCmd::Call(c) = &mut cmd {
+        c.id_seq = w.last;
+    }
+    w.push(&cmd)
+}
+
+fn input_held(w: &World) -> bool {
+    held(&w.r).contains(&fid(INPUT))
+}
+
+fn input_refs(w: &World) -> u64 {
+    w.r.machine.state.component.blobs.records[&[INPUT; 32]].refs
+}
+
+#[test]
+fn an_input_of_an_active_run_is_kept_until_the_idle_time_after_the_run_is_final() {
+    let mut w = World::new();
+    assert!(!touch(&mut w, 1, store_ref("k", INPUT)).conflict);
+    w.start("r1");
+    assert!(!touch(&mut w, 2, remove("k")).conflict);
+    assert_eq!(input_refs(&w), 1, "only the run refers to it now");
+    // The idle time after the last reference went is long past, yet the run holds the file.
+    assert!(!touch(&mut w, 3 * BLOB_IDLE_MS, store_ref("a", 1)).conflict);
+    assert!(input_held(&w), "an active run's input was forgotten");
+    let k = job_key(1);
+    let _a = w.assign("r1", &k);
+    let mut done = w.done("r1", &k);
+    done.ts_ms = 4 * BLOB_IDLE_MS;
+    assert!(!w.finish(done).conflict);
+    assert!(input_held(&w), "released only when the run ended");
+    assert!(!touch(&mut w, 5 * BLOB_IDLE_MS - 1, store_ref("b", 2)).conflict);
+    assert!(input_held(&w), "inside the idle time");
+    assert!(!touch(&mut w, 5 * BLOB_IDLE_MS + 1, store_ref("c", 3)).conflict);
+    assert!(
+        !input_held(&w),
+        "a final run's input is forgotten after the idle time"
+    );
+    assert!(queued(&w.r).contains(&fid(INPUT)));
+}
+
+#[test]
+fn every_way_a_run_ends_releases_its_inputs() {
+    let refused = FinalOutcome::Failed {
+        reason: FailedReason::Refused,
+    };
+    let mut w = World::new();
+    w.start("r1");
+    w.start("r2");
+    assert_eq!(input_refs(&w), 2);
+    let mut entry = leader(&w, "r1", refused);
+    entry.attempt = 0;
+    entry.base_index = w.last;
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(input_refs(&w), 1, "the other run still holds it");
+    let _a = w.assign("r2", &job_key(1));
+    let _a = w.call(Vec::new(), &["r2"]);
+    let mut entry = leader(&w, "r2", FinalOutcome::Cancelled);
+    entry.base_index = w.last;
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(input_refs(&w), 0);
+}
+
+#[test]
+fn a_start_of_an_input_the_app_no_longer_holds_is_dropped() {
+    let mut w = World::new();
+    let mut gone = started("r1");
+    gone.inputs[0].id = fid(0xcd);
+    let _a = w.call(vec![gone], &[]);
+    assert!(w.active().is_empty() && w.r.machine.run_record("r1").is_none());
 }

@@ -462,6 +462,9 @@ is its command line.
   `finished_runs` keeps the last `FINISHED_RUNS_KEPT` (256) finished ids, oldest first, and a record leaves with its id.
   The record pins the bundle that ran at start, so an upgrade does not move it.
   An input of a run is one of the app's own sealed files (a blob record with a `file` seal), named once; the host refuses a plain blob, an unknown id and a file the same run just made.
+  A start whose input is no longer a sealed file the app holds when it applies is dropped.
+  An active run's inputs count as references of the app (`pin_inputs`: one more at the start, one less at the final), so R8 keeps them even when no state refers to them.
+  They are forgotten `BLOB_IDLE_MS` after the run is final, like any file nothing refers to.
   Two more entries move a run.
   `computeAttempt { run, attempt, node, jobKey, assignmentDigest, tsMs }` applies to an active run whose cancel was not requested, when `attempt` is the next number and at most `MAX_ATTEMPTS` (3) and both keys are hashes (64 lowercase hex); it sets `running`.
   `computeFinal { run, attempt, outcome, report?, signature?, outputs, usage, result, baseIndex, tsMs, idTerm, idSeq }` ends it.
