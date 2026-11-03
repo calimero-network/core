@@ -342,6 +342,7 @@ Full details - key generation, the `did:key` derivation, and how package + signe
 
 `cargo mero publish <mpk>` uploads a signed `.mpk` to the Calimero App Registry.
 It requires the `CALIMERO_API_KEY` environment variable; the registry base URL defaults to `https://apps.calimero.network` and is overridable with `CALIMERO_REGISTRY_URL`.
+The archive goes straight to the registry's storage through a signed upload URL, so a bundle that carries its frontend is not held to the 4.5 MB a registry request body takes (up to 50 MiB). A registry that grants no upload URL gets the archive inline, as before.
 
 ```bash
 cargo mero bundle --key my-key.json --bump patch   # fetch and use the next patch version

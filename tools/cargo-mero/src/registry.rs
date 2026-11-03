@@ -130,17 +130,127 @@ fn parse_component(s: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// Uploads a signed `.mpk`. The registry's CLI endpoint takes the manifest JSON
-/// as the request body, with the whole archive attached under `_binary` (hex);
-/// the registry strips `_`-prefixed keys before checking the signature, so this
-/// doesn't touch what was signed.
+/// The archive's own PUT to storage: up to 50 MiB, so far longer than a JSON call.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Uploads a signed `.mpk`.
+///
+/// The registry runs on Vercel, which refuses a request body over 4.5 MB: the
+/// archive as `_binary` hex in the push stops at about 2.2 MiB, and a bundle
+/// that carries its frontend is usually past that. So the archive goes straight
+/// to storage: `POST /upload-url` grants a signed URL, the `.mpk` is PUT there,
+/// and the push carries the manifest with `_upload: {object}`.
+///
+/// A registry that does not grant one (403, 404 or 405: an older registry, or
+/// an account it does not allow) gets the `_binary` push as before. The
+/// registry strips `_`-prefixed keys before checking the signature, so neither
+/// touches what was signed.
 pub fn publish(base_url: &str, api_key: &str, mpk: &Utf8Path) -> Result<()> {
     require_secure_registry(base_url)?;
     let bytes = std::fs::read(mpk).map_err(|e| eyre!("failed to read {mpk}: {e}"))?;
-    let body = push_body(&bytes)
+    let mut manifest = manifest_object(&bytes)
         .map_err(|e| eyre!("failed to build the publish request from {mpk}: {e}"))?;
 
-    let url = format!("{base_url}/api/v2/bundles/push");
+    let api = format!("{base_url}/api/v2/bundles");
+    match upload_grant(&api, api_key)? {
+        Some(grant) => {
+            upload(&grant, &bytes)?;
+            let _prev = manifest.insert(
+                "_upload".to_owned(),
+                serde_json::json!({ "object": grant.object }),
+            );
+        }
+        None => {
+            let _prev = manifest.insert("_binary".to_owned(), Value::String(hex::encode(&bytes)));
+        }
+    }
+    push(&api, api_key, &Value::Object(manifest))
+}
+
+/// A signed URL to PUT the archive to, and the object name the push refers to.
+#[derive(Debug)]
+struct UploadGrant {
+    url: String,
+    object: String,
+    headers: Vec<(String, String)>,
+}
+
+/// `Ok(None)` when the registry does not grant direct upload to this caller.
+fn upload_grant(api: &str, api_key: &str) -> Result<Option<UploadGrant>> {
+    let url = format!("{api}/upload-url");
+    let mut response = ureq::post(&url)
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .config()
+        .timeout_global(Some(TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .send_empty()
+        .map_err(|e| eyre!("failed to request an upload URL from {url}: {e}"))?;
+    let code = response.status().as_u16();
+    let body = response.body_mut().read_to_string().unwrap_or_default();
+    if matches!(code, 403..=405) {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(eyre!("registry refused an upload URL ({code}): {body}"));
+    }
+    parse_grant(&body).map(Some)
+}
+
+/// Split out from the HTTP call so the grant's shape is unit-testable.
+fn parse_grant(body: &str) -> Result<UploadGrant> {
+    let grant: Value = serde_json::from_str(body)
+        .map_err(|e| eyre!("registry returned an invalid upload grant: {e}"))?;
+    let field = |name: &str| {
+        grant
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| eyre!("registry's upload grant has no `{name}`"))
+    };
+    let headers = match grant.get("headers") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Object(h)) => h
+            .iter()
+            .map(|(k, v)| {
+                v.as_str()
+                    .map(|v| (k.clone(), v.to_owned()))
+                    .ok_or_else(|| eyre!("registry's upload grant header `{k}` is not a string"))
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => return Err(eyre!("registry's upload grant `headers` is not an object")),
+    };
+    Ok(UploadGrant {
+        url: field("url")?,
+        object: field("object")?,
+        headers,
+    })
+}
+
+/// PUTs the archive to the signed URL, replaying the grant's headers verbatim
+/// (the size cap is one of them). The API key never goes to storage.
+fn upload(grant: &UploadGrant, bytes: &[u8]) -> Result<()> {
+    let mut request = ureq::put(&grant.url);
+    for (name, value) in &grant.headers {
+        request = request.header(name, value);
+    }
+    let mut response = request
+        .config()
+        .timeout_global(Some(UPLOAD_TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .send(bytes)
+        .map_err(|e| eyre!("failed to upload the bundle to storage: {e}"))?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let code = response.status().as_u16();
+    let body = response.body_mut().read_to_string().unwrap_or_default();
+    Err(eyre!("storage refused the bundle upload ({code}): {body}"))
+}
+
+fn push(api: &str, api_key: &str, body: &Value) -> Result<()> {
+    let url = format!("{api}/push");
     // ureq 3's `Error::StatusCode` carries only the code, so a non-2xx would
     // lose the body the registry explains itself in. Turn that mapping off and
     // read the status here, keeping the old message intact.
@@ -148,7 +258,7 @@ pub fn publish(base_url: &str, api_key: &str, mpk: &Utf8Path) -> Result<()> {
         .header("Authorization", &format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .config()
-        .timeout_global(Some(TIMEOUT))
+        .timeout_global(Some(UPLOAD_TIMEOUT))
         .http_status_as_error(false)
         .build()
         .send(body.to_string())
@@ -163,15 +273,12 @@ pub fn publish(base_url: &str, api_key: &str, mpk: &Utf8Path) -> Result<()> {
     Err(eyre!("registry rejected the publish ({code}): {body}"))
 }
 
-/// Split out from the HTTP call so the request body is unit-testable: parses
-/// `manifest.json` out of the `.mpk` and attaches the raw archive as `_binary`.
-fn push_body(mpk_bytes: &[u8]) -> Result<Value> {
-    let mut manifest = manifest_json(mpk_bytes)?;
-    let object = manifest
-        .as_object_mut()
-        .ok_or_else(|| eyre!("manifest.json is not a JSON object"))?;
-    object.insert("_binary".to_owned(), Value::String(hex::encode(mpk_bytes)));
-    Ok(manifest)
+/// The `.mpk`'s `manifest.json`, as the object the push body is built on.
+fn manifest_object(mpk_bytes: &[u8]) -> Result<serde_json::Map<String, Value>> {
+    match manifest_json(mpk_bytes)? {
+        Value::Object(map) => Ok(map),
+        _ => Err(eyre!("manifest.json is not a JSON object")),
+    }
 }
 
 /// Extracts and parses `manifest.json` from a gzipped tar `.mpk`.
@@ -238,11 +345,36 @@ mod tests {
         (base_url, handle)
     }
 
+    /// Like `one_shot_server`, for a client that makes several requests:
+    /// accepts `n` connections in turn and answers the i-th with
+    /// `respond(i, base_url)`, so a response can point back at this server.
+    fn scripted_server(
+        n: usize,
+        respond: impl Fn(usize, &str) -> String + Send + 'static,
+    ) -> (String, JoinHandle<Vec<RecordedRequest>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let base_url = format!("http://{}", listener.local_addr().expect("read local addr"));
+        let base = base_url.clone();
+        let handle = thread::spawn(move || {
+            (0..n)
+                .map(|i| {
+                    let (mut stream, _) = listener.accept().expect("accept a connection");
+                    let request = read_request(&mut stream);
+                    stream
+                        .write_all(respond(i, &base).as_bytes())
+                        .expect("write canned response");
+                    request
+                })
+                .collect()
+        });
+        (base_url, handle)
+    }
+
     /// An HTTP response with a correct `Content-Length`, computed from `body`
     /// rather than hardcoded, so a test editing the body can't desync it.
     fn http_response(status_line: &str, body: &str) -> String {
         format!(
-            "{status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            "{status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
     }
@@ -320,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_posts_to_push_with_bearer_auth_and_the_manifest_body() {
+    fn publish_uploads_straight_to_storage_then_pushes_the_object() {
         let mpk = build_mpk(&[(
             "manifest.json",
             br#"{"package":"com.example.demo","appVersion":"1.2.3"}"#,
@@ -331,23 +463,157 @@ mod tests {
             .join("demo.mpk");
         std::fs::write(&mpk_path, &mpk).expect("write fixture mpk");
 
-        let (base_url, handle) = one_shot_server(http_response("HTTP/1.1 200 OK", "{}"));
+        let (base_url, handle) = scripted_server(3, |i, base| match i {
+            0 => http_response(
+                "HTTP/1.1 200 OK",
+                &serde_json::json!({
+                    "url": format!("{base}/storage/signed?sig=x"),
+                    "object": "uploads/abc/1.mpk",
+                    "method": "PUT",
+                    "headers": {
+                        "Content-Type": "application/gzip",
+                        "x-goog-content-length-range": "0,52428800",
+                    },
+                })
+                .to_string(),
+            ),
+            _ => http_response("HTTP/1.1 200 OK", "{}"),
+        });
 
         publish(&base_url, "test-api-key", &mpk_path).expect("publish");
 
-        let request = handle.join().expect("server thread");
-        assert_eq!(request.method, "POST");
-        assert_eq!(request.path, "/api/v2/bundles/push");
+        let requests = handle.join().expect("server thread");
+        let [grant, put, push] = &requests[..] else {
+            panic!("expected 3 requests, got {}", requests.len())
+        };
+
+        assert_eq!(grant.method, "POST");
+        assert_eq!(grant.path, "/api/v2/bundles/upload-url");
         assert_eq!(
-            request.headers.get("authorization").map(String::as_str),
+            grant.headers.get("authorization").map(String::as_str),
             Some("Bearer test-api-key")
         );
 
-        let body: Value = serde_json::from_slice(&request.body).expect("body is valid JSON");
+        assert_eq!(put.method, "PUT");
+        assert_eq!(put.path, "/storage/signed?sig=x");
+        assert_eq!(put.body, mpk);
+        assert_eq!(
+            put.headers
+                .get("x-goog-content-length-range")
+                .map(String::as_str),
+            Some("0,52428800")
+        );
+        assert_eq!(
+            put.headers.get("content-type").map(String::as_str),
+            Some("application/gzip")
+        );
+        assert!(
+            !put.headers.contains_key("authorization"),
+            "the API key must not go to storage"
+        );
+
+        assert_eq!(push.method, "POST");
+        assert_eq!(push.path, "/api/v2/bundles/push");
+        assert_eq!(
+            push.headers.get("authorization").map(String::as_str),
+            Some("Bearer test-api-key")
+        );
+        let body: Value = serde_json::from_slice(&push.body).expect("body is valid JSON");
         assert_eq!(body["package"], "com.example.demo");
         assert_eq!(body["appVersion"], "1.2.3");
-        let binary = body["_binary"].as_str().expect("_binary is a string");
-        assert_eq!(hex::decode(binary).expect("valid hex"), mpk);
+        assert_eq!(body["_upload"]["object"], "uploads/abc/1.mpk");
+        assert!(body.get("_binary").is_none(), "got: {body}");
+    }
+
+    #[test]
+    fn publish_falls_back_to_binary_when_the_registry_grants_no_upload() {
+        let mpk = build_mpk(&[(
+            "manifest.json",
+            br#"{"package":"com.example.demo","appVersion":"1.2.3"}"#,
+        )]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mpk_path = Utf8Path::from_path(tmp.path())
+            .expect("utf8 tempdir")
+            .join("demo.mpk");
+        std::fs::write(&mpk_path, &mpk).expect("write fixture mpk");
+
+        for refused in ["403 Forbidden", "404 Not Found", "405 Method Not Allowed"] {
+            let (base_url, handle) = scripted_server(2, move |i, _| match i {
+                0 => http_response(&format!("HTTP/1.1 {refused}"), r#"{"error":"forbidden"}"#),
+                _ => http_response("HTTP/1.1 200 OK", "{}"),
+            });
+
+            publish(&base_url, "test-api-key", &mpk_path).expect("publish");
+
+            let requests = handle.join().expect("server thread");
+            let push = &requests[1];
+            assert_eq!(push.method, "POST");
+            assert_eq!(push.path, "/api/v2/bundles/push");
+            let body: Value = serde_json::from_slice(&push.body).expect("body is valid JSON");
+            assert_eq!(body["package"], "com.example.demo");
+            assert!(body.get("_upload").is_none(), "got: {body}");
+            let binary = body["_binary"].as_str().expect("_binary is a string");
+            assert_eq!(hex::decode(binary).expect("valid hex"), mpk);
+        }
+    }
+
+    #[test]
+    fn publish_stops_when_storage_refuses_the_upload() {
+        let mpk = build_mpk(&[(
+            "manifest.json",
+            br#"{"package":"com.example.demo","appVersion":"1.2.3"}"#,
+        )]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mpk_path = Utf8Path::from_path(tmp.path())
+            .expect("utf8 tempdir")
+            .join("demo.mpk");
+        std::fs::write(&mpk_path, &mpk).expect("write fixture mpk");
+
+        let (base_url, handle) = scripted_server(2, |i, base| match i {
+            0 => http_response(
+                "HTTP/1.1 200 OK",
+                &serde_json::json!({
+                    "url": format!("{base}/storage/signed"),
+                    "object": "uploads/abc/1.mpk",
+                    "headers": {},
+                })
+                .to_string(),
+            ),
+            _ => http_response("HTTP/1.1 400 Bad Request", "EntityTooLarge"),
+        });
+
+        let err = publish(&base_url, "test-api-key", &mpk_path).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("storage refused"), "got: {message}");
+        assert!(message.contains("EntityTooLarge"), "got: {message}");
+
+        // No push follows a failed upload.
+        assert_eq!(handle.join().expect("server thread").len(), 2);
+    }
+
+    #[test]
+    fn publish_surfaces_a_refused_upload_grant() {
+        let mpk = build_mpk(&[(
+            "manifest.json",
+            br#"{"package":"com.example.demo","appVersion":"1.2.3"}"#,
+        )]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mpk_path = Utf8Path::from_path(tmp.path())
+            .expect("utf8 tempdir")
+            .join("demo.mpk");
+        std::fs::write(&mpk_path, &mpk).expect("write fixture mpk");
+
+        let (base_url, handle) = one_shot_server(http_response(
+            "HTTP/1.1 429 Too Many Requests",
+            "At most 10 upload URLs per hour",
+        ));
+
+        let err = publish(&base_url, "test-api-key", &mpk_path).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("429"), "got: {message}");
+        assert!(message.contains("At most 10"), "got: {message}");
+
+        handle.join().expect("server thread");
     }
 
     #[test]
@@ -402,10 +668,13 @@ mod tests {
             .join("demo.mpk");
         std::fs::write(&mpk_path, &mpk).expect("write fixture mpk");
 
-        let (base_url, handle) = one_shot_server(http_response(
-            "HTTP/1.1 422 Unprocessable Entity",
-            "signature verification failed",
-        ));
+        let (base_url, handle) = scripted_server(2, |i, _| match i {
+            0 => http_response("HTTP/1.1 403 Forbidden", "{}"),
+            _ => http_response(
+                "HTTP/1.1 422 Unprocessable Entity",
+                "signature verification failed",
+            ),
+        });
 
         let err = publish(&base_url, "test-api-key", &mpk_path).unwrap_err();
         let message = err.to_string();
@@ -436,21 +705,38 @@ mod tests {
     }
 
     #[test]
-    fn push_body_carries_the_manifest_and_the_binary_round_trips() {
+    fn manifest_object_reads_the_archive_manifest() {
         let mpk = build_mpk(&[("manifest.json", br#"{"package":"com.example.demo"}"#)]);
 
-        let body = push_body(&mpk).expect("push body");
+        let manifest = manifest_object(&mpk).expect("manifest");
 
-        assert_eq!(body["package"], "com.example.demo");
-        let binary = body["_binary"].as_str().expect("_binary is a string");
-        assert_eq!(hex::decode(binary).expect("valid hex"), mpk);
+        assert_eq!(manifest["package"], "com.example.demo");
     }
 
     #[test]
-    fn push_body_errors_when_the_archive_has_no_manifest_json() {
+    fn parse_grant_needs_a_url_and_an_object() {
+        let grant =
+            parse_grant(r#"{"url":"https://s/x","object":"uploads/a/b.mpk","headers":{"A":"1"}}"#)
+                .expect("grant");
+        assert_eq!(grant.url, "https://s/x");
+        assert_eq!(grant.object, "uploads/a/b.mpk");
+        assert_eq!(grant.headers, vec![("A".to_owned(), "1".to_owned())]);
+
+        let err = parse_grant(r#"{"url":"https://s/x"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`object`"), "got: {err}");
+        let err = parse_grant(r#"{"url":"u","object":"o","headers":{"A":1}}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a string"), "got: {err}");
+    }
+
+    #[test]
+    fn manifest_object_errors_when_the_archive_has_no_manifest_json() {
         let mpk = build_mpk(&[("app.wasm", b"wasm-bytes")]);
 
-        let err = push_body(&mpk).unwrap_err().to_string();
+        let err = manifest_object(&mpk).unwrap_err().to_string();
 
         assert!(err.contains("manifest.json"), "got: {err}");
     }

@@ -99,6 +99,7 @@ The checks, the JSON output and the error codes are in the [cargo-mero docs](htt
 
 `cargo mero publish <mpk>` uploads a signed `.mpk` to the Calimero App Registry.
 It requires `CALIMERO_API_KEY`; the registry base URL defaults to `https://apps.calimero.network` and is overridable with `CALIMERO_REGISTRY_URL`. `publish` sends the key only to an `https` URL, or to plain `http` on localhost.
+The archive goes straight to the registry's storage through a signed upload URL, so a bundle that carries its frontend is not held to the 4.5 MB a registry request body takes (up to 50 MiB); a registry that grants no upload URL gets the archive inline, as before.
 
 ```bash
 cargo mero bundle --key my-key.json --bump patch   # fetch and use the next patch version
