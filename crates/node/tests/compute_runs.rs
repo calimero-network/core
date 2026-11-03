@@ -72,7 +72,7 @@ impl Rig {
     async fn upload(&self, plain: &[u8]) -> String {
         let up = self
             .alice
-            .upload_blob(&self.app, plain.to_vec())
+            .upload_file(&self.app, plain.to_vec())
             .await
             .unwrap();
         up["id"].as_str().unwrap().to_owned()
@@ -446,8 +446,7 @@ async fn a_second_run_of_an_org_waits_for_the_first_final() {
     let rig = Rig::start(&[JOB_A]).await;
     let ops = rig.c.client(0);
     ops.use_api_key("ops-secret").await;
-    let _ok = ops
-        .post("ops/quotas", json!({ "maxConcurrentRunsPerOrg": 1 }))
+    let _ok = common::ops_signed(&ops, "ops/quotas", json!({ "maxConcurrentRunsPerOrg": 1 }))
         .await
         .unwrap();
     let first = rig.begin("startRun", json!({ "method": "spin" })).await;

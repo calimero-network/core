@@ -449,9 +449,7 @@ impl Node {
     /// Undoes the staged outputs `marks` unless the app holds one as a blob: then a final that did
     /// commit owns them.
     fn discard_unowned(&self, g: &Group<AppMachine>, app_id: &str, marks: &[FileMark]) {
-        let owned = g.read_local(|m, _| {
-            marks.iter().any(|f| holds_file(m, &f.id))
-        });
+        let owned = g.read_local(|m, _| marks.iter().any(|f| holds_file(m, &f.id)));
         if !owned {
             self.discard(app_id, stored_of(marks));
         }
