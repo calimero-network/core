@@ -127,6 +127,7 @@ Every replica forgets the record in the same entry, and the bytes are then colle
 The ciphertext lives on the app's replicas, not on every node.
 Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
 The call proceeds only once a majority of the app's voters hold every new file; otherwise it fails with a retryable `503`, nothing is logged, and its idempotency key is not spent.
+A node holds at most 256 MiB of new files' ciphertext across all runs until their entries are proposed; a call that cannot get its share fails with a retryable `503`, is not logged, and does not spend its idempotency key.
 A replica that misses a file fetches it from the other replicas when a run opens it.
 If no replica can serve it, a call, tick or `init` is aborted with a retryable `503` and not logged, while a view is told the bytes are not available.
 A run reads a file by decrypting it as it goes, and the end of the stream checks the plaintext size and SHA-256 against the mark.
@@ -145,4 +146,6 @@ Each file has its own random key, so no other app can mark the same ciphertext.
 | Blobs one component app holds | 100,000 (`429 QUOTA_EXCEEDED` past it) |
 | A component blob's content type | 127 bytes, printable ASCII |
 | A component blob held with no reference | 1 hour |
+| A sealed file held with no reference | 1 hour |
+| New-file ciphertext all runs of a node hold before their entries | 256 MiB |
 | A grant | 1 s to 24 h |
