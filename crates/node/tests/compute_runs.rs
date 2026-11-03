@@ -646,6 +646,37 @@ async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_lists_runs_without_file_sizes_hashes_or_keys() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let file = rig.upload(&input()).await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let _ = rig.outcome(&run).await;
+    let path = format!("apps/{}/runs", rig.app);
+    let owner = rig.alice.get(&path).await.unwrap();
+    assert!(
+        owner["runs"][0]["inputs"][0]["sha256"].is_string(),
+        "{owner}"
+    );
+    assert!(
+        owner["runs"][0]["final"]["outputs"][0]["size"].is_u64(),
+        "{owner}"
+    );
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&path).await.unwrap();
+    let listed = &shown["runs"][0];
+    assert_eq!(listed["state"], "done", "{shown}");
+    for file in [&listed["inputs"][0], &listed["final"]["outputs"][0]] {
+        assert!(file["id"].is_string(), "{shown}");
+        assert_eq!(file.as_object().unwrap().len(), 1, "only the id: {shown}");
+    }
+    let text = shown.to_string();
+    for word in ["wrapped", "key", "args"] {
+        assert!(!text.contains(word), "{word} in {text}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_result_over_the_cap_fails_the_run_and_registers_nothing() {
     let rig = Rig::start(&[JOB_A]).await;
     let run = rig.begin("startRun", json!({ "method": "big" })).await;

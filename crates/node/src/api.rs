@@ -6426,7 +6426,7 @@ async fn app_runs(
         return Err(ApiError::not_found("no such run"));
     }
     let p = gate(&node, &headers, &app, "*", false).await?;
-    let files = require_file_access(&node, &app, &p).is_ok();
+    let files = node.sys(|s| may_handle_files(s, &app, p.caller.account()));
     let limit = match q.limit {
         None => Value::Null,
         Some(l) => json!(l
