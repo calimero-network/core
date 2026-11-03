@@ -1650,3 +1650,59 @@ fn a_start_of_an_input_the_app_no_longer_holds_is_dropped() {
     let _a = w.call(vec![gone], &[]);
     assert!(w.active().is_empty() && w.r.machine.run_record("r1").is_none());
 }
+
+/// A final of `r1` whose result method stores the output `out(1)` as `key`, if given.
+fn final_storing(w: &mut World, key: Option<&str>) -> FinalEntry {
+    let k = job_key(1);
+    let _a = w.assign("r1", &k);
+    let mut entry = w.done("r1", &k);
+    entry.ts_ms = 10;
+    entry.result.diff = key.map(|key| store_ref(key, 1)).into_iter().collect();
+    entry
+}
+
+#[test]
+fn a_result_method_that_stores_an_output_keeps_it_past_the_idle_time() {
+    let mut w = World::new();
+    w.start("r1");
+    let entry = final_storing(&mut w, Some("kept"));
+    assert!(!w.finish(entry).conflict);
+    let record = &w.r.machine.state.component.blobs.records[&[1; 32]];
+    assert!(record.file.is_some());
+    assert_eq!(record.refs, 1, "counted in the entry that registered it");
+    assert!(!touch(&mut w, 10 + 3 * BLOB_IDLE_MS, store_ref("later", 2)).conflict);
+    assert!(
+        held(&w.r).contains(&fid(1)),
+        "a stored output was forgotten"
+    );
+    assert!(!queued(&w.r).contains(&fid(1)));
+}
+
+#[test]
+fn an_output_the_result_method_does_not_store_is_forgotten_and_its_quota_released() {
+    let mut w = World::new();
+    w.start("r1");
+    let entry = final_storing(&mut w, None);
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(w.files(), [fid(1)], "registered, idle");
+    assert!(!touch(&mut w, 10 + BLOB_IDLE_MS + 1, store_ref("later", 2)).conflict);
+    assert!(w.files().is_empty(), "an unstored output stayed");
+    assert!(queued(&w.r).contains(&fid(1)));
+    w.last += 1;
+    let freed = w.r.apply(w.last, &collected(&[fid(1)]));
+    assert_eq!(freed.result["freed"], json!(out(1).size));
+}
+
+#[test]
+fn the_result_method_sees_the_outputs_as_sealed_files_of_the_app() {
+    let mut w = World::new();
+    w.start("r1");
+    assert!(w.r.machine.blob_view().get(&[1; 32]).is_none());
+    let view = w.r.machine.blob_view_with_outputs(&[out(1)], 10);
+    let record = &view[&[1; 32]];
+    assert_eq!((record.size, record.file.is_some()), (out(1).size, true));
+    assert!(
+        w.r.machine.blob_view().get(&[1; 32]).is_none(),
+        "the view is a copy"
+    );
+}

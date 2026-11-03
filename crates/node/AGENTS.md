@@ -474,6 +474,11 @@ is its command line.
   Other leader outcomes carry no report, no outputs and zero usage: `failed lost` needs every attempt used, `failed timeout` a run that was assigned, `failed refused` (an acquire refused for good) a run with no attempt.
   Outputs are bounded (`MAX_NEW_FILES`, `MAX_FILE_BYTES` each, `MAX_COMPUTE_FILE_BYTES` together), and a job's usage cannot pass its caps (fuel; CPU micros and memory-GiB-micros at most the wall cap plus `DEADLINE_GRACE`, 60 s).
   An output id that is not a blob id, is already a blob of the app or is listed twice is refused.
+  A final registers each output as a sealed file of the app in the same entry and before `result` applies (`BlobTable::add_file`, the path a run's own files take, with the plaintext hash and wrapped key), so a `BlobRef` the result method stores is counted.
+  An output the result method does not store is forgotten `BLOB_IDLE_MS` later, and the org's file quota is released when the leader collects it.
+  `AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave, so `storage_put` accepts those references.
+  The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
+  The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
   Every permanent refusal changes nothing and answers `AppError` with the reason as `error`; only a stale `baseIndex` answers `conflict` (retry on the current state) and leaves the run active.
   `init` starts runs on its own bundle.
   The result method runs with `runs_provider(Some(run))`, which leaves out the run that is ending, so its own start of the same job is a new run.
@@ -482,7 +487,7 @@ is its command line.
   A final over the cap even without it is not built (`FINAL_TOO_LARGE`), and the leader ends the run `Failed{timeout}`.
   A run record that cannot be read makes the host deny start and cancel (`RUN_RECORDS_UNREADABLE`).
   A run being cancelled is not the answer to a start of the same job.
-  Applying a final records it, frees the run's slot, then applies `result` as a call's outcome (only if its status is `Ok`; its own starts and cancels included).
+  Applying a final records it, releases the inputs, registers the outputs, then applies `result` as a call's outcome (only if its status is `Ok`; its own starts and cancels included).
   A queued run whose fuel exceeds a lowered `computeFuelPerOrg` is marked `RunSlot::refused`, and the leader ends it `failed refused`.
   The system group queues runs (`SystemState::compute`, `RunSlot`).
   `AcquireRun` (idempotent; payer must be the app's, fuel at most `MAX_COMPUTE_FUEL`) and `ReleaseRun` run the grant pass.
