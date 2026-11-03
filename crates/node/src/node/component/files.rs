@@ -619,9 +619,10 @@ impl Node {
 
     /// Whether a component app hosted here holds `id` as one of its blobs.
     pub(crate) fn holds_file(&self, id: &str) -> bool {
-        self.apps
-            .read()
-            .is_ok_and(|apps| apps.values().any(|g| g.read_local(|m, _| holds_file(m, id))))
+        self.apps.read().is_ok_and(|apps| {
+            apps.values()
+                .any(|g| g.read_local(|m, _| holds_file(m, id)))
+        })
     }
 
     /// Removes the bytes of `ids` on this node and the app's other replicas, in a task of
