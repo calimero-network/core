@@ -694,6 +694,17 @@ impl Client {
             .await
     }
 
+    /// Upload a sealed file for component app `app` (its owner or an organization member);
+    /// answers `{ blobId, id, size, sha256, index }`, the size and SHA-256 of the plaintext.
+    pub async fn upload_file(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.upload(
+            &format!("apps/{app}/blobs?sealed=true"),
+            "application/octet-stream",
+            bytes,
+        )
+        .await
+    }
+
     /// Download a component app's blob with a grant one of its runs handed out
     /// (`blobs.grant`); no session needed.
     pub async fn download_blob_granted(&self, app: &str, id: &str, grant: &str) -> Result<Vec<u8>> {

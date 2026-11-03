@@ -112,11 +112,23 @@ which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
 A component app's runs can also make sealed files: a file is written in a call, tick or `init`, and read in any run but a migration.
 A file is a sealed blob.
 It shares the blob id namespace and the `BlobRef` type, and `blobs.info` answers for it with an empty content type.
-It cannot be downloaded or granted, and no upload can claim its id: only the app's code reads it.
+It cannot be downloaded or granted, and no blob upload can claim its id: only the app's code reads it.
 The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
 The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
 The app's blob record for the file holds the plaintext size and SHA-256 and the wrapped key, in the hidden rows the guest cannot reach.
 The log entry carries these marks and never the ciphertext.
+
+A client can also upload a file with `POST /apps/{app}/blobs?sealed=true` (the raw bytes, up to the same size cap as a blob).
+The answer is `{ id, blobId, size, sha256, sealed, index }` for the plaintext.
+Without the query the route uploads a blob, as before.
+A node that does not lead the app passes the upload to the leader.
+The leader seals it as a run's files are sealed, stores it on a majority of the app's voters, and then commits the blob record as a command of the node's own, which no `/intents` call can name.
+Only the app's owner and the members (not guests) of its organization may upload and list files, even where the app is public.
+The reason is that a file's SHA-256 is the plaintext's, and would let anyone confirm a guessed document.
+`GET /apps/{app}/blobs` lists the files after the blobs, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and SHA-256, to those people only.
+Everyone else gets the list without files, and `404` for a file's info, as for an id the app does not hold.
+Neither answer ever carries the key or any content.
+An uploaded file is held like any file: for an hour unless the app stores a `BlobRef` to it.
 
 There is no delete.
 `files.finish` returns the blob id, and the app keeps the file by storing it as a `BlobRef`, exactly as for an uploaded blob.
@@ -134,6 +146,18 @@ A run reads a file by decrypting it as it goes, and the end of the stream checks
 A file that was altered or cut short fails the run with a trap, so no app can ignore it.
 Each file has its own random key, so no other app can mark the same ciphertext.
 
+The plaintext bytes of an organization's files (a personal account's, for an app outside one) count against `maxFileBytesPerOrg` (default 50 GB).
+A file counts from the moment it is charged until retention collects it.
+The charge is taken before any bytes move, so an upload or a call that would pass the quota fails with `429 QUOTA_EXCEEDED`, nothing is logged and the stored bytes are removed.
+When the leader collects the bytes of files the app forgot, the same entry that logs the collection tells the node how many plaintext bytes it released.
+Deleting an app or an organization frees its files in the same system command.
+A node that stops hosting a deleted app drops the bytes of its files.
+The count and the app's log are not one atomic step.
+When a record's commit fails, the leader checks whether it was logged and settles the count either way.
+A crash between the two can still leave an over-count.
+Transferring a personal app is refused if its files would pass the new owner's quota.
+`GET /auth/usage` shows an account's file bytes per payer.
+
 ## Limits
 
 | Limit | Value |
@@ -147,5 +171,6 @@ Each file has its own random key, so no other app can mark the same ciphertext.
 | A component blob's content type | 127 bytes, printable ASCII |
 | A component blob held with no reference | 1 hour |
 | A sealed file held with no reference | 1 hour |
+| Plaintext bytes of an organization's files | `maxFileBytesPerOrg`, 50 GB (`429 QUOTA_EXCEEDED` past it) |
 | New-file ciphertext all runs of a node hold before their entries | 256 MiB |
 | A grant | 1 s to 24 h |

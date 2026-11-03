@@ -28,6 +28,8 @@ pub struct Quotas {
     /// Accounts the cluster takes in all: sign-up is open, so this is what
     /// keeps it from growing without bound (Xil's review, issue 12).
     pub max_accounts: u32,
+    /// Plaintext bytes of the files an organization's (or a personal account's) apps hold.
+    pub max_file_bytes_per_org: u64,
 }
 
 impl Default for Quotas {
@@ -38,6 +40,7 @@ impl Default for Quotas {
             max_api_keys_per_account: 50,
             max_orgs_per_account: 20,
             max_accounts: 100_000,
+            max_file_bytes_per_org: 50_000_000_000,
         }
     }
 }
@@ -266,6 +269,12 @@ pub struct SystemState {
     /// empty, so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deployments: BTreeMap<String, Deployment>,
+    /// Plaintext bytes of the files each app holds (`ChargeFileBytes`).
+    #[serde(default)]
+    pub app_file_bytes: BTreeMap<AppId, u64>,
+    /// `app_file_bytes` summed per payer, kept in step by `set_app_file_bytes`.
+    #[serde(default)]
+    pub payer_file_bytes: BTreeMap<String, u64>,
 }
 
 /// An owner's list of the apps it offers on this cluster. Customers create
@@ -542,6 +551,37 @@ impl PublisherProof {
 pub const REVOKED_SESSION_KEEP_SECS: u64 = 60 * 60;
 
 impl SystemState {
+    /// Sets the file bytes an app holds, and its payer's total with it.
+    fn set_app_file_bytes(&mut self, app_id: &str, now: u64) {
+        let Some(app) = self.apps.get(app_id) else {
+            return;
+        };
+        let payer = crate::usage::payer(app);
+        let before = self.app_file_bytes.get(app_id).copied().unwrap_or(0);
+        let total = self.payer_file_bytes.entry(payer.clone()).or_default();
+        *total = total.saturating_sub(before).saturating_add(now);
+        if *total == 0 {
+            let _gone = self.payer_file_bytes.remove(&payer);
+        }
+        if now == 0 {
+            let _gone = self.app_file_bytes.remove(app_id);
+        } else {
+            let _prev = self.app_file_bytes.insert(app_id.to_owned(), now);
+        }
+    }
+
+    /// Removes an app and the file bytes counted against its payer.
+    fn remove_app(&mut self, app_id: &str) {
+        self.set_app_file_bytes(app_id, 0);
+        let _gone = self.apps.remove(app_id);
+    }
+
+    /// The file bytes held by the apps `payer` ([`crate::usage::payer`]) is billed for.
+    #[must_use]
+    pub fn file_bytes(&self, payer: &str) -> u64 {
+        self.payer_file_bytes.get(payer).copied().unwrap_or(0)
+    }
+
     /// The releases approved to hold `app`'s data: its organization's, or its
     /// owner's for an app outside one. Empty means none was ever recorded
     /// (state from before approvals), which leaves the app unrestricted.
@@ -1850,6 +1890,12 @@ pub enum SystemCmd {
         app_id: AppId,
         actor: AccountId,
     },
+    /// Counts `delta` bytes more (less, when negative) of files against an app's payer. A
+    /// charge past `Quotas::max_file_bytes_per_org` is refused; a refund stops at zero.
+    ChargeFileBytes {
+        app_id: AppId,
+        delta: i64,
+    },
     /// The operator moves an app (`<app> / __set_replicas / { replicas }`,
     /// the sorted target): one signature covers the move's two writes
     /// ([`authorize`]).
@@ -2793,11 +2839,23 @@ impl SystemMachine {
                         return Err("the new owner is not a member of the app's organization");
                     }
                 }
-                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                let app = s.apps.get(&app_id).ok_or("no such app")?;
                 if app.owner != actor {
                     return Err("only the owner may transfer");
                 }
-                app.owner = to;
+                // A personal app's files move to the new owner's quota.
+                let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
+                if app.org.is_none()
+                    && s.file_bytes(&format!("account:{to}")).saturating_add(held)
+                        > s.quotas.max_file_bytes_per_org
+                {
+                    return Err("quota exceeded: file bytes");
+                }
+                s.set_app_file_bytes(&app_id, 0);
+                if let Some(app) = s.apps.get_mut(&app_id) {
+                    app.owner = to;
+                }
+                s.set_app_file_bytes(&app_id, held);
                 Ok(Value::Null)
             }
             SystemCmd::DeleteApp { app_id, actor } => {
@@ -2811,8 +2869,24 @@ impl SystemMachine {
                 if app.owner != actor && !admin {
                     return Err("only the owner or an org admin may delete");
                 }
-                let _prev = s.apps.remove(&app_id);
+                s.remove_app(&app_id);
                 Ok(Value::Null)
+            }
+            SystemCmd::ChargeFileBytes { app_id, delta } => {
+                let app = s.apps.get(&app_id).ok_or("no such app")?;
+                let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
+                let now = if delta >= 0 {
+                    let total = s.file_bytes(&crate::usage::payer(app));
+                    if total.saturating_add(delta.unsigned_abs()) > s.quotas.max_file_bytes_per_org
+                    {
+                        return Err("quota exceeded: file bytes");
+                    }
+                    held.saturating_add(delta.unsigned_abs())
+                } else {
+                    held.saturating_sub(delta.unsigned_abs())
+                };
+                s.set_app_file_bytes(&app_id, now);
+                Ok(json!({ "fileBytes": now }))
             }
             SystemCmd::SetReplicas {
                 app_id, replicas, ..
@@ -3480,7 +3554,7 @@ impl SystemMachine {
                     .map(|a| a.app_id.clone())
                     .collect();
                 for a in &apps {
-                    let _removed = s.apps.remove(a);
+                    s.remove_app(a);
                 }
                 Ok(json!({ "apps": apps }))
             }
@@ -3804,7 +3878,7 @@ impl SystemMachine {
                     .map(|a| a.app_id.clone())
                     .collect();
                 for a in &apps {
-                    let _removed = s.apps.remove(a);
+                    s.remove_app(a);
                 }
                 Ok(json!({ "teams": gone, "apps": apps }))
             }
@@ -3976,7 +4050,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Authority, Governance, OrgRole, ReleaseScope, SystemCmd, SystemMachine, SystemState,
+        Authority, Governance, OrgRole, Quotas, ReleaseScope, SystemCmd, SystemMachine,
+        SystemState, QUOTA_PREFIX,
     };
 
     // The tests above `account_with` judge each command's own authority rules
@@ -6367,5 +6442,185 @@ mod tests {
         let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
         assert!(restored.deployments.is_empty());
         assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+    }
+
+    /// An app of `org` (or a personal one) in a machine whose file quota is `quota`.
+    fn machine_with_apps(quota: u64, apps: &[(&str, Option<&str>)]) -> SystemMachine {
+        let mut m = SystemMachine::default();
+        m.state.quotas.max_file_bytes_per_org = quota;
+        for (id, org) in apps {
+            let app = serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 2, "bundle": "b", "owner": "alice",
+                "org": org, "replicas": [1], "createdAt": 0
+            }))
+            .unwrap();
+            let _prev = m.state.apps.insert((*id).into(), app);
+        }
+        m
+    }
+
+    fn charge(app: &str, delta: i64) -> SystemCmd {
+        SystemCmd::ChargeFileBytes {
+            app_id: app.into(),
+            delta,
+        }
+    }
+
+    #[test]
+    fn file_bytes_are_granted_up_to_the_quota_across_the_payers_apps() {
+        let mut m = machine_with_apps(100, &[("a", Some("org")), ("b", Some("org")), ("c", None)]);
+        let _ok = m.run_unproven(charge("a", 60)).unwrap();
+        let _ok = m.run_unproven(charge("b", 40)).unwrap();
+        assert_eq!(m.state.file_bytes("org"), 100);
+
+        let refused = m.run_unproven(charge("a", 1)).unwrap_err();
+        assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+        assert_eq!(m.state.file_bytes("org"), 100, "a refusal changes nothing");
+
+        // Another payer has its own quota.
+        let _ok = m.run_unproven(charge("c", 100)).unwrap();
+        assert_eq!(m.state.file_bytes("account:alice"), 100);
+        assert!(m.run_unproven(charge("nobody", 1)).is_err());
+    }
+
+    #[test]
+    fn a_refund_frees_room_and_stops_at_zero() {
+        let mut m = machine_with_apps(100, &[("a", Some("org")), ("b", Some("org"))]);
+        let _ok = m.run_unproven(charge("a", 100)).unwrap();
+        assert!(m.run_unproven(charge("b", 1)).is_err());
+        let _ok = m.run_unproven(charge("a", -30)).unwrap();
+        let _ok = m.run_unproven(charge("b", 30)).unwrap();
+        assert_eq!(m.state.file_bytes("org"), 100);
+
+        let _ok = m.run_unproven(charge("a", -1_000)).unwrap();
+        assert!(!m.state.app_file_bytes.contains_key("a"));
+        assert_eq!(m.state.app_file_bytes["b"], 30, "another app's bytes stay");
+    }
+
+    #[test]
+    fn deleting_an_app_or_an_org_frees_its_files() {
+        let mut m = machine_with_apps(100, &[("a", Some("org")), ("b", Some("org")), ("c", None)]);
+        for app in ["a", "b", "c"] {
+            let _ok = m.run_unproven(charge(app, 10)).unwrap();
+        }
+        let _ok = m
+            .run_unproven(SystemCmd::DeleteApp {
+                app_id: "a".into(),
+                actor: "alice".into(),
+            })
+            .unwrap();
+        assert_eq!(m.state.file_bytes("org"), 10);
+        assert!(!m.state.app_file_bytes.contains_key("a"));
+
+        let _prev = m.state.orgs.insert(
+            "org".into(),
+            serde_json::from_value(json!({
+                "orgId": "org", "name": "O", "members": { "alice": "owner" }, "teams": {}
+            }))
+            .unwrap(),
+        );
+        let _ok = m
+            .run_unproven(SystemCmd::DeleteOrg {
+                org: "org".into(),
+                actor: "alice".into(),
+                consent: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert_eq!(m.state.file_bytes("org"), 0);
+        assert_eq!(m.state.app_file_bytes.len(), 1, "only the personal app's");
+    }
+
+    #[test]
+    fn the_file_quota_defaults_to_fifty_gigabytes_and_reads_from_old_state() {
+        assert_eq!(Quotas::default().max_file_bytes_per_org, 50_000_000_000);
+        let old: Quotas = serde_json::from_value(json!({ "maxAccounts": 7 })).unwrap();
+        assert_eq!(old.max_file_bytes_per_org, 50_000_000_000);
+        assert_eq!(
+            serde_json::to_value(&old).unwrap()["maxFileBytesPerOrg"],
+            json!(50_000_000_000u64)
+        );
+        let old_state: SystemState = serde_json::from_value(json!({
+            "nodes": {}, "apps": {}, "nextGroup": 1, "bundles": {}, "accounts": {},
+            "credentials": {}, "apiKeys": {}, "refresh": {}, "revokedSessions": [],
+            "sessionKeys": [], "orgs": {}, "invites": {}
+        }))
+        .unwrap();
+        assert!(old_state.app_file_bytes.is_empty());
+    }
+
+    /// The per-payer totals equal the sum over the apps' bytes.
+    fn assert_totals_are_sums(s: &SystemState) {
+        let mut sums = std::collections::BTreeMap::new();
+        for (id, bytes) in &s.app_file_bytes {
+            let payer = crate::usage::payer(&s.apps[id]);
+            *sums.entry(payer).or_insert(0u64) += bytes;
+        }
+        assert_eq!(s.payer_file_bytes, sums);
+    }
+
+    #[test]
+    fn the_payer_totals_always_equal_the_sum_over_the_apps() {
+        let mut m = machine_with_apps(
+            1_000,
+            &[("a", Some("org")), ("b", Some("org")), ("c", None)],
+        );
+        let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_unproven(account("bob")).unwrap();
+        let steps = [
+            charge("a", 100),
+            charge("b", 50),
+            charge("c", 70),
+            charge("a", -30),
+        ];
+        for step in steps {
+            let _ok = m.run_unproven(step).unwrap();
+            assert_totals_are_sums(&m.state);
+        }
+        let _ok = m.run_unproven(charge("b", -500)).unwrap();
+        assert_totals_are_sums(&m.state);
+        let _ok = m
+            .run_unproven(SystemCmd::TransferApp {
+                app_id: "c".into(),
+                to: "bob".into(),
+                actor: "alice".into(),
+                consent: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert_totals_are_sums(&m.state);
+        assert_eq!(m.state.file_bytes("account:bob"), 70);
+        assert_eq!(m.state.file_bytes("account:alice"), 0);
+        let _ok = m
+            .run_unproven(SystemCmd::DeleteApp {
+                app_id: "a".into(),
+                actor: "alice".into(),
+            })
+            .unwrap();
+        assert_totals_are_sums(&m.state);
+        assert!(!m.state.payer_file_bytes.contains_key("org"));
+    }
+
+    #[test]
+    fn a_personal_app_moves_only_to_an_owner_whose_quota_holds_its_files() {
+        let mut m = machine_with_apps(100, &[("a", None), ("b", None)]);
+        let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_unproven(account("bob")).unwrap();
+        let _ok = m.run_unproven(charge("a", 80)).unwrap();
+        // Bob holds 50 bytes in an app of his own.
+        let mut bobs = m.state.apps["b"].clone();
+        bobs.owner = "bob".into();
+        let _prev = m.state.apps.insert("b".into(), bobs);
+        let _ok = m.run_unproven(charge("b", 50)).unwrap();
+        let transfer = SystemCmd::TransferApp {
+            app_id: "a".into(),
+            to: "bob".into(),
+            actor: "alice".into(),
+            consent: serde_json::Value::Null,
+        };
+        let refused = m.run_unproven(transfer.clone()).unwrap_err();
+        assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+        assert_eq!(m.state.apps["a"].owner, "alice");
+        let _ok = m.run_unproven(charge("b", -50)).unwrap();
+        let _ok = m.run_unproven(transfer).unwrap();
+        assert_eq!(m.state.file_bytes("account:bob"), 80);
     }
 }

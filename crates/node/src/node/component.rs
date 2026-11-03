@@ -34,7 +34,7 @@ use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
-use self::files::{Blob, NodeFiles, PendingBytes};
+use self::files::{Blob, NodeFiles, PendingBytes, Stored};
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
@@ -223,10 +223,23 @@ fn entry_bytes(mut cmd: ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
         | ComponentCmd::BlobsCollected { .. }
+        | ComponentCmd::File { .. }
+        | ComponentCmd::Barrier
         | ComponentCmd::XcallDone { .. }
         | ComponentCmd::ActionEnd { .. } => {}
     }
     (serde_json::to_vec(&cmd).unwrap_or_default(), true)
+}
+
+/// The plaintext bytes of the files `cmd` marks.
+fn new_file_bytes(cmd: &ComponentCmd) -> u64 {
+    let outcome = match cmd {
+        ComponentCmd::Call(entry) => &entry.outcome,
+        ComponentCmd::Tick(entry) => &entry.outcome,
+        ComponentCmd::Init { outcome, .. } => outcome,
+        _ => return 0,
+    };
+    outcome.files.iter().map(|f| f.size).sum()
 }
 
 /// A finished run: its outcome, and the ciphertext of the files it made, which stays
@@ -288,6 +301,13 @@ impl Node {
     #[must_use]
     pub fn file_pushes(&self) -> u64 {
         self.probes.file_pushes.load(Ordering::Relaxed)
+    }
+
+    /// Fails the next upload's mark commit on this node: `1` before it is proposed, `2` after
+    /// it applied. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_mark_commit(&self, mode: u8) {
+        self.probes.commit_fault.store(mode, Ordering::Relaxed);
     }
 
     /// How many blob puts peers sent this node. Tests only.
@@ -583,14 +603,15 @@ impl Node {
         })
     }
 
-    /// The entry that logs `cmd`, once the files it marks are on a majority of the voters, and
-    /// the ids of the files stored for it. An entry replaced as too large marks none.
+    /// The entry that logs `cmd`, once the files it marks are on a majority of the voters and
+    /// counted against the quota, and what was stored for it. An entry replaced as too large
+    /// marks and deletes none.
     fn logged_entry(
         &self,
         app_id: &str,
         #[cfg_attr(not(feature = "testing"), allow(unused_mut))] mut cmd: ComponentCmd,
         blobs: &[Blob],
-    ) -> Result<(Vec<u8>, Vec<String>), ApiError> {
+    ) -> Result<(Vec<u8>, Stored), ApiError> {
         #[cfg(feature = "testing")]
         if let ComponentCmd::Call(call) = &mut cmd {
             if self
@@ -601,29 +622,40 @@ impl Node {
                 call.base_index += 1;
             }
         }
+        let charged = new_file_bytes(&cmd);
         let (bytes, replaced) = entry_bytes(cmd);
         if replaced {
-            return Ok((bytes, Vec::new()));
+            return Ok((bytes, Stored::default()));
         }
-        self.persist_files(app_id, blobs)?;
-        Ok((bytes, blobs.iter().map(|(id, _)| id.clone()).collect()))
+        // Counted first: a refused charge sends no bytes anywhere.
+        if charged > 0 {
+            self.charge_files(app_id, charged)?;
+        }
+        if let Err(e) = self.persist_files(app_id, blobs) {
+            self.discard(
+                app_id,
+                Stored {
+                    ids: Vec::new(),
+                    charged,
+                },
+            );
+            return Err(e);
+        }
+        let stored = Stored {
+            ids: blobs.iter().map(|(id, _)| id.clone()).collect(),
+            charged,
+        };
+        Ok((bytes, stored))
     }
 
-    /// Removes the bytes of files persisted for an entry that did not commit (best effort).
-    fn discard_files(&self, app_id: &str, persisted: Vec<String>) {
-        if !persisted.is_empty() {
-            self.delete_files_later(app_id, persisted);
-        }
-    }
-
-    /// [`Self::discard_files`] after a failed proposal, unless the entry may still commit
+    /// [`Node::discard`] after a failed proposal, unless the entry may still commit
     /// (a new leader can append it): only `NotLeader` and `TooLarge` mean it never will.
-    fn discard_failed(&self, app_id: &str, persisted: Vec<String>, error: &WriteError) {
+    fn discard_failed(&self, app_id: &str, stored: Stored, error: &WriteError) {
         if matches!(
             error,
             WriteError::NotLeader { .. } | WriteError::TooLarge { .. }
         ) {
-            self.discard_files(app_id, persisted);
+            self.discard(app_id, stored);
         }
     }
 
@@ -686,7 +718,7 @@ impl Node {
         }
         let mut timed_out = false;
         let mut not_stored = None;
-        let mut persisted = Vec::new();
+        let mut persisted = Stored::default();
         let meter = self.meter(&app.app_id, &bundle);
         let p = g
             .propose_led(|m, applied, leadership| {
@@ -766,7 +798,7 @@ impl Node {
         let a: Applied =
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
         if a.conflict {
-            self.discard_files(&app.app_id, persisted);
+            self.discard(&app.app_id, persisted);
         }
         let a = to_wasmer_applied(a);
         self.count_conflict(&a);
@@ -864,7 +896,7 @@ impl Node {
         slot: u64,
     ) -> Result<(), WriteError> {
         let meter = self.meter(app_id, &prepared.hash);
-        let mut persisted = Vec::new();
+        let mut persisted = Stored::default();
         let p = g
             .propose_led(|m, applied, leadership| {
                 // An upgrade applied since the round read the ABI: the next poll
@@ -937,7 +969,7 @@ impl Node {
             let applied: Applied = serde_json::from_slice(&p.output)
                 .map_err(|e| WriteError::Unavailable(e.to_string()))?;
             if applied.conflict {
-                self.discard_files(app_id, persisted);
+                self.discard(app_id, persisted);
             }
         }
         Ok(())
@@ -1000,7 +1032,7 @@ impl Node {
         let mut refused = None;
         let meter = self.meter(&req.app_id, &bundle);
         let mut answered = false;
-        let mut persisted = Vec::new();
+        let mut persisted = Stored::default();
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
@@ -1166,7 +1198,7 @@ impl Node {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if p.appended && a.conflict {
-            self.discard_files(&req.app_id, persisted);
+            self.discard(&req.app_id, persisted);
         }
         if answered && !a.conflict {
             self.usage.called(&meter, RunKind::Mutation);
@@ -1817,11 +1849,19 @@ impl Node {
             }
         }
         let cmd = ComponentCmd::BlobsCollected { ids };
-        if let Err(e) = g
+        let logged = g
             .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
-            .await
-        {
-            debug!(error = %e, "collected blobs not logged; collected again next round");
+            .await;
+        match logged {
+            // Released by the entry that really took the files off the queue, so a repeat frees nothing.
+            Ok(p) => {
+                let freed = serde_json::from_slice::<Applied>(&p.output)
+                    .ok()
+                    .and_then(|a| a.result["freed"].as_u64());
+                let app_id = g.read_local(|m, _| m.app_id.clone());
+                self.refund_files(&app_id, freed.unwrap_or(0)).await;
+            }
+            Err(e) => debug!(error = %e, "collected blobs not logged; collected again next round"),
         }
     }
 
