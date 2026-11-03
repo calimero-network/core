@@ -39,6 +39,7 @@ wasmtime-wasi = { workspace = true, features = ["p2"] }
 testing = []
 
 [dev-dependencies]
+calimero-app-host = { workspace = true, features = ["testing"] }
 calimero-app-engine-wasmtime = { path = ".", features = ["testing"] }
 tempfile.workspace = true
 wat.workspace = true

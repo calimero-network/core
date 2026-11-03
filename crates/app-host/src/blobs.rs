@@ -61,6 +61,15 @@ pub fn parse_blob_id(id: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// A blob id as the WIT `blob-id` spells it: 64 lowercase hex digits.
+pub(crate) fn blob_id_hex(id: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    id.iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
 /// The blobs a stored value refers to, each once per reference, in the order they appear.
 /// A value that is not CBOR, or holds no `BlobRef`, refers to none.
 #[must_use]

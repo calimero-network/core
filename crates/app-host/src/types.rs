@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::files::NewFile;
+
 /// Fuel per call or view (D28); Task 13 measures the real ratio to wall time.
 pub const DEFAULT_FUEL: u64 = 200_000_000;
 /// Memory per instance: 1,024 WASM pages (64 MiB).
@@ -179,6 +181,8 @@ pub struct Outcome {
     /// A logged run's outbound requests and their responses, for its log entry (D76);
     /// kept whatever the status, since they left the node. Empty for views and actions.
     pub http: Vec<crate::action::HttpExchange>,
+    /// Files the run finished; empty unless the status is `Ok`.
+    pub new_files: Vec<NewFile>,
     pub usage: Usage,
 }
 

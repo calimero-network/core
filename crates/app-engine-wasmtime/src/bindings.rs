@@ -4,7 +4,7 @@
 //! wasmtime-wasi's bindings, and `wasi.rs` links the implementations. `wasi:http`'s
 //! resources are `http.rs`'s buffered types, linked here.
 
-use calimero_app_host::{self as host, CursorId};
+use calimero_app_host::{self as host, CursorId, ReaderId, WriterId};
 use wasmtime::component::HasSelf;
 use wasmtime::component::Linker;
 use wasmtime::component::Resource;
@@ -35,9 +35,11 @@ wasmtime::component::bindgen!({
     require_store_data_send: true,
 });
 
-use self::calimero::app::{action, blobs, context, events, rebuild, search, storage, types, xcall};
+use self::calimero::app::{
+    action, blobs, context, events, files, rebuild, search, storage, types, xcall,
+};
 
-/// Links the nine `calimero:app` interfaces and `wasi:http` onto `StoreData`.
+/// Links the ten `calimero:app` interfaces and `wasi:http` onto `StoreData`.
 pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     let l = linker;
     types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -47,6 +49,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     events::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     blobs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     search::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    files::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     let options = wasi::http::types::LinkOptions::default();
@@ -309,6 +312,70 @@ impl search::Host for StoreData {
             next: p.next,
             total: p.total,
         }))
+    }
+}
+
+impl files::Host for StoreData {
+    fn create(&mut self) -> Result<std::result::Result<Resource<files::Writer>, String>> {
+        let writer = self.host.files_create().map_err(denied)?;
+        Ok(writer.map(|id| Resource::new_own(id.0)))
+    }
+
+    fn open(&mut self, id: String) -> Result<std::result::Result<Resource<files::Reader>, String>> {
+        let reader = self.host.files_open(&id).map_err(denied)?;
+        Ok(reader.map(|id| Resource::new_own(id.0)))
+    }
+
+    fn info(&mut self, id: String) -> Result<Option<types::BlobInfo>> {
+        let info = self.host.files_info(&id).map_err(denied)?;
+        Ok(info.map(|info| types::BlobInfo {
+            size: info.size,
+            sha256: info.sha256,
+            mime: String::new(),
+        }))
+    }
+}
+
+impl files::HostWriter for StoreData {
+    fn write(
+        &mut self,
+        this: Resource<files::Writer>,
+        bytes: Vec<u8>,
+    ) -> Result<std::result::Result<(), String>> {
+        self.host
+            .writer_write(WriterId(this.rep()), &bytes)
+            .map_err(denied)
+    }
+
+    fn finish(
+        &mut self,
+        this: Resource<files::Writer>,
+    ) -> Result<std::result::Result<String, String>> {
+        self.host
+            .writer_finish(WriterId(this.rep()))
+            .map_err(denied)
+    }
+
+    fn drop(&mut self, this: Resource<files::Writer>) -> Result<()> {
+        self.host.writer_close(WriterId(this.rep()));
+        Ok(())
+    }
+}
+
+impl files::HostReader for StoreData {
+    fn read(
+        &mut self,
+        this: Resource<files::Reader>,
+        max: u32,
+    ) -> Result<std::result::Result<Vec<u8>, String>> {
+        self.host
+            .reader_read(ReaderId(this.rep()), max)
+            .map_err(denied)
+    }
+
+    fn drop(&mut self, this: Resource<files::Reader>) -> Result<()> {
+        self.host.reader_close(ReaderId(this.rep()));
+        Ok(())
     }
 }
 

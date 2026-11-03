@@ -15,14 +15,17 @@ use std::sync::{Arc, OnceLock};
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
     blob_refs, stored_key as host_key, Audience as HostAudience, BlobHost, BlobInfo, Budget,
-    Caller as HostCaller, Engine, HostCore, Invocation, InvocationKind, MethodKind, OrgRole,
-    Outcome, Prepared, SearchHit as HostHit, SearchHost, SearchPage, SearchQuery, Status, TimerCtx,
-    Usage,
+    Caller as HostCaller, Engine, HostCore, Invocation, InvocationKind, MemoryFiles, MethodKind,
+    OrgRole, Outcome, Prepared, SearchHit as HostHit, SearchHost, SearchPage, SearchQuery, Status,
+    TimerCtx, Usage,
 };
 use calimero_app_host::{ActionHost, ActionStart, HttpHost};
 use serde_json::Value;
 
 pub use calimero_app_host::{HttpRequest, HttpResponse, TrapKind};
+
+use crate::blob::BlobRef;
+
 pub use directory::{Org, ORG_ID, OWNER};
 pub use scenario::run_scenario;
 
@@ -170,6 +173,7 @@ pub struct TestApp {
     apps: BTreeMap<String, AppHandler>,
     /// Set while an action's sub-calls run: `allow(action)` methods are reachable.
     in_action: bool,
+    files: MemoryFiles,
 }
 
 /// What `mock_app` answers another app's synchronous xcalls with: the JSON result, or
@@ -375,6 +379,7 @@ impl TestApp {
             http: BTreeMap::new(),
             apps: BTreeMap::new(),
             in_action: false,
+            files: MemoryFiles::default(),
         };
         let owner = HostCaller::Account(OWNER.to_owned());
         let res = app.run(InvocationKind::Init, owner, "init", Vec::new(), None);
@@ -689,6 +694,7 @@ impl TestApp {
             http: BTreeMap::new(),
             apps: BTreeMap::new(),
             in_action: false,
+            files: MemoryFiles::default(),
         }
     }
 
@@ -696,6 +702,18 @@ impl TestApp {
     #[must_use]
     pub fn last_usage(&self) -> Usage {
         self.usage
+    }
+
+    /// Puts a file in the app's store, as if a committed run had made it; returns its id.
+    #[must_use]
+    pub fn add_file(&self, bytes: &[u8]) -> BlobRef {
+        BlobRef::parse(&self.files.insert(bytes)).expect("a file id is a blob id")
+    }
+
+    /// The content of a file the app holds.
+    #[must_use]
+    pub fn file(&self, id: &BlobRef) -> Option<Vec<u8>> {
+        self.files.get(&id.id())
     }
 
     /// The state as deterministic CBOR (RFC 8949 4.2.1): a map of stored key (generation
@@ -796,7 +814,8 @@ impl TestApp {
         .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
         .with_search(search)
         .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())))
-        .with_http(Arc::new(HarnessHttp(self.http.clone())));
+        .with_http(Arc::new(HarnessHttp(self.http.clone())))
+        .with_files(Arc::new(self.files.clone()));
         let budget = if is_view {
             Budget::view()
         } else {
@@ -858,6 +877,7 @@ impl TestApp {
                 }
                 if !is_view {
                     self.outbox.extend(sent);
+                    self.files.apply(&out.new_files);
                     for w in out.diff {
                         match w.value {
                             Some(v) => self.state.insert(w.key, v),
