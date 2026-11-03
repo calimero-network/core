@@ -8,7 +8,7 @@
 //! Records are hidden rows ([`rows::CRUN`]), never keys the app sees; the head keeps the active
 //! ids and the last [`FINISHED_RUNS_KEPT`] finished ones, whose records are then deleted.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -405,6 +405,9 @@ impl AppMachine {
             let Some(bundle) = self.state.bundle.clone() else {
                 continue;
             };
+            if !self.holds_files(&start.inputs) {
+                continue;
+            }
             let record = RunRecord {
                 run: start.run.clone(),
                 method: start.method.clone(),
@@ -429,6 +432,7 @@ impl AppMachine {
                 .head
                 .active_runs
                 .insert(start.run.clone());
+            self.pin_inputs(tx, &start.inputs, 1, ts_ms);
         }
         for run in &outcome.compute_cancels {
             if !self.state.component.head.active_runs.contains(run) {
@@ -506,6 +510,7 @@ impl AppMachine {
         });
         Self::write_run(tx, &record);
         self.finish_run(tx, &entry.run);
+        self.pin_inputs(tx, &record.inputs, -1, entry.ts_ms);
         // Registered before the result method's diff, so a `BlobRef` it stores is counted.
         for output in &entry.outputs {
             self.state.component.blobs.add_file(tx, output, entry.ts_ms);
@@ -518,6 +523,25 @@ impl AppMachine {
             &entry.result,
             &Caller::System,
         )
+    }
+
+    /// Whether every input is a sealed file the app holds.
+    fn holds_files(&self, inputs: &[RunInputRef]) -> bool {
+        let blobs = &self.state.component.blobs.records;
+        inputs.iter().all(|i| {
+            parse_hex32(&i.id)
+                .and_then(|id| blobs.get(&id))
+                .is_some_and(|r| r.file.is_some())
+        })
+    }
+
+    /// Counts the inputs of a run as references while it is active, so retention keeps them.
+    fn pin_inputs(&mut self, tx: &mut StateTx<'_>, inputs: &[RunInputRef], delta: i64, ts_ms: u64) {
+        let mut deltas = BTreeMap::new();
+        for id in inputs.iter().filter_map(|i| parse_hex32(&i.id)) {
+            *deltas.entry(id).or_insert(0) += delta;
+        }
+        self.state.component.blobs.count(tx, &deltas, ts_ms);
     }
 
     /// Takes `run` out of the active set and keeps its record among the last finished ones.
