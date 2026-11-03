@@ -19,7 +19,3 @@ pub fn info(id: &str) -> Option<FileInfo> {
         sha256: i.sha256,
     })
 }
-
-pub fn delete(id: &str) -> Result<(), String> {
-    files::delete(id)
-}

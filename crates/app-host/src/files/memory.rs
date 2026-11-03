@@ -25,14 +25,11 @@ impl MemoryFiles {
         self.lock().get(id).cloned()
     }
 
-    /// What the node does with an applied entry: keeps the new files, drops the deleted.
-    pub fn apply(&self, new_files: &[NewFile], deleted: &[String]) {
+    /// What the node does with an applied entry: keeps the new files.
+    pub fn apply(&self, new_files: &[NewFile]) {
         let mut files = self.lock();
         for file in new_files {
             let _ = files.insert(file.id.clone(), file.ciphertext.clone());
-        }
-        for id in deleted {
-            let _ = files.remove(id);
         }
     }
 

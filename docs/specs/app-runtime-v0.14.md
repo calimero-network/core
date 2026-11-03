@@ -377,7 +377,10 @@ interface blobs {
   grant: func(id: blob-id, ttl-seconds: u32) -> string;
 }
 
-// Encrypted files kept by the node. Writes are logged-write kinds only; reads work in views too.
+// Encrypted files kept by the node: sealed blobs, sharing the blob-id namespace. `finish` returns
+// the id to store as a BlobRef; a file no state refers to is collected. Writes are logged-write
+// kinds only; reads work in views and actions too. blobs.info answers for a file; blobs.grant
+// refuses it.
 interface files {
   use types.{blob-id, blob-info};
   resource writer {
@@ -390,7 +393,6 @@ interface files {
   create: func() -> result<writer, string>;
   open: func(id: blob-id) -> result<reader, string>;
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
-  delete: func(id: blob-id) -> result<_, string>;
 }
 
 interface xcall {
@@ -448,14 +450,21 @@ Rules the host enforces, whatever the guest says:
 ### Files
 
 The `files` interface, added in 0.5.1, gives an app encrypted byte streams that the node stores on the app's replicas.
-`create`, `writer.write`, `writer.finish` and `delete` work only in invocations that become log entries (call, timer, init, xcall delivery); anywhere else they trap `HostDenied`.
-`open`, `reader.read` and `info` work in every kind except migrate.
-`info` reports the plaintext size and SHA-256, and `mime` is empty.
-A file is a mark in app state; it exists only once the run that finished it commits, and a delete takes effect with its entry.
-In one run, a deleted file is gone at once: `info` returns none and `open` fails with `no such file`.
-A run holds at most 16 open readers and writers, writes at most 47 MiB to a file and 64 MiB in all, reads at most 1 MiB per `read`, and deletes at most 1,000 files.
-Every refusal that is not a policy violation is a fixed soft error string: `no such file`, `files are not enabled`, `too many open files`, `file too large`, `run wrote too much`, `file already finished`, `file write failed`, `file already deleted`, `file created in this run`, `too many deletes`.
-A storage failure inside the provider is passed through as an opaque soft error, and the writer then answers `file write failed`.
+A file is a sealed blob: it shares the blob id namespace and the `blob-id` and `blob-info` types, and the host records which ids are sealed files.
+`create`, `writer.write` and `writer.finish` work only in invocations that become log entries (call, timer, init, xcall delivery); anywhere else they trap `HostDenied`.
+`open`, `reader.read` and `info` work in every kind except migrate, so an action may read a file but never write one.
+An action may send a file it read out over outbound HTTP (D76).
+`finish` returns the file's blob id, which the app stores as a typed `BlobRef` in state.
+Retention is R8: the host counts the `BlobRef`s in state, a file no state refers to is collected, and a call that finishes a file without storing its id leaves nothing behind.
+There is no `delete`: dropping the reference is the delete, as for blobs.
+`blobs.info` answers for a file id with the plaintext size and SHA-256 and an empty `mime`, and so does `files.info`.
+`blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one, so a file is readable only by the app's code.
+A `BlobRef` to a file the app holds, or finished earlier in the same run, may be stored.
+A file exists only once the run that finished it commits.
+A run holds at most 16 open readers and writers, writes at most 47 MiB to a file and 64 MiB in all, and reads at most 1 MiB per `read`.
+Every refusal that is not a policy violation is a fixed soft error string: `no such file`, `files are not enabled`, `too many open files`, `file too large`, `run wrote too much`, `file already finished`, `file write failed`.
+A write refused for either size cap, or failed inside the provider, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
+A storage failure inside the provider is passed through as an opaque soft error.
 An unknown handle, or running out of handle ids, traps `HostDenied`.
 A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
 

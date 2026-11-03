@@ -1,12 +1,11 @@
-//! The `files` host calls of [`HostCore`]: handles, limits and the run's new and deleted files.
+//! The `files` host calls of [`HostCore`]: handles, limits and the run's new files.
 
 use std::collections::BTreeMap;
 
 use super::HostCore;
 use crate::files::{
-    FileInfo, FileRead, FileWrite, NewFile, FILE_CREATED_IN_RUN, FILE_DELETED_TWICE, FILE_FAILED,
-    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_DELETES, FILE_TOO_MANY_OPEN, MAX_DELETES,
-    MAX_FILE_BYTES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE,
+    FileInfo, FileRead, FileWrite, NewFile, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE,
+    FILE_TOO_MANY_OPEN, MAX_FILE_BYTES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
     RUN_WROTE_TOO_MUCH,
 };
 use crate::types::{HostDenied, InvocationKind};
@@ -45,12 +44,11 @@ pub(crate) struct FileTable {
     next: u32,
     written: u64,
     created: Vec<NewFile>,
-    deleted: Vec<String>,
 }
 
 impl FileTable {
-    pub(crate) fn into_changes(self) -> (Vec<NewFile>, Vec<String>) {
-        (self.created, self.deleted)
+    pub(crate) fn into_created(self) -> Vec<NewFile> {
+        self.created
     }
 
     fn open_count(&self) -> usize {
@@ -163,9 +161,6 @@ impl HostCore {
         if self.files.open_count() >= MAX_OPEN_FILES {
             return Ok(Err(FILE_TOO_MANY_OPEN.to_owned()));
         }
-        if self.files.deleted.iter().any(|d| d == id) {
-            return Ok(Err(NO_SUCH_FILE.to_owned()));
-        }
         let source = match self.provider.open(id) {
             Ok(source) => source,
             Err(reason) => return Ok(Err(reason)),
@@ -214,31 +209,18 @@ impl HostCore {
 
     pub fn files_info(&self, id: &str) -> Result<Option<FileInfo>, HostDenied> {
         self.may_read_files("files.info")?;
-        if self.files.deleted.iter().any(|d| d == id) {
-            return Ok(None);
-        }
-        Ok(self.provider.info(id))
+        Ok(self.file_info(id))
     }
 
-    /// Records the delete for the entry to apply; the file is gone for the rest of the run.
-    /// Logged writes only; the file must exist and not be created, or already deleted, in
-    /// this run.
-    pub fn files_delete(&mut self, id: &str) -> Result<Result<(), String>, HostDenied> {
-        self.may_write_files("files.delete")?;
-        if self.files.created.iter().any(|f| f.id == id) {
-            return Ok(Err(FILE_CREATED_IN_RUN.to_owned()));
+    /// A sealed file's metadata: one the provider holds or this run finished.
+    pub(super) fn file_info(&self, id: &str) -> Option<FileInfo> {
+        match self.files.created.iter().find(|f| f.id == id) {
+            Some(f) => Some(FileInfo {
+                size: f.size,
+                sha256: f.sha256.clone(),
+            }),
+            None => self.provider.info(id),
         }
-        if self.files.deleted.iter().any(|d| d == id) {
-            return Ok(Err(FILE_DELETED_TWICE.to_owned()));
-        }
-        if self.provider.info(id).is_none() {
-            return Ok(Err(NO_SUCH_FILE.to_owned()));
-        }
-        if self.files.deleted.len() >= MAX_DELETES {
-            return Ok(Err(FILE_TOO_MANY_DELETES.to_owned()));
-        }
-        self.files.deleted.push(id.to_owned());
-        Ok(Ok(()))
     }
 
     fn may_write_files(&self, what: &str) -> Result<(), HostDenied> {

@@ -13,7 +13,7 @@ use crate::action::{
     subcall_key, ActionHost, ActionStart, HttpExchange, HttpHost, HttpRequest, HttpResponse,
     NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
 };
-use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
+use crate::blobs::{blob_id_hex, blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::files::{Files, NoFiles};
 use crate::overlay::{Cursor, Overlay};
 use crate::search::{
@@ -653,16 +653,27 @@ impl HostCore {
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
         self.may_use_blobs("blobs.info")?;
-        Ok(parse_blob_id(id).and_then(|id| self.blobs.info(&id)))
+        let blob = parse_blob_id(id).and_then(|id| self.blobs.info(&id));
+        Ok(blob.or_else(|| {
+            self.file_info(id).map(|f| BlobInfo {
+                size: f.size,
+                sha256: f.sha256,
+                mime: String::new(),
+            })
+        }))
     }
 
     /// A download grant for one of the app's blobs, valid for `ttl_seconds` (1 to
     /// [`MAX_GRANT_TTL_SECS`]) from the run's wall clock. An unknown blob or a TTL out of
-    /// range is refused: the WIT result has no error case.
+    /// range, or a sealed file (only the app's code reads those), is refused: the WIT result
+    /// has no error case.
     pub fn blobs_grant(&mut self, id: &str, ttl_seconds: u32) -> Result<String, HostDenied> {
         self.may_use_blobs("blobs.grant")?;
         if ttl_seconds == 0 || ttl_seconds > MAX_GRANT_TTL_SECS {
             return Err(HostDenied::new("grant ttl out of range"));
+        }
+        if self.file_info(id).is_some() {
+            return Err(HostDenied::new("a sealed file cannot be granted"));
         }
         let Some(id) = parse_blob_id(id).filter(|id| self.blobs.info(id).is_some()) else {
             return Err(HostDenied::new("unknown blob"));
@@ -811,10 +822,10 @@ impl HostCore {
     #[must_use]
     pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
         let ok = status == Status::Ok;
-        let (new_files, deleted_files) = if ok {
-            self.files.into_changes()
+        let new_files = if ok {
+            self.files.into_created()
         } else {
-            (Vec::new(), Vec::new())
+            Vec::new()
         };
         Outcome {
             status,
@@ -830,7 +841,6 @@ impl HostCore {
             logs: self.logs,
             http: self.http_log,
             new_files,
-            deleted_files,
             usage: Usage {
                 writes: self.writes,
                 ..usage
@@ -882,7 +892,7 @@ impl HostCore {
     fn check_blob_refs(&self, value: &[u8]) -> Result<(), HostDenied> {
         if blob_refs(value)
             .iter()
-            .any(|id| self.blobs.info(id).is_none())
+            .any(|id| self.blobs.info(id).is_none() && self.file_info(&blob_id_hex(id)).is_none())
         {
             return Err(HostDenied::new("unknown blob"));
         }

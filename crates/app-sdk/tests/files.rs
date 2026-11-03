@@ -2,7 +2,8 @@
 
 use std::io::{Read, Write};
 
-use calimero_app_sdk::files::{self, FileId};
+use calimero_app_sdk::files;
+use calimero_app_sdk::BlobRef;
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -55,28 +56,21 @@ fn an_unfinished_writer_leaves_no_file() {
     drop(w);
     let empty = files::create().unwrap().finish().unwrap();
     assert_eq!(files::info(&empty).unwrap().size, 0);
-    let lost = FileId::from(hex::encode(Sha256::digest(b"lost")));
+    let lost = BlobRef::from_sha256(Sha256::digest(b"lost").into());
     assert!(files::info(&lost).is_none());
 }
 
 #[test]
-fn unknown_files_are_errors_and_delete_removes() {
-    let ghost = FileId::from("nope".to_owned());
+fn an_unknown_file_has_no_info_and_cannot_be_opened() {
+    let ghost = BlobRef::from_sha256([9; 32]);
     assert!(files::info(&ghost).is_none());
     assert_eq!(files::open(&ghost).err().unwrap().code, "Files");
-    assert_eq!(files::delete(&ghost).unwrap_err().code, "Files");
-
-    let mut w = files::create().unwrap();
-    w.write_all(b"x").unwrap();
-    let id = w.finish().unwrap();
-    files::delete(&id).unwrap();
-    assert!(files::info(&id).is_none());
 }
 
 #[test]
-fn a_file_id_is_a_plain_json_string() {
-    let id = FileId::from("abc".to_owned());
-    assert_eq!(serde_json::to_string(&id).unwrap(), "\"abc\"");
-    assert_eq!(serde_json::from_str::<FileId>("\"abc\"").unwrap(), id);
-    assert_eq!(id.to_string(), "abc");
+fn finish_returns_the_blob_ref_of_the_content() {
+    let mut w = files::create().unwrap();
+    w.write_all(b"x").unwrap();
+    let id = w.finish().unwrap();
+    assert_eq!(id, BlobRef::from_sha256(Sha256::digest(b"x").into()));
 }

@@ -334,10 +334,6 @@ impl files::Host for StoreData {
             mime: String::new(),
         }))
     }
-
-    fn delete(&mut self, id: String) -> Result<std::result::Result<(), String>> {
-        self.host.files_delete(&id).map_err(denied)
-    }
 }
 
 impl files::HostWriter for StoreData {

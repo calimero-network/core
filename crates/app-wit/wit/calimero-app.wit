@@ -77,7 +77,10 @@ interface search {
   query: func(table: string, text: string, mode: search-mode, cursor: u32, limit: u32) -> result<search-page, string>;
 }
 
-// Encrypted files kept by the node. Writes are logged-write kinds only; reads work in views too.
+// Encrypted files kept by the node: sealed blobs, sharing the blob-id namespace. `finish` returns
+// the id to store as a BlobRef; a file no state refers to is collected. Writes are logged-write
+// kinds only; reads work in views and actions too. blobs.info answers for a file; blobs.grant
+// refuses it.
 interface files {
   use types.{blob-id, blob-info};
   resource writer {
@@ -90,7 +93,6 @@ interface files {
   create: func() -> result<writer, string>;
   open: func(id: blob-id) -> result<reader, string>;
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
-  delete: func(id: blob-id) -> result<_, string>;
 }
 
 interface xcall {

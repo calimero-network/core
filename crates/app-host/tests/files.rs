@@ -5,12 +5,11 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use calimero_app_host::{
-    Caller, Directory, FileInfo, FileRead, FileWrite, Files, HostCore, HostDenied, Invocation,
-    InvocationKind, MemoryFiles, NewFile, OrgRole, Outcome, ReaderId, Status, TimerCtx, TrapKind,
-    Usage, WriterId, FILES_DISABLED, FILE_CREATED_IN_RUN, FILE_DELETED_TWICE, FILE_FAILED,
-    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_DELETES, FILE_TOO_MANY_OPEN, MAX_DELETES,
-    MAX_FILE_BYTES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE,
-    RUN_WROTE_TOO_MUCH,
+    parse_blob_id, BlobHost, BlobInfo, Caller, Directory, FileInfo, FileRead, FileWrite, Files,
+    HostCore, HostDenied, Invocation, InvocationKind, MemoryFiles, NewFile, OrgRole, Outcome,
+    ReaderId, Status, TimerCtx, TrapKind, Usage, WriterId, FILES_DISABLED, FILE_FAILED,
+    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_OPEN, MAX_FILE_BYTES, MAX_OPEN_FILES,
+    MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
 };
 
 struct NoDirectory;
@@ -138,17 +137,14 @@ fn writes_are_logged_kinds_only_reads_are_everything_but_migrate() {
         let w = h.files_create().unwrap().unwrap();
         h.writer_write(w, b"x").unwrap().unwrap();
         h.writer_finish(w).unwrap().unwrap();
-        h.files_delete(&id).unwrap().unwrap();
     }
     let mut h = host(timer_inv(), Arc::new(files.clone()));
     let w = h.files_create().unwrap().unwrap();
     h.writer_write(w, b"x").unwrap().unwrap();
     h.writer_finish(w).unwrap().unwrap();
-    h.files_delete(&id).unwrap().unwrap();
     for kind in no_writes {
         let mut h = host(inv(kind), Arc::new(files.clone()));
         denied(h.files_create());
-        denied(h.files_delete(&id));
     }
     for kind in reads {
         let mut h = host(inv(kind), Arc::new(files.clone()));
@@ -171,7 +167,7 @@ fn write_finish_then_read_back_in_chunks_to_the_end() {
     let id = h.writer_finish(w).unwrap().unwrap();
     h.writer_close(w);
     let out = finish(h, Status::Ok);
-    files.apply(&out.new_files, &out.deleted_files);
+    files.apply(&out.new_files);
 
     let mut h = host(inv(InvocationKind::View), Arc::new(files));
     let info = h.files_info(&id).unwrap().unwrap();
@@ -319,60 +315,8 @@ fn a_dropped_writer_leaves_no_file() {
 }
 
 #[test]
-fn delete_is_recorded_not_applied_and_only_for_known_files() {
+fn a_failing_run_drops_its_new_files() {
     let files = MemoryFiles::default();
-    let id = files.insert(b"data");
-    let mut h = call_host(&files);
-    assert_eq!(h.files_delete("nope").unwrap().unwrap_err(), NO_SUCH_FILE);
-    h.files_delete(&id).unwrap().unwrap();
-    assert!(files.get(&id).is_some());
-    let out = finish(h, Status::Ok);
-    assert_eq!(out.deleted_files, vec![id.clone()]);
-    files.apply(&out.new_files, &out.deleted_files);
-    assert!(files.get(&id).is_none());
-}
-
-#[test]
-fn deleting_twice_or_a_file_created_in_the_run_is_a_soft_error() {
-    let files = MemoryFiles::default();
-    let id = files.insert(b"data");
-    let mut h = call_host(&files);
-    h.files_delete(&id).unwrap().unwrap();
-    assert_eq!(
-        h.files_delete(&id).unwrap().unwrap_err(),
-        FILE_DELETED_TWICE
-    );
-    let w = h.files_create().unwrap().unwrap();
-    h.writer_write(w, b"fresh").unwrap().unwrap();
-    let fresh = h.writer_finish(w).unwrap().unwrap();
-    assert_eq!(
-        h.files_delete(&fresh).unwrap().unwrap_err(),
-        FILE_CREATED_IN_RUN
-    );
-    let out = finish(h, Status::Ok);
-    assert_eq!(out.deleted_files, vec![id]);
-}
-
-#[test]
-fn deletes_are_capped_per_run() {
-    let files = MemoryFiles::default();
-    let ids: Vec<String> = (0..=MAX_DELETES)
-        .map(|n| files.insert(n.to_string().as_bytes()))
-        .collect();
-    let mut h = call_host(&files);
-    for id in &ids[..MAX_DELETES] {
-        h.files_delete(id).unwrap().unwrap();
-    }
-    assert_eq!(
-        h.files_delete(&ids[MAX_DELETES]).unwrap().unwrap_err(),
-        FILE_TOO_MANY_DELETES
-    );
-}
-
-#[test]
-fn a_failing_run_drops_new_and_deleted_files() {
-    let files = MemoryFiles::default();
-    let id = files.insert(b"data");
     let statuses = [
         Status::AppError {
             code: "x".to_owned(),
@@ -387,10 +331,8 @@ fn a_failing_run_drops_new_and_deleted_files() {
         let mut h = call_host(&files);
         let w = h.files_create().unwrap().unwrap();
         h.writer_finish(w).unwrap().unwrap();
-        h.files_delete(&id).unwrap().unwrap();
         let out = finish(h, status);
         assert!(out.new_files.is_empty());
-        assert!(out.deleted_files.is_empty());
     }
 }
 
@@ -421,7 +363,6 @@ fn no_files_refuses_everything() {
     assert_eq!(h.files_create().unwrap().unwrap_err(), FILES_DISABLED);
     assert_eq!(h.files_open("x").unwrap().unwrap_err(), NO_SUCH_FILE);
     assert!(h.files_info("x").unwrap().is_none());
-    assert_eq!(h.files_delete("x").unwrap().unwrap_err(), NO_SUCH_FILE);
 }
 
 #[test]
@@ -464,20 +405,6 @@ fn a_refused_oversized_write_does_not_count_toward_the_run_cap() {
     assert_eq!(
         h.writer_write(second, &chunk).unwrap().unwrap_err(),
         RUN_WROTE_TOO_MUCH
-    );
-}
-
-#[test]
-fn a_deleted_file_is_gone_for_the_rest_of_the_run() {
-    let files = MemoryFiles::default();
-    let id = files.insert(b"data");
-    let mut h = call_host(&files);
-    h.files_delete(&id).unwrap().unwrap();
-    assert!(h.files_info(&id).unwrap().is_none());
-    assert_eq!(h.files_open(&id).unwrap().unwrap_err(), NO_SUCH_FILE);
-    assert_eq!(
-        h.files_delete(&id).unwrap().unwrap_err(),
-        FILE_DELETED_TWICE
     );
 }
 
@@ -602,4 +529,68 @@ fn a_provider_failure_in_finish_does_not_read_as_finished() {
     assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_FAILED);
     assert_eq!(h.writer_write(w, b"x").unwrap().unwrap_err(), FILE_FAILED);
     assert!(finish(h, Status::Ok).new_files.is_empty());
+}
+
+fn blob_ref(id: &str) -> Vec<u8> {
+    let mut value = vec![0xD9, 0xCA, 0x1B, 0x58, 0x20];
+    value.extend_from_slice(&parse_blob_id(id).unwrap());
+    value
+}
+
+#[test]
+fn blobs_info_answers_for_a_file_with_an_empty_mime() {
+    let files = MemoryFiles::default();
+    let held = files.insert(b"hello");
+    let mut h = call_host(&files);
+    let info = h.blobs_info(&held).unwrap().unwrap();
+    assert_eq!((info.size, info.mime.as_str()), (5, ""));
+    assert_eq!(info.sha256, h.files_info(&held).unwrap().unwrap().sha256);
+    let w = h.files_create().unwrap().unwrap();
+    h.writer_write(w, b"fresh").unwrap().unwrap();
+    let fresh = h.writer_finish(w).unwrap().unwrap();
+    assert_eq!(h.blobs_info(&fresh).unwrap().unwrap().size, 5);
+    assert_eq!(h.files_info(&fresh).unwrap().unwrap().size, 5);
+    assert!(h.blobs_info(&"0".repeat(64)).unwrap().is_none());
+}
+
+/// A blob store that knows every id, so only the file rule can refuse a grant.
+struct AnyBlob;
+
+impl BlobHost for AnyBlob {
+    fn info(&self, _id: &[u8; 32]) -> Option<BlobInfo> {
+        Some(BlobInfo {
+            size: 1,
+            sha256: Vec::new(),
+            mime: String::new(),
+        })
+    }
+
+    fn grant(&self, _id: &[u8; 32], _expires_ms: u64) -> String {
+        "grant".to_owned()
+    }
+}
+
+#[test]
+fn blobs_grant_refuses_a_sealed_file_but_not_a_blob() {
+    let files = MemoryFiles::default();
+    let held = files.insert(b"hello");
+    let mut h = call_host(&files).with_blobs(Arc::new(AnyBlob));
+    denied(h.blobs_grant(&held, 60));
+    let w = h.files_create().unwrap().unwrap();
+    let fresh = h.writer_finish(w).unwrap().unwrap();
+    denied(h.blobs_grant(&fresh, 60));
+    assert_eq!(h.blobs_grant(&"1".repeat(64), 60).unwrap(), "grant");
+}
+
+#[test]
+fn a_blob_ref_to_a_file_may_be_stored_and_one_to_nothing_may_not() {
+    let files = MemoryFiles::default();
+    let held = files.insert(b"hello");
+    let mut h = call_host(&files);
+    h.storage_put(b"held", &blob_ref(&held)).unwrap();
+    let w = h.files_create().unwrap().unwrap();
+    h.writer_write(w, b"fresh").unwrap().unwrap();
+    let fresh = h.writer_finish(w).unwrap().unwrap();
+    h.storage_put(b"fresh", &blob_ref(&fresh)).unwrap();
+    denied(h.storage_put(b"none", &blob_ref(&"0".repeat(64))));
 }

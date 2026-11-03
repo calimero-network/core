@@ -181,9 +181,8 @@ pub struct Outcome {
     /// A logged run's outbound requests and their responses, for its log entry (D76);
     /// kept whatever the status, since they left the node. Empty for views and actions.
     pub http: Vec<crate::action::HttpExchange>,
-    /// Files the run finished and the files it deleted; empty unless the status is `Ok`.
+    /// Files the run finished; empty unless the status is `Ok`.
     pub new_files: Vec<NewFile>,
-    pub deleted_files: Vec<String>,
     pub usage: Usage,
 }
 

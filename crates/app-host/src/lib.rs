@@ -34,10 +34,9 @@ pub use engine::{Engine, PrepareError, Prepared};
 #[cfg(feature = "testing")]
 pub use files::MemoryFiles;
 pub use files::{
-    FileInfo, FileRead, FileWrite, Files, NewFile, NoFiles, FILES_DISABLED, FILE_CREATED_IN_RUN,
-    FILE_DELETED_TWICE, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_DELETES,
-    FILE_TOO_MANY_OPEN, MAX_DELETES, MAX_FILE_BYTES, MAX_OPEN_FILES, MAX_READ_CHUNK,
-    MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
+    FileInfo, FileRead, FileWrite, Files, NewFile, NoFiles, FILES_DISABLED, FILE_FAILED,
+    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_OPEN, MAX_FILE_BYTES, MAX_OPEN_FILES,
+    MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
 };
 pub use search::{
     NoSearch, SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT,

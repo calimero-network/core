@@ -1,7 +1,6 @@
 //! A thread-local in-memory file store, for tests on the host target. A finished file is
-//! visible at once and a delete takes effect at once: the host shows both only after the
-//! run commits, and has soft errors for deleting a file made in the run or twice. Those need
-//! the host core, which the guest-facing SDK does not depend on; `testing::TestApp` has them.
+//! visible at once: the host shows it only after the run commits, and has soft errors the
+//! host core owns, which the guest-facing SDK does not depend on; `testing::TestApp` has them.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -41,13 +40,6 @@ pub fn info(id: &str) -> Option<FileInfo> {
             sha256: Sha256::digest(bytes).to_vec(),
         })
     })
-}
-
-pub fn delete(id: &str) -> Result<(), String> {
-    FILES
-        .with(|f| f.borrow_mut().remove(id))
-        .map(drop)
-        .ok_or_else(|| NO_SUCH_FILE.to_owned())
 }
 
 impl Writer {

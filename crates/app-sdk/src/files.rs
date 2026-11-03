@@ -6,14 +6,14 @@
 //! In the guest every function reaches the host through the `calimero:app/files` import; on
 //! the host target they use a plain in-memory store that shows a finished file at once.
 //! Only `testing::TestApp` shows the host's commit semantics (a file appears when its call
-//! commits and a delete takes effect then) and its soft errors.
+//! commits) and its soft errors.
 
 use std::fmt;
 use std::io;
 
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::blob::BlobRef;
 use crate::error::{AppError, Result};
 
 #[cfg(target_arch = "wasm32")]
@@ -25,30 +25,6 @@ use wasm as backend;
 mod mock;
 #[cfg(not(target_arch = "wasm32"))]
 use mock as backend;
-
-/// The id of a file: opaque, safe to store and to send in JSON.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct FileId(String);
-
-impl FileId {
-    /// The id as the host spells it.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for FileId {
-    fn from(id: String) -> Self {
-        Self(id)
-    }
-}
-
-impl fmt::Display for FileId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// A file's size and SHA-256, both of the plaintext.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,24 +60,21 @@ pub fn create() -> Result<Writer> {
 }
 
 /// Opens a file this app holds.
-pub fn open(id: &FileId) -> Result<Reader> {
-    backend::open(id.as_str()).map(Reader).map_err(fail)
+pub fn open(id: &BlobRef) -> Result<Reader> {
+    backend::open(&id.id()).map(Reader).map_err(fail)
 }
 
 /// A file's size and hash; none when the app holds no such file.
-pub fn info(id: &FileId) -> Option<FileInfo> {
-    backend::info(id.as_str())
-}
-
-/// Deletes a file the app held before this run, when the run is committed.
-pub fn delete(id: &FileId) -> Result<()> {
-    backend::delete(id.as_str()).map_err(fail)
+pub fn info(id: &BlobRef) -> Option<FileInfo> {
+    backend::info(&id.id())
 }
 
 impl Writer {
-    /// Seals the file and returns its id.
-    pub fn finish(self) -> Result<FileId> {
-        self.0.finish().map(FileId).map_err(fail)
+    /// Seals the file and returns the reference to store in state.
+    pub fn finish(self) -> Result<BlobRef> {
+        let id = self.0.finish().map_err(fail)?;
+        BlobRef::parse(&id)
+            .ok_or_else(|| fail(format!("the host returned a malformed file id: {id}")))
     }
 }
 

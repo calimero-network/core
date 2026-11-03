@@ -1,4 +1,4 @@
-//! The files a run can read, create and delete, behind the node's encrypted store.
+//! The files a run can read and create, behind the node's encrypted store.
 //! The host core talks only to [`Files`]; the node provides it.
 
 #[cfg(feature = "testing")]
@@ -16,8 +16,6 @@ pub const MAX_FILE_BYTES: u64 = 47 * 1024 * 1024;
 pub const MAX_RUN_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// Bytes one `read` returns at most; a larger `max` is clamped.
 pub const MAX_READ_CHUNK: u32 = 1024 * 1024;
-/// Files one run may delete.
-pub const MAX_DELETES: usize = 1_000;
 
 /// The soft errors of the `files` interface (the WIT `result<_, string>`), fixed so every
 /// engine and SDK returns and matches the same strings.
@@ -28,9 +26,6 @@ pub const FILE_TOO_LARGE: &str = "file too large";
 pub const RUN_WROTE_TOO_MUCH: &str = "run wrote too much";
 pub const FILE_FINISHED: &str = "file already finished";
 pub const FILE_FAILED: &str = "file write failed";
-pub const FILE_DELETED_TWICE: &str = "file already deleted";
-pub const FILE_CREATED_IN_RUN: &str = "file created in this run";
-pub const FILE_TOO_MANY_DELETES: &str = "too many deletes";
 
 /// A file's plaintext size and SHA-256, as the app's mark records them.
 #[derive(Clone, Debug, PartialEq, Eq)]

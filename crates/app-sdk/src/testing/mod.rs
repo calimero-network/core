@@ -24,7 +24,7 @@ use serde_json::Value;
 
 pub use calimero_app_host::{HttpRequest, HttpResponse, TrapKind};
 
-use crate::files::FileId;
+use crate::blob::BlobRef;
 
 pub use directory::{Org, ORG_ID, OWNER};
 pub use scenario::run_scenario;
@@ -706,14 +706,14 @@ impl TestApp {
 
     /// Puts a file in the app's store, as if a committed run had made it; returns its id.
     #[must_use]
-    pub fn add_file(&self, bytes: &[u8]) -> FileId {
-        FileId::from(self.files.insert(bytes))
+    pub fn add_file(&self, bytes: &[u8]) -> BlobRef {
+        BlobRef::parse(&self.files.insert(bytes)).expect("a file id is a blob id")
     }
 
     /// The content of a file the app holds.
     #[must_use]
-    pub fn file(&self, id: &FileId) -> Option<Vec<u8>> {
-        self.files.get(id.as_str())
+    pub fn file(&self, id: &BlobRef) -> Option<Vec<u8>> {
+        self.files.get(&id.id())
     }
 
     /// The state as deterministic CBOR (RFC 8949 4.2.1): a map of stored key (generation
@@ -877,7 +877,7 @@ impl TestApp {
                 }
                 if !is_view {
                     self.outbox.extend(sent);
-                    self.files.apply(&out.new_files, &out.deleted_files);
+                    self.files.apply(&out.new_files);
                     for w in out.diff {
                         match w.value {
                             Some(v) => self.state.insert(w.key, v),

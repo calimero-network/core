@@ -302,7 +302,7 @@ fn a_guest_writes_a_file_in_a_call_and_reads_it_back_in_a_view() {
     assert_eq!(file.size, expected.len() as u64);
     assert_eq!(file.sha256, sha);
     assert_eq!(out.result, file.id.as_bytes());
-    files.apply(&out.new_files, &out.deleted_files);
+    files.apply(&out.new_files);
 
     let view = host(InvocationKind::View, "read", &out.result).with_files(Arc::new(files));
     let read = fx.engine.invoke(&app, view, heavy());

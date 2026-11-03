@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 
-use calimero_app_sdk::files::{self, FileId};
+use calimero_app_sdk::files;
 use calimero_app_sdk::prelude::*;
 
 #[derive(Record)]
@@ -197,24 +197,18 @@ impl Rooms {
     }
 
     /// Stores `data` as a file and returns its id.
-    pub fn save_file(&mut self, data: Vec<u8>) -> app::Result<String> {
+    pub fn save_file(&mut self, data: Vec<u8>) -> app::Result<BlobRef> {
         let mut writer = files::create()?;
         writer.write_all(&data)?;
-        Ok(writer.finish()?.to_string())
+        Ok(writer.finish()?)
     }
 
     /// Bytes in the file `id`, read to the end.
     #[app::view]
-    pub fn file_len(&self, id: String) -> app::Result<u64> {
+    pub fn file_len(&self, id: BlobRef) -> app::Result<u64> {
         let mut bytes = Vec::new();
-        files::open(&FileId::from(id))?.read_to_end(&mut bytes)?;
+        files::open(&id)?.read_to_end(&mut bytes)?;
         Ok(bytes.len() as u64)
-    }
-
-    /// Deletes the file `id`.
-    pub fn drop_file(&mut self, id: String) -> app::Result<()> {
-        files::delete(&FileId::from(id))?;
-        Ok(())
     }
 
     /// A fresh unique id.
