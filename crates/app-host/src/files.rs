@@ -9,7 +9,7 @@ pub use memory::MemoryFiles;
 
 /// Open files (readers and writers) one run may hold at once.
 pub const MAX_OPEN_FILES: usize = 16;
-/// Plaintext bytes of one file (the node's blob cap).
+/// Plaintext bytes of one file; at most the node's blob cap (a node test pins it).
 pub const MAX_FILE_BYTES: u64 = 47 * 1024 * 1024;
 /// Plaintext bytes one run may write across all its files; the node holds a logged run's new
 /// ciphertext in memory until its entry is proposed.
