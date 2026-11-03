@@ -181,7 +181,7 @@ impl Drive<'_> {
     }
 
     /// Output `i` of `report`: fetched, checked against the hash and the size the job signed,
-    /// opened with its key, stored on the replicas and marked.
+    /// opened with its key, stored on the replicas and described as a sealed file for the final to register.
     async fn store_output(
         &self,
         peer: &JobPeer,

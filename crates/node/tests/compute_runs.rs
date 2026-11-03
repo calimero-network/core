@@ -379,7 +379,7 @@ async fn a_cancel_ends_the_run_and_stops_the_job() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_run_that_breaks_a_cap_fails_with_its_reason_and_marks_nothing() {
+async fn a_run_that_breaks_a_cap_fails_with_its_reason_and_registers_nothing() {
     let rig = Rig::start(&[JOB_A]).await;
     for (method, reason) in [("spin", "time"), ("hog", "memory"), ("burn", "fuel")] {
         let run = rig.begin("startRun", json!({ "method": method })).await;
@@ -541,7 +541,7 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_result_over_the_cap_fails_the_run_and_marks_nothing() {
+async fn a_result_over_the_cap_fails_the_run_and_registers_nothing() {
     let rig = Rig::start(&[JOB_A]).await;
     let run = rig.begin("startRun", json!({ "method": "big" })).await;
     let outcome = rig.outcome(&run).await;
@@ -681,7 +681,7 @@ async fn a_final_that_conflicted_is_billed_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn the_bytes_of_a_marked_output_survive_every_cleanup() {
+async fn the_bytes_of_a_registered_output_survive_every_cleanup() {
     let rig = Rig::start(&[JOB_A]).await;
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
@@ -702,11 +702,11 @@ async fn the_bytes_of_a_marked_output_survive_every_cleanup() {
     })
     .await;
 
-    // A losing leader's cleanup of the same id: the barrier and the strong read find the mark.
+    // A losing leader's cleanup of the same id: the barrier and the strong read find the blob record.
     rig.leader()
         .clean_up_outputs(&rig.app, vec![output.clone()])
         .await;
-    // A peer's delete request: the replica itself refuses an id its app marks.
+    // A peer's delete request: the replica itself refuses an id its app holds.
     let leader = rig.c.app_leader(&rig.app).unwrap();
     for i in (0..3).filter(|i| *i != leader && holds(*i)) {
         let _ = rig
@@ -721,7 +721,7 @@ async fn the_bytes_of_a_marked_output_survive_every_cleanup() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
         (0..3).filter(|i| holds(*i)).count() >= 2,
-        "the marked output kept its bytes"
+        "the registered output kept its bytes"
     );
     assert!(holds(leader));
 }
