@@ -1378,3 +1378,21 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
         assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deleted_apps_sealed_files_leave_every_replica_and_the_quota() {
+    let f = start().await;
+    let up = f.upload(0, 30_000, 8).await.unwrap();
+    let uploaded = up["id"].as_str().unwrap().to_owned();
+    let (made, _sha, _index) = f.put(2_000, 9).await;
+    assert_eq!(f.charged().await, 32_000);
+    assert!(!f.holders(&uploaded).is_empty() && !f.holders(&made).is_empty());
+
+    let _ok = f.clients[0]
+        .delete(&format!("apps/{}", f.app))
+        .await
+        .unwrap();
+    f.wait_gone(&uploaded).await;
+    f.wait_gone(&made).await;
+    assert_eq!(f.charged().await, 0);
+}

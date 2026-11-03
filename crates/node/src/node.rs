@@ -1708,7 +1708,12 @@ impl Node {
                     self.search.drop_app(&app);
                     self.component_search.drop_app(&app);
                 }
-                let _g = self.apps.write().ok().and_then(|mut a| a.remove(&group));
+                let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
+                if let Some(g) =
+                    stopped.filter(|_| self.sys(|s| s.apps.values().all(|a| a.group != group)))
+                {
+                    self.drop_deleted_files(&g);
+                }
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
             }
@@ -1991,6 +1996,22 @@ impl Node {
                 .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
                 .collect()
         })
+    }
+
+    /// Removes this node's bytes of the sealed files of an app that was deleted. Files are per
+    /// app and never shared; plain blobs are content-addressed and may be another app's.
+    fn drop_deleted_files(&self, g: &Group<AppMachine>) {
+        let files: Vec<String> = g.read_local(|m, _| {
+            (m.state.component.blobs.records.iter())
+                .filter(|(_, r)| r.file.is_some())
+                .map(|(id, _)| hex::encode(id))
+                .collect()
+        });
+        for id in files.iter().filter(|id| !self.is_code_blob(id)) {
+            if let Err(e) = self.engine.delete_blob(id) {
+                warn!(file = %id, error = %e, "file bytes not deleted");
+            }
+        }
     }
 
     /// Whether `hash` is code (a bundle, a package release): any node may fetch it, and it is

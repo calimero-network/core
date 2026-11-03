@@ -151,6 +151,7 @@ A file counts from the moment it is charged until retention collects it.
 The charge is taken before any bytes move, so an upload or a call that would pass the quota fails with `429 QUOTA_EXCEEDED`, nothing is logged and the stored bytes are removed.
 When the leader collects the bytes of files the app forgot, the same entry that logs the collection tells the node how many plaintext bytes it released.
 Deleting an app or an organization frees its files in the same system command.
+A node that stops hosting a deleted app drops the bytes of its files.
 The count and the app's log are not one atomic step.
 When a record's commit fails, the leader checks whether it was logged and settles the count either way.
 A crash between the two can still leave an over-count.

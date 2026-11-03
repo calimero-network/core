@@ -923,6 +923,7 @@ API and system group. What differs from the wasmer path:
   `Node::discard` undoes the bytes and the charge if the entry does not commit.
   The charge is released by retention: `expire_blobs` queues a forgotten file's plaintext size in `ComponentHead::collect_files` beside its id in `collect`.
   The leader's `componentBlobsCollected` entry answers `freed`, the bytes of the queued files it really took off, and the node releases that many (`collect_component_blobs`), so a repeated entry releases nothing.
+  A node that stops hosting an app that is deleted everywhere drops its sealed files' bytes (`Node::drop_deleted_files`); plain blobs stay, as they may be another app's.
   A crash between the entry and the release leaves an over-count, never a loss; a queue past `MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
   Before a call, tick or `init` proposes, `Node::persist_files` stores the ciphertext here and pushes all new files at once to the app group's voters and learners (its own Raft membership, not the directory's replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
   It needs a majority of the voters, this node counted; a voter with no address still counts.
