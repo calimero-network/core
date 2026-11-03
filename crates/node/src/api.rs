@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::app::{Applied, Status};
+use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
@@ -4807,6 +4807,27 @@ fn blob_json(id: &[u8; 32], size: u64) -> Value {
     })
 }
 
+/// Refuses `raw` when it is one of the component `app`'s sealed files: only its code reads
+/// those, so no route serves, replaces or deletes one.
+async fn refuse_sealed_file(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    raw: &[u8; 32],
+) -> Result<(), ApiError> {
+    if app.executor != crate::types::Executor::Component {
+        return Ok(());
+    }
+    match node.file_held_strong(app, raw).await {
+        Some(false) => Ok(()),
+        Some(true) => Err(ApiError::new(
+            409,
+            "NOT_SUPPORTED",
+            "a sealed file is read only by the app's code",
+        )),
+        None => Err(ApiError::unavailable("the app's leader did not answer")),
+    }
+}
+
 /// Upload a blob for an app: the body is its bytes. Anyone who may call the
 /// app may add one; its runs then open it by id.
 async fn blob_upload(
@@ -4833,6 +4854,8 @@ async fn blob_upload(
             "the app holds as many blobs as it may",
         ));
     }
+    // The bytes of a sealed file would claim its id.
+    refuse_sealed_file(&node, &app, &sha256(&body)).await?;
     let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
     let a = node
@@ -4905,6 +4928,7 @@ async fn blob_download(
             let _p = gate(&node, &headers, &app, "__blob", false).await?;
         }
     }
+    refuse_sealed_file(&node, &app, &raw).await?;
     // The app's leader decides: a replica that has not applied a delete yet
     // still holds the mark and the bytes.
     match node.blob_held_strong(&app, &raw).await {
@@ -4995,6 +5019,7 @@ async fn blob_delete(
         ));
     }
     let raw = parse_blob_id(&id)?;
+    refuse_sealed_file(&node, &app, &raw).await?;
     if !node.blob_held(&app, &raw).await? {
         return Err(ApiError::not_found("no such blob in this app"));
     }
@@ -5160,6 +5185,9 @@ struct HeldBody {
     id: String,
     #[serde(default)]
     strong: bool,
+    /// Ask whether it is held as a sealed file, not whether it is held at all.
+    #[serde(default)]
+    file: bool,
 }
 
 async fn internal_blob_held(
@@ -5176,12 +5204,19 @@ async fn internal_blob_held(
         .hosted(&app.app_id)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
     // `strong`: answered only by the app's leader, after it confirmed it leads.
+    let asks = |m: &AppMachine| {
+        if body.file {
+            m.is_sealed_file(&raw)
+        } else {
+            m.holds_blob(&raw)
+        }
+    };
     let held = if body.strong {
-        g.read_strong(|m, _| m.holds_blob(&raw))
+        g.read_strong(|m, _| asks(m))
             .await
             .map_err(|e| ApiError::unavailable(&e.to_string()))?
     } else {
-        g.read_local(|m, _| m.holds_blob(&raw))
+        g.read_local(|m, _| asks(m))
     };
     Ok(Json(json!({ "held": held })))
 }

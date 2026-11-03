@@ -1279,6 +1279,37 @@ mod tests {
         assert!(plain.get("http").is_none());
     }
 
+    #[test]
+    fn the_outcome_of_a_run_carries_its_new_files_as_marks_and_only_when_ok() {
+        let run = |status| host::Outcome {
+            status,
+            result: Vec::new(),
+            diff: Vec::new(),
+            events: Vec::new(),
+            xcalls: Vec::new(),
+            actions: Vec::new(),
+            logs: Vec::new(),
+            http: Vec::new(),
+            new_files: vec![host::NewFile {
+                id: fid(1),
+                size: 5,
+                sha256: vec![1; 32],
+                wrapped_key: vec![2; 60],
+                ciphertext: vec![3; 21],
+            }],
+            usage: host::Usage::default(),
+        };
+        let ok = Outcome::from_host(run(host::Status::Ok));
+        assert_eq!(ok.files, [mark(1)]);
+        // The ciphertext is not in what the log carries.
+        assert!(!serde_json::to_string(&ok).unwrap().contains("ciphertext"));
+        let trapped = Outcome::from_host(run(host::Status::Trap {
+            kind: host::TrapKind::Fault,
+            detail: String::new(),
+        }));
+        assert!(trapped.files.is_empty());
+    }
+
     /// A machine on a real, empty group state (the log's store, in a temp dir).
     struct Rig {
         _dir: tempfile::TempDir,

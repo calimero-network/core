@@ -342,6 +342,40 @@ mod tests {
     }
 
     #[test]
+    fn a_run_sees_a_file_with_its_plaintext_hash_and_no_content_type() {
+        let mut records = BTreeMap::new();
+        let record = |file| BlobRecord {
+            size: 5,
+            mime: if file {
+                String::new()
+            } else {
+                "text/plain".into()
+            },
+            refs: 1,
+            idle_since_ms: 0,
+            file: file.then(|| FileSeal {
+                sha256: Bytes(vec![9; 32]),
+                wrapped_key: Bytes(vec![8; 60]),
+            }),
+        };
+        let _ = records.insert([1; 32], record(true));
+        let _ = records.insert([2; 32], record(false));
+        let run = RunBlobs {
+            app_id: "app".into(),
+            records: Arc::new(records),
+            key: [0; 32],
+        };
+        let file = run.info(&[1; 32]).unwrap();
+        assert_eq!(
+            (file.size, file.sha256, file.mime),
+            (5, vec![9; 32], String::new())
+        );
+        let blob = run.info(&[2; 32]).unwrap();
+        assert_eq!((blob.sha256, blob.mime), (vec![2; 32], "text/plain".into()));
+        assert!(run.info(&[3; 32]).is_none());
+    }
+
+    #[test]
     fn a_value_replaced_moves_its_references() {
         let tagged = |id: u8| {
             let mut out = Vec::new();

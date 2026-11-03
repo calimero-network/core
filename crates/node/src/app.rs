@@ -595,6 +595,17 @@ impl AppMachine {
         self.state.kv.get(&blob_key(id)).is_some()
     }
 
+    /// Whether `id` is one of a component app's sealed files, which only its code reads.
+    #[must_use]
+    pub fn is_sealed_file(&self, id: &[u8; 32]) -> bool {
+        self.state
+            .component
+            .blobs
+            .records
+            .get(id)
+            .is_some_and(|r| r.file.is_some())
+    }
+
     /// The size of one of the app's blobs, if it is one.
     #[must_use]
     pub fn blob_size(&self, id: &[u8; 32]) -> Option<u64> {

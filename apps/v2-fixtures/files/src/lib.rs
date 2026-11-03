@@ -24,6 +24,13 @@ pub struct ReadOut {
     pub sha256: String,
 }
 
+#[derive(serde::Serialize)]
+pub struct InfoOut {
+    pub size: String,
+    pub sha256: String,
+    pub mime: String,
+}
+
 #[app::state(version = 1)]
 pub struct Files {
     puts: Counter,
@@ -151,6 +158,22 @@ impl Files {
         let first = calimero_app_sdk::files::open(&id)?;
         let _second = calimero_app_sdk::files::open(&id)?;
         read_reader(first)
+    }
+
+    /// What `blobs.info` answers for the id: a file answers like any blob, with no content type.
+    #[app::view]
+    pub fn blob_info(&self, id: BlobRef) -> app::Result<Option<InfoOut>> {
+        Ok(id.info().map(|i| InfoOut {
+            size: i.size.to_string(),
+            sha256: hex(&i.sha256),
+            mime: i.mime,
+        }))
+    }
+
+    /// Asks for a download grant of the id; a sealed file is refused.
+    #[app::view]
+    pub fn share_file(&self, id: BlobRef) -> app::Result<String> {
+        Ok(id.grant(60))
     }
 
     /// Writes a file and `pad` bytes of state: past the log's entry cap the entry is replaced.

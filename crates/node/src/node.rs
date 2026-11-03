@@ -2150,8 +2150,25 @@ impl Node {
     /// [`Self::blob_held`] as `app`'s leader answers it (a linearizable
     /// read); `None` when no replica could answer as leader.
     pub async fn blob_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        self.blob_asked_strong(app, id, false).await
+    }
+
+    /// Whether `id` is one of `app`'s sealed files, as its leader answers it.
+    pub async fn file_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        self.blob_asked_strong(app, id, true).await
+    }
+
+    /// The leader's answer to whether `id` is held (`file`: held as a sealed file).
+    async fn blob_asked_strong(&self, app: &AppRecord, id: &[u8; 32], file: bool) -> Option<bool> {
+        let asks = |m: &AppMachine| {
+            if file {
+                m.is_sealed_file(id)
+            } else {
+                m.holds_blob(id)
+            }
+        };
         if let Some(g) = self.replica_group(app) {
-            if let Ok(held) = g.read_strong(|m, _| m.holds_blob(id)).await {
+            if let Ok(held) = g.read_strong(|m, _| asks(m)).await {
                 return Some(held);
             }
         }
@@ -2162,7 +2179,8 @@ impl Node {
                 .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
                 .collect()
         });
-        let body = json!({ "app": app.app_id, "id": hex::encode(id), "strong": true });
+        let body =
+            json!({ "app": app.app_id, "id": hex::encode(id), "strong": true, "file": file });
         for addr in others {
             if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
                 if let Some(held) = v["held"].as_bool() {

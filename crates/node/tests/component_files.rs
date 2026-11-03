@@ -775,3 +775,75 @@ async fn a_snapshot_install_carries_the_marks() {
     let read = f.read_on(lagging, &id, index).await.unwrap();
     assert_eq!(read["size"], "70000");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blobs_info_answers_for_a_file_and_blobs_grant_refuses_it() {
+    let f = start().await;
+    let (id, sha, index) = f.put(100_000, 14).await;
+    for i in 0..3 {
+        let info = f.clients[i]
+            .view(
+                &f.app,
+                "blobInfo",
+                json!({ "id": id }),
+                Consistency::Stale { min_index: index },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            info.result,
+            json!({ "size": "100000", "sha256": sha, "mime": "" }),
+            "node {i}"
+        );
+    }
+    let e = f.clients[0]
+        .view(
+            &f.app,
+            "shareFile",
+            json!({ "id": id }),
+            Consistency::Strong,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+    let none = f.clients[0]
+        .view(
+            &f.app,
+            "blobInfo",
+            json!({ "id": "11".repeat(32) }),
+            Consistency::Strong,
+        )
+        .await
+        .unwrap();
+    assert_eq!(none.result, Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_blob_routes_refuse_a_file_id() {
+    let f = start().await;
+    let (id, _sha, _index) = f.put(100_000, 15).await;
+    let alice = &f.clients[0];
+    let refused = |e: calimero_client::Error, what: &str| {
+        assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{what}: {e}");
+    };
+    refused(
+        alice.download_blob(&f.app, &id).await.unwrap_err(),
+        "download",
+    );
+    // Another node's route answers the same.
+    refused(
+        f.clients[2].download_blob(&f.app, &id).await.unwrap_err(),
+        "download",
+    );
+    // The ciphertext uploaded as a blob would claim the file's id.
+    let ciphertext = f.node(f.leader()).engine.get_blob(&id).unwrap().unwrap();
+    refused(
+        alice.upload_blob(&f.app, ciphertext).await.unwrap_err(),
+        "upload",
+    );
+    refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
+    assert_eq!(alice.list_blobs(&f.app).await.unwrap()["blobs"], json!([]));
+    for i in 0..3 {
+        assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()), "node {i}");
+    }
+}
