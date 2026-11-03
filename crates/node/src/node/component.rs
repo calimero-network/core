@@ -281,6 +281,16 @@ fn marked_blobs(cmd: &ComponentCmd, blobs: &[Blob]) -> Vec<Blob> {
         .collect()
 }
 
+/// Whether a call's outcome changes anything a read-only member may not: keys, events,
+/// files, and the compute runs it starts or cancels (they spend the org's run quota).
+fn writes(outcome: &Outcome) -> bool {
+    !outcome.diff.is_empty()
+        || !outcome.events.is_empty()
+        || !outcome.files.is_empty()
+        || !outcome.compute_starts.is_empty()
+        || !outcome.compute_cancels.is_empty()
+}
+
 /// A finished run: its outcome, and the ciphertext of the files it made, which stays
 /// out of the outcome (the log carries marks only).
 struct Ran {
@@ -1244,13 +1254,7 @@ impl Node {
                 answered = true;
                 // Events are logged side effects too (Ruling 41): an emit-only call
                 // is refused like one that writes keys.
-                if read_only
-                    && (!outcome.diff.is_empty()
-                        || !outcome.events.is_empty()
-                        || !outcome.files.is_empty()
-                        || !outcome.compute_starts.is_empty()
-                        || !outcome.compute_cancels.is_empty())
-                {
+                if read_only && writes(&outcome) {
                     let refused = Applied::unlogged(
                         applied,
                         Outcome {
@@ -2350,6 +2354,31 @@ fn to_host_applied(a: Applied) -> crate::app::Applied {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_that_starts_or_cancels_a_run_is_a_write() {
+        assert!(!writes(&Outcome::default()));
+        let mut start = Outcome::default();
+        start.compute_starts.push(crate::component::ComputeStart {
+            run: "r".into(),
+            method: "digest".into(),
+            args: calimero_log::Bytes(Vec::new()),
+            inputs: Vec::new(),
+            caps: crate::component::RunCaps {
+                fuel: 1,
+                memory_mib: 1,
+                wall_secs: 1,
+            },
+            result_method: "onDone".into(),
+            owner: String::new(),
+        });
+        assert!(writes(&start));
+        let cancel = Outcome {
+            compute_cancels: vec!["r".into()],
+            ..Outcome::default()
+        };
+        assert!(writes(&cancel));
+    }
 
     #[test]
     fn the_component_cache_key_matches_its_known_answer() {
