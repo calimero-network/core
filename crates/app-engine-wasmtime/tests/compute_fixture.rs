@@ -1,5 +1,6 @@
 //! The cluster tests' compute fixture on the real engine: its result method takes the outcome
-//! shape the node hands it and keeps the outputs by `BlobRef`.
+//! shape the node hands it (the whole object, as the SDK's `ComputeOutcome`) and keeps the
+//! outputs by `BlobRef`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -50,7 +51,7 @@ fn on_done(
     let inv = Invocation {
         kind: InvocationKind::Call,
         method: "onDone".to_owned(),
-        args: serde_json::to_vec(&json!({ "outcome": outcome })).unwrap(),
+        args: serde_json::to_vec(outcome).unwrap(),
         caller: Caller::System,
         entry_ts_ms: 1_700_000_000_000,
         id_term: 1,
