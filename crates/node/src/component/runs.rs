@@ -16,6 +16,7 @@ use calimero_app_host as host;
 use calimero_log::{Bytes, GroupState, StateTx};
 use serde::{Deserialize, Serialize};
 
+use super::blobs::{BlobRecord, Blobs};
 use super::{host_answer, parse_hex32, Applied, FileMark, Outcome};
 use crate::app::{rows, AppMachine};
 use crate::job_wire::{hash_bytes, verify_report, FailReason, Report, ReportStatus, ReportUsage};
@@ -523,6 +524,15 @@ impl AppMachine {
             &entry.result,
             &Caller::System,
         )
+    }
+
+    /// What a run's result method sees of the app's blobs: the current records plus the sealed
+    /// files the run's final registers, so a `BlobRef` it stores to an output is accepted.
+    #[must_use]
+    pub fn blob_view_with_outputs(&self, outputs: &[FileMark], ts_ms: u64) -> Blobs {
+        let mut records = (*self.blob_view()).clone();
+        records.extend(outputs.iter().filter_map(|o| BlobRecord::sealed(o, ts_ms)));
+        Arc::new(records)
     }
 
     /// Whether every input is a sealed file the app holds.
