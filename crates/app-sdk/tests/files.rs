@@ -37,6 +37,18 @@ fn reads_come_in_the_size_of_the_buffer_and_end_with_zero() {
 }
 
 #[test]
+fn reading_into_an_empty_buffer_loses_no_byte() {
+    let mut w = files::create().unwrap();
+    w.write_all(b"abcde").unwrap();
+    let id = w.finish().unwrap();
+    let mut r = files::open(&id).unwrap();
+    assert_eq!(r.read(&mut []).unwrap(), 0);
+    let mut rest = Vec::new();
+    r.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, b"abcde");
+}
+
+#[test]
 fn an_unfinished_writer_leaves_no_file() {
     let mut w = files::create().unwrap();
     w.write_all(b"lost").unwrap();

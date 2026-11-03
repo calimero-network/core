@@ -65,7 +65,10 @@ impl Writer {
 
 impl Reader {
     pub fn read(&mut self, max: u32) -> Result<Vec<u8>, String> {
-        let end = self.at.saturating_add(max as usize).min(self.bytes.len());
+        let end = self
+            .at
+            .saturating_add(max.max(1) as usize)
+            .min(self.bytes.len());
         let chunk = self.bytes[self.at..end].to_vec();
         self.at = end;
         Ok(chunk)

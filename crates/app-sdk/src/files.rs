@@ -120,6 +120,10 @@ impl io::Write for Writer {
 
 impl io::Read for Reader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // The host clamps max 0 to 1, so an empty buffer would swallow a byte.
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let max = u32::try_from(buf.len()).unwrap_or(u32::MAX);
         let chunk = self
             .0
