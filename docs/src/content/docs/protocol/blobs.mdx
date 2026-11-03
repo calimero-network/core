@@ -107,6 +107,33 @@ which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
   no session on any node, until it expires; a bad or expired grant answers
   `404`. Downloads carry the recorded content type.
 
+## Files of component apps
+
+A component app's runs can also make sealed files: a file is written in a call, tick or `init`, and read in any run but a migration.
+A file is a sealed blob.
+It shares the blob id namespace and the `BlobRef` type, and `blobs.info` answers for it with an empty content type.
+It cannot be downloaded or granted, and no upload can claim its id: only the app's code reads it.
+The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
+The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
+The app's blob record for the file holds the plaintext size and SHA-256 and the wrapped key, in the hidden rows the guest cannot reach.
+The log entry carries these marks and never the ciphertext.
+
+There is no delete.
+`files.finish` returns the blob id, and the app keeps the file by storing it as a `BlobRef`, exactly as for an uploaded blob.
+The entry that makes the file also applies the state write that stores the reference, so the file is never collectable in between.
+A file nothing refers to is held for an hour from its entry, and one whose last reference went is forgotten the same way a blob is.
+Every replica forgets the record in the same entry, and the bytes are then collected from the nodes that hold them.
+
+The ciphertext lives on the app's replicas, not on every node.
+Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
+The call proceeds only once a majority of the app's voters hold every new file; otherwise it fails with a retryable `503`, nothing is logged, and its idempotency key is not spent.
+A node holds at most 256 MiB of new files' ciphertext across all runs until their entries are proposed; a call that cannot get its share fails with a retryable `503`, is not logged, and does not spend its idempotency key.
+A replica that misses a file fetches it from the other replicas when a run opens it.
+If no replica can serve it, a call, tick or `init` is aborted with a retryable `503` and not logged, while a view is told the bytes are not available.
+A run reads a file by decrypting it as it goes, and the end of the stream checks the plaintext size and SHA-256 against the mark.
+A file that was altered or cut short fails the run with a trap, so no app can ignore it.
+Each file has its own random key, so no other app can mark the same ciphertext.
+
 ## Limits
 
 | Limit | Value |
@@ -119,4 +146,6 @@ which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
 | Blobs one component app holds | 100,000 (`429 QUOTA_EXCEEDED` past it) |
 | A component blob's content type | 127 bytes, printable ASCII |
 | A component blob held with no reference | 1 hour |
+| A sealed file held with no reference | 1 hour |
+| New-file ciphertext all runs of a node hold before their entries | 256 MiB |
 | A grant | 1 s to 24 h |

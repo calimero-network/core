@@ -11,7 +11,7 @@ use ring::hmac;
 /// every node derives the same key from K_c, and nothing outside it can.
 #[must_use]
 pub fn tee_key(cluster_key: &[u8; 32], app_id: &str) -> [u8; 32] {
-    tag(cluster_key, &format!("calimero.tee.v1|{app_id}"))
+    tag(cluster_key, format!("calimero.tee.v1|{app_id}"))
 }
 
 /// The key that stands for `account`'s devices in `app`: a member's share is
@@ -21,15 +21,20 @@ pub fn tee_key(cluster_key: &[u8; 32], app_id: &str) -> [u8; 32] {
 pub fn member_key(cluster_key: &[u8; 32], app_id: &str, account: &str) -> [u8; 32] {
     tag(
         cluster_key,
-        &format!("calimero.member.v1|{app_id}|{account}"),
+        format!("calimero.member.v1|{app_id}|{account}"),
     )
 }
 
-fn tag(cluster_key: &[u8; 32], label: &str) -> [u8; 32] {
-    let tag = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, cluster_key),
-        label.as_bytes(),
-    );
+/// The key the app's files are wrapped and its compute runs are derived under:
+/// separate from the TEE key, which is also a curve private key.
+#[must_use]
+pub fn file_key(cluster_key: &[u8; 32], app_id: &str) -> [u8; 32] {
+    tag(cluster_key, format!("calimero.files.v1|{app_id}"))
+}
+
+/// `HMAC-SHA256(key, label)`: every key this node derives from another is one.
+pub(crate) fn tag(key: &[u8; 32], label: impl AsRef<[u8]>) -> [u8; 32] {
+    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), label.as_ref());
     let mut out = [0; 32];
     out.copy_from_slice(&tag.as_ref()[..32]);
     out
@@ -78,4 +83,17 @@ pub fn latest(
         Ok(())
     })?;
     Ok(Some((index.parse()?, rows)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_file_key_matches_its_known_answer() {
+        assert_eq!(
+            hex::encode(file_key(&[7; 32], "app")),
+            "fd6f5681b66993559e8d5027662473049b1a25fe667a1383454003d7db41fdf6"
+        );
+    }
 }

@@ -586,13 +586,24 @@ impl AppMachine {
         Some(out)
     }
 
-    /// Whether `id` (hex) is a blob of this app.
+    /// Whether `id` is a blob of this app (for a component, a sealed file included).
     #[must_use]
     pub fn holds_blob(&self, id: &[u8; 32]) -> bool {
         if self.state.executor() == Some(crate::types::Executor::Component) {
             return self.state.component.blobs.records.contains_key(id);
         }
         self.state.kv.get(&blob_key(id)).is_some()
+    }
+
+    /// Whether `id` is one of a component app's sealed files, which only its code reads.
+    #[must_use]
+    pub fn is_sealed_file(&self, id: &[u8; 32]) -> bool {
+        self.state
+            .component
+            .blobs
+            .records
+            .get(id)
+            .is_some_and(|r| r.file.is_some())
     }
 
     /// The size of one of the app's blobs, if it is one.
@@ -614,8 +625,19 @@ impl AppMachine {
             return StorageStats {
                 keys: kv.len() as u64,
                 bytes: kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum(),
-                blobs: blobs.iter().map(|(id, r)| (*id, r.size)).collect(),
-                blob_bytes: blobs.values().map(|r| r.size).sum(),
+                blobs: blobs
+                    .iter()
+                    .filter(|(_, r)| r.file.is_none())
+                    .map(|(id, r)| (*id, r.size))
+                    .collect(),
+                blob_bytes: blobs
+                    .values()
+                    .map(|r| {
+                        r.file
+                            .as_ref()
+                            .map_or(r.size, |_| crate::files::sealed_len(r.size))
+                    })
+                    .sum(),
             };
         }
         let prefix = blob_key(&[0; 32]);

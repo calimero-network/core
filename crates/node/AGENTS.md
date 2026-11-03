@@ -320,6 +320,14 @@ is its command line.
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
+- **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
+  (`FileSealer`, `FileOpener`) under a random data key.
+  The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
+  `FileOpener::finish_expecting` checks the plaintext size and SHA-256 against the mark, as GCM does not commit to its key.
+  `wrap_key` wraps the data key as salt || nonce || AES-256-GCM under a subkey of `backup::file_key` (per app, from K_c, not the TEE key), with the app id as AAD.
+  `wrap_for_job` re-wraps a secret to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
+  The job node opens it through `SealedTransport::derive`, which never returns the raw DH output and labels its HKDF (`calimero_sealed::derive_shared`, shared with the wrap side).
+  `noise_seed` and `run_token` derive a run's seed and capability from the file key.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, made on the node's first start and kept
   in `<data_dir>/signing-key` wrapped under K_r, `signing_key.rs`: a restart
@@ -880,6 +888,34 @@ API and system group. What differs from the wasmer path:
   (3 s) while the runtime runs it; two apps calling each other at once both time out.
   Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
   (`apps/v2-fixtures/captcha`).
+- **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
+  It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
+  A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
+  A sealed file's record carries a `FileSeal` (`BlobRecord::file`: the plaintext hash and the wrapped key) in the hidden `rows::CBLOB` rows the guest cannot reach, so a snapshot and `restore` carry it.
+  A writer seals into memory (`FileSealer`) and wraps the data key; the blob id is the hex SHA-256 of the ciphertext.
+  The outcome and the entry carry marks only (`Outcome::files`, a serde default: old entries decode unchanged).
+  `apply` records them as unreferenced blobs before the diff, only for status `Ok`, so a `BlobRef` the same entry stores is counted and a file is never collectable in between.
+  A file is then held while a stored `BlobRef` names it, `BLOB_IDLE_MS` after its entry or after the last reference went, and forgotten by `expire_blobs` in the same entry on every replica.
+  The leader then collects its bytes through the same `collect_blob` and `componentBlobsCollected` as any blob; a replica that is down then keeps unreachable bytes, as for a blob.
+  `BlobTable::upload` and `forget_blob` refuse a file id, so an upload or an owner delete cannot take one.
+  `RunBlobs::info` answers a file with its plaintext size and hash and an empty mime, as `files.info` does; the host core refuses `blobs.grant` for it.
+  `GET`, `POST` and `DELETE` on `/apps/{app}/blobs` refuse a file id with `409 NOT_SUPPORTED` (`refuse_sealed_file`, judged by the app's leader through `file_held_strong`); `GET` of the list leaves files out and `/apps/{app}/storage` counts their sealed bytes in `blobBytes` (a tag per chunk).
+  Before a call, tick or `init` proposes, `Node::persist_files` stores the ciphertext here and pushes all new files at once to the app group's voters and learners (its own Raft membership, not the directory's replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
+  It needs a majority of the voters, this node counted; a voter with no address still counts.
+  It runs only after the entry bytes are built, so an entry the log replaces as too large stores nothing.
+  When the majority is missing the call is `503 FILES_UNAVAILABLE` (the forward loops pass it on unchanged and do not retry it; the client does, with its key), nothing is logged and the pushed bytes are removed; so are the bytes of an entry that conflicts or whose proposal fails.
+  The ciphertext a run's writers hold until its entry is proposed draws on a node-wide budget (`MAX_PENDING_FILE_BYTES`, `PendingBytes`, kept by `Ran` until the entry is proposed or refused).
+  A write it cannot hold takes nothing and aborts the logged run as `FileError::Unavailable`, so runs together never hold more than the budget.
+  `open` uses the local blob only if its SHA-256 is its id, else drops it and fetches it from the other replicas (5 s), and decrypts as the guest reads.
+  Any opener failure, including at the end of the stream, is `ReadError::Corrupt`, which the host core makes a `HostDenied` trap.
+  Open readers hold their ciphertext bytes against a per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged runs wait 1 s for it).
+  A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `open`, `create`, `write` and `finish`); a view gets the soft error `"file bytes are not available"`.
+  The provider is built for every run but touches keys, budgets and bytes only when a run touches a file.
+  Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
+  Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app holds (`holds_blob`); bundles and wasmer blobs still use every node.
+  Replica moves hand over the app's files with the bundle (`hand_over_bytes`), and again after the voters change, only what the joining nodes do not hold, for files made while the move ran; the second hand-over is retried for 10 s and never abandons the move.
+  **Upgrade note (rolling upgrade):** a node on a release without files refuses to prepare a bundle that imports `calimero:app/files` (`ForbiddenImport`), so it never runs, leads or answers for an app that uses files.
+  Replicas of different releases coexist only while a release upgrade moves apps, and the old ones are retired.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are

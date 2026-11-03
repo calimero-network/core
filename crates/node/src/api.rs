@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::app::{Applied, Status};
+use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
@@ -43,6 +43,9 @@ use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
 
+/// How long a replica move retries the second hand-over of files, and how long it pauses.
+const HAND_OVER_AGAIN_WITHIN: Duration = Duration::from_secs(10);
+const HAND_OVER_AGAIN_PAUSE: Duration = Duration::from_millis(500);
 const SESSION_TTL: u64 = 15 * 60;
 const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 const CHALLENGE_TTL: u64 = 5 * 60;
@@ -4530,17 +4533,6 @@ async fn caller_may_hold_app(
     caller_may_hold(node, caller, &app)
 }
 
-/// Whether a blob is code (a bundle, a package release): what any node of
-/// the cluster may fetch. Anything else is an app's data.
-fn is_code(node: &Node, hash: &str) -> bool {
-    node.sys(|s| {
-        s.bundles.contains_key(hash)
-            || s.packages
-                .values()
-                .any(|p| p.versions.values().any(|v| v.mpk == hash))
-    })
-}
-
 /// The apps hosted here whose state marks blob `hash`.
 fn hosted_holders(node: &Node, hash: &str) -> Vec<crate::types::AppRecord> {
     let Some(raw) = hex::decode(hash)
@@ -4750,9 +4742,21 @@ async fn internal_blob_put(
     if hex::encode(sha256(&wasm.0)) != body.hash {
         return Err(ApiError::bad_request("BAD_REQUEST", "hash does not match"));
     }
+    #[cfg(feature = "testing")]
+    node.note_blob_put();
+    #[cfg(feature = "testing")]
+    let mode = node.peer_blobs_mode();
+    #[cfg(feature = "testing")]
+    if mode == crate::node::PeerBlobs::Refuse {
+        return Err(ApiError::unavailable("blob puts are refused"));
+    }
     node.engine
         .put_blob(&body.hash, &wasm.0)
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+    #[cfg(feature = "testing")]
+    if mode == crate::node::PeerBlobs::StoreThenFail {
+        return Err(ApiError::unavailable("blob put answered late"));
+    }
     Ok(Json(json!({})))
 }
 
@@ -4765,7 +4769,7 @@ async fn internal_blob_get(
     let caller = peer(&node, &headers, key).await?;
     // Code goes to any node of the cluster; an app's blob only to a node
     // approved for an app hosted here that marks it.
-    if !is_code(&node, &body.hash) {
+    if !node.is_code_blob(&body.hash) {
         let allowed = hosted_holders(&node, &body.hash)
             .iter()
             .any(|app| caller_may_hold(&node, &caller, app).is_ok());
@@ -4803,6 +4807,27 @@ fn blob_json(id: &[u8; 32], size: u64) -> Value {
     })
 }
 
+/// Refuses `raw` when it is one of the component `app`'s sealed files: only its code reads
+/// those, so no route serves, replaces or deletes one.
+async fn refuse_sealed_file(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    raw: &[u8; 32],
+) -> Result<(), ApiError> {
+    if app.executor != crate::types::Executor::Component {
+        return Ok(());
+    }
+    match node.file_held_strong(app, raw).await {
+        Some(false) => Ok(()),
+        Some(true) => Err(ApiError::new(
+            409,
+            "NOT_SUPPORTED",
+            "a sealed file is read only by the app's code",
+        )),
+        None => Err(ApiError::unavailable("the app's leader did not answer")),
+    }
+}
+
 /// Upload a blob for an app: the body is its bytes. Anyone who may call the
 /// app may add one; its runs then open it by id.
 async fn blob_upload(
@@ -4829,6 +4854,8 @@ async fn blob_upload(
             "the app holds as many blobs as it may",
         ));
     }
+    // The bytes of a sealed file would claim its id.
+    refuse_sealed_file(&node, &app, &sha256(&body)).await?;
     let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
     let a = node
@@ -4901,6 +4928,7 @@ async fn blob_download(
             let _p = gate(&node, &headers, &app, "__blob", false).await?;
         }
     }
+    refuse_sealed_file(&node, &app, &raw).await?;
     // The app's leader decides: a replica that has not applied a delete yet
     // still holds the mark and the bytes.
     match node.blob_held_strong(&app, &raw).await {
@@ -4991,6 +5019,7 @@ async fn blob_delete(
         ));
     }
     let raw = parse_blob_id(&id)?;
+    refuse_sealed_file(&node, &app, &raw).await?;
     if !node.blob_held(&app, &raw).await? {
         return Err(ApiError::not_found("no such blob in this app"));
     }
@@ -5142,13 +5171,7 @@ async fn internal_blob_delete(
             }
         }
     }
-    let code = node.sys(|s| {
-        s.bundles.contains_key(&hash)
-            || s.packages
-                .values()
-                .any(|p| p.versions.values().any(|v| v.mpk == hash))
-    });
-    if !code {
+    if !node.is_code_blob(&hash) {
         node.engine
             .delete_blob(&hash)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -5162,6 +5185,9 @@ struct HeldBody {
     id: String,
     #[serde(default)]
     strong: bool,
+    /// Ask whether it is held as a sealed file, not whether it is held at all.
+    #[serde(default)]
+    file: bool,
 }
 
 async fn internal_blob_held(
@@ -5178,12 +5204,19 @@ async fn internal_blob_held(
         .hosted(&app.app_id)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
     // `strong`: answered only by the app's leader, after it confirmed it leads.
+    let asks = |m: &AppMachine| {
+        if body.file {
+            m.is_sealed_file(&raw)
+        } else {
+            m.holds_blob(&raw)
+        }
+    };
     let held = if body.strong {
-        g.read_strong(|m, _| m.holds_blob(&raw))
+        g.read_strong(|m, _| asks(m))
             .await
             .map_err(|e| ApiError::unavailable(&e.to_string()))?
     } else {
-        g.read_local(|m, _| m.holds_blob(&raw))
+        g.read_local(|m, _| asks(m))
     };
     Ok(Json(json!({ "held": held })))
 }
@@ -5983,7 +6016,9 @@ async fn move_replicas(
         .filter(|(id, _)| !current.contains(id))
         .cloned()
         .collect();
-    let _handed = node.hand_over_bytes(&app, &g, &joining).await?;
+    let handed = node
+        .hand_over_bytes(&app, &g, &joining, &std::collections::HashSet::new())
+        .await?;
     for (id, addr) in addrs {
         if !g.status().voters.contains(&id) {
             g.add_learner(id, addr)
@@ -5994,6 +6029,15 @@ async fn move_replicas(
     g.change_voters(target.clone())
         .await
         .map_err(|e| membership_err(&e))?;
+    // Files made while the move ran may have reached a majority that left the joining nodes
+    // out: hand those over before the old nodes go, but never abandon the move for it.
+    let again = crate::node::retry_within(HAND_OVER_AGAIN_WITHIN, HAND_OVER_AGAIN_PAUSE, || {
+        node.hand_over_bytes(&app, &g, &joining, &handed)
+    })
+    .await;
+    if let Err(e) = again {
+        warn!(app = %app_id, error = %e, "files made during the move were not handed over");
+    }
     if !grows {
         let _ok = node
             .sys_write(&SystemCmd::SetReplicas {

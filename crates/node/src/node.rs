@@ -11,7 +11,6 @@ use calimero_log::{
     WriteError,
 };
 use futures_util::StreamExt;
-use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -381,6 +380,15 @@ pub struct Node {
     /// How many times this node ran the engine's `prepare` (feature `testing`).
     #[cfg(feature = "testing")]
     prepares: std::sync::atomic::AtomicU64,
+    /// The ciphertext bytes open file readers may still take, across all runs.
+    open_file_bytes: Arc<tokio::sync::Semaphore>,
+    /// The bytes of new files that may be on their way to replicas at once.
+    push_bytes: Arc<tokio::sync::Semaphore>,
+    /// The ciphertext of new files that runs hold until their entries are proposed.
+    pending_file_bytes: Arc<tokio::sync::Semaphore>,
+    /// Knobs and counters for tests (feature `testing`).
+    #[cfg(feature = "testing")]
+    probes: component::Probes,
     /// App time of component apps ([`Clock`]).
     clock: Clock,
     /// Per component app group: the term this node last led it in, and its
@@ -561,6 +569,17 @@ pub const COMPONENT_REFUSES: &str =
 /// The error of a call a read-only member made that would have written.
 pub const READ_ONLY: &str = "read-only in this team: the call would write";
 
+/// How a node answers a peer's blob requests (feature `testing`).
+#[cfg(feature = "testing")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerBlobs {
+    Accept,
+    /// Answers `503` without storing.
+    Refuse,
+    /// Stores, then answers `503`: a peer that holds the bytes but is not counted.
+    StoreThenFail,
+}
+
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -655,12 +674,8 @@ impl Node {
             &component::component_cache_key(&cluster_key),
         )?);
         let clock = Clock::new(config.clock_offset_ms);
-        let secret = hmac::sign(
-            &hmac::Key::new(hmac::HMAC_SHA256, &cluster_key),
-            format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
-        );
         let node = Arc::new(Self {
-            cluster_secret: calimero_identity::b64url(secret.as_ref()),
+            cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
             key_releases: tokio::sync::Semaphore::new(crate::api::MAX_CONCURRENT_KEY_RELEASES),
             config,
@@ -673,6 +688,13 @@ impl Node {
             preparing: Mutex::new(HashMap::new()),
             #[cfg(feature = "testing")]
             prepares: std::sync::atomic::AtomicU64::new(0),
+            open_file_bytes: Arc::new(tokio::sync::Semaphore::new(component::MAX_OPEN_FILE_BYTES)),
+            push_bytes: Arc::new(tokio::sync::Semaphore::new(component::MAX_PUSH_BYTES)),
+            pending_file_bytes: Arc::new(tokio::sync::Semaphore::new(
+                component::MAX_PENDING_FILE_BYTES,
+            )),
+            #[cfg(feature = "testing")]
+            probes: component::Probes::default(),
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
@@ -798,7 +820,12 @@ impl Node {
     }
 
     /// POST JSON to a peer's internal route over its sealed channel.
-    pub async fn peer_post(&self, addr: &str, path: &str, body: &Value) -> eyre::Result<Value> {
+    pub async fn peer_post(
+        &self,
+        addr: &str,
+        path: &str,
+        body: &(impl Serialize + ?Sized),
+    ) -> eyre::Result<Value> {
         let peer = self.connected(addr).await?;
         let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
         let req = self
@@ -1424,10 +1451,8 @@ impl Node {
         if let Some(g) = self.app_group(app.group) {
             return Ok(g);
         }
-        let g = self
-            .engine
-            .start_group(app.group, AppMachine::new(app.app_id.clone()))
-            .await?;
+        let machine = AppMachine::new(app.app_id.clone());
+        let g = self.engine.start_group(app.group, machine).await?;
         let _prev = self
             .apps
             .write()
@@ -1908,13 +1933,7 @@ impl Node {
     /// [`Self::may_send`] judges a Raft entry); `Ok` once a majority of those
     /// holds it.
     async fn spread_blob(&self, id: &str, bytes: &[u8], app: Option<&str>) -> Result<(), ApiError> {
-        let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
-                .filter(|n| n.id != self.config.node_id)
-                .map(|n| n.addr.clone())
-                .collect()
-        });
+        let peers = self.other_nodes();
         let group = app.and_then(|a| self.sys(|s| s.apps.get(a).map(|r| r.group)));
         let mut eligible = Vec::with_capacity(peers.len());
         for addr in peers {
@@ -1938,29 +1957,79 @@ impl Node {
         Ok(())
     }
 
+    /// The address of every node but this one.
+    fn other_nodes(&self) -> Vec<String> {
+        self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        })
+    }
+
+    /// The address of every replica of `app` but this node.
+    pub(crate) fn other_replicas(&self, app: &AppRecord) -> Vec<String> {
+        self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|r| **r != self.config.node_id)
+                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .collect()
+        })
+    }
+
+    /// Whether `hash` is code (a bundle, a package release): any node may fetch it, and it is
+    /// never deleted as a blob.
+    pub(crate) fn is_code_blob(&self, hash: &str) -> bool {
+        self.sys(|s| {
+            s.bundles.contains_key(hash)
+                || s.packages
+                    .values()
+                    .any(|p| p.versions.values().any(|v| v.mpk == hash))
+        })
+    }
+
     /// Hand `to` (nodes about to become replicas of `app`) the bytes the app
     /// needs that live outside its log: its bundle and every blob its state
     /// marks. They would otherwise be fetched from a peer on first use, and a
     /// cluster grown from one node holds them only on that node: once it is
-    /// gone, nobody could run the app. Returns how many it handed over.
+    /// gone, nobody could run the app. `held` names what `to` already hold; answers
+    /// everything they hold now.
     pub async fn hand_over_bytes(
         &self,
         app: &AppRecord,
         g: &Group<AppMachine>,
         to: &[(NodeId, String)],
-    ) -> Result<usize, ApiError> {
+        held: &HashSet<String>,
+    ) -> Result<HashSet<String>, ApiError> {
+        let mut now = held.clone();
         if to.is_empty() {
-            return Ok(0);
+            return Ok(now);
         }
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .unwrap_or_else(|| app.bundle.clone());
-        let wasm = self.bundle_wasm(&bundle).await?;
-        self.hand_to(&bundle, wasm, to).await?;
+        if now.insert(bundle.clone()) {
+            let wasm = self.bundle_wasm(&bundle).await?;
+            self.hand_to(&bundle, wasm, to).await?;
+        }
         // One blob in memory at a time: an app may hold many large ones.
-        let blobs = g.read_local(|m, _| m.storage_stats().blobs);
-        for (id, _size) in &blobs {
-            let id = hex::encode(id);
+        let ids: Vec<String> = g.read_local(|m, _| {
+            let mut ids: Vec<String> = (m.storage_stats().blobs.iter())
+                .map(|(id, _)| hex::encode(id))
+                .collect();
+            ids.extend(
+                (m.state.component.blobs.records.iter())
+                    .filter(|(_, r)| r.file.is_some())
+                    .map(|(id, _)| hex::encode(id)),
+            );
+            ids
+        });
+        for id in ids {
+            if !now.insert(id.clone()) {
+                continue;
+            }
             let bytes = match self
                 .engine
                 .get_blob(&id)
@@ -1971,7 +2040,7 @@ impl Node {
             };
             self.hand_to(&id, bytes, to).await?;
         }
-        Ok(1 + blobs.len())
+        Ok(now)
     }
 
     /// Store `bytes` (named by their hash) on each of `to`.
@@ -1994,16 +2063,18 @@ impl Node {
 
     /// A blob's bytes from a peer (this node missed it), kept here after.
     pub async fn fetch_blob(&self, id: &str) -> Result<Vec<u8>, ApiError> {
-        let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
-                .filter(|n| n.id != self.config.node_id)
-                .map(|n| n.addr.clone())
-                .collect()
-        });
+        self.fetch_blob_from(id, &self.other_nodes()).await
+    }
+
+    /// [`Self::fetch_blob`] asking only `peers`.
+    pub(crate) async fn fetch_blob_from(
+        &self,
+        id: &str,
+        peers: &[String],
+    ) -> Result<Vec<u8>, ApiError> {
         for addr in peers {
             let Ok(v) = self
-                .peer_post(&addr, "internal/blob/get", &json!({ "hash": id }))
+                .peer_post(addr, "internal/blob/get", &json!({ "hash": id }))
                 .await
             else {
                 continue;
@@ -2048,16 +2119,10 @@ impl Node {
     /// another app still marks it or it is a bundle or a package release.
     pub async fn collect_blob(&self, id: &[u8; 32]) {
         let hex_id = hex::encode(id);
-        let (code, apps) = self.sys(|s| {
-            let code = s.bundles.contains_key(&hex_id)
-                || s.packages
-                    .values()
-                    .any(|p| p.versions.values().any(|v| v.mpk == hex_id));
-            (code, s.apps.values().cloned().collect::<Vec<_>>())
-        });
-        if code {
+        if self.is_code_blob(&hex_id) {
             return;
         }
+        let apps: Vec<AppRecord> = self.sys(|s| s.apps.values().cloned().collect());
         for app in &apps {
             // Read on each app's leader: a lagging replica could miss a mark
             // committed a moment ago (the same content uploaded to another
@@ -2090,8 +2155,25 @@ impl Node {
     /// [`Self::blob_held`] as `app`'s leader answers it (a linearizable
     /// read); `None` when no replica could answer as leader.
     pub async fn blob_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        self.blob_asked_strong(app, id, false).await
+    }
+
+    /// Whether `id` is one of `app`'s sealed files, as its leader answers it.
+    pub async fn file_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        self.blob_asked_strong(app, id, true).await
+    }
+
+    /// The leader's answer to whether `id` is held (`file`: held as a sealed file).
+    async fn blob_asked_strong(&self, app: &AppRecord, id: &[u8; 32], file: bool) -> Option<bool> {
+        let asks = |m: &AppMachine| {
+            if file {
+                m.is_sealed_file(id)
+            } else {
+                m.holds_blob(id)
+            }
+        };
         if let Some(g) = self.replica_group(app) {
-            if let Ok(held) = g.read_strong(|m, _| m.holds_blob(id)).await {
+            if let Ok(held) = g.read_strong(|m, _| asks(m)).await {
                 return Some(held);
             }
         }
@@ -2102,7 +2184,8 @@ impl Node {
                 .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
                 .collect()
         });
-        let body = json!({ "app": app.app_id, "id": hex::encode(id), "strong": true });
+        let body =
+            json!({ "app": app.app_id, "id": hex::encode(id), "strong": true, "file": file });
         for addr in others {
             if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
                 if let Some(held) = v["held"].as_bool() {
@@ -3106,6 +3189,14 @@ const fn executor_name(e: Kind) -> &'static str {
     }
 }
 
+/// What peers present as `x-cluster-auth`: a MAC of the cluster name under K_c.
+fn cluster_secret(cluster_key: &[u8; 32], cluster: &str) -> String {
+    calimero_identity::b64url(&crate::backup::tag(
+        cluster_key,
+        format!("calimero.cluster.v1|{cluster}"),
+    ))
+}
+
 /// Runs `f`, a WASM run that may take up to its budget, without holding an
 /// async worker: on the multi-threaded runtime, `block_in_place` hands this
 /// worker's queued tasks to another worker for the run, so Raft heartbeats,
@@ -3119,6 +3210,73 @@ fn off_workers<R>(f: impl FnOnce() -> R) -> R {
             tokio::task::block_in_place(f)
         }
         _ => f(),
+    }
+}
+
+/// Runs `attempt` until it succeeds or `within` has passed, `pause` apart; the last error otherwise.
+pub(crate) async fn retry_within<T, E, F, Fut>(
+    within: Duration,
+    pause: Duration,
+    mut attempt: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match attempt().await {
+            Err(_) if tokio::time::Instant::now() + pause < deadline => {
+                tokio::time::sleep(pause).await;
+            }
+            done => return done,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_within_tests {
+    use super::retry_within;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn it_retries_until_success_and_gives_up_with_the_last_error() {
+        let mut calls = 0;
+        let ok = retry_within(Duration::from_secs(5), Duration::from_millis(1), || {
+            calls += 1;
+            let n = calls;
+            async move {
+                if n < 3 {
+                    Err(n)
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(ok, Ok(3));
+        let mut calls = 0;
+        let failed: Result<(), u32> =
+            retry_within(Duration::from_millis(30), Duration::from_millis(10), || {
+                calls += 1;
+                let n = calls;
+                async move { Err(n) }
+            })
+            .await;
+        assert!(failed.is_err() && (2..=4).contains(&calls), "{calls} calls");
+    }
+}
+
+#[cfg(test)]
+mod cluster_secret_tests {
+    use super::cluster_secret;
+
+    #[test]
+    fn the_cluster_secret_matches_its_known_answer() {
+        assert_eq!(
+            cluster_secret(&[7; 32], "test"),
+            "DMlHI6sAvDPbCJbzsN0QduVwNi6MriMe5KHoRHrNkB4"
+        );
     }
 }
 

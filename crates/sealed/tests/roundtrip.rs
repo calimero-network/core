@@ -10,8 +10,10 @@ use axum::routing::{any, get};
 use axum::Extension;
 use axum::Router;
 use calimero_sealed::client::{SealedTransport as Client, StaleTransportKey};
-use calimero_sealed::{intercept, PeerKey, SealedOptions, SealedTransport};
+use calimero_sealed::{intercept, LowOrder, PeerKey, SealedOptions, SealedTransport};
+use curve25519_dalek::montgomery::MontgomeryPoint;
 use futures_util::StreamExt;
+use ring::hkdf;
 use url::Url;
 
 async fn echo(method: Method, uri: Uri, headers: HeaderMap, body: Bytes) -> impl IntoResponse {
@@ -342,4 +344,47 @@ async fn an_identified_handshake_with_another_nodes_key_is_refused() {
         .await
         .unwrap();
     assert_eq!(r.status(), 400);
+}
+
+const SALT: &[u8] = b"salt";
+const INFO: &[u8] = b"info";
+
+#[test]
+fn a_derived_key_is_the_hkdf_of_the_shared_secret() {
+    let transport = SealedTransport::generate(&SealedOptions::default());
+    let peer_secret = [7u8; 32];
+    let peer_public = MontgomeryPoint::mul_base_clamped(peer_secret).0;
+
+    let theirs = MontgomeryPoint(transport.public_key())
+        .mul_clamped(peer_secret)
+        .0;
+    let mut expected = [0u8; 32];
+    hkdf::Salt::new(hkdf::HKDF_SHA256, SALT)
+        .extract(&theirs)
+        .expand(&[b"calimero.sealed.derive.v1\0", INFO], hkdf::HKDF_SHA256)
+        .unwrap()
+        .fill(&mut expected)
+        .unwrap();
+
+    let derived = transport.derive(&peer_public, SALT, INFO).unwrap();
+    assert_eq!(*derived, expected);
+    assert_ne!(
+        *transport.derive(&peer_public, SALT, b"other").unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn a_low_order_peer_key_derives_nothing() {
+    let transport = SealedTransport::generate(&SealedOptions::default());
+    let mut one = [0; 32];
+    one[0] = 1;
+    let order_8: [u8; 32] =
+        hex::decode("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800")
+            .unwrap()
+            .try_into()
+            .unwrap();
+    for point in [[0; 32], one, order_8] {
+        assert_eq!(transport.derive(&point, SALT, INFO).unwrap_err(), LowOrder);
+    }
 }

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sha2::{Digest, Sha256};
 
-use super::{FileInfo, FileRead, FileWrite, Files, NewFile, NO_SUCH_FILE};
+use super::{FileError, FileInfo, FileRead, FileWrite, Files, NewFile, ReadError, NO_SUCH_FILE};
 
 /// Shared by every clone, so a test keeps a handle while the host core holds another.
 #[derive(Clone, Default)]
@@ -44,7 +44,7 @@ struct Reader {
 }
 
 impl FileRead for Reader {
-    fn read(&mut self, max: usize) -> Result<Vec<u8>, String> {
+    fn read(&mut self, max: usize) -> Result<Vec<u8>, ReadError> {
         let end = self.at.saturating_add(max).min(self.bytes.len());
         let chunk = self.bytes[self.at..end].to_vec();
         self.at = end;
@@ -55,12 +55,12 @@ impl FileRead for Reader {
 struct Writer(Vec<u8>);
 
 impl FileWrite for Writer {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), FileError> {
         self.0.extend_from_slice(bytes);
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> Result<NewFile, String> {
+    fn finish(self: Box<Self>) -> Result<NewFile, FileError> {
         let sha256 = Sha256::digest(&self.0).to_vec();
         Ok(NewFile {
             id: hex::encode(&sha256),
@@ -73,8 +73,10 @@ impl FileWrite for Writer {
 }
 
 impl Files for MemoryFiles {
-    fn open(&self, id: &str) -> Result<Box<dyn FileRead>, String> {
-        let bytes = self.get(id).ok_or_else(|| NO_SUCH_FILE.to_owned())?;
+    fn open(&self, id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        let bytes = self
+            .get(id)
+            .ok_or_else(|| FileError::Failed(NO_SUCH_FILE.to_owned()))?;
         Ok(Box::new(Reader { bytes, at: 0 }))
     }
 
@@ -86,7 +88,7 @@ impl Files for MemoryFiles {
         })
     }
 
-    fn create(&self) -> Result<Box<dyn FileWrite>, String> {
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         Ok(Box::new(Writer(Vec::new())))
     }
 }

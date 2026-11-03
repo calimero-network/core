@@ -14,6 +14,7 @@ base64.workspace = true
 camino.workspace = true
 chrono.workspace = true
 ciborium.workspace = true
+curve25519-dalek.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
