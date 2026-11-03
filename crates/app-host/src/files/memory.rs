@@ -55,12 +55,12 @@ impl FileRead for Reader {
 struct Writer(Vec<u8>);
 
 impl FileWrite for Writer {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), FileError> {
         self.0.extend_from_slice(bytes);
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> Result<NewFile, String> {
+    fn finish(self: Box<Self>) -> Result<NewFile, FileError> {
         let sha256 = Sha256::digest(&self.0).to_vec();
         Ok(NewFile {
             id: hex::encode(&sha256),

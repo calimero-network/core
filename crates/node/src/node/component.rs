@@ -19,7 +19,7 @@ mod files;
 
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
-pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PUSH_BYTES};
+pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -34,7 +34,7 @@ use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
-use self::files::{Blob, NodeFiles};
+use self::files::{Blob, NodeFiles, PendingBytes};
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
@@ -234,6 +234,8 @@ fn entry_bytes(mut cmd: ComponentCmd) -> (Vec<u8>, bool) {
 struct Ran {
     outcome: Outcome,
     blobs: Vec<Blob>,
+    /// Keeps the node's budget for `blobs` until the run's entry is proposed or refused.
+    _pending: Option<Arc<PendingBytes>>,
 }
 
 impl Node {
@@ -318,6 +320,20 @@ impl Node {
     pub fn limit_push_bytes(&self, leave: usize) {
         let held = self.push_bytes.available_permits().saturating_sub(leave);
         let _forgotten = self.push_bytes.forget_permits(held);
+    }
+
+    /// Leaves only `leave` bytes for the new files runs hold before their entries. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_pending_file_bytes(&self, leave: usize) {
+        let held = (self.pending_file_bytes.available_permits()).saturating_sub(leave);
+        let _forgotten = self.pending_file_bytes.forget_permits(held);
+    }
+
+    /// The bytes of new files runs may still take. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn pending_file_bytes_left(&self) -> usize {
+        self.pending_file_bytes.available_permits()
     }
 
     /// Caps the bytes the readers of one run hold at `cap` (new runs). Tests only.
@@ -506,6 +522,7 @@ impl Node {
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
         let files = NodeFiles::new(self, app_id, Arc::clone(&blobs), invocation.kind);
+        let pending = files.pending();
         let blobs = Arc::new(RunBlobs {
             app_id: app_id.to_owned(),
             records: blobs,
@@ -535,11 +552,13 @@ impl Node {
                 Ran {
                     outcome: Outcome::from_host(out),
                     blobs,
+                    _pending: Some(pending),
                 }
             }
             Err(e) => Ran {
                 outcome: Outcome::trap(TrapKind::Fault, &e.to_string()),
                 blobs: Vec::new(),
+                _pending: None,
             },
         }
     }
@@ -701,6 +720,7 @@ impl Node {
                     Err(why) => Ran {
                         outcome: Outcome::trap(TrapKind::Fault, why),
                         blobs: Vec::new(),
+                        _pending: None,
                     },
                 };
                 let outcome = ran.outcome;
@@ -1048,6 +1068,7 @@ impl Node {
                             ..Outcome::default()
                         },
                         blobs: Vec::new(),
+                        _pending: None,
                     }
                 } else {
                     self.run_logged(

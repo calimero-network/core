@@ -125,9 +125,16 @@ impl HostCore {
             writer.sink = Sink::Failed;
             return Ok(Err(reason.to_owned()));
         }
-        if let Err(reason) = sink.write(bytes) {
-            writer.sink = Sink::Failed;
-            return Ok(Err(reason));
+        match sink.write(bytes) {
+            Ok(()) => {}
+            Err(FileError::Failed(reason)) => {
+                writer.sink = Sink::Failed;
+                return Ok(Err(reason));
+            }
+            Err(FileError::Unavailable) => {
+                self.files.unavailable = true;
+                return Err(HostDenied::new(FILE_UNAVAILABLE));
+            }
         }
         writer.bytes += len;
         self.files.written += len;
@@ -157,9 +164,13 @@ impl HostCore {
                 self.files.created.push(file);
                 Ok(Ok(id))
             }
-            Err(reason) => {
+            Err(FileError::Failed(reason)) => {
                 writer.sink = Sink::Failed;
                 Ok(Err(reason))
+            }
+            Err(FileError::Unavailable) => {
+                self.files.unavailable = true;
+                Err(HostDenied::new(FILE_UNAVAILABLE))
             }
         }
     }

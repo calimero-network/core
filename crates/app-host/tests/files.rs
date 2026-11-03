@@ -42,11 +42,11 @@ struct CountingFiles;
 struct CountingWriter(u64);
 
 impl FileWrite for CountingWriter {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), FileError> {
         self.0 += bytes.len() as u64;
         Ok(())
     }
-    fn finish(self: Box<Self>) -> Result<NewFile, String> {
+    fn finish(self: Box<Self>) -> Result<NewFile, FileError> {
         Ok(NewFile {
             id: "counted".to_owned(),
             size: self.0,
@@ -507,14 +507,14 @@ const PROVIDER_ERROR: &str = "disk on fire";
 struct FailingWriter(bool);
 
 impl FileWrite for FailingWriter {
-    fn write(&mut self, _bytes: &[u8]) -> Result<(), String> {
+    fn write(&mut self, _bytes: &[u8]) -> Result<(), FileError> {
         if self.0 {
-            return Err(PROVIDER_ERROR.to_owned());
+            return Err(FileError::Failed(PROVIDER_ERROR.to_owned()));
         }
         Ok(())
     }
-    fn finish(self: Box<Self>) -> Result<NewFile, String> {
-        Err(PROVIDER_ERROR.to_owned())
+    fn finish(self: Box<Self>) -> Result<NewFile, FileError> {
+        Err(FileError::Failed(PROVIDER_ERROR.to_owned()))
     }
 }
 
@@ -697,4 +697,66 @@ fn new_files_are_capped_per_run() {
     }
     let w = h.files_create().unwrap().unwrap();
     assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_TOO_MANY_NEW);
+}
+
+/// A provider whose writers cannot hold the bytes now: on a write, or on the finish.
+struct FullFiles {
+    on_write: bool,
+}
+
+struct FullWriter(bool);
+
+impl FileWrite for FullWriter {
+    fn write(&mut self, _bytes: &[u8]) -> Result<(), FileError> {
+        if self.0 {
+            return Err(FileError::Unavailable);
+        }
+        Ok(())
+    }
+    fn finish(self: Box<Self>) -> Result<NewFile, FileError> {
+        Err(FileError::Unavailable)
+    }
+}
+
+impl Files for FullFiles {
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Err(FileError::Failed(NO_SUCH_FILE.to_owned()))
+    }
+    fn info(&self, _id: &str) -> Option<FileInfo> {
+        None
+    }
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Ok(Box::new(FullWriter(self.on_write)))
+    }
+}
+
+#[test]
+fn a_write_the_node_cannot_hold_aborts_the_logged_run_as_a_timeout() {
+    for on_write in [true, false] {
+        let mut h = host(inv(InvocationKind::Call), Arc::new(FullFiles { on_write }));
+        let w = h.files_create().unwrap().unwrap();
+        if on_write {
+            denied(h.writer_write(w, b"x"));
+        } else {
+            h.writer_write(w, b"x").unwrap().unwrap();
+            denied(h.writer_finish(w));
+        }
+        let trapped = Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail: String::new(),
+        };
+        let out = finish(h, trapped);
+        assert!(out.new_files.is_empty());
+        assert!(
+            matches!(
+                out.status,
+                Status::Trap {
+                    kind: TrapKind::Timeout,
+                    ..
+                }
+            ),
+            "on_write {on_write}: {:?}",
+            out.status
+        );
+    }
 }

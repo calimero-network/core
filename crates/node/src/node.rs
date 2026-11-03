@@ -384,6 +384,8 @@ pub struct Node {
     open_file_bytes: Arc<tokio::sync::Semaphore>,
     /// The bytes of new files that may be on their way to replicas at once.
     push_bytes: Arc<tokio::sync::Semaphore>,
+    /// The ciphertext of new files that runs hold until their entries are proposed.
+    pending_file_bytes: Arc<tokio::sync::Semaphore>,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -688,6 +690,9 @@ impl Node {
             prepares: std::sync::atomic::AtomicU64::new(0),
             open_file_bytes: Arc::new(tokio::sync::Semaphore::new(component::MAX_OPEN_FILE_BYTES)),
             push_bytes: Arc::new(tokio::sync::Semaphore::new(component::MAX_PUSH_BYTES)),
+            pending_file_bytes: Arc::new(tokio::sync::Semaphore::new(
+                component::MAX_PENDING_FILE_BYTES,
+            )),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,

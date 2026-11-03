@@ -80,8 +80,8 @@ pub trait FileRead: Send {
 
 /// A file being written.
 pub trait FileWrite: Send {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String>;
-    fn finish(self: Box<Self>) -> Result<NewFile, String>;
+    fn write(&mut self, bytes: &[u8]) -> Result<(), FileError>;
+    fn finish(self: Box<Self>) -> Result<NewFile, FileError>;
 }
 
 /// The node's file store, as one run sees it.

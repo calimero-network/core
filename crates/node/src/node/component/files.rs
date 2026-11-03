@@ -40,6 +40,8 @@ const OPEN_WAIT: Duration = Duration::from_secs(1);
 pub(in crate::node) const MAX_OPEN_FILE_BYTES: usize = 1 << 30;
 /// The ciphertext bytes the readers of one run hold.
 pub(in crate::node) const MAX_RUN_OPEN_BYTES: usize = 256 << 20;
+/// The ciphertext bytes the new files of all runs of the node hold until their entries are proposed.
+pub(in crate::node) const MAX_PENDING_FILE_BYTES: usize = 256 << 20;
 /// The bytes being pushed to replicas at once, across all calls of the node.
 pub(in crate::node) const MAX_PUSH_BYTES: usize = 512 << 20;
 /// Files whose bytes a removal deletes at once.
@@ -48,7 +50,45 @@ const MAX_DELETE_CONCURRENCY: usize = 8;
 /// forward loop does not retry it, the client does, with its key.
 pub const FILES_UNAVAILABLE: &str = "FILES_UNAVAILABLE";
 
+const _: () = assert!(MAX_PENDING_FILE_BYTES >= 4 * calimero_app_host::MAX_RUN_FILE_BYTES as usize);
 const _: () = assert!(PUSH_WAIT.as_millis() < FORWARD_TIMEOUT.as_millis());
+
+/// The node-wide budget for the ciphertext one run's new files hold in memory: bytes are taken
+/// as the guest writes and return when this drops, once the run's entry is proposed or the run
+/// failed. A run that cannot get them fails and holds nothing, so runs never hold more than the
+/// budget between them.
+pub(super) struct PendingBytes {
+    node: Arc<Semaphore>,
+    held: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+}
+
+impl PendingBytes {
+    pub(super) fn new(node: Arc<Semaphore>) -> Self {
+        Self {
+            node,
+            held: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Takes `bytes` more from the node's budget, or none of them.
+    fn reserve(&self, bytes: usize) -> bool {
+        let Ok(bytes) = u32::try_from(bytes) else {
+            return false;
+        };
+        let Ok(permit) = Arc::clone(&self.node).try_acquire_many_owned(bytes) else {
+            return false;
+        };
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match held.as_mut() {
+            Some(total) => total.merge(permit),
+            None => *held = Some(permit),
+        }
+        true
+    }
+}
 
 /// A file's ciphertext as the host core hands it over, with the blob id it is stored under.
 pub type Blob = (String, Vec<u8>);
@@ -144,6 +184,7 @@ pub(super) struct NodeFiles {
     blobs: Blobs,
     node_open: Arc<Semaphore>,
     run_open: Arc<Semaphore>,
+    pending: Arc<PendingBytes>,
     /// Logged runs wait a little for the node-wide budget; views do not.
     waits: bool,
 }
@@ -157,11 +198,17 @@ impl NodeFiles {
             blobs,
             node_open: Arc::clone(&node.open_file_bytes),
             run_open: Arc::new(Semaphore::new(node.run_open_cap())),
+            pending: Arc::new(PendingBytes::new(Arc::clone(&node.pending_file_bytes))),
             waits: !matches!(
                 kind,
                 InvocationKind::View | InvocationKind::Action | InvocationKind::Migrate
             ),
         }
+    }
+
+    /// The budget the new files of this run draw on; the caller keeps it while it holds their bytes.
+    pub(super) fn pending(&self) -> Arc<PendingBytes> {
+        Arc::clone(&self.pending)
     }
 
     /// The key the app's data keys are wrapped under, derived when a run touches a file.
@@ -246,6 +293,7 @@ impl Files for NodeFiles {
         Ok(Box::new(SealedWriter {
             sealer: Some(FileSealer::new()),
             ciphertext: Vec::new(),
+            pending: Arc::clone(&self.pending),
             app_id: self.app_id.clone(),
             file_key,
         }))
@@ -256,25 +304,41 @@ impl Files for NodeFiles {
 struct SealedWriter {
     sealer: Option<FileSealer>,
     ciphertext: Vec<u8>,
+    pending: Arc<PendingBytes>,
     app_id: String,
     file_key: Zeroizing<[u8; 32]>,
 }
 
-impl FileWrite for SealedWriter {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let sealer = self.sealer.as_mut().ok_or_else(|| FILE_FAILED.to_owned())?;
-        let sealed = sealer.write(bytes).map_err(|_| FILE_FAILED.to_owned())?;
-        self.ciphertext.extend_from_slice(&sealed);
-        Ok(())
+impl SealedWriter {
+    fn failed() -> FileError {
+        FileError::Failed(FILE_FAILED.to_owned())
     }
 
-    fn finish(mut self: Box<Self>) -> Result<NewFile, String> {
-        let sealer = self.sealer.take().ok_or_else(|| FILE_FAILED.to_owned())?;
+    /// Appends sealed bytes if the node's budget has room for them: else the run is aborted
+    /// and retried, as for a file it cannot read.
+    fn keep(&mut self, sealed: &[u8]) -> Result<(), FileError> {
+        if !self.pending.reserve(sealed.len()) {
+            return Err(FileError::Unavailable);
+        }
+        self.ciphertext.extend_from_slice(sealed);
+        Ok(())
+    }
+}
+
+impl FileWrite for SealedWriter {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), FileError> {
+        let sealer = self.sealer.as_mut().ok_or_else(Self::failed)?;
+        let sealed = sealer.write(bytes).map_err(|_| Self::failed())?;
+        self.keep(&sealed)
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<NewFile, FileError> {
+        let sealer = self.sealer.take().ok_or_else(Self::failed)?;
         let data_key = Zeroizing::new(*sealer.data_key());
-        let sealed = sealer.finish().map_err(|_| FILE_FAILED.to_owned())?;
-        self.ciphertext.extend_from_slice(&sealed.tail);
-        let wrapped_key = wrap_key(&self.file_key, &self.app_id, &data_key)
-            .map_err(|_| FILE_FAILED.to_owned())?;
+        let sealed = sealer.finish().map_err(|_| Self::failed())?;
+        self.keep(&sealed.tail)?;
+        let wrapped_key =
+            wrap_key(&self.file_key, &self.app_id, &data_key).map_err(|_| Self::failed())?;
         Ok(NewFile {
             id: hex::encode(calimero_identity::sha256(&self.ciphertext)),
             size: sealed.size,
@@ -543,6 +607,31 @@ mod tests {
         assert!(!t.self_voter);
         assert!(!t.is_majority(1));
         assert!(t.is_majority(2));
+    }
+
+    #[test]
+    fn two_runs_over_the_budget_do_not_both_hold_their_bytes() {
+        let node = Arc::new(Semaphore::new(100));
+        let (a, b) = (
+            PendingBytes::new(node.clone()),
+            PendingBytes::new(node.clone()),
+        );
+        assert!(a.reserve(60));
+        assert!(!b.reserve(60), "a second run took what was not left");
+        assert_eq!(node.available_permits(), 40, "a refused run took some");
+        // A failed or finished run returns what it held, and the other may then take it.
+        drop(a);
+        assert_eq!(node.available_permits(), 100);
+        assert!(b.reserve(60) && b.reserve(40));
+        assert!(!b.reserve(1));
+        drop(b);
+        assert_eq!(node.available_permits(), 100);
+    }
+
+    #[test]
+    fn a_reservation_past_u32_is_refused() {
+        let b = PendingBytes::new(Arc::new(Semaphore::new(1)));
+        assert!(!b.reserve(usize::MAX));
     }
 
     #[tokio::test]

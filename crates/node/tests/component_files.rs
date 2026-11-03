@@ -847,3 +847,44 @@ async fn the_blob_routes_refuse_a_file_id() {
         assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()), "node {i}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ciphertext_runs_hold_before_their_entries_is_bounded_and_returned() {
+    let f = start().await;
+    let leader = f.leader();
+    let node = f.node(leader);
+    let full = node.pending_file_bytes_left();
+    let (_id, _sha, _index) = f.put(100_000, 50).await;
+    assert_eq!(
+        node.pending_file_bytes_left(),
+        full,
+        "a finished call kept bytes"
+    );
+
+    // Other runs hold all but 150_000 bytes: a bigger file cannot be held, and the call is
+    // aborted and retried, not logged.
+    node.limit_pending_file_bytes(150_000);
+    let applied = f.applied();
+    let before = f.blob_counts();
+    let e = f.clients[0]
+        .call(
+            &f.app,
+            "putFile",
+            json!({ "len": "400000", "seed": "51" }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
+    assert_eq!(f.applied(), applied, "the refused call was logged");
+    assert_eq!(f.blob_counts(), before);
+    assert_eq!(
+        node.pending_file_bytes_left(),
+        150_000,
+        "a failed run kept bytes"
+    );
+
+    // What was left still takes a smaller file, and gives the bytes back.
+    let (_id, _sha, _index) = f.put(100_000, 52).await;
+    assert_eq!(node.pending_file_bytes_left(), 150_000);
+}
