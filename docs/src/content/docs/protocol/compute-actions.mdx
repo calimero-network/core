@@ -213,7 +213,10 @@ The signed report protects against a job node and against a replica applying a j
 Plaintext sizes and SHA-256 hashes of inputs and outputs are shown only to callers who may list the app's files; others get ids.
 It never returns arguments or keys.
 `GET /apps/{app}/runs?limit=<n>&before=<cursor>` answers `{ runs, next }` with the same objects, newest start first (ties by run id, descending), `limit` 1 to 100 (default 20) and `next` an opaque cursor for `before`, `null` on the last page.
-Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are kept, so the list reaches no further back, and a bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
+Active runs carry `progress`, and an app that is not a component app answers `404 NOT_FOUND`.
+Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are kept, so the list reaches no further back and a page reads at most `MAX_ACTIVE_RUNS` plus 256 records.
+A bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
+The sizes and hashes follow the same rule as the single run.
 
 ## Restarts, cancel and caps
 
