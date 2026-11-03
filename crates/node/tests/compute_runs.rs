@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::component::blobs::BlobRecord;
 use calimero_node::component::{
     ComponentCmd, FailedReason, FinalEntry, FinalOutcome, Outcome, RunRecord, RunState,
 };
@@ -25,6 +26,7 @@ const JOB_B: u64 = 5;
 const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 const READ_PIECE: usize = 64 * 1024; // what the fixture reads and keys at a time
 const WAIT: Duration = Duration::from_secs(180);
+const PAST_IDLE_MS: i64 = 3_700_000; // past the idle time of an unreferenced blob
 
 struct Rig {
     c: Cluster,
@@ -143,6 +145,44 @@ impl Rig {
         let app = leader.sys(|s| s.apps[&self.app].clone());
         let peer = leader.attest_job(id, &app).await.unwrap();
         leader.job_load(&peer).await.unwrap().0
+    }
+
+    /// The leader's record of the blob `id`, if the app holds it.
+    fn blob(&self, id: &str) -> Option<BlobRecord> {
+        let raw = <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap();
+        self.leader()
+            .hosted(&self.app)
+            .unwrap()
+            .read_local(|m, _| m.state.component.blobs.records.get(&raw).cloned())
+    }
+
+    fn holds_bytes(&self, id: &str) -> bool {
+        (0..3).any(|i| {
+            let node = &self.c.nodes[i].as_ref().unwrap().node;
+            node.engine.get_blob(id).unwrap().is_some()
+        })
+    }
+
+    /// Advances every clock past the idle time and logs an entry, which forgets what is due.
+    async fn pass_the_idle_time(&self) {
+        self.c.advance_all(PAST_IDLE_MS);
+        let _ok = self
+            .alice
+            .call(&self.app, "ping", json!({}), None)
+            .await
+            .unwrap();
+    }
+
+    /// The file bytes the payer of alice's apps is charged for.
+    async fn charged(&self) -> u64 {
+        let account = self.alice.me().await.unwrap()["accountId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let usage = self.alice.usage().await.unwrap();
+        usage["fileBytes"][format!("account:{account}")]
+            .as_u64()
+            .unwrap_or(0)
     }
 
     fn limits(&self, limits: ComputeLimits) {
@@ -1119,4 +1159,71 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
     let outcome = rig.outcome_within(&run, 60).await;
     assert_eq!(outcome["status"], "done", "{outcome}");
     assert_ne!(outcome["fuel"], "0", "{outcome}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_output_the_result_method_stores_is_kept_past_the_idle_time_and_the_app_reads_it_back() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let plain = input()[..100_000].to_vec(); // a view's fuel hashes little
+    let file = rig.upload(&plain).await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let outcome = rig.outcome(&run).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    let output = rig.record(&run).final_.unwrap().outputs[0].id.clone();
+    let record = rig.blob(&output).expect("the final registered the output");
+    assert!(record.file.is_some(), "a sealed file");
+    assert_eq!(record.refs, 1, "the result method stored its reference");
+
+    rig.pass_the_idle_time().await;
+    assert_eq!(rig.blob(&output).map(|r| r.refs), Some(1), "still held");
+    assert!(
+        rig.blob(&file).is_none(),
+        "an input nobody stored is forgotten"
+    );
+    assert!(rig.holds_bytes(&output));
+    let read = rig
+        .alice
+        .view(
+            &rig.app,
+            "readKept",
+            json!({ "id": output }),
+            Consistency::Strong,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read.result, outcome["sha256"],
+        "the app reads the output back"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_output_the_result_method_does_not_store_is_collected_and_its_quota_released() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let plain = input();
+    let file = rig.upload(&plain).await;
+    let run = rig.begin("startUnkept", json!({ "inputs": [file] })).await;
+    rig.until("the run ends", || !rig.record(&run).state.is_active())
+        .await;
+    assert_eq!(rig.record(&run).state, RunState::Done);
+    let output = rig.record(&run).final_.unwrap().outputs[0].id.clone();
+    assert!(
+        rig.blob(&output).is_some_and(|r| r.refs == 0),
+        "registered, idle"
+    );
+    assert_eq!(
+        rig.charged().await,
+        2 * plain.len() as u64,
+        "input and output"
+    );
+
+    rig.pass_the_idle_time().await;
+    assert!(rig.blob(&output).is_none(), "forgotten with its idle time");
+    rig.until("the bytes are collected", || !rig.holds_bytes(&output))
+        .await;
+    rig.until("the quota is released", || {
+        let now = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| now.block_on(rig.charged())) == 0
+    })
+    .await;
 }

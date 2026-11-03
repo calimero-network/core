@@ -17,6 +17,7 @@ const PIECE: usize = 64 * 1024;
 #[app::state(version = 1)]
 pub struct Compute {
     done: Counter,
+    pings: Counter,
     /// The outputs kept, by id: a reference in state retains one.
     kept: UnorderedMap<String, BlobRef>,
     /// What each run's outcome said, by run id: JSON text.
@@ -34,28 +35,13 @@ impl Compute {
     /// SHA-256 of each input in order.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_done")]
     pub fn digest() -> app::Result<Vec<String>> {
-        let inputs = compute::inputs();
-        let mut writer = calimero_sdk::files::create()?;
-        let mut hashes = Vec::new();
-        for (i, id) in inputs.iter().enumerate() {
-            let mut reader = calimero_sdk::files::open(id)?;
-            let mut hash = Sha256::new();
-            let mut buf = vec![0u8; PIECE];
-            loop {
-                let n = reader.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hash.update(&buf[..n]);
-                let key = env::random_bytes(n);
-                let out: Vec<u8> = buf[..n].iter().zip(&key).map(|(b, k)| b ^ k).collect();
-                writer.write_all(&out)?;
-            }
-            hashes.push(hex(&hash.finalize()));
-            compute::progress(percent(i + 1, inputs.len()), "hashing");
-        }
-        writer.finish()?;
-        Ok(hashes)
+        digest_inputs()
+    }
+
+    /// [`Compute::digest`] whose result method keeps no output.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_drop")]
+    pub fn digest_unkept() -> app::Result<Vec<String>> {
+        digest_inputs()
     }
 
     /// Loops until the wall clock ends it.
@@ -103,6 +89,11 @@ impl Compute {
         compute::start("digest", &(), &inputs)
     }
 
+    /// Starts a `digestUnkept` run over `inputs`.
+    pub fn start_unkept(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
+        compute::start("digestUnkept", &(), &inputs)
+    }
+
     /// Starts the argument-less compute method `method` with no input.
     pub fn start_run(&mut self, method: String) -> app::Result<RunId> {
         compute::start(&method, &(), &[])
@@ -143,16 +134,39 @@ impl Compute {
         Ok(())
     }
 
+    /// Receives the outcome of `digestUnkept` and stores no output.
+    #[app::compute_result]
+    pub fn on_drop(&mut self, _outcome: ComputeOutcome) -> app::Result<()> {
+        self.done.add(1)?;
+        Ok(())
+    }
+
+    /// Logs an entry that changes nothing else.
+    pub fn ping(&mut self) -> app::Result<()> {
+        self.pings.add(1)?;
+        Ok(())
+    }
+
+    /// The SHA-256 of the output `id`, read back from the file.
+    #[app::view]
+    pub fn read_kept(&self, id: BlobRef) -> app::Result<String> {
+        let mut reader = calimero_sdk::files::open(&id)?;
+        let mut hash = Sha256::new();
+        let mut buf = vec![0u8; PIECE];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buf[..n]);
+        }
+        Ok(hex(&hash.finalize()))
+    }
+
     /// The outcome recorded for `run`, as JSON text, if its result method ran.
     #[app::view]
     pub fn outcome(&self, run: RunId) -> app::Result<Option<String>> {
         Ok(self.outcomes.get(&run.to_string())?)
-    }
-
-    /// Whether the output `id` is kept in state.
-    #[app::view]
-    pub fn kept(&self, id: BlobRef) -> app::Result<bool> {
-        Ok(self.kept.contains(&id.id())?)
     }
 
     /// How many outcomes `onDone` has received.
@@ -160,6 +174,31 @@ impl Compute {
     pub fn done(&self) -> app::Result<u64> {
         Ok(self.done.get()?)
     }
+}
+
+fn digest_inputs() -> app::Result<Vec<String>> {
+    let inputs = compute::inputs();
+    let mut writer = calimero_sdk::files::create()?;
+    let mut hashes = Vec::new();
+    for (i, id) in inputs.iter().enumerate() {
+        let mut reader = calimero_sdk::files::open(id)?;
+        let mut hash = Sha256::new();
+        let mut buf = vec![0u8; PIECE];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buf[..n]);
+            let key = env::random_bytes(n);
+            let out: Vec<u8> = buf[..n].iter().zip(&key).map(|(b, k)| b ^ k).collect();
+            writer.write_all(&out)?;
+        }
+        hashes.push(hex(&hash.finalize()));
+        compute::progress(percent(i + 1, inputs.len()), "hashing");
+    }
+    writer.finish()?;
+    Ok(hashes)
 }
 
 fn percent(done: usize, total: usize) -> u8 {
