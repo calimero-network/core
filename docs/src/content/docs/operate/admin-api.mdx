@@ -158,10 +158,10 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
 | `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `context presence stream` |
-| `POST /apps/{app}/blobs` | app access | Upload a blob | `blob upload` |
-| `GET /apps/{app}/blobs` | app access | List blobs | `blob list` |
+| `POST /apps/{app}/blobs` | app access | Upload a blob; with `?sealed=true`, a component's sealed file (the app's owner and its organization's members) | `blob upload` |
+| `GET /apps/{app}/blobs` | app access | List blobs, and a component's files for the app's owner and its organization's members | `blob list` |
 | `GET /apps/{app}/blobs/{id}` | app access | Download (id base58 or hex) | `blob download` |
-| `GET /apps/{app}/blobs/{id}/info` | app access | Size | `blob info` |
+| `GET /apps/{app}/blobs/{id}/info` | app access | Size, and a file's plaintext SHA-256 for the app's owner and its organization's members | `blob info` |
 | `DELETE /apps/{app}/blobs/{id}` | app access | Forget (owner or org admin) | `blob delete` |
 
 Every `/intents` and `/views` answer carries a receipt signed by the answering

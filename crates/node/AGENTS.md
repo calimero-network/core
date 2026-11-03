@@ -703,6 +703,11 @@ is its command line.
   `a_removed_nodes_sessions_are_refused`.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
+  `maxFileBytesPerOrg` counts the plaintext bytes of a component's files.
+  `SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer (`usage::payer`), kept in step by `set_app_file_bytes`.
+  `SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release at 0.
+  `DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
+  `TransferApp` of a personal app is refused when the new owner's quota would not hold its files.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
   elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
@@ -801,7 +806,7 @@ API and system group. What differs from the wasmer path:
   for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
-  `/apps/{app}/storage` counts its keys, bytes and blobs. The host refuses event
+  `/apps/{app}/storage` counts its keys, bytes and blobs (see "Files" for the file routes). The host refuses event
   handlers and TEE runs to a component; a wasmer app's xcall into a
   component, and a component's into a wasmer app, are refused (`node::COMPONENT_REFUSES`,
   a dead letter).
@@ -897,9 +902,28 @@ API and system group. What differs from the wasmer path:
   `apply` records them as unreferenced blobs before the diff, only for status `Ok`, so a `BlobRef` the same entry stores is counted and a file is never collectable in between.
   A file is then held while a stored `BlobRef` names it, `BLOB_IDLE_MS` after its entry or after the last reference went, and forgotten by `expire_blobs` in the same entry on every replica.
   The leader then collects its bytes through the same `collect_blob` and `componentBlobsCollected` as any blob; a replica that is down then keeps unreachable bytes, as for a blob.
-  `BlobTable::upload` and `forget_blob` refuse a file id, so an upload or an owner delete cannot take one.
+  `BlobTable::upload` and `forget_blob` refuse a file id, so a blob upload or an owner delete cannot take one.
   `RunBlobs::info` answers a file with its plaintext size and hash and an empty mime, as `files.info` does; the host core refuses `blobs.grant` for it.
-  `GET`, `POST` and `DELETE` on `/apps/{app}/blobs` refuse a file id with `409 NOT_SUPPORTED` (`refuse_sealed_file`, judged by the app's leader through `file_held_strong`); `GET` of the list leaves files out and `/apps/{app}/storage` counts their sealed bytes in `blobBytes` (a tag per chunk).
+  `GET`, `POST` and `DELETE` on `/apps/{app}/blobs` refuse a file id with `409 NOT_SUPPORTED` (`refuse_sealed_file`, judged by the app's leader through `file_held_strong`).
+  `/apps/{app}/storage` counts their sealed bytes in `blobBytes` (a tag per chunk).
+  **Uploads** are `POST /apps/{app}/blobs?sealed=true` (`Client::upload_file`); without the query the route uploads a blob as before.
+  Only the app's owner and the members of its organization (role Member or above, `api::may_handle_files`) may upload and list files, even where the app is public; a guest or a stranger gets `403` on an upload.
+  `GET /apps/{app}/blobs` adds the files to its list, with `sealed: true` and the plaintext SHA-256, for those callers only, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and plaintext SHA-256 to them (never the key).
+  Everyone else gets the list without files and `404` on a file's info, as for an id the app does not hold.
+  `StorageStats::files` carries each file's id, size and SHA-256 for these routes, and `internal/storage` sends it to a peer.
+  A node that does not lead the app seals and stores nothing: it passes the body to the leader (`internal/file-upload`, one hop; a follower answers `421 NOT_LEADER` with `details.leaderUrl` and the receiver follows it).
+  The leader (`Node::upload_local`) seals through `NodeFiles::create`, holding the node-wide pending budget, charges the quota, pushes to its group's voters and commits `ComponentCmd::File` under a key made per HTTP request.
+  Only a forward retried inside that request replays the first answer; a recorded answer for another file wins and the new file is undone.
+  `apply` records the file as an unreferenced blob stamped with the entry's `ts_ms`, as `Node::component_blob_cmd` stamps an upload, so a client has the idle time to attach it.
+  If the commit fails, a `componentBarrier` entry (applies as nothing) is committed through the leader, so the failed entry has either committed or never will.
+  The leader then reads the record: present, the upload succeeded; absent, its bytes and charge go; no barrier possible, they stay.
+  A file is held while its blob record exists, and the quota counts it for as long.
+  A logged entry's new files are charged first, within `CHARGE_WAIT` (`Node::charge_files`, from the run's thread).
+  A refused charge pushes nothing, answers `429` and logs nothing; a charge that lands after the wait is refunded when its answer arrives.
+  `Node::discard` undoes the bytes and the charge if the entry does not commit.
+  The charge is released by retention: `expire_blobs` queues a forgotten file's plaintext size in `ComponentHead::collect_files` beside its id in `collect`.
+  The leader's `componentBlobsCollected` entry answers `freed`, the bytes of the queued files it really took off, and the node releases that many (`collect_component_blobs`), so a repeated entry releases nothing.
+  A crash between the entry and the release leaves an over-count, never a loss; a queue past `MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
   Before a call, tick or `init` proposes, `Node::persist_files` stores the ciphertext here and pushes all new files at once to the app group's voters and learners (its own Raft membership, not the directory's replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
   It needs a majority of the voters, this node counted; a voter with no address still counts.
   It runs only after the entry bytes are built, so an entry the log replaces as too large stores nothing.
@@ -914,6 +938,8 @@ API and system group. What differs from the wasmer path:
   Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
   Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app holds (`holds_blob`); bundles and wasmer blobs still use every node.
   Replica moves hand over the app's files with the bundle (`hand_over_bytes`), and again after the voters change, only what the joining nodes do not hold, for files made while the move ran; the second hand-over is retried for 10 s and never abandons the move.
+  **Upgrade note (quota):** an older system leader rejects `ChargeFileBytes`, so uploads and calls that create files fail until the system group runs this release.
+  A snapshot from before carries no file-byte counts, so files stored earlier start from zero, and their release floors at zero.
   **Upgrade note (rolling upgrade):** a node on a release without files refuses to prepare a bundle that imports `calimero:app/files` (`ForbiddenImport`), so it never runs, leads or answers for an app that uses files.
   Replicas of different releases coexist only while a release upgrade moves apps, and the old ones are retired.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
