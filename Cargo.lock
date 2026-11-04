@@ -663,6 +663,7 @@ dependencies = [
  "calimero-app-wit",
  "eyre",
  "hex",
+ "libc",
  "ring",
  "serde_json",
  "sha2 0.11.1",
@@ -3664,6 +3665,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "mero-compute"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "calimero-app-build",
+ "calimero-app-engine-wasmtime",
+ "calimero-app-host",
+ "clap",
+ "eyre",
+ "hex",
+ "rand_chacha 0.10.0",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
 ]
 
 [[package]]
