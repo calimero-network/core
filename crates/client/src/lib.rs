@@ -469,16 +469,40 @@ impl Client {
 
     // ------------------------------------------------------------ identity
 
-    /// Create an account with a new passkey and sign in.
+    /// Create an account with a new passkey and sign in. The node asks the
+    /// new passkey to sign the account it creates (`412 CONFIRM_REQUIRED`),
+    /// so a sign-up asks the passkey twice: to create it, then to sign.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
+        self.sign_up_invited(passkey, name, None).await
+    }
+
+    /// [`Self::sign_up`] with an invite: an organization invite token (the
+    /// new account joins the organization) or a cluster sign-up invite
+    /// token, which a cluster whose sign-up is `invite` or `closed` needs
+    /// (`GET /sign-up` says which). Refused `403 SIGN_UP_REFUSED` before the
+    /// passkey is asked when the cluster would not take it.
+    pub async fn sign_up_invited(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        invite: Option<&str>,
+    ) -> Result<Session> {
         let begin = self
-            .post("auth/passkey/register/begin", json!({ "name": name }))
+            .post(
+                "auth/passkey/register/begin",
+                json!({ "name": name, "invite": invite }),
+            )
             .await?;
         let registration = passkey.create(&begin["options"]);
         let s: Session = serde_json::from_value(
-            self.post(
+            self.post_confirmed(
                 "auth/passkey/register/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                json!({
+                    "challengeId": begin["challengeId"],
+                    "registration": registration,
+                    "invite": invite,
+                }),
+                passkey,
             )
             .await?,
         )
@@ -575,6 +599,13 @@ impl Client {
             v["keyId"].as_str().unwrap_or_default().to_owned(),
             v["key"].as_str().unwrap_or_default().to_owned(),
         ))
+    }
+
+    /// Revoke one of the account's API keys, approved with its passkey
+    /// (`412 CONFIRM_REQUIRED`).
+    pub async fn revoke_api_key(&self, key_id: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.delete_confirmed(&format!("auth/apikeys/{}", path_segment(key_id)), passkey)
+            .await
     }
 
     // ------------------------------------------------------------ apps

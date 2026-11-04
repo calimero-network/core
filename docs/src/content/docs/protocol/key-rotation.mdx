@@ -53,9 +53,11 @@ refresh tokens are forgotten once they would have expired.
 ## Signature counters
 
 A passkey assertion reports a signature counter. `SetSignCount` accepts only a
-counter that moves forward (unless the authenticator reports zero every time),
-whatever order sign-ins committed in, so a cloned authenticator replaying an old
-counter is refused.
+counter that moves forward, whatever order sign-ins committed in, so a cloned
+authenticator replaying an old counter is refused; an authenticator that
+reports zero every time records nothing. It carries the assertion that
+reached the counter and is checked at apply, so no node can set a counter
+the authenticator never reached.
 
 ## What does not rotate yet
 

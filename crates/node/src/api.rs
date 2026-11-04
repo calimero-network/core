@@ -37,10 +37,11 @@ use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
-    Deployments, SystemCmd, SystemState,
+    Deployments, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
 };
 use crate::types::{
-    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
+    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, NodeRole, OrgRole, RefreshRecord,
+    TeamJoin,
 };
 
 /// How long a replica move retries the second hand-over of files, and how long it pauses.
@@ -62,9 +63,23 @@ pub enum Pending {
         name: String,
         expires: u64,
     },
+    /// A sign-in: its challenge is the statement's, which states the
+    /// session it opens ([`NewSession`]).
     Login {
         challenge: [u8; 32],
         expires: u64,
+        statement: crate::proof::Statement,
+        session: NewSession,
+    },
+    /// A sign-up whose passkey is registered and must now sign the account
+    /// it creates (`account:<id> / __create_account`).
+    SignUp {
+        challenge: [u8; 32],
+        expires: u64,
+        statement: crate::proof::Statement,
+        account: Box<Account>,
+        session: NewSession,
+        app: Option<String>,
     },
     AddPasskey {
         challenge: [u8; 32],
@@ -94,6 +109,7 @@ impl Pending {
         match self {
             Self::Register { expires, .. }
             | Self::Login { expires, .. }
+            | Self::SignUp { expires, .. }
             | Self::AddPasskey { expires, .. }
             | Self::Confirm { expires, .. } => *expires,
         }
@@ -141,7 +157,7 @@ async fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
         take_local(node, id)?
     } else {
         let addr = node
-            .sys(|s| s.nodes.get(&holder).map(|n| n.addr.clone()))
+            .sys(|s| s.replica_node(&holder).map(|n| n.addr.clone()))
             .ok_or_else(unknown_challenge)?;
         let v = node
             .peer_post(&addr, "internal/challenge/take", &json!({ "id": id }))
@@ -468,40 +484,105 @@ pub(crate) async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal
     Ok(p)
 }
 
-async fn new_session(node: &Node, account: &str, passkey: &str, app: Option<String>) -> ApiResult {
-    let session = b64url(&random::<16>());
+/// A session's refresh token, made before the passkey is asked: the
+/// ceremony's challenge states it, so the log takes it only with that
+/// passkey's assertion (`system::sign_in_args`, `system::account_args`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NewSession {
+    refresh: String,
+    session: String,
+    expires_at: u64,
+}
+
+impl NewSession {
+    fn new() -> Self {
+        Self {
+            refresh: format!("rt_{}", b64url(&random::<32>())),
+            session: b64url(&random::<16>()),
+            expires_at: now_secs() + REFRESH_TTL,
+        }
+    }
+
+    fn hash(&self) -> String {
+        b64url(&sha256(self.refresh.as_bytes()))
+    }
+
+    fn record(&self, account: &str, passkey: &str, app: Option<String>) -> RefreshRecord {
+        RefreshRecord {
+            account: account.to_owned(),
+            session: self.session.clone(),
+            expires_at: self.expires_at,
+            passkey: Some(passkey.to_owned()),
+            app,
+            key: crate::proof::refresh_key(&self.refresh),
+        }
+    }
+
+    /// What a sign-in's challenge states (`session / __sign_in`): the
+    /// record's account, passkey and package are not known yet and not
+    /// stated; the passkey that signs names them.
+    fn sign_in_statement(&self) -> crate::proof::Statement {
+        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None));
+        crate::proof::Statement::new("session", "__sign_in", &args)
+    }
+}
+
+/// A sign-in's session: its refresh token logged with the sign-in's
+/// assertion, then the session token.
+async fn new_session(
+    node: &Node,
+    account: &str,
+    passkey: &str,
+    app: Option<String>,
+    new: NewSession,
+    consent: Value,
+) -> ApiResult {
+    let token = session_token_for(node, account, passkey, app.clone(), &new)?;
+    let _ok = node
+        .sys_write(&SystemCmd::CreateRefresh {
+            hash: new.hash(),
+            record: new.record(account, passkey, app),
+            consent,
+        })
+        .await?;
+    Ok(session_answer(account, &token, &new))
+}
+
+/// The session token for `new`, signed by this node.
+fn session_token_for(
+    node: &Node,
+    account: &str,
+    passkey: &str,
+    app: Option<String>,
+    new: &NewSession,
+) -> Result<(String, u64), ApiError> {
     let expires_at = now_secs() + SESSION_TTL;
     let token = session_token(
         node,
         SessionClaims {
             account: account.to_owned(),
-            session: session.clone(),
+            session: new.session.clone(),
             expires_at,
             passkey: Some(passkey.to_owned()),
-            app: app.clone(),
+            app,
             node: 0,
             key: String::new(),
         },
     )?;
-    let refresh = format!("rt_{}", b64url(&random::<32>()));
-    let _ok = node
-        .sys_write(&SystemCmd::CreateRefresh {
-            hash: b64url(&sha256(refresh.as_bytes())),
-            record: RefreshRecord {
-                account: account.to_owned(),
-                session,
-                expires_at: now_secs() + REFRESH_TTL,
-                passkey: Some(passkey.to_owned()),
-                app,
-            },
-        })
-        .await?;
-    Ok(Json(json!({
+    Ok((token, expires_at))
+}
+
+fn session_answer(
+    account: &str,
+    (token, expires_at): &(String, u64),
+    new: &NewSession,
+) -> Json<Value> {
+    Json(json!({
         "accountId": account,
         "sessionToken": token,
         "expiresAt": expires_at,
-        "refreshToken": refresh,
-    })))
+        "refreshToken": new.refresh,
+    }))
 }
 
 // ---------------------------------------------------------------- public
@@ -547,6 +628,9 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
             .ok_or_else(|| ApiError::bad_request("BAD_HASH", "appHash must be 32 bytes hex"))?,
         (None, None) => [0; 32],
     };
+    if q.purpose.as_deref() == Some("jobs") {
+        return Err(ApiError::not_found("this node is not a job node"));
+    }
     #[cfg(feature = "testing")]
     if let Some(delay) = crate::testing::attestation_delay(&node.config.public_url) {
         tokio::time::sleep(delay).await;
@@ -587,6 +671,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         receipt_key: receipts.then(|| hex::encode(node.receipt_public())),
         governance: receipts.then_some(governance),
         kms,
+        job_key: None,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -640,12 +725,51 @@ async fn app_attestation(
 struct RegisterBegin {
     #[serde(default)]
     name: String,
+    /// The invite the person signs up with (an organization invite token or
+    /// a cluster sign-up invite token), checked here so a cluster whose
+    /// sign-up is not open refuses before the passkey ceremony; the finish
+    /// carries it again.
+    #[serde(default)]
+    invite: Option<String>,
+}
+
+/// Refuse a sign-up the cluster's policy would refuse (`403
+/// SIGN_UP_REFUSED`), before a challenge is made or spent. A refusal is
+/// judged again on fresh state, so a replica behind a policy change or a new
+/// invite does not refuse what the log would take; `apply` decides in the end.
+async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiError> {
+    let key = invite.map(crate::proof::invite_key);
+    let now = now_secs();
+    let judge = |s: &SystemState| s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ());
+    if node.sys(judge).is_ok() {
+        return Ok(());
+    }
+    let _caught_up = node.sys_fresh().await;
+    node.sys(judge).map_err(crate::node::rejected)
+}
+
+/// What a client reads before sign-up (`GET /sign-up`, no session): the
+/// cluster's policy and which invites it takes, so a frontend shows "invite
+/// only" instead of failing at the end of a passkey ceremony.
+async fn sign_up_public(State(node): State<Arc<Node>>) -> ApiResult {
+    node.sys_fresh().await;
+    Ok(Json(node.sys(|s| sign_up_json(s.governance().sign_up))))
+}
+
+fn sign_up_json(policy: SignUp) -> Value {
+    json!({
+        "policy": policy,
+        "orgInvites": policy != SignUp::Closed,
+        "signUpInvites": true,
+        "inviteRequired": policy != SignUp::Open,
+    })
 }
 
 async fn register_begin(
     State(node): State<Arc<Node>>,
     Json(body): Json<RegisterBegin>,
 ) -> ApiResult {
+    refuse_sign_up(&node, body.invite.as_deref()).await?;
     let challenge = random::<32>();
     let user_id = random::<16>();
     let name = if body.name.is_empty() {
@@ -680,6 +804,16 @@ async fn register_begin(
 struct RegisterFinish {
     challenge_id: String,
     registration: Registration,
+    /// The invite the account is created with ([`RegisterBegin::invite`]),
+    /// sent on the first finish and again on its `412` retry: the policy is
+    /// judged before either spends its challenge, and the retry's node signs
+    /// the redemption with the token's key.
+    #[serde(default)]
+    invite: Option<String>,
+    /// The retry after `412 CONFIRM_REQUIRED`: the new passkey's assertion
+    /// over the account it creates.
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
 async fn register_finish(
@@ -692,6 +826,12 @@ async fn register_finish(
     // another node. An account no one holds yet stands for the new one.
     if !serves(&node, "") {
         return Err(wrong_node());
+    }
+    // Before a challenge is spent, on both halves: a person refused for a
+    // missing or bad invite starts again with one.
+    refuse_sign_up(&node, body.invite.as_deref()).await?;
+    if let Some(confirm) = body.confirm {
+        return sign_up_confirmed(&node, confirm, body.invite.as_deref()).await;
     }
     let Pending::Register {
         challenge, name, ..
@@ -710,33 +850,129 @@ async fn register_finish(
         &body.registration,
     )
     .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
-    let account = typed_id::<32>();
+    let account = Account {
+        account_id: typed_id::<32>(),
+        name,
+        created_at: now_secs(),
+        passkeys: vec![cred.clone()],
+        // The release this account began on holds its apps until the
+        // owner approves another.
+        approved_releases: [node.own_release()].into_iter().collect(),
+        outbound_approvals: std::collections::BTreeMap::new(),
+        passkey_labels: std::collections::BTreeMap::new(),
+        aliases: std::collections::BTreeMap::new(),
+    };
+    // A registration carries no signature by the new key (attestation
+    // `none`): the new passkey signs the account it creates, and the session
+    // it opens, before the log takes it (412, then the retry).
+    let session = NewSession::new();
+    let app = app.map(|(pkg, _)| pkg);
+    let grant = RefreshGrant {
+        hash: session.hash(),
+        record: session.record(&account.account_id, &cred.id, app.clone()),
+    };
+    let statement = crate::proof::Statement::new(
+        &format!("account:{}", account.account_id),
+        "__create_account",
+        &crate::system::account_args(&account, Some(&grant)),
+    );
+    let signed = statement.challenge().map_err(ApiError::internal)?;
+    let id = put_pending(
+        &node,
+        Pending::SignUp {
+            challenge: signed,
+            expires: now_secs() + CHALLENGE_TTL,
+            statement,
+            account: Box::new(account),
+            session,
+            app,
+        },
+    )?;
+    Err(ApiError::new(
+        412,
+        "CONFIRM_REQUIRED",
+        "sign in with the new passkey to create the account",
+    )
+    .with_details(json!({
+        "challengeId": id,
+        "challenge": b64url(&signed),
+        "rpId": node.config.rp_id,
+        "allowCredentials": [cred.id],
+    })))
+}
+
+/// The sign-up's retry: the new passkey's assertion over the account, then
+/// the account and its first session. `invite` (the same token the first
+/// half carried) is redeemed for the account here, signed with its key.
+async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&str>) -> ApiResult {
+    let Pending::SignUp {
+        challenge,
+        statement,
+        account,
+        session,
+        app,
+        ..
+    } = take_pending(node, &confirm.challenge_id).await?
+    else {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "not a sign-up confirmation",
+        ));
+    };
+    let cred = account
+        .passkeys
+        .first()
+        .ok_or_else(|| ApiError::internal("a sign-up without its passkey"))?;
+    // From the origin the sign-up came from: the package's, or the cluster's.
+    let origin = claimed_app(node, &confirm.assertion.client_data_json)
+        .filter(|(pkg, _)| app.as_ref() == Some(pkg));
+    let _count = verify_assertion(
+        &rp_with(rp(node), origin.as_ref()),
+        &challenge,
+        cred,
+        &confirm.assertion,
+    )
+    .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    let account_id = account.account_id.clone();
+    let passkey = cred.id.clone();
+    let token = session_token_for(node, &account_id, &passkey, app.clone(), &session)?;
+    let consent = crate::proof::Consent {
+        statement,
+        assertion: confirm.assertion,
+    };
+    let now = now_secs();
+    let invite = invite.map(|token| crate::system::SignUpRedemption {
+        invite_key: crate::proof::invite_key(token),
+        now,
+        signature: crate::proof::sign_invite_redeem(token, &account_id, now),
+    });
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {
-            account: Account {
-                account_id: account.clone(),
-                name,
-                created_at: now_secs(),
-                passkeys: vec![cred.clone()],
-                // The release this account began on holds its apps until the
-                // owner approves another.
-                approved_releases: [node.own_release()].into_iter().collect(),
-                outbound_approvals: std::collections::BTreeMap::new(),
-                passkey_labels: std::collections::BTreeMap::new(),
-                aliases: std::collections::BTreeMap::new(),
-            },
+            account: *account,
+            invite,
+            refresh: Some(RefreshGrant {
+                hash: session.hash(),
+                record: session.record(&account_id, &passkey, app),
+            }),
+            consent: serde_json::to_value(&consent).unwrap_or_default(),
         })
         .await?;
-    new_session(&node, &account, &cred.id, app.map(|(pkg, _)| pkg)).await
+    Ok(session_answer(&account_id, &token, &session))
 }
 
 async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
-    let challenge = random::<32>();
+    // The challenge states the session the sign-in opens, so the log takes
+    // its refresh token only with this assertion (`CreateRefresh`).
+    let session = NewSession::new();
+    let statement = session.sign_in_statement();
+    let challenge = statement.challenge().map_err(ApiError::internal)?;
     let id = put_pending(
         &node,
         Pending::Login {
             challenge,
             expires: now_secs() + CHALLENGE_TTL,
+            statement,
+            session,
         },
     )?;
     Ok(Json(json!({
@@ -802,6 +1038,7 @@ async fn check_assertion_for(
             .sys_write(&SystemCmd::SetSignCount {
                 credential_id: cred.id.clone(),
                 count,
+                assertion: serde_json::to_value(assertion).unwrap_or_default(),
             })
             .await
             .map_err(|e| {
@@ -827,7 +1064,13 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     if named.is_some_and(|a| !serves(&node, &a)) {
         return Err(wrong_node());
     }
-    let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id).await? else {
+    let Pending::Login {
+        challenge,
+        statement,
+        session,
+        ..
+    } = take_pending(&node, &body.challenge_id).await?
+    else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
             "not a login challenge",
@@ -835,7 +1078,19 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     };
     let (account, app) =
         check_assertion(&node, &challenge, &body.assertion, None, false, None, true).await?;
-    new_session(&node, &account, &body.assertion.credential_id, app).await
+    let consent = crate::proof::Consent {
+        statement,
+        assertion: body.assertion.clone(),
+    };
+    new_session(
+        &node,
+        &account,
+        &body.assertion.credential_id,
+        app,
+        session,
+        serde_json::to_value(&consent).unwrap_or_default(),
+    )
+    .await
 }
 
 async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -1036,13 +1291,30 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         expires_at: now_secs() + REFRESH_TTL,
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
+        key: crate::proof::refresh_key(&new_refresh),
     };
+    let new_hash = b64url(&sha256(new_refresh.as_bytes()));
+    let now = now_secs();
+    // Signed with the presented token's key: the log exchanges a token only
+    // for whoever holds it, never for a node that only saw its hash.
+    let signature = crate::proof::sign_refresh_use(
+        &body.refresh_token,
+        &crate::proof::refresh_use_message(
+            &old_hash,
+            &new_hash,
+            &record.key,
+            &record.session,
+            record.expires_at,
+            now,
+        ),
+    );
     let exchanged = node
         .sys_write(&SystemCmd::UseRefresh {
             old_hash: old_hash.clone(),
-            new_hash: b64url(&sha256(new_refresh.as_bytes())),
+            new_hash,
             record,
-            now: now_secs(),
+            now,
+            signature,
         })
         .await;
     if let Err(e) = exchanged {
@@ -1453,16 +1725,40 @@ async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
     Ok(Json(json!({ "keys": keys })))
 }
 
+/// Revoke an API key: the account's, approved with a passkey (412 first;
+/// the retry's JSON body carries `confirm`).
 async fn apikey_revoke(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(key_id): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    // Asked before the passkey: a key the account does not have is not one
+    // to approve revoking.
+    let theirs = node.sys(|s| {
+        s.api_keys
+            .values()
+            .any(|k| k.key_id == key_id && k.account == account)
+    });
+    if !theirs {
+        return Err(ApiError::not_found("no such key"));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__revoke_api_key",
+        &json!({ "keyId": key_id }),
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
     let _ok = node
         .sys_write(&SystemCmd::RevokeApiKey {
             key_id,
             actor: account,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
@@ -4468,15 +4764,14 @@ async fn internal_cluster_key(
         return Err(ApiError::forbidden("another cluster"));
     }
     let id = body.node;
-    let addr = node.sys(|s| {
-        if s.removed_nodes.contains(&id) {
-            return None;
-        }
-        s.nodes
-            .get(&id)
-            .map(|n| n.addr.clone())
-            .or_else(|| node.config.peers.get(&id).cloned())
-    });
+    if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+        return Err(ApiError::forbidden(
+            "a job node never holds the cluster key",
+        ));
+    }
+    let addr = (!node.sys(|s| s.removed_nodes.contains(&id)))
+        .then(|| node.replica_addr(id))
+        .flatten();
     let Some(addr) = addr else {
         return Err(ApiError::forbidden(
             "not a node of this cluster: register it (/ops/nodes) first",
@@ -5349,9 +5644,10 @@ pub async fn plain_metrics(State(node): State<Arc<Node>>) -> Response {
 /// membership, the build's release; never names or state.
 fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     use std::fmt::Write as _;
-    let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
+    let (nodes, job_nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
         (
-            s.nodes.len(),
+            s.replica_nodes().count(),
+            s.job_nodes().count(),
             s.apps.len(),
             s.accounts.len(),
             s.orgs.len(),
@@ -5374,8 +5670,13 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     };
     gauge(
         "calimero_cluster_nodes",
-        "Nodes in the directory.",
+        "Replica nodes in the directory.",
         nodes as u64,
+    );
+    gauge(
+        "calimero_cluster_job_nodes",
+        "Job nodes in the directory.",
+        job_nodes as u64,
     );
     gauge(
         "calimero_apps",
@@ -5515,7 +5816,7 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
 
 /// How long `/ops/placement` waits for a node it has not attested yet to name
 /// its release; one that does not answer by then is listed with none.
-const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
 
 /// Where every app's replicas are, for a rebalancer (mdma): each app's id,
 /// group and replica node ids, and each node's id, zone, attested release and
@@ -5531,7 +5832,7 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             .values()
             .map(|a| json!({ "app": a.app_id, "group": a.group, "replicas": a.replicas }))
             .collect();
-        let nodes: Vec<(u64, String, usize)> = s
+        let nodes: Vec<(u64, String, NodeRole, usize)> = s
             .nodes
             .values()
             .map(|n| {
@@ -5540,21 +5841,21 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
                     .values()
                     .filter(|a| a.replicas.contains(&n.id))
                     .count();
-                (n.id, n.zone.clone(), hosted)
+                (n.id, n.zone.clone(), n.role, hosted)
             })
             .collect();
         (apps, nodes)
     });
     let releases =
-        futures_util::future::join_all(nodes.iter().map(|(id, _, _)| {
+        futures_util::future::join_all(nodes.iter().map(|(id, ..)| {
             tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))
         }))
         .await;
     let nodes: Vec<Value> = nodes
         .into_iter()
         .zip(releases)
-        .map(|((id, zone, hosted), release)| {
-            json!({ "id": id, "zone": zone, "release": release.ok().flatten(), "apps": hosted })
+        .map(|((id, zone, role, hosted), release)| {
+            json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
     Ok(Json(
@@ -5774,29 +6075,71 @@ struct NodeBody {
     zone: String,
     #[serde(default, rename = "operatorProof")]
     operator_proof: Option<OperatorProofBody>,
+    #[serde(default)]
+    role: NodeRole,
 }
 
 /// Register a node: the operator's decision, signed
-/// (`cluster / __register_node / { id, addr, zone }`, 428 first).
+/// (`cluster / __register_node / { id, addr, zone }`, plus `role` for a job node; 428 first).
 async fn ops_register_node(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(b): Json<NodeBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    let proof = operator_proof(
-        &node,
-        "cluster",
-        "__register_node",
-        &json!({ "id": b.id, "addr": b.addr, "zone": b.zone }),
-        b.operator_proof,
-    )?;
+    let st = node.system.status();
+    let member = st.voters.iter().chain(&st.learners).any(|m| *m == b.id)
+        || node.config.peers.contains_key(&b.id);
+    if b.role == NodeRole::Job && member {
+        return Err(ApiError::bad_request(
+            "NODE_HOLDS_CLUSTER",
+            "that node is a member of this cluster: it cannot be a job node",
+        ));
+    }
+    if !matches!(
+        url::Url::parse(&b.addr)
+            .map(|u| u.scheme().to_owned())
+            .as_deref(),
+        Ok("http" | "https")
+    ) {
+        return Err(ApiError::bad_request(
+            "BAD_ADDRESS",
+            "a node's address is an http or https URL",
+        ));
+    }
+    let wanted = crate::system::normalize_addr(&b.addr);
+    let taken = node
+        .config
+        .peers
+        .iter()
+        .any(|(id, addr)| *id != b.id && crate::system::normalize_addr(addr) == wanted)
+        || node.sys(|s| {
+            s.nodes
+                .values()
+                .any(|n| n.id != b.id && crate::system::normalize_addr(&n.addr) == wanted)
+        });
+    if taken {
+        return Err(ApiError::new(
+            409,
+            "ADDRESS_TAKEN",
+            "another node has that address",
+        ));
+    }
+    if b.role == NodeRole::Job {
+        node.require_upgraded_nodes().await?;
+    }
+    let mut args = json!({ "id": b.id, "addr": b.addr, "zone": b.zone });
+    if b.role != NodeRole::Replica {
+        args["role"] = json!(b.role);
+    }
+    let proof = operator_proof(&node, "cluster", "__register_node", &args, b.operator_proof)?;
     let _ok = node
         .sys_write(&SystemCmd::RegisterNode {
             node: crate::types::NodeRecord {
                 id: b.id,
                 addr: b.addr,
                 zone: b.zone,
+                role: b.role,
             },
             proof,
         })
@@ -5842,12 +6185,16 @@ async fn ops_remove_node(
             "the cluster's last voter cannot be removed",
         ));
     }
+    let in_membership = st.voters.iter().chain(&st.learners).any(|m| *m == id);
     let _ok = node.sys_write(&SystemCmd::RemoveNode { id, proof }).await?;
+    if !in_membership {
+        return Ok(Json(json!({ "status": node.system.status() })));
+    }
     let learners: Vec<u64> = node.sys(|s| {
         st.learners
             .iter()
             .copied()
-            .filter(|l| *l != id && s.nodes.contains_key(l))
+            .filter(|l| *l != id && s.replica_node(l).is_some())
             .collect()
     });
     for l in learners {
@@ -5901,7 +6248,7 @@ async fn ops_set_replicas(
             "a node is named twice",
         ));
     }
-    if target.len() < 3.min(node.sys(|s| s.nodes.len())) {
+    if target.len() < 3.min(node.sys(|s| s.replica_nodes().count())) {
         return Err(ApiError::bad_request(
             "TOO_FEW",
             "an app keeps at least 3 replicas",
@@ -5911,6 +6258,17 @@ async fn ops_set_replicas(
         return Err(ApiError::bad_request(
             "UNKNOWN_NODE",
             &format!("node {id} is not registered"),
+        ));
+    }
+    if let Some(id) = node.sys(|s| {
+        target
+            .iter()
+            .copied()
+            .find(|id| s.replica_node(id).is_none())
+    }) {
+        return Err(ApiError::bad_request(
+            "JOB_NODE",
+            &format!("node {id} is a job node: it holds no app"),
         ));
     }
     // One signature over the target covers both of the move's writes
@@ -6616,6 +6974,382 @@ async fn deployer_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             "deployers": g.deployers,
             "owner": s.cluster_owner,
             "grants": grants,
+        })
+    })))
+}
+
+// ---------------------------------------------------------------- sign-up
+
+/// The longest a cluster sign-up invite lives (a year).
+pub const MAX_SIGN_UP_INVITE_TTL: u64 = 365 * 24 * 3600;
+
+/// How long a cluster sign-up invite the owner mints lives unless it says.
+const SIGN_UP_INVITE_TTL: u64 = 7 * 24 * 3600;
+
+/// The bounds on an operator-chosen sign-up invite token, in bytes.
+const SIGN_UP_TOKEN_BYTES: std::ops::RangeInclusive<usize> = 16..=256;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignUpBody {
+    policy: SignUp,
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// The operator's sign-up invite: it chooses the token (the node never
+/// makes one for it, so the `428` and the signed retry name the same
+/// invite) and its expiry.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpsSignUpInviteBody {
+    /// The secret the invitee signs up with (16 to 256 bytes); the log keeps
+    /// only its public key ([`crate::proof::invite_key`]).
+    token: String,
+    /// How many accounts it creates [default: 1].
+    #[serde(default)]
+    uses: Option<u32>,
+    /// RFC 3339; at most [`MAX_SIGN_UP_INVITE_TTL`] ahead.
+    expires_at: String,
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// The owner's sign-up invite: the node mints the token (kept with the
+/// passkey challenge, as for an organization invite).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignUpInviteBody {
+    #[serde(default)]
+    uses: Option<u32>,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// `403` unless the operator runs the cluster's sign-up (no owner named).
+async fn operator_runs_sign_up(node: &Node) -> Result<(), ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| s.runs_sign_up(OPERATOR))
+        .map_err(ApiError::forbidden)
+}
+
+/// The signed-in account, if it acts for the cluster's owner and the owner
+/// runs sign-up; `403` otherwise.
+async fn owner_runs_sign_up(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    let p = holder(node, headers).await?;
+    let account = p.account()?;
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| s.runs_sign_up(&account))
+        .map_err(ApiError::forbidden)?;
+    Ok(p)
+}
+
+/// Set the sign-up policy, signed with the operator key (`cluster /
+/// __sign_up / { policy }`), while the operator runs sign-up.
+async fn ops_sign_up_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<SignUpBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    operator_runs_sign_up(&node).await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__sign_up",
+        &json!({ "policy": body.policy }),
+        body.operator_proof,
+    )?;
+    let v = node
+        .sys_write(&SystemCmd::SetSignUp {
+            policy: body.policy,
+            actor: OPERATOR.to_owned(),
+            proof: Some(proof),
+            consent: None,
+        })
+        .await?;
+    Ok(Json(
+        json!({ "governance": v["governance"], "signUp": sign_up_json(body.policy) }),
+    ))
+}
+
+/// The cluster's owner sets the sign-up policy, with a passkey assertion
+/// over `cluster / __sign_up / { policy }` (a `412` asks for it).
+async fn sign_up_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<SignUpBody>,
+) -> ApiResult {
+    let p = owner_runs_sign_up(&node, &headers).await?;
+    let consent = consent(
+        &node,
+        &p,
+        "cluster",
+        "__sign_up",
+        &json!({ "policy": body.policy }),
+        body.confirm,
+    )
+    .await?;
+    let v = node
+        .sys_write(&SystemCmd::SetSignUp {
+            policy: body.policy,
+            actor: p.account()?,
+            proof: None,
+            consent: Some(consent),
+        })
+        .await?;
+    Ok(Json(
+        json!({ "governance": v["governance"], "signUp": sign_up_json(body.policy) }),
+    ))
+}
+
+/// A sign-up invite's uses, checked before anything is signed.
+fn sign_up_uses(uses: Option<u32>) -> Result<u32, ApiError> {
+    let uses = uses.unwrap_or(1);
+    if uses == 0 || uses > crate::system::MAX_SIGN_UP_INVITE_USES {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "a sign-up invite creates 1 to 10000 accounts",
+        ));
+    }
+    Ok(uses)
+}
+
+/// Issue a cluster sign-up invite, signed with the operator key (`cluster /
+/// __create_sign_up_invite / { inviteKey, uses, expiresAt }`), while the
+/// operator runs sign-up. Answers the invite's key; the operator hands the
+/// token to the person.
+async fn ops_sign_up_invite_create(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<OpsSignUpInviteBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    if !SIGN_UP_TOKEN_BYTES.contains(&body.token.len()) {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "a sign-up invite token is 16 to 256 bytes",
+        ));
+    }
+    let uses = sign_up_uses(body.uses)?;
+    let now = now_secs();
+    let expires_at = unix_secs(Some(&body.expires_at), "expiresAt")?.unwrap_or_default();
+    if expires_at <= now || expires_at > now + MAX_SIGN_UP_INVITE_TTL {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "expiresAt is in the future, at most a year ahead",
+        ));
+    }
+    operator_runs_sign_up(&node).await?;
+    let invite_key = crate::proof::invite_key(&body.token);
+    let invite = SignUpInvite {
+        expires_at,
+        uses_left: uses,
+        created_by: OPERATOR.to_owned(),
+        created_at: now,
+    };
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__create_sign_up_invite",
+        &crate::system::sign_up_invite_args(&invite_key, &invite),
+        body.operator_proof,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::CreateSignUpInvite {
+            invite_key: invite_key.clone(),
+            invite: invite.clone(),
+            actor: OPERATOR.to_owned(),
+            proof: Some(proof),
+            consent: None,
+        })
+        .await?;
+    Ok(Json(sign_up_invite_json(&invite_key, &invite)))
+}
+
+/// The cluster's owner mints a sign-up invite, with a passkey assertion over
+/// its key and terms (412 first). Answers the token, once.
+async fn sign_up_invite_create(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<SignUpInviteBody>,
+) -> ApiResult {
+    let uses = sign_up_uses(body.uses)?;
+    let ttl = body.ttl_secs.unwrap_or(SIGN_UP_INVITE_TTL);
+    if ttl == 0 || ttl > MAX_SIGN_UP_INVITE_TTL {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "ttlSecs is 1 to a year",
+        ));
+    }
+    let p = owner_runs_sign_up(&node, &headers).await?;
+    let actor = p.account()?;
+    let token = format!("sup_{}", b64url(&random::<24>()));
+    let now = now_secs();
+    let invite = SignUpInvite {
+        expires_at: now + ttl,
+        uses_left: uses,
+        created_by: actor.clone(),
+        created_at: now,
+    };
+    let args = crate::system::sign_up_invite_args(&crate::proof::invite_key(&token), &invite);
+    let c = consent_minted(
+        &node,
+        &p,
+        "cluster",
+        "__create_sign_up_invite",
+        &args,
+        Some(json!({ "token": token, "createdAt": now })),
+        body.confirm,
+    )
+    .await?;
+    // The retry records the invite the approval names, minted by the first
+    // request; its uses must be the ones this request asks for.
+    let carry = c.carry.unwrap_or_default();
+    let (Some(token), Some(created_at)) = (
+        carry
+            .get("token")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        carry.get("createdAt").and_then(Value::as_u64),
+    ) else {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "not a sign-up invite approval",
+        ));
+    };
+    let invite_key = crate::proof::invite_key(&token);
+    let invite = SignUpInvite {
+        expires_at: c
+            .args
+            .get("expiresAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        created_at,
+        ..invite
+    };
+    if crate::system::sign_up_invite_args(&invite_key, &invite) != c.args {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "the approval was for a different call",
+        ));
+    }
+    let _ok = node
+        .sys_write(&SystemCmd::CreateSignUpInvite {
+            invite_key: invite_key.clone(),
+            invite: invite.clone(),
+            actor,
+            proof: None,
+            consent: Some(c.consent),
+        })
+        .await?;
+    let mut out = sign_up_invite_json(&invite_key, &invite);
+    out["token"] = json!(token);
+    Ok(Json(out))
+}
+
+fn sign_up_invite_json(invite_key: &str, i: &SignUpInvite) -> Value {
+    json!({
+        "inviteKey": invite_key,
+        "uses": i.uses_left,
+        "expiresAt": crate::system::rfc3339(i.expires_at),
+        "expiresAtSecs": i.expires_at,
+        "createdBy": i.created_by,
+        "createdAt": crate::system::rfc3339(i.created_at),
+    })
+}
+
+/// Withdraw a sign-up invite, signed with the operator key (`cluster /
+/// __revoke_sign_up_invite / { inviteKey }`).
+async fn ops_sign_up_invite_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let body = ops_proof_body(&body)?;
+    operator_runs_sign_up(&node).await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__revoke_sign_up_invite",
+        &json!({ "inviteKey": key }),
+        body.operator_proof,
+    )?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::RevokeSignUpInvite {
+            invite_key: key,
+            actor: OPERATOR.to_owned(),
+            proof: Some(proof),
+            consent: None,
+        })
+        .await?,
+    ))
+}
+
+/// The cluster's owner withdraws a sign-up invite, with a passkey assertion.
+async fn sign_up_invite_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = owner_runs_sign_up(&node, &headers).await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        "cluster",
+        "__revoke_sign_up_invite",
+        &json!({ "inviteKey": key }),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::RevokeSignUpInvite {
+            invite_key: key,
+            actor: p.account()?,
+            proof: None,
+            consent: Some(consent),
+        })
+        .await?,
+    ))
+}
+
+/// The policy and the live sign-up invites (keys and terms, never a token):
+/// for the operator (its token) and whoever acts for the cluster's owner.
+async fn sign_up_invite_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    if operator(&node, &headers).is_err() {
+        let account = signed_in(&node, &headers).await?.account()?;
+        let _caught_up = node.sys_fresh().await;
+        let owner = node.sys(|s| {
+            s.cluster_owner
+                .as_ref()
+                .is_some_and(|o| s.acts_for(o, &account))
+        });
+        if !owner {
+            return Err(ApiError::forbidden(
+                "only the cluster's operator and owner read its sign-up invites",
+            ));
+        }
+    } else {
+        let _caught_up = node.sys_fresh().await;
+    }
+    Ok(Json(node.sys(|s| {
+        let invites: Vec<Value> = s
+            .sign_up_invites
+            .iter()
+            .map(|(k, i)| sign_up_invite_json(k, i))
+            .collect();
+        json!({
+            "signUp": sign_up_json(s.governance().sign_up),
+            "runBy": if s.deployers_owner().is_some() { "owner" } else { "operator" },
+            "invites": invites,
         })
     })))
 }
@@ -7340,6 +8074,14 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/deployers/{key}/revoke", post(ops_deployer_revoke))
         .route("/ops/deployments/granted", post(ops_deployments_granted))
         .route("/ops/cluster-owner", post(ops_cluster_owner))
+        .route("/sign-up", get(sign_up_public).post(sign_up_set))
+        .route("/sign-up/invites", post(sign_up_invite_create).get(sign_up_invite_list))
+        .route("/sign-up/invites/{key}", delete(sign_up_invite_revoke))
+        .route("/ops/sign-up", post(ops_sign_up_set))
+        .route("/ops/sign-up/invites", post(ops_sign_up_invite_create).get(sign_up_invite_list))
+        .route("/ops/sign-up/invites/{key}", delete(ops_sign_up_invite_revoke))
+        // For an HTTP client whose DELETE carries no body (as for deployers).
+        .route("/ops/sign-up/invites/{key}/revoke", post(ops_sign_up_invite_revoke))
         .route("/deployers", post(deployer_grant).get(deployer_list))
         .route("/deployers/{key}", delete(deployer_revoke))
         .route("/deployments", post(deployment_create).get(deployment_list))

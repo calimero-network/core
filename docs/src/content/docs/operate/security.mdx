@@ -165,8 +165,9 @@ from mero-kms, no restore of a snapshot into a
 running cluster, no event audiences, no pruning of revoked session ids, and
 search indexes rebuilt from state at each start, and no recovery when every
 mero-kms replica is lost: backups are sealed only under the cluster's key
-(planned: each organization holds a recovery seed that opens its own backups). Sign-up is open; bound it with
-the `maxAccounts` quota.
+(planned: each organization holds a recovery seed that opens its own backups). Sign-up is open by
+default; bound it with the `maxAccounts` quota, or deploy with `--sign-up invite|closed`
+([Sign-up policy](/operate/auth/#sign-up-policy)).
 
 ## Checklist
 

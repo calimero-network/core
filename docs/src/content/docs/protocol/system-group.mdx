@@ -11,7 +11,7 @@ not one app's own data:
 
 | Field of `SystemState` | What it is |
 | --- | --- |
-| `nodes` | Every registered node: id, base URL, zone |
+| `nodes` | Every registered node: id, base URL, zone, role (`replica`, or `job` for a node that only runs compute) |
 | `apps` | The app directory: each instance's bundle, owner, organization, access rule, confirm methods, replicas, group, metadata, last upgrade |
 | `next_group` | The next app group number |
 | `bundles` | Bundle hash → size, uploader, and the release it ships in (the WASM itself is in the blob store) |
@@ -92,10 +92,44 @@ signature over its target: first the union of the current and the target set
 (which needs the signature unspent and leaves it so), then the target (which
 spends it); the union replayed after the move is refused.
 
-Commands that still carry no proof (`CreateAccount`, `CreateRefresh`,
-`UseRefresh`, `RevokeApiKey`, `SetSignCount` and the rest) are trusted from
-any node of the cluster; making them carry the user's proof is the next phase
-of the design (`docs/specs/gate-system-group.md`, section 5.6).
+Sessions carry their proofs too:
+
+- **Sign-up** (`CreateAccount`): a registration with attestation `none`
+  carries no signature by the new key, so `/auth/passkey/register/finish`
+  answers `412 CONFIRM_REQUIRED`, and the new passkey signs `account:<id> /
+  __create_account / { account, refresh }` (`system::account_args`: the whole
+  account, its release among it, and the sign-up's first refresh token). A
+  node that saw someone's new credential cannot register it first under an
+  account and a release of its own. A sign-up asks the passkey twice.
+- **Sign-in** (`CreateRefresh`): the login challenge is the challenge of
+  `session / __sign_in / { refresh, key, session, expiresAt }`
+  (`system::sign_in_args`), made before the passkey is asked; the log keeps
+  the refresh token only with that assertion, by the passkey the record names,
+  once.
+- **Refresh** (`UseRefresh`): each refresh token stands for an Ed25519 key
+  (`proof::refresh_key`, seed `SHA-256("calimero.refresh.v1\0" ‖ token)`); its
+  record keeps the public half, and an exchange carries that key's signature
+  over the new token and the session (`proof::refresh_use_message`), which
+  must stay the old token's. A node that only saw the log, or the proposal,
+  cannot exchange a token. Tokens from before keys are not exchanged: their
+  holders sign in again.
+- **Counters** (`SetSignCount`): the assertion that carries the counter; only
+  the authenticator signs one, so no node can set a counter past it and lock
+  a passkey out.
+- **API key revocation** (`RevokeApiKey`): the account's passkey consent,
+  `account:<a> / __revoke_api_key / { keyId }` (`412` first, as for removing
+  a passkey).
+
+A cluster begun before these proofs replays what it logged then as it applied
+it: the first system leader on a release that makes them writes
+`RequireSessionProofs`, and they are required from that entry on (a new
+cluster requires them from genesis). The mark is written once and only
+tightens.
+
+Still without a proof: `RefreshReused`, `RevokeSession`, `RevokeAllSessions`,
+labels and aliases, and the rest of the account and app housekeeping; they
+are trusted from any node of the cluster. Splitting the system group into
+realms (`docs/specs/gate-system-group.md`, section 5) is the next phase.
 
 The API checks most rules before it proposes, too, so a request that would be
 refused usually fails fast and records nothing. The check at apply is the one
@@ -116,6 +150,16 @@ state every receipt key attests.
 The same leader registers the configured `--peers` as nodes. Genesis also
 records the operator's verify key (`--operator-key`) when one is configured.
 
+## Job nodes in the directory
+
+`POST /ops/nodes` takes an optional `role`: `replica` (the default) or `job`.
+A job node runs compute for the cluster's apps and never holds the cluster key, so it is never a Raft member, not even a learner: a member keeps its log sealed under that key.
+It is also never placed an app, never a target or a majority member of a blob or bundle push, and never sent the cluster key.
+`/ops/placement` lists it with its role and an app count of zero, and `/ops/apps/{app}/replicas` refuses a request that names one.
+`DELETE /ops/nodes/{id}` removes it at any time and changes no voter.
+A node's role is fixed until it is removed, an address belongs to one node in any spelling, and `--peers` must list only replica nodes.
+Registering a job node is refused (`409 CLUSTER_NOT_UPGRADED`) until every replica node, voter and learner runs at least the registering node's release, so no older node ever reads a job record.
+
 ## The leader's housekeeping
 
 Every node runs a reconcile loop (on each applied system entry, on a follow-up
@@ -123,8 +167,8 @@ kick, and every 500 ms). On the system leader it also:
 
 - writes `Genesis` if nothing has;
 - registers configured peers that are not yet in `nodes`;
-- adds every registered node that is not in the system group as a **learner**
-  ([Replication](/protocol/replication/#joining-nodes));
+- adds every registered replica node that is not in the system group as a **learner**
+  ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted);
 - promotes caught-up learners to voters while there are fewer than three.
 
 On every node it starts the app groups this node is a replica of, stops the
@@ -174,7 +218,7 @@ same command for the same reason:
 | `maxBundleBytesPerAccount` | 1 GiB | `PutBundle`, `InstallPackage` (operator installs count against no account) |
 | `maxApiKeysPerAccount` | 50 | `CreateApiKey` |
 | `maxOrgsPerAccount` | 20 (organizations owned) | `CreateOrg` |
-| `maxAccounts` | 100 000 | `CreateAccount` (sign-up is open, so this bounds the cluster) |
+| `maxAccounts` | 100 000 | `CreateAccount` (where sign-up is `open`, this bounds the cluster) |
 | `maxFileBytesPerOrg` | 50 000 000 000 | `ChargeFileBytes` (plaintext bytes of the files of an organization's apps, or of a personal account's) |
 
 `GET /auth/usage` shows an account what it uses against them.

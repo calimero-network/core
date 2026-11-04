@@ -51,7 +51,8 @@ One part may change once: the operator may move [deployments](#deployers)
 from `open` to `granted` (`SystemCmd::SetDeploymentsGranted`, signed with its
 key), never back, so an existing cluster can close installs without being
 recreated. It only narrows who may install code; the attested governance
-changes with it.
+changes with it. The [sign-up policy](#sign-up) changes too, with the
+signature of whoever runs it.
 
 Every node's receipt-key attestation binds the governance its system state
 holds (`receipt_key_binding(key, governance)`). `verify_app_cluster` requires
@@ -274,6 +275,40 @@ defaults attests the same bytes as before
 (`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`). A client
 that recomputes the receipt-key binding must keep both fields, in that order,
 when the attested object carries them.
+
+## Sign-up
+
+Who may create an account (`Governance::sign_up`, `--sign-up`), checked by
+`CreateAccount` at apply (`SystemState::admits`), so a leader cannot let
+anyone else in:
+
+- **`open`** (the default): anyone who reaches the cluster.
+- **`invite`**: someone presenting an organization invite (the account joins
+  the organization at the invite's role, the invite spent once) or a cluster
+  sign-up invite.
+- **`closed`**: someone presenting a cluster sign-up invite only, the
+  pre-authorization of whoever runs sign-up.
+
+An invite rides on `CreateAccount { invite: { inviteKey, now, signature } }`:
+the signature is the token key's over the new account id and `now`
+(`proof::sign_invite_redeem`, the redemption an organization invite already
+uses), so only the node the person handed the token to can make it, and it is
+spent once (`used_proofs`). Its expiry is judged at the signed `now`.
+An unknown, expired or used-up invite is refused on every policy, before
+anything changes.
+
+Cluster sign-up invites (`SystemState::sign_up_invites`, by the token's public
+key; `CreateSignUpInvite`, `RevokeSignUpInvite`) and the policy itself
+(`SetSignUp`) are run by one party: the operator, with its key, until the
+operator names the cluster's owner where `deployers: owner`; then whoever acts
+for the owner, with a passkey, and never the operator
+(`SystemState::runs_sign_up`). Statements: `cluster / __sign_up / { policy }`,
+`__create_sign_up_invite / { inviteKey, uses, expiresAt }`,
+`__revoke_sign_up_invite / { inviteKey }`. Routes:
+[Sign-up policy](/operate/auth/#sign-up-policy).
+
+The governance JSON names `signUp` only when it is not `open`, after
+`deployers`; a cluster from before reads as `open`.
 
 ## Deployments
 

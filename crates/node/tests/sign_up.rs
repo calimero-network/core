@@ -1,0 +1,280 @@
+//! The cluster's sign-up policy (`Governance::sign_up`), as a person and an
+//! operator meet it through the API: `open` takes anyone; `invite` takes
+//! someone holding an organization invite or a cluster sign-up invite;
+//! `closed` only a cluster sign-up invite (a pre-authorization). A refusal is
+//! `403 SIGN_UP_REFUSED` before the passkey ceremony, and `apply` refuses
+//! again; the policy changes only with the operator's signature.
+
+use calimero_client::{Client, Passkey};
+use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::system::{SignUp, SystemCmd};
+use serde_json::{json, Value};
+
+#[path = "harness/cluster.rs"]
+#[allow(
+    dead_code,
+    reason = "shared with tests/cluster.rs, which uses the parts this test does not"
+)]
+mod harness;
+
+use harness::{ops_signed, Cluster, ORIGIN};
+
+/// A client holding the ops token.
+async fn ops(c: &Cluster) -> Client {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    ops
+}
+
+/// Sign up on node `i` as `name`, with `invite` if given.
+async fn sign_up(
+    c: &Cluster,
+    i: usize,
+    name: &str,
+    invite: Option<&str>,
+) -> Result<(Client, SoftAuthenticator), Box<calimero_client::Error>> {
+    let client = c.client(i);
+    let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let _s = client
+        .sign_up_invited(&mut pk, name, invite)
+        .await
+        .map_err(Box::new)?;
+    Ok((client, pk))
+}
+
+fn refused(r: Result<(Client, SoftAuthenticator), Box<calimero_client::Error>>, why: &str) {
+    let Err(e) = r else {
+        panic!("{why}: signed up");
+    };
+    assert_eq!(e.code(), Some("SIGN_UP_REFUSED"), "{why}: {e}");
+}
+
+/// A sign-up invite the operator issues: `uses` accounts, an hour.
+async fn operator_invite(ops: &Client, token: &str, uses: u32) -> Value {
+    let expires = chrono::Utc::now() + chrono::Duration::hours(1);
+    ops_signed(
+        ops,
+        "ops/sign-up/invites",
+        json!({ "token": token, "uses": uses, "expiresAt": expires.to_rfc3339() }),
+    )
+    .await
+    .unwrap()
+}
+
+/// An organization of `owner`'s, and an invite to it for one member.
+async fn org_invite(owner: &Client, pk: &mut SoftAuthenticator) -> (String, String) {
+    let org = owner.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = owner
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            pk,
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (org, token)
+}
+
+async fn account_of(client: &Client) -> String {
+    client.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A default cluster is open, says so before sign-up, and takes anyone; an
+/// invite presented there is still checked, and an organization's joins it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_cluster_takes_anyone() {
+    let c = Cluster::start(3).await;
+    let info = c.client(1).get("sign-up").await.unwrap();
+    assert_eq!(info["policy"], "open", "{info}");
+    assert_eq!(info["inviteRequired"], false, "{info}");
+    let (alice, mut a) = sign_up(&c, 0, "alice", None).await.unwrap();
+    refused(
+        sign_up(&c, 1, "eve", Some("inv_made_up")).await,
+        "an unknown invite",
+    );
+    let (org, token) = org_invite(&alice, &mut a).await;
+    let (bob, _b) = sign_up(&c, 2, "bob", Some(&token)).await.unwrap();
+    let orgs = bob.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(orgs["members"][account_of(&bob).await], "member", "{orgs}");
+}
+
+/// Invite only: refused without an invite, with a made-up one and with a
+/// used one, before any passkey is asked; taken with the operator's sign-up
+/// invite and with an organization invite, which joins the organization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_invite_only_cluster_takes_invited_people() {
+    let c = Cluster::start_with(3, |cfg| cfg.governance.sign_up = SignUp::Invite).await;
+    let ops = ops(&c).await;
+    let info = c.client(1).get("sign-up").await.unwrap();
+    assert_eq!(
+        info,
+        json!({
+            "policy": "invite", "orgInvites": true, "signUpInvites": true, "inviteRequired": true,
+        })
+    );
+    // Refused at begin: the passkey is never asked.
+    let e = c
+        .client(0)
+        .post("auth/passkey/register/begin", json!({ "name": "eve" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("SIGN_UP_REFUSED"), "{e}");
+    assert!(e.to_string().contains("invite only"), "{e}");
+    refused(sign_up(&c, 0, "eve", None).await, "no invite");
+    refused(
+        sign_up(&c, 1, "eve", Some("sup_made_up_000000")).await,
+        "a made-up invite",
+    );
+
+    let _i = operator_invite(&ops, "sup_alice_000000000", 1).await;
+    let (alice, mut a) = sign_up(&c, 1, "alice", Some("sup_alice_000000000"))
+        .await
+        .unwrap();
+    refused(
+        sign_up(&c, 2, "eve", Some("sup_alice_000000000")).await,
+        "a used sign-up invite",
+    );
+
+    let (org, token) = org_invite(&alice, &mut a).await;
+    let (bob, _b) = sign_up(&c, 2, "bob", Some(&token)).await.unwrap();
+    let o = bob.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["members"][account_of(&bob).await], "member", "{o}");
+    refused(
+        sign_up(&c, 0, "eve", Some(&token)).await,
+        "a used org invite",
+    );
+
+    // A begin with an invite and a finish without one: refused at finish.
+    let _i = operator_invite(&ops, "sup_carol_000000000", 1).await;
+    let client = c.client(0);
+    let begin = client
+        .post(
+            "auth/passkey/register/begin",
+            json!({ "name": "eve", "invite": "sup_carol_000000000" }),
+        )
+        .await
+        .unwrap();
+    let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let registration = Passkey::create(&mut pk, &begin["options"]);
+    let e = client
+        .post(
+            "auth/passkey/register/finish",
+            json!({ "challengeId": begin["challengeId"], "registration": registration }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("SIGN_UP_REFUSED"), "{e}");
+}
+
+/// Closed: only someone the operator pre-authorized gets in; an
+/// organization invite does not open the door.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_closed_cluster_takes_only_preauthorized_people() {
+    let c = Cluster::start_with(3, |cfg| cfg.governance.sign_up = SignUp::Closed).await;
+    let ops = ops(&c).await;
+    let info = c.client(0).get("sign-up").await.unwrap();
+    assert_eq!(info["policy"], "closed");
+    assert_eq!(info["orgInvites"], false);
+    refused(sign_up(&c, 0, "eve", None).await, "no pre-authorization");
+    let _i = operator_invite(&ops, "sup_alice_000000000", 1).await;
+    let (alice, mut a) = sign_up(&c, 0, "alice", Some("sup_alice_000000000"))
+        .await
+        .unwrap();
+    let (_org, token) = org_invite(&alice, &mut a).await;
+    refused(sign_up(&c, 1, "bob", Some(&token)).await, "an org invite");
+
+    // The operator lists what it issued, never a token, and withdraws one.
+    let _i = operator_invite(&ops, "sup_bob_00000000000", 1).await;
+    let listed = ops.get("ops/sign-up/invites").await.unwrap();
+    assert_eq!(listed["invites"].as_array().unwrap().len(), 1, "{listed}");
+    assert!(!listed.to_string().contains("sup_bob"), "{listed}");
+    let key = listed["invites"][0]["inviteKey"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ok = ops
+        .delete_operator_signed(
+            &format!("ops/sign-up/invites/{key}"),
+            &harness::operator_sign,
+        )
+        .await
+        .unwrap();
+    refused(
+        sign_up(&c, 1, "bob", Some("sup_bob_00000000000")).await,
+        "a withdrawn invite",
+    );
+    let e = alice.get("ops/sign-up/invites").await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}
+
+/// The policy changes only with the operator's signature: the token alone
+/// gets the bytes to sign, another key's signature and a replay are refused,
+/// and a change logged without one is refused where it applies. The new
+/// policy is what clients read and what receipt keys attest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_policy_change_needs_the_operators_signature() {
+    let c = Cluster::start(3).await;
+    let ops = ops(&c).await;
+    let body = json!({ "policy": "invite" });
+    let e = ops.post("ops/sign-up", body.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let mut other = body.clone();
+    other["operatorProof"] = {
+        use ed25519_dalek::Signer;
+        let st = calimero_node::proof::Statement::new("cluster", "__sign_up", &body);
+        let sig =
+            ed25519_dalek::SigningKey::from_bytes(&[8; 32]).sign(&st.operator_message(&c.name));
+        json!({ "nonce": st.nonce, "signature": hex::encode(sig.to_bytes()) })
+    };
+    let e = ops.post("ops/sign-up", other).await.unwrap_err();
+    assert_eq!(e.code(), Some("BAD_OPERATOR_SIGNATURE"), "{e}");
+    // A person cannot change it.
+    let (alice, _a) = sign_up(&c, 0, "alice", None).await.unwrap();
+    let e = alice.post("ops/sign-up", body.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let e = alice.post("sign-up", body.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    // Logged without a signature (a node's own code): refused at apply.
+    let forged = serde_json::to_value(SystemCmd::SetSignUp {
+        policy: SignUp::Closed,
+        actor: calimero_node::system::OPERATOR.into(),
+        proof: None,
+        consent: None,
+    })
+    .unwrap();
+    let leader = c
+        .nodes
+        .iter()
+        .flatten()
+        .find(|r| r.node.system.status().is_leader)
+        .expect("a system leader");
+    let (_i, out) = leader
+        .node
+        .system
+        .write(serde_json::to_vec(&forged).unwrap())
+        .await
+        .unwrap();
+    assert!(calimero_node::system::output(&out).is_err());
+    assert_eq!(c.client(1).get("sign-up").await.unwrap()["policy"], "open");
+
+    let v = ops_signed(&ops, "ops/sign-up", body).await.unwrap();
+    assert_eq!(v["governance"]["signUp"], "invite", "{v}");
+    for i in 0..3 {
+        assert_eq!(
+            c.client(i).get("sign-up").await.unwrap()["policy"],
+            "invite"
+        );
+    }
+    let public = c.client(2).get("releases").await.unwrap();
+    assert_eq!(public["governance"]["signUp"], "invite", "{public}");
+    refused(sign_up(&c, 1, "bob", None).await, "invite only now");
+}
