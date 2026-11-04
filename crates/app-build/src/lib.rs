@@ -9,7 +9,6 @@ use std::process::Command;
 use std::process::Stdio;
 
 use eyre::Result as EyreResult;
-use fs4::fs_std::FileExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use wasmparser::ComponentTypeRef;
@@ -34,7 +33,8 @@ fn lock_exclusive(path: &Path) -> EyreResult<std::fs::File> {
         .write(true)
         .open(path)
         .map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
-    FileExt::lock_exclusive(&lock).map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
+    lock.lock()
+        .map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
     Ok(lock)
 }
 
