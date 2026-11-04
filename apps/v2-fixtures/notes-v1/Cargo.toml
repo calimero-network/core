@@ -10,7 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 calimero-app-sdk = { path = "../../../crates/app-sdk" }
-serde = { version = "1", features = ["derive"] }
 
 # Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
 [workspace]
