@@ -117,10 +117,10 @@ fn str_of(v: &Value, k: &str) -> String {
         .to_owned()
 }
 
-// ---- The scenario runner: the step format of `calimero_app_sdk::testing::scenario`,
+// ---- The scenario runner: the step format of `calimero_sdk::testing::scenario`,
 // against the cluster. Step `i` goes to node `i % 3`.
 
-/// How a step ended, in the harness's terms (`calimero_app_sdk::testing::Failure`).
+/// How a step ended, in the harness's terms (`calimero_sdk::testing::Failure`).
 enum Failure {
     App {
         code: String,

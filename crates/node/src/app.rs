@@ -25,7 +25,7 @@ pub use crate::idempotency::{IDEMPOTENCY_MIN_KEEP, IDEMPOTENCY_TTL_MS, NODE_KEY_
 
 /// What a node without wasmer answers for an SDK 0.12 app: every call, view and
 /// upgrade of one ([`crate::types::Executor::Wasmer`]).
-pub const WASMER_GONE: &str = "this app is an SDK 0.12 (wasmer) app, which this node no longer runs; rebuild it with calimero-app-sdk and create it again";
+pub const WASMER_GONE: &str = "this app is an SDK 0.12 (wasmer) app, which this node no longer runs; rebuild it with calimero-sdk and create it again";
 
 /// Events kept for resuming subscriptions.
 pub const EVENT_RING: usize = 10_000;

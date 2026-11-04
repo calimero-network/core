@@ -94,7 +94,7 @@ impl ApiError {
 }
 
 /// Why a core-module bundle is refused ([`ApiError::unsupported_bundle`]).
-pub const UNSUPPORTED_BUNDLE: &str = "this bundle is a WASM core module (an SDK 0.12 app, for wasmer), which this node no longer runs; rebuild it with calimero-app-sdk into a calimero:app component";
+pub const UNSUPPORTED_BUNDLE: &str = "this bundle is a WASM core module (an SDK 0.12 app, for wasmer), which this node no longer runs; rebuild it with calimero-sdk into a calimero:app component";
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
