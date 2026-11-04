@@ -221,7 +221,8 @@ Build the component (from a checkout of core, or with the `mero-app-build`
 binary):
 
 ```sh
-cargo run -p calimero-app-build -- path/to/kv-store --out kv_store.wasm
+scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+mero-app-build path/to/kv-store --out kv_store.wasm
 ```
 
 It compiles the crate for `wasm32-wasip2` and lifts the ABI into the

@@ -86,7 +86,8 @@ Use this to check which signer a key belongs to before signing.
 Build the component, then pack and sign it:
 
 ```bash
-cargo run -p calimero-app-build --bin mero-app-build -- apps/my-app --out my-app.wasm
+scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+mero-app-build apps/my-app --out my-app.wasm
 python3 -I scripts/pack-component.py --wasm my-app.wasm --package com.example.my-app \
   --app-version 1.0.0 --out dist/com.example.my-app-1.0.0.mpk --key my-key.json   # or omit --key for --dev
 ```

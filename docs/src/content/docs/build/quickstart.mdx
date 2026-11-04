@@ -38,7 +38,8 @@ form, checking output at every step.
 3. **Build the component**:
 
    ```sh
-   cargo run -p calimero-app-build --bin mero-app-build -- apps/kv-store --out kv_store.wasm
+   scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+   mero-app-build apps/kv-store --out kv_store.wasm
    ```
 
 4. **Start a development cluster** and sign in (mock attestation, a passkey in

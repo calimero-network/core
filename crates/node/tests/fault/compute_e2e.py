@@ -6,8 +6,8 @@ cancel, the three caps, an output the result method does not store, the quota, a
 nodes' logs showing only the compute component. Forged finals, per-run key isolation and
 the collection of unreferenced files after `BLOB_IDLE_MS` (an hour of entry time, which only an
 in-process clock can pass) are proved by in-process tests that are run and quoted. Binaries from
-`RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` from
-there, or taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
+`RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` (on PATH,
+`scripts/install-mero-app-build.sh`), or taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
 Work dir and logs: `COMPUTE_E2E_DIR` (default target/compute-e2e).
 The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the key the nodes start with
 (`--operator-key`), as the node tests' harness signs them.
@@ -113,7 +113,7 @@ def build_components(wd):
     if app:
         return Path(app), Path(compute)
     app, compute = wd / "app.wasm", wd / "compute.wasm"
-    subprocess.run([str(BIN / "mero-app-build"), "apps/v2-fixtures/compute", "--out", str(app),
+    subprocess.run(["mero-app-build", "apps/v2-fixtures/compute", "--out", str(app),
                     "--compute-out", str(compute), "--target-dir", str(wd / "build")], cwd=ROOT, check=True)
     return app, compute
 
