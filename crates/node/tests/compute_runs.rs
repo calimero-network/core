@@ -10,13 +10,15 @@ use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::component::{
-    ComponentCmd, FailedReason, FinalEntry, FinalOutcome, Outcome, RunRecord, RunState,
+    CallEntry, ComponentCmd, ComputeStart, FailedReason, FinalEntry, FinalOutcome, Outcome,
+    RunCaps, RunRecord, RunState,
 };
 use calimero_node::files::noise_seed;
 use calimero_node::job_wire::{Report, ReportStatus, ReportUsage};
 use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POLL};
+use calimero_node::types::Caller;
 use calimero_node::Node;
-use common::{signed_up, Cluster, JobNode};
+use common::{mpk_with, signed_up, Cluster, JobNode, PUBLISHER};
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde_json::{json, Value};
@@ -34,6 +36,8 @@ struct Rig {
     pk: SoftAuthenticator,
     app: String,
     jobs: Vec<JobNode>,
+    /// The hashes of the installed release's app component and compute component.
+    hashes: (String, String),
 }
 
 impl Rig {
@@ -42,13 +46,25 @@ impl Rig {
     }
 
     async fn start_with(job_ids: &[u64], options: Value) -> Self {
-        let c = Cluster::start(3).await;
+        let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
         let (alice, pk) = signed_up(&c, 0, "alice").await;
-        let bundle = alice
-            .upload_bundle(common::component("compute"))
+        let both = common::components("compute");
+        let compute = both.compute.expect("a compute component");
+        let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+        let _installed = alice
+            .upload_package(mpk_with(
+                "com.test.compute",
+                "1.0.0",
+                &both.app,
+                Some(&compute),
+                &key,
+            ))
             .await
             .unwrap();
-        let app = alice.create_app("compute", &bundle, options).await.unwrap();
+        let app = alice
+            .create_app_from_package("compute", "com.test.compute", Some("1.0.0"), None, options)
+            .await
+            .unwrap();
         let mut jobs = Vec::new();
         for id in job_ids {
             let job = c.start_job_node(*id, |_| {}).await;
@@ -61,6 +77,7 @@ impl Rig {
             pk,
             app,
             jobs,
+            hashes: (sha256_hex(&both.app), sha256_hex(&compute)),
         }
     }
 
@@ -1226,4 +1243,63 @@ async fn an_output_the_result_method_does_not_store_is_collected_and_its_quota_r
         tokio::task::block_in_place(|| now.block_on(rig.charged())) == 0
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_is_only_ever_given_the_compute_component() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&input()).await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let outcome = rig.outcome(&run).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+
+    let (app, compute) = &rig.hashes;
+    let record = rig.record(&run);
+    assert_eq!(record.compute_bundle.as_ref(), Some(compute));
+    assert_eq!(
+        record.bundle, *app,
+        "the run is still billed to the app's bundle"
+    );
+    assert_eq!(rig.jobs[0].running.held_bundles(), vec![compute.clone()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_recorded_without_a_compute_component_is_refused_without_a_job_node() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let g = rig.leader().hosted(&rig.app).unwrap();
+    let mut outcome = Outcome::default();
+    outcome.compute_starts.push(ComputeStart {
+        run: "old".into(),
+        method: "digest".into(),
+        args: Default::default(),
+        inputs: Vec::new(),
+        caps: RunCaps {
+            fuel: 1_000_000,
+            memory_mib: 64,
+            wall_secs: 30,
+        },
+        result_method: "onDone".into(),
+        owner: "o".into(),
+        compute_bundle: None,
+    });
+    let entry = ComponentCmd::Call(Box::new(CallEntry {
+        method: "ping".into(),
+        args: json!({}),
+        caller: Caller::System,
+        idempotency_key: None,
+        consent: None,
+        ts_ms: 1,
+        base_index: g.read_local(|m, _| m.state.last_index),
+        id_term: 0,
+        id_seq: 0,
+        outcome,
+        xcall: None,
+    }));
+    let _answer = g.write(serde_json::to_vec(&entry).unwrap()).await.unwrap();
+    assert_eq!(rig.record("old").compute_bundle, None);
+
+    let rec = until_ended(&rig, "old", 30).await;
+    assert_eq!(rec.final_.unwrap().outcome, failed(FailedReason::Refused));
+    assert!(rec.attempts.is_empty(), "no job node was given the run");
+    assert!(rig.jobs[0].running.held_bundles().is_empty());
 }

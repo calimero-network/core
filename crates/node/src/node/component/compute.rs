@@ -613,6 +613,11 @@ impl Drive<'_> {
     /// A queued run: get a place from the system queue, then a job node.
     async fn place(&self, watch: &mut Watch) {
         let refused = FinalPlan::failed(self.rec, FailedReason::Refused);
+        // Only a run recorded before compute components existed lacks one.
+        if self.rec.compute_bundle.is_none() {
+            self.end(&refused, watch).await;
+            return;
+        }
         match self.acquire().await {
             Acquired::Waiting => {}
             Acquired::Refused => {

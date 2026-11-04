@@ -507,6 +507,9 @@ is its command line.
   A delivered run whose attempt did not commit is deleted.
   Choosing and reserving a place is serialized (`assigning`, `reserved`), the transfers are not.
   A granted run that no job node takes for `QUEUED_RUN_TIMEOUT` (10 min) ends `Failed{refused}`.
+  The leader assigns and pushes only the run's compute component (`RunRecord.compute_bundle`, named by `Assignment.bundle`, fetched by `push_bundle` through `bundle_wasm` and signed with `sign_bundle`), never the app component.
+  A queued run recorded without one (only a record from before compute components existed) ends `Failed{refused}` at once, before a slot is taken or a job node contacted.
+  Usage is billed to the run's `bundle`, the app component that started it, and the result method runs on the replicas' app component.
   The assignment is a pure function of the record, the app's blob records (each input's `FileSeal` wrapped key) and the job node's keys (`build_assignment`).
   The assignment is signed by the cluster identity, and `wrap_for_job_derived` derives each wrap's ephemeral key and nonce from the app file key, so a new leader rebuilds the very bytes the digest names; a digest or job key that differs means the attempt is lost.
   The run token is `HMAC(file key, run | attempt)`.
