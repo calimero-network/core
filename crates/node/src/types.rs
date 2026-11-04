@@ -275,7 +275,7 @@ pub struct ApiKeyRecord {
     pub expires_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshRecord {
     pub account: AccountId,
@@ -287,6 +287,11 @@ pub struct RefreshRecord {
     /// The package whose frontend opened the session, which binds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The token's public key (`proof::refresh_key`, hex), which signs its
+    /// exchange (`UseRefresh`). Empty in records from before: those are not
+    /// exchanged, and their holders sign in again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
