@@ -15,6 +15,14 @@ pub const RECOVERY_DOMAIN: &[u8] = b"calimero.org-recovery.v1\0";
 /// The longest nonce a recovery carries, in bytes.
 pub const MAX_RECOVERY_NONCE_BYTES: usize = 64;
 
+/// The longest recovery public key text read (base64url of 32 bytes is 43;
+/// padding tolerated), checked before decoding.
+pub const MAX_RECOVERY_KEY_CHARS: usize = 44;
+
+/// The longest recovery signature text read (base64url of 64 bytes is 86;
+/// padding tolerated), checked before decoding.
+pub const MAX_RECOVERY_SIGNATURE_CHARS: usize = 88;
+
 /// The bytes a recovery signs: `"calimero.org-recovery.v1\0" || org || 0 ||
 /// account || 0 || nonce`.
 #[must_use]
@@ -66,6 +74,9 @@ pub fn verify_recovery(
         return Err(Error::Malformed("recovery nonce"));
     }
     let public = parse_public(public)?;
+    if signature.len() > MAX_RECOVERY_SIGNATURE_CHARS {
+        return Err(Error::Malformed("recovery signature"));
+    }
     let signature = from_b64url(signature).map_err(|_| Error::Malformed("recovery signature"))?;
     if signature.len() != 64 {
         return Err(Error::Malformed("recovery signature"));
@@ -80,6 +91,9 @@ pub fn verify_recovery(
 /// # Errors
 /// Not base64url, or not 32 bytes.
 pub fn parse_public(public: &str) -> Result<[u8; 32], Error> {
+    if public.len() > MAX_RECOVERY_KEY_CHARS {
+        return Err(Error::Malformed("recovery key"));
+    }
     from_b64url(public)
         .ok()
         .and_then(|b| <[u8; 32]>::try_from(b).ok())
@@ -158,6 +172,9 @@ mod tests {
         let long = "n".repeat(MAX_RECOVERY_NONCE_BYTES + 1);
         assert!(verify_recovery(&public, "org", "bob", &long, &sig).is_err());
         assert!(verify_recovery("short", "org", "bob", "n1", &sig).is_err());
+        let padded = format!("{sig}{}", "=".repeat(MAX_RECOVERY_SIGNATURE_CHARS));
+        assert!(verify_recovery(&public, "org", "bob", "n1", &padded).is_err());
+        assert!(parse_public(&"A".repeat(MAX_RECOVERY_KEY_CHARS + 1)).is_err());
     }
 
     #[test]
