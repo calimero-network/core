@@ -2133,12 +2133,19 @@ impl Node {
         }
     }
 
-    /// Run `f`, one WASM run, off the async workers ([`off_workers`]), and add
-    /// the CPU and memory it took to `meter`'s app: on the thread that runs
-    /// it, on this node, whatever becomes of its result.
-    pub(crate) fn metered<R>(&self, meter: &Meter, f: impl FnOnce() -> R) -> R {
+    /// Run `f`, one WASM run of `kind`, off the async workers ([`off_workers`]),
+    /// add the CPU and memory it took to `meter`'s app and its wall time to
+    /// `calimero_wasm_run_duration_seconds`: on the thread that runs it, on this
+    /// node, whatever becomes of its result.
+    pub(crate) fn metered<R>(
+        &self,
+        meter: &Meter,
+        kind: calimero_app_host::InvocationKind,
+        f: impl FnOnce() -> R,
+    ) -> R {
         let (out, run) = off_workers(|| crate::usage::measure(f));
         self.usage.ran(meter, run);
+        crate::metrics::wasm_run(kind, run.wall);
         out
     }
 

@@ -3982,6 +3982,69 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
     }
 }
 
+/// How long WASM runs take, by kind, and how a logged call's time splits
+/// between its run and its commit, on `/metrics`. Labels are kinds and phases,
+/// never the app or the method.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wasm_runs_and_a_calls_run_and_commit_are_timed() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice-the-timed").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    let v = alice
+        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("v"));
+
+    // The registry is the process's: any node's text holds every node's runs.
+    let addr = c.nodes[0].as_ref().unwrap().metrics_addr.unwrap();
+    let text = reqwest::Client::new()
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains("# TYPE calimero_wasm_run_duration_seconds histogram"));
+    assert!(text.contains("# TYPE calimero_call_phase_duration_seconds histogram"));
+    for kind in ["init", "call", "view"] {
+        let labels = format!("kind=\"{kind}\"");
+        let n = sample(&text, "calimero_wasm_run_duration_seconds_count", &labels);
+        assert!(n.is_some_and(|n| n >= 1.0), "{kind}: {n:?} in\n{text}");
+        let all = sample(
+            &text,
+            "calimero_wasm_run_duration_seconds_bucket",
+            &format!("{labels},le=\"+Inf\""),
+        );
+        assert_eq!(all, n, "{kind}");
+        let sum = sample(&text, "calimero_wasm_run_duration_seconds_sum", &labels);
+        assert!(sum.is_some_and(|s| s > 0.0), "{kind}: {sum:?}");
+    }
+    for phase in ["run", "commit"] {
+        let labels = format!("phase=\"{phase}\"");
+        let n = sample(&text, "calimero_call_phase_duration_seconds_count", &labels);
+        assert!(n.is_some_and(|n| n >= 1.0), "{phase}: {n:?} in\n{text}");
+        let sum = sample(&text, "calimero_call_phase_duration_seconds_sum", &labels);
+        assert!(sum.is_some_and(|s| s > 0.0), "{phase}: {sum:?}");
+    }
+    for line in text
+        .lines()
+        .filter(|l| l.starts_with("calimero_wasm_run_") || l.starts_with("calimero_call_phase_"))
+    {
+        for secret in [app.as_str(), "set", "get"] {
+            assert!(!line.contains(secret), "{secret} in {line}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------- release governance
 
 const APPROVE_RELEASES: u32 = 1 << 10;
