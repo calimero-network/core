@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Sessions, counters, key revocations and sign-ups carry their proofs at
+  apply** (next to #4791). A system leader could log, without any proof, a
+  refresh token of its own for any account, the exchange of someone's refresh
+  token for one of its own, a passkey counter at its maximum, the revocation
+  of anyone's API key, or an account holding someone's new credential under an
+  id and a release it picks. Now `CreateRefresh` carries the sign-in's
+  assertion (its challenge states the token), `UseRefresh` a signature by a
+  key derived from the old token, `SetSignCount` the assertion carrying the
+  counter, `RevokeApiKey` the account's passkey consent (`412
+  CONFIRM_REQUIRED` on `DELETE /auth/apikeys/{key}`), and `CreateAccount` the
+  new passkey's assertion over the account and its first session (`412
+  CONFIRM_REQUIRED` on `/auth/passkey/register/finish`: a sign-up asks the
+  passkey twice). Refresh tokens issued before are not exchanged: their
+  holders sign in again. `calimero-client`: `sign_up` answers the `412`;
+  `revoke_api_key(key_id, passkey)`. `meroctl account api-key revoke` takes
+  `--dev-passkey`.
+
 ## [1.0.0-rc.8] - 2026-11-02
 
 ### Added

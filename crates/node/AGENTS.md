@@ -121,6 +121,25 @@ is its command line.
   `memberships_need_the_actors_passkey`, `invites_are_redeemed_with_the_tokens_key`,
   `the_fleet_and_quotas_need_the_operators_signature`,
   `a_replica_move_is_signed_once_over_its_target`).
+  Sessions too: a sign-up (`CreateAccount`) carries the new passkey's
+  assertion over `system::account_args` (`account:<id> / __create_account`;
+  `register/finish` answers `412` once the registration verifies, the pending
+  `Pending::SignUp` keeps the account and the first refresh token, and the
+  retry's `confirm` logs it); a sign-in's `CreateRefresh` carries the login
+  assertion, whose challenge is that of `session / __sign_in /
+  system::sign_in_args` (`api::NewSession`, made in `login_begin`); a
+  refresh token stands for an Ed25519 key (`proof::refresh_key`, kept in
+  `RefreshRecord::key`) that signs its exchange (`UseRefresh::signature`,
+  `proof::refresh_use_message`; a record without a key is not exchanged);
+  `SetSignCount` carries the assertion whose counter it records
+  (`calimero_identity::assertion_counter`); `RevokeApiKey` the account's
+  consent (`__revoke_api_key { keyId }`). Regressions:
+  `forged_sessions_counters_key_revocations_and_accounts_are_refused`,
+  `system::tests` (`a_sign_ins_refresh_token_needs_its_passkeys_assertion`,
+  `a_refresh_token_is_exchanged_with_its_own_key`,
+  `an_account_is_created_by_its_own_passkey`,
+  `an_api_key_is_revoked_with_its_accounts_passkey`,
+  `a_counter_moves_with_the_assertion_that_moved_it`).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).

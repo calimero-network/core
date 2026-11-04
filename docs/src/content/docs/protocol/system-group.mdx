@@ -92,10 +92,38 @@ signature over its target: first the union of the current and the target set
 (which needs the signature unspent and leaves it so), then the target (which
 spends it); the union replayed after the move is refused.
 
-Commands that still carry no proof (`CreateAccount`, `CreateRefresh`,
-`UseRefresh`, `RevokeApiKey`, `SetSignCount` and the rest) are trusted from
-any node of the cluster; making them carry the user's proof is the next phase
-of the design (`docs/specs/gate-system-group.md`, section 5.6).
+Sessions carry their proofs too:
+
+- **Sign-up** (`CreateAccount`): a registration with attestation `none`
+  carries no signature by the new key, so `/auth/passkey/register/finish`
+  answers `412 CONFIRM_REQUIRED`, and the new passkey signs `account:<id> /
+  __create_account / { account, refresh }` (`system::account_args`: the whole
+  account, its release among it, and the sign-up's first refresh token). A
+  node that saw someone's new credential cannot register it first under an
+  account and a release of its own. A sign-up asks the passkey twice.
+- **Sign-in** (`CreateRefresh`): the login challenge is the challenge of
+  `session / __sign_in / { refresh, key, session, expiresAt }`
+  (`system::sign_in_args`), made before the passkey is asked; the log keeps
+  the refresh token only with that assertion, by the passkey the record names,
+  once.
+- **Refresh** (`UseRefresh`): each refresh token stands for an Ed25519 key
+  (`proof::refresh_key`, seed `SHA-256("calimero.refresh.v1\0" ‖ token)`); its
+  record keeps the public half, and an exchange carries that key's signature
+  over the new token and the session (`proof::refresh_use_message`), which
+  must stay the old token's. A node that only saw the log, or the proposal,
+  cannot exchange a token. Tokens from before keys are not exchanged: their
+  holders sign in again.
+- **Counters** (`SetSignCount`): the assertion that carries the counter; only
+  the authenticator signs one, so no node can set a counter past it and lock
+  a passkey out.
+- **API key revocation** (`RevokeApiKey`): the account's passkey consent,
+  `account:<a> / __revoke_api_key / { keyId }` (`412` first, as for removing
+  a passkey).
+
+Still without a proof: `RefreshReused`, `RevokeSession`, `RevokeAllSessions`,
+labels and aliases, and the rest of the account and app housekeeping; they
+are trusted from any node of the cluster. Splitting the system group into
+realms (`docs/specs/gate-system-group.md`, section 5) is the next phase.
 
 The API checks most rules before it proposes, too, so a request that would be
 refused usually fails fast and records nothing. The check at apply is the one

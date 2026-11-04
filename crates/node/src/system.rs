@@ -1082,6 +1082,12 @@ impl SystemState {
         sets.is_empty() || sets.iter().any(|set| set.contains(release))
     }
 
+    /// Whether a refresh token was ever issued under `hash` and is still
+    /// remembered (live or exchanged).
+    fn refresh_known(&self, hash: &str) -> bool {
+        self.refresh.contains_key(hash) || self.rotated_refresh.contains_key(hash)
+    }
+
     /// Revoke `session`: its refresh tokens go and its tokens stop verifying.
     fn revoke_session(&mut self, session: &str, now: u64) {
         self.refresh.retain(|_, r| r.session != session);
@@ -1600,6 +1606,113 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             )?;
             Ok(Some(used))
         }
+        SystemCmd::RevokeApiKey {
+            key_id,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("account:{actor}"), "__revoke_api_key", &|a| {
+                *a == json!({ "keyId": key_id })
+            })?;
+            Ok(Some(used))
+        }
+        // Sessions. A sign-up: the new passkey's assertion over the whole
+        // account and the session it opens, so a node that saw someone's new
+        // credential cannot register it first under an account and a release
+        // of its own.
+        SystemCmd::CreateAccount {
+            account,
+            refresh,
+            consent,
+        } => {
+            let (st, used) = fresh(crate::proof::verify_sign_in(consent, &account.passkeys)?)?;
+            if refresh
+                .as_ref()
+                .is_some_and(|g| g.record.account != account.account_id)
+            {
+                return Err("the consent is for another change");
+            }
+            let args = account_args(account, refresh.as_ref());
+            states(
+                &st,
+                &format!("account:{}", account.account_id),
+                "__create_account",
+                &|a| *a == args,
+            )?;
+            Ok(Some(used))
+        }
+        // A sign-in: the assertion it took, by the passkey the session names,
+        // over a challenge that states this refresh token.
+        SystemCmd::CreateRefresh {
+            hash,
+            record,
+            consent,
+        } => {
+            let passkey: Vec<Credential> = s
+                .accounts
+                .get(&record.account)
+                .ok_or("unknown account")?
+                .passkeys
+                .iter()
+                .filter(|c| record.passkey.as_deref() == Some(c.id.as_str()))
+                .cloned()
+                .collect();
+            let (st, used) = fresh(crate::proof::verify_sign_in(consent, &passkey)?)?;
+            let args = sign_in_args(hash, record);
+            states(&st, "session", "__sign_in", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        // An exchange: the old token's key, over the new token and the
+        // session it continues, which stays the old one's.
+        SystemCmd::UseRefresh {
+            old_hash,
+            new_hash,
+            record,
+            now,
+            signature,
+        } => {
+            let old = s.refresh.get(old_hash).ok_or("unknown refresh token")?;
+            if old.key.is_empty() {
+                return Err("this refresh token has no key; sign in again");
+            }
+            if old.account != record.account
+                || old.session != record.session
+                || old.passkey != record.passkey
+                || old.app != record.app
+            {
+                return Err("the exchange is for another session");
+            }
+            let message = crate::proof::refresh_use_message(
+                old_hash,
+                new_hash,
+                &record.key,
+                &record.session,
+                record.expires_at,
+                *now,
+            );
+            crate::proof::verify_refresh_use(&old.key, &message, signature)?;
+            Ok(None)
+        }
+        // A counter: an assertion of that passkey carrying it. Only the
+        // authenticator signs a counter, so none is set past what it reached.
+        SystemCmd::SetSignCount {
+            credential_id,
+            count,
+            assertion,
+        } => {
+            let (_, credential) = s
+                .account_of_credential(credential_id)
+                .ok_or("unknown credential")?;
+            let assertion: calimero_identity::Assertion = serde_json::from_value(assertion.clone())
+                .map_err(|_| "the counter carries no assertion")?;
+            let carried = calimero_identity::assertion_counter(credential, &assertion)
+                .map_err(|_| "the assertion does not verify")?;
+            if carried != *count {
+                return Err("the assertion carries another counter");
+            }
+            Ok(None)
+        }
         // Memberships: the actor's passkey consent over exactly this change
         // (a member leaving consents to that too). Who may make it is the
         // command's own rule (`run_authorized`).
@@ -1800,6 +1913,36 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
     })
 }
 
+/// A refresh token as the log keeps it: under its hash, with its record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshGrant {
+    pub hash: String,
+    pub record: RefreshRecord,
+}
+
+/// What a sign-in's challenge states (`session / __sign_in`): the refresh
+/// token it opens, by hash and key, its session and its expiry. Made before
+/// the passkey is asked, so it names no account: the passkey that signs it
+/// names the account, and must be the one the record names.
+#[must_use]
+pub fn sign_in_args(hash: &str, record: &RefreshRecord) -> Value {
+    json!({
+        "refresh": hash,
+        "key": record.key,
+        "session": record.session,
+        "expiresAt": record.expires_at,
+    })
+}
+
+/// What a new account's passkey signs at sign-up (`account:<id> /
+/// __create_account`): the whole account (its passkey, name and approved
+/// release among it) and the session the sign-up opens.
+#[must_use]
+pub fn account_args(account: &Account, refresh: Option<&RefreshGrant>) -> Value {
+    json!({ "account": account, "refresh": refresh })
+}
+
 /// What a person consents to when creating an invite: its public key
 /// ([`crate::proof::invite_key`]) and its terms.
 #[must_use]
@@ -1911,8 +2054,18 @@ pub enum SystemCmd {
         access: Access,
         actor: AccountId,
     },
+    /// A new account, with the session its sign-up opens. Carries the new
+    /// passkey's assertion over [`account_args`] (`account:<id> /
+    /// __create_account`): only the passkey's holder makes the account it
+    /// opens, with the release and the session it states.
     CreateAccount {
         account: Account,
+        /// The sign-up's first refresh token.
+        #[serde(default)]
+        refresh: Option<RefreshGrant>,
+        /// The new passkey's consent ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     /// A new passkey, approved by one the account already has.
     AddPasskey {
@@ -1942,9 +2095,13 @@ pub enum SystemCmd {
         hash: String,
         now: u64,
     },
+    /// A passkey's counter moved: carries the assertion that moved it,
+    /// which only the authenticator signs.
     SetSignCount {
         credential_id: String,
         count: u32,
+        #[serde(default)]
+        assertion: Value,
     },
     CreateApiKey {
         hash: String,
@@ -1956,16 +2113,28 @@ pub enum SystemCmd {
     RevokeApiKey {
         key_id: String,
         actor: AccountId,
+        /// The actor's passkey consent (`account:<a> / __revoke_api_key /
+        /// { keyId }`, [`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
+    /// A sign-in's refresh token: carries the sign-in's assertion, whose
+    /// challenge states [`sign_in_args`] (`session / __sign_in`).
     CreateRefresh {
         hash: String,
         record: RefreshRecord,
+        #[serde(default)]
+        consent: Value,
     },
+    /// A refresh token exchanged for the next: signed with the old token's
+    /// key ([`crate::proof::refresh_use_message`]), which only its holder has.
     UseRefresh {
         old_hash: String,
         new_hash: String,
         record: RefreshRecord,
         now: u64,
+        #[serde(default)]
+        signature: String,
     },
     RevokeSession {
         session: String,
@@ -2918,7 +3087,9 @@ impl SystemMachine {
                 app.access = access;
                 Ok(Value::Null)
             }
-            SystemCmd::CreateAccount { account } => {
+            SystemCmd::CreateAccount {
+                account, refresh, ..
+            } => {
                 // The first account waits for genesis: the rules it joins
                 // under are fixed before anyone relies on them.
                 if s.governance.is_none() && s.accounts.is_empty() {
@@ -2935,10 +3106,16 @@ impl SystemMachine {
                         return Err("credential already registered");
                     }
                 }
+                if refresh.as_ref().is_some_and(|g| s.refresh_known(&g.hash)) {
+                    return Err("refresh token already issued");
+                }
                 for c in &account.passkeys {
                     let _prev = s
                         .credentials
                         .insert(c.id.clone(), account.account_id.clone());
+                }
+                if let Some(RefreshGrant { hash, record }) = refresh {
+                    let _prev = s.refresh.insert(hash, record);
                 }
                 let id = account.account_id.clone();
                 let _prev = s.accounts.insert(id.clone(), account);
@@ -3015,6 +3192,7 @@ impl SystemMachine {
             SystemCmd::SetSignCount {
                 credential_id,
                 count,
+                ..
             } => {
                 let account = s
                     .credentials
@@ -3027,8 +3205,9 @@ impl SystemMachine {
                     .iter_mut()
                     .find(|c| c.id == credential_id)
                     .ok_or("unknown credential")?;
-                // Counters only move forward, whatever order logins committed in.
-                if count != 0 && count <= cred.sign_count {
+                // Counters only move forward, whatever order logins committed
+                // in; a passkey that does not count (0) has nothing to record.
+                if count <= cred.sign_count {
                     return Err("stale signature counter");
                 }
                 cred.sign_count = count;
@@ -3050,7 +3229,7 @@ impl SystemMachine {
                 let _prev = s.api_keys.insert(hash, record);
                 Ok(json!({ "keyId": id }))
             }
-            SystemCmd::RevokeApiKey { key_id, actor } => {
+            SystemCmd::RevokeApiKey { key_id, actor, .. } => {
                 let before = s.api_keys.len();
                 s.api_keys
                     .retain(|_, r| !(r.key_id == key_id && r.account == actor));
@@ -3059,7 +3238,10 @@ impl SystemMachine {
                 }
                 Ok(Value::Null)
             }
-            SystemCmd::CreateRefresh { hash, record } => {
+            SystemCmd::CreateRefresh { hash, record, .. } => {
+                if s.refresh_known(&hash) {
+                    return Err("refresh token already issued");
+                }
                 let _prev = s.refresh.insert(hash, record);
                 Ok(Value::Null)
             }
@@ -3068,7 +3250,11 @@ impl SystemMachine {
                 new_hash,
                 record,
                 now,
+                ..
             } => {
+                if s.refresh_known(&new_hash) {
+                    return Err("refresh token already issued");
+                }
                 let old = s.refresh.remove(&old_hash).ok_or("unknown refresh token")?;
                 if old.expires_at <= now || old.account != record.account {
                     return Err("refresh token expired");
@@ -4063,6 +4249,8 @@ mod tests {
                 json!({ "accountId": id, "name": id, "createdAt": 0, "passkeys": [] }),
             )
             .unwrap(),
+            refresh: None,
+            consent: serde_json::Value::Null,
         }
     }
 
@@ -4548,12 +4736,16 @@ mod tests {
         let credential =
             calimero_identity::verify_registration(&rp, &challenge, &pk.register(&challenge))
                 .unwrap();
+        let account: crate::types::Account = serde_json::from_value(json!({
+            "accountId": id, "name": id, "createdAt": 0,
+            "passkeys": [credential], "approvedReleases": ["1.0.0"],
+        }))
+        .unwrap();
+        let args = super::account_args(&account, None);
         SystemCmd::CreateAccount {
-            account: serde_json::from_value(json!({
-                "accountId": id, "name": id, "createdAt": 0,
-                "passkeys": [credential], "approvedReleases": ["1.0.0"],
-            }))
-            .unwrap(),
+            consent: consent(pk, &format!("account:{id}"), "__create_account", &args),
+            account,
+            refresh: None,
         }
     }
 
@@ -4911,6 +5103,333 @@ mod tests {
             create,
         );
         assert!(m.state.api_keys.contains_key("h1"));
+    }
+
+    /// A refresh token for `account`'s `passkey`, as the API makes one: the
+    /// token, its hash, and its record.
+    fn refresh_token(
+        account: &str,
+        passkey: &str,
+        session: &str,
+    ) -> (String, String, crate::types::RefreshRecord) {
+        let token = format!(
+            "rt_{}",
+            calimero_identity::b64url(&calimero_identity::random::<32>())
+        );
+        let hash = calimero_identity::b64url(&calimero_identity::sha256(token.as_bytes()));
+        let record = crate::types::RefreshRecord {
+            account: account.into(),
+            session: session.into(),
+            expires_at: 99,
+            passkey: Some(passkey.into()),
+            app: None,
+            key: crate::proof::refresh_key(&token),
+        };
+        (token, hash, record)
+    }
+
+    /// A sign-in's refresh token applies only with that sign-in's assertion,
+    /// by the passkey its record names, over a challenge stating that token;
+    /// once.
+    #[test]
+    fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let (_token, hash, record) = refresh_token("alice", &alice.credential_id(), "s1");
+        let create = |consent| SystemCmd::CreateRefresh {
+            hash: hash.clone(),
+            record: record.clone(),
+            consent,
+        };
+        let args = super::sign_in_args(&hash, &record);
+        // Bob's passkey does not sign alice in, nor does a record naming bob's
+        // passkey take alice's assertion.
+        let c = consent(&mut bob, "session", "__sign_in", &args);
+        assert!(m.run(create(c)).is_err());
+        let c = consent(&mut alice, "session", "__sign_in", &args);
+        let mut bobs = record.clone();
+        bobs.passkey = Some(bob.credential_id());
+        assert!(m
+            .run(SystemCmd::CreateRefresh {
+                hash: hash.clone(),
+                record: bobs,
+                consent: c,
+            })
+            .is_err());
+        // An assertion over another token: refused.
+        let (_t, other_hash, other) = refresh_token("alice", &alice.credential_id(), "s1");
+        let c = consent(
+            &mut alice,
+            "session",
+            "__sign_in",
+            &super::sign_in_args(&other_hash, &other),
+        );
+        assert!(m.run(create(c)).is_err());
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("session", "__sign_in"),
+            &args,
+            &json!({ "refresh": hash, "key": "00", "session": "s1", "expiresAt": 99 }),
+            create,
+        );
+        assert_eq!(m.state.refresh[&hash].account, "alice");
+    }
+
+    /// A refresh token is exchanged only with its own key's signature, for
+    /// the session it already belongs to.
+    #[test]
+    fn a_refresh_token_is_exchanged_with_its_own_key() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let (token, hash, record) = refresh_token("alice", &alice.credential_id(), "s1");
+        let c = consent(
+            &mut alice,
+            "session",
+            "__sign_in",
+            &super::sign_in_args(&hash, &record),
+        );
+        let _ok = m
+            .run(SystemCmd::CreateRefresh {
+                hash: hash.clone(),
+                record: record.clone(),
+                consent: c,
+            })
+            .unwrap();
+        let (next, next_hash, next_record) = refresh_token("alice", &alice.credential_id(), "s1");
+        let message = |r: &crate::types::RefreshRecord| {
+            crate::proof::refresh_use_message(
+                &hash,
+                &next_hash,
+                &r.key,
+                &r.session,
+                r.expires_at,
+                5,
+            )
+        };
+        let exchange =
+            |record: crate::types::RefreshRecord, signature: String| SystemCmd::UseRefresh {
+                old_hash: hash.clone(),
+                new_hash: next_hash.clone(),
+                record,
+                now: 5,
+                signature,
+            };
+        for (why, cmd) in [
+            ("unsigned", exchange(next_record.clone(), String::new())),
+            (
+                "signed with another token",
+                exchange(
+                    next_record.clone(),
+                    crate::proof::sign_refresh_use(&next, &message(&next_record)),
+                ),
+            ),
+            (
+                "into another session",
+                exchange(
+                    crate::types::RefreshRecord {
+                        session: "s2".into(),
+                        ..next_record.clone()
+                    },
+                    crate::proof::sign_refresh_use(
+                        &token,
+                        &message(&crate::types::RefreshRecord {
+                            session: "s2".into(),
+                            ..next_record.clone()
+                        }),
+                    ),
+                ),
+            ),
+            (
+                "signed over another expiry",
+                exchange(
+                    next_record.clone(),
+                    crate::proof::sign_refresh_use(
+                        &token,
+                        &message(&crate::types::RefreshRecord {
+                            expires_at: 1,
+                            ..next_record.clone()
+                        }),
+                    ),
+                ),
+            ),
+        ] {
+            assert!(m.run(cmd).is_err(), "{why}");
+        }
+        assert!(m.state.refresh.contains_key(&hash));
+        let signed = crate::proof::sign_refresh_use(&token, &message(&next_record));
+        let _ok = m
+            .run(exchange(next_record.clone(), signed.clone()))
+            .unwrap();
+        assert!(m.state.refresh.contains_key(&next_hash));
+        assert!(m.run(exchange(next_record, signed)).is_err(), "replayed");
+
+        // A token from before keys is not exchanged at all.
+        let (old, old_hash, mut keyless) = refresh_token("alice", &alice.credential_id(), "s3");
+        keyless.key = String::new();
+        let _prev = m.state.refresh.insert(old_hash.clone(), keyless.clone());
+        let (_n, new_hash, new_record) = refresh_token("alice", &alice.credential_id(), "s3");
+        let message = crate::proof::refresh_use_message(
+            &old_hash,
+            &new_hash,
+            &new_record.key,
+            "s3",
+            new_record.expires_at,
+            5,
+        );
+        assert_eq!(
+            m.run(SystemCmd::UseRefresh {
+                old_hash,
+                new_hash,
+                record: new_record,
+                now: 5,
+                signature: crate::proof::sign_refresh_use(&old, &message),
+            })
+            .unwrap_err(),
+            "this refresh token has no key; sign in again"
+        );
+    }
+
+    /// An account is created only by its own new passkey, over the whole
+    /// account and the session its sign-up opens; never with a refresh token
+    /// for another account.
+    #[test]
+    fn an_account_is_created_by_its_own_passkey() {
+        let (mut m, _alice, mut bob, _carol) = proven_cluster();
+        let mut dave = Soft::new("localhost", "http://localhost:3000");
+        let SystemCmd::CreateAccount { account, .. } = account_with("dave", &mut dave) else {
+            unreachable!()
+        };
+        let (_token, hash, record) = refresh_token("dave", &dave.credential_id(), "s1");
+        let grant = super::RefreshGrant { hash, record };
+        let create = |refresh: Option<super::RefreshGrant>, consent| SystemCmd::CreateAccount {
+            account: account.clone(),
+            refresh,
+            consent,
+        };
+        let args = super::account_args(&account, Some(&grant));
+        let mut elsewhere = account.clone();
+        elsewhere.approved_releases = ["9.9.9".to_owned()].into_iter().collect();
+        let (_t, h, alices) = refresh_token("alice", &dave.credential_id(), "s1");
+        let for_alice = super::RefreshGrant {
+            hash: h,
+            record: alices,
+        };
+        for (why, cmd) in [
+            (
+                "no consent",
+                create(Some(grant.clone()), serde_json::Value::Null),
+            ),
+            (
+                "another passkey's",
+                create(
+                    Some(grant.clone()),
+                    consent(&mut bob, "account:dave", "__create_account", &args),
+                ),
+            ),
+            (
+                "over another release",
+                create(
+                    Some(grant.clone()),
+                    consent(
+                        &mut dave,
+                        "account:dave",
+                        "__create_account",
+                        &super::account_args(&elsewhere, Some(&grant)),
+                    ),
+                ),
+            ),
+            (
+                "a refresh token for alice",
+                create(
+                    Some(for_alice.clone()),
+                    consent(
+                        &mut dave,
+                        "account:dave",
+                        "__create_account",
+                        &super::account_args(&account, Some(&for_alice)),
+                    ),
+                ),
+            ),
+        ] {
+            assert!(m.run(cmd).is_err(), "{why}");
+        }
+        assert!(!m.state.accounts.contains_key("dave"));
+        let real = consent(&mut dave, "account:dave", "__create_account", &args);
+        let _ok = m.run(create(Some(grant.clone()), real)).unwrap();
+        assert!(m.state.accounts.contains_key("dave"));
+        assert_eq!(m.state.refresh[&grant.hash].account, "dave");
+    }
+
+    /// An API key is revoked only with its account's passkey consent over
+    /// that key, once.
+    #[test]
+    fn an_api_key_is_revoked_with_its_accounts_passkey() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+            "keyId": "k1", "account": "alice", "label": "ci", "apps": null,
+            "methods": null, "readOnly": false, "allowConfirm": false, "expiresAt": 99,
+        }))
+        .unwrap();
+        let _prev = m.state.api_keys.insert("h1".into(), record.clone());
+        let _prev = m.state.api_keys.insert(
+            "h2".into(),
+            crate::types::ApiKeyRecord {
+                key_id: "k2".into(),
+                ..record
+            },
+        );
+        let revoke = |consent| SystemCmd::RevokeApiKey {
+            key_id: "k1".into(),
+            actor: "alice".into(),
+            consent,
+        };
+        let args = json!({ "keyId": "k1" });
+        let c = consent(&mut bob, "account:alice", "__revoke_api_key", &args);
+        assert!(m.run(revoke(c)).is_err(), "bob's passkey");
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__revoke_api_key"),
+            &args,
+            &json!({ "keyId": "k2" }),
+            revoke,
+        );
+        assert!(!m.state.api_keys.contains_key("h1"));
+        assert!(m.state.api_keys.contains_key("h2"));
+    }
+
+    /// A passkey's counter moves only to what an assertion of that passkey
+    /// carries.
+    #[test]
+    fn a_counter_moves_with_the_assertion_that_moved_it() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let id = alice.credential_id();
+        let set = |count, assertion: &calimero_identity::Assertion| SystemCmd::SetSignCount {
+            credential_id: id.clone(),
+            count,
+            assertion: serde_json::to_value(assertion).unwrap(),
+        };
+        let theirs = calimero_identity::Assertion {
+            credential_id: id.clone(),
+            ..bob.assert(&[1; 32])
+        };
+        let a = alice.assert(&[1; 32]);
+        let carried = calimero_identity::assertion_counter(
+            &m.state.account_of_credential(&id).unwrap().1.clone(),
+            &a,
+        )
+        .unwrap();
+        assert!(m
+            .run(SystemCmd::SetSignCount {
+                credential_id: id.clone(),
+                count: u32::MAX,
+                assertion: serde_json::Value::Null,
+            })
+            .is_err());
+        assert!(m.run(set(u32::MAX, &a)).is_err(), "past what it carries");
+        assert!(m.run(set(carried, &theirs)).is_err(), "bob's signature");
+        let _ok = m.run(set(carried, &a)).unwrap();
+        assert_eq!(m.state.accounts["alice"].passkeys[0].sign_count, carried);
+        assert!(m.run(set(carried, &a)).is_err(), "replayed");
     }
 
     /// Membership changes apply only with the actor's passkey consent over
