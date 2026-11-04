@@ -164,8 +164,8 @@ is its command line.
   records only `{hash, size}`. A node missing a blob fetches it from a peer
   (`internal/blob/get`) on first use. Log entries are capped at
   `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
-  A call whose arguments alone pass the cap is refused where it arrives
-  (`413 TOO_LARGE`), never forwarded to the leader first (regression:
+  A call whose arguments pass `MAX_ARGS_BYTES` (below that cap) is refused where it arrives
+  (`413 ARGS_TOO_LARGE`), never proposed (regression:
   `a_write_too_large_for_the_log_is_refused_at_once_on_every_node`).
 - **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
   `POST /packages/install { package, version }` fetches from the
