@@ -8261,6 +8261,8 @@ mod tests {
                 name: "o".into(),
                 actor: "bob".into(),
                 release: None,
+                recovery_key: None,
+                at: 0,
             })
             .unwrap();
         let _prev = m.state.publishers.insert(
