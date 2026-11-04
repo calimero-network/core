@@ -283,6 +283,24 @@ is its command line.
   `deployment_changes_carry_their_managers_consent`,
   `state_from_before_deployments_reads_with_none_and_writes_as_before`,
   `a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind`.
+- **Sign-up policy** (`Governance::sign_up`, `--sign-up open|invite|closed`,
+  left out of the governance JSON when `open`): `CreateAccount { invite }`
+  is judged at apply by `SystemState::admits` (`open`: anyone; `invite`: an
+  org invite, which joins the org, or a cluster sign-up invite; `closed`: a
+  sign-up invite only; an invite presented is checked on every policy).
+  The invite is `SignUpRedemption { inviteKey, now, signature }`, the token
+  key's `proof::sign_invite_redeem` over the new account, spent in
+  `used_proofs`; refusals start with `system::SIGN_UP_PREFIX` (`403
+  SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse first
+  (`api::refuse_sign_up`, fresh state before refusing; the finish before its
+  challenge is spent). `SystemState::sign_up_invites` (`CreateSignUpInvite`,
+  `RevokeSignUpInvite`, bounded by `MAX_SIGN_UP_INVITES` and
+  `MAX_SIGN_UP_INVITE_USES`) and `SetSignUp` are run by the operator's
+  signature until the cluster's owner is named, then the owner's passkey
+  (`SystemState::runs_sign_up`; `__sign_up`, `__create_sign_up_invite`,
+  `__revoke_sign_up_invite`). Routes: `GET /sign-up` (public), `/ops/sign-up[/invites]`,
+  `/sign-up[/invites]` (owner). Regressions: `tests/sign_up.rs`,
+  `system::tests::sign_up`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
@@ -483,8 +501,8 @@ is its command line.
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
-  consent page still shows the plan an ABI pair implies
-  (`consent_page::diff::plan_from_abis`). The directory records the new bundle only
+  consent page shows the state version each side's `calimero:abi` declares and flags a
+  change (`stateVersion`), as no migration runs. The directory records the new bundle only
   once the upgrade succeeded.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
@@ -557,7 +575,10 @@ is its command line.
   request (this node's memory,
   `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
   a model from node state and verified manifests (an upgrade's capability
-  sheet is `consent_page::diff`; the plain-language `title`, `points` and
+  sheet is `consent_page::diff`, its methods, events, timers and state version from the
+  `calimero:abi` each component embeds, `component::embedded_abi`; regression:
+  `an_upgrades_page_names_what_the_components_abis_change` with
+  `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
   a collapsed *Technical details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
