@@ -1,0 +1,24 @@
+[package]
+name = "mero-compute"
+description = "Runs a compute component alone, on the compute engine a job node uses"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+calimero-app-engine-wasmtime.workspace = true
+calimero-app-host.workspace = true
+clap = { workspace = true, features = ["derive"] }
+eyre.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+calimero-app-build.workspace = true
+rand_chacha.workspace = true
+tempfile.workspace = true

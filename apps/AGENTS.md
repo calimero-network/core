@@ -20,6 +20,22 @@ python3 -I scripts/pack-component.py --wasm <app>.wasm --package <id> --app-vers
   --out dist/<id>-1.0.0.mpk                           # a signed single-service .mpk (dev key)
 ```
 
+## Testing a compute method locally
+
+A compute method (`#[app::compute]`) is tested alone, with no app component, cluster or job node.
+Put `mero-compute` on PATH once with `scripts/install-mero-compute.sh`.
+`mero-app-build` writes the compute component as `compute.component.wasm` beside `--out`.
+
+```bash
+mero-app-build apps/<app> --out <app>.wasm
+mero-compute run compute.component.wasm --method <name> [--args <json or @file>] [--input <file>]... --out <dir> [--seed <hex>] [--twice]
+```
+
+It runs on the job node's engine and run setup with the method's caps from the compute ABI, a fixed clock and seeded randomness.
+Inputs are plain files and outputs are written to `<dir>/output-<i>` in the order the run finished them.
+It prints progress as the run reports it, then the result, each output and the usage, and exits non-zero with the reason (`fuel`, `memory`, `time`, `trap`, `app-error`) when the run fails.
+`--twice` runs again and fails, naming what differs, if the result or an output differs.
+
 ## Available Apps
 
 | App                      | Purpose                | Good Example For       |
@@ -41,6 +57,7 @@ python3 -I scripts/pack-component.py --wasm <app>.wasm --package <id> --app-vers
 | `team-metrics`           | Team metrics with badges | Per-team counts and a bitmask as a plain record |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
 | `v2-fixtures/kv`         | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
+| `v2-fixtures/compute` | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `tools/mero-compute/tests` |
 | `v2-fixtures/org-gated`, `captcha`, `files` | Node test fixtures | What `crates/node/tests` needs that the example apps do not show |
 
 ## Component apps
