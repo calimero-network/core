@@ -887,9 +887,8 @@ impl SystemState {
             })
     }
 
-    /// The compute component an app takes when it names the app component `bundle` alone: the
-    /// one every release `who` sees ships it with, `None` when none ships one, and an error
-    /// when releases that share the app component differ (the caller names the release).
+    /// The compute component `bundle` alone names: the one every release `who` sees ships with it,
+    /// none if none does, an error if they differ.
     pub fn compute_of(&self, bundle: &str, who: &str) -> Result<Option<String>, &'static str> {
         let shipped: BTreeSet<Option<&String>> = self
             .packages
