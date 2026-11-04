@@ -20,7 +20,7 @@ use calimero_app_host::{
     Abi, Budget, Engine, HostCore, Outcome, PrepareError, Prepared, Status, TimerCtx, TrapKind,
     Usage, DEFAULT_MEMORY_PAGES,
 };
-use calimero_app_wit::{allowed_imports, stubbed_imports};
+use calimero_app_wit::{allowed_imports, compute_allowed_imports, stubbed_imports};
 use eyre::Result as EyreResult;
 use wasmparser::Parser;
 use wasmparser::Payload;
@@ -44,12 +44,14 @@ use wasmtime_wasi::WasiView;
 
 mod bindings;
 mod cache;
+mod compute;
 mod errors;
 mod http;
 mod wasi;
 
 use bindings::AppPre;
 use cache::Cache;
+use compute::ComputePre;
 use errors::{classify, Cancelled, GrowFailed, GrowRefused, HostPanic, Phase};
 
 pub use errors::{CANCELLED, WALL_CLOCK_EXCEEDED};
@@ -114,8 +116,16 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
 /// a patch keeps running.
 const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
 
+/// The world an engine runs: replicas and job nodes never share one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum World {
+    App,
+    Compute,
+}
+
 /// Runs `calimero:app` components on wasmtime.
 pub struct WasmtimeEngine {
+    world: World,
     engine: wasmtime::Engine,
     linker: Linker<StoreData>,
     /// None on a compute engine: a job node keeps prepared components in memory only.
@@ -145,14 +155,15 @@ impl WasmtimeEngine {
         Self::build(cache_dir, cache_key, instances)
     }
 
-    /// The engine of a job node's compute runs on-demand instances instead of pool
+    /// The engine of a job node: it prepares and runs compute components (world
+    /// `calimero:app/compute`) only, on-demand instances instead of pool
     /// slots, NaN results canonicalized so floating point is bit-reproducible, memory up to
     /// 4 GiB, and no disk cache (a job node holds no key to authenticate one).
     pub fn for_compute() -> EyreResult<Self> {
         let mut config = Self::config();
         let _ = config.cranelift_nan_canonicalization(true);
         let engine = wasmtime::Engine::new(&config).map_err(report)?;
-        Self::finish(engine, None, COMPUTE_MAX_MEMORY_BYTES)
+        Self::finish(World::Compute, engine, None, COMPUTE_MAX_MEMORY_BYTES)
     }
 
     fn build(cache_dir: PathBuf, cache_key: &[u8; 32], instances: u32) -> EyreResult<Self> {
@@ -170,7 +181,7 @@ impl WasmtimeEngine {
             .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
         let engine = wasmtime::Engine::new(&config).map_err(report)?;
         let cache = Cache::new(cache_dir, &engine, cache_key)?;
-        Self::finish(engine, Some(cache), MAX_MEMORY_BYTES)
+        Self::finish(World::App, engine, Some(cache), MAX_MEMORY_BYTES)
     }
 
     /// What every engine shares: fuel, epochs, the stack and the pinned feature set.
@@ -189,12 +200,16 @@ impl WasmtimeEngine {
     }
 
     fn finish(
+        world: World,
         engine: wasmtime::Engine,
         cache: Option<Cache>,
         max_memory_bytes: usize,
     ) -> EyreResult<Self> {
         let mut linker = Linker::new(&engine);
-        bindings::add_to_linker(&mut linker).map_err(report)?;
+        match world {
+            World::App => bindings::add_to_linker(&mut linker).map_err(report)?,
+            World::Compute => compute::add_to_linker(&mut linker).map_err(report)?,
+        }
         wasi::add_to_linker(&mut linker).map_err(report)?;
 
         let ticker_stop = Arc::new(AtomicBool::new(false));
@@ -209,6 +224,7 @@ impl WasmtimeEngine {
                 }
             })?;
         Ok(Self {
+            world,
             engine,
             linker,
             cache,
@@ -228,7 +244,7 @@ impl Engine for WasmtimeEngine {
     fn prepare(&self, bundle_hash: &str, component: &[u8]) -> Result<Prepared, PrepareError> {
         let imports = calimero_app_build::imports_of(component)
             .map_err(|e| PrepareError::Compile(e.to_string()))?;
-        if let Some(forbidden) = imports.into_iter().find(|i| !import_allowed(i)) {
+        if let Some(forbidden) = imports.into_iter().find(|i| !import_allowed(self.world, i)) {
             return Err(PrepareError::ForbiddenImport(forbidden));
         }
         let abi = calimero_app_build::abi_of(component)
@@ -250,12 +266,15 @@ impl Engine for WasmtimeEngine {
         let pre = self
             .linker
             .instantiate_pre(&compiled)
-            .and_then(AppPre::new)
             .map_err(|e| PrepareError::Compile(e.to_string()))?;
+        let inner: Arc<dyn std::any::Any + Send + Sync> = match self.world {
+            World::App => Arc::new(AppPre::new(pre).map_err(compile)?),
+            World::Compute => Arc::new(ComputePre::new(pre).map_err(compile)?),
+        };
         Ok(Prepared {
             hash: bundle_hash.to_owned(),
             abi,
-            inner: Arc::new(pre),
+            inner,
         })
     }
 
@@ -284,7 +303,15 @@ impl WasmtimeEngine {
         budget: Budget,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Outcome {
-        let Some(pre) = (*app.inner).downcast_ref::<AppPre<StoreData>>() else {
+        let pre = match self.world {
+            World::App => (*app.inner)
+                .downcast_ref::<AppPre<StoreData>>()
+                .map(Pre::App),
+            World::Compute => (*app.inner)
+                .downcast_ref::<ComputePre<StoreData>>()
+                .map(Pre::Compute),
+        };
+        let Some(pre) = pre else {
             let status = trap(TrapKind::Fault, "not prepared by this engine");
             return host.finish(status, Vec::new(), Usage::default());
         };
@@ -331,10 +358,17 @@ impl WasmtimeEngine {
             // `HostCore::finish` drops the diff and the events of any status but `Ok`, so
             // state a panic left half-updated never reaches the log; only the app log,
             // which is kept, is read afterwards.
-            catch_unwind(AssertUnwindSafe(|| {
-                let instance = pre.instantiate(&mut store)?;
-                phase = Phase::Call;
-                instance.call_handle(&mut store, kind, &method, &args)
+            catch_unwind(AssertUnwindSafe(|| match pre {
+                Pre::App(pre) => {
+                    let instance = pre.instantiate(&mut store)?;
+                    phase = Phase::Call;
+                    instance.call_handle(&mut store, kind, &method, &args)
+                }
+                Pre::Compute(pre) => {
+                    let instance = pre.instantiate(&mut store)?;
+                    phase = Phase::Call;
+                    instance.call_run(&mut store, &method, &args)
+                }
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
         });
@@ -368,6 +402,16 @@ impl WasmtimeEngine {
     }
 }
 
+fn compile(error: wasmtime::Error) -> PrepareError {
+    PrepareError::Compile(error.to_string())
+}
+
+/// A prepared component of either world.
+enum Pre<'a> {
+    App(&'a AppPre<StoreData>),
+    Compute(&'a ComputePre<StoreData>),
+}
+
 /// `wasmtime::Error` is not a `std::error::Error`, so `?` can't lift it into eyre.
 fn report(error: wasmtime::Error) -> eyre::Report {
     eyre::eyre!("{error:#}")
@@ -380,11 +424,15 @@ fn trap(kind: TrapKind, detail: &str) -> Status {
     }
 }
 
-/// An import is allowed if the world or the D44 stubs list it, or if it is a WASI or
+/// An import is allowed if the engine's world or the D44 stubs list it, or if it is a WASI or
 /// `calimero:app` interface they list at a patch of the same minor no newer than the listed
 /// one (D43, Ruling 15).
-fn import_allowed(import: &str) -> bool {
-    let listed = || allowed_imports().iter().chain(stubbed_imports());
+fn import_allowed(world: World, import: &str) -> bool {
+    let world_imports = match world {
+        World::App => allowed_imports(),
+        World::Compute => compute_allowed_imports(),
+    };
+    let listed = || world_imports.iter().chain(stubbed_imports());
     if listed().any(|l| *l == import) {
         return true;
     }
@@ -539,31 +587,49 @@ fn timer_args(tick: &TimerCtx) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::import_allowed;
+    use super::{import_allowed, World};
 
     #[test]
     fn files_at_0_5_0_is_accepted_though_that_interface_first_shipped_at_0_5_1() {
-        assert!(import_allowed("calimero:app/files@0.5.0"));
-        assert!(import_allowed("calimero:app/files@0.5.1"));
-        assert!(!import_allowed("calimero:app/files@0.5.2"));
+        assert!(import_allowed(World::App, "calimero:app/files@0.5.0"));
+        assert!(import_allowed(World::App, "calimero:app/files@0.5.1"));
+        assert!(!import_allowed(World::App, "calimero:app/files@0.5.2"));
+    }
+
+    #[test]
+    fn the_compute_world_allows_job_files_and_wasi_but_no_state_or_http() {
+        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.1"));
+        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.1"));
+        assert!(import_allowed(World::Compute, "wasi:random/random@0.2.12"));
+        assert!(import_allowed(World::Compute, "wasi:cli/stdin@0.2.9"));
+        for import in [
+            "calimero:app/storage@0.5.1",
+            "calimero:app/xcall@0.5.1",
+            "calimero:app/context@0.5.1",
+            "wasi:http/outgoing-handler@0.2.12",
+            "wasi:http/types@0.2.12",
+        ] {
+            assert!(!import_allowed(World::Compute, import), "{import}");
+        }
+        assert!(!import_allowed(World::App, "calimero:app/job@0.5.1"));
     }
 
     #[test]
     fn imports_match_the_lists_with_older_patches_only() {
-        assert!(import_allowed("calimero:app/storage@0.5.1"));
-        assert!(import_allowed("calimero:app/storage@0.5.0"));
-        assert!(!import_allowed("calimero:app/storage@0.5.2"));
-        assert!(!import_allowed("calimero:app/storage@0.6.0"));
-        assert!(!import_allowed("calimero:app/nothing@0.5.0"));
-        assert!(import_allowed("wasi:cli/stdin@0.2.12"));
-        assert!(import_allowed("wasi:cli/stdin@0.2.0"));
-        assert!(import_allowed("wasi:http/types@0.2.10"));
-        assert!(!import_allowed("wasi:cli/stdin@0.2.13"));
-        assert!(!import_allowed("wasi:cli/stdin@0.3.0"));
-        assert!(!import_allowed("wasi:sockets/tcp@0.2.12"));
-        assert!(!import_allowed("wasi:sockets/tcp@0.2.9"));
-        assert!(!import_allowed("wasi:random/insecure@0.2.12"));
-        assert!(!import_allowed("calimero:app/storage@0.4.0"));
-        assert!(!import_allowed("wasi:cli/stdin"));
+        assert!(import_allowed(World::App, "calimero:app/storage@0.5.1"));
+        assert!(import_allowed(World::App, "calimero:app/storage@0.5.0"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.2"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.6.0"));
+        assert!(!import_allowed(World::App, "calimero:app/nothing@0.5.0"));
+        assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.12"));
+        assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.0"));
+        assert!(import_allowed(World::App, "wasi:http/types@0.2.10"));
+        assert!(!import_allowed(World::App, "wasi:cli/stdin@0.2.13"));
+        assert!(!import_allowed(World::App, "wasi:cli/stdin@0.3.0"));
+        assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.12"));
+        assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.9"));
+        assert!(!import_allowed(World::App, "wasi:random/insecure@0.2.12"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.4.0"));
+        assert!(!import_allowed(World::App, "wasi:cli/stdin"));
     }
 }

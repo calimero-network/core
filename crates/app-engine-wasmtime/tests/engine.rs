@@ -913,7 +913,7 @@ fn prepare_compute(engine: &WasmtimeEngine, name: &str) -> Prepared {
 #[test]
 fn a_compute_run_past_its_fuel_is_out_of_fuel() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "spin");
+    let app = prepare_compute(&engine, "compute_probe");
     let budget = Budget {
         fuel: 5_000_000,
         ..compute_budget()
@@ -931,7 +931,7 @@ fn a_compute_run_past_its_fuel_is_out_of_fuel() {
 #[test]
 fn a_compute_run_past_its_wall_is_a_timeout() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "spin");
+    let app = prepare_compute(&engine, "compute_probe");
     let budget = Budget {
         wall_clock: Duration::from_millis(300),
         ..compute_budget()
@@ -955,7 +955,7 @@ fn a_compute_run_past_its_wall_is_a_timeout() {
 #[test]
 fn a_compute_run_past_its_memory_is_out_of_memory_and_reports_its_peak() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "membomb");
+    let app = prepare_compute(&engine, "compute_probe");
     let out = engine.invoke(&app, compute_host("bomb", 1), compute_budget());
     assert_eq!(
         trap_kind(&out),
@@ -974,7 +974,7 @@ fn a_compute_run_past_its_memory_is_out_of_memory_and_reports_its_peak() {
 #[test]
 fn a_compute_run_is_cancelled_from_another_thread() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "spin");
+    let app = prepare_compute(&engine, "compute_probe");
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = Arc::clone(&cancel);
     let setter = std::thread::spawn(move || {
@@ -1001,8 +1001,8 @@ fn a_compute_run_is_cancelled_from_another_thread() {
 #[test]
 fn compute_runs_with_the_same_seed_draw_the_same_bytes_and_other_seeds_differ() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "clock_reader");
-    let draw = |seed| engine.invoke(&app, compute_host("random", seed), compute_budget());
+    let app = prepare_compute(&engine, "compute_probe");
+    let draw = |seed| engine.invoke(&app, compute_host("draw", seed), compute_budget());
     let (a, b, c) = (draw(3), draw(3), draw(4));
     assert_eq!(a.status, Status::Ok, "{:?}", a.status);
     assert_eq!(a.result.len(), 32);
@@ -1013,7 +1013,7 @@ fn compute_runs_with_the_same_seed_draw_the_same_bytes_and_other_seeds_differ() 
 #[test]
 fn compute_runs_see_the_start_entry_clock() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "clock_reader");
+    let app = prepare_compute(&engine, "compute_probe");
     let out = engine.invoke(&app, compute_host("wall", 1), compute_budget());
     assert_eq!(out.status, Status::Ok, "{:?}", out.status);
     let seconds = u64::from_le_bytes(out.result[..8].try_into().unwrap());
@@ -1023,7 +1023,7 @@ fn compute_runs_see_the_start_entry_clock() {
 #[test]
 fn nans_are_canonical_and_identical_across_compute_runs() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "probe");
+    let app = prepare_compute(&engine, "compute_probe");
     let run = || engine.invoke(&app, compute_host("nan", 1), compute_budget());
     let (a, b) = (run(), run());
     assert_eq!(a.status, Status::Ok, "{:?}", a.status);
@@ -1046,7 +1046,7 @@ fn pages(result: &[u8], at: usize) -> u64 {
 #[test]
 fn a_compute_run_may_hold_more_than_a_pool_slot_and_reports_the_peak() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "membomb");
+    let app = prepare_compute(&engine, "compute_probe");
     let budget = Budget {
         memory_pages: 2_048,
         ..compute_budget()
@@ -1069,7 +1069,7 @@ fn a_compute_run_may_hold_more_than_a_pool_slot_and_reports_the_peak() {
 #[test]
 fn a_compute_run_may_grow_to_four_gib() {
     let engine = compute_engine();
-    let app = prepare_compute(&engine, "probe");
+    let app = prepare_compute(&engine, "compute_probe");
     let budget = Budget {
         memory_pages: 65_536,
         ..compute_budget()
@@ -1086,8 +1086,8 @@ fn random_requests_over_the_per_call_limit_are_denied_in_every_engine() {
     let compute = compute_engine();
     let cache = tempfile::tempdir().unwrap();
     let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
-    for engine in [&compute, &pooled] {
-        let app = prepare_compute(engine, "probe");
+    for (engine, guest) in [(&compute, "compute_probe"), (&pooled, "probe")] {
+        let app = prepare_compute(engine, guest);
         let ask = |len: u64| {
             let mut host = compute_host("random", 1);
             let mut inv = host.invocation().clone();
@@ -1116,4 +1116,46 @@ fn random_requests_over_the_per_call_limit_are_denied_in_every_engine() {
             );
         }
     }
+}
+
+#[test]
+fn the_compute_engine_refuses_components_that_import_state_or_http() {
+    let engine = compute_engine();
+    // clock_reader imports `calimero:app/context` and `wasi:http`.
+    let err = engine
+        .prepare("clock_reader-hash", &guest("clock_reader"))
+        .err()
+        .expect("a replica component on a job node");
+    assert!(matches!(err, PrepareError::ForbiddenImport(_)), "{err:?}");
+    let err = engine
+        .prepare("view_writer-hash", &guest("view_writer"))
+        .err()
+        .expect("a state component on a job node");
+    assert!(
+        matches!(err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/storage"))
+    );
+}
+
+#[test]
+fn a_compute_component_prepares_on_the_compute_engine_and_is_refused_by_the_replica_engine() {
+    prepare_compute(&compute_engine(), "compute_probe");
+    let fx = fixture();
+    let err = fx
+        .engine
+        .prepare("compute_probe-hash", &guest("compute_probe"))
+        .err()
+        .expect("a compute component on a replica");
+    assert!(
+        matches!(&err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/job")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_compute_run_reads_its_run_id_through_the_job_interface() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let out = engine.invoke(&app, compute_host("id", 1), compute_budget());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_eq!(out.result, b"run-1");
 }
