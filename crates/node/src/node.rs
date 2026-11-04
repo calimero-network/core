@@ -1610,12 +1610,21 @@ impl Node {
                     .collect();
                 let _r = self
                     .sys_write(&SystemCmd::Genesis {
+                        session_proofs: true,
                         governance: self.config.governance.clone(),
                         release: Some(self.own_release()),
                         operator_key: self.operator_key(),
                         nodes,
                     })
                     .await;
+            }
+            // A cluster begun before session proofs requires them from here
+            // on; what it logged before applies as it did (`RequireSessionProofs`).
+            if self.sys(|s| {
+                s.session_proofs_from.is_none()
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+            }) {
+                let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
             self.admit_registered_nodes();
             self.promote_learners();

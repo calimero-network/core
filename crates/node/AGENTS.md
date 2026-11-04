@@ -139,7 +139,14 @@ is its command line.
   `a_refresh_token_is_exchanged_with_its_own_key`,
   `an_account_is_created_by_its_own_passkey`,
   `an_api_key_is_revoked_with_its_accounts_passkey`,
-  `a_counter_moves_with_the_assertion_that_moved_it`).
+  `a_counter_moves_with_the_assertion_that_moved_it`). A cluster requires
+  these session proofs from `SystemState::session_proofs_from` on: a genesis
+  this release logs (`Genesis { session_proofs: true }`), or in a cluster begun
+  before, the `RequireSessionProofs` its first system leader on this release
+  writes (`reconcile`). An entry before it (what an earlier release logged,
+  replayed on restart) applies as it did, so replicas never diverge on it
+  (`session_commands_logged_before_their_proofs_apply_as_they_did`,
+  `old_datadir.rs`).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).

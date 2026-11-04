@@ -253,6 +253,15 @@ pub struct SystemState {
     /// decisions are signed with.
     #[serde(default)]
     pub operator_key: Option<crate::proof::OperatorKey>,
+    /// The log index from which sign-ups, sign-ins, refreshes, counters and
+    /// API key revocations carry their proofs ([`SystemCmd::is_session_command`]):
+    /// genesis's, or that of the [`SystemCmd::RequireSessionProofs`] the first
+    /// leader on a release that makes them wrote. Entries before it, logged by
+    /// releases that made none, apply as they did when a restart replays them.
+    /// `None` (state from before): none required yet. Left out when `None`,
+    /// so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_proofs_from: Option<u64>,
     /// Who may install apps where deployments are granted
     /// ([`Governance::deployments`]), by [`Deployer::key`]
     /// (`account:<id>`, `org:<id>`); [`SystemState::may_deploy`] judges them.
@@ -1080,6 +1089,13 @@ impl SystemState {
             .filter(|set| !set.is_empty())
             .collect();
         sets.is_empty() || sets.iter().any(|set| set.contains(release))
+    }
+
+    /// Whether an entry at `index` must carry its session proof
+    /// ([`Self::session_proofs_from`]).
+    #[must_use]
+    pub fn proves_sessions(&self, index: u64) -> bool {
+        self.session_proofs_from.is_some_and(|from| index >= from)
     }
 
     /// Whether a refresh token was ever issued under `hash` and is still
@@ -1913,6 +1929,22 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
     })
 }
 
+impl SystemCmd {
+    /// The commands whose proofs a cluster requires only from
+    /// [`SystemState::session_proofs_from`] on.
+    #[must_use]
+    pub const fn is_session_command(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateAccount { .. }
+                | Self::CreateRefresh { .. }
+                | Self::UseRefresh { .. }
+                | Self::SetSignCount { .. }
+                | Self::RevokeApiKey { .. }
+        )
+    }
+}
+
 /// A refresh token as the log keeps it: under its hash, with its record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2173,7 +2205,18 @@ pub enum SystemCmd {
         /// joins through the operator's signed `RegisterNode`.
         #[serde(default)]
         nodes: Vec<NodeRecord>,
+        /// Session commands carry their proofs from genesis on
+        /// ([`SystemState::session_proofs_from`]). Absent (`false`) in a
+        /// genesis an earlier release logged: replayed, it requires nothing.
+        #[serde(default)]
+        session_proofs: bool,
     },
+    /// From this entry on, the session commands carry their proofs
+    /// ([`SystemState::session_proofs_from`]). Written once by the first
+    /// system leader on a release that makes them, in a cluster begun before
+    /// (genesis sets it in a new one). It only ever tightens: a node that
+    /// logs it early takes nothing from anyone.
+    RequireSessionProofs,
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
@@ -2528,6 +2571,9 @@ fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
 #[derive(Default)]
 pub struct SystemMachine {
     pub state: SystemState,
+    /// The log index of the entry being applied (0 outside the log, in
+    /// tests): what [`SystemState::session_proofs_from`] is judged against.
+    index: u64,
 }
 
 fn ok(v: Value) -> Vec<u8> {
@@ -2556,7 +2602,14 @@ impl SystemMachine {
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
     fn run(&mut self, cmd: SystemCmd) -> Result<Value, String> {
-        let used = authorize(&self.state, &cmd).map_err(str::to_owned)?;
+        // An entry logged before the cluster required session proofs applies
+        // as it did then: a restart replays it, and every replica must reach
+        // the answer the release that logged it reached.
+        let used = if cmd.is_session_command() && !self.state.proves_sessions(self.index) {
+            None
+        } else {
+            authorize(&self.state, &cmd).map_err(str::to_owned)?
+        };
         if let Some(stall) = self.new_work_refusal(&cmd) {
             return Err(stall.message());
         }
@@ -2604,6 +2657,7 @@ impl SystemMachine {
     /// Apply `cmd` by its own rules, its proof already judged ([`Self::run`]).
     #[allow(clippy::too_many_lines, reason = "one arm per command")]
     fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
+        let index = self.index;
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node, .. } => {
@@ -3332,6 +3386,7 @@ impl SystemMachine {
                 release,
                 operator_key,
                 nodes,
+                session_proofs,
             } => {
                 if s.governance.is_some() || !s.accounts.is_empty() {
                     return Err("the cluster's governance is fixed at genesis");
@@ -3347,7 +3402,17 @@ impl SystemMachine {
                 for node in nodes {
                     let _prev = s.nodes.insert(node.id, node);
                 }
+                if session_proofs {
+                    s.session_proofs_from = Some(index);
+                }
                 Ok(json!({ "governance": governance }))
+            }
+            SystemCmd::RequireSessionProofs => {
+                if s.session_proofs_from.is_some() {
+                    return Err("session proofs are required already");
+                }
+                s.session_proofs_from = Some(index);
+                Ok(Value::Null)
             }
             SystemCmd::SetOperatorRelease {
                 version,
@@ -4207,10 +4272,11 @@ impl Machine for SystemMachine {
 
     fn apply(
         &mut self,
-        _index: u64,
+        index: u64,
         command: &[u8],
         _state: &mut calimero_log::StateTx<'_>,
     ) -> Vec<u8> {
+        self.index = index;
         match serde_json::from_slice::<SystemCmd>(command) {
             Ok(cmd) => match self.run(cmd) {
                 Ok(v) => ok(v),
@@ -4256,6 +4322,7 @@ mod tests {
 
     fn genesis(governance: Governance) -> SystemCmd {
         SystemCmd::Genesis {
+            session_proofs: true,
             governance,
             release: Some("2.0.0".into()),
             operator_key: None,
@@ -4921,6 +4988,7 @@ mod tests {
         let mut m = SystemMachine::default();
         let _ok = m
             .run(SystemCmd::Genesis {
+                session_proofs: true,
                 governance: all(Authority::Owner),
                 release: Some("2.0.0".into()),
                 operator_key: Some(operator_signer().1),
@@ -5103,6 +5171,42 @@ mod tests {
             create,
         );
         assert!(m.state.api_keys.contains_key("h1"));
+    }
+
+    /// A cluster begun before session proofs replays what it logged then as
+    /// it applied it, proofless, and requires the proofs from the entry its
+    /// first leader on this release wrote; genesis requires them from the
+    /// start. The mark is written once and only tightens.
+    #[test]
+    fn session_commands_logged_before_their_proofs_apply_as_they_did() {
+        let mut m = SystemMachine::default();
+        m.state.governance = Some(Governance::default());
+        m.index = 3;
+        let _ok = m.run(account("alice")).unwrap();
+        m.index = 5;
+        let _ok = m.run(SystemCmd::RequireSessionProofs).unwrap();
+        assert_eq!(m.state.session_proofs_from, Some(5));
+        assert!(m.run(SystemCmd::RequireSessionProofs).is_err(), "once");
+        m.index = 6;
+        assert!(m.run(account("bob")).is_err(), "proofless after the mark");
+        // A restart from a snapshot before the mark replays what came before it.
+        m.index = 4;
+        let _ok = m.run(account("carol")).unwrap();
+
+        let mut fresh = SystemMachine {
+            index: 1,
+            ..SystemMachine::default()
+        };
+        let _ok = fresh.run(genesis(all(Authority::Owner))).unwrap();
+        assert_eq!(fresh.state.session_proofs_from, Some(1));
+        fresh.index = 2;
+        assert!(
+            fresh.run(account("alice")).is_err(),
+            "required from genesis"
+        );
+        // State from before reads without the mark and writes as it did.
+        let before = serde_json::to_value(SystemState::default()).unwrap();
+        assert!(before.get("sessionProofsFrom").is_none());
     }
 
     /// A refresh token for `account`'s `passkey`, as the API makes one: the
@@ -6455,6 +6559,7 @@ mod tests {
         let mut m = SystemMachine::default();
         let _ok = m
             .run(SystemCmd::Genesis {
+                session_proofs: true,
                 governance: Governance {
                     deployments: Deployments::Granted,
                     deployers: Deployers::Owner,

@@ -120,6 +120,12 @@ Sessions carry their proofs too:
   `account:<a> / __revoke_api_key / { keyId }` (`412` first, as for removing
   a passkey).
 
+A cluster begun before these proofs replays what it logged then as it applied
+it: the first system leader on a release that makes them writes
+`RequireSessionProofs`, and they are required from that entry on (a new
+cluster requires them from genesis). The mark is written once and only
+tightens.
+
 Still without a proof: `RefreshReused`, `RevokeSession`, `RevokeAllSessions`,
 labels and aliases, and the rest of the account and app housekeeping; they
 are trusted from any node of the cluster. Splitting the system group into

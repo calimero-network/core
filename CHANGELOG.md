@@ -17,7 +17,9 @@
   new passkey's assertion over the account and its first session (`412
   CONFIRM_REQUIRED` on `/auth/passkey/register/finish`: a sign-up asks the
   passkey twice). Refresh tokens issued before are not exchanged: their
-  holders sign in again. `calimero-client`: `sign_up` answers the `412`;
+  holders sign in again. A cluster begun before requires these proofs from
+  the `RequireSessionProofs` entry its first leader on this release writes;
+  what it logged before replays as it applied. `calimero-client`: `sign_up` answers the `412`;
   `revoke_api_key(key_id, passkey)`. `meroctl account api-key revoke` takes
   `--dev-passkey`.
 
