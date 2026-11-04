@@ -622,12 +622,14 @@ mod tests {
             "calimero:app/storage@0.5.1",
             "calimero:app/xcall@0.5.1",
             "calimero:app/context@0.5.1",
+            "calimero:app/runs@0.5.1",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:http/types@0.2.12",
         ] {
             assert!(!import_allowed(World::Compute, import), "{import}");
         }
         assert!(!import_allowed(World::App, "calimero:app/job@0.5.1"));
+        assert!(import_allowed(World::App, "calimero:app/runs@0.5.1"));
     }
 
     #[test]

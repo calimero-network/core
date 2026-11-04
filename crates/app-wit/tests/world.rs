@@ -95,7 +95,9 @@ fn compute_world_imports_exactly_its_allow_list_and_exports_only_run() {
 #[test]
 fn compute_world_has_no_state_xcall_or_http() {
     let imports = imports_of_world("compute");
-    for name in ["storage", "xcall", "context", "events", "action", "search", "runs"] {
+    for name in [
+        "storage", "xcall", "context", "events", "action", "search", "runs",
+    ] {
         assert!(
             !imports.contains(&format!("calimero:app/{name}@0.5.1")),
             "{name}"
