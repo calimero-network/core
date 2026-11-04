@@ -599,7 +599,6 @@ async fn a_run_that_breaks_its_limits_fails_with_the_reason_and_a_signed_report(
         wall_secs,
     };
     let cases = [
-        ("spin", small(1_000_000_000_000, 64, 2), FailReason::Time),
         ("hog", small(20_000_000_000, 64, 30), FailReason::Memory),
         ("burn", small(1_000_000, 64, 30), FailReason::Fuel),
         ("peek", small(20_000_000_000, 64, 30), FailReason::Trap),
@@ -612,7 +611,26 @@ async fn a_run_that_breaks_its_limits_fails_with_the_reason_and_a_signed_report(
         a.signature = rig.leader().sign_assignment(&a).unwrap();
         let answer = rig.run(&job, &a, &[]).await;
         failed(&answer, &job, &a, reason);
+        let message = report(&answer, &job, &a).message;
+        match method {
+            "peek" => assert!(message.contains("not an input"), "{message}"),
+            _ => assert!(message.is_empty(), "{method}: {message}"),
+        }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_that_outlasts_its_wall_clock_is_a_lost_attempt_and_no_failure() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let budget = RunBudget {
+        fuel: 1_000_000_000_000,
+        memory_mib: 64,
+        wall_secs: 2,
+    };
+    let a = rig.assignment(&job, "slow", 1, "spin", budget, &[]);
+    let answer = rig.run(&job, &a, &[]).await;
+    assert_eq!(answer, json!({ "state": "lost" }));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

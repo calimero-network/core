@@ -22,6 +22,7 @@ use super::{locked, JobNode};
 use crate::files::{sealed_len, FileOpener, FileSealer, CHUNK_BYTES, TAG_BYTES};
 use crate::job_wire::{
     sign_report, Assignment, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
+    MAX_REPORT_MESSAGE_BYTES,
 };
 use crate::usage::{self, Run as Measured};
 
@@ -42,7 +43,7 @@ pub(super) enum Verdict {
 }
 
 /// Maps an outcome to what is reported, by what happened and never by its text. An input that
-/// does not open during a run is the node's disk, never the leader's doing: the run is lost.
+/// does not open during a run, and a wall clock that ran out, are the node's: the attempt is lost.
 pub(super) fn classify(status: &Status) -> Verdict {
     match status {
         Status::Ok => Verdict::Done,
@@ -50,9 +51,8 @@ pub(super) fn classify(status: &Status) -> Verdict {
         Status::Trap { kind, .. } => match kind {
             TrapKind::OutOfFuel => Verdict::Failed(FailReason::Fuel),
             TrapKind::OutOfMemory => Verdict::Failed(FailReason::Memory),
-            TrapKind::Timeout => Verdict::Failed(FailReason::Time),
             TrapKind::Cancelled => Verdict::Failed(FailReason::Cancelled),
-            TrapKind::Unavailable => Verdict::Lost,
+            TrapKind::Timeout | TrapKind::Unavailable => Verdict::Lost,
             TrapKind::StackOverflow | TrapKind::Fault | TrapKind::HostDenied => {
                 Verdict::Failed(FailReason::Trap)
             }
@@ -396,6 +396,7 @@ fn ending(
         attempt: a.attempt,
         status,
         reason,
+        message: failure_message(&outcome.status, reason),
         result,
         outputs: kept
             .iter()
@@ -429,6 +430,18 @@ fn ending(
     })))
 }
 
+/// The text a failed report carries: the method's app error, or what a trap says.
+fn failure_message(status: &Status, reason: Option<FailReason>) -> String {
+    let text = match (status, reason) {
+        (Status::AppError { code, message }, Some(FailReason::AppError)) => {
+            format!("{code}: {message}")
+        }
+        (Status::Trap { detail, .. }, Some(FailReason::Trap)) => detail.clone(),
+        _ => return String::new(),
+    };
+    text[..text.floor_char_boundary(MAX_REPORT_MESSAGE_BYTES)].to_owned()
+}
+
 /// Whether `ciphertext` opens under `key` to a file of `size` bytes hashing to `sha256`: what
 /// the leader declared of an input, which is checked once, when the input arrives.
 pub(super) fn input_matches(
@@ -456,6 +469,7 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
         attempt: a.attempt,
         status: ReportStatus::Failed,
         reason: Some(FailReason::Integrity),
+        message: String::new(),
         result: Vec::new(),
         outputs: Vec::new(),
         usage: ReportUsage::default(),
@@ -557,7 +571,7 @@ mod tests {
         let cases = [
             (TrapKind::OutOfFuel, Verdict::Failed(FailReason::Fuel)),
             (TrapKind::OutOfMemory, Verdict::Failed(FailReason::Memory)),
-            (TrapKind::Timeout, Verdict::Failed(FailReason::Time)),
+            (TrapKind::Timeout, Verdict::Lost),
             (TrapKind::Cancelled, Verdict::Failed(FailReason::Cancelled)),
             (TrapKind::Unavailable, Verdict::Lost),
             (TrapKind::StackOverflow, Verdict::Failed(FailReason::Trap)),
@@ -573,6 +587,34 @@ mod tests {
             message: "m".into(),
         };
         assert_eq!(classify(&app_error), Verdict::Failed(FailReason::AppError));
+    }
+
+    #[test]
+    fn a_failure_message_is_the_app_error_or_the_trap_detail_cut_to_its_bound() {
+        let app_error = Status::AppError {
+            code: "Denied".into(),
+            message: "no".into(),
+        };
+        let reason = Some(FailReason::AppError);
+        assert_eq!(failure_message(&app_error, reason), "Denied: no");
+        let trap = |detail: &str| Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail: detail.to_owned(),
+        };
+        assert_eq!(
+            failure_message(&trap("files.open: no"), Some(FailReason::Trap)),
+            "files.open: no"
+        );
+        // A multi-byte character that straddles the bound is dropped whole.
+        let long = format!("{}é", "x".repeat(MAX_REPORT_MESSAGE_BYTES - 1));
+        let cut = failure_message(&trap(&long), Some(FailReason::Trap));
+        assert_eq!(cut, "x".repeat(MAX_REPORT_MESSAGE_BYTES - 1));
+        // Fuel, memory and the rest carry no text.
+        let out_of_fuel = Status::Trap {
+            kind: TrapKind::OutOfFuel,
+            detail: "all fuel consumed".into(),
+        };
+        assert_eq!(failure_message(&out_of_fuel, Some(FailReason::Fuel)), "");
     }
 
     #[test]
