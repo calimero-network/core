@@ -5759,7 +5759,7 @@ mod tests {
             let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
         }
         let secret = "cal_ci-secret";
-        let record = |expires_at: u64| ApiKeyRecord {
+        let record = |expires_at: u64| super::ApiKeyRecord {
             key_id: "k1".into(),
             account: "dan".into(),
             label: "ci".into(),
