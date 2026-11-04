@@ -43,7 +43,6 @@ members = [
     "./crates/meroctl",
 
     "./crates/utils/fs",
-    "./crates/wasm-abi",
 
     "./tools/mero-sign",
     "./tools/search-bench",
@@ -75,7 +74,6 @@ hex = "0.4.3"
 html5ever = "0.40"
 http = "1"
 indexmap = "2.6.0"
-jsonschema = { version = "0.60", default-features = false }
 libc = "0.2"
 libp2p-identity = "0.2.12"
 multiaddr = "0.18.1"
@@ -148,7 +146,6 @@ calimero-search = { path = "./crates/search" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-tee-release = { path = "./crates/tee-release" }
 calimero-utils-fs = { path = "./crates/utils/fs" }
-calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-sign = { path = "./tools/mero-sign" }
 
 [profile.dev]

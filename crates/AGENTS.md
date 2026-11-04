@@ -40,9 +40,9 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the Rust app SDK runtime for components.
 - [app-sdk-macros](app-sdk-macros/AGENTS.md) (`calimero-app-sdk-macros`) - the `app` attributes.
 - [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; `mero-app-build <crate-dir> --out <file>`.
-- [wasm-abi](wasm-abi/AGENTS.md) (`calimero-wasm-abi`) - the `wasm-abi/1` schema; the consent page plans an upgrade from two of them.
 
-SDK 0.12 (`calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer) is gone; the
+SDK 0.12 (`calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer, and its
+`wasm-abi/1` schema, `calimero-wasm-abi`) is gone; the
 node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left behind
 ([node](node/AGENTS.md), "SDK 0.12 apps").
 

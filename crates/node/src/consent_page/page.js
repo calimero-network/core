@@ -71,10 +71,14 @@
     return m.name + " (" + flags(m) + ")";
   }
   function flags(f) {
-    var out = [f.kind === "view" ? "read-only view" : "changes data"];
-    if (f.xcall) out.push("callable by other apps");
-    if (f.handler) out.push("event handler");
-    if (f.destructive) out.push("deletes data");
+    var kinds = { view: "read-only view", init: "runs once at creation", timer: "runs on a timer", action: "runs in the background, may send data out" };
+    var out = [kinds[f.kind] || "changes data"];
+    if (f.confirm) out.push("needs a passkey confirmation");
+    if (f.public) out.push("anyone, without signing in" + (f.rate ? " (" + f.rate + ")" : ""));
+    if (has(f.allowApps)) out.push("callable by " + (f.allowApps.indexOf("*") >= 0 ? "other apps" : "the apps " + f.allowApps.join(", ")));
+    if (f.allowSystem && f.kind !== "timer") out.push("called by the node itself");
+    if (f.allowAction) out.push("called only by the app's background actions");
+    if (f.params) out.push("takes (" + f.params.map(function (p) { return p[0]; }).join(", ") + ")");
     return out.join(", ");
   }
   function whom(scope) {
@@ -239,7 +243,7 @@
       ["To", u.to.package + " " + u.to.version],
       ["Publisher key", u.publisher.signer],
       ["Author", u.publisher.author],
-      ["Migration", mig.refused ? "refused: " + mig.refused : mig.runs ? "runs " + mig.export + " (state " + mig.fromStateVersion + " → " + mig.toStateVersion + ")" : "none: code only", true],
+      ["Stored data", "kept as it is: an update runs no migration" + (mig.fromStateVersion != null && mig.toStateVersion != null ? " (state version " + mig.fromStateVersion + " → " + mig.toStateVersion + ")" : ""), true],
       ["Frontend", u.frontend && (u.frontend.from || u.frontend.to) ? (u.frontend.from || "none") + " → " + (u.frontend.to || "none") : null],
     ]));
     var f = u.frontend || {};
@@ -249,7 +253,7 @@
     diff(t, "Frontend aliases", f.aliases);
     diff(t, "Interfaces used", u.interfaces && u.interfaces.uses);
     diff(t, "Interfaces exported", u.interfaces && u.interfaces.exports);
-    diff(t, "Public methods", u.methods);
+    diff(t, "Methods", u.methods);
     diff(t, "Events", u.events);
     diff(t, "Timers", u.timers);
     t.appendChild(el("h3", "Exactly what you approve"));

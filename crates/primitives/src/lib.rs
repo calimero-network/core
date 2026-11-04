@@ -1,5 +1,3 @@
-#[cfg(not(target_arch = "wasm32"))]
-mod abi_type;
 pub mod alias;
 pub mod application;
 pub mod blobs;
