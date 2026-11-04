@@ -155,7 +155,7 @@ release. See [Packages & frontends](/protocol/applications/).
 **Registry** — The operator's package source (`--registry-url`); each node
 fetches registry releases from it itself.
 
-**Frontend** — A package's web files, served at `{label}.{apps-domain}`.
+**Frontend** — A package's web files, served at `{label}.{apps-domain}`, at its cluster's `{cluster_label}.{apps-domain}`, and at each deployment's own host `{dlabel}.{apps-domain}`.
 
 **Follow-up** — A run another run asked for: an event handler or an xcall,
 queued in the app's state and run once by the leader. See

@@ -419,15 +419,26 @@ is its command line.
   is Prometheus text (directory counts, this node's groups, streams, system
   membership, build release; per-group Raft term, lags and quorum age; store
   sizes; and, from `metrics::track` on the router, requests by route template
-  and status, error codes, latency per route group and body bytes), never
-  names or state: labels are templates, groups, codes and numbers, and ids only
-  on the usage series below
-  (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
+  and status, error codes, latency per route group and body bytes; WASM run
+  time by kind, `calimero_wasm_run_duration_seconds{kind}` from
+  `metrics::wasm_run` in `Node::metered` and the view and action runs; a
+  logged call's `run` and `commit` time,
+  `calimero_call_phase_duration_seconds{phase}`, observed in
+  `call_local_component` once the entry is appended), never
+  names or state: labels are templates, groups, codes, kinds, phases and
+  numbers, and ids only on the usage series below
+  (regressions: `metrics_count_requests_errors_and_raft_without_naming_anyone`,
+  `wasm_runs_and_a_calls_run_and_commit_are_timed`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
   `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
-  labelled `app` and `org` (the payer: org id, or `account:{owner}` for a
-  personal app; `usage::payer`). Every WASM run goes through `Node::metered`
+  labelled `app`, `org` (the payer, whose quotas it counts against: org id,
+  or `account:{owner}` for a personal app; `usage::payer`) and `developer`
+  (who Calimero Cloud bills: for an instance of a deployment the deployment's
+  owner, in the same form, else the payer; `usage::developer`,
+  `usage::Billed::of`). Both are functions of the app, so they add no series
+  (at most 8 per hosted app). Regression for developers:
+  `an_instances_usage_is_billed_to_its_deployments_developer`. Every WASM run goes through `Node::metered`
   (`off_workers` plus `usage::measure`: thread CPU time, `CLOCK_THREAD_CPUTIME_ID`,
   around the run on its one thread; wall time off Unix), so CPU is counted on
   the node that ran the WASM: the leader for calls, `init`, migrations,
@@ -576,7 +587,17 @@ is its command line.
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins in `connect-src`, `/.well-known/calimero.json` (with the deployments
   offering the package); an unknown label under
-  D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
+  D is a 404, never a node route. Each package is also at
+  `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
+  and origin (for mdma's hostname resolver; another cluster's label 404s;
+  regression in `app_frontends_are_served_and_their_sessions_are_bound`,
+  vector in `cluster_labels_match_the_resolvers_vector`). Each deployment has its own host too,
+  `{deployment_label(id)}.D` (`app_host::Site`): the one package it offers
+  (404 while it offers none or several), `/` → what `/d/{deployment}/` gives,
+  `/d/` only for itself, well-known `deployment` set and listed first; the
+  deployment API answers its `host`. Regression:
+  `each_deployment_serves_its_frontend_on_its_own_host`. App origins (both
+  kinds) pass CORS, and a passkey ceremony
   from one opens a session bound to its package (`SessionClaims::app`, carried
   by refresh): `Principal::within` keeps it to that package's apps (gate, app
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
@@ -653,6 +674,15 @@ is its command line.
   and team reads use it, and so does an access check before it refuses.
   Concurrent callers share a round (`ReadRounds`): one that arrives while a
   round runs waits for the next one, never takes the one already under way.
+  One round per request: `principal` (or `gate`, anonymous) keeps the index its
+  round named (`Principal::sys_index`, `Node::sys_fresh_index`); the request's
+  later checks and the app leader's (`CallRequest::sys_index`, carried on
+  `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
+  argument that this is as fresh as a round of their own) instead of running
+  another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  Regressions: `a_call_costs_one_system_read_round`,
+  `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
+  (`tests/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
