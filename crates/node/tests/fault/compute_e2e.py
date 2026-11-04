@@ -4,7 +4,8 @@ The app is built as two components (`app.wasm` and `compute.wasm`) and installed
 package that carries both. Scenarios: happy path, a job node killed mid-run, restart determinism,
 cancel, the three caps, an output the result method does not store, the quota, the job
 nodes' logs showing only the compute component, and compute-redact end to end (an admin's
-policy, a member's CSV, a job node killed mid-run, the published output downloaded through a grant). Forged finals, per-run key isolation and
+policy, a member's CSV, a job node killed mid-run, the published output downloaded through a grant the admin can
+revoke). Forged finals, per-run key isolation and
 the collection of unreferenced files after `BLOB_IDLE_MS` (an hour of entry time, which only an
 in-process clock can pass) are proved by in-process tests that are run and quoted. Binaries from
 `RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` and
@@ -377,11 +378,21 @@ def local_part(wd, compute, csv_path, policy, start, rows):
     return (out / "output-0").read_bytes(), result["cells"]
 
 
-def download(cl, app, blob, grant):
-    """A published blob through its grant, with no session."""
-    url = cl.url(1) + f"apps/{app}/blobs/{blob}?grant={urllib.parse.quote(grant)}"
-    with urllib.request.urlopen(url, timeout=120) as r:
+def download(cl, app, blob, grant=None, key=None):
+    """A published blob through its grant, with no session; `key` signs in instead, as any caller."""
+    url = cl.url(1) + f"apps/{app}/blobs/{blob}" + (f"?grant={urllib.parse.quote(grant)}" if grant else "")
+    req = urllib.request.Request(url, headers={"authorization": f"Bearer {key}"} if key else {})
+    with urllib.request.urlopen(req, timeout=120) as r:
         return r.read()
+
+
+def status_of(call):
+    """The HTTP status `call` is refused with, or 200."""
+    try:
+        call()
+    except urllib.error.HTTPError as e:
+        return e.code
+    return 200
 
 
 def killed_mid_run(cl, member, app):
@@ -424,9 +435,11 @@ def redact_job(cl, owner_home_passkey):
     app = cl.cli(1, "context", "create", "--name", "redact", "--package", package, "--version", version,
                  "--namespace", org)["appId"]
     owner = {"home": wd / "cfg", "passkey": owner_home_passkey}
-    admin, member = sign_up(cl, wd, "ada"), sign_up(cl, wd, "bob")
+    admin, member, other = sign_up(cl, wd, "ada"), sign_up(cl, wd, "bob"), sign_up(cl, wd, "cyd")
     admin_client = Client(cl, app, join_org(cl, owner, admin, org, "admin"))
-    member_client = Client(cl, app, join_org(cl, owner, member, org, "member"))
+    member_key = join_org(cl, owner, member, org, "member")
+    member_client = Client(cl, app, member_key)
+    other_client = Client(cl, app, join_org(cl, owner, other, org, "member"))
     policy = {"salt": REDACT_SALT, "columns": REDACT_COLUMNS}
     refused = refused_with("AdminsOnly", lambda: member_client.call(1, "setPolicy", {"policy": policy}))
     admin_client.call(1, "setPolicy", {"policy": policy})
@@ -435,6 +448,9 @@ def redact_job(cl, owner_home_passkey):
     csv_path = wd / "people.csv"
     csv_path.write_bytes(data)
     file, _ = upload(cl, member_client.h["authorization"][7:], app, data=data)
+    member_client.call(1, "register", {"file": file})
+    not_theirs = refused_with("NotYourFile", lambda: other_client.call(1, "submit", {"file": file}))
+    taken = refused_with("FileTaken", lambda: other_client.call(1, "register", {"file": file}))
     submit = member_client.call(1, "submit", {"file": file, "rowsPerPart": REDACT_PER_PART})
     job = submit["result"]
     killed_run, killed_node = killed_mid_run(cl, member_client, app)
@@ -451,17 +467,20 @@ def redact_job(cl, owner_home_passkey):
     parts = len(view["parts"])
     check("11a job done after its job node was killed mid-run",
           view["status"] == "done" and rec["state"] == "done" and len(attempts) >= 2 and attempts[-1] != killed_node
-          and view["totalRows"] == REDACT_ROWS and view["rowsDone"] == REDACT_ROWS and parts == 3,
+          and view["totalRows"] == REDACT_ROWS and view["rowsDone"] == REDACT_ROWS and parts == 3
+          and refused and not_theirs and taken,
           f"{REDACT_ROWS} rows in {len(data)} bytes, parts of {REDACT_PER_PART}; admin set the policy, a member "
-          f"was refused it: {refused}; job node {killed_node} killed {KILL_AFTER}s into run {killed_run[:12]}",
+          f"was refused it: {refused}; another member was refused the registered file: {not_theirs}, {taken}; "
+          f"job node {killed_node} killed {KILL_AFTER}s into run {killed_run[:12]}",
           f"job {view['status']}, {view['rowsDone']}/{view['totalRows']} rows in {parts} parts; the killed run "
           f"{rec['state']} after attempts on nodes {attempts}")
 
     shared = member_client.call(1, "share", {"job": job})["result"]
     blobs = [p["published"] for p in shared["parts"]]
-    texts = []
+    texts, grants = [], []
     for i, blob in enumerate(blobs):
-        grant = member_client.view(1, "link", {"job": job, "part": i, "ttlSecs": 600})["result"]
+        grant = member_client.call(1, "link", {"job": job, "part": i, "ttlSecs": 600})["result"]
+        grants.append(grant)
         texts.append(download(cl, app, blob, grant))
     refs = []
     for i in range(parts):
@@ -487,6 +506,17 @@ def redact_job(cl, owner_home_passkey):
           f"{len(originals)} source rows, {len(tokens)} distinct names, columns {REDACT_COLUMNS}",
           f"patterns left: {leaks or 'none'}; {len(rows)} rows out, {len(tokens)} pseudonyms each the HMAC of its name; "
           f"cells redacted {view['cellsRedacted']} (local runs {cells})")
+
+    plain = status_of(lambda: download(cl, app, blobs[0], key=member_key))
+    revoke = f"apps/{app}/blobs/{blobs[0]}/revoke"
+    http("POST", cl.url(1) + revoke, {}, headers=admin_client.h)
+    stale = status_of(lambda: download(cl, app, blobs[0], grants[0]))
+    fresh = member_client.call(1, "link", {"job": job, "part": 0, "ttlSecs": 600})["result"]
+    again = download(cl, app, blobs[0], fresh) == texts[0]
+    check("11d a published part downloads only through a grant, which the admin can revoke",
+          plain == 404 and stale == 404 and again,
+          "a signed-in member's plain download, then the admin revokes part 0 and its old grant is used",
+          f"plain download {plain}, revoked grant {stale}, a new grant gives the same bytes: {again}")
 
 
 def main():
