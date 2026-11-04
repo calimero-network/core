@@ -223,6 +223,13 @@ pub fn sign_invite_redeem(token: &str, account: &str, now: u64) -> String {
     hex::encode(invite_signing_key(token).sign(&message).to_bytes())
 }
 
+/// What marks a redemption of `invite_key` for `account` at `now` used, as
+/// [`verify_invite_redeem`] answers it for a signature that verifies.
+#[must_use]
+pub fn invite_redeem_used(invite_key: &str, account: &str, now: u64) -> String {
+    used(b"invite", &invite_redeem_message(invite_key, account, now))
+}
+
 /// Check that `signature` redeems the invite whose public key is
 /// `invite_key` for `account` at `now`, and answer what marks it used.
 ///
@@ -240,7 +247,7 @@ pub fn verify_invite_redeem(
     UnparsedPublicKey::new(&ED25519, &public)
         .verify(&message, &signature)
         .map_err(|_| "the redemption is not signed with the invite's key")?;
-    Ok(used(b"invite", &message))
+    Ok(invite_redeem_used(invite_key, account, now))
 }
 
 /// Check that `signature` is the recovery key `public`'s, handing `org` to
