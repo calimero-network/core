@@ -23,6 +23,8 @@ pub const MAX_READ_CHUNK: u32 = 1024 * 1024;
 pub const MAX_NEW_FILES: usize = 1_000;
 /// Compute outputs one logged run may publish; the node holds their plaintext in memory.
 pub const MAX_PUBLISHED_PER_RUN: usize = 16;
+/// Plaintext bytes one logged run may publish across all its outputs (held in memory like new files).
+pub const MAX_PUBLISHED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The soft errors of the `files` interface (the WIT `result<_, string>`), fixed so every
 /// engine and SDK returns and matches the same strings.
@@ -31,6 +33,7 @@ pub const FILES_DISABLED: &str = "files are not enabled";
 pub const FILE_TOO_MANY_OPEN: &str = "too many open files";
 pub const FILE_TOO_LARGE: &str = "file too large";
 pub const RUN_WROTE_TOO_MUCH: &str = "run wrote too much";
+pub const RUN_PUBLISHED_TOO_MUCH: &str = "run published too much";
 pub const FILE_FINISHED: &str = "file already finished";
 pub const FILE_FAILED: &str = "file write failed";
 pub const FILE_TOO_MANY_NEW: &str = "too many new files";

@@ -7,7 +7,8 @@ use crate::files::{
     FileError, FileInfo, FileRead, FileWrite, NewFile, PublishedFile, ReadError, FILE_CORRUPT,
     FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN,
     FILE_UNAVAILABLE, MAX_COMPUTE_FILE_BYTES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
-    MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, RUN_WROTE_TOO_MUCH,
+    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
+    RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
 use crate::types::{HostDenied, InvocationKind};
 
@@ -201,6 +202,11 @@ impl HostCore {
         }
         if self.files.published.len() >= MAX_PUBLISHED_PER_RUN {
             return Ok(Err(FILE_TOO_MANY_NEW.to_owned()));
+        }
+        let held: u64 = self.files.published.iter().map(|p| p.size).sum();
+        let size = self.provider.info(id).map_or(0, |f| f.size);
+        if held.saturating_add(size) > MAX_PUBLISHED_BYTES {
+            return Ok(Err(RUN_PUBLISHED_TOO_MUCH.to_owned()));
         }
         match self.provider.publish(id) {
             Ok(file) => {

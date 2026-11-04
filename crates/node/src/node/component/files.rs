@@ -61,7 +61,11 @@ pub const FILES_UNAVAILABLE: &str = "FILES_UNAVAILABLE";
 /// The code of an answer that names the app's leader in `details.leaderUrl`.
 const NOT_LEADER: &str = "NOT_LEADER";
 
-const _: () = assert!(MAX_PENDING_FILE_BYTES >= 4 * calimero_app_host::MAX_RUN_FILE_BYTES as usize);
+const _: () = assert!(
+    MAX_PENDING_FILE_BYTES
+        >= 2 * (calimero_app_host::MAX_RUN_FILE_BYTES + calimero_app_host::MAX_PUBLISHED_BYTES)
+            as usize
+);
 const _: () =
     assert!(PUSH_WAIT.as_millis() + CHARGE_WAIT.as_millis() < FORWARD_TIMEOUT.as_millis());
 

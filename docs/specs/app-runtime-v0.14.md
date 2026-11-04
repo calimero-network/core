@@ -513,7 +513,7 @@ An id that is not an output of a done run of this app (an uploaded file, a file 
 The platform enforces only that rule: each app decides who may publish, in the method that calls `publish`.
 The answer is the plain blob's id, the SHA-256 of the plaintext, which the app stores as a `BlobRef` to keep it (R8, like any blob).
 A result method cannot publish an output of the run that is ending, because the entry that registers it is the one the method runs in: it stores the `BlobRef` and a later call publishes.
-A run publishes at most 16 outputs, each at most 47 MiB, and the output stays publishable while the app holds it.
+A run publishes at most 16 outputs, each at most 47 MiB and 64 MiB together (`run published too much`), and the output stays publishable while the app holds it.
 A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
 
 ### Compute methods
