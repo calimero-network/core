@@ -38,7 +38,7 @@ pub const MAX_COMPONENT_BLOBS: usize = 100_000;
 pub const MAX_COLLECT_QUEUE: usize = 4_096;
 /// Bytes of a blob's content type.
 pub const MAX_BLOB_MIME_BYTES: usize = 127;
-/// Bytes of a grant a download presents (`<expires_ms>.<base64url HMAC>` is 64 at most);
+/// Bytes of a grant a download presents (`<expires_ms>.<epoch>.<base64url HMAC>` is 75 at most);
 /// a longer one is refused before it is parsed.
 pub const MAX_GRANT_BYTES: usize = 128;
 /// Blobs one `BlobsCollected` entry names at most.
@@ -64,6 +64,14 @@ pub struct BlobRecord {
     /// file quota, which collecting it releases.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub charged: bool,
+    /// How many times the owner revoked the grants of a published blob: a grant names the
+    /// count it was made under, and one made under another no longer holds.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub epoch: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl BlobRecord {
@@ -83,6 +91,7 @@ impl BlobRecord {
                 output: false,
             }),
             charged: false,
+            epoch: 0,
         };
         Some((id, record))
     }
@@ -166,6 +175,7 @@ impl BlobTable {
             idle_since_ms: ts_ms,
             file: None,
             charged: prev.as_ref().is_some_and(|p| p.charged),
+            epoch: prev.as_ref().map_or(0, |p| p.epoch),
         };
         if refs == 0 {
             let _new = self.idle.insert((ts_ms, id));
@@ -209,9 +219,8 @@ impl BlobTable {
         })
     }
 
-    /// Record the plain blob a published output made, charged, unreferenced and idle from
-    /// `ts_ms`; a blob the app already holds stays as it is. Not bounded by
-    /// [`MAX_COMPONENT_BLOBS`]: the guest was already told it exists.
+    /// Record the plain blob a published output made, charged and idle from `ts_ms`; one the app
+    /// already holds stays as it is. Past [`MAX_COMPONENT_BLOBS`] too: the guest was told it exists.
     pub fn add_published(&mut self, tx: &mut StateTx<'_>, id: [u8; 32], size: u64, ts_ms: u64) {
         if self.records.contains_key(&id) {
             return;
@@ -223,18 +232,28 @@ impl BlobTable {
             idle_since_ms: ts_ms,
             file: None,
             charged: true,
+            epoch: 0,
         };
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);
     }
 
-    /// The owner deletes a blob: [`Self::forget`], except a sealed file and a charged
-    /// published blob, which only the retention rules forget (they release the quota).
-    pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
-        self.records
-            .get(id)
-            .is_some_and(|r| r.file.is_none() && !r.charged)
-            && self.forget(tx, id)
+    /// The owner deletes a blob: [`Self::forget`], except a sealed file, which only the
+    /// retention rules forget. Answers the bytes it had charged to the quota, if it held it.
+    pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> Option<u64> {
+        let r = self.records.get(id).filter(|r| r.file.is_none())?;
+        let charged = if r.charged { r.size } else { 0 };
+        self.forget(tx, id).then_some(charged)
+    }
+
+    /// Invalidates the grants made so far for the published blob `id`; whether it is one.
+    pub fn revoke(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
+        let Some(mut r) = self.records.get(id).filter(|r| r.charged).cloned() else {
+            return false;
+        };
+        r.epoch = r.epoch.saturating_add(1);
+        self.put(tx, *id, r);
+        true
     }
 
     /// Forget a blob; whether the app held it.
@@ -328,43 +347,67 @@ pub fn grant_key(cluster_key: &[u8; 32]) -> [u8; 32] {
     out
 }
 
-fn grant_message(app_id: &str, id: &[u8; 32], expires_ms: u64) -> Vec<u8> {
-    format!("{app_id}|{}|{expires_ms}", hex::encode(id)).into_bytes()
+fn grant_message(app_id: &str, id: &[u8; 32], expires_ms: u64, epoch: u32) -> Vec<u8> {
+    let epoch = if epoch == 0 {
+        String::new()
+    } else {
+        format!("|{epoch}")
+    };
+    format!("{app_id}|{}|{expires_ms}{epoch}", hex::encode(id)).into_bytes()
 }
 
-/// A grant to download blob `id` of `app_id` until `expires_ms` (app time):
-/// `<expires_ms>.<base64url HMAC>`.
+/// A grant to download blob `id` of `app_id` until `expires_ms` (app time) under revocation
+/// count `epoch`: `<expires_ms>[.<epoch>].<base64url HMAC>`, the epoch only when above zero.
 #[must_use]
-pub fn grant_token(key: &[u8; 32], app_id: &str, id: &[u8; 32], expires_ms: u64) -> String {
+pub fn grant_token(
+    key: &[u8; 32],
+    app_id: &str,
+    id: &[u8; 32],
+    expires_ms: u64,
+    epoch: u32,
+) -> String {
     let mac = hmac::sign(
         &hmac::Key::new(hmac::HMAC_SHA256, key),
-        &grant_message(app_id, id, expires_ms),
+        &grant_message(app_id, id, expires_ms, epoch),
     );
-    format!("{expires_ms}.{}", calimero_identity::b64url(mac.as_ref()))
+    let mac = calimero_identity::b64url(mac.as_ref());
+    if epoch == 0 {
+        format!("{expires_ms}.{mac}")
+    } else {
+        format!("{expires_ms}.{epoch}.{mac}")
+    }
 }
 
-/// Whether `token` grants blob `id` of `app_id` at `now_ms` (app time).
+/// The revocation count `token` was made under, if it grants blob `id` of `app_id` at
+/// `now_ms` (app time); the caller compares it with the blob's current count.
 #[must_use]
-pub fn grant_valid(key: &[u8; 32], app_id: &str, id: &[u8; 32], token: &str, now_ms: u64) -> bool {
+pub fn grant_epoch(
+    key: &[u8; 32],
+    app_id: &str,
+    id: &[u8; 32],
+    token: &str,
+    now_ms: u64,
+) -> Option<u32> {
     if token.len() > MAX_GRANT_BYTES {
-        return false;
+        return None;
     }
-    let Some((expires, mac)) = token.split_once('.') else {
-        return false;
+    let mut parts = token.split('.');
+    let expires_ms = parts.next()?.parse::<u64>().ok()?;
+    let (epoch, mac) = match (parts.next()?, parts.next()) {
+        (mac, None) => (0, mac),
+        (epoch, Some(mac)) => (epoch.parse::<u32>().ok().filter(|e| *e > 0)?, mac),
     };
-    let (Ok(expires_ms), Ok(mac)) = (expires.parse::<u64>(), calimero_identity::from_b64url(mac))
-    else {
-        return false;
-    };
-    if now_ms > expires_ms {
-        return false;
+    if parts.next().is_some() || now_ms > expires_ms {
+        return None;
     }
+    let mac = calimero_identity::from_b64url(mac).ok()?;
     hmac::verify(
         &hmac::Key::new(hmac::HMAC_SHA256, key),
-        &grant_message(app_id, id, expires_ms),
+        &grant_message(app_id, id, expires_ms, epoch),
         &mac,
     )
-    .is_ok()
+    .ok()
+    .map(|()| epoch)
 }
 
 /// What a run sees of the app's blobs: the replica's records at the state it reads.
@@ -387,7 +430,12 @@ impl BlobHost for RunBlobs {
     }
 
     fn grant(&self, id: &[u8; 32], expires_ms: u64) -> String {
-        grant_token(&self.key, &self.app_id, id, expires_ms)
+        let epoch = self.records.get(id).map_or(0, |r| r.epoch);
+        grant_token(&self.key, &self.app_id, id, expires_ms, epoch)
+    }
+
+    fn published(&self, id: &[u8; 32]) -> bool {
+        self.records.get(id).is_some_and(|r| r.charged)
     }
 }
 
@@ -398,19 +446,47 @@ mod tests {
     #[test]
     fn a_grant_holds_for_its_blob_and_app_until_it_expires() {
         let key = grant_key(&[1; 32]);
-        let t = grant_token(&key, "app", &[2; 32], 1_000);
-        assert!(grant_valid(&key, "app", &[2; 32], &t, 1_000));
-        assert!(!grant_valid(&key, "app", &[2; 32], &t, 1_001), "expired");
-        assert!(!grant_valid(&key, "other", &[2; 32], &t, 0), "another app");
-        assert!(!grant_valid(&key, "app", &[3; 32], &t, 0), "another blob");
+        let t = grant_token(&key, "app", &[2; 32], 1_000, 0);
+        let epoch = |key, app, id: &[u8; 32], t: &str, now| grant_epoch(key, app, id, t, now);
+        assert_eq!(epoch(&key, "app", &[2; 32], &t, 1_000), Some(0));
+        assert_eq!(epoch(&key, "app", &[2; 32], &t, 1_001), None, "expired");
+        assert_eq!(epoch(&key, "other", &[2; 32], &t, 0), None, "another app");
+        assert_eq!(epoch(&key, "app", &[3; 32], &t, 0), None, "another blob");
         let forged = t.replacen("1000", "9000", 1);
-        assert!(
-            !grant_valid(&key, "app", &[2; 32], &forged, 0),
+        assert_eq!(
+            epoch(&key, "app", &[2; 32], &forged, 0),
+            None,
             "moved expiry"
         );
-        assert!(
-            !grant_valid(&grant_key(&[9; 32]), "app", &[2; 32], &t, 0),
+        assert_eq!(
+            epoch(&grant_key(&[9; 32]), "app", &[2; 32], &t, 0),
+            None,
             "another cluster"
+        );
+    }
+
+    #[test]
+    fn a_grant_names_the_revocation_count_it_was_made_under() {
+        let key = grant_key(&[1; 32]);
+        let old = grant_token(&key, "app", &[2; 32], 1_000, 0);
+        let new = grant_token(&key, "app", &[2; 32], 1_000, 3);
+        assert_eq!(grant_epoch(&key, "app", &[2; 32], &old, 0), Some(0));
+        assert_eq!(grant_epoch(&key, "app", &[2; 32], &new, 0), Some(3));
+        let mac = new.rsplit('.').next().unwrap();
+        for forged in [
+            format!("1000.4.{mac}"),
+            format!("1000.0.{mac}"),
+            format!("1000.{mac}"),
+        ] {
+            assert_eq!(
+                grant_epoch(&key, "app", &[2; 32], &forged, 0),
+                None,
+                "{forged}"
+            );
+        }
+        assert_eq!(
+            grant_epoch(&key, "app", &[2; 32], &format!("{new}.x"), 0),
+            None
         );
     }
 
@@ -432,6 +508,7 @@ mod tests {
                 output: false,
             }),
             charged: false,
+            epoch: 0,
         };
         let _ = records.insert([1; 32], record(true));
         let _ = records.insert([2; 32], record(false));

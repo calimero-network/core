@@ -1625,12 +1625,7 @@ impl Rig {
     async fn grant(&self, id: &str) -> String {
         let r = self
             .alice
-            .view(
-                &self.app,
-                "share",
-                json!({ "id": id, "ttl": 600 }),
-                Consistency::Strong,
-            )
+            .call(&self.app, "share", json!({ "id": id, "ttl": 600 }), None)
             .await
             .unwrap();
         r.result.as_str().unwrap().to_owned()
@@ -1666,6 +1661,102 @@ async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
     let again = rig.publish(&output).await;
     assert_eq!(again, blob, "publishing twice answers the same blob");
     assert_eq!(rig.charged().await, charged + expected.len() as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_blob_downloads_only_through_a_grant_a_logged_call_made() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+
+    let e = rig.alice.download_blob(&rig.app, &blob).await.unwrap_err();
+    assert_eq!(
+        e.code(),
+        Some("NOT_FOUND"),
+        "the owner needs a grant too: {e}"
+    );
+    let peeked = rig
+        .alice
+        .view(
+            &rig.app,
+            "shareView",
+            json!({ "id": blob, "ttl": 600 }),
+            Consistency::Strong,
+        )
+        .await;
+    assert!(peeked.is_err(), "a view mints no grant for it");
+
+    let grant = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let old = rig.grant(&blob).await;
+
+    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    for i in 0..3 {
+        let e = rig
+            .c
+            .client(i)
+            .download_blob_granted(&rig.app, &blob, &old)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "node {i}: {e}");
+    }
+    let fresh = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &fresh)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+
+    let was = rig.c.app_leader(&rig.app).unwrap();
+    rig.c.stop(was).await;
+    rig.until("another node leads", || {
+        rig.c.app_leader(&rig.app).is_some()
+    })
+    .await;
+    let new = rig.c.client(usize::from(was == 0));
+    let e = new
+        .download_blob_granted(&rig.app, &blob, &old)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let bytes = new.download_blob_granted(&rig.app, &blob, &fresh).await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_owner_takes_a_published_blob_down_and_its_charge_is_released() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, _expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+    let blob = rig.publish(&output).await;
+    let grant = rig.grant(&blob).await;
+    assert!(rig.charged().await > charged);
+
+    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    assert!(rig.blob(&blob).is_none());
+    let e = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    rig.until("the bytes are collected and the quota released", || {
+        let now = tokio::runtime::Handle::current();
+        !rig.holds_bytes(&blob)
+            && tokio::task::block_in_place(|| now.block_on(rig.charged())) == charged
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -1703,7 +1703,7 @@ async fn answers_carry_receipts_from_attested_replicas() {
 /// deployment, each one either the operator's or the owner's, and a user
 /// proves which: every replica binds the governance into its receipt-key
 /// quote, and a replica claiming other rules is refused.
-/// The node's own commands (`__upgrade`, `__blob`, `__blob_forget`) are not
+/// The node's own commands (`__upgrade`, `__blob`, `__blob_forget`, `__blob_revoke`) are not
 /// methods anyone can call: through `/intents` they would switch an app's
 /// bundle with no owner approval, or mark another app's blob as one's own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1742,7 +1742,7 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
         .unwrap();
     let id = up["id"].as_str().unwrap().to_owned();
     let (mine, _) = deploy(&bob, "mine", kv.clone(), json!({})).await;
-    for method in ["__blob", "__blob_forget"] {
+    for method in ["__blob", "__blob_forget", "__blob_revoke"] {
         let r = bob
             .call(&mine, method, json!({ "id": id, "size": 7 }), None)
             .await;

@@ -6163,32 +6163,38 @@ async fn blob_download(
     let app = node.app(&app_id).await?;
     let raw = parse_blob_id(&id)?;
     let component = app.executor == crate::types::Executor::Component;
-    match q.grant.as_deref() {
-        // A bad or expired grant answers as a missing blob: it proves nothing.
-        Some(grant)
-            if !component
-                || !crate::component::blobs::grant_valid(
-                    &node.blob_grant_key(),
-                    &app.app_id,
-                    &raw,
-                    grant,
-                    node.app_clock().now_ms(),
-                ) =>
-        {
-            return Err(ApiError::not_found("no such blob in this app"));
-        }
-        Some(_) => {}
+    // A bad or expired grant answers as a missing blob: it proves nothing.
+    let granted = match q.grant.as_deref() {
+        Some(grant) => Some(
+            component
+                .then(|| {
+                    crate::component::blobs::grant_epoch(
+                        &node.blob_grant_key(),
+                        &app.app_id,
+                        &raw,
+                        grant,
+                        node.app_clock().now_ms(),
+                    )
+                })
+                .flatten()
+                .ok_or_else(|| ApiError::not_found("no such blob in this app"))?,
+        ),
         None => {
             let _p = gate(&node, &headers, &app, "__blob", false).await?;
+            None
         }
-    }
+    };
     refuse_sealed_file(&node, &app, &raw).await?;
-    // The app's leader decides: a replica that has not applied a delete yet
-    // still holds the mark and the bytes.
-    match node.blob_held_strong(&app, &raw).await {
-        Some(true) => {}
-        Some(false) => return Err(ApiError::not_found("no such blob in this app")),
+    // The app's leader decides: a replica that has not applied a delete or a revoke yet
+    // still serves the blob and its old grants.
+    let (published, epoch) = match node.blob_standing_strong(&app, &raw).await {
+        Some(Some(standing)) => standing,
+        Some(None) => return Err(ApiError::not_found("no such blob in this app")),
         None => return Err(ApiError::unavailable("the app's leader did not answer")),
+    };
+    // A published blob is served only through a grant made since its last revoke.
+    if granted.is_some_and(|made| made != epoch) || (published && granted.is_none()) {
+        return Err(ApiError::not_found("no such blob in this app"));
     }
     let hex_id = hex::encode(raw);
     let bytes = match node
@@ -6306,6 +6312,39 @@ async fn blob_delete(
         })
         .await?;
     node.collect_blob(&raw).await;
+    Ok(Json(json!({ "index": a.index })))
+}
+
+/// Revoke the grants made so far for one of the app's published blobs: its owner's or an org
+/// admin's. A grant made after this one holds.
+async fn blob_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, id)): Path<(String, String)>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "__blob", true).await?;
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin revokes grants",
+        ));
+    }
+    let raw = parse_blob_id(&id)?;
+    let a = node
+        .call(&CallRequest {
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app_id,
+                "__blob_revoke",
+                json!({ "id": hex::encode(raw) }),
+                p.caller,
+            )
+        })
+        .await?;
+    if a.status != Status::Ok {
+        return Err(ApiError::not_found("no such published blob in this app"));
+    }
     Ok(Json(json!({ "index": a.index })))
 }
 
@@ -6593,14 +6632,17 @@ async fn internal_blob_held(
             m.holds_blob(&raw)
         }
     };
-    let held = if body.strong {
-        g.read_strong(|m, _| asks(m))
+    let (held, standing) = if body.strong {
+        g.read_strong(|m, _| (asks(m), m.blob_standing(&raw)))
             .await
             .map_err(|e| ApiError::unavailable(&e.to_string()))?
     } else {
-        g.read_local(|m, _| asks(m))
+        g.read_local(|m, _| (asks(m), m.blob_standing(&raw)))
     };
-    Ok(Json(json!({ "held": held })))
+    let (published, epoch) = standing.unwrap_or_default();
+    Ok(Json(
+        json!({ "held": held, "published": published, "epoch": epoch }),
+    ))
 }
 
 /// The system leader's applied index, once it confirmed it leads.
@@ -9133,6 +9175,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))
+        .route("/apps/{app}/blobs/{id}/revoke", post(blob_revoke))
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))

@@ -189,6 +189,7 @@ A context's blobs.
 | `blob download ID -c CONTEXT [-o FILE]` | `GET /apps/{app}/blobs/{id}` | Write a blob to `--output`, or to standard output. |
 | `blob info ID -c CONTEXT` | `GET /apps/{app}/blobs/{id}/info` | A blob's size. |
 | `blob delete ID -c CONTEXT` (`rm`) | `DELETE /apps/{app}/blobs/{id}` | Forget a blob (its owner or an org admin); its bytes go once no other context holds them. |
+| `blob revoke ID -c CONTEXT` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate the download grants made so far for a published blob (its owner or an org admin). |
 
 ## namespace
 

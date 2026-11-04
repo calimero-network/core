@@ -53,8 +53,8 @@ node that misses the bytes fetches them from a peer, waiting at most 5 seconds.
 ## Reading and listing
 
 - `GET /apps/{app}/blobs/{id}` downloads a blob the app marks, by anyone who
-  reaches the app. A blob the app does not mark is `404`, whether or not the
-  bytes exist.
+  reaches the app, except a published compute output (a grant is needed). A
+  blob the app does not mark is `404`, whether or not the bytes exist.
 - `GET /apps/{app}/blobs` and `/blobs/{id}/info` list the app's blobs and their
   sizes, from a scan of a replica's state.
 - Inside the sealed channel, a download is sealed frame by frame like any
@@ -164,8 +164,14 @@ Transferring a personal app is refused if its files would pass the new owner's q
 
 A sealed file never leaves the cluster, with one exception: an app's logged write can publish the output of one of its finished compute runs with `runs.publish` (`compute::publish` in the Rust SDK).
 The node answers a plain blob of the app, named by the SHA-256 of the plaintext.
-From then on `blobs.info`, `blobs.grant` and the download route treat it as any uploaded blob, so a grant gives a time-limited link, for example to an outside auditor.
+From then on `blobs.info` answers it, and `blobs.grant` gives a time-limited link, for example to an outside auditor.
 Until an app publishes, the same download answers `409`.
+
+A published blob downloads only through a grant, for every caller including the owner: the plain `GET /apps/{app}/blobs/{id}` answers `404`.
+`blobs.grant` of it works only in logged writes (calls, timers, init, xcall deliveries), never in a view, so the log records who shared it.
+The owner or an org admin can revoke every grant made so far with `POST /apps/{app}/blobs/{id}/revoke`, after which a new grant holds.
+The blob record counts the revokes and a grant names the count it was made under, so every replica refuses a revoked grant, and a new leader does too.
+`DELETE /apps/{app}/blobs/{id}` takes a published blob down: the app forgets it, its bytes are collected and its charge is released.
 
 The platform enforces one rule: the id must be an output of a `done` run of this app.
 An uploaded file, a file a call made, another app's output, a failed or cancelled run's output and an unknown id answer the soft error `NOT_A_RUN_OUTPUT`.
@@ -178,7 +184,6 @@ Otherwise it answers `NOT_A_RUN_OUTPUT` and changes nothing, so a leader cannot 
 
 The plaintext counts against the organization's file quota from the entry until retention collects it.
 Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
-The owner's delete does not remove a published blob, so its charge is released only by that retention.
 Publishing an output the app already holds as a plain blob stores and charges nothing again.
 A run publishes at most 16 outputs, each at most 47 MiB and 64 MiB together.
 Past that `publish` answers the soft error `run published too much` and records nothing.

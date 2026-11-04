@@ -176,8 +176,13 @@ impl Compute {
     }
 
     /// A download grant for the blob `id`, valid for `ttl` seconds.
+    pub fn share(&mut self, id: BlobRef, ttl: u32) -> app::Result<String> {
+        Ok(id.grant(ttl))
+    }
+
+    /// [`Self::share`] in a view, which the host refuses for a published blob.
     #[app::view]
-    pub fn share(&self, id: BlobRef, ttl: u32) -> app::Result<String> {
+    pub fn share_view(&self, id: BlobRef, ttl: u32) -> app::Result<String> {
         Ok(id.grant(ttl))
     }
 

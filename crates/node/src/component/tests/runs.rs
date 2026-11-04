@@ -2097,13 +2097,67 @@ fn a_published_blob_the_app_already_holds_is_not_charged_again() {
     assert_eq!(second.idle_since_ms, first.idle_since_ms);
 }
 
-#[test]
-fn the_owner_cannot_delete_a_published_blob_around_its_charge() {
+fn published_world() -> World {
     let mut w = done_world();
     let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
     assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    w
+}
+
+fn owner_cmd(w: &mut World, cmd: &ComponentCmd) -> Applied {
     w.last += 1;
-    let forget = serde_json::to_vec(&ComponentCmd::BlobForget { id: plain(1) }).unwrap();
-    assert_eq!(why(&w.r.apply(w.last, &forget)), "no such blob in this app");
-    assert!(plain_record(&w, 1).is_some());
+    w.r.apply(w.last, &serde_json::to_vec(cmd).unwrap())
+}
+
+#[test]
+fn the_owner_takes_a_published_blob_down_and_its_charge_is_queued_for_release() {
+    let mut w = published_world();
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    assert!(plain_record(&w, 1).is_none());
+    let head = &w.r.machine.state.component.head;
+    assert_eq!(head.collect, [plain(1)]);
+    assert_eq!(head.collect_files[&plain(1)], out(1).size);
+    let freed = w.r.apply(w.last + 1, &collected(&[plain(1)]));
+    assert_eq!(freed.result["freed"], json!(out(1).size));
+    assert_eq!(why(&owner_cmd(&mut w, &forget)), "no such blob in this app");
+}
+
+#[test]
+fn a_sealed_file_is_still_not_the_owners_to_delete() {
+    let mut w = published_world();
+    let forget = ComponentCmd::BlobForget { id: out(1).id };
+    assert_eq!(why(&owner_cmd(&mut w, &forget)), "no such blob in this app");
+    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
+        .file
+        .is_some());
+}
+
+#[test]
+fn a_revoke_counts_up_only_for_a_published_blob() {
+    let mut w = published_world();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, 2);
+    for id in [out(1).id, hex::encode([0x77; 32])] {
+        let other = ComponentCmd::BlobRevoke { id };
+        assert_eq!(why(&owner_cmd(&mut w, &other)), "no such published blob");
+    }
+}
+
+#[test]
+fn an_upload_of_a_published_blobs_bytes_keeps_its_revocations() {
+    let mut w = published_world();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    let upload = ComponentCmd::Blob {
+        id: plain(1),
+        size: out(1).size,
+        mime: "text/plain".to_owned(),
+        ts_ms: 20,
+    };
+    assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
+    let record = plain_record(&w, 1).unwrap();
+    assert_eq!((record.epoch, record.charged), (1, true));
 }
