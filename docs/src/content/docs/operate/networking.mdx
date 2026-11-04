@@ -91,6 +91,12 @@ signature before a byte is served.
 - Responses carry a strict CSP whose `connect-src` adds the cluster's API
   origins.
 - An unknown label under `D` answers `404`, never a node route.
+- On this cluster each package is also at `{cluster_label}.D`
+  (`calimero_node::app_host::cluster_label` of `--cluster` and the package):
+  the same site and the same package origin, for a front that routes by
+  hostname to the cluster; see
+  [Cluster hosts](/protocol/applications/#cluster-hosts). Another cluster's
+  label answers `404`.
 - Each deployment has its own host too, `{dlabel}.D`
   (`calimero_node::app_host::deployment_label` of the deployment id), serving
   what `/d/{deployment}/` serves, as its own origin of the package; see

@@ -192,10 +192,12 @@ attested node, so a TLS terminator in front of it sees only sealed bytes, plus
 
 With `--apps-domain apps.example.com` and a wildcard DNS name
 `*.apps.example.com` pointing at the cluster, each installed package's frontend
-is served from its signed release at `{label}.apps.example.com`, and each
+is served from its signed release at `{label}.apps.example.com` and at this
+cluster's `{cluster_label}.apps.example.com`, and each
 deployment's at its own `{dlabel}.apps.example.com`. TLS for the
 wildcard name is the front's job; a front shared by several clusters routes
-each deployment's host to the cluster that holds the deployment. See
+each cluster label to its cluster. Keep `--cluster` stable: the cluster labels
+derive from it. See
 [Networking](/operate/networking/#app-frontends).
 
 ## Checklist

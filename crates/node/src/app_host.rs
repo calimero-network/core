@@ -26,6 +26,13 @@
 //!   cluster's API URLs, for the page to connect to.
 //! - Nothing else: only `GET` and `HEAD`, never the node's own routes.
 //!
+//! On a cluster, a package's frontend is also at
+//! `{cluster_label}.{apps_domain}` ([`cluster_label`] of the node's
+//! `--cluster` and the package): the same site and the same package origin as
+//! `{label}`, under a name a hostname-routing front (Calimero Cloud's
+//! resolver) can send to this cluster when the package is on several. A
+//! cluster label made for another cluster is a 404 here.
+//!
 //! Every deployment has a host of its own too, `{dlabel}.{apps_domain}`
 //! ([`deployment_label`] of its id), serving the frontend of the package it
 //! offers (none while it offers nothing or apps of several packages). A
@@ -68,6 +75,20 @@ const CACHED_FRONTENDS: usize = 32;
 pub fn label(package: &str) -> String {
     base32(&calimero_identity::sha256(
         format!("calimero.app-host.v1\0{package}").as_bytes(),
+    ))
+}
+
+/// The DNS label of `package`'s origin on cluster `cluster` (merod's
+/// `--cluster`): SHA-256 of `calimero.app-host.cluster.v1`, a zero byte,
+/// the cluster, a zero byte and the package, unpadded lowercase base32 (52
+/// characters, shaped like [`label`]). A package deployed on several clusters
+/// has one such host on each, so a front that routes by hostname alone (mdma's
+/// resolver, which computes the same) sends it to the right cluster; on its
+/// cluster it is the package's origin, as `{label}` is.
+#[must_use]
+pub fn cluster_label(cluster: &str, package: &str) -> String {
+    base32(&calimero_identity::sha256(
+        format!("calimero.app-host.cluster.v1\0{cluster}\0{package}").as_bytes(),
     ))
 }
 
@@ -194,7 +215,12 @@ impl Node {
             return None;
         }
         self.sys(|s| {
-            if let Some(p) = s.packages.keys().find(|p| self::label(p) == label) {
+            let cluster = self.config.cluster.as_str();
+            if let Some(p) = s
+                .packages
+                .keys()
+                .find(|p| self::label(p) == label || cluster_label(cluster, p) == label)
+            {
                 return Some(Site {
                     package: p.clone(),
                     deployment: None,
@@ -563,6 +589,16 @@ mod tests {
         assert!(a.bytes().all(|c| BASE32.contains(&c)));
         assert_ne!(a, label("com.calimero.chat"));
         assert_eq!(a, "7pysax5oylhat255idekdoknnceibzxygvjbceej2umvlmpwx2aa");
+    }
+
+    /// The value mdma's resolver pins too, computed once with Python's
+    /// `hashlib` and `base64`.
+    #[test]
+    fn cluster_labels_match_the_resolvers_vector() {
+        let c = cluster_label("eu-shared-1", "com.calimero.kv");
+        assert_eq!(c, "zqcnu7vlgoxqnu6ar6awxsbcclqru6ry4ygt3bou7tqpimvx25va");
+        assert_ne!(c, cluster_label("eu-shared-2", "com.calimero.kv"));
+        assert_ne!(c, label("com.calimero.kv"));
     }
 
     /// The value mdma computes too (its resolver routes the host).

@@ -213,7 +213,26 @@ uses `localhost`.
   node route. Responses carry a fixed content security policy with the cluster's
   API origins added to `connect-src`.
 
+### Cluster hosts
+
+A package may be deployed on several clusters while each customer's account and
+organization live on one, and a front that routes by hostname alone (Calimero
+Cloud's resolver) cannot tell them apart by the package's host. So on each
+cluster the package also has the host `{cluster_label}.D`, where the label is 52
+lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
+`SHA-256("calimero.app-host.cluster.v1\0" ‖ cluster ‖ "\0" ‖ package)`,
+`cluster` being the node's `--cluster` (`app_host::cluster_label`). For example,
+`com.calimero.kv` on cluster `eu-shared-1` is at
+`zqcnu7vlgoxqnu6ar6awxsbcclqru6ry4ygt3bou7tqpimvx25va.D`.
+
+On its cluster the host is the package's site exactly as `{label}.D` is (every
+path above, `/d/{deployment}/` included), and an origin of the package: CORS
+admits it, and a passkey ceremony from it opens a session bound to the package.
+A cluster label made for another cluster answers `404`.
+
 ### Deployment hosts
+
+The front does not route these yet; cluster hosts are what it routes.
 
 Every deployment has a host of its own too, `{dlabel}.D`, where the dlabel is
 52 lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
@@ -223,10 +242,8 @@ For example, deployment `0123456789abcdef0123456789abcdef` is served at
 `lprfchrsznkwfwiu7gfovvcywyujxdza3rentyjkivnw6cxescca.D`. Its own prefix keeps a
 dlabel apart from every package label.
 
-A package may be deployed on several clusters while each customer's account and
-organization live on one, and a front that routes by hostname alone (Calimero
-Cloud's resolver) cannot tell them apart by the package's host. The deployment's
-host names the deployment, and with it the cluster that holds it.
+The deployment's host names the deployment, and with it the cluster that holds
+it.
 
 - It serves the frontend of the one package the deployment offers, exactly as
   `/d/{deployment}/` does on the package's host: `GET /` redirects to
