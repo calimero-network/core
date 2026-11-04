@@ -158,8 +158,8 @@ pub fn cancel(run: &RunId) -> Result<()> {
     backend::cancel(run.as_str()).map_err(fail)
 }
 
-/// Turns the output of one of this app's done compute runs into a plain blob the app can share
-/// with `blobs.grant`; logged writes only. Anything else answers `NOT_A_RUN_OUTPUT`.
+/// Turns the output of one of this app's done compute runs into a plain blob, which downloads
+/// only through a `blobs.grant` made in a logged write. Anything else answers `NOT_A_RUN_OUTPUT`.
 pub fn publish(output: &BlobRef) -> Result<BlobRef> {
     let id = backend::publish(&output.id()).map_err(fail)?;
     BlobRef::parse(&id).ok_or_else(|| fail(format!("the host returned a malformed blob id: {id}")))

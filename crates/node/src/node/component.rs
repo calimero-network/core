@@ -250,6 +250,7 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::ComputeAttempt(_)
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
+        | ComponentCmd::BlobRevoke { .. }
         | ComponentCmd::BlobsCollected { .. }
         | ComponentCmd::File { .. }
         | ComponentCmd::Barrier
@@ -1709,27 +1710,25 @@ impl Node {
         })
     }
 
-    /// A component's blob command (R8) on this node, the app group's leader: an upload
-    /// (`__blob { id, size, mime }`) or its owner's delete (`__blob_forget { id }`), which
-    /// only the API builds (`CallRequest::host`), after judging who may.
+    /// A component's blob command (R8) on its leader: `__blob { id, size, mime }` (an upload),
+    /// `__blob_forget` or `__blob_revoke` (`{ id }`, the owner's), built by the API after judging who may.
     pub(super) async fn component_blob_cmd(
         &self,
         g: &Group<AppMachine>,
         req: &CallRequest,
     ) -> Result<crate::app::Applied, WriteError> {
         let id = req.args["id"].as_str().unwrap_or_default().to_owned();
-        let upload = req.method == "__blob";
         let p = g
             .propose_led(|m, _, _| {
-                let cmd = if upload {
-                    ComponentCmd::Blob {
+                let cmd = match req.method.as_str() {
+                    "__blob" => ComponentCmd::Blob {
                         id: id.clone(),
                         size: req.args["size"].as_u64().unwrap_or_default(),
                         mime: req.args["mime"].as_str().unwrap_or_default().to_owned(),
                         ts_ms: self.stamp(m),
-                    }
-                } else {
-                    ComponentCmd::BlobForget { id: id.clone() }
+                    },
+                    "__blob_revoke" => ComponentCmd::BlobRevoke { id: id.clone() },
+                    _ => ComponentCmd::BlobForget { id: id.clone() },
                 };
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })

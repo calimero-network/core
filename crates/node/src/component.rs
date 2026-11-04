@@ -442,6 +442,9 @@ pub enum ComponentCmd {
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
     #[serde(rename = "componentBlobForget")]
     BlobForget { id: String },
+    /// The app's owner revoked the download grants of a published blob.
+    #[serde(rename = "componentBlobRevoke")]
+    BlobRevoke { id: String },
     /// An uploaded file (its ciphertext is on the replicas already): the app holds it, idle
     /// until a value refers to it ([`blobs`]). The node's own command, built by the upload route.
     #[serde(rename = "componentFile")]
@@ -682,13 +685,18 @@ impl ComponentState {
     /// Forget the blobs idle past their time at `now_ms` and queue their bytes for the
     /// leader to collect.
     fn expire_blobs(&mut self, tx: &mut StateTx<'_>, now_ms: u64) {
-        for (id, file_size) in self.blobs.expire(tx, now_ms) {
-            let id = hex::encode(id);
-            if let Some(size) = file_size {
-                let _prev = self.head.collect_files.insert(id.clone(), size);
-            }
-            self.head.collect.push(id);
+        for (id, charged) in self.blobs.expire(tx, now_ms) {
+            self.queue_collect(hex::encode(id), charged);
         }
+    }
+
+    /// Queue the bytes of the forgotten blob `id` for the leader to collect, with the bytes
+    /// of quota it held (a file or a published blob).
+    fn queue_collect(&mut self, id: String, charged: Option<u64>) {
+        if let Some(size) = charged {
+            let _prev = self.head.collect_files.insert(id.clone(), size);
+        }
+        self.head.collect.push(id);
         let over = self.head.collect.len().saturating_sub(MAX_COLLECT_QUEUE);
         for dropped in self.head.collect.drain(..over) {
             let _gone = self.head.collect_files.remove(&dropped);
@@ -841,9 +849,8 @@ impl AppMachine {
             .is_some_and(|last| *last >= slot)
     }
 
-    /// Whether every published mark names an output of a done run the app holds and that
-    /// output's own plaintext hash and size: judged on the records, so no leader can publish
-    /// anything else.
+    /// Whether every published mark names a done run's output the app holds, with that output's
+    /// own plaintext hash and size: judged on the records, so no leader can publish more.
     fn publishes_only_outputs(&self, marks: &[PublishedMark]) -> bool {
         let blobs = &self.state.component.blobs;
         marks.len() <= host::MAX_PUBLISHED_PER_RUN
@@ -1088,6 +1095,7 @@ impl AppMachine {
             Ok(
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
+                | ComponentCmd::BlobRevoke { .. }
                 | ComponentCmd::BlobsCollected { .. }
                 | ComponentCmd::ComputeAttempt(_)
                 | ComponentCmd::Barrier,
@@ -1233,8 +1241,16 @@ impl AppMachine {
             Ok(ComponentCmd::ComputeFinal(done)) => self.apply_compute_final(tx, index, &done),
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
-                let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget_blob(tx, &raw));
-                host_answer(index, held, "no such blob in this app")
+                let forgotten = parse_hex32(&id).and_then(|raw| c.blobs.forget_blob(tx, &raw));
+                if let Some(size) = forgotten.filter(|size| *size > 0) {
+                    c.queue_collect(id, Some(size));
+                }
+                host_answer(index, forgotten.is_some(), "no such blob in this app")
+            }
+            Ok(ComponentCmd::BlobRevoke { id }) => {
+                let c = &mut self.state.component;
+                let revoked = parse_hex32(&id).is_some_and(|raw| c.blobs.revoke(tx, &raw));
+                host_answer(index, revoked, "no such published blob")
             }
             Ok(ComponentCmd::ActionEnd {
                 id,

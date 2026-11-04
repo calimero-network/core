@@ -158,7 +158,7 @@ is its command line.
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
-  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
+  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`, `__blob_revoke`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
@@ -1220,7 +1220,10 @@ API and system group:
   `apply_component_outcome` checks every mark first (`publishes_only_outputs`): the source must be an output record, its plaintext hash must be the mark's id and its size the mark's, and at most `MAX_PUBLISHED_PER_RUN` marks.
   A failing mark makes the whole entry a no-op that answers `NOT_A_RUN_OUTPUT`, on every replica, so a leader cannot publish an uploaded file, a file a call made, another app's output or a different plaintext.
   Any entry that applies as a no-op (a conflict or a refusal) has the bytes it stored discarded and its charge refunded (`recorded_nothing`).
-  Then `BlobTable::add_published` records the plain blob (`BlobRecord::charged`, `application/octet-stream`) before the diff, unless the app already holds that id; `expire` and `BlobsCollected` release the charge of a file or a charged blob, and `forget_blob` refuses a charged blob.
+  Then `BlobTable::add_published` records the plain blob (`BlobRecord::charged`, `application/octet-stream`) before the diff, unless the app already holds that id; `expire` and `BlobsCollected` release the charge of a file or a charged blob.
+  A published blob is served only through a grant (`blob_download` judges it on the leader's record, `Node::blob_standing_strong`), and `blobs.grant` is refused for it outside a logged write.
+  `BlobRecord::epoch` counts the owner's revokes (`ComponentCmd::BlobRevoke`, `POST /apps/{app}/blobs/{id}/revoke`, `__blob_revoke`); a grant above zero carries its epoch (`grant_token`), and a download whose grant names another epoch than the record's answers `404`.
+  The owner's delete (`forget_blob`) forgets a published blob too, queuing its bytes and charge in `collect` and `collect_files` like `expire` does; it still refuses a sealed file.
   A result method sees its own run's outputs without the flag (`blob_view_with_outputs`), so it cannot publish them; it stores the `BlobRef` and a later call publishes.
   Tests: `component/tests/runs.rs` (the apply rule) and `compute_runs.rs` (`a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote`, `only_an_output_of_this_apps_done_runs_publishes`, `a_published_blob_survives_a_leader_change`).
   `RunBlobs::info` answers a file with its plaintext size and hash and an empty mime, as `files.info` does; the host core refuses `blobs.grant` for it.

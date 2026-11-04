@@ -507,7 +507,9 @@ Every refusal that is not a policy violation is a fixed soft error string: `no s
 A write refused for either size cap, or failed inside the provider, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
 A storage failure inside the provider is passed through as an opaque soft error.
 An unknown handle, or running out of handle ids, traps `HostDenied`.
-`runs.publish` is the one way a file's bytes leave the cluster: it turns the output of one of the app's `done` compute runs into a plain blob that `blobs.grant` and `GET /apps/{app}/blobs/{id}` then serve like any uploaded blob.
+`runs.publish` is the one way a file's bytes leave the cluster: it turns the output of one of the app's `done` compute runs into a plain blob that `GET /apps/{app}/blobs/{id}` serves only through a grant.
+`blobs.grant` of a published blob traps `HostDenied` outside invocations that become log entries, so the log records who shared it.
+The app's owner or an org admin can revoke the blob's grants (`POST /apps/{app}/blobs/{id}/revoke`) or delete the blob, which forgets it and releases its charge.
 It works only in invocations that become log entries and traps `HostDenied` in a view and an action; it is in `runs`, which the compute world does not import, so a run cannot publish its own output.
 An id that is not an output of a done run of this app (an uploaded file, a file a call made, another app's output, an unknown id) answers the soft error `NOT_A_RUN_OUTPUT` and records nothing.
 The platform enforces only that rule: each app decides who may publish, in the method that calls `publish`.
