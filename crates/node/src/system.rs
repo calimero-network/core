@@ -1653,6 +1653,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             at,
             run: None,
             consent,
+            ..
         } => {
             // An upgrade key's signature, judged against the key as the log
             // holds it now: revoked or expired, it proves nothing.
@@ -7476,6 +7477,7 @@ mod tests {
             SystemCmd::UpgradeApp {
                 app_id: "inst".into(),
                 bundle: bundle.into(),
+                compute_bundle: None,
                 by_operator: false,
                 actor: "dan".into(),
                 at,
