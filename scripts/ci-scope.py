@@ -81,6 +81,8 @@ WORKFLOWS = {
             "scripts/tests/path-dep-closure-test.py",
             "scripts/pack-component.py",
             "scripts/tests/pack-component-test.py",
+            "scripts/install-mero-app-build.sh",
+            "scripts/install-mero-compute.sh",
         ),
     ),
     "release": (
