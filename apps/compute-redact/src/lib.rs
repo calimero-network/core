@@ -10,10 +10,10 @@
 mod jobs;
 mod rules;
 
-use calimero_app_sdk::compute::{self, ComputeOutcome, RunId};
-use calimero_app_sdk::env::{Caller, OrgRole};
-use calimero_app_sdk::prelude::*;
-use calimero_app_sdk::{files, BlobRef};
+use calimero_sdk::compute::{self, ComputeOutcome, RunId};
+use calimero_sdk::env::{Caller, OrgRole};
+use calimero_sdk::prelude::*;
+use calimero_sdk::{files, BlobRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
