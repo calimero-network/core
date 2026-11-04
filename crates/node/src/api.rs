@@ -5616,7 +5616,7 @@ async fn blob_list(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", false).await?;
-    let stats = node.storage_stats(&app).await?;
+    let stats = node.storage_stats_strong(&app).await?;
     let mut blobs: Vec<Value> = (stats.blobs.iter())
         .map(|(id, size)| blob_json(id, *size))
         .collect();
@@ -5642,7 +5642,7 @@ async fn blob_info(
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", false).await?;
     let raw = parse_blob_id(&id)?;
-    let stats = node.storage_stats(&app).await?;
+    let stats = node.storage_stats_strong(&app).await?;
     // A file is no blob to one who may not list files: its hash is the plaintext's.
     if let Some((_, size, sha256)) = stats.files.iter().find(|(f, ..)| *f == raw) {
         if node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
@@ -5805,7 +5805,14 @@ async fn internal_storage(
     let g = node
         .hosted(app)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-    let stats = g.read_local(|m, _| m.storage_stats());
+    // `strong`: answered only by the app's leader, after it confirmed it leads.
+    let stats = if body["strong"].as_bool().unwrap_or(false) {
+        g.read_strong(|m, _| m.storage_stats())
+            .await
+            .map_err(|e| ApiError::unavailable(&e.to_string()))?
+    } else {
+        g.read_local(|m, _| m.storage_stats())
+    };
     Ok(Json(json!({
         "keys": stats.keys,
         "bytes": stats.bytes,
