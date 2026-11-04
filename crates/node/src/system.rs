@@ -123,6 +123,10 @@ pub struct PackageVersion {
     /// Never a service: no app runs it, and only job nodes do.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub compute: BTreeMap<String, String>,
+    /// Each part's WASM size by bundle hash, which is what it counts against the bundle quota.
+    /// Absent in releases from before: every part then counts the whole `.mpk`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub part_sizes: BTreeMap<String, u64>,
     /// The manifest's display metadata (name, description, icon, ...).
     #[serde(default)]
     pub metadata: Value,
@@ -162,6 +166,11 @@ impl PackageVersion {
             .iter()
             .map(move |(s, h)| (h.as_str(), at(s, true)));
         services.chain(computes)
+    }
+
+    /// What the part `hash` counts against the bundle quota.
+    fn part_size(&self, hash: &str) -> u64 {
+        self.part_sizes.get(hash).copied().unwrap_or(self.mpk_size)
     }
 
     /// Whether `who` installed this release, first or again.
@@ -876,6 +885,28 @@ impl SystemState {
                     main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
                 })
             })
+    }
+
+    /// The compute component an app takes when it names the app component `bundle` alone: the
+    /// one every release `who` sees ships it with, `None` when none ships one, and an error
+    /// when releases that share the app component differ (the caller names the release).
+    pub fn compute_of(&self, bundle: &str, who: &str) -> Result<Option<String>, &'static str> {
+        let shipped: BTreeSet<Option<&String>> = self
+            .packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .filter(|v| self.sees_release(v, who))
+            .flat_map(|v| {
+                v.services
+                    .iter()
+                    .filter(|(_, main)| *main == bundle)
+                    .map(|(service, _)| v.compute.get(service))
+            })
+            .collect();
+        match shipped.len() {
+            0 | 1 => Ok(shipped.into_iter().next().flatten().cloned()),
+            _ => Err("releases that share this bundle ship different compute components; name the package and version"),
+        }
     }
 
     /// Whether `who` may name the bundle `hash` for an app: it must be
@@ -3628,14 +3659,23 @@ impl SystemMachine {
                     .filter(|b| b.uploaded_by == actor)
                     .map(|b| b.size)
                     .sum();
+                let added = if release.part_sizes.is_empty() {
+                    release.mpk_size
+                } else {
+                    release
+                        .parts(&package)
+                        .filter(|(hash, _)| !s.bundles.contains_key(*hash))
+                        .map(|(hash, _)| release.part_size(hash))
+                        .sum()
+                };
                 // The operator's installs count against no account's quota.
-                if !by_operator && used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
+                if !by_operator && used + added > s.quotas.max_bundle_bytes_per_account {
                     return Err("quota exceeded: bundle storage");
                 }
                 for (hash, at) in release.parts(&package) {
                     let b = s.bundles.entry(hash.to_owned()).or_insert(BundleRecord {
                         hash: hash.to_owned(),
-                        size: release.mpk_size,
+                        size: release.part_size(hash),
                         uploaded_by: actor.clone(),
                         package: None,
                     });
@@ -6165,6 +6205,7 @@ mod tests {
                 compute: job
                     .map(|j| BTreeMap::from([(String::new(), j.to_owned())]))
                     .unwrap_or_default(),
+                part_sizes: BTreeMap::new(),
                 metadata: Value::Null,
                 outbound: Vec::new(),
                 installed_by: "alice".into(),
@@ -6228,6 +6269,99 @@ mod tests {
         };
         let _ok = m.run_unproven(uninstall("1.0.0")).unwrap();
         assert!(!m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j1"));
+    }
+
+    /// A release with a compute component counts each part's own size against the bundle
+    /// quota, not the whole `.mpk` once per part.
+    #[test]
+    fn a_compute_release_is_charged_each_parts_own_size() {
+        use super::{BundleSource, PackageVersion};
+        use calimero_bundle::UpgradeAuthority;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        m.state.quotas.max_bundle_bytes_per_account = 37;
+        let release = |version: &str, main: &str, job: &str| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                version: version.into(),
+                mpk: format!("mpk{version}"),
+                mpk_size: 40,
+                source: BundleSource::Upload,
+                services: BTreeMap::from([(String::new(), main.to_owned())]),
+                compute: BTreeMap::from([(String::new(), job.to_owned())]),
+                part_sizes: BTreeMap::from([(main.to_owned(), 30), (job.to_owned(), 7)]),
+                metadata: Value::Null,
+                outbound: Vec::new(),
+                installed_by: "alice".into(),
+                installed_at: 0,
+                installers: BTreeSet::new(),
+                upgrades: UpgradeAuthority::Owner,
+            },
+        };
+        let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
+        assert_eq!(m.state.bundles["m1"].size, 30);
+        assert_eq!(m.state.bundles["j1"].size, 7);
+        let e = m.run_authorized(release("1.1.0", "m2", "j2")).unwrap_err();
+        assert!(e.contains("quota exceeded"), "{e}");
+    }
+
+    /// An uninstall that would remove a compute component an app still runs is refused, like
+    /// one that would remove its main component.
+    #[test]
+    fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
+        use super::{BundleSource, PackageVersion};
+        use calimero_bundle::UpgradeAuthority;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let install = |version: &str, main: &str, job: &str| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                version: version.into(),
+                mpk: format!("mpk{version}"),
+                mpk_size: 1,
+                source: BundleSource::Upload,
+                services: BTreeMap::from([(String::new(), main.to_owned())]),
+                compute: BTreeMap::from([(String::new(), job.to_owned())]),
+                part_sizes: BTreeMap::new(),
+                metadata: Value::Null,
+                outbound: Vec::new(),
+                installed_by: "alice".into(),
+                installed_at: 0,
+                installers: BTreeSet::new(),
+                upgrades: UpgradeAuthority::Owner,
+            },
+        };
+        let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
+        let _ok = m.run_authorized(install("1.1.0", "m1", "j2")).unwrap();
+        // The app runs the main component both releases share, and the first one's compute.
+        let app = SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": "app", "name": "app", "group": 0, "bundle": "m1", "owner": "alice",
+                    "replicas": [1], "createdAt": 10, "computeBundle": "j1",
+                }))
+                .unwrap(),
+            ),
+        };
+        let _ok = m.run_unproven(app).unwrap();
+        let uninstall = |version: &str| SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some(version.into()),
+            actor: "alice".into(),
+        };
+        let e = m.run_unproven(uninstall("1.0.0")).unwrap_err();
+        assert!(e.contains("still runs"), "{e}");
+        assert!(m.state.bundles.contains_key("j1"));
+        let _ok = m.run_unproven(uninstall("1.1.0")).unwrap();
+        assert!(m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j2"));
     }
 
     /// An account `id` holding the passkey `pk`.

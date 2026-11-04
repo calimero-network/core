@@ -288,7 +288,7 @@ fn a_component_built_against_0_5_0_still_links_and_runs() {
 }
 
 #[test]
-fn a_guest_writes_a_file_in_a_call_and_reads_it_back_in_a_view() {
+fn a_guest_writes_a_file_in_a_call_and_cannot_read_it_back_outside_a_compute_run() {
     let fx = fixture();
     let app = prepare(&fx, "files");
     let files = MemoryFiles::default();
@@ -309,9 +309,12 @@ fn a_guest_writes_a_file_in_a_call_and_reads_it_back_in_a_view() {
 
     let view = host(InvocationKind::View, "read", &out.result).with_files(Arc::new(files));
     let read = fx.engine.invoke(&app, view, heavy());
-    assert_eq!(read.status, Status::Ok, "{:?}", read.status);
-    assert_eq!(read.result, sha);
-    assert!(read.new_files.is_empty());
+    assert_eq!(
+        trap_kind(&read),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        read.status
+    );
 }
 
 #[test]

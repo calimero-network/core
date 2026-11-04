@@ -2501,6 +2501,11 @@ impl Node {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let compute_bundle = req
+            .args
+            .get("computeBundle")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let migrate = req
             .args
             .get("migrate")
@@ -2535,7 +2540,8 @@ impl Node {
                 conflict: false,
             });
         }
-        self.upgrade_component(g, &bundle, migrate.as_deref()).await
+        self.upgrade_component(g, &bundle, compute_bundle.as_deref(), migrate.as_deref())
+            .await
     }
 
     /// Run a call wherever the app's leader is.

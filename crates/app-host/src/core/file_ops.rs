@@ -189,9 +189,14 @@ impl HostCore {
         let _ = self.files.writers.remove(&id.0);
     }
 
-    /// Opens a file the app marks. Every kind but migrate.
+    /// Opens a file the app marks. A compute run only.
     pub fn files_open(&mut self, id: &str) -> Result<Result<ReaderId, String>, HostDenied> {
         self.may_read_files("files.open", Some(id))?;
+        if self.inv.compute.is_none() {
+            return Err(HostDenied::new(
+                "files.open: a sealed file is readable only inside a compute run",
+            ));
+        }
         if self.files.open_count() >= MAX_OPEN_FILES {
             return Ok(Err(FILE_TOO_MANY_OPEN.to_owned()));
         }
@@ -298,8 +303,8 @@ impl HostCore {
         Ok(())
     }
 
-    /// Every kind but migrate reads; a compute run only the files it was given. `id` is none
-    /// for a read, which works on a handle that was already checked at `open`.
+    /// Every kind but migrate may ask a file's info; a compute run only the files it was given.
+    /// `id` is none for a read, which works on a handle that was already checked at `open`.
     fn may_read_files(&self, what: &str, id: Option<&str>) -> Result<(), HostDenied> {
         if self.inv.kind == InvocationKind::Migrate {
             return Err(self.denied(what));

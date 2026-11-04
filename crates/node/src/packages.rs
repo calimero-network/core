@@ -260,6 +260,7 @@ impl Node {
         let mut services = BTreeMap::new();
         let mut compute = BTreeMap::new();
         let mut wasm_by_hash = BTreeMap::new();
+        let mut part_sizes = BTreeMap::new();
         for Service {
             name: service,
             wasm: bytes,
@@ -298,9 +299,11 @@ impl Node {
                         .with_details(serde_json::json!({ "service": service }))
                 })?;
                 let _prev = compute.insert(service.clone(), job_hash.clone());
+                let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
                 let _prev = wasm_by_hash.insert(job_hash, job);
             }
             let _prev = services.insert(service, hash.clone());
+            let _prev = part_sizes.insert(hash.clone(), bytes.len() as u64);
             let _prev = wasm_by_hash.insert(hash, bytes);
         }
         let metadata = manifest
@@ -318,6 +321,7 @@ impl Node {
                 source,
                 services,
                 compute,
+                part_sizes,
                 metadata,
                 outbound: manifest.outbound.clone(),
                 installed_by: actor.to_owned(),

@@ -5,10 +5,10 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use calimero_app_host::{
-    parse_blob_id, BlobHost, BlobInfo, Caller, Directory, FileError, FileInfo, FileRead, FileWrite,
-    Files, HostCore, HostDenied, Invocation, InvocationKind, MemoryFiles, NewFile, OrgRole,
-    Outcome, ReadError, ReaderId, Status, TimerCtx, TrapKind, Usage, WriterId, FILES_DISABLED,
-    FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW,
+    parse_blob_id, BlobHost, BlobInfo, Caller, ComputeCtx, Directory, FileError, FileInfo,
+    FileRead, FileWrite, Files, HostCore, HostDenied, Invocation, InvocationKind, MemoryFiles,
+    NewFile, OrgRole, Outcome, ReadError, ReaderId, Status, TimerCtx, TrapKind, Usage, WriterId,
+    FILES_DISABLED, FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW,
     FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
     MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
 };
@@ -128,6 +128,19 @@ fn host(inv: Invocation, files: Arc<dyn Files>) -> HostCore {
         .with_files(files)
 }
 
+fn run_host(files: Arc<dyn Files>, inputs: &[&str]) -> HostCore {
+    let compute = ComputeCtx {
+        run_id: "r".to_owned(),
+        owner: "owner".to_owned(),
+        inputs: inputs.iter().map(|id| (*id).to_owned()).collect(),
+    };
+    let inv = Invocation {
+        compute: Some(compute),
+        ..inv(InvocationKind::Action)
+    };
+    host(inv, files)
+}
+
 fn call_host(files: &MemoryFiles) -> HostCore {
     host(inv(InvocationKind::Call), Arc::new(files.clone()))
 }
@@ -136,12 +149,27 @@ fn finish(host: HostCore, status: Status) -> Outcome {
     host.finish(status, Vec::new(), Usage::default())
 }
 
+fn assert_unavailable(h: HostCore) {
+    let trapped = Status::Trap {
+        kind: TrapKind::HostDenied,
+        detail: String::new(),
+    };
+    let out = finish(h, trapped);
+    assert!(matches!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Unavailable,
+            ..
+        }
+    ));
+}
+
 fn denied<T: Debug>(result: Result<T, HostDenied>) {
     result.expect_err("expected HostDenied");
 }
 
 #[test]
-fn writes_are_logged_kinds_only_reads_are_everything_but_migrate() {
+fn writes_are_logged_kinds_only_and_a_file_opens_only_in_a_compute_run() {
     let files = MemoryFiles::default();
     let id = files.insert(b"hello");
     let writes = [
@@ -178,9 +206,15 @@ fn writes_are_logged_kinds_only_reads_are_everything_but_migrate() {
     for kind in reads {
         let mut h = host(inv(kind), Arc::new(files.clone()));
         assert!(h.files_info(&id).unwrap().is_some());
-        let r = h.files_open(&id).unwrap().unwrap();
-        assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"hello");
+        let refused = h.files_open(&id).unwrap_err();
+        assert!(
+            refused.0.contains("only inside a compute run"),
+            "{kind:?}: {refused:?}"
+        );
     }
+    let mut h = run_host(Arc::new(files.clone()), &[&id]);
+    let r = h.files_open(&id).unwrap().unwrap();
+    assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"hello");
     let mut h = host(inv(InvocationKind::Migrate), Arc::new(files.clone()));
     denied(h.files_info(&id));
     denied(h.files_open(&id));
@@ -198,7 +232,7 @@ fn write_finish_then_read_back_in_chunks_to_the_end() {
     let out = finish(h, Status::Ok);
     files.apply(&out.new_files);
 
-    let mut h = host(inv(InvocationKind::View), Arc::new(files));
+    let mut h = run_host(Arc::new(files), &[&id]);
     let info = h.files_info(&id).unwrap().unwrap();
     assert_eq!(info.size, 11);
     let r = h.files_open(&id).unwrap().unwrap();
@@ -210,9 +244,11 @@ fn write_finish_then_read_back_in_chunks_to_the_end() {
 #[test]
 fn open_and_info_of_an_unknown_file() {
     let files = MemoryFiles::default();
-    let mut h = call_host(&files);
+    let h = call_host(&files);
     assert!(h.files_info("nope").unwrap().is_none());
-    assert_eq!(h.files_open("nope").unwrap().unwrap_err(), NO_SUCH_FILE);
+    let mut h = run_host(Arc::new(files), &["nope"]);
+    denied(h.files_open("nope"));
+    assert_unavailable(h);
 }
 
 #[test]
@@ -229,7 +265,7 @@ fn read_chunks_are_clamped() {
     let files = MemoryFiles::default();
     let big = vec![1u8; MAX_READ_CHUNK as usize + 10];
     let id = files.insert(&big);
-    let mut h = call_host(&files);
+    let mut h = run_host(Arc::new(files), &[&id]);
     let r = h.files_open(&id).unwrap().unwrap();
     assert_eq!(
         h.reader_read(r, u32::MAX).unwrap().unwrap().len(),
@@ -241,7 +277,7 @@ fn read_chunks_are_clamped() {
 fn open_handles_are_capped_and_closing_frees_a_slot() {
     let files = MemoryFiles::default();
     let id = files.insert(b"x");
-    let mut h = call_host(&files);
+    let mut h = run_host(Arc::new(files), &[&id]);
     let mut readers = Vec::new();
     for _ in 0..MAX_OPEN_FILES / 2 {
         readers.push(h.files_open(&id).unwrap().unwrap());
@@ -381,17 +417,28 @@ fn the_outcome_carries_the_new_file_with_its_key_material() {
 #[test]
 fn no_files_refuses_everything() {
     let state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
-    let mut h = HostCore::new(
-        "app",
-        Arc::new(state),
-        0,
-        inv(InvocationKind::Call),
-        Arc::new(NoDirectory),
-    )
-    .unwrap();
+    let make = |inv| {
+        HostCore::new(
+            "app",
+            Arc::new(state.clone()),
+            0,
+            inv,
+            Arc::new(NoDirectory),
+        )
+        .unwrap()
+    };
+    let mut h = make(inv(InvocationKind::Call));
     assert_eq!(h.files_create().unwrap().unwrap_err(), FILES_DISABLED);
-    assert_eq!(h.files_open("x").unwrap().unwrap_err(), NO_SUCH_FILE);
     assert!(h.files_info("x").unwrap().is_none());
+    let run = Invocation {
+        compute: Some(ComputeCtx {
+            run_id: "r".to_owned(),
+            owner: "owner".to_owned(),
+            inputs: vec!["x".to_owned()],
+        }),
+        ..inv(InvocationKind::Action)
+    };
+    denied(make(run).files_open("x"));
 }
 
 #[test]
@@ -463,10 +510,7 @@ impl Files for OverReturningFiles {
 #[test]
 fn a_provider_that_returns_more_than_max_is_truncated_and_the_rest_kept() {
     let data: Vec<u8> = (0..10).collect();
-    let mut h = host(
-        inv(InvocationKind::Call),
-        Arc::new(OverReturningFiles(data.clone())),
-    );
+    let mut h = run_host(Arc::new(OverReturningFiles(data.clone())), &["f"]);
     let r = h.files_open("f").unwrap().unwrap();
     assert_eq!(h.reader_read(r, 4).unwrap().unwrap(), data[..4]);
     assert_eq!(h.reader_read(r, 4).unwrap().unwrap(), data[4..8]);
@@ -477,10 +521,7 @@ fn a_provider_that_returns_more_than_max_is_truncated_and_the_rest_kept() {
 #[test]
 fn an_over_returning_provider_is_clamped_to_the_chunk_cap() {
     let data = vec![1u8; MAX_READ_CHUNK as usize + 5];
-    let mut h = host(
-        inv(InvocationKind::Call),
-        Arc::new(OverReturningFiles(data)),
-    );
+    let mut h = run_host(Arc::new(OverReturningFiles(data)), &["f"]);
     let r = h.files_open("f").unwrap().unwrap();
     assert_eq!(
         h.reader_read(r, u32::MAX).unwrap().unwrap().len(),
@@ -493,7 +534,7 @@ fn an_over_returning_provider_is_clamped_to_the_chunk_cap() {
 fn a_read_of_zero_still_makes_progress() {
     let files = MemoryFiles::default();
     let id = files.insert(b"abc");
-    let mut h = call_host(&files);
+    let mut h = run_host(Arc::new(files), &[&id]);
     let r = h.files_open(&id).unwrap().unwrap();
     assert_eq!(h.reader_read(r, 0).unwrap().unwrap(), b"a");
 }
@@ -625,23 +666,22 @@ fn a_blob_ref_to_a_file_may_be_stored_and_one_to_nothing_may_not() {
 }
 
 #[test]
-fn a_corrupt_file_traps_the_run_and_other_read_failures_are_soft() {
-    let mut h = host(
-        inv(InvocationKind::View),
-        Arc::new(FailingFiles(ReadError::Corrupt)),
-    );
+fn a_corrupt_file_traps_the_run_and_any_other_read_failure_ends_it_unavailable() {
+    let mut h = run_host(Arc::new(FailingFiles(ReadError::Corrupt)), &["f"]);
     let r = h.files_open("f").unwrap().unwrap();
     assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
     let denied = h.reader_read(r, 10).unwrap_err();
     assert_eq!(denied, HostDenied(FILE_CORRUPT.to_owned()));
 
-    let mut h = host(
-        inv(InvocationKind::View),
-        Arc::new(FailingFiles(ReadError::Failed("flaky".to_owned()))),
-    );
+    let failing = FailingFiles(ReadError::Failed("flaky".to_owned()));
+    let mut h = run_host(Arc::new(failing), &["f"]);
     let r = h.files_open("f").unwrap().unwrap();
     assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
-    assert_eq!(h.reader_read(r, 10).unwrap().unwrap_err(), "flaky");
+    assert_eq!(
+        h.reader_read(r, 10).unwrap_err(),
+        HostDenied(FILE_UNAVAILABLE.to_owned())
+    );
+    assert_unavailable(h);
 }
 
 /// A provider that cannot get the bytes of any file now.
@@ -660,10 +700,9 @@ impl Files for UnavailableFiles {
 }
 
 #[test]
-fn an_unavailable_file_aborts_a_logged_run_as_unavailable_and_is_soft_in_a_view() {
+fn an_unavailable_file_aborts_a_logged_run_and_a_compute_run_as_unavailable() {
     for kind in [InvocationKind::Call, InvocationKind::Init] {
         let mut h = host(inv(kind), Arc::new(UnavailableFiles));
-        denied(h.files_open("f"));
         denied(h.files_create());
         let trapped = Status::Trap {
             kind: TrapKind::HostDenied,
@@ -682,9 +721,9 @@ fn an_unavailable_file_aborts_a_logged_run_as_unavailable_and_is_soft_in_a_view(
             out.status
         );
     }
-    let mut h = host(inv(InvocationKind::View), Arc::new(UnavailableFiles));
-    assert_eq!(h.files_open("f").unwrap().unwrap_err(), FILE_UNAVAILABLE);
-    assert_eq!(finish(h, Status::Ok).status, Status::Ok);
+    let mut h = run_host(Arc::new(UnavailableFiles), &["f"]);
+    denied(h.files_open("f"));
+    assert_unavailable(h);
 }
 
 #[test]
@@ -787,13 +826,11 @@ impl Files for TrickleFiles {
 
 #[test]
 fn a_read_fills_to_max_whatever_the_provider_chunks() {
-    for kind in [InvocationKind::Call, InvocationKind::View] {
-        let mut h = host(inv(kind), Arc::new(TrickleFiles(b"abcdefg".to_vec())));
-        let r = h.files_open("f").unwrap().unwrap();
-        assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"abc", "{kind:?}");
-        assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"def");
-        assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"g");
-        assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
-        assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
-    }
+    let mut h = run_host(Arc::new(TrickleFiles(b"abcdefg".to_vec())), &["f"]);
+    let r = h.files_open("f").unwrap().unwrap();
+    assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"abc");
+    assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"def");
+    assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"g");
+    assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
+    assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
 }

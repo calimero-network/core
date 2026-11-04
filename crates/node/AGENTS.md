@@ -198,6 +198,9 @@ is its command line.
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
   `AppRecord::compute_bundle` carries the running release's compute hash next to `bundle`.
   Releases may share an app component and differ in compute, so create and upgrade carry the compute hash of the release they name (`resolve_release_parts`), and apply only checks that a release ships that pair (`SystemState::ships_compute`).
+  A create or upgrade by bundle hash alone resolves the compute part of the releases that ship that app component (`SystemState::compute_of`), `400 AMBIGUOUS_COMPUTE` when they differ, and answers `compute: false` when none ships one.
+  The app's log carries the pair too: `ComponentCmd::Init` and `Upgrade` name `compute_bundle` beside `bundle`, and apply keeps it in `ComponentHead::compute_bundle`, so a run pins the pair the group runs and never the system record's, which a delayed or failed system write may leave behind.
+  A release's parts count against the bundle quota each at its own size (`PackageVersion::part_sizes`; a release from before counts the whole `.mpk` per part).
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
@@ -1092,7 +1095,9 @@ API and system group:
   `open` uses the local blob only if its SHA-256 is its id, else drops it and fetches it from the other replicas (5 s), and decrypts as the guest reads.
   Any opener failure, including at the end of the stream, is `ReadError::Corrupt`, which the host core makes a `HostDenied` trap.
   Open readers hold their ciphertext bytes against a per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged runs wait 1 s for it).
-  A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `open`, `create`, `write` and `finish`); a view gets the soft error `"file bytes are not available"`.
+  Only a compute run opens a file (the host core refuses `files.open` in every other kind), so a sealed file's contents are readable only inside a compute run of the release the organization approved.
+  A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `create`, `write` and `finish`) and ends a compute run `Unavailable`.
+  Tests read a file through `Node::read_sealed_file` (feature `testing`), which uses the provider a run reads with.
   The provider is built for every run but touches keys, budgets and bytes only when a run touches a file.
   Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
   Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app holds (`holds_blob`); bundles and other blobs still use every node.
