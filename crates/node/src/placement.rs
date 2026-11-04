@@ -32,7 +32,7 @@ pub fn replicas(state: &SystemState, allowed: &[NodeId], count: usize) -> Vec<No
         .filter_map(|id| {
             Some(Candidate {
                 id: *id,
-                zone: &state.nodes.get(id)?.zone,
+                zone: &state.replica_node(id)?.zone,
                 load: state
                     .apps
                     .values()
@@ -79,7 +79,9 @@ pub fn choose(candidates: &[Candidate<'_>], count: usize) -> Vec<NodeId> {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose, Candidate};
+    use super::{choose, replicas, Candidate};
+    use crate::system::SystemState;
+    use crate::types::{NodeRecord, NodeRole};
 
     fn nodes<'a>(spec: &[(u64, &'a str, usize)]) -> Vec<Candidate<'a>> {
         spec.iter()
@@ -133,5 +135,26 @@ mod tests {
         let n = nodes(&[(5, "a", 0), (2, "b", 0)]);
         assert_eq!(choose(&n, 3), vec![2, 5]);
         assert!(choose(&[], 3).is_empty());
+    }
+
+    #[test]
+    fn a_job_node_is_never_placed() {
+        let mut state = SystemState::default();
+        for (id, role) in [
+            (1, NodeRole::Replica),
+            (2, NodeRole::Job),
+            (3, NodeRole::Replica),
+        ] {
+            let _prev = state.nodes.insert(
+                id,
+                NodeRecord {
+                    id,
+                    addr: String::new(),
+                    zone: String::new(),
+                    role,
+                },
+            );
+        }
+        assert_eq!(replicas(&state, &[1, 2, 3], 3), vec![1, 3]);
     }
 }

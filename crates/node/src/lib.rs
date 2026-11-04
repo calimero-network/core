@@ -24,6 +24,7 @@ pub mod error;
 pub mod files;
 pub mod idempotency;
 pub mod inspect;
+pub mod job_node;
 pub mod kms;
 pub mod local;
 pub mod membership;
@@ -34,6 +35,7 @@ pub mod placement;
 pub mod presence;
 pub mod proof;
 pub mod report;
+pub mod rollback;
 pub mod signing_key;
 pub mod system;
 #[cfg(feature = "testing")]
@@ -41,6 +43,7 @@ pub mod testing;
 pub mod types;
 pub mod usage;
 
+pub use job_node::{run_job, JobConfig, RunningJob};
 pub use node::{Config, Node};
 
 /// The core release this build is: `[workspace.metadata.workspaces].version`
@@ -176,6 +179,10 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
         None => None,
     };
+
+    if let Some(checkpoints) = &node.checkpoints {
+        drop(tokio::spawn(Arc::clone(checkpoints).run(shutdown.clone())));
+    }
 
     drop(tokio::spawn(calimero_sealed::expire_sessions(
         Arc::downgrade(&node.transport),

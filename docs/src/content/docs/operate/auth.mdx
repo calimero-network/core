@@ -46,9 +46,62 @@ each a device of the account.
   affinity for `/auth/passkey/*` and `/auth/passkeys/add/*`, or clients must
   talk to one node URL. A node holds at most 10,000 open ceremonies and then
   answers `429 RATE_LIMITED`.
-- **Sign-up is open.** Anyone who can reach the cluster can register an
-  account. The `maxAccounts` quota (default 100,000) bounds the total; see
+- **Sign-up policy.** Each cluster has one, set at genesis (`--sign-up`)
+  and attested with its governance; see [Sign-up policy](#sign-up-policy).
+  On an `open` cluster (the default) anyone who can reach it can register an
+  account, and the `maxAccounts` quota (default 100,000) bounds the total; see
   [quotas](/operate/runbooks/#set-quotas).
+
+## Sign-up policy
+
+| Policy | Who may create an account |
+| --- | --- |
+| `open` (default) | Anyone who reaches the cluster. |
+| `invite` | Someone holding a valid **organization invite** (the new account joins the organization) or a **cluster sign-up invite**. |
+| `closed` | Someone holding a cluster sign-up invite only: the operator's (or owner's) pre-authorization. Organization invites still let existing accounts join. |
+
+Read it before sign-up, without a session: `GET /sign-up` answers
+`{ policy, orgInvites, signUpInvites, inviteRequired }`. The attested
+governance carries it too (`signUp`, left out when `open`), on
+`GET /attestation?purpose=receipts` and `GET /releases`.
+
+Sign up with an invite by sending its token on both halves of the ceremony:
+
+```json
+POST /auth/passkey/register/begin   { "name": "Ada", "invite": "<token>" }
+POST /auth/passkey/register/finish  { "challengeId": "...", "registration": {...}, "invite": "<token>" }
+```
+
+`begin` refuses a sign-up the policy would refuse with `403 SIGN_UP_REFUSED`
+before any passkey is made, and so does `finish`, before it spends the
+challenge; the system log judges it again where it applies, so a leader
+cannot let anyone else in. An invite given on an `open` cluster is checked
+too (an unknown, expired or used one is refused, never ignored), and an
+organization invite there joins its organization. The node signs the
+invite's redemption with the token's key, as for
+[`/invites/{token}/redeem`](/protocol/organizations/): the log never sees
+the token. With the Rust client: `Client::sign_up_invited(passkey, name,
+Some(token))`.
+
+Who runs sign-up (its policy and its sign-up invites) is the party that runs
+the cluster's deployers: the operator, with its key, until the operator names
+the cluster's owner on a `--deployers owner` cluster; from then on the owner,
+with a passkey, and the operator's signature is refused.
+
+| Change | Operator (`--ops-token`, signed) | Owner (passkey, `412` first) | Statement |
+| --- | --- | --- | --- |
+| Set the policy | `POST /ops/sign-up { policy }` | `POST /sign-up { policy }` | `cluster / __sign_up / { policy }` |
+| Issue a sign-up invite | `POST /ops/sign-up/invites { token, uses?, expiresAt }` | `POST /sign-up/invites { uses?, ttlSecs? }` (answers the `token`) | `cluster / __create_sign_up_invite / { inviteKey, uses, expiresAt }` |
+| Withdraw one | `DELETE /ops/sign-up/invites/{inviteKey}` (or `POST .../revoke`) | `DELETE /sign-up/invites/{inviteKey}` | `cluster / __revoke_sign_up_invite / { inviteKey }` |
+| List them | `GET /ops/sign-up/invites` | `GET /sign-up/invites` | |
+
+The operator chooses its token (16 to 256 bytes) so that the `428
+OPERATOR_SIGNATURE_REQUIRED` and the signed retry name the same invite;
+`inviteKey` is `proof::invite_key(token)`, the Ed25519 public key whose seed is
+`SHA-256("calimero.invite.v1\0" || token)`, and the list answers keys and terms
+only. A sign-up invite creates 1 to 10,000 accounts (default 1) and lives at
+most a year; at most 10,000 are live at once. Accounts it created stay when it
+is withdrawn, and a policy change never removes an account.
 
 Devices: `POST /auth/passkeys/add/*` adds one (`meroctl account device add`),
 approved with a passkey the account already has; `DELETE
@@ -129,7 +182,8 @@ file passkey (`--dev-passkey`) on development clusters.
 ## App-bound sessions
 
 With `--apps-domain`, a passkey ceremony run from a package's frontend origin
-(`{label}.{domain}`) opens a session bound to that package. It reaches only
+(`{label}.{domain}`, its cluster host `{cluster_label}.{domain}`, or a deployment's host `{dlabel}.{domain}` offering it)
+opens a session bound to that package. It reaches only
 apps that run a release of that package, can create instances of that package
 only, and is refused credentials, API keys, approvals, upgrades, uninstalls
 and uploads. Its step-up confirmations come from its own origin only.

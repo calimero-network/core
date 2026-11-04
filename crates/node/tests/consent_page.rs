@@ -4,8 +4,8 @@
 //! node-side facts only, and the person's passkey assertion there is the
 //! consent, bound to exactly what the page showed.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
-//! (see `harness/cluster.rs`).
+//! Builds the component fixtures `apps/v2-fixtures/kv`, `notes-v1` and `notes-v2`
+//! from this checkout (see `harness/cluster.rs`).
 
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::api::Pending;
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster, ORIGIN};
+use harness::{fixture, kv_wasm, signed_up, Cluster, ORIGIN};
 
 const PACKAGE: &str = "com.test.notes";
 
@@ -460,8 +460,15 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         serde_json::to_string_pretty(&snapshot).unwrap()
     );
     assert_eq!(
-        model["upgrade"]["migration"]["runs"], false,
-        "same state version"
+        model["upgrade"]["migration"],
+        json!({ "fromStateVersion": 1, "toStateVersion": 1 }),
+        "the same state version, read from each component's ABI"
+    );
+    assert_eq!(model["upgrade"]["abi"], json!({ "from": true, "to": true }));
+    assert_eq!(
+        model["upgrade"]["methods"],
+        json!({ "added": [], "removed": [], "changed": [] }),
+        "the same code under another name"
     );
 
     // Approved on the page: the passkey signs the target's manifest hash.
@@ -503,6 +510,125 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
     let (bob, _) = signed_up(&c, 2, "bob").await;
     let e = bob.get(&format!("consent/{id}/result")).await.unwrap_err();
     assert_eq!(status(&e), 404);
+}
+
+/// An upgrade between two components: the page reads what changes from the
+/// `calimero:abi` section each one embeds (methods added, removed and changed,
+/// events, timers, the state version), not from an SDK 0.12 schema neither has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrades_page_names_what_the_components_abis_change() {
+    let c = Cluster::start(3).await;
+    let (alice, _) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let d = Declares::default();
+    let (v1, _) = release(
+        "1.0.0",
+        &fixture("apps/v2-fixtures/notes-v1"),
+        &publisher,
+        &d,
+    );
+    let (v2, _) = release(
+        "2.0.0",
+        &fixture("apps/v2-fixtures/notes-v2"),
+        &publisher,
+        &d,
+    );
+    let _ = alice.upload_package(v1).await.unwrap();
+    let _ = alice.upload_package(v2).await.unwrap();
+    let app = alice
+        .post(
+            "apps",
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let made = alice
+        .post(
+            "consent/requests",
+            json!({
+                "kind": "upgrade",
+                "subject": { "app": app, "toVersion": "2.0.0" },
+                "returnTo": format!("{ORIGIN}/done"),
+            }),
+        )
+        .await
+        .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    let u = &model["upgrade"];
+    assert_eq!(u["abi"], json!({ "from": true, "to": true }), "{u}");
+
+    let names = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap_or_else(|| panic!("not a list: {v}"))
+            .iter()
+            .map(|m| m["name"].as_str().or(m.as_str()).unwrap().to_owned())
+            .collect()
+    };
+    let methods = &u["methods"];
+    assert_eq!(
+        names(&methods["added"]),
+        ["exists", "tidy", "wipe"],
+        "{methods}"
+    );
+    assert_eq!(names(&methods["removed"]), ["remove"], "{methods}");
+    assert_eq!(names(&methods["changed"]), ["set"], "{methods}");
+    let set = &methods["changed"][0];
+    assert_eq!(
+        (&set["from"]["confirm"], &set["to"]["confirm"]),
+        (&json!(false), &json!(true)),
+        "{set}"
+    );
+    assert_eq!(
+        set["to"]["params"],
+        json!([["id", "string"], ["title", "string"], ["text", "string"]]),
+        "{set}"
+    );
+    let exists = &methods["added"][0];
+    assert_eq!(
+        (&exists["kind"], &exists["public"]),
+        (&json!("view"), &json!(true)),
+        "{exists}"
+    );
+    assert_eq!(
+        methods["added"][2],
+        json!({
+            "name": "wipe", "kind": "call", "confirm": true, "public": false, "rate": null,
+            "allowSystem": false, "allowApps": [], "allowAction": false,
+            "params": [["id", "string"]], "returns": null,
+        })
+    );
+
+    assert_eq!(
+        u["events"],
+        json!({ "added": ["Wiped"], "removed": [], "kept": ["Changed"] })
+    );
+    assert_eq!(
+        u["timers"],
+        json!({ "added": [{ "name": "tidy", "everySecs": 3600 }], "removed": [], "changed": [] })
+    );
+    assert_eq!(
+        u["migration"],
+        json!({ "fromStateVersion": 1, "toStateVersion": 2 }),
+        "an upgrade is code only: no migration runs"
+    );
+
+    // What the person is told first.
+    let flags: Vec<&str> = model["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["flag"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        flags,
+        ["newPublic", "stateVersion", "removesFeatures"],
+        "{model}"
+    );
+    assert_eq!(model["attention"][0]["items"], json!(["exists"]));
+    assert_eq!(model["attention"][2]["items"], json!(["remove"]));
 }
 
 /// A bundle re-installed under the version the person was shown is not the

@@ -651,6 +651,21 @@ impl Engine {
         self.db.get_blob(name)
     }
 
+    /// Write a row of this node's own (not of any group), synced: it lives in
+    /// the same store as the groups' rows, so a copy of the store carries the
+    /// value it had when the copy was taken (the node's rollback counter).
+    pub fn put_node_meta<T: serde::Serialize>(&self, name: &str, value: &T) -> eyre::Result<()> {
+        self.db.put_meta(store::NODE_ROWS, name, value)
+    }
+
+    /// Read a row written with [`Engine::put_node_meta`].
+    pub fn get_node_meta<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> eyre::Result<Option<T>> {
+        self.db.get_meta(store::NODE_ROWS, name)
+    }
+
     #[must_use]
     pub const fn node_id(&self) -> NodeId {
         self.node

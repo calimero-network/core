@@ -18,8 +18,12 @@ An account id is 32 random bytes in base64url, made when someone signs up. The
 account record holds a display name, its passkeys (at most 10) and their
 labels, the account's aliases for apps, and the approvals it makes for apps it
 owns outside any organization (mero-tee releases and outbound prefixes; see
-[Deployment governance](/protocol/governance/)). Sign-up is open; the
-operator's `maxAccounts` quota bounds how many accounts a cluster takes.
+[Deployment governance](/protocol/governance/)). Who may sign up is the
+cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
+default; the operator's `maxAccounts` quota bounds how many accounts a cluster
+takes), `invite` or `closed`. `CreateAccount` carries the invite a person signs
+up with, as the token key's signature over the new account and the time, and
+`apply` judges it against the policy.
 
 The release of the node an account signed up through is approved for that
 account's own apps from the start, so its apps can run where it began.

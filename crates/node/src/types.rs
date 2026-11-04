@@ -91,6 +91,16 @@ pub enum Access {
     Team { team: TeamId },
 }
 
+/// What a registered node is for: a replica holds apps and the cluster key, a
+/// job node only runs compute for them and never holds either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NodeRole {
+    #[default]
+    Replica,
+    Job,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeRecord {
@@ -98,6 +108,8 @@ pub struct NodeRecord {
     pub addr: String,
     #[serde(default)]
     pub zone: String,
+    #[serde(default)]
+    pub role: NodeRole,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -263,7 +275,7 @@ pub struct ApiKeyRecord {
     pub expires_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshRecord {
     pub account: AccountId,
@@ -275,6 +287,11 @@ pub struct RefreshRecord {
     /// The package whose frontend opened the session, which binds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The token's public key (`proof::refresh_key`, hex), which signs its
+    /// exchange (`UseRefresh`). Empty in records from before: those are not
+    /// exchanged, and their holders sign in again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -395,7 +412,44 @@ pub struct Org {
     /// Organization-wide upgrade runs, the newest [`UPGRADE_RUNS_KEPT`].
     #[serde(default)]
     pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
+    /// The organization's recovery key and any recovery under way
+    /// (`docs/specs/org-recovery.md`); absent for an organization that never
+    /// set one, as every organization written before this field was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<OrgRecovery>,
 }
+
+/// An organization's recovery key: whoever holds its seed can hand the
+/// organization to an account, [`RECOVERY_DELAY_SECS`] after starting, unless
+/// the owner cancels first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgRecovery {
+    /// The key's Ed25519 public half, base64url
+    /// ([`calimero_identity::recovery`]).
+    pub public_key: String,
+    /// When the owner set it (the setting command's time, Unix seconds).
+    pub set_at: u64,
+    /// A recovery under way.
+    #[serde(default)]
+    pub pending: Option<PendingRecovery>,
+}
+
+/// A recovery started with the seed, not finished or cancelled yet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRecovery {
+    /// The account the organization goes to.
+    pub account: AccountId,
+    /// When it started (Unix seconds).
+    pub started_at: u64,
+    /// The earliest time it may finish.
+    pub ready_at: u64,
+}
+
+/// How long a started recovery waits before it may finish: the owner's time
+/// to notice and cancel (72 hours).
+pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).
 pub const MAX_METADATA_BYTES: usize = 16 * 1024;

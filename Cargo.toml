@@ -43,7 +43,6 @@ members = [
     "./crates/meroctl",
 
     "./crates/utils/fs",
-    "./crates/wasm-abi",
 
     "./tools/mero-sign",
     "./tools/search-bench",
@@ -68,14 +67,11 @@ dirs = "7.0.0"
 ed25519-dalek = "3"
 eyre = "0.6.12"
 flate2 = "1.0"
-# Cross-process build lock in calimero-app-build (already in the tree through tantivy).
-fs4 = "0.13.1"
 futures-util = "0.3.30"
 hex = "0.4.3"
 html5ever = "0.40"
 http = "1"
 indexmap = "2.6.0"
-jsonschema = { version = "0.60", default-features = false }
 libc = "0.2"
 libp2p-identity = "0.2.12"
 multiaddr = "0.18.1"
@@ -148,7 +144,6 @@ calimero-search = { path = "./crates/search" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-tee-release = { path = "./crates/tee-release" }
 calimero-utils-fs = { path = "./crates/utils/fs" }
-calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-sign = { path = "./tools/mero-sign" }
 
 [profile.dev]

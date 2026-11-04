@@ -21,13 +21,13 @@ and, for billing, each app's usage under its opaque id.
 
 ## Metrics
 
-The `_total` metrics are counters, `http_request_duration_seconds` is a
-histogram, and the rest are gauges. "Here" means as this node sees it;
+The `_total` metrics are counters, the `_duration_seconds` ones
+histograms, and the rest are gauges. "Here" means as this node sees it;
 directory counts are the same on every node once it has caught up.
 
 No label carries a name or anything from a request: labels are route
 templates (`/apps/{app}/intents`), route groups, status classes, the node's
-error codes, group numbers and node ids. The one exception is the
+error codes, run kinds, call phases, group numbers and node ids. The one exception is the
 [usage metering](#usage-metering) family `calimero_app_*`, labelled with an
 app's id and its payer's id (an organization, or a personal app's owner
 account) so it can be billed; those are opaque random ids, never names. Whoever
@@ -40,7 +40,8 @@ A few series keep conventional names (`http_requests_total`,
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
-| `calimero_cluster_nodes` | | Nodes in the fleet directory. |
+| `calimero_cluster_nodes` | | Replica nodes in the fleet directory (job nodes are not counted). |
+| `calimero_cluster_job_nodes` | | Job nodes in the fleet directory. |
 | `calimero_apps` | | App instances in the directory. |
 | `calimero_accounts` | | Accounts. |
 | `calimero_orgs` | | Organizations. |
@@ -54,6 +55,7 @@ A few series keep conventional names (`http_requests_total`,
 | `calimero_system_voters` | | System group voters. |
 | `calimero_system_learners` | | System group learners. |
 | `calimero_build_conflicts_total` | | Counter: entries this node appended as leader that applied as conflicts (built on state that changed first) and ran again. |
+| `calimero_system_read_rounds_total` | | Counter: read-index rounds this node began on the system group. A client's call or view makes one, wherever it enters and wherever the app's leader is; requests waiting together share one. |
 | `calimero_raft_misaddressed_total` | `reason` | Counter: Raft messages from peers whose addressee did not check out. `not_addressee`: addressed to another node, refused (`421 NOT_ADDRESSEE`; peers only); a steady rate means a peer reaches this node at an address the cluster has for another one. `no_target`: no addressee, from a peer on an earlier release; accepted this release (with a warning at most once a minute) and refused from the next, so it should fall to zero once every node runs this release. |
 | `calimero_group_applied` | `group` | An app group's applied index here, per hosted group (the label is the group number, not the app's name). |
 | `calimero_build_info` | `release` | Always `1`; `release` is this node's release. |
@@ -72,6 +74,8 @@ A few series keep conventional names (`http_requests_total`,
 | `http_requests_total` | `method`, `path`, `status`, `group` | Counter: requests answered, by method, route template (`path`) and status class (`2xx`, `4xx`, ...; `cancelled` when the caller went away before the answer), including peers' (`internal`, `raft`). |
 | `calimero_http_errors_total` | `group`, `code` | Counter: error answers by the node's error code (`NOT_FOUND`, `QUOTA_EXCEEDED`, `TOO_LARGE`, ...; anything else, and a refusal without a code such as a malformed body's, is `OTHER`). |
 | `http_request_duration_seconds` | `method`, `path`, `status`, `group` | Histogram: time to a response's head (buckets 1 ms doubling to 16 s); `group` is the route group (`calls`, `views`, `sign_in`, `account`, `apps`, `blobs`, `streams`, `orgs`, `packages`, `ops`, `raft`, `internal`, `attestation`, `health`, `other`). |
+| `calimero_wasm_run_duration_seconds` | `kind` | Histogram: wall time of each WASM run this node made, whatever became of its result (buckets 250 µs doubling to 16 s). `kind` is `call` (a call through `/intents`), `xcall` (a delivered cross-app call), `view`, `init`, `timer`, `action` or `migrate`. Runs happen where usage is counted: calls, `init`, timers, xcalls and actions on the app's leader, a view on the replica that answered it. |
+| `calimero_call_phase_duration_seconds` | `phase` | Histogram: a logged call's time on the app's leader (same buckets), each call observed once in each phase. `run`: the WASM run that built its entry. `commit`: from proposing the entry until the log committed it and this node applied it (the Raft round trip to a majority, plus the apply). A call answered without an entry (a replay, a timeout, a refusal) is in neither. |
 | `calimero_http_requests_in_flight` | `group` | Requests being handled now. |
 | `calimero_http_request_bytes_total` | `group` | Counter: request body bytes, as each body's length says, at most the sealed cap (64 MiB) per request. |
 | `calimero_http_response_bytes_total` | `group` | Counter: response body bytes, where the length was known up front (streams count 0). |
@@ -79,9 +83,21 @@ A few series keep conventional names (`http_requests_total`,
 The request metrics count what the router matched: a request no route
 matches (404, 405), the sealed layer's own refusals and handshakes, and app
 frontends (`--apps-domain`) are not counted. A call (`/intents`) of a method
-declared as a view counts under `calls`. The request metrics are kept per
-process: a test that runs several nodes in one process sees their sum on each
-node.
+declared as a view counts under `calls`. The request and run metrics are kept
+per process: a test that runs several nodes in one process sees their sum on
+each node.
+
+Where a slow call's time goes: `calimero_call_phase_duration_seconds` splits it
+into the app's own work (`run`) and replication (`commit`); the rest of
+`http_request_duration_seconds{group="calls"}` is the sealed channel, routing
+to the leader and waiting for the app's proposal lock behind other calls.
+
+```text
+# p99 of a call's run and commit over 5 minutes
+histogram_quantile(0.99, sum by (phase, le) (rate(calimero_call_phase_duration_seconds_bucket[5m])))
+# p99 WASM run time by kind
+histogram_quantile(0.99, sum by (kind, le) (rate(calimero_wasm_run_duration_seconds_bucket[5m])))
+```
 
 ## Usage metering
 
@@ -94,16 +110,25 @@ Code: `crates/node/src/usage.rs`.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `calimero_app_calls_total` | counter | `app`, `org`, `kind` | WASM calls this node ran for the app whose answer stood. `kind` is `mutation` (a call through `/intents`, the app's `init`, an upgrade's migration), `view` (a view, strong or stale, and a declared `#[app::view]` called through `/intents`) or `followup` (an event handler, a timer, an xcall, counted on the app it called). |
-| `calimero_app_wasm_cpu_seconds_total` | counter | `app`, `org` | CPU seconds the app's WASM runs took on this node: the run's **thread CPU time** (`CLOCK_THREAD_CPUTIME_ID` around the run, which runs on one thread) on Linux and other Unix systems; wall time elsewhere (the metric's `# HELP` says which). Includes the host functions the run called (state reads, sealing), not the time an outbound request waits (that runs on a thread of its own). |
-| `calimero_app_wasm_memory_byte_seconds_total` | counter | `app`, `org` | Linear memory bytes × wall seconds of the app's runs on this node. The bytes are the linear memory the module declares at instantiation, a floor of the run's peak: the runtime does not report how far an instance grew yet. |
-| `calimero_app_outbound_requests_total` | counter | `app`, `org` | Outbound HTTPS requests the app's runs on this node sent. A request the gate refused, or a malformed one, never left the node and is not counted; one that failed on the network is. |
-| `calimero_app_state_bytes` | gauge | `app`, `org` | Key and value bytes of the app's state on this replica (blob marks excluded), sampled every 5 minutes. Logical bytes: the store's sealing and indexes are not counted. |
-| `calimero_app_blob_bytes` | gauge | `app`, `org` | Bytes of the blobs the app holds, on this replica, sampled with the state. |
+| `calimero_app_wasm_cpu_seconds_total` | counter | `app`, `org`, `developer` | CPU seconds the app's WASM runs took on this node: the run's **thread CPU time** (`CLOCK_THREAD_CPUTIME_ID` around the run, which runs on one thread) on Linux and other Unix systems; wall time elsewhere (the metric's `# HELP` says which). Includes the host functions the run called (state reads, sealing), not the time an outbound request waits (that runs on a thread of its own). |
+| `calimero_app_wasm_memory_byte_seconds_total` | counter | `app`, `org`, `developer` | Linear memory bytes × wall seconds of the app's runs on this node. The bytes are the linear memory the module declares at instantiation, a floor of the run's peak: the runtime does not report how far an instance grew yet. |
+| `calimero_app_outbound_requests_total` | counter | `app`, `org`, `developer` | Outbound HTTPS requests the app's runs on this node sent. A request the gate refused, or a malformed one, never left the node and is not counted; one that failed on the network is. |
+| `calimero_app_state_bytes` | gauge | `app`, `org`, `developer` | Key and value bytes of the app's state on this replica (blob marks excluded), sampled every 5 minutes. Logical bytes: the store's sealing and indexes are not counted. |
+| `calimero_app_blob_bytes` | gauge | `app`, `org`, `developer` | Bytes of the blobs the app holds, on this replica, sampled with the state. |
 
-**Labels.** `app` is the app's id (as `/apps` lists it). `org` is who pays: the
-organization's id for an org app, `account:{owner account id}` for a personal
-app (`:` is not in an id's alphabet, so the two never collide). A transfer to
-another payer starts a new series from zero. No other label exists.
+**Labels.** `app` is the app's id (as `/apps` lists it). `org` is the app's
+payer, whose quotas it counts against: the organization's id for an org app,
+`account:{owner account id}` for a personal app (`:` is not in an id's
+alphabet, so the two never collide). `developer` is who is billed for its
+usage on a shared cluster: for an instance a customer made from a deployment
+(`POST /apps { deployment }`), the deployment's owner, in the same form (an
+organization's id, or `account:{id}`); for an app made from a release
+directly, the same value as `org`. A transfer to another payer starts a new
+series from zero. No other label exists.
+
+**Cardinality.** `org` and `developer` each have one value per app at a time,
+so they add no series: a node exports at most 8 `calimero_app_*` series per
+app it runs or hosts (below), whatever the number of developers.
 
 **Where a run is counted.** On the node that ran the WASM, once:
 
@@ -135,27 +160,28 @@ after the last scrape before a crash are not counted.
 Queries for each billing meter (MetricsQL; PromQL reads them the same way):
 
 ```text
-# Mutations and views, per app and payer, over the last hour
-sum by (org, app) (increase(calimero_app_calls_total{kind="mutation"}[1h]))
-sum by (org, app) (increase(calimero_app_calls_total{kind="view"}[1h]))
-sum by (org, app) (increase(calimero_app_calls_total{kind="followup"}[1h]))
+# Mutations and views, per app and developer, over the last hour
+sum by (developer, app) (increase(calimero_app_calls_total{kind="mutation"}[1h]))
+sum by (developer, app) (increase(calimero_app_calls_total{kind="view"}[1h]))
+sum by (developer, app) (increase(calimero_app_calls_total{kind="followup"}[1h]))
 
 # vCPU-seconds while the app's WASM ran
-sum by (org, app) (increase(calimero_app_wasm_cpu_seconds_total[1h]))
+sum by (developer, app) (increase(calimero_app_wasm_cpu_seconds_total[1h]))
 
 # Memory GB-seconds while the app's WASM ran
-sum by (org, app) (increase(calimero_app_wasm_memory_byte_seconds_total[1h])) / 1e9
+sum by (developer, app) (increase(calimero_app_wasm_memory_byte_seconds_total[1h])) / 1e9
 
 # Outbound requests
-sum by (org, app) (increase(calimero_app_outbound_requests_total[1h]))
+sum by (developer, app) (increase(calimero_app_outbound_requests_total[1h]))
 
 # State and blob GB-months over a 30-day month: the average size, one replica
-max by (org, app) (avg_over_time(calimero_app_state_bytes[30d])) / 1e9
-max by (org, app) (avg_over_time(calimero_app_blob_bytes[30d])) / 1e9
+max by (developer, app) (avg_over_time(calimero_app_state_bytes[30d])) / 1e9
+max by (developer, app) (avg_over_time(calimero_app_blob_bytes[30d])) / 1e9
 ```
 
-For storage, `max by` picks one replica's sample rather than summing the
-replicas; multiply by the replica count if storage is priced per stored copy.
+Group by `org` in place of `developer` for what a customer organization's
+apps used, whoever developed them. For storage, `max by` picks one replica's
+sample rather than summing the replicas; multiply by the replica count if storage is priced per stored copy.
 
 ## Collecting metrics
 

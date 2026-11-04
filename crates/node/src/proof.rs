@@ -118,6 +118,26 @@ pub fn verify_consent(
     consent: &Value,
     credentials: &[Credential],
 ) -> Result<(Statement, String), &'static str> {
+    verify_signed(consent, credentials, true)
+}
+
+/// [`verify_consent`] for a sign-in or a sign-up: the passkey's holder
+/// present, verified or not, as the ceremony asked of them.
+///
+/// # Errors
+/// As [`verify_consent`].
+pub fn verify_sign_in(
+    consent: &Value,
+    credentials: &[Credential],
+) -> Result<(Statement, String), &'static str> {
+    verify_signed(consent, credentials, false)
+}
+
+fn verify_signed(
+    consent: &Value,
+    credentials: &[Credential],
+    verified: bool,
+) -> Result<(Statement, String), &'static str> {
     let consent: Consent =
         serde_json::from_value(consent.clone()).map_err(|_| "the decision carries no consent")?;
     let challenge = consent.statement.challenge()?;
@@ -125,8 +145,12 @@ pub fn verify_consent(
         .iter()
         .find(|c| c.id == consent.assertion.credential_id)
         .ok_or("the consent is not signed by a passkey of the actor")?;
-    calimero_identity::verify_consent(&challenge, credential, &consent.assertion)
-        .map_err(|_| "the consent does not verify")?;
+    let checked = if verified {
+        calimero_identity::verify_consent(&challenge, credential, &consent.assertion)
+    } else {
+        calimero_identity::verify_sign_in(&challenge, credential, &consent.assertion).map(|_| ())
+    };
+    checked.map_err(|_| "the consent does not verify")?;
     Ok((consent.statement, used(b"consent", &challenge)))
 }
 
@@ -199,6 +223,13 @@ pub fn sign_invite_redeem(token: &str, account: &str, now: u64) -> String {
     hex::encode(invite_signing_key(token).sign(&message).to_bytes())
 }
 
+/// What marks a redemption of `invite_key` for `account` at `now` used, as
+/// [`verify_invite_redeem`] answers it for a signature that verifies.
+#[must_use]
+pub fn invite_redeem_used(invite_key: &str, account: &str, now: u64) -> String {
+    used(b"invite", &invite_redeem_message(invite_key, account, now))
+}
+
 /// Check that `signature` redeems the invite whose public key is
 /// `invite_key` for `account` at `now`, and answer what marks it used.
 ///
@@ -216,7 +247,97 @@ pub fn verify_invite_redeem(
     UnparsedPublicKey::new(&ED25519, &public)
         .verify(&message, &signature)
         .map_err(|_| "the redemption is not signed with the invite's key")?;
-    Ok(used(b"invite", &message))
+    Ok(invite_redeem_used(invite_key, account, now))
+}
+
+/// Check that `signature` is the recovery key `public`'s, handing `org` to
+/// `account` under `nonce`, and answer what marks it used.
+///
+/// # Errors
+/// A malformed signature or nonce, or one the organization's key did not make.
+pub fn verify_recovery(
+    public: &str,
+    org: &str,
+    account: &str,
+    nonce: &str,
+    signature: &str,
+) -> Result<String, &'static str> {
+    use calimero_identity::recovery;
+    recovery::verify_recovery(public, org, account, nonce, signature)
+        .map_err(|_| "the recovery is not signed with the organization's recovery key")?;
+    let message = recovery::recovery_message(org, account, nonce);
+    Ok(used(
+        b"recovery",
+        &[public.as_bytes(), b"\0", &message].concat(),
+    ))
+}
+
+/// What a refresh token's key is derived from, before the token.
+pub const REFRESH_DOMAIN: &[u8] = b"calimero.refresh.v1\0";
+
+/// What an exchange's signature covers, before the tokens it names.
+pub const REFRESH_USE_DOMAIN: &[u8] = b"calimero.refresh-use.v1\0";
+
+/// The Ed25519 key a refresh token stands for: its seed is
+/// `SHA-256("calimero.refresh.v1\0" || token)`. The log keeps only the public
+/// half ([`refresh_key`]), so a node that sees the log, and not the token,
+/// cannot exchange it.
+#[must_use]
+pub fn refresh_signing_key(token: &str) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&sha256(&[REFRESH_DOMAIN, token.as_bytes()].concat()))
+}
+
+/// A refresh token's public key, hex: what its record keeps.
+#[must_use]
+pub fn refresh_key(token: &str) -> String {
+    hex::encode(refresh_signing_key(token).verifying_key().to_bytes())
+}
+
+/// The bytes an exchange signs: `"calimero.refresh-use.v1\0"`, then
+/// `old_hash`, `new_hash`, the new token's key, the session, the new expiry
+/// and `now` (decimal Unix seconds), each followed by a zero byte.
+#[must_use]
+pub fn refresh_use_message(
+    old_hash: &str,
+    new_hash: &str,
+    new_key: &str,
+    session: &str,
+    expires_at: u64,
+    now: u64,
+) -> Vec<u8> {
+    let mut m = REFRESH_USE_DOMAIN.to_vec();
+    for part in [
+        old_hash,
+        new_hash,
+        new_key,
+        session,
+        &expires_at.to_string(),
+        &now.to_string(),
+    ] {
+        m.extend_from_slice(part.as_bytes());
+        m.push(0);
+    }
+    m
+}
+
+/// The exchange signature (hex) the node that received `token` makes.
+#[must_use]
+pub fn sign_refresh_use(token: &str, message: &[u8]) -> String {
+    use ed25519_dalek::Signer;
+    hex::encode(refresh_signing_key(token).sign(message).to_bytes())
+}
+
+/// Check that `signature` is the key `key` (a token's [`refresh_key`]) over
+/// `message`.
+///
+/// # Errors
+/// A key or signature that is missing, malformed or not the token's.
+pub fn verify_refresh_use(key: &str, message: &[u8], signature: &str) -> Result<(), &'static str> {
+    let public = hex::decode(key).map_err(|_| "the refresh token has no key: sign in again")?;
+    let signature = hex::decode(signature).map_err(|_| "the exchange carries no signature")?;
+    UnparsedPublicKey::new(&ED25519, &public)
+        .verify(message, &signature)
+        .map_err(|_| "the exchange is not signed with the refresh token's key")
 }
 
 /// What a recovery code's key is derived from, before the code.

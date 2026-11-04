@@ -19,11 +19,14 @@ use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
-use crate::system::{output, SystemCmd, SystemMachine, SystemState};
-use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord};
+use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemState};
+use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
 mod component;
+mod job;
+
+pub use job::JobPeer;
 
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
@@ -151,6 +154,13 @@ pub struct Config {
     /// storage key, and the data disk's when the boot script recorded it).
     /// Reported, bound into the quote, by `GET /attestation?purpose=kms`.
     pub kms_keys: calimero_client::attest::KmsKeys,
+    /// The rollback counter this node checks its store against and raises
+    /// (`rollback`): mero-kms's, from the key release. `None`: no counter
+    /// (`--dev`, a key given by flag or file), and the store is not judged.
+    pub rollback: Option<Arc<dyn crate::rollback::Counter>>,
+    /// Start on a store the counter says was rolled back (`--accept-rollback`):
+    /// mero-kms lowers this node's entry and raises the cluster epoch.
+    pub accept_rollback: bool,
 }
 
 impl Config {
@@ -158,33 +168,56 @@ impl Config {
     /// channel, and a new node's request for the cluster key.
     #[must_use]
     pub fn peer_policy(&self) -> Policy {
-        Policy {
-            allow_mock: self.allow_mock_peers,
-            app_hash: None,
-            measurements: self.peer_measurements.clone(),
-            allowed_tcb_statuses: Vec::new(),
-            // A node trusts debug peers only when it runs a debug image itself.
-            allow_debug_profiles: self
-                .tee_profile
-                .as_deref()
-                .is_some_and(calimero_client::attest::is_debug_profile),
-        }
+        peer_policy(
+            self.allow_mock_peers,
+            &self.peer_measurements,
+            self.tee_profile.as_deref(),
+        )
     }
 
     /// The release this node's attestations name.
     #[must_use]
     pub fn attested_release(&self) -> crate::attest::Release {
-        crate::attest::Release {
-            version: self
-                .tee_release
-                .clone()
-                .unwrap_or_else(|| self.release.clone()),
-            profile: match (&self.tee_profile, self.attestation) {
-                (_, Mode::Mock) => "mock".into(),
-                (Some(p), _) => p.clone(),
-                (None, _) => "tdx".into(),
-            },
-        }
+        attested_release(
+            &self.release,
+            self.tee_release.as_deref(),
+            self.tee_profile.as_deref(),
+            self.attestation,
+        )
+    }
+}
+
+/// How a node judges a peer's quote. It trusts debug peers only when it runs a
+/// debug image itself.
+pub(crate) fn peer_policy(
+    allow_mock: bool,
+    measurements: &calimero_client::Measurements,
+    tee_profile: Option<&str>,
+) -> Policy {
+    Policy {
+        allow_mock,
+        app_hash: None,
+        measurements: measurements.clone(),
+        allowed_tcb_statuses: Vec::new(),
+        allow_debug_profiles: tee_profile.is_some_and(calimero_client::attest::is_debug_profile),
+    }
+}
+
+/// The release a node's attestation names: its mero-tee release (else the
+/// build's) and the image profile (`mock` for mock quotes).
+pub(crate) fn attested_release(
+    release: &str,
+    tee_release: Option<&str>,
+    tee_profile: Option<&str>,
+    mode: Mode,
+) -> crate::attest::Release {
+    crate::attest::Release {
+        version: tee_release.unwrap_or(release).to_owned(),
+        profile: match (tee_profile, mode) {
+            (_, Mode::Mock) => "mock".into(),
+            (Some(p), _) => p.to_owned(),
+            (None, _) => "tdx".into(),
+        },
     }
 }
 
@@ -219,6 +252,14 @@ pub struct CallRequest {
     /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_from: Option<String>,
+    /// The system index the request's read-index round named on the node that
+    /// judged it (`Principal::sys_index`): every system write committed before
+    /// the request arrived is at or below it. The replica that runs the call
+    /// waits to apply it ([`Node::sys_fresh_from`]) instead of running a round
+    /// of its own. Set only by the API and the node's own runners; peers pass
+    /// it along on `internal/call`. `None`: the leader runs a round itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sys_index: Option<u64>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -250,6 +291,7 @@ impl CallRequest {
             xcall: None,
             action: None,
             sync_from: None,
+            sys_index: None,
         }
     }
 
@@ -428,6 +470,8 @@ pub struct Node {
     /// When a token's verification last attested each issuer
     /// ([`ISSUER_RETRY_SECS`]).
     issuer_tries: Mutex<HashMap<NodeId, u64>>,
+    /// Job nodes this node attested, with when ([`Node::attest_job`]).
+    job_peers: Mutex<HashMap<NodeId, (std::time::Instant, u64, JobPeer)>>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
@@ -438,6 +482,8 @@ pub struct Node {
     pub consent: crate::consent_page::ConsentRequests,
     /// Nodes being added to the system group now.
     joining: Mutex<std::collections::HashSet<NodeId>>,
+    /// Registered nodes that did not attest as cluster nodes (logged once each).
+    unattested: Mutex<HashSet<NodeId>>,
     /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
     moving: Mutex<HashSet<String>>,
     /// A promotion of learners to system voters is under way.
@@ -448,8 +494,13 @@ pub struct Node {
     pub component_search: crate::component::search::ComponentSearch,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
+    /// The rollback counter's checkpoints (`rollback`), when this node has one.
+    pub checkpoints: Option<Arc<crate::rollback::Checkpoints>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
     sys_reads: ReadRounds,
+    /// Read-index rounds this node began on the system group
+    /// (`calimero_system_read_rounds_total`).
+    pub sys_rounds: std::sync::atomic::AtomicU64,
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
@@ -517,13 +568,17 @@ impl Transport for PeerTransport {
     fn send(
         &self,
         target: NodeId,
-        addr: String,
+        _addr: String,
         group: GroupId,
         request: RpcRequest,
     ) -> BoxFuture<Result<RpcResponse, String>> {
         let node = self.node.lock().ok().and_then(|n| n.upgrade());
         Box::pin(async move {
             let node = node.ok_or("node is shutting down")?;
+            // The id decides where it goes: the membership's address is only a hint.
+            let addr = node
+                .replica_addr(target)
+                .ok_or_else(|| format!("node {target} is not a node of this cluster"))?;
             if !node.may_send(&addr, group).await {
                 return Err(format!(
                     "{addr} runs a release the app's owner has not approved; it gets none of the app's data"
@@ -615,11 +670,28 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(429, "QUOTA_EXCEEDED", reason)
     } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
         ApiError::new(409, RELEASE_DEADLINE, reason)
+    } else if reason.starts_with(crate::system::SIGN_UP_PREFIX) {
+        ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if let Some(code) = recovery_code(reason) {
+        ApiError::new(409, code, reason)
     } else {
         ApiError::bad_request("REJECTED", reason)
     }
+}
+
+/// The code of a recovery refusal that is a conflict with the organization's
+/// state, not a malformed request.
+fn recovery_code(reason: &str) -> Option<&'static str> {
+    use crate::system::{NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING};
+    [
+        (NO_RECOVERY_KEY, "NO_RECOVERY_KEY"),
+        (RECOVERY_PENDING, "RECOVERY_PENDING"),
+        (RECOVERY_NOT_READY, "RECOVERY_NOT_READY"),
+    ]
+    .into_iter()
+    .find_map(|(r, code)| (r == reason).then_some(code))
 }
 
 fn status_of(e: &WriteError) -> ApiError {
@@ -649,6 +721,20 @@ impl Node {
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
         )?;
+        // Before any group starts: a store older than mero-kms has seen
+        // never serves (`rollback`).
+        let checkpoints = match &config.rollback {
+            Some(counter) => {
+                crate::rollback::start(
+                    &engine,
+                    config.node_id,
+                    Arc::clone(counter),
+                    config.accept_rollback,
+                )
+                .await?
+            }
+            None => None,
+        };
         let system = engine
             .start_group(SYSTEM_GROUP, SystemMachine::default())
             .await?;
@@ -707,6 +793,7 @@ impl Node {
             frontends: crate::app_host::FrontendCache::default(),
             consent: crate::consent_page::ConsentRequests::default(),
             joining: Mutex::default(),
+            unattested: Mutex::default(),
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
@@ -716,12 +803,15 @@ impl Node {
             connecting: Mutex::default(),
             issuers: Mutex::new(HashMap::new()),
             issuer_tries: Mutex::new(HashMap::new()),
+            job_peers: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
+            sys_rounds: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
             component_search: crate::component::search::ComponentSearch::default(),
             this: Mutex::new(Weak::new()),
+            checkpoints,
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
         *node.this.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
@@ -755,7 +845,38 @@ impl Node {
         &self.cluster_secret
     }
 
+    /// The address node `id` is reached at, if it is a replica node: the
+    /// directory's, else `--peers`'. A job node has none.
+    #[must_use]
+    pub fn replica_addr(&self, id: NodeId) -> Option<String> {
+        self.sys(|s| match s.nodes.get(&id) {
+            Some(n) if n.role == NodeRole::Job => None,
+            Some(n) => Some(n.addr.clone()),
+            None => self.config.peers.get(&id).cloned(),
+        })
+    }
+
+    /// The address the directory or `--peers` holds for the replica node at
+    /// `addr` (any spelling); a job node's address is refused even if `--peers` lists it.
+    fn replica_addr_of(&self, addr: &str) -> Option<String> {
+        let wanted = normalize_addr(addr);
+        self.sys(|s| {
+            if s.job_nodes().any(|n| normalize_addr(&n.addr) == wanted) {
+                return None;
+            }
+            s.replica_nodes()
+                .map(|n| &n.addr)
+                .chain(self.config.peers.values())
+                .find(|a| normalize_addr(a) == wanted)
+                .cloned()
+        })
+    }
+
     fn peer(&self, addr: &str) -> eyre::Result<Arc<calimero_sealed::client::SealedTransport>> {
+        let Some(addr) = self.replica_addr_of(addr) else {
+            eyre::bail!("{addr} is not a node of this cluster");
+        };
+        let addr = addr.as_str();
         let mut peers = self.peers.lock().map_err(|e| eyre::eyre!("{e}"))?;
         if let Some(p) = peers.get(addr) {
             return Ok(Arc::clone(p));
@@ -1002,37 +1123,76 @@ impl Node {
     /// catch up, for a caller that must not answer from a stale one.
     /// Callers that wait at the same moment share one round (`ReadRounds`).
     pub async fn sys_fresh(&self) -> bool {
+        self.sys_fresh_index().await.1
+    }
+
+    /// [`Node::sys_fresh`], answering also the index the round named (`None`
+    /// when no leader answered), for a request to carry to the other checks it
+    /// makes ([`Node::sys_fresh_from`]), here or on the app's leader.
+    pub async fn sys_fresh_index(&self) -> (Option<u64>, bool) {
+        let index = self.sys_round().await;
+        let caught_up = match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => false,
+        };
+        (index, caught_up)
+    }
+
+    /// Fresh system state for a request whose read-index round already named
+    /// `index` (`Principal::sys_index`, `CallRequest::sys_index`): wait to
+    /// apply it here, with no round of its own. `None`: run a round
+    /// ([`Node::sys_fresh`]).
+    ///
+    /// Why that is as fresh as a round of its own: a round answers the system
+    /// leader's applied index after it confirmed it still leads, and a caller
+    /// takes only a round begun after it arrived (`ReadRounds`), so every
+    /// system write committed before the request arrived is at or below
+    /// `index`. Raft's log matching makes the entries up to `index` the same on
+    /// every replica, and a replica's applied index only grows, so a state at
+    /// or past `index`, on this node or any other, holds each of those writes:
+    /// the removal, revocation or demotion committed before the request is
+    /// seen by every check made for it. A write committed after the request
+    /// arrived is concurrent with it, and either order is linearizable. When
+    /// this replica cannot apply `index` in `Config::read_wait`, a round of its
+    /// own would name an index at least as high, which it could not apply
+    /// either; the read goes ahead best effort, as `sys_fresh` does.
+    pub async fn sys_fresh_from(&self, index: Option<u64>) -> bool {
+        match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => self.sys_fresh().await,
+        }
+    }
+
+    /// The index of a read-index round begun after this caller arrived,
+    /// shared with the callers waiting at the same moment (`ReadRounds`).
+    async fn sys_round(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
 
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
-        let index = {
-            let _turn = rounds.turn.lock().await;
-            let (round, index) = *rounds
-                .finished
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if round > arrived {
-                index
-            } else {
-                let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
-                let index = self.sys_read_index().await;
-                *rounds
-                    .finished
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
-                index
-            }
-        };
-        match index {
-            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
-            None => false,
+        let _turn = rounds.turn.lock().await;
+        let (round, index) = *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if round > arrived {
+            return index;
         }
+        let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
+        let index = self.sys_read_index().await;
+        *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+        index
     }
 
     /// One read-index round: the system leader's applied index, once it has
     /// confirmed it leads. `None` when no leader answers.
     async fn sys_read_index(&self) -> Option<u64> {
+        let _prev = self
+            .sys_rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.system.read_strong(|_, applied| applied).await {
             Ok(i) => Some(i),
             Err(WriteError::NotLeader {
@@ -1052,6 +1212,9 @@ impl Node {
     pub async fn release_of_node(&self, id: NodeId) -> Option<String> {
         if id == self.config.node_id {
             return Some(self.own_release());
+        }
+        if self.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+            return self.job_attestation(id).await.ok().map(|p| p.release);
         }
         let addr = self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))?;
         if self.release_at(&addr).is_none() {
@@ -1145,16 +1308,15 @@ impl Node {
             .cloned()
     }
 
-    /// Whether `id` is a node of this cluster: registered (or in `--peers`)
-    /// and not removed, or still a voter or learner of the system group (a
-    /// node being removed takes part until its membership change commits).
+    /// Whether `id` is a node of this cluster: registered as a replica node (or
+    /// in `--peers`, if not registered as a job node) and not removed, or still a
+    /// voter or learner of the system group (a node being removed takes part
+    /// until its membership change commits).
     #[must_use]
     pub fn is_peer(&self, id: NodeId) -> bool {
         id != self.config.node_id
-            && (self.sys(|s| {
-                !s.removed_nodes.contains(&id)
-                    && (s.nodes.contains_key(&id) || self.config.peers.contains_key(&id))
-            }) || self.system.member_addr(id).is_some())
+            && (self.sys(|s| !s.removed_nodes.contains(&id)) && self.replica_addr(id).is_some()
+                || self.system.member_addr(id).is_some())
     }
 
     /// Where node `id` is reached: its registered address, its `--peers`
@@ -1493,8 +1655,7 @@ impl Node {
             .copied()
             .collect();
         let newcomers: Vec<(NodeId, String)> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| !members.contains(&n.id))
                 .map(|n| (n.id, n.addr.clone()))
                 .collect()
@@ -1510,6 +1671,12 @@ impl Node {
             }
             let node = Arc::clone(&me);
             drop(tokio::spawn(async move {
+                if !node.attests_as_replica(id, &addr).await {
+                    if let Ok(mut j) = node.joining.lock() {
+                        let _was = j.remove(&id);
+                    }
+                    return;
+                }
                 match node.system.add_learner(id, addr).await {
                     Ok(()) => info!(node = id, "a registered node joined the system group"),
                     Err(e) => warn!(node = id, error = %e, "a registered node could not join yet"),
@@ -1519,6 +1686,44 @@ impl Node {
                 }
             }));
         }
+    }
+
+    /// Whether the node at `addr` attests as a cluster node; one that does not
+    /// (a job node registered as a replica) is never admitted, logged once.
+    async fn attests_as_replica(&self, id: NodeId, addr: &str) -> bool {
+        let attested = async {
+            let url: Url = addr.parse()?;
+            let attestor = HttpAttestor {
+                policy: self.config.peer_policy(),
+                seen_release: Arc::default(),
+            };
+            calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
+                .await
+                .map(|_key| ())
+        };
+        let Err(e) = attested.await else {
+            if let Ok(mut u) = self.unattested.lock() {
+                let _was = u.remove(&id);
+            }
+            return true;
+        };
+        let first = self
+            .unattested
+            .lock()
+            .map(|mut u| u.insert(id))
+            .unwrap_or(false);
+        if first {
+            let unreachable = e
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|r| r.is_connect() || r.is_timeout());
+            let why = if unreachable {
+                "a registered node is unreachable: not admitted yet"
+            } else {
+                "a registered node does not attest as a cluster node: not admitted"
+            };
+            warn!(node = id, error = %format!("{e:#}"), "{why}");
+        }
+        false
     }
 
     /// On the system leader: while the system group has fewer than
@@ -1550,7 +1755,7 @@ impl Node {
             let candidates: Vec<(NodeId, String)> = status
                 .learners
                 .iter()
-                .filter(|l| s.nodes.contains_key(l) && !s.removed_nodes.contains(l))
+                .filter(|l| s.replica_node(l).is_some() && !s.removed_nodes.contains(l))
                 .filter(|l| {
                     matched
                         .get(l)
@@ -1606,16 +1811,26 @@ impl Node {
                         id: *id,
                         addr: addr.clone(),
                         zone: String::new(),
+                        role: NodeRole::Replica,
                     })
                     .collect();
                 let _r = self
                     .sys_write(&SystemCmd::Genesis {
+                        session_proofs: true,
                         governance: self.config.governance.clone(),
                         release: Some(self.own_release()),
                         operator_key: self.operator_key(),
                         nodes,
                     })
                     .await;
+            }
+            // A cluster begun before session proofs requires them from here
+            // on; what it logged before applies as it did (`RequireSessionProofs`).
+            if self.sys(|s| {
+                s.session_proofs_from.is_none()
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+            }) {
+                let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
             self.admit_registered_nodes();
             self.promote_learners();
@@ -1692,8 +1907,7 @@ impl Node {
             .put_blob(hash, wasm)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -1736,8 +1950,7 @@ impl Node {
             return self.release_wasm(hash, &release).await;
         }
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -1845,8 +2058,7 @@ impl Node {
     /// The address of every node but this one.
     fn other_nodes(&self) -> Vec<String> {
         self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -1859,7 +2071,7 @@ impl Node {
             app.replicas
                 .iter()
                 .filter(|r| **r != self.config.node_id)
-                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
                 .collect()
         })
     }
@@ -2004,7 +2216,7 @@ impl Node {
         }
         let body = json!({ "app": app.app_id });
         for id in &app.replicas {
-            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
                 continue;
             };
             if let Ok(v) = self.peer_forward(&addr, "internal/storage", &body).await {
@@ -2036,8 +2248,7 @@ impl Node {
             warn!(blob = %hex_id, error = %e, "blob not deleted");
         }
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -2082,7 +2293,7 @@ impl Node {
             app.replicas
                 .iter()
                 .filter(|r| **r != self.config.node_id)
-                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
                 .collect()
         });
         let body =
@@ -2107,7 +2318,7 @@ impl Node {
             app.replicas
                 .iter()
                 .filter(|r| **r != self.config.node_id)
-                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
                 .collect()
         });
         let body = json!({ "app": app.app_id, "id": hex::encode(id) });
@@ -2126,19 +2337,26 @@ impl Node {
     pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
         Meter {
             app: app_id.to_owned(),
-            payer: self
-                .sys(|s| s.apps.get(app_id).map(crate::usage::payer))
+            billed: self
+                .sys(|s| s.apps.get(app_id).map(|a| crate::usage::Billed::of(s, a)))
                 .unwrap_or_default(),
             bundle: bundle.to_owned(),
         }
     }
 
-    /// Run `f`, one WASM run, off the async workers ([`off_workers`]), and add
-    /// the CPU and memory it took to `meter`'s app: on the thread that runs
-    /// it, on this node, whatever becomes of its result.
-    pub(crate) fn metered<R>(&self, meter: &Meter, f: impl FnOnce() -> R) -> R {
+    /// Run `f`, one WASM run of `kind`, off the async workers ([`off_workers`]),
+    /// add the CPU and memory it took to `meter`'s app and its wall time to
+    /// `calimero_wasm_run_duration_seconds`: on the thread that runs it, on this
+    /// node, whatever becomes of its result.
+    pub(crate) fn metered<R>(
+        &self,
+        meter: &Meter,
+        kind: calimero_app_host::InvocationKind,
+        f: impl FnOnce() -> R,
+    ) -> R {
         let (out, run) = off_workers(|| crate::usage::measure(f));
         self.usage.ran(meter, run);
+        crate::metrics::wasm_run(kind, run.wall);
         out
     }
 
@@ -2146,19 +2364,19 @@ impl Node {
     /// (`calimero_app_state_bytes`, `calimero_app_blob_bytes`). Each app's scan
     /// holds its group's read lock, as `GET /apps/{app}/storage` does.
     pub fn sample_usage(&self) {
-        let hosted: Vec<(String, String)> = self.sys(|s| {
+        let hosted: Vec<(String, crate::usage::Billed)> = self.sys(|s| {
             s.apps
                 .values()
-                .map(|a| (a.app_id.clone(), crate::usage::payer(a)))
+                .map(|a| (a.app_id.clone(), crate::usage::Billed::of(s, a)))
                 .collect()
         });
-        for (app, payer) in hosted {
+        for (app, billed) in hosted {
             let Some(g) = self.hosted(&app) else {
                 continue;
             };
             let stats = g.read_local(|m, _| m.storage_stats());
             self.usage
-                .stored(&app, &payer, stats.bytes, stats.blob_bytes);
+                .stored(&app, &billed, stats.bytes, stats.blob_bytes);
         }
     }
 
@@ -2178,8 +2396,7 @@ impl Node {
             return;
         }
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -2214,8 +2431,9 @@ impl Node {
     ) -> Result<Applied, WriteError> {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
-        // change committed before the call, wherever it was committed.
-        self.sys_fresh().await;
+        // change committed before the call, wherever it was committed: the
+        // round the API made for the request covers it (`sys_fresh_from`).
+        self.sys_fresh_from(req.sys_index).await;
         if req.host && req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }
@@ -2504,7 +2722,7 @@ impl Node {
         // but takes no new one.
         let deadlines = self.sys(|s| s.any_deadline_passed(now));
         let mut allowed = Vec::new();
-        for id in self.sys(|s| s.nodes.keys().copied().collect::<Vec<_>>()) {
+        for id in self.sys(|s| s.replica_nodes().map(|n| n.id).collect::<Vec<_>>()) {
             let ok = match (approved, deadlines) {
                 (None, false) => true,
                 (approved, _) => self.release_of_node(id).await.is_some_and(|r| {

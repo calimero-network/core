@@ -3,7 +3,9 @@
 //! managers change it, each with their own passkey, judged where the command
 //! applies; customers create instances from its offers, which then record it;
 //! the managers list the organizations with instances from it; and an app's
-//! frontend opens at the release a deployment offers or an instance runs.
+//! frontend opens at the release a deployment offers or an instance runs;
+//! and an instance's usage is billed to the developer whose deployment it
+//! came from.
 //!
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
@@ -769,6 +771,239 @@ async fn frontends_open_the_deployed_release() {
     );
 }
 
+/// Every deployment has a frontend host of its own,
+/// `{deployment_label}.{apps-domain}` (what the resolver in front routes to
+/// the deployment's cluster): it serves what `/d/{deployment}/` serves on the
+/// package's host, names its deployment first in the well-known file, and a
+/// passkey ceremony from it opens a session bound to the package. Two
+/// deployments of one package get two hosts; an unknown one, or one
+/// offering apps of several packages, answers 404; the package's own host
+/// is unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn each_deployment_serves_its_frontend_on_its_own_host() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let site = |version: &str, html: &'static [u8]| {
+        mpk(
+            "com.test.site",
+            version,
+            &variant(&kv_wasm(), version),
+            &[("frontend/index.html", html)],
+        )
+    };
+    let _ok = alice
+        .upload_package(site("1.0.0", b"<p>one"))
+        .await
+        .unwrap();
+    let _ok = alice
+        .upload_package(site("1.1.0", b"<p>two"))
+        .await
+        .unwrap();
+    let _ok = alice
+        .upload_package(release("com.test.other", "1.0.0"))
+        .await
+        .unwrap();
+    let created = alice
+        .post_confirmed(
+            "deployments",
+            json!({ "name": "alpha", "owner": { "account": alice_id } }),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let alpha = created["id"].as_str().unwrap().to_owned();
+    let alpha_label = calimero_node::app_host::deployment_label(&alpha);
+    let alpha_host = format!("{alpha_label}.localhost");
+    assert_eq!(created["host"], json!(alpha_host), "{created}");
+    let beta = deploy(
+        &alice,
+        &mut alice_pk,
+        "beta",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let mixed = deploy(
+        &alice,
+        &mut alice_pk,
+        "mixed",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &alpha,
+        "site",
+        "com.test.site",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &beta,
+        "site",
+        "com.test.site",
+        "1.1.0",
+    )
+    .await
+    .unwrap();
+    for (app, package) in [("site", "com.test.site"), ("other", "com.test.other")] {
+        let _ok = offer(&alice, &mut alice_pk, &mixed, app, package, "1.0.0")
+            .await
+            .unwrap();
+    }
+    // Read back by anyone: the host travels with the id.
+    let read = c
+        .client(2)
+        .get(&format!("deployments/{beta}"))
+        .await
+        .unwrap();
+    let beta_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::deployment_label(&beta)
+    );
+    assert_eq!(read["host"], json!(beta_host), "{read}");
+    assert_ne!(alpha_host, beta_host, "two deployments, two hosts");
+
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let browser = |host: &str| {
+        reqwest::Client::builder()
+            .resolve(host, ([127, 0, 0, 1], port).into())
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    };
+    let get = |host: &str, path: &str| {
+        browser(host)
+            .get(format!("http://{host}:{port}{path}"))
+            .header("accept", "text/html")
+            .send()
+    };
+    let location = |r: &reqwest::Response| {
+        assert_eq!(r.status(), 302, "{r:?}");
+        r.headers()["location"].to_str().unwrap().to_owned()
+    };
+
+    // Each host opens its deployment's release, telling the page which.
+    assert_eq!(
+        location(&get(&alpha_host, "/").await.unwrap()),
+        format!("/1.0.0/?deployment={alpha}")
+    );
+    assert_eq!(
+        location(&get(&beta_host, "/").await.unwrap()),
+        format!("/1.1.0/?deployment={beta}")
+    );
+    let page = get(&alpha_host, "/1.0.0/").await.unwrap();
+    assert_eq!(page.status(), 200);
+    assert!(page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("default-src 'self'"));
+    assert_eq!(page.bytes().await.unwrap().as_ref(), b"<p>one");
+    assert_eq!(
+        location(&get(&alpha_host, &format!("/d/{alpha}/x")).await.unwrap()),
+        format!("/1.0.0/x?deployment={alpha}")
+    );
+    // Another deployment's link is not this host's; nor are node routes.
+    assert_eq!(
+        get(&alpha_host, &format!("/d/{beta}/"))
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(get(&alpha_host, "/health").await.unwrap().status(), 404);
+    let known: Value = get(&beta_host, "/.well-known/calimero.json")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(known["package"], json!("com.test.site"));
+    assert_eq!(known["deployment"], json!(beta));
+    assert_eq!(known["deployments"][0]["id"], json!(beta), "{known}");
+    assert_eq!(known["deployments"].as_array().unwrap().len(), 3, "{known}");
+    // Unknown, or no one package: not served.
+    let stranger = format!(
+        "{}.localhost",
+        calimero_node::app_host::deployment_label("ffffffffffffffffffffffffffffffff")
+    );
+    assert_eq!(get(&stranger, "/").await.unwrap().status(), 404);
+    assert_eq!(get(&stranger, "/health").await.unwrap().status(), 404);
+    let mixed_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::deployment_label(&mixed)
+    );
+    assert_eq!(get(&mixed_host, "/").await.unwrap().status(), 404);
+    // The package's own host and its `/d/` link are unchanged.
+    let package_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::label("com.test.site")
+    );
+    assert_eq!(location(&get(&package_host, "/").await.unwrap()), "/1.1.0/");
+    assert_eq!(
+        location(&get(&package_host, &format!("/d/{alpha}/")).await.unwrap()),
+        format!("/1.0.0/?deployment={alpha}")
+    );
+    let known: Value = get(&package_host, "/.well-known/calimero.json")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(known["deployment"], Value::Null);
+
+    // Signing up on a deployment's host binds the session to its package.
+    let origin = format!("http://{alpha_host}:{port}");
+    let dave = c.client(1);
+    let mut dave_pk = SoftAuthenticator::new("localhost", &origin);
+    let _s = dave.sign_up(&mut dave_pk, "dave").await.unwrap();
+    let mine = instance(&dave, &alpha, "com.test.site", None, None)
+        .await
+        .unwrap();
+    let _ok = dave
+        .call(&mine, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    assert!(dave
+        .post("apps", json!({ "name": "x", "package": "com.test.other" }))
+        .await
+        .is_err());
+    assert!(dave
+        .create_api_key(json!({ "label": "k" }), &mut dave_pk)
+        .await
+        .is_err());
+    // And signing in there again, too.
+    let dave_again = c.client(2);
+    let mut again_pk = SoftAuthenticator::with_key(&dave_pk, "localhost", &origin);
+    let _s = dave_again.sign_in(&mut again_pk).await.unwrap();
+    assert!(dave_again
+        .create_api_key(json!({ "label": "k" }), &mut again_pk)
+        .await
+        .is_err());
+    let _ok = dave_again
+        .call(&mine, "set", json!({ "key": "k", "value": "w" }), None)
+        .await
+        .unwrap();
+    // CORS admits the deployment's host as an origin.
+    let pre = reqwest::Client::new()
+        .request(reqwest::Method::OPTIONS, format!("{}/health", c.urls[0]))
+        .header("origin", &origin)
+        .header("access-control-request-method", "POST")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        pre.headers()
+            .get("access-control-allow-origin")
+            .map(|v| v.to_str().unwrap().to_owned()),
+        Some(origin.clone())
+    );
+}
+
 /// Where deployments are granted, creating a deployment and offering an app
 /// need a live deployer grant (refused at the API and where it applies); a
 /// customer without one still creates instances from the offers.
@@ -877,4 +1112,132 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
         .call(&app, "set", json!({ "key": "k", "value": "w" }), None)
         .await
         .unwrap();
+}
+
+/// The value of `metric{labels}` in Prometheus text, if the series is there.
+fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
+    let head = format!("{metric}{{{labels}}} ");
+    text.lines()
+        .find_map(|l| l.strip_prefix(&head))
+        .map(|v| v.parse().unwrap())
+}
+
+/// Two developers, an account and an organization, each offer an app on one
+/// shared cluster; one customer organization makes an instance of each. Every
+/// `calimero_app_*` series of an instance names its customer's org as `org`
+/// (quotas stay the customer's) and the deployment's owner as `developer`, so
+/// a call on developer A's instance is counted against A and never against B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instances_usage_is_billed_to_its_deployments_developer() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (dave, mut dave_pk) = signed_up(&c, 1, "dave").await;
+    let (carol, _carol_pk) = signed_up(&c, 2, "carol").await;
+
+    // Developer A is alice's account; developer B is dave's organization.
+    let _ok = alice
+        .upload_package(release("com.test.notes", "1.0.0"))
+        .await
+        .unwrap();
+    let _ok = dave
+        .upload_package(release("com.test.board", "1.0.0"))
+        .await
+        .unwrap();
+    let dev_b = org(&dave, "Bee Labs").await;
+    let da = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let db = deploy(&dave, &mut dave_pk, "beta", json!({ "org": dev_b })).await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+    let _ok = offer(&dave, &mut dave_pk, &db, "board", "com.test.board", "1.0.0")
+        .await
+        .unwrap();
+
+    // The customer: one organization with an instance from each.
+    let globex = org(&carol, "Globex").await;
+    let of_a = instance(&carol, &da, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+    let of_b = instance(&carol, &db, "com.test.board", None, Some(&globex))
+        .await
+        .unwrap();
+    for i in 0..3 {
+        let _ = carol
+            .call(
+                &of_a,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let _ = carol
+        .call(&of_b, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+
+    for r in c.nodes.iter().flatten() {
+        r.node.sample_usage();
+    }
+    let http = reqwest::Client::new();
+    let mut texts = Vec::new();
+    for r in c.nodes.iter().flatten() {
+        let addr = r.metrics_addr.unwrap();
+        let text = http
+            .get(format!("http://{addr}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        texts.push(text);
+    }
+    let summed = |metric: &str, labels: &str| -> f64 {
+        texts.iter().filter_map(|t| sample(t, metric, labels)).sum()
+    };
+    let a = format!("app=\"{of_a}\",org=\"{globex}\",developer=\"account:{alice_id}\"");
+    let b = format!("app=\"{of_b}\",org=\"{globex}\",developer=\"{dev_b}\"");
+    let mutations = |labels: &str| {
+        summed(
+            "calimero_app_calls_total",
+            &format!("{labels},kind=\"mutation\""),
+        )
+    };
+    // `init` and the calls: 4 on A's instance, 2 on B's, each counted once.
+    assert_eq!(mutations(&a), 4.0, "{texts:#?}");
+    assert_eq!(mutations(&b), 2.0, "{texts:#?}");
+    assert!(summed("calimero_app_wasm_cpu_seconds_total", &a) > 0.0);
+    assert!(summed("calimero_app_wasm_cpu_seconds_total", &b) > 0.0);
+    for t in &texts {
+        assert!(sample(t, "calimero_app_state_bytes", &a).is_some(), "{t}");
+        for line in t.lines().filter(|l| l.starts_with("calimero_app_")) {
+            if line.contains(&format!("app=\"{of_a}\"")) {
+                assert!(line.contains(&a), "A's app billed elsewhere: {line}");
+            }
+            if line.contains(&format!("app=\"{of_b}\"")) {
+                assert!(line.contains(&b), "B's app billed elsewhere: {line}");
+            }
+        }
+        // The customer is never the developer of either.
+        assert!(!t.contains(&format!("developer=\"{globex}\"")), "{t}");
+    }
 }
