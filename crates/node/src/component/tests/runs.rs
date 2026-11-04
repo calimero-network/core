@@ -2161,3 +2161,13 @@ fn an_upload_of_a_published_blobs_bytes_keeps_its_revocations() {
     let record = plain_record(&w, 1).unwrap();
     assert_eq!((record.epoch, record.charged), (1, true));
 }
+
+#[test]
+fn an_entry_publishing_more_than_the_cap_is_refused_even_if_every_mark_is_valid() {
+    let mut w = done_world();
+    let mark = published(&out(1).id, &plain(1), out(1).size);
+    let marks = vec![mark; host::MAX_PUBLISHED_PER_RUN + 1];
+    let a = w.push(&publish_call(&w, marks, vec![]));
+    assert_eq!(why(&a), "NOT_A_RUN_OUTPUT");
+    assert!(plain_record(&w, 1).is_none());
+}
