@@ -16,8 +16,8 @@ pub mod webauthn;
 pub mod testing;
 
 pub use webauthn::{
-    claimed_origin, verify_assertion, verify_consent, verify_registration, Assertion, Credential,
-    PublicKey, Registration, RelyingParty,
+    assertion_counter, claimed_origin, verify_assertion, verify_consent, verify_registration,
+    verify_sign_in, Assertion, Credential, PublicKey, Registration, RelyingParty,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -290,6 +290,28 @@ mod tests {
             verify_consent(&[8; 32], &other_cred, &a),
             Err(Error::Mismatch("credential"))
         );
+    }
+
+    #[test]
+    fn a_sign_in_and_a_counter_verify_from_public_data_only() {
+        let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let challenge = random::<32>();
+        let cred = verify_registration(&rp(), &challenge, &auth.register(&challenge)).unwrap();
+        let a = auth.assert(&[8; 32]);
+        assert_eq!(verify_sign_in(&[8; 32], &cred, &a), Ok(1));
+        assert_eq!(
+            verify_sign_in(&[9; 32], &cred, &a),
+            Err(Error::Mismatch("challenge"))
+        );
+        // The counter, whatever the assertion was made for.
+        let b = auth.assert(&[9; 32]);
+        assert_eq!(assertion_counter(&cred, &b), Ok(2));
+        let mut other = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let forged = Assertion {
+            credential_id: cred.id.clone(),
+            ..other.assert(&[8; 32])
+        };
+        assert_eq!(assertion_counter(&cred, &forged), Err(Error::BadSignature));
     }
 
     #[test]

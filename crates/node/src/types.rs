@@ -91,6 +91,16 @@ pub enum Access {
     Team { team: TeamId },
 }
 
+/// What a registered node is for: a replica holds apps and the cluster key, a
+/// job node only runs compute for them and never holds either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NodeRole {
+    #[default]
+    Replica,
+    Job,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeRecord {
@@ -98,6 +108,8 @@ pub struct NodeRecord {
     pub addr: String,
     #[serde(default)]
     pub zone: String,
+    #[serde(default)]
+    pub role: NodeRole,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -263,7 +275,7 @@ pub struct ApiKeyRecord {
     pub expires_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshRecord {
     pub account: AccountId,
@@ -278,6 +290,11 @@ pub struct RefreshRecord {
     /// The registered origin that opened it (`SessionClaims::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// The token's public key (`proof::refresh_key`, hex), which signs its
+    /// exchange (`UseRefresh`). Empty in records from before: those are not
+    /// exchanged, and their holders sign in again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -507,7 +507,7 @@ impl Node {
         let group = self.sys(|s| s.apps.get(app_id).map(|a| a.group))?;
         let members: Vec<(NodeId, String)> = self.sys(|s| {
             (status.voters.iter().chain(&status.learners))
-                .filter_map(|id| s.nodes.get(id).map(|n| (*id, n.addr.clone())))
+                .filter_map(|id| s.replica_node(id).map(|n| (*id, n.addr.clone())))
                 .collect()
         });
         let mut allowed = HashMap::new();
