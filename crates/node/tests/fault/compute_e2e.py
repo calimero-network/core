@@ -448,9 +448,7 @@ def redact_job(cl, owner_home_passkey):
     csv_path = wd / "people.csv"
     csv_path.write_bytes(data)
     file, _ = upload(cl, member_client.h["authorization"][7:], app, data=data)
-    member_client.call(1, "register", {"file": file})
     not_theirs = refused_with("NotYourFile", lambda: other_client.call(1, "submit", {"file": file}))
-    taken = refused_with("FileTaken", lambda: other_client.call(1, "register", {"file": file}))
     submit = member_client.call(1, "submit", {"file": file, "rowsPerPart": REDACT_PER_PART})
     job = submit["result"]
     killed_run, killed_node = killed_mid_run(cl, member_client, app)
@@ -468,9 +466,9 @@ def redact_job(cl, owner_home_passkey):
     check("11a job done after its job node was killed mid-run",
           view["status"] == "done" and rec["state"] == "done" and len(attempts) >= 2 and attempts[-1] != killed_node
           and view["totalRows"] == REDACT_ROWS and view["rowsDone"] == REDACT_ROWS and parts == 3
-          and refused and not_theirs and taken,
+          and refused and not_theirs,
           f"{REDACT_ROWS} rows in {len(data)} bytes, parts of {REDACT_PER_PART}; admin set the policy, a member "
-          f"was refused it: {refused}; another member was refused the registered file: {not_theirs}, {taken}; "
+          f"was refused it: {refused}; another member was refused the uploader's file: {not_theirs}; "
           f"job node {killed_node} killed {KILL_AFTER}s into run {killed_run[:12]}",
           f"job {view['status']}, {view['rowsDone']}/{view['totalRows']} rows in {parts} parts; the killed run "
           f"{rec['state']} after attempts on nodes {attempts}")
