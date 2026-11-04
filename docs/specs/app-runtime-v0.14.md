@@ -395,12 +395,13 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
-// Starting and cancelling compute runs: logged writes only (call, timer, init, xcall delivery).
+// Starting and cancelling compute runs, and publishing a done run's output: logged writes only (call, timer, init, xcall delivery).
 // The compute world does not import it: a run cannot start runs.
 interface runs {
   use types.{blob-id, action-id};
   start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
   cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+  publish: func(id: blob-id) -> result<blob-id, string>; // a done run's output as a plain blob: its id is the SHA-256 of the plaintext; an id that is no output of this app's done runs answers NOT_A_RUN_OUTPUT
 }
 
 // What a compute component sees of its run; only the compute world imports it.
@@ -506,6 +507,13 @@ Every refusal that is not a policy violation is a fixed soft error string: `no s
 A write refused for either size cap, or failed inside the provider, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
 A storage failure inside the provider is passed through as an opaque soft error.
 An unknown handle, or running out of handle ids, traps `HostDenied`.
+`runs.publish` is the one way a file's bytes leave the cluster: it turns the output of one of the app's `done` compute runs into a plain blob that `blobs.grant` and `GET /apps/{app}/blobs/{id}` then serve like any uploaded blob.
+It works only in invocations that become log entries and traps `HostDenied` in a view and an action; it is in `runs`, which the compute world does not import, so a run cannot publish its own output.
+An id that is not an output of a done run of this app (an uploaded file, a file a call made, another app's output, an unknown id) answers the soft error `NOT_A_RUN_OUTPUT` and records nothing.
+The platform enforces only that rule: each app decides who may publish, in the method that calls `publish`.
+The answer is the plain blob's id, the SHA-256 of the plaintext, which the app stores as a `BlobRef` to keep it (R8, like any blob).
+A result method cannot publish an output of the run that is ending, because the entry that registers it is the one the method runs in: it stores the `BlobRef` and a later call publishes.
+A run publishes at most 16 outputs, each at most 47 MiB, and the output stays publishable while the app holds it.
 A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
 
 ### Compute methods

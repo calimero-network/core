@@ -1613,12 +1613,13 @@ impl Rig {
         (output, expected_output(&plain, seed))
     }
 
-    async fn publish(&self, id: &str) -> Result<String, calimero_client::Error> {
+    async fn publish(&self, id: &str) -> String {
         let r = self
             .alice
             .call(&self.app, "publish", json!({ "output": id }), None)
-            .await?;
-        Ok(r.result.as_str().unwrap().to_owned())
+            .await
+            .unwrap();
+        r.result.as_str().unwrap().to_owned()
     }
 
     async fn grant(&self, id: &str) -> String {
@@ -1649,7 +1650,7 @@ async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
         .unwrap_err();
     assert_eq!(refused.code(), Some("NOT_SUPPORTED"), "{refused}");
 
-    let blob = rig.publish(&output).await.unwrap();
+    let blob = rig.publish(&output).await;
     assert_eq!(blob, sha256_hex(&expected));
     let record = rig.blob(&blob).expect("the app holds the plain blob");
     assert!(record.file.is_none() && record.charged && record.refs == 1);
@@ -1662,7 +1663,7 @@ async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
         .await
         .unwrap();
     assert_eq!(bytes, expected);
-    let again = rig.publish(&output).await.unwrap();
+    let again = rig.publish(&output).await;
     assert_eq!(again, blob, "publishing twice answers the same blob");
     assert_eq!(rig.charged().await, charged + expected.len() as u64);
 }
@@ -1711,7 +1712,7 @@ async fn only_an_output_of_this_apps_done_runs_publishes() {
 async fn a_published_blob_survives_a_leader_change() {
     let mut rig = Rig::start(&[JOB_A]).await;
     let (output, expected) = rig.finished_output().await;
-    let blob = rig.publish(&output).await.unwrap();
+    let blob = rig.publish(&output).await;
     let grant = rig.grant(&blob).await;
     let old = rig.c.app_leader(&rig.app).unwrap();
     rig.c.stop(old).await;

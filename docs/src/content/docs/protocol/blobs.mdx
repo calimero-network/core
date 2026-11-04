@@ -160,6 +160,28 @@ A crash between the two can still leave an over-count.
 Transferring a personal app is refused if its files would pass the new owner's quota.
 `GET /auth/usage` shows an account's file bytes per payer.
 
+## Publishing a compute output
+
+A sealed file never leaves the cluster, with one exception: an app's logged write can publish the output of one of its finished compute runs with `runs.publish` (`compute::publish` in the Rust SDK).
+The node answers a plain blob of the app, named by the SHA-256 of the plaintext.
+From then on `blobs.info`, `blobs.grant` and the download route treat it as any uploaded blob, so a grant gives a time-limited link, for example to an outside auditor.
+Until an app publishes, the same download answers `409`.
+
+The platform enforces one rule: the id must be an output of a `done` run of this app.
+An uploaded file, a file a call made, another app's output, a failed or cancelled run's output and an unknown id answer the soft error `NOT_A_RUN_OUTPUT`.
+Each app decides who may publish, in the method that calls it.
+The rule is in the log, not in the leader.
+The leader decrypts the output, stores the plaintext on a majority of the app's voters as it does a new file, and only then proposes the entry.
+The entry carries the source, the plain blob's id and its size, never the bytes.
+Every replica applies the entry only if the source is a file the app's records mark as a done run's output, and the id and size are that file's plaintext hash and size.
+Otherwise it answers `NOT_A_RUN_OUTPUT` and changes nothing, so a leader cannot publish anything else.
+
+The plaintext counts against the organization's file quota from the entry until retention collects it.
+Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
+The owner's delete does not remove a published blob, so its charge is released only by that retention.
+Publishing an output the app already holds as a plain blob stores and charges nothing again.
+A run publishes at most 16 outputs, each at most 47 MiB.
+
 ## Limits
 
 | Limit | Value |
