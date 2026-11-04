@@ -1,12 +1,5 @@
-//! CSV redaction on compute runs. The org admin sets one policy (`setPolicy`); a member
-//! uploads a CSV as a sealed file and calls `submit`. A preview run (the first rows, redacted,
-//! in its result) comes first and counts the rows; then one run redacts each part of the file.
-//! At most `MAX_ACTIVE` runs are active at once, the rest wait their turn. Method names and
-//! arguments are the ABI's camelCase ones.
-//!
-//! The rules engine is `rules` and runs in the compute component; `jobs` is a job's state.
-//! `share` publishes a done job's outputs as plain blobs, for its submitter or an admin; a grant
-//! (`blobs.grant`) then hands each out.
+//! CSV redaction on compute runs: an admin sets the policy, a member registers and submits a sealed CSV, a preview run plans the parts and one run redacts each.
+//! `share` publishes a done job's outputs and `link` grants a download of one; at most `MAX_ACTIVE` runs are active at once.
 
 mod jobs;
 mod rules;
@@ -29,8 +22,8 @@ const PREVIEW_ROWS: usize = 500;
 const PREVIEW_BYTES: usize = 48 * 1024;
 /// Rows per part when `submit` names none.
 const DEFAULT_ROWS_PER_PART: u32 = 50_000;
-/// Jobs one `jobs` call lists at most.
-const PAGE: u32 = 1000;
+/// Jobs one `jobs` call reads at most; `next` continues.
+const JOBS_PAGE: u32 = 50;
 /// Longest download link, which is the host's longest grant.
 const MAX_LINK_SECS: u32 = 86_400;
 /// Outputs one `share` call publishes at most, which is the host's cap on a logged call.
@@ -62,6 +55,8 @@ pub struct Redact {
     runs: UnorderedMap<String, Task>,
     /// The tasks waiting for a free slot, by `Task::key`.
     waiting: UnorderedMap<String, Task>,
+    /// Who registered each file, by file id: the first claim stands.
+    uploaders: UnorderedMap<String, String>,
 }
 
 #[app::error]
@@ -71,12 +66,21 @@ pub enum Error {
     NoPolicy,
     BadPolicy { reason: String },
     NoSuchFile,
+    NotYourFile,
+    FileTaken,
     NotFound { id: String },
     NotDone { id: String },
     NotPublished { id: String },
     BadTtl,
     NoInput,
     Csv { message: String },
+}
+
+/// One page of `jobs`: the jobs the caller may see among the page's, and where to continue.
+#[derive(Debug, Serialize)]
+pub struct JobsPage {
+    pub jobs: Vec<JobView>,
+    pub next: Option<String>,
 }
 
 /// What a part's run answers.
@@ -96,6 +100,13 @@ fn account() -> Option<String> {
 fn role() -> Option<OrgRole> {
     env::org()?;
     env::org_role(&account()?)
+}
+
+/// The caller's account if it is a member of the org or more.
+fn member() -> app::Result<String> {
+    account()
+        .filter(|_| role().is_some_and(|r| r >= OrgRole::Member))
+        .ok_or_else(|| Error::MembersOnly.into())
 }
 
 fn csv_error(e: csv::Error) -> AppError {
@@ -146,17 +157,34 @@ impl Redact {
         Ok(())
     }
 
+    /// Claims the sealed file `file` as the caller's: only its first claimant and admins submit
+    /// it. Call it right after uploading. Members and above.
+    pub fn register(&mut self, file: BlobRef) -> app::Result<()> {
+        let who = member()?;
+        if file.info().is_none() {
+            return Err(Error::NoSuchFile.into());
+        }
+        match self.uploaders.get(&file.id())? {
+            Some(owner) if owner != who => return Err(Error::FileTaken.into()),
+            Some(_) => {}
+            None => self.uploaders.insert(&file.id(), &who).map(drop)?,
+        }
+        Ok(())
+    }
+
     /// Redacts the CSV `file` (a sealed file of the app) under the current policy and answers
-    /// the job's id. `rows_per_part` sizes the parts. Members and above.
+    /// the job's id. `rows_per_part` sizes the parts. Its registrant and admins only.
     pub fn submit(&mut self, file: BlobRef, rows_per_part: Option<u32>) -> app::Result<String> {
-        let Some(who) = account().filter(|_| role().is_some_and(|r| r >= OrgRole::Member)) else {
-            return Err(Error::MembersOnly.into());
-        };
+        let who = member()?;
         let Some(policy) = self.policy.get()? else {
             return Err(Error::NoPolicy.into());
         };
         if file.info().is_none() {
             return Err(Error::NoSuchFile.into());
+        }
+        let admin = role().is_some_and(|r| r >= OrgRole::Admin);
+        if !admin && self.uploaders.get(&file.id())?.as_deref() != Some(&who) {
+            return Err(Error::NotYourFile.into());
         }
         let rows_per_part = rows_per_part.unwrap_or(DEFAULT_ROWS_PER_PART);
         let id = self.enqueue(Job::new(who, file, policy, rows_per_part))?;
@@ -164,9 +192,8 @@ impl Redact {
         Ok(id)
     }
 
-    /// Publishes the outputs of the done job `id` as plain blobs and answers the job, whose parts
-    /// now name them. Its submitter and admins only. A job of more than 16 parts takes one call
-    /// per 16; an output past 47 MiB cannot be published, so size the parts below it.
+    /// Publishes a done job's outputs as plain blobs, 16 a call, and answers the job; a part past
+    /// 47 MiB cannot be published. Its submitter and admins only.
     pub fn share(&mut self, job: String) -> app::Result<JobView> {
         if !self.jobs.get(&job)?.is_some_and(|j| self.may_see(&j)) {
             return Err(Error::NotFound { id: job }.into());
@@ -174,11 +201,9 @@ impl Redact {
         self.share_done(job, &mut compute::publish)
     }
 
-    /// A download link for the published part `part` of the job `job`, valid for `ttl_secs`
-    /// (1 to 86,400): `GET /apps/{app}/blobs/{blob}?grant=<link>` needs no session, so it can go
-    /// to an outside auditor. Its submitter and admins only.
-    #[app::view]
-    pub fn link(&self, job: String, part: u32, ttl_secs: u32) -> app::Result<String> {
+    /// A download link for a published part, valid for `ttl_secs` (1 to 86,400) and needing no
+    /// session; a call, so the log records who shared it. Its submitter and admins only.
+    pub fn link(&mut self, job: String, part: u32, ttl_secs: u32) -> app::Result<String> {
         if !(1..=MAX_LINK_SECS).contains(&ttl_secs) {
             return Err(Error::BadTtl.into());
         }
@@ -205,16 +230,26 @@ impl Redact {
         }
     }
 
-    /// The caller's jobs, oldest first; an admin's call lists everyone's.
+    /// The caller's jobs among one page of `JOBS_PAGE`, oldest first, without their preview
+    /// rows; an admin's call lists everyone's. Pass `next` as `after` until it is null.
     #[app::view]
-    pub fn jobs(&self) -> app::Result<Vec<JobView>> {
-        let page = self.jobs.page(FindOpts::default().limit(PAGE))?;
-        Ok(page
+    pub fn jobs(&self, after: Option<String>) -> app::Result<JobsPage> {
+        let mut opts = FindOpts::default().limit(JOBS_PAGE);
+        opts.cursor = after;
+        let page = self.jobs.page(opts)?;
+        let jobs = page
             .items
             .iter()
             .filter(|(_, job)| self.may_see(job))
-            .map(|(id, job)| job.view(id))
-            .collect())
+            .map(|(id, job)| JobView {
+                preview: None,
+                ..job.view(id)
+            })
+            .collect();
+        Ok(JobsPage {
+            jobs,
+            next: page.next,
+        })
     }
 
     /// Redacts the preview: the first rows, and the file's row count. `job` only tells the

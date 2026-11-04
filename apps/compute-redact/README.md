@@ -6,9 +6,14 @@ One crate builds two components: `app.wasm` (state and calls) and `compute.wasm`
 ## Roles
 
 - The organization's admin or owner sets the policy once with `setPolicy {policy}`.
-- A member uploads a CSV as a sealed file and calls `submit {file, rowsPerPart?}`; the job copies the policy, so a later `setPolicy` does not change it.
-- `job {id}` and `jobs` show a job to its submitter and to admins; the view holds the policy's SHA-256, never the salt.
-- `share {job}` publishes a done job's outputs as plain blobs, for the submitter or an admin; the parts of `job {id}` then name them in `published`, and `link {job, part, ttlSecs}` answers a grant (1 to 86,400 seconds) for `GET /apps/{app}/blobs/{blob}?grant=<grant>`, which needs no session, for example for an outside auditor.
+- A member uploads a CSV as a sealed file, claims it with `register {file}`, and calls `submit {file, rowsPerPart?}`; only the file's registrant and admins can submit it, and the job copies the policy, so a later `setPolicy` does not change it.
+- The platform does not tell an app who uploaded a file, so `register` is a first claim: register right after uploading, before another member can.
+- `job {id}` shows a job to its submitter and to admins; the view holds the policy's SHA-256, never the salt.
+- `jobs {after?}` lists the jobs the caller may see, without their preview rows, from one page of 50 jobs; call it again with `next` as `after` until `next` is null.
+- A sealed file is read only inside compute runs, so a call or a view never opens the CSV; the app sees only its size and hash.
+- `share {job}` publishes a done job's outputs as plain blobs, for the submitter or an admin; the parts of `job {id}` then name them in `published`.
+- A published blob downloads only through a grant, for everyone: `link {job, part, ttlSecs}` is a call (the log records who shared it) that answers a grant (1 to 86,400 seconds) for `GET /apps/{app}/blobs/{blob}?grant=<grant>`, which needs no session, for example for an outside auditor.
+- The app's owner or an org admin ends a grant early with `meroctl blob revoke` (every grant made so far stops working), or takes the blob down with `meroctl blob delete`.
 
 ## Policy
 
