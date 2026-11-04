@@ -57,6 +57,8 @@ const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 /// session then writes once per this, not once per [`SESSION_TTL`].
 pub const REFRESH_ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const CHALLENGE_TTL: u64 = 5 * 60;
+/// The code of a create or upgrade by bundle hash whose releases ship different compute components.
+const AMBIGUOUS_COMPUTE: &str = "AMBIGUOUS_COMPUTE";
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
@@ -2846,7 +2848,12 @@ async fn bundle_named(
 ) -> Result<(String, Option<String>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release.
-        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok((b, None)),
+        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => {
+            let compute = node
+                .sys(|s| s.compute_of(&b, actor))
+                .map_err(|why| ApiError::bad_request(AMBIGUOUS_COMPUTE, why))?;
+            Ok((b, compute))
+        }
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
             node.resolve_release_parts(p, version, service, actor, frontend)
@@ -3053,6 +3060,7 @@ async fn app_create(
         ));
     }
     let app_id = typed_id::<16>();
+    let has_compute = compute_bundle.is_some();
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org
     } else {
@@ -3103,6 +3111,7 @@ async fn app_create(
         "contextId": hex::encode(sha256(app_id.as_bytes())),
         "group": out["group"],
         "replicas": out["replicas"],
+        "compute": has_compute,
     })))
 }
 
@@ -4208,6 +4217,7 @@ async fn run_upgrade(
     // so `apply` judges the deadline at the same moment and never refuses
     // the record of an upgrade the app's group already ran.
     let begun = now_secs();
+    let has_compute = compute_bundle.is_some();
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
@@ -4235,7 +4245,7 @@ async fn run_upgrade(
         .call(&CallRequest::host(
             app_id.clone(),
             "__upgrade",
-            json!({ "bundle": bundle, "migrate": migrate }),
+            json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate }),
             who.caller.clone(),
         ))
         .await
@@ -4272,9 +4282,12 @@ async fn run_upgrade(
             consent: who.consent,
         })
         .await?;
-    Ok(Json(
-        json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
-    ))
+    Ok(Json(json!({
+        "index": applied.index,
+        "status": applied.status,
+        "error": applied.error,
+        "compute": has_compute,
+    })))
 }
 
 /// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
@@ -9048,7 +9061,12 @@ async fn ops_upgrade(
     let app = node.app(&app_id).await?;
     let current = node.release_of(&app.bundle);
     let (bundle, compute_bundle) = match (body.bundle, body.version) {
-        (Some(b), _) => (b, None),
+        (Some(b), _) => {
+            let compute = node
+                .sys(|s| s.compute_of(&b, crate::system::OPERATOR))
+                .map_err(|why| ApiError::bad_request(AMBIGUOUS_COMPUTE, why))?;
+            (b, compute)
+        }
         (None, Some(version)) => {
             let package = body
                 .package

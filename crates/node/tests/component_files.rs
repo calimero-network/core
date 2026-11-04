@@ -1,6 +1,7 @@
 //! Files of a component app on a cluster, through the client and the `files` fixture
-//! (`apps/v2-fixtures/files`): stored on the replicas before the entry, read back, retained by
-//! `BlobRef` and collected when nothing refers to them.
+//! (`apps/v2-fixtures/files`): stored on the replicas before the entry, retained by `BlobRef` and
+//! collected when nothing refers to them. A guest reads a sealed file only inside a compute run
+//! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
 mod common;
 
@@ -106,23 +107,11 @@ impl Fixture {
         (id, r.result["sha256"].as_str().unwrap().to_owned(), r.index)
     }
 
-    /// `readFile` as a view on node `i` that applied entry `index`.
-    async fn read_on(
-        &self,
-        i: usize,
-        id: &str,
-        index: u64,
-    ) -> Result<Value, Box<calimero_client::Error>> {
-        let v = self.clients[i]
-            .view(
-                &self.app,
-                "readFile",
-                json!({ "id": id }),
-                Consistency::Stale { min_index: index },
-            )
-            .await
-            .map_err(Box::new)?;
-        Ok(v.result)
+    /// The size and SHA-256 of file `id` as node `i` reads it once it applied entry `index`.
+    async fn read_on(&self, i: usize, id: &str, index: u64) -> Result<Value, String> {
+        applied_on(self, i, index).await;
+        let bytes = self.node(i).read_sealed_file(&self.app, id, 1)?;
+        Ok(json!({ "size": bytes.len().to_string(), "sha256": sha256_hex(&bytes) }))
     }
 
     fn node(&self, i: usize) -> &calimero_node::Node {
@@ -188,17 +177,13 @@ async fn a_large_file_reads_back_identically_on_every_replica() {
     // Before the call answered, a majority held the bytes.
     assert!(f.holders(&id).len() >= 2, "held by {:?}", f.holders(&id));
 
-    let strong = f.clients[0]
-        .view(&f.app, "readFile", json!({ "id": id }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(
-        strong.result,
-        json!({ "size": LEN.to_string(), "sha256": sha })
-    );
     for i in 0..3 {
-        let stale = f.read_on(i, &id, index).await.unwrap();
-        assert_eq!(stale, strong.result, "node {i}");
+        let read = f.read_on(i, &id, index).await.unwrap();
+        assert_eq!(
+            read,
+            json!({ "size": LEN.to_string(), "sha256": sha }),
+            "node {i}"
+        );
     }
 }
 
@@ -354,7 +339,7 @@ async fn applied_on(f: &Fixture, i: usize, index: u64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_view_on_a_replica_that_misses_the_bytes_fetches_them() {
+async fn a_replica_that_misses_the_bytes_fetches_them() {
     let f = start().await;
     let (id, sha, index) = f.put(500_000, 5).await;
     f.read_on(2, &id, index).await.unwrap();
@@ -372,19 +357,26 @@ async fn a_file_no_replica_holds_cannot_be_read() {
     for i in 0..3 {
         f.node(i).engine.delete_blob(&id).unwrap();
     }
-    let applied = f.applied();
+    let e = f.read_on(1, &id, index).await.unwrap_err();
+    assert!(e.contains("not available"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_and_a_view_cannot_open_a_sealed_file() {
+    let f = start().await;
+    let (id, _sha, _index) = f.put(100_000, 5).await;
     let e = f.clients[0]
         .call(&f.app, "touchFile", json!({ "id": id }), None)
         .await
         .unwrap_err();
-    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
-    assert_eq!(f.applied(), applied, "the call was logged");
-    let e = f.read_on(1, &id, index).await.unwrap_err();
-    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
-    assert!(
-        e.details().unwrap().to_string().contains("not available"),
-        "{e}"
-    );
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+    assert!(format!("{:?}", e.details()).contains("compute run"), "{e}");
+    let e = f.clients[0]
+        .view(&f.app, "readFile", json!({ "id": id }), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+    assert!(format!("{:?}", e.details()).contains("compute run"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -399,17 +391,11 @@ async fn a_corrupt_copy_is_dropped_and_healed_from_a_replica() {
         stored[at] ^= 1;
         f.node(i).engine.put_blob(&id, &stored).unwrap();
     }
-    // A view on the follower and a logged call on the leader each find their copy is not
-    // the file, and read it from the replica that still holds it.
-    assert_eq!(
-        f.read_on(follower, &id, index).await.unwrap()["sha256"],
-        sha
-    );
-    let touched = f.clients[0]
-        .call(&f.app, "touchFile", json!({ "id": id }), None)
-        .await
-        .unwrap();
-    assert_eq!(touched.result["sha256"], sha);
+    // The follower and the leader each find their copy is not the file, and read it from the
+    // replica that still holds it.
+    for i in [follower, leader] {
+        assert_eq!(f.read_on(i, &id, index).await.unwrap()["sha256"], sha);
+    }
     for i in [follower, leader] {
         let healed = f.node(i).engine.get_blob(&id).unwrap().unwrap();
         assert_eq!(sha256_hex(&healed), id, "node {i} keeps a corrupt copy");
@@ -520,28 +506,14 @@ async fn open_file_bytes_are_bounded_across_runs_and_freed_with_the_reader() {
     let f = start().await;
     let (id, sha, index) = f.put(500_000, 8).await;
     let leader = f.leader();
-    let applied = f.applied();
     // Room for the stored file only once at a time (500_000 bytes and 8 chunk tags).
     f.node(leader).limit_open_file_bytes(500_128);
     for _ in 0..2 {
-        let r = f.clients[0]
-            .call(&f.app, "touchFile", json!({ "id": id }), None)
-            .await
-            .unwrap();
-        assert_eq!(r.result["sha256"], sha);
+        assert_eq!(f.read_on(leader, &id, index).await.unwrap()["sha256"], sha);
     }
     f.node(leader).limit_open_file_bytes(100_000);
-    let e = f.clients[0]
-        .call(&f.app, "touchFile", json!({ "id": id }), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
-    assert_eq!(f.applied(), applied + 2, "the refused call was logged");
     let e = f.read_on(leader, &id, index).await.unwrap_err();
-    assert!(
-        e.details().unwrap().to_string().contains("not available"),
-        "{e}"
-    );
+    assert!(e.contains("not available"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -555,32 +527,19 @@ async fn a_blob_swapped_for_another_files_ciphertext_is_never_read() {
         f.node(i).engine.put_blob(&a, &other).unwrap();
     }
     let e = f.read_on(2, &a, index_b).await.unwrap_err();
-    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
-    assert!(
-        e.details().unwrap().to_string().contains("not available"),
-        "{e}"
-    );
+    assert!(e.contains("not available"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_run_cannot_hold_more_than_its_cap_open() {
     let f = start().await;
-    let (id, sha, _index) = f.put(500_000, 8).await;
+    let (id, _sha, _index) = f.put(500_000, 8).await;
     let leader = f.leader();
-    let applied = f.applied();
     // Room for the file once (500_000 bytes and 8 chunk tags) in one run, not twice.
     f.node(leader).limit_run_open_bytes(600_000);
-    let once = f.clients[0]
-        .call(&f.app, "touchFile", json!({ "id": id }), None)
-        .await
-        .unwrap();
-    assert_eq!(once.result["sha256"], sha);
-    let e = f.clients[0]
-        .call(&f.app, "touchTwice", json!({ "id": id }), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
-    assert_eq!(f.applied(), applied + 1, "the refused call was logged");
+    assert!(f.node(leader).read_sealed_file(&f.app, &id, 1).is_ok());
+    let e = f.node(leader).read_sealed_file(&f.app, &id, 2).unwrap_err();
+    assert!(e.contains("not available"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -109,10 +109,12 @@ which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
 
 ## Files of component apps
 
-A component app's runs can also make sealed files: a file is written in a call, tick or `init`, and read in any run but a migration.
+A component app's runs can also make sealed files: a file is written in a call, tick or `init`, and its contents are read only inside a compute run.
 A file is a sealed blob.
 It shares the blob id namespace and the `BlobRef` type, and `blobs.info` answers for it with an empty content type.
-It cannot be downloaded or granted, and no blob upload can claim its id: only the app's code reads it.
+It cannot be downloaded or granted, and no blob upload can claim its id.
+A call, view, timer or `init` may create a file and ask for its size and hash, and `files.open` is refused there.
+So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
 The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
 The app's blob record for the file holds the plaintext size and SHA-256 and the wrapped key, in the hidden rows the guest cannot reach.
