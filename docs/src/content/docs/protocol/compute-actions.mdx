@@ -48,7 +48,6 @@ Neither world imports the other's interface, so the install-time import check is
 An author changes nothing: `#[app::compute]` and `#[app::compute_result]` mark the methods, and `mero-app-build <crate> --out app.wasm --compute-out compute.wasm` builds the crate twice.
 The second build sets `--cfg calimero_compute` in its own target directory, binds world `compute`, keeps only the compute methods and exports `run`.
 A crate with no compute methods builds one component and has no compute output.
-To test a compute component alone, without an app, a cluster or a job node, use the local runner `mero-compute run`, which runs `compute.wasm` on the files you give it.
 
 **The bundle.**
 The signed manifest carries the compute component as `compute` (per service as `services[].compute`), next to `wasm`.
@@ -78,7 +77,9 @@ The usage series carry `app`, `org` and `developer`.
 ## Files for component apps
 
 A component app (the wasmtime runtime) has **files**: sealed blobs.
-A file shares the blob id namespace and the `BlobRef` type with the blobs of [Blobs](/protocol/blobs/), and is readable only by the app's code.
+A file shares the blob id namespace and the `BlobRef` type with the blobs of [Blobs](/protocol/blobs/).
+A call, view, timer or `init` may create a file and ask for its size and hash, but `files.open` is refused there.
+**A sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.**
 
 - **Sealing.** Each file has a random 256-bit data key.
   Its content is cut into 64 KiB chunks, each sealed with AES-256-GCM under that key, with the chunk index in the nonce and a last-chunk flag in the authenticated data, so chunks cannot be reordered, dropped or truncated.
@@ -186,7 +187,9 @@ The result method takes the whole outcome as its one parameter, whatever the par
 
 - `status` is `done`, `failed` or `cancelled`.
   A cancel is `status: cancelled` with `reason: null`.
-- `reason` is set only for failed runs and is one of `fuel`, `memory`, `time`, `trap`, `app-error`, `integrity`, `lost`, `timeout`, `refused` or `quota`.
+- `reason` is set only for failed runs and is one of `fuel`, `memory`, `trap`, `app-error`, `integrity`, `lost`, `timeout`, `refused`, `quota`, `not-granted` or `too-large`.
+  A wall clock that ran out is not a reason of its own: it is a lost attempt, retried on another job node, and `lost` once every attempt is spent.
+  `not-granted` means the queue gave the run no place within `QUEUED_RUN_TIMEOUT` of healthy time, and `too-large` that the final did not fit the log even without its result method.
   `quota` means the outputs would have passed the payer's file quota: the run ends failed with no outputs.
 - `result` is the compute method's return bytes as standard base64, present only for done.
 - `outputs[].id` is the output's blob id, a `BlobRef`.
@@ -199,9 +202,12 @@ The result method keeps one by storing its `BlobRef` in the app's state.
 An output it does not store is forgotten `BLOB_IDLE_MS` after the final, and the organization's file quota is released when the bytes are collected, as for any file.
 If the result method itself fails, the run keeps its outcome and its outputs are registered, but with nothing referring to them they go the same way.
 Neither `/intents` nor `/views` reaches a result method, for any caller, and the SDK macro refuses `compute_result` on a public method, so no client can forge an outcome.
+A compromised leader can still forge a run's final, because the final is the leader's entry.
+It gains nothing a leader does not hold already: it has the cluster key and the plaintext of every file it serves.
+The signed report protects against a job node and against a replica applying a job outcome nobody signed, not against the leader.
 
-`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, and `progress` while it runs.
-Plaintext sizes and SHA-256 hashes of inputs and outputs are shown only to callers who may list the app's files; others get ids.
+`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason.
+Plaintext sizes and SHA-256 hashes of inputs and outputs, `progress` while it runs and the failure text of a failed run (the method's app error or the trap's detail, at most 512 bytes, signed by the job node) are shown only to callers who may list the app's files; others get ids.
 It never returns arguments or keys.
 
 ## Restarts, cancel and caps
@@ -232,7 +238,8 @@ It never returns arguments or keys.
   The result method sees `cancelled`.
   Refused and quota finals are leader entries too.
 - **Caps.** A method declares `fuel`, `memoryMib`, `wallSecs` and its result method in the ABI.
-  Hitting one ends the run failed with `fuel`, `memory` or `time`; nothing is recorded as done and no output is registered.
+  Hitting the fuel or memory cap ends the run failed with `fuel` or `memory`; nothing is recorded as done and no output is registered.
+  The wall cap is a lost attempt (see CA25), because how fast a machine runs is not the app's doing.
 
 ## Usage and billing
 
@@ -310,10 +317,10 @@ Each row is one decision and the reason for it.
 | CA22 | The file quota is counted per app in the system state with payer totals kept in step. A release is taken from what apply actually removed, never from what a run saw when it was built. | A stale view cannot refund more than was charged. |
 | CA23 | A job node attests only for `purpose=jobs`, bound to its transport key, job key and release, and answers no plain attestation. Every peer request carrying the cluster secret goes through one gate to replicas only. A node's role is fixed at registration. A job node runs from a narrow `JobConfig` with no storage key. | No channel that carries the cluster secret, the cluster key, Raft or blob traffic can ever open to a job node. |
 | CA24 | Peers are gated by node id, never by an address string, and addresses are compared normalized. A job node can be registered only once every replica node, voter and learner, runs at least the registering node's release (else `409 CLUSTER_NOT_UPGRADED`). The jobs attestation binds the cluster, node id, transport key, job key and release. | An address is spoofable, an id is not. No older node can apply or snapshot a record it does not understand. |
-| CA25 | A run's outcome never depends on the node it ran on. Node-local failures (instance pool, allocation, OS memory, file I/O) are `Unavailable`, retried elsewhere and never reported as the app's failure. A cancel is `cancelled`, the wall cap is `time` (`timeout` is the leader's deadline), reads fill to the requested size, a compute run sees a constant context, and `wasi:random` is capped per call. Accepted: stack depth may differ by CPU, so a run at the recursion limit can end differently on two job nodes. | A customer must never pay for, or be told about, a fault of someone else's hardware. The recursion-limit case is a known gap. |
+| CA25 | A run's outcome never depends on the node it ran on. Node-local failures (instance pool, allocation, OS memory, file I/O) are `Unavailable`, retried elsewhere and never reported as the app's failure. A cancel is `cancelled`, running out of wall time is a lost attempt retried on another job node (fuel is the deterministic cap, and `timeout` is the leader's deadline), reads fill to the requested size, a compute run sees a constant context, and `wasi:random` is capped per call. Accepted: stack depth may differ by CPU, so a run at the recursion limit can end differently on two job nodes. | A customer must never pay for, or be told about, a fault of someone else's hardware. The recursion-limit case is a known gap. |
 | CA26 | Job-node admission is a cluster identity key: every cluster node derives one Ed25519 key from the cluster key, the job node is started with its public half, and every assignment and bundle upload carries a signature. Runs are keyed by app, run and attempt, and a report also binds the digest of the exact assignment it ran. | Only an attested TD of this cluster can hold the cluster key, so a signature proves the sender is a node of the cluster, with no attestation fetch or cache on the job node. This replaces CA10. A job node also prepares every bundle on the compute world, so a signed app component is refused (`BAD_BUNDLE`) too. |
 | CA27 | A job node decides input integrity once, from the uploaded bytes in memory, so its own disk can never turn a correct input into a signed failure. A `computeAttempt` entry records the job key and the assignment digest, and every replica verifies a final report against both. Later read failures are lost attempts. | The disk of a job node is outside the trust boundary, and a report must be checkable by a replica that never talked to the job node. |
-| CA28 | A run that can never be granted (its fuel alone exceeds the quota, or it was released), or that is granted but taken by no job node within `QUEUED_RUN_TIMEOUT` (10 minutes of healthy time, at most that plus `MAX_OUTAGE_CREDIT`), ends as failed with reason `refused`. Every value a job node signs is bounded at apply: output sizes and count, fuel within the declared cap, CPU and memory within the run's caps. An input of an active run is pinned as a reference, so R8 cannot collect it until the run is final. | No run may occupy an app's active set forever, and a compromised job node cannot make a replica apply an absurd value. |
+| CA28 | A run that can never be granted (its fuel alone exceeds the quota, or it was released), or that is granted but taken by no job node within `QUEUED_RUN_TIMEOUT` (10 minutes of healthy time, at most that plus `MAX_OUTAGE_CREDIT`), ends as failed with reason `refused`, and a run the queue grants no place in that time ends `not-granted`. Every value a job node signs is bounded at apply: output sizes and count, fuel within the declared cap, CPU and memory within the run's caps. An input of an active run is pinned as a reference, so R8 cannot collect it until the run is final. | No run may occupy an app's active set forever, and a compromised job node cannot make a replica apply an absurd value. |
 | CA29 | Assignments are deterministic: each wrap's ephemeral key and nonce derive from the file key and the run, attempt, kind, index and job key. The leader delivers an assignment before committing its attempt. A cancel bills the usage the job node signed when it stopped, and has none when the job node does not answer. | Any leader can rebuild the exact assignment an attempt's digest names, and a busy or unreachable job node costs no attempt. |
 | CA30 | A file is a sealed blob: it shares the blob id namespace, `BlobRef` replaces a separate file id, and there is no delete. Retention is R8: a file nothing refers to is forgotten `BLOB_IDLE_MS` after it was made, and the quota is released when it is collected. | One identifier and one retention rule for every byte an app holds, and a reference in state is the only thing that has to be kept honest. |
 | CA31 | A run's outputs are registered as sealed files by the final entry, before the result method applies, and are kept only if the result method stores their `BlobRef`. Inputs are pinned while the run is active. | An output the app never claims cannot linger or hold quota, and an input cannot be collected under a run that reads it. |

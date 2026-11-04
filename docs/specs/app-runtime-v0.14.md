@@ -521,7 +521,6 @@ At install the node prepares it on the compute world only, never on the replica 
 A release without a compute component installs and its app runs calls, but cannot run compute.
 An author builds both from one crate with `mero-app-build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
 `scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
-A compute component alone is tested with the local runner `mero-compute run`, with no app, cluster or job node.
 The leader sends a job node only the run's compute component (`RunRecord.compute_bundle`, named by the assignment's `bundle`), and a job node prepares everything it is given on the compute world, so an app component is refused (`BAD_BUNDLE`) even when the cluster signed it.
 Usage is billed to the app component that started the run, and the result method runs on the replicas' app component.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
