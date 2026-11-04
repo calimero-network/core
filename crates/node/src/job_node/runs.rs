@@ -718,6 +718,7 @@ mod tests {
             attempt: 1,
             status: crate::job_wire::ReportStatus::Done,
             reason: None,
+            message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
             usage: crate::job_wire::ReportUsage::default(),

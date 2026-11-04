@@ -14,6 +14,7 @@ const BUNDLE_LABEL: &[u8] = b"calimero.compute.bundle.v1\0"; // prefix of the si
 const REPORT_LABEL: &[u8] = b"calimero.compute.report.v1\0"; // prefix of the signed report message
 const SHA256_LEN: usize = 32; // bytes of a SHA-256
 pub const BUNDLE_SIGNATURE_HEADER: &str = "x-bundle-signature"; // the header carrying the cluster identity's signature over a component's hash
+pub const MAX_REPORT_MESSAGE_BYTES: usize = 512; // the failure text a signed report carries
 const MICROS_PER_SECOND: u128 = 1_000_000; // to turn GiB-microseconds into GiB-seconds
 const BYTES_PER_GIB: u128 = 1 << 30; // a GiB, the unit of memory billed
 
@@ -258,7 +259,6 @@ pub enum ReportStatus {
 pub enum FailReason {
     Fuel,
     Memory,
-    Time,
     Trap,
     AppError,
     Integrity,
@@ -272,7 +272,6 @@ impl FailReason {
         match self {
             Self::Fuel => "fuel",
             Self::Memory => "memory",
-            Self::Time => "time",
             Self::Trap => "trap",
             Self::AppError => "app-error",
             Self::Integrity => "integrity",
@@ -334,6 +333,10 @@ pub struct Report {
     pub status: ReportStatus,
     /// Some exactly when the status is `Failed`.
     pub reason: Option<FailReason>,
+    /// The method's app error or the trap's detail, at most `MAX_REPORT_MESSAGE_BYTES`; empty
+    /// unless the reason is `app-error` or `trap`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
     /// The method's return bytes; empty unless the status is `Done`.
     #[serde(with = "b64")]
     pub result: Vec<u8>,
@@ -351,6 +354,12 @@ pub fn report_message(report: &Report, assignment: &[u8; 32]) -> EyreResult<Vec<
             bail!("a done report has no reason, and a failed one a reason and no result or outputs")
         }
     }
+    if report.message.len() > MAX_REPORT_MESSAGE_BYTES
+        || !(report.message.is_empty()
+            || matches!(report.reason, Some(FailReason::AppError | FailReason::Trap)))
+    {
+        bail!("only an app-error or trap report carries a message, of a bounded size");
+    }
     let mut m = REPORT_LABEL.to_vec();
     m.extend_from_slice(assignment);
     push_prefixed(&mut m, report.app.as_bytes())?;
@@ -364,6 +373,7 @@ pub fn report_message(report: &Report, assignment: &[u8; 32]) -> EyreResult<Vec<
         &mut m,
         report.reason.map_or("", FailReason::as_str).as_bytes(),
     )?;
+    push_prefixed(&mut m, report.message.as_bytes())?;
     m.extend_from_slice(&calimero_identity::sha256(&report.result));
     let count = u32::try_from(report.outputs.len()).map_err(|_| eyre!("too many outputs"))?;
     m.extend_from_slice(&count.to_be_bytes());
@@ -449,6 +459,7 @@ mod tests {
             attempt: 1,
             status: ReportStatus::Done,
             reason: None,
+            message: String::new(),
             result: b"[\"x\"]".to_vec(),
             outputs: vec![OutputRef {
                 id: "aa".repeat(32),
@@ -669,7 +680,6 @@ mod tests {
         let reasons = [
             FailReason::Fuel,
             FailReason::Memory,
-            FailReason::Time,
             FailReason::Trap,
             FailReason::AppError,
             FailReason::Integrity,
@@ -702,6 +712,30 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_message_is_signed_bounded_and_only_for_an_app_error_or_a_trap() {
+        let with = |reason, message: &str| Report {
+            message: message.to_owned(),
+            ..failed_report(reason)
+        };
+        let signed = |r: &Report| sign_report(&key(3), &FOR, r).unwrap();
+        let r = with(FailReason::AppError, "Denied: no");
+        assert!(verify_report(&public(3), &FOR, &r, &signed(&r)));
+        let mut edited = r.clone();
+        edited.message.push('x');
+        assert!(!verify_report(&public(3), &FOR, &edited, &signed(&r)));
+        let longest = "x".repeat(MAX_REPORT_MESSAGE_BYTES);
+        assert!(sign_report(&key(3), &FOR, &with(FailReason::Trap, &longest)).is_ok());
+        let too_long = format!("{longest}x");
+        assert!(sign_report(&key(3), &FOR, &with(FailReason::Trap, &too_long)).is_err());
+        assert!(sign_report(&key(3), &FOR, &with(FailReason::Fuel, "no")).is_err());
+        let done = Report {
+            message: "no".into(),
+            ..report()
+        };
+        assert!(sign_report(&key(3), &FOR, &done).is_err());
+    }
+
+    #[test]
     fn the_report_message_is_the_documented_byte_layout() {
         let r = Report {
             app: "a".into(),
@@ -709,6 +743,7 @@ mod tests {
             attempt: 2,
             status: ReportStatus::Failed,
             reason: Some(FailReason::Fuel),
+            message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
             usage: ReportUsage {
@@ -722,6 +757,7 @@ mod tests {
         want.extend([0, 0, 0, 1, b'a', 0, 0, 0, 1, b'r', 0, 0, 0, 2, 1]);
         want.extend([0, 0, 0, 4]);
         want.extend(b"fuel");
+        want.extend([0, 0, 0, 0]);
         want.extend(calimero_identity::sha256(b""));
         want.extend([0, 0, 0, 0]);
         want.extend([
