@@ -448,6 +448,8 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             deployers: args.deployers.unwrap_or_default(),
         },
         kms_keys,
+        rollback: None,
+        accept_rollback: false,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

@@ -151,6 +151,13 @@ pub struct Config {
     /// storage key, and the data disk's when the boot script recorded it).
     /// Reported, bound into the quote, by `GET /attestation?purpose=kms`.
     pub kms_keys: calimero_client::attest::KmsKeys,
+    /// The rollback counter this node checks its store against and raises
+    /// (`rollback`): mero-kms's, from the key release. `None`: no counter
+    /// (`--dev`, a key given by flag or file), and the store is not judged.
+    pub rollback: Option<Arc<dyn crate::rollback::Counter>>,
+    /// Start on a store the counter says was rolled back (`--accept-rollback`):
+    /// mero-kms lowers this node's entry and raises the cluster epoch.
+    pub accept_rollback: bool,
 }
 
 impl Config {
@@ -448,6 +455,8 @@ pub struct Node {
     pub component_search: crate::component::search::ComponentSearch,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
+    /// The rollback counter's checkpoints (`rollback`), when this node has one.
+    pub checkpoints: Option<Arc<crate::rollback::Checkpoints>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
     sys_reads: ReadRounds,
     /// Entries this node appended that applied as conflicts (built on state
@@ -649,6 +658,20 @@ impl Node {
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
         )?;
+        // Before any group starts: a store older than mero-kms has seen
+        // never serves (`rollback`).
+        let checkpoints = match &config.rollback {
+            Some(counter) => {
+                crate::rollback::start(
+                    &engine,
+                    config.node_id,
+                    Arc::clone(counter),
+                    config.accept_rollback,
+                )
+                .await?
+            }
+            None => None,
+        };
         let system = engine
             .start_group(SYSTEM_GROUP, SystemMachine::default())
             .await?;
@@ -722,6 +745,7 @@ impl Node {
             starting: tokio::sync::Mutex::new(()),
             component_search: crate::component::search::ComponentSearch::default(),
             this: Mutex::new(Weak::new()),
+            checkpoints,
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
         *node.this.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);

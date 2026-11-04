@@ -34,6 +34,7 @@ pub mod placement;
 pub mod presence;
 pub mod proof;
 pub mod report;
+pub mod rollback;
 pub mod signing_key;
 pub mod system;
 #[cfg(feature = "testing")]
@@ -176,6 +177,10 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
         None => None,
     };
+
+    if let Some(checkpoints) = &node.checkpoints {
+        drop(tokio::spawn(Arc::clone(checkpoints).run(shutdown.clone())));
+    }
 
     drop(tokio::spawn(calimero_sealed::expire_sessions(
         Arc::downgrade(&node.transport),
