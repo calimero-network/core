@@ -501,8 +501,8 @@ is its command line.
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
-  consent page still shows the plan an ABI pair implies
-  (`consent_page::diff::plan_from_abis`). The directory records the new bundle only
+  consent page shows the state version each side's `calimero:abi` declares and flags a
+  change (`stateVersion`), as no migration runs. The directory records the new bundle only
   once the upgrade succeeded.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
@@ -575,7 +575,10 @@ is its command line.
   request (this node's memory,
   `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
   a model from node state and verified manifests (an upgrade's capability
-  sheet is `consent_page::diff`; the plain-language `title`, `points` and
+  sheet is `consent_page::diff`, its methods, events, timers and state version from the
+  `calimero:abi` each component embeds, `component::embedded_abi`; regression:
+  `an_upgrades_page_names_what_the_components_abis_change` with
+  `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
   a collapsed *Technical details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
