@@ -32,9 +32,8 @@ pub fn file_key(cluster_key: &[u8; 32], app_id: &str) -> [u8; 32] {
     tag(cluster_key, format!("calimero.files.v1|{app_id}"))
 }
 
-/// The cluster's identity: an Ed25519 key only a node holding the cluster key can make, so a
-/// signature by it proves a node of this cluster signed. Its public half names the cluster to
-/// the job nodes that take its work.
+/// The cluster's identity: an Ed25519 key only a node holding the cluster key can make, so its
+/// signature proves a node of this cluster signed. Its public half names the cluster to job nodes.
 #[must_use]
 pub fn cluster_identity_key(cluster_key: &[u8; 32]) -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&tag(cluster_key, "calimero.cluster-identity.v1"))

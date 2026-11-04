@@ -1191,9 +1191,8 @@ async fn an_input_that_changes_on_the_job_nodes_disk_loses_the_run_and_never_bla
     );
     let answer = client.finish(&a, &token).await;
     assert_eq!(answer, json!({ "state": "lost" }));
-    // The run's files are deleted as it ends, and the failure happens in its own thread while
-    // the file is altered: putting it back mid-run cannot be timed from here, so the reader's
-    // unit test covers restoring.
+    // Putting a file back mid-run cannot be timed from here: the reader's unit test covers
+    // restoring.
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
