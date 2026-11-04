@@ -664,6 +664,7 @@ dependencies = [
  "eyre",
  "hex",
  "ring",
+ "serde_json",
  "sha2 0.11.1",
  "subtle",
  "tempfile",

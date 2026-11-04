@@ -1256,3 +1256,30 @@ fn a_compute_run_of_the_fixture_writes_its_input_xor_the_seeded_stream() {
     let hash = hex::encode(Sha256::digest(&input));
     assert_eq!(a.result, format!("[\"{hash}\"]").into_bytes());
 }
+
+#[test]
+fn each_engine_refuses_an_abi_of_the_other_world() {
+    let plain = serde_json::json!({
+        "abiVersion": 1,
+        "methods": { "spin": { "kind": "call" } },
+    });
+    let compute_abi = serde_json::json!({
+        "abiVersion": 1,
+        "world": "calimero:app/compute@0.5.1",
+        "methods": {},
+    });
+    let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");
+    let err = compute_engine()
+        .prepare("job-hash", &job)
+        .err()
+        .expect("a compute component whose ABI names the app world");
+    assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
+
+    let app = calimero_app_build::with_abi(&guest("probe"), &compute_abi).expect("patch");
+    let err = fixture()
+        .engine
+        .prepare("app-hash", &app)
+        .err()
+        .expect("an app component whose ABI names the compute world");
+    assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
+}

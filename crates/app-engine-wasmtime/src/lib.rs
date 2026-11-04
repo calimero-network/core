@@ -250,6 +250,22 @@ impl Engine for WasmtimeEngine {
         let abi = calimero_app_build::abi_of(component)
             .map_err(|e| PrepareError::BadAbi(e.to_string()))?
             .ok_or(PrepareError::NoAbi)?;
+        let names_compute_world = abi["world"] == calimero_app_wit::COMPUTE_WORLD;
+        if names_compute_world != (self.world == World::Compute) {
+            return Err(PrepareError::BadAbi(format!(
+                "the ABI is for the {} world, this engine runs the {} world",
+                if names_compute_world {
+                    "compute"
+                } else {
+                    "app"
+                },
+                if self.world == World::Compute {
+                    "compute"
+                } else {
+                    "app"
+                },
+            )));
+        }
         let abi = Abi::from_json(&abi)?;
         let memories = defined_memories(component)?;
         if memories > MAX_MEMORIES {
