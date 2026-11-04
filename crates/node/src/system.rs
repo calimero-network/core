@@ -814,9 +814,8 @@ impl SystemState {
         self.compute.get(app)?.get(run)
     }
 
-    /// Grants waiting runs up to the job nodes' places, to the payers in turn (the one served
-    /// longest ago first, then the one whose oldest run arrived first); a payer at a quota is
-    /// passed over for the pass. Granted runs stay.
+    /// Grants waiting runs up to the job nodes' places, to the payers in turn (longest served
+    /// first); a payer at a quota is passed over for the pass. Granted runs stay.
     fn grant_runs(&mut self) {
         let quota = self.quotas.compute_fuel_per_org;
         for slot in self.compute.values_mut().flat_map(BTreeMap::values_mut) {
