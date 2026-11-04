@@ -1068,8 +1068,12 @@ impl AppMachine {
                 if self.state.initialized || self.state.init_error.is_some() {
                     Applied::conflict(index, "already initialized")
                 } else {
-                    // The runs init starts name its bundle.
+                    // The runs init starts name its bundle and compute component.
                     let before = self.state.bundle.replace(bundle.clone());
+                    let before_compute = std::mem::replace(
+                        &mut self.state.component.head.compute_bundle,
+                        compute_bundle.clone(),
+                    );
                     let a = self.apply_component_outcome(
                         tx,
                         index,
@@ -1080,10 +1084,10 @@ impl AppMachine {
                     );
                     if a.conflict {
                         self.state.bundle = before;
+                        self.state.component.head.compute_bundle = before_compute;
                     } else {
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
-                        self.state.component.head.compute_bundle = compute_bundle;
                         self.state.component.head.install_ts_ms = ts_ms;
                         self.state.initialized = outcome.status == Status::Ok;
                         if !self.state.initialized {
@@ -1253,7 +1257,7 @@ fn parse_hex32(id: &str) -> Option<[u8; 32]> {
 
 /// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
 /// `AppError` with `why`.
-fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
+pub(crate) fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
     Applied {
         index,
         status: if ok { Status::Ok } else { Status::AppError },

@@ -82,6 +82,8 @@ pub const NOT_REACHED: &str = "no such app";
 
 /// The code of a component the engine refuses.
 pub const BAD_BUNDLE: &str = "BAD_BUNDLE";
+/// The code of an upgrade refused because an active compute run still needs a result method the target lacks.
+pub const RUN_NEEDS_RESULT_METHOD: &str = "RunNeedsResultMethod";
 
 /// The largest call or `init` arguments a component runs (Ruling 30): well under
 /// `MAX_ENTRY_BYTES`, so the entry that logs a refused run always fits.
@@ -603,12 +605,8 @@ impl Node {
             records: blobs,
             key: self.blob_grant_key(),
         });
-        let (owner, compute_bundle) = self
-            .sys(|s| {
-                s.apps
-                    .get(app_id)
-                    .map(|a| (a.owner.clone(), a.compute_bundle.clone()))
-            })
+        let owner = self
+            .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
             .unwrap_or_default();
         match HostCore::new(app_id, state, applied, invocation, directory) {
             Ok(host) => {
@@ -616,7 +614,7 @@ impl Node {
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
-                        .with_compute_component(compute_bundle.is_some()),
+                        .with_compute_component(extras.compute_component),
                     None => host,
                 };
                 let host = match search {
@@ -639,7 +637,7 @@ impl Node {
                     .collect();
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
-                    outcome.name_app(&owner, compute_bundle.as_deref());
+                    outcome.name_owner(&owner);
                 }
                 Ran {
                     outcome,
@@ -841,6 +839,7 @@ impl Node {
                         },
                         RunExtras {
                             runs: Some(m.runs_provider(None)),
+                            compute_component: compute_bundle.is_some(),
                             ..RunExtras::default()
                         },
                     ),
@@ -1031,6 +1030,7 @@ impl Node {
                         key: Some(format!("tick:{timer}:{slot}")),
                         outbound: true,
                         runs: Some(m.runs_provider(None)),
+                        compute_component: m.state.component.head.compute_bundle.is_some(),
                     },
                 );
                 let outcome = ran.outcome;
@@ -1245,6 +1245,7 @@ impl Node {
                             // A read-only member's run reaches no outbound host.
                             outbound: !read_only,
                             runs: Some(m.runs_provider(None)),
+                            compute_component: m.state.component.head.compute_bundle.is_some(),
                         },
                     );
                     ran_for = Some(started.elapsed());
@@ -1535,6 +1536,7 @@ impl Node {
                         key: Some("view".to_owned()),
                         outbound: false,
                         runs: None,
+                        compute_component: false,
                     },
                     search,
                 )
@@ -2016,13 +2018,30 @@ impl Node {
                 "migrations are rebuilds (D38), not in this milestone",
             ));
         }
-        match self.prepared_for(bundle).await {
-            Ok(_) => {}
+        let target = match self.prepared_for(bundle).await {
+            Ok(target) => target,
             Err(e) if e.code == BAD_BUNDLE => return Ok(refuse(BAD_BUNDLE, &e.message)),
             Err(e) => return Err(WriteError::Unavailable(e.message)),
-        }
+        };
         let p = g
             .propose_led(|m, _, _| {
+                let is_result = |name: &String| {
+                    target
+                        .abi
+                        .methods
+                        .get(name)
+                        .is_some_and(|method| method.compute_result)
+                };
+                if let Some(lost) = m.active_result_methods().iter().find(|r| !is_result(r)) {
+                    let mut refused = crate::component::host_answer(m.state.last_index, false, "");
+                    refused.error = json!({
+                        "code": RUN_NEEDS_RESULT_METHOD,
+                        "fields": { "message": format!(
+                            "an active compute run will call {lost}, which the target release does not declare as a result method"
+                        ) },
+                    });
+                    return Proposal::Reply(serde_json::to_vec(&refused).unwrap_or_default());
+                }
                 let mut cmd = ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
                     compute_bundle: compute_bundle.map(str::to_owned),
@@ -2131,6 +2150,8 @@ struct RunExtras {
     outbound: bool,
     /// The app's active runs: with them, a logged run starts and cancels compute runs.
     runs: Option<Arc<dyn Runs>>,
+    /// Whether the app's group runs a release that ships a compute component.
+    compute_component: bool,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the
@@ -2377,7 +2398,6 @@ mod tests {
             },
             result_method: "onDone".into(),
             owner: String::new(),
-            compute_bundle: None,
         });
         assert!(writes(&start));
         let cancel = Outcome {

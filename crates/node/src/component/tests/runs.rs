@@ -132,7 +132,6 @@ fn started(run: &str) -> ComputeStart {
         },
         result_method: "onDone".into(),
         owner: "alice".into(),
-        compute_bundle: None,
     }
 }
 
@@ -178,6 +177,7 @@ fn report(
         attempt,
         status,
         reason,
+        message: String::new(),
         result: if status == ReportStatus::Done {
             b"\"ok\"".to_vec()
         } else {
@@ -253,6 +253,7 @@ fn a_run_starts_on_the_bundle_that_ran_it_whatever_is_installed_later() {
     w.start("r1");
     let upgrade = ComponentCmd::Upgrade {
         bundle: "b2".into(),
+        compute_bundle: None,
         base_index: w.last,
     };
     let _a = w.push(&upgrade);
@@ -267,29 +268,27 @@ fn a_run_starts_on_the_bundle_that_ran_it_whatever_is_installed_later() {
 }
 
 #[test]
-fn a_run_keeps_the_compute_component_its_start_named_whatever_is_installed_later() {
+fn a_run_pins_the_compute_component_the_groups_bundle_shipped_with() {
     let mut w = World::new();
-    let named = |run: &str, hash: &str| ComputeStart {
-        compute_bundle: Some(hash.into()),
-        ..started(run)
-    };
-    let a = w.call(vec![named("r1", "c1")], &[]);
-    assert!(!a.conflict, "{a:?}");
-    let upgrade = ComponentCmd::Upgrade {
-        bundle: "b2".into(),
+    let upgrade = |w: &World, bundle: &str, compute: Option<&str>| ComponentCmd::Upgrade {
+        bundle: bundle.into(),
+        compute_bundle: compute.map(str::to_owned),
         base_index: w.last,
     };
-    let _a = w.push(&upgrade);
-    let a = w.call(vec![named("r2", "c2")], &[]);
+    w.start("r1");
+    let a = w.push(&upgrade(&w, "b2", Some("c2")));
+    assert!(!a.conflict, "{a:?}");
+    w.start("r2");
+    let a = w.push(&upgrade(&w, "b3", Some("c3")));
     assert!(!a.conflict, "{a:?}");
     w.start("r3");
-    assert_eq!(w.record("r1").compute_bundle.as_deref(), Some("c1"));
-    assert_eq!(w.record("r2").compute_bundle.as_deref(), Some("c2"));
-    assert_eq!(
-        w.record("r3").compute_bundle,
-        None,
-        "a start that names none"
-    );
+    let _a = w.push(&upgrade(&w, "b4", None));
+    w.start("r4");
+    let pinned = |run: &str| w.record(run).compute_bundle;
+    assert_eq!(pinned("r1"), None, "init named none");
+    assert_eq!(pinned("r2").as_deref(), Some("c2"));
+    assert_eq!(pinned("r3").as_deref(), Some("c3"));
+    assert_eq!(pinned("r4"), None, "the release without one");
 }
 
 #[test]
@@ -636,7 +635,7 @@ fn the_outcome_must_be_what_the_report_says() {
         "report does not match the outcome"
     );
     entry.outcome = FinalOutcome::Failed {
-        reason: FailedReason::Time,
+        reason: FailedReason::Memory,
     };
     assert_eq!(
         why(&w.finish(entry.clone())),
@@ -664,7 +663,6 @@ fn every_job_reason_ends_the_run_failed_with_its_report() {
     let cases = [
         (FailedReason::Fuel, FailReason::Fuel),
         (FailedReason::Memory, FailReason::Memory),
-        (FailedReason::Time, FailReason::Time),
         (FailedReason::Trap, FailReason::Trap),
         (FailedReason::AppError, FailReason::AppError),
         (FailedReason::Integrity, FailReason::Integrity),
@@ -925,6 +923,19 @@ fn an_output_that_is_already_a_file_or_listed_twice_is_refused() {
     entry.report = Some(rep);
     entry.outputs = twice;
     assert_eq!(why(&w.finish(entry)), "output is already a file");
+}
+
+#[test]
+fn an_output_whose_id_is_not_a_blob_id_is_refused() {
+    let k = job_key(1);
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &k);
+    let mut entry = w.done("r1", &k);
+    let mut bad = out(1);
+    bad.id = "not-a-blob-id".into();
+    entry.outputs = vec![bad];
+    assert_eq!(why(&w.finish(entry)), "output id is not a blob id");
 }
 
 fn call_entry(base: u64) -> CallEntry {
@@ -1190,11 +1201,8 @@ fn naming_the_app_fills_every_start() {
         ],
         ..Outcome::default()
     };
-    outcome.name_app("alice", Some("c1"));
-    assert!(outcome
-        .compute_starts
-        .iter()
-        .all(|s| s.owner == "alice" && s.compute_bundle.as_deref() == Some("c1")));
+    outcome.name_owner("alice");
+    assert!(outcome.compute_starts.iter().all(|s| s.owner == "alice"));
 }
 
 #[test]

@@ -93,8 +93,8 @@ pub struct RunInputRef {
     pub sha256: String,
 }
 
-/// A run a call started, as its outcome carries it: the node fills `owner` and `compute_bundle`
-/// from the system state when the leader builds the entry.
+/// A run a call started, as its outcome carries it: the node fills `owner` from the system state
+/// when the leader builds the entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeStart {
@@ -106,9 +106,6 @@ pub struct ComputeStart {
     pub result_method: String,
     #[serde(default)]
     pub owner: String,
-    /// The compute component of the release the app runs, as the leader read it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub compute_bundle: Option<String>,
 }
 
 impl From<host::StartedRun> for ComputeStart {
@@ -133,7 +130,6 @@ impl From<host::StartedRun> for ComputeStart {
             },
             result_method: run.caps.result,
             owner: String::new(),
-            compute_bundle: None,
         }
     }
 }
@@ -196,7 +192,6 @@ pub struct RunRecord {
 pub enum FailedReason {
     Fuel,
     Memory,
-    Time,
     Trap,
     AppError,
     Integrity,
@@ -216,7 +211,6 @@ impl FailedReason {
         match self {
             Self::Fuel => Some(FailReason::Fuel),
             Self::Memory => Some(FailReason::Memory),
-            Self::Time => Some(FailReason::Time),
             Self::Trap => Some(FailReason::Trap),
             Self::AppError => Some(FailReason::AppError),
             Self::Integrity => Some(FailReason::Integrity),
@@ -333,12 +327,10 @@ impl host::Runs for NodeRuns {
 }
 
 impl Outcome {
-    /// Names the owner and the running compute component of the app for the runs this outcome
-    /// starts.
-    pub fn name_app(&mut self, owner: &str, compute_bundle: Option<&str>) {
+    /// Names the owner of the app for the runs this outcome starts.
+    pub fn name_owner(&mut self, owner: &str) {
         for start in &mut self.compute_starts {
             owner.clone_into(&mut start.owner);
-            start.compute_bundle = compute_bundle.map(str::to_owned);
         }
     }
 }
@@ -353,6 +345,16 @@ impl AppMachine {
             .group()?
             .get_hidden(rows::CRUN, run.as_bytes())?;
         serde_json::from_slice(&raw).ok()
+    }
+
+    /// The result methods the active runs will call when they end, by ABI name.
+    #[must_use]
+    pub fn active_result_methods(&self) -> BTreeSet<String> {
+        self.active_runs()
+            .iter()
+            .filter_map(|run| self.run_record(run))
+            .map(|record| record.result_method)
+            .collect()
     }
 
     /// The ids of the active runs, in order.
@@ -427,7 +429,7 @@ impl AppMachine {
                 caps: start.caps,
                 result_method: start.result_method.clone(),
                 bundle,
-                compute_bundle: start.compute_bundle.clone(),
+                compute_bundle: self.state.component.head.compute_bundle.clone(),
                 caller: caller.clone(),
                 owner: start.owner.clone(),
                 start_ts_ms: ts_ms,

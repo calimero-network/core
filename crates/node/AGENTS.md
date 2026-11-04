@@ -461,8 +461,9 @@ is its command line.
   At most `MAX_ACTIVE_RUNS` runs are active; a start past it or of a known id is dropped.
   `finished_runs` keeps the last `FINISHED_RUNS_KEPT` (256) finished ids, oldest first, and a record leaves with its id.
   The record pins the bundle that ran at start, so an upgrade does not move it.
-  It pins the compute component the same way: `RunRecord::compute_bundle` is copied from the start in the logged entry (`ComputeStart::compute_bundle`), which the leader fills from the app's `AppRecord::compute_bundle` (`Outcome::name_app`) in the same read that decides the start.
-  Apply never reads system state, because the system group and the app's log are different logs and a replica could see them in a different order; what the leader read is in the entry, so every replica records the same hash.
+  It pins the compute component the same way: `RunRecord::compute_bundle` is the group's own (`ComponentHead::compute_bundle`, set with the bundle by the app log's `Init` or `Upgrade` entry) at the moment the start applies, never a value the leader read from the system group.
+  Apply never reads system state, because the system group and the app's log are different logs: a delayed or failed system write cannot give a run a compute component that did not ship with the group's bundle.
+  An upgrade that would leave an active run's result method undeclared (`RunNeedsResultMethod`, checked on the leader inside the proposal) is refused.
   An app whose running release has no compute component (a raw upload, or a release without one) cannot start a run: `runs.start` answers the soft error `NO_COMPUTE_COMPONENT` and nothing is recorded.
   A run recorded before this has no `compute_bundle`; the leader that drives runs must treat none as no compute component.
   An input of a run is one of the app's own sealed files (a blob record with a `file` seal), named once; the host refuses a plain blob, an unknown id and a file the same run just made.
@@ -473,7 +474,7 @@ is its command line.
   `computeAttempt { run, attempt, node, jobKey, assignmentDigest, tsMs }` applies to an active run whose cancel was not requested, when `attempt` is the next number and at most `MAX_ATTEMPTS` (3) and both keys are hashes (64 lowercase hex); it sets `running`.
   `computeFinal { run, attempt, outcome, report?, signature?, outputs, usage, result, baseIndex, tsMs, idTerm, idSeq }` ends it.
   The first valid final of the run's latest attempt (0 before any) wins and any later one is a no-op.
-  A job outcome (`done`, or `failed` with `fuel | memory | time | trap | app-error | integrity | cancelled`) needs a report and signature that `verify_report` accepts under the latest attempt's `jobKey` and `assignmentDigest`, for this app, run and attempt, with the same status and reason, and `outputs` and `usage` exactly the report's.
+  A job outcome (`done`, or `failed` with `fuel | memory | trap | app-error | integrity | cancelled`) needs a report and signature that `verify_report` accepts under the latest attempt's `jobKey` and `assignmentDigest`, for this app, run and attempt, with the same status and reason, and `outputs` and `usage` exactly the report's.
   A `cancelled` final (or `failed cancelled`) needs `cancelRequested`, and is either the leader's (no report, zero usage) or carries the job node's report (status failed, reason cancelled) that verifies like any other, with its usage.
   Other leader outcomes carry no report, no outputs and zero usage: `failed lost` needs every attempt used, `failed timeout` a run that was assigned, `failed refused` (an acquire refused for good) a run with no attempt.
   Outputs are bounded (`MAX_NEW_FILES`, `MAX_FILE_BYTES` each, `MAX_COMPUTE_FILE_BYTES` together), and a job's usage cannot pass its caps (fuel; CPU micros and memory-GiB-micros at most the wall cap plus `DEADLINE_GRACE`, 60 s).
@@ -495,7 +496,8 @@ is its command line.
   A queued run whose fuel exceeds a lowered `computeFuelPerOrg` is marked `RunSlot::refused`, and the leader ends it `failed refused`.
   The system group queues runs (`SystemState::compute`, `RunSlot`).
   `AcquireRun` (idempotent; payer must be the app's, fuel at most `MAX_COMPUTE_FUEL`) and `ReleaseRun` run the grant pass.
-  Capacity is job nodes times `RUNS_PER_JOB_NODE` (2), the payer whose oldest waiting run has the smallest `seq` is served first, and a payer at `maxConcurrentRunsPerOrg` (4) or over `computeFuelPerOrg` (10 x `MAX_COMPUTE_FUEL`) is passed over for the pass.
+  Capacity is registered job nodes times `RUNS_PER_JOB_NODE` (2); whether a node is reachable or runs a release an org approved is the leader's attested view, not replicated state, so `apply` cannot count it and the leader bounds a run's wait instead.
+  Free places go to the payers in turn: the one served longest ago (`run_served`, a count of grants, kept only for payers that still have runs), then the one whose oldest waiting run has the smallest `seq`; and a payer at `maxConcurrentRunsPerOrg` (4) or over `computeFuelPerOrg` (10 x `MAX_COMPUTE_FUEL`) is passed over for the pass.
   `RegisterNode`, `RemoveNode`, `SetQuotas`, `TransferApp` (a personal app's payer moves) and `remove_app` (`DeleteApp`, `DeleteOrg`, `DeleteTeam`) re-run it, and a granted run is never taken back.
   `AcquireRun` answers `{ state: granted | queued | refused, code, retryable }`.
   Retryable codes are `NOT_PAYER` and `APP_QUEUE_FULL`; permanent ones are `NO_SUCH_APP`, `FUEL_OVER_RUN_MAX`, `FUEL_OVER_QUOTA` and `RELEASED`.
