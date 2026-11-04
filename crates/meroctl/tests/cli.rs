@@ -618,6 +618,34 @@ fn scenario(root: &Path, url: &str) {
         .unwrap_err();
     assert!(refused.contains("owner"), "{refused}");
     assert!(ops(&["quotas"]).is_object());
+    // The role is a closed set.
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--role",
+            "gpu",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("invalid value"), "{refused}");
+    // This cluster has no operator key: the role reaches the node, which asks for the key.
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--role",
+            "job",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("no operator key"), "{refused}");
     // A node no context lives on, and one that does not exist.
     let unknown = alice
         .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])

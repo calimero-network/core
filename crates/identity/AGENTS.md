@@ -17,7 +17,11 @@ machines, short session tokens any node verifies, and step-up consent challenges
   from the system state alone (credential, challenge, UP and UV, signature),
   so the node checks a logged consent where the command applies; origin, RP id
   and the counter stay with `verify_assertion` on the node that took it. Test:
-  `a_consent_verifies_from_public_data_only`.
+  `a_consent_verifies_from_public_data_only`. `verify_sign_in` is the same
+  check with presence only (a sign-in or sign-up asks no verification), and
+  `assertion_counter` answers the counter a genuine assertion carries,
+  whatever its challenge (what proves `SetSignCount`). Test:
+  `a_sign_in_and_a_counter_verify_from_public_data_only`.
 - `confirm_challenge`: what a passkey signs to approve one `#[app::confirm]` call.
 - Feature `testing`: `SoftAuthenticator`, an in-memory ES256 passkey.
 

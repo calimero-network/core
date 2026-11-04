@@ -186,5 +186,21 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(deleted, "the app was not deleted");
+    // What the old release logged without session proofs replayed as it
+    // applied (the owner's account and app above), and the node on this
+    // release requires the proofs from here on.
+    let mut required = None;
+    for _ in 0..100 {
+        required = node.sys(|s| s.session_proofs_from);
+        if required.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let from = required.expect("the leader requires session proofs");
+    assert!(
+        node.sys(|s| s.proves_sessions(from) && !s.proves_sessions(from - 1)),
+        "from {from} on, not before"
+    );
     r.stop().await;
 }

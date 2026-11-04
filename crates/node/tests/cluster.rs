@@ -163,6 +163,7 @@ async fn a_system_write_waits_for_a_leader_until_its_deadline() {
     // A second genesis: refused when it applies, which proves it reached a leader.
     let genesis = |node: std::sync::Arc<calimero_node::Node>| async move {
         node.sys_write(&calimero_node::system::SystemCmd::Genesis {
+            session_proofs: true,
             governance: calimero_node::system::Governance::default(),
             release: None,
             operator_key: None,

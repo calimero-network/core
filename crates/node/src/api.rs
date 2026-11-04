@@ -37,10 +37,11 @@ use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
-    Deployments, SystemCmd, SystemState,
+    Deployments, RefreshGrant, SystemCmd, SystemState,
 };
 use crate::types::{
-    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
+    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, NodeRole, OrgRole, RefreshRecord,
+    TeamJoin,
 };
 
 /// How long a replica move retries the second hand-over of files, and how long it pauses.
@@ -62,9 +63,23 @@ pub enum Pending {
         name: String,
         expires: u64,
     },
+    /// A sign-in: its challenge is the statement's, which states the
+    /// session it opens ([`NewSession`]).
     Login {
         challenge: [u8; 32],
         expires: u64,
+        statement: crate::proof::Statement,
+        session: NewSession,
+    },
+    /// A sign-up whose passkey is registered and must now sign the account
+    /// it creates (`account:<id> / __create_account`).
+    SignUp {
+        challenge: [u8; 32],
+        expires: u64,
+        statement: crate::proof::Statement,
+        account: Box<Account>,
+        session: NewSession,
+        app: Option<String>,
     },
     AddPasskey {
         challenge: [u8; 32],
@@ -94,6 +109,7 @@ impl Pending {
         match self {
             Self::Register { expires, .. }
             | Self::Login { expires, .. }
+            | Self::SignUp { expires, .. }
             | Self::AddPasskey { expires, .. }
             | Self::Confirm { expires, .. } => *expires,
         }
@@ -141,7 +157,7 @@ async fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
         take_local(node, id)?
     } else {
         let addr = node
-            .sys(|s| s.nodes.get(&holder).map(|n| n.addr.clone()))
+            .sys(|s| s.replica_node(&holder).map(|n| n.addr.clone()))
             .ok_or_else(unknown_challenge)?;
         let v = node
             .peer_post(&addr, "internal/challenge/take", &json!({ "id": id }))
@@ -468,40 +484,105 @@ pub(crate) async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal
     Ok(p)
 }
 
-async fn new_session(node: &Node, account: &str, passkey: &str, app: Option<String>) -> ApiResult {
-    let session = b64url(&random::<16>());
+/// A session's refresh token, made before the passkey is asked: the
+/// ceremony's challenge states it, so the log takes it only with that
+/// passkey's assertion (`system::sign_in_args`, `system::account_args`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NewSession {
+    refresh: String,
+    session: String,
+    expires_at: u64,
+}
+
+impl NewSession {
+    fn new() -> Self {
+        Self {
+            refresh: format!("rt_{}", b64url(&random::<32>())),
+            session: b64url(&random::<16>()),
+            expires_at: now_secs() + REFRESH_TTL,
+        }
+    }
+
+    fn hash(&self) -> String {
+        b64url(&sha256(self.refresh.as_bytes()))
+    }
+
+    fn record(&self, account: &str, passkey: &str, app: Option<String>) -> RefreshRecord {
+        RefreshRecord {
+            account: account.to_owned(),
+            session: self.session.clone(),
+            expires_at: self.expires_at,
+            passkey: Some(passkey.to_owned()),
+            app,
+            key: crate::proof::refresh_key(&self.refresh),
+        }
+    }
+
+    /// What a sign-in's challenge states (`session / __sign_in`): the
+    /// record's account, passkey and package are not known yet and not
+    /// stated; the passkey that signs names them.
+    fn sign_in_statement(&self) -> crate::proof::Statement {
+        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None));
+        crate::proof::Statement::new("session", "__sign_in", &args)
+    }
+}
+
+/// A sign-in's session: its refresh token logged with the sign-in's
+/// assertion, then the session token.
+async fn new_session(
+    node: &Node,
+    account: &str,
+    passkey: &str,
+    app: Option<String>,
+    new: NewSession,
+    consent: Value,
+) -> ApiResult {
+    let token = session_token_for(node, account, passkey, app.clone(), &new)?;
+    let _ok = node
+        .sys_write(&SystemCmd::CreateRefresh {
+            hash: new.hash(),
+            record: new.record(account, passkey, app),
+            consent,
+        })
+        .await?;
+    Ok(session_answer(account, &token, &new))
+}
+
+/// The session token for `new`, signed by this node.
+fn session_token_for(
+    node: &Node,
+    account: &str,
+    passkey: &str,
+    app: Option<String>,
+    new: &NewSession,
+) -> Result<(String, u64), ApiError> {
     let expires_at = now_secs() + SESSION_TTL;
     let token = session_token(
         node,
         SessionClaims {
             account: account.to_owned(),
-            session: session.clone(),
+            session: new.session.clone(),
             expires_at,
             passkey: Some(passkey.to_owned()),
-            app: app.clone(),
+            app,
             node: 0,
             key: String::new(),
         },
     )?;
-    let refresh = format!("rt_{}", b64url(&random::<32>()));
-    let _ok = node
-        .sys_write(&SystemCmd::CreateRefresh {
-            hash: b64url(&sha256(refresh.as_bytes())),
-            record: RefreshRecord {
-                account: account.to_owned(),
-                session,
-                expires_at: now_secs() + REFRESH_TTL,
-                passkey: Some(passkey.to_owned()),
-                app,
-            },
-        })
-        .await?;
-    Ok(Json(json!({
+    Ok((token, expires_at))
+}
+
+fn session_answer(
+    account: &str,
+    (token, expires_at): &(String, u64),
+    new: &NewSession,
+) -> Json<Value> {
+    Json(json!({
         "accountId": account,
         "sessionToken": token,
         "expiresAt": expires_at,
-        "refreshToken": refresh,
-    })))
+        "refreshToken": new.refresh,
+    }))
 }
 
 // ---------------------------------------------------------------- public
@@ -547,6 +628,9 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
             .ok_or_else(|| ApiError::bad_request("BAD_HASH", "appHash must be 32 bytes hex"))?,
         (None, None) => [0; 32],
     };
+    if q.purpose.as_deref() == Some("jobs") {
+        return Err(ApiError::not_found("this node is not a job node"));
+    }
     #[cfg(feature = "testing")]
     if let Some(delay) = crate::testing::attestation_delay(&node.config.public_url) {
         tokio::time::sleep(delay).await;
@@ -587,6 +671,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         receipt_key: receipts.then(|| hex::encode(node.receipt_public())),
         governance: receipts.then_some(governance),
         kms,
+        job_key: None,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -680,6 +765,10 @@ async fn register_begin(
 struct RegisterFinish {
     challenge_id: String,
     registration: Registration,
+    /// The retry after `412 CONFIRM_REQUIRED`: the new passkey's assertion
+    /// over the account it creates.
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
 async fn register_finish(
@@ -692,6 +781,9 @@ async fn register_finish(
     // another node. An account no one holds yet stands for the new one.
     if !serves(&node, "") {
         return Err(wrong_node());
+    }
+    if let Some(confirm) = body.confirm {
+        return sign_up_confirmed(&node, confirm).await;
     }
     let Pending::Register {
         challenge, name, ..
@@ -710,33 +802,121 @@ async fn register_finish(
         &body.registration,
     )
     .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
-    let account = typed_id::<32>();
+    let account = Account {
+        account_id: typed_id::<32>(),
+        name,
+        created_at: now_secs(),
+        passkeys: vec![cred.clone()],
+        // The release this account began on holds its apps until the
+        // owner approves another.
+        approved_releases: [node.own_release()].into_iter().collect(),
+        outbound_approvals: std::collections::BTreeMap::new(),
+        passkey_labels: std::collections::BTreeMap::new(),
+        aliases: std::collections::BTreeMap::new(),
+    };
+    // A registration carries no signature by the new key (attestation
+    // `none`): the new passkey signs the account it creates, and the session
+    // it opens, before the log takes it (412, then the retry).
+    let session = NewSession::new();
+    let app = app.map(|(pkg, _)| pkg);
+    let grant = RefreshGrant {
+        hash: session.hash(),
+        record: session.record(&account.account_id, &cred.id, app.clone()),
+    };
+    let statement = crate::proof::Statement::new(
+        &format!("account:{}", account.account_id),
+        "__create_account",
+        &crate::system::account_args(&account, Some(&grant)),
+    );
+    let signed = statement.challenge().map_err(ApiError::internal)?;
+    let id = put_pending(
+        &node,
+        Pending::SignUp {
+            challenge: signed,
+            expires: now_secs() + CHALLENGE_TTL,
+            statement,
+            account: Box::new(account),
+            session,
+            app,
+        },
+    )?;
+    Err(ApiError::new(
+        412,
+        "CONFIRM_REQUIRED",
+        "sign in with the new passkey to create the account",
+    )
+    .with_details(json!({
+        "challengeId": id,
+        "challenge": b64url(&signed),
+        "rpId": node.config.rp_id,
+        "allowCredentials": [cred.id],
+    })))
+}
+
+/// The sign-up's retry: the new passkey's assertion over the account, then
+/// the account and its first session.
+async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody) -> ApiResult {
+    let Pending::SignUp {
+        challenge,
+        statement,
+        account,
+        session,
+        app,
+        ..
+    } = take_pending(node, &confirm.challenge_id).await?
+    else {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "not a sign-up confirmation",
+        ));
+    };
+    let cred = account
+        .passkeys
+        .first()
+        .ok_or_else(|| ApiError::internal("a sign-up without its passkey"))?;
+    // From the origin the sign-up came from: the package's, or the cluster's.
+    let origin = claimed_app(node, &confirm.assertion.client_data_json)
+        .filter(|(pkg, _)| app.as_ref() == Some(pkg));
+    let _count = verify_assertion(
+        &rp_with(rp(node), origin.as_ref()),
+        &challenge,
+        cred,
+        &confirm.assertion,
+    )
+    .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    let account_id = account.account_id.clone();
+    let passkey = cred.id.clone();
+    let token = session_token_for(node, &account_id, &passkey, app.clone(), &session)?;
+    let consent = crate::proof::Consent {
+        statement,
+        assertion: confirm.assertion,
+    };
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {
-            account: Account {
-                account_id: account.clone(),
-                name,
-                created_at: now_secs(),
-                passkeys: vec![cred.clone()],
-                // The release this account began on holds its apps until the
-                // owner approves another.
-                approved_releases: [node.own_release()].into_iter().collect(),
-                outbound_approvals: std::collections::BTreeMap::new(),
-                passkey_labels: std::collections::BTreeMap::new(),
-                aliases: std::collections::BTreeMap::new(),
-            },
+            account: *account,
+            refresh: Some(RefreshGrant {
+                hash: session.hash(),
+                record: session.record(&account_id, &passkey, app),
+            }),
+            consent: serde_json::to_value(&consent).unwrap_or_default(),
         })
         .await?;
-    new_session(&node, &account, &cred.id, app.map(|(pkg, _)| pkg)).await
+    Ok(session_answer(&account_id, &token, &session))
 }
 
 async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
-    let challenge = random::<32>();
+    // The challenge states the session the sign-in opens, so the log takes
+    // its refresh token only with this assertion (`CreateRefresh`).
+    let session = NewSession::new();
+    let statement = session.sign_in_statement();
+    let challenge = statement.challenge().map_err(ApiError::internal)?;
     let id = put_pending(
         &node,
         Pending::Login {
             challenge,
             expires: now_secs() + CHALLENGE_TTL,
+            statement,
+            session,
         },
     )?;
     Ok(Json(json!({
@@ -802,6 +982,7 @@ async fn check_assertion_for(
             .sys_write(&SystemCmd::SetSignCount {
                 credential_id: cred.id.clone(),
                 count,
+                assertion: serde_json::to_value(assertion).unwrap_or_default(),
             })
             .await
             .map_err(|e| {
@@ -827,7 +1008,13 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     if named.is_some_and(|a| !serves(&node, &a)) {
         return Err(wrong_node());
     }
-    let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id).await? else {
+    let Pending::Login {
+        challenge,
+        statement,
+        session,
+        ..
+    } = take_pending(&node, &body.challenge_id).await?
+    else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
             "not a login challenge",
@@ -835,7 +1022,19 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     };
     let (account, app) =
         check_assertion(&node, &challenge, &body.assertion, None, false, None, true).await?;
-    new_session(&node, &account, &body.assertion.credential_id, app).await
+    let consent = crate::proof::Consent {
+        statement,
+        assertion: body.assertion.clone(),
+    };
+    new_session(
+        &node,
+        &account,
+        &body.assertion.credential_id,
+        app,
+        session,
+        serde_json::to_value(&consent).unwrap_or_default(),
+    )
+    .await
 }
 
 async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -1036,13 +1235,30 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         expires_at: now_secs() + REFRESH_TTL,
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
+        key: crate::proof::refresh_key(&new_refresh),
     };
+    let new_hash = b64url(&sha256(new_refresh.as_bytes()));
+    let now = now_secs();
+    // Signed with the presented token's key: the log exchanges a token only
+    // for whoever holds it, never for a node that only saw its hash.
+    let signature = crate::proof::sign_refresh_use(
+        &body.refresh_token,
+        &crate::proof::refresh_use_message(
+            &old_hash,
+            &new_hash,
+            &record.key,
+            &record.session,
+            record.expires_at,
+            now,
+        ),
+    );
     let exchanged = node
         .sys_write(&SystemCmd::UseRefresh {
             old_hash: old_hash.clone(),
-            new_hash: b64url(&sha256(new_refresh.as_bytes())),
+            new_hash,
             record,
-            now: now_secs(),
+            now,
+            signature,
         })
         .await;
     if let Err(e) = exchanged {
@@ -1453,16 +1669,40 @@ async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
     Ok(Json(json!({ "keys": keys })))
 }
 
+/// Revoke an API key: the account's, approved with a passkey (412 first;
+/// the retry's JSON body carries `confirm`).
 async fn apikey_revoke(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(key_id): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    // Asked before the passkey: a key the account does not have is not one
+    // to approve revoking.
+    let theirs = node.sys(|s| {
+        s.api_keys
+            .values()
+            .any(|k| k.key_id == key_id && k.account == account)
+    });
+    if !theirs {
+        return Err(ApiError::not_found("no such key"));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__revoke_api_key",
+        &json!({ "keyId": key_id }),
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
     let _ok = node
         .sys_write(&SystemCmd::RevokeApiKey {
             key_id,
             actor: account,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
@@ -4468,15 +4708,14 @@ async fn internal_cluster_key(
         return Err(ApiError::forbidden("another cluster"));
     }
     let id = body.node;
-    let addr = node.sys(|s| {
-        if s.removed_nodes.contains(&id) {
-            return None;
-        }
-        s.nodes
-            .get(&id)
-            .map(|n| n.addr.clone())
-            .or_else(|| node.config.peers.get(&id).cloned())
-    });
+    if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+        return Err(ApiError::forbidden(
+            "a job node never holds the cluster key",
+        ));
+    }
+    let addr = (!node.sys(|s| s.removed_nodes.contains(&id)))
+        .then(|| node.replica_addr(id))
+        .flatten();
     let Some(addr) = addr else {
         return Err(ApiError::forbidden(
             "not a node of this cluster: register it (/ops/nodes) first",
@@ -5349,9 +5588,10 @@ pub async fn plain_metrics(State(node): State<Arc<Node>>) -> Response {
 /// membership, the build's release; never names or state.
 fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     use std::fmt::Write as _;
-    let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
+    let (nodes, job_nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
         (
-            s.nodes.len(),
+            s.replica_nodes().count(),
+            s.job_nodes().count(),
             s.apps.len(),
             s.accounts.len(),
             s.orgs.len(),
@@ -5374,8 +5614,13 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     };
     gauge(
         "calimero_cluster_nodes",
-        "Nodes in the directory.",
+        "Replica nodes in the directory.",
         nodes as u64,
+    );
+    gauge(
+        "calimero_cluster_job_nodes",
+        "Job nodes in the directory.",
+        job_nodes as u64,
     );
     gauge(
         "calimero_apps",
@@ -5515,7 +5760,7 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
 
 /// How long `/ops/placement` waits for a node it has not attested yet to name
 /// its release; one that does not answer by then is listed with none.
-const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
 
 /// Where every app's replicas are, for a rebalancer (mdma): each app's id,
 /// group and replica node ids, and each node's id, zone, attested release and
@@ -5531,7 +5776,7 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             .values()
             .map(|a| json!({ "app": a.app_id, "group": a.group, "replicas": a.replicas }))
             .collect();
-        let nodes: Vec<(u64, String, usize)> = s
+        let nodes: Vec<(u64, String, NodeRole, usize)> = s
             .nodes
             .values()
             .map(|n| {
@@ -5540,21 +5785,21 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
                     .values()
                     .filter(|a| a.replicas.contains(&n.id))
                     .count();
-                (n.id, n.zone.clone(), hosted)
+                (n.id, n.zone.clone(), n.role, hosted)
             })
             .collect();
         (apps, nodes)
     });
     let releases =
-        futures_util::future::join_all(nodes.iter().map(|(id, _, _)| {
+        futures_util::future::join_all(nodes.iter().map(|(id, ..)| {
             tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))
         }))
         .await;
     let nodes: Vec<Value> = nodes
         .into_iter()
         .zip(releases)
-        .map(|((id, zone, hosted), release)| {
-            json!({ "id": id, "zone": zone, "release": release.ok().flatten(), "apps": hosted })
+        .map(|((id, zone, role, hosted), release)| {
+            json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
     Ok(Json(
@@ -5774,29 +6019,71 @@ struct NodeBody {
     zone: String,
     #[serde(default, rename = "operatorProof")]
     operator_proof: Option<OperatorProofBody>,
+    #[serde(default)]
+    role: NodeRole,
 }
 
 /// Register a node: the operator's decision, signed
-/// (`cluster / __register_node / { id, addr, zone }`, 428 first).
+/// (`cluster / __register_node / { id, addr, zone }`, plus `role` for a job node; 428 first).
 async fn ops_register_node(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(b): Json<NodeBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    let proof = operator_proof(
-        &node,
-        "cluster",
-        "__register_node",
-        &json!({ "id": b.id, "addr": b.addr, "zone": b.zone }),
-        b.operator_proof,
-    )?;
+    let st = node.system.status();
+    let member = st.voters.iter().chain(&st.learners).any(|m| *m == b.id)
+        || node.config.peers.contains_key(&b.id);
+    if b.role == NodeRole::Job && member {
+        return Err(ApiError::bad_request(
+            "NODE_HOLDS_CLUSTER",
+            "that node is a member of this cluster: it cannot be a job node",
+        ));
+    }
+    if !matches!(
+        url::Url::parse(&b.addr)
+            .map(|u| u.scheme().to_owned())
+            .as_deref(),
+        Ok("http" | "https")
+    ) {
+        return Err(ApiError::bad_request(
+            "BAD_ADDRESS",
+            "a node's address is an http or https URL",
+        ));
+    }
+    let wanted = crate::system::normalize_addr(&b.addr);
+    let taken = node
+        .config
+        .peers
+        .iter()
+        .any(|(id, addr)| *id != b.id && crate::system::normalize_addr(addr) == wanted)
+        || node.sys(|s| {
+            s.nodes
+                .values()
+                .any(|n| n.id != b.id && crate::system::normalize_addr(&n.addr) == wanted)
+        });
+    if taken {
+        return Err(ApiError::new(
+            409,
+            "ADDRESS_TAKEN",
+            "another node has that address",
+        ));
+    }
+    if b.role == NodeRole::Job {
+        node.require_upgraded_nodes().await?;
+    }
+    let mut args = json!({ "id": b.id, "addr": b.addr, "zone": b.zone });
+    if b.role != NodeRole::Replica {
+        args["role"] = json!(b.role);
+    }
+    let proof = operator_proof(&node, "cluster", "__register_node", &args, b.operator_proof)?;
     let _ok = node
         .sys_write(&SystemCmd::RegisterNode {
             node: crate::types::NodeRecord {
                 id: b.id,
                 addr: b.addr,
                 zone: b.zone,
+                role: b.role,
             },
             proof,
         })
@@ -5842,12 +6129,16 @@ async fn ops_remove_node(
             "the cluster's last voter cannot be removed",
         ));
     }
+    let in_membership = st.voters.iter().chain(&st.learners).any(|m| *m == id);
     let _ok = node.sys_write(&SystemCmd::RemoveNode { id, proof }).await?;
+    if !in_membership {
+        return Ok(Json(json!({ "status": node.system.status() })));
+    }
     let learners: Vec<u64> = node.sys(|s| {
         st.learners
             .iter()
             .copied()
-            .filter(|l| *l != id && s.nodes.contains_key(l))
+            .filter(|l| *l != id && s.replica_node(l).is_some())
             .collect()
     });
     for l in learners {
@@ -5901,7 +6192,7 @@ async fn ops_set_replicas(
             "a node is named twice",
         ));
     }
-    if target.len() < 3.min(node.sys(|s| s.nodes.len())) {
+    if target.len() < 3.min(node.sys(|s| s.replica_nodes().count())) {
         return Err(ApiError::bad_request(
             "TOO_FEW",
             "an app keeps at least 3 replicas",
@@ -5911,6 +6202,17 @@ async fn ops_set_replicas(
         return Err(ApiError::bad_request(
             "UNKNOWN_NODE",
             &format!("node {id} is not registered"),
+        ));
+    }
+    if let Some(id) = node.sys(|s| {
+        target
+            .iter()
+            .copied()
+            .find(|id| s.replica_node(id).is_none())
+    }) {
+        return Err(ApiError::bad_request(
+            "JOB_NODE",
+            &format!("node {id} is a job node: it holds no app"),
         ));
     }
     // One signature over the target covers both of the move's writes
