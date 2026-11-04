@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 base64 = "0.22"
-calimero-app-sdk = { path = "../../crates/app-sdk" }
+calimero-sdk = { path = "../../crates/sdk" }
 csv = "1"
 hmac = "0.13"
 regex = "1"
@@ -19,7 +19,7 @@ serde_json = "1"
 sha2 = "0.11"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
 calimero-app-build = { path = "../../crates/app-build" }
 
 # Standalone, like the other component apps: the tests build this crate for wasm32-wasip2.

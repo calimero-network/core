@@ -3,8 +3,8 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use calimero_app_sdk::compute::{ComputeOutcome, ComputeStatus};
-use calimero_app_sdk::BlobRef;
+use calimero_sdk::compute::{ComputeOutcome, ComputeStatus};
+use calimero_sdk::BlobRef;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

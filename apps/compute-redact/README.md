@@ -1,6 +1,6 @@
 # compute-redact
 
-Redacts a CSV file on compute runs, on the component SDK (`calimero-app-sdk`, `wasm32-wasip2`).
+Redacts a CSV file on compute runs, on the component SDK (`calimero-sdk`, `wasm32-wasip2`).
 One crate builds two components: `app.wasm` (state and calls) and `compute.wasm` (the rules engine, which is all a job node receives).
 
 ## Roles
