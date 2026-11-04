@@ -147,22 +147,48 @@ fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built
     })
 }
 
+/// An app's components as the cache keeps them: the app component and, when it declares
+/// compute methods, the compute component.
+#[derive(Clone, Debug)]
+pub struct CachedApp {
+    pub app: Vec<u8>,
+    pub compute: Option<Vec<u8>>,
+}
+
 /// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
 ///
 /// The component is `cache_dir/<crate dir name>-<key>.wasm` (key: see [`cache_key`]); cargo's
-/// own target directory is `cache_dir/target/<crate dir name>`.
+/// own target directory is `cache_dir/target/<crate dir name>`. Use [`build_components_cached`]
+/// to get the compute component too.
 pub fn build_component_cached(
     crate_dir: &Path,
     also_hash: &[&Path],
     cache_dir: &Path,
 ) -> EyreResult<Vec<u8>> {
+    Ok(build_components_cached(crate_dir, also_hash, cache_dir)?.app)
+}
+
+/// Builds `crate_dir` like [`build_components`], reusing a result cached under `cache_dir`.
+///
+/// The app component is `<name>-<key>.wasm` and the compute one `<name>-<key>.compute.wasm`,
+/// written first, so an app file that exists says the compute decision is final too.
+pub fn build_components_cached(
+    crate_dir: &Path,
+    also_hash: &[&Path],
+    cache_dir: &Path,
+) -> EyreResult<CachedApp> {
     let name = crate_dir
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| eyre::eyre!("{} has no name", crate_dir.display()))?;
-    let cached = |key: &str| cache_dir.join(format!("{name}-{key}.wasm"));
-    if let Ok(bytes) = std::fs::read(cached(&cache_key(crate_dir, also_hash)?)) {
-        return Ok(bytes);
+    let cached = |key: &str, ext: &str| cache_dir.join(format!("{name}-{key}.{ext}"));
+    let read = |key: &str| {
+        let app = std::fs::read(cached(key, "wasm")).ok()?;
+        let compute = std::fs::read(cached(key, "compute.wasm")).ok();
+        Some(CachedApp { app, compute })
+    };
+    if let Some(hit) = read(&cache_key(crate_dir, also_hash)?) {
+        return Ok(hit);
     }
     // A miss builds under an exclusive lock per (crate, target dir), held across
     // processes (nextest runs each test in its own): the first builds and writes the
@@ -172,23 +198,32 @@ pub fn build_component_cached(
     std::fs::create_dir_all(&target_dir)?;
     let lock = lock_exclusive(&cache_dir.join("target").join(format!("{name}.build.lock")))?;
     let key = cache_key(crate_dir, also_hash)?;
-    let cached = cached(&key);
-    if let Ok(bytes) = std::fs::read(&cached) {
-        return Ok(bytes);
+    if let Some(hit) = read(&key) {
+        return Ok(hit);
     }
-    let built = build_component(crate_dir, &target_dir)?;
+    let built = build_components(crate_dir, &target_dir)?;
     // Write beside, then rename: a reader that skips the lock never sees half a file.
-    let tmp = cache_dir.join(format!("{name}-{key}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, &built.component)?;
-    std::fs::rename(&tmp, &cached)?;
+    let write = |ext: &str, bytes: &[u8]| -> EyreResult<()> {
+        let tmp = cache_dir.join(format!("{name}-{key}.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, cached(&key, ext))?;
+        Ok(())
+    };
+    if let Some(compute) = &built.compute {
+        write("compute.wasm", &compute.component)?;
+    }
+    write("wasm", &built.app.component)?;
     // Dropping `lock` closes it, which releases the lock.
     drop(lock);
-    Ok(built.component)
+    Ok(CachedApp {
+        app: built.app.component,
+        compute: built.compute.map(|c| c.component),
+    })
 }
 
 /// Bump when [`build_component`]'s post-processing (the ABI lift) changes behaviour without
 /// its source text changing; the source of this file is hashed too.
-const POST_PROCESSING_VERSION: u32 = 1;
+const POST_PROCESSING_VERSION: u32 = 2;
 
 /// The first 16 hex digits of a SHA-256 over everything that decides the built component:
 /// - every file under `crate_dir` and under each of `also_hash` (the guest's path
@@ -294,6 +329,14 @@ pub fn abi_of(component: &[u8]) -> EyreResult<Option<Value>> {
         }
     }
     Ok(None)
+}
+
+/// The component with its top-level `calimero:abi` section replaced by `abi`, for tests that
+/// need a component whose ABI says something its code does not.
+pub fn with_abi(component: &[u8], abi: &Value) -> EyreResult<Vec<u8>> {
+    let (mut out, _) = lift_abi(component)?;
+    append_custom_section(&mut out, ABI_SECTION, abi);
+    Ok(out)
 }
 
 /// Splits `bytes` (a module or component) into `(id, content)` sections.

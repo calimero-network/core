@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use calimero_app_build::{abi_of, build_component, build_components, imports_of};
+use calimero_app_build::{
+    abi_of, build_component, build_components, build_components_cached, imports_of,
+};
 use calimero_app_wit::{allowed_imports, compute_allowed_imports, stubbed_imports, COMPUTE_WORLD};
 
 #[test]
@@ -159,4 +161,27 @@ fn the_cli_writes_the_compute_component_beside_the_app_component() {
         .output()
         .expect("run mero-app-build");
     assert!(!refused.status.success());
+}
+
+#[test]
+fn the_cache_keeps_both_components_and_whether_there_is_a_compute_one() {
+    let cache = tempfile::tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sdk = root.join("crates/app-sdk");
+    let macros = root.join("crates/app-sdk-macros");
+    let wit = root.join("crates/app-wit");
+    let also = [sdk.as_path(), macros.as_path(), wit.as_path()];
+
+    let fixture = root.join("apps/v2-fixtures/compute");
+    let first = build_components_cached(&fixture, &also, cache.path()).expect("build");
+    let compute = first.compute.clone().expect("a compute component");
+    assert_ne!(first.app, compute);
+    let again = build_components_cached(&fixture, &also, cache.path()).expect("cached");
+    assert_eq!((again.app, again.compute), (first.app, Some(compute)));
+
+    let echo = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/echo");
+    let plain = build_components_cached(&echo, &[], cache.path()).expect("build");
+    assert!(plain.compute.is_none());
+    let plain_again = build_components_cached(&echo, &[], cache.path()).expect("cached");
+    assert!(plain_again.compute.is_none());
 }
