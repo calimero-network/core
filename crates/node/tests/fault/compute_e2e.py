@@ -2,12 +2,14 @@
 
 The app is built as two components (`app.wasm` and `compute.wasm`) and installed from a signed
 package that carries both. Scenarios: happy path, a job node killed mid-run, restart determinism,
-cancel, the three caps, an output the result method does not store, the quota, and the job
-nodes' logs showing only the compute component. Forged finals, per-run key isolation and
+cancel, the three caps, an output the result method does not store, the quota, the job
+nodes' logs showing only the compute component, and compute-redact end to end (an admin's
+policy, a member's CSV, a job node killed mid-run, the published output downloaded through a grant). Forged finals, per-run key isolation and
 the collection of unreferenced files after `BLOB_IDLE_MS` (an hour of entry time, which only an
 in-process clock can pass) are proved by in-process tests that are run and quoted. Binaries from
-`RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` (on PATH,
-`scripts/install-mero-app-build.sh`), or taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
+`RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` and
+compute-redact's output is checked against `mero-compute` (both on PATH,
+`scripts/install-mero-app-build.sh` and `scripts/install-mero-compute.sh`), or the fixture is taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
 Work dir and logs: `COMPUTE_E2E_DIR` (default target/compute-e2e).
 The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the key the nodes start with
 (`--operator-key`), as the node tests' harness signs them.
@@ -18,19 +20,26 @@ The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the key t
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import hmac
+import io
 import json
 import os
+import random
+import re
 import shutil
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, PackageRegistry, http  # noqa: E402
+from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, HttpError, PackageRegistry, http  # noqa: E402
 
 BASE_PORT = 7650
 PACKAGE = "com.calimero.compute-fixture"
@@ -40,6 +49,14 @@ SMALL_MIB = 5
 VIEW_BYTES = 100_000  # a small input, so the scenarios that only need a result stay quick
 BIG_MIB = 40  # long enough to kill the job node mid-run
 WAIT = 180
+REDACT_PACKAGE = "com.calimero.compute-redact"
+REDACT_ROWS = 150_000  # about 38 MB: a part runs for seconds, long enough to kill its job node
+REDACT_PER_PART = 60_000  # three parts, so the pseudonyms must agree across parts
+REDACT_SEED = 20260413  # the fake people are the same on every run
+REDACT_SALT = "pepper"
+REDACT_COLUMNS = {"name": "pseudonym", "email": "mask", "phone": "mask", "card": "mask", "ssn": "drop", "note": "scan"}
+ORG_QUOTA = 50_000_000_000  # the node's default maxFileBytesPerOrg, put back after the quota scenario
+KILL_AFTER = 0.4  # seconds a part runs before its job node is killed
 CANCEL_DEADLINE = 20  # the leader's wait for a job node to report a cancel
 SETTLE = 12  # poll rounds after a resume, in seconds
 UPLOAD_TRIES = 5  # FILES_UNAVAILABLE is retryable on an overloaded runner
@@ -138,10 +155,10 @@ def cargo_tests():
     return out
 
 
-def upload(cl, key, app, mib=0, length=0):
-    """A sealed file of `mib` MiB (or `length` bytes): its blob id and plaintext SHA-256, as the answer gives them."""
+def upload(cl, key, app, mib=0, length=0, data=None):
+    """A sealed file of `data`, else of `mib` MiB (or `length` bytes): its blob id and plaintext SHA-256, as the answer gives them."""
     piece = bytes((i * 7 + 3) % 251 for i in range(1 << 20))
-    data = piece * mib if mib else piece[:length]
+    data = data if data is not None else piece * mib if mib else piece[:length]
     req = urllib.request.Request(cl.url(1) + f"apps/{app}/blobs?sealed=true", data=data, method="POST",
                                  headers={"authorization": f"Bearer {key}", "content-type": "application/octet-stream"})
     for tries in range(1, UPLOAD_TRIES + 1):
@@ -288,6 +305,188 @@ def quota(cl, rig):
     check("9 quota", out["status"] == "failed" and out["reason"] == "quota" and out["outputs"] == 0,
           f"{used} bytes charged, quota {cap}, input uploaded, digest started",
           f"status {out['status']} reason {out['reason']} outputs {out['outputs']}")
+    cl.operate("set-quotas", json.dumps({"maxFileBytesPerOrg": ORG_QUOTA}))
+
+
+FIRST = ["Ana", "Ben", "Chen", "Dara", "Eli", "Fay", "Gus", "Hana", "Ivo", "Jin", "Kai", "Lena", "Mo", "Nia", "Omar", "Pia"]
+LAST = ["Abel", "Brook", "Cruz", "Dunn", "Eze", "Fox", "Gray", "Hart", "Ito", "Jones", "Khan", "Lund", "Moss", "Nash", "Okoro"]
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+PHONE = re.compile(r"\+1 \d{3} \d{3} \d{4}|\(\d{3}\) \d{3}-\d{4}|\b\d{3}-\d{3}-\d{4}\b")
+CARD = re.compile(r"\b\d{4} \d{4} \d{4} \d{4}\b")
+
+
+def fake_people(seed, rows):
+    """`rows` CSV records of invented people, from a fixed seed: the same bytes on every run."""
+    rng = random.Random(seed)
+    names = [f"{rng.choice(FIRST)} {rng.choice(LAST)}" for _ in range(300)]
+    for i in range(rows):
+        name = rng.choice(names)
+        email = f"{name.lower().replace(' ', '.')}{rng.randrange(100)}@{rng.choice(['acme.com', 'mail.org', 'corp.example.net'])}"
+        phone = rng.choice([f"+1 {rng.randrange(200, 999)} {rng.randrange(200, 999)} {rng.randrange(1000, 9999)}",
+                            f"({rng.randrange(200, 999)}) {rng.randrange(200, 999)}-{rng.randrange(1000, 9999)}",
+                            f"{rng.randrange(200, 999)}-{rng.randrange(200, 999)}-{rng.randrange(1000, 9999)}"])
+        card = " ".join(f"{rng.randrange(10000):04d}" for _ in range(4))
+        ssn = f"{rng.randrange(100, 999)}-{rng.randrange(10, 99)}-{rng.randrange(1000, 9999)}"
+        note = rng.choice([f"please reach me at {email}", f"call {phone} after 5", f"paid with card {card} today",
+                           "no contact details", f"{name} asked for a refund, ping {email} or {phone}"])
+        yield [str(i), name, email, phone, card, ssn, note + " lorem ipsum" * rng.randrange(8, 14)]
+
+
+def people_csv(seed, rows):
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["id", "name", "email", "phone", "card", "ssn", "note"])
+    writer.writerows(fake_people(seed, rows))
+    return out.getvalue().encode()
+
+
+def sign_up(cl, wd, name):
+    """A person: a meroctl home with a file passkey, and the account's id."""
+    home = wd / "accounts" / name
+    passkey = home / "dev-passkey.json"
+    cl.cli(1, "login", "--dev-passkey", str(passkey), "--name", name, "--origin", ORIGIN, home=home)
+    return {"home": home, "passkey": passkey, "id": cl.cli(1, "whoami", home=home)["accountId"]}
+
+
+def join_org(cl, owner, person, org, role):
+    token = cl.cli(1, "raw", "post", f"orgs/{org}/invites", json.dumps({"role": role, "teams": []}),
+                   "--dev-passkey", str(owner["passkey"]), home=owner["home"])["token"]
+    cl.cli(1, "raw", "post", f"invites/{token}/redeem", "{}", home=person["home"])
+    return cl.cli(1, "account", "api-key", "create", "--label", role, "--dev-passkey", str(person["passkey"]),
+                  home=person["home"])["key"]
+
+
+def refused_with(code, call):
+    """Whether `call` is an app error named `code`."""
+    try:
+        call()
+    except HttpError as e:
+        return isinstance(e.body, dict) and e.body.get("details", {}).get("code") == code
+    return False
+
+
+def local_part(wd, compute, csv_path, policy, start, rows):
+    """What `mero-compute run` makes of one part on this machine: its output bytes and cells redacted."""
+    out = wd / f"local-{start}"
+    args = wd / f"local-{start}.json"
+    args.write_text(json.dumps({"policy": policy, "job": "local", "start": start, "rows": rows}))
+    shutil.rmtree(out, ignore_errors=True)
+    run = subprocess.run(["mero-compute", "run", str(compute), "--method", "redact", "--args", f"@{args}",
+                          "--input", str(csv_path), "--out", str(out)], capture_output=True, text=True, check=True)
+    result = json.loads(base64.b64decode(re.search(r"result \(base64\): (\S+)", run.stdout).group(1)))
+    return (out / "output-0").read_bytes(), result["cells"]
+
+
+def download(cl, app, blob, grant):
+    """A published blob through its grant, with no session."""
+    url = cl.url(1) + f"apps/{app}/blobs/{blob}?grant={urllib.parse.quote(grant)}"
+    with urllib.request.urlopen(url, timeout=120) as r:
+        return r.read()
+
+
+def killed_mid_run(cl, member, app):
+    """Kills the job node of the first `redact` run seen running, `KILL_AFTER` seconds in: its run and node."""
+    deadline = time.time() + WAIT
+    while time.time() < deadline:
+        runs = http("GET", cl.url(1) + f"apps/{app}/runs?limit=100", headers=member.h)["runs"]
+        for r in runs:
+            if r["method"] == "redact" and r["state"] == "running" and r["attempts"]:
+                time.sleep(KILL_AFTER)
+                run, node = r["run"], r["attempts"][0]["node"]
+                if http("GET", cl.url(1) + f"apps/{app}/runs/{run}", headers=member.h)["state"] != "running":
+                    raise RuntimeError(f"run {run} ended before its job node could be killed")
+                cl.kill(node)
+                return run, node
+        time.sleep(0.05)
+    raise TimeoutError("no redact run started")
+
+
+def pseudonym(salt, value):
+    return "P-" + hmac.new(salt.encode(), value.encode(), hashlib.sha256).hexdigest()[:12]
+
+
+def redact_job(cl, owner_home_passkey):
+    say("\n== 11 compute-redact: an admin's policy, a member's CSV, a job node killed mid-run, a shared output")
+    wd = cl.workdir
+    for j in JOBS:
+        if cl.procs.get(j) is None:
+            cl.start_job(j, cl.identity)
+    app_wasm, compute_wasm = wd / "redact-app.wasm", wd / "redact-compute.wasm"
+    subprocess.run(["mero-app-build", "apps/compute-redact", "--out", str(app_wasm), "--compute-out", str(compute_wasm),
+                    "--target-dir", str(wd / "build-redact")], cwd=ROOT, check=True)
+    mpk = wd / f"{REDACT_PACKAGE}-{VERSION}.mpk"
+    subprocess.run([sys.executable, "-I", "scripts/pack-component.py", "--wasm", str(app_wasm), "--compute",
+                    str(compute_wasm), "--package", REDACT_PACKAGE, "--app-version", VERSION, "--out", str(mpk),
+                    "--mero-sign", str(BIN / "mero-sign")], cwd=ROOT, check=True)
+    package, version = cl.registry.publish(mpk)
+    cl.cli(1, "app", "install", f"{package}@{version}")
+    org = cl.cli(1, "namespace", "create", "Redact")["orgId"]
+    app = cl.cli(1, "context", "create", "--name", "redact", "--package", package, "--version", version,
+                 "--namespace", org)["appId"]
+    owner = {"home": wd / "cfg", "passkey": owner_home_passkey}
+    admin, member = sign_up(cl, wd, "ada"), sign_up(cl, wd, "bob")
+    admin_client = Client(cl, app, join_org(cl, owner, admin, org, "admin"))
+    member_client = Client(cl, app, join_org(cl, owner, member, org, "member"))
+    policy = {"salt": REDACT_SALT, "columns": REDACT_COLUMNS}
+    refused = refused_with("AdminsOnly", lambda: member_client.call(1, "setPolicy", {"policy": policy}))
+    admin_client.call(1, "setPolicy", {"policy": policy})
+
+    data = people_csv(REDACT_SEED, REDACT_ROWS)
+    csv_path = wd / "people.csv"
+    csv_path.write_bytes(data)
+    file, _ = upload(cl, member_client.h["authorization"][7:], app, data=data)
+    submit = member_client.call(1, "submit", {"file": file, "rowsPerPart": REDACT_PER_PART})
+    job = submit["result"]
+    killed_run, killed_node = killed_mid_run(cl, member_client, app)
+    view = None
+    deadline = time.time() + WAIT
+    while time.time() < deadline:
+        view = member_client.view(1, "job", {"id": job})["result"]
+        if view["status"] in ("done", "failed"):
+            break
+        time.sleep(0.5)
+    cl.start_job(killed_node, cl.identity)
+    rec = http("GET", cl.url(1) + f"apps/{app}/runs/{killed_run}", headers=member_client.h)
+    attempts = [a["node"] for a in rec["attempts"]]
+    parts = len(view["parts"])
+    check("11a job done after its job node was killed mid-run",
+          view["status"] == "done" and rec["state"] == "done" and len(attempts) >= 2 and attempts[-1] != killed_node
+          and view["totalRows"] == REDACT_ROWS and view["rowsDone"] == REDACT_ROWS and parts == 3,
+          f"{REDACT_ROWS} rows in {len(data)} bytes, parts of {REDACT_PER_PART}; admin set the policy, a member "
+          f"was refused it: {refused}; job node {killed_node} killed {KILL_AFTER}s into run {killed_run[:12]}",
+          f"job {view['status']}, {view['rowsDone']}/{view['totalRows']} rows in {parts} parts; the killed run "
+          f"{rec['state']} after attempts on nodes {attempts}")
+
+    shared = member_client.call(1, "share", {"job": job})["result"]
+    blobs = [p["published"] for p in shared["parts"]]
+    texts = []
+    for i, blob in enumerate(blobs):
+        grant = member_client.view(1, "link", {"job": job, "part": i, "ttlSecs": 600})["result"]
+        texts.append(download(cl, app, blob, grant))
+    refs = []
+    for i in range(parts):
+        start = i * REDACT_PER_PART
+        refs.append(local_part(wd, compute_wasm, csv_path, policy, start, min(REDACT_PER_PART, REDACT_ROWS - start)))
+    identical = [text == ref[0] for text, ref in zip(texts, refs)]
+    check("11b published parts equal mero-compute's output, retried part included", all(identical) and parts == len(refs),
+          f"each part rerun locally with mero-compute; part of the killed run among {parts}",
+          f"parts byte-identical to the local runs: {identical}; sizes {[len(t) for t in texts]}")
+
+    body = b"".join(texts).decode()
+    leaks = [name for name, pattern in (("email", EMAIL), ("phone", PHONE), ("card", CARD)) if pattern.search(body)]
+    rows = [r for t in texts for r in list(csv.reader(io.StringIO(t.decode())))[1:]]
+    originals = list(fake_people(REDACT_SEED, REDACT_ROWS))
+    tokens = {}
+    stable = len(rows) == len(originals)
+    for out, src in zip(rows, originals):
+        stable = stable and tokens.setdefault(src[1], out[1]) == out[1] and out[1] == pseudonym(REDACT_SALT, src[1])
+        stable = stable and out[5] == "" and out[2] != src[2] and out[3] != src[3] and out[4] != src[4]
+    cells = sum(c for _, c in refs)
+    check("11c no email, phone or card is left, pseudonyms are stable across rows and parts, counts match",
+          not leaks and stable and len(set(tokens.values())) == len(tokens) and view["cellsRedacted"] == cells,
+          f"{len(originals)} source rows, {len(tokens)} distinct names, columns {REDACT_COLUMNS}",
+          f"patterns left: {leaks or 'none'}; {len(rows)} rows out, {len(tokens)} pseudonyms each the HMAC of its name; "
+          f"cells redacted {view['cellsRedacted']} (local runs {cells})")
 
 
 def main():
@@ -422,6 +621,7 @@ def scenarios(cl, rig, in_process):
     stuck_cancel(cl, rig)
     unkept_output(cl, rig, in_process)
     quota(cl, rig)
+    redact_job(cl, cl.workdir / "dev-passkey.json")
     only_compute_reaches_job_nodes(cl, rig)
 
 
