@@ -2109,11 +2109,36 @@ impl Node {
         &self,
         app: &AppRecord,
     ) -> Result<crate::app::StorageStats, ApiError> {
+        self.stats_from(app, false).await
+    }
+
+    /// [`Self::storage_stats`] as `app`'s leader answers it (a linearizable
+    /// read), so a caller sees what it wrote through any node.
+    pub async fn storage_stats_strong(
+        &self,
+        app: &AppRecord,
+    ) -> Result<crate::app::StorageStats, ApiError> {
+        self.stats_from(app, true).await
+    }
+
+    async fn stats_from(
+        &self,
+        app: &AppRecord,
+        strong: bool,
+    ) -> Result<crate::app::StorageStats, ApiError> {
         if let Some(g) = self.hosted(&app.app_id) {
-            return Ok(g.read_local(|m, _| m.storage_stats()));
+            if !strong {
+                return Ok(g.read_local(|m, _| m.storage_stats()));
+            }
+            if let Ok(stats) = g.read_strong(|m, _| m.storage_stats()).await {
+                return Ok(stats);
+            }
         }
-        let body = json!({ "app": app.app_id });
+        let body = json!({ "app": app.app_id, "strong": strong });
         for id in &app.replicas {
+            if *id == self.config.node_id && strong {
+                continue;
+            }
             let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
                 continue;
             };

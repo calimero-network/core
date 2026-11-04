@@ -1379,6 +1379,54 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
     }
 }
 
+/// A replica restarted after an upload committed has not applied it yet; what blob info and the
+/// blob list read must still hold the upload, as the leader has it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
+    let mut f = start_with(
+        Cluster::start_with(3, |cfg| {
+            more_fuel(cfg);
+            cfg.raft.heartbeat_ms = 2_000;
+            cfg.raft.election_min_ms = 8_000;
+            cfg.raft.election_max_ms = 12_000;
+        })
+        .await,
+    )
+    .await;
+    let leader = f.leader();
+    let follower = (leader + 1) % 3;
+    f.c.stop(follower).await;
+    let owner = &f.clients[leader];
+    let plain = owner.upload_blob(&f.app, stream(2_000, 7)).await.unwrap();
+    let file = owner.upload_file(&f.app, stream(4_000, 9)).await.unwrap();
+    let (plain, file) = (plain["id"].as_str().unwrap(), file["id"].as_str().unwrap());
+    f.c.restart(follower, |_| {}).await;
+    while f.node(follower).hosted(&f.app).is_none() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let app = f.node(follower).sys(|s| s.apps[&f.app].clone());
+    let (plain, file) = (hex_id(plain), hex_id(file));
+    let local = f.node(follower).storage_stats(&app).await.unwrap();
+    assert!(
+        local.blobs.iter().all(|(id, _)| *id != plain),
+        "the replica already applied the blob"
+    );
+    let stats = f.node(follower).storage_stats_strong(&app).await.unwrap();
+    assert!(
+        stats.blobs.iter().any(|(id, _)| *id == plain),
+        "blob unseen"
+    );
+    assert!(
+        stats.files.iter().any(|(id, ..)| *id == file),
+        "file unseen"
+    );
+}
+
+fn hex_id(id: &str) -> [u8; 32] {
+    <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_deleted_apps_sealed_files_leave_every_replica_and_the_quota() {
     let f = start().await;
