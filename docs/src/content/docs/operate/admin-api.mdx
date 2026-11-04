@@ -100,7 +100,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | --- | --- | --- | --- |
 | `GET /sign-up` | anyone | The cluster's [sign-up policy](/operate/auth/#sign-up-policy): `{ policy, orgInvites, signUpInvites, inviteRequired }` | |
 | `POST /auth/passkey/register/begin` | anyone | Start a sign-up: `{ name, invite? }` → `{ challengeId, options }`; `403 SIGN_UP_REFUSED` when the policy would refuse it | `login` (new file) |
-| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration, invite? }` → a session; `invite` (an organization or cluster sign-up invite token) is redeemed for the new account | `login` |
+| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration, invite? }` → `412 CONFIRM_REQUIRED` (the new passkey signs the account it creates); the retry with `confirm` (and the same `invite`) → a session. `invite` (an organization or cluster sign-up invite token) is redeemed for the new account | `login` |
 | `POST /sign-up`, `POST\|GET /sign-up/invites`, `DELETE /sign-up/invites/{key}` | the cluster's owner, once named | Set the policy and run sign-up invites with a passkey (`412` first) | |
 | `POST /auth/passkey/login/begin` | anyone | Start a sign-in | `login` |
 | `POST /auth/passkey/login/finish` | anyone | `{ challengeId, assertion }` → a session | `login` |
@@ -117,7 +117,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
 | `POST /auth/apikeys` | account holder (a passkey session) | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs?, confirm? }` → `{ keyId, key }`, approved with a passkey (`412` first) | `account api-key create` |
 | `GET /auth/apikeys` | account holder | The account's keys | `account api-key list` |
-| `DELETE /auth/apikeys/{key}` | account holder | Revoke a key | `account api-key revoke` |
+| `DELETE /auth/apikeys/{key}` | account holder | Revoke a key, approved with a passkey (`412` first; the retry's body carries `confirm`) | `account api-key revoke` |
 | `POST /auth/releases` | account holder | `{ version, approved, confirm? }`: approve a mero-tee release for the account's own apps (where the owner holds release approvals) | `account approve-release` |
 | `POST /auth/outbound` | account holder | `{ package, prefixes, replace, confirm? }`: approve outbound prefixes for the account's own apps | `account outbound` |
 

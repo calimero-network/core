@@ -37,7 +37,7 @@ use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
-    Deployments, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
+    Deployments, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
 };
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
@@ -62,9 +62,23 @@ pub enum Pending {
         name: String,
         expires: u64,
     },
+    /// A sign-in: its challenge is the statement's, which states the
+    /// session it opens ([`NewSession`]).
     Login {
         challenge: [u8; 32],
         expires: u64,
+        statement: crate::proof::Statement,
+        session: NewSession,
+    },
+    /// A sign-up whose passkey is registered and must now sign the account
+    /// it creates (`account:<id> / __create_account`).
+    SignUp {
+        challenge: [u8; 32],
+        expires: u64,
+        statement: crate::proof::Statement,
+        account: Box<Account>,
+        session: NewSession,
+        app: Option<String>,
     },
     AddPasskey {
         challenge: [u8; 32],
@@ -94,6 +108,7 @@ impl Pending {
         match self {
             Self::Register { expires, .. }
             | Self::Login { expires, .. }
+            | Self::SignUp { expires, .. }
             | Self::AddPasskey { expires, .. }
             | Self::Confirm { expires, .. } => *expires,
         }
@@ -468,40 +483,105 @@ pub(crate) async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal
     Ok(p)
 }
 
-async fn new_session(node: &Node, account: &str, passkey: &str, app: Option<String>) -> ApiResult {
-    let session = b64url(&random::<16>());
+/// A session's refresh token, made before the passkey is asked: the
+/// ceremony's challenge states it, so the log takes it only with that
+/// passkey's assertion (`system::sign_in_args`, `system::account_args`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NewSession {
+    refresh: String,
+    session: String,
+    expires_at: u64,
+}
+
+impl NewSession {
+    fn new() -> Self {
+        Self {
+            refresh: format!("rt_{}", b64url(&random::<32>())),
+            session: b64url(&random::<16>()),
+            expires_at: now_secs() + REFRESH_TTL,
+        }
+    }
+
+    fn hash(&self) -> String {
+        b64url(&sha256(self.refresh.as_bytes()))
+    }
+
+    fn record(&self, account: &str, passkey: &str, app: Option<String>) -> RefreshRecord {
+        RefreshRecord {
+            account: account.to_owned(),
+            session: self.session.clone(),
+            expires_at: self.expires_at,
+            passkey: Some(passkey.to_owned()),
+            app,
+            key: crate::proof::refresh_key(&self.refresh),
+        }
+    }
+
+    /// What a sign-in's challenge states (`session / __sign_in`): the
+    /// record's account, passkey and package are not known yet and not
+    /// stated; the passkey that signs names them.
+    fn sign_in_statement(&self) -> crate::proof::Statement {
+        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None));
+        crate::proof::Statement::new("session", "__sign_in", &args)
+    }
+}
+
+/// A sign-in's session: its refresh token logged with the sign-in's
+/// assertion, then the session token.
+async fn new_session(
+    node: &Node,
+    account: &str,
+    passkey: &str,
+    app: Option<String>,
+    new: NewSession,
+    consent: Value,
+) -> ApiResult {
+    let token = session_token_for(node, account, passkey, app.clone(), &new)?;
+    let _ok = node
+        .sys_write(&SystemCmd::CreateRefresh {
+            hash: new.hash(),
+            record: new.record(account, passkey, app),
+            consent,
+        })
+        .await?;
+    Ok(session_answer(account, &token, &new))
+}
+
+/// The session token for `new`, signed by this node.
+fn session_token_for(
+    node: &Node,
+    account: &str,
+    passkey: &str,
+    app: Option<String>,
+    new: &NewSession,
+) -> Result<(String, u64), ApiError> {
     let expires_at = now_secs() + SESSION_TTL;
     let token = session_token(
         node,
         SessionClaims {
             account: account.to_owned(),
-            session: session.clone(),
+            session: new.session.clone(),
             expires_at,
             passkey: Some(passkey.to_owned()),
-            app: app.clone(),
+            app,
             node: 0,
             key: String::new(),
         },
     )?;
-    let refresh = format!("rt_{}", b64url(&random::<32>()));
-    let _ok = node
-        .sys_write(&SystemCmd::CreateRefresh {
-            hash: b64url(&sha256(refresh.as_bytes())),
-            record: RefreshRecord {
-                account: account.to_owned(),
-                session,
-                expires_at: now_secs() + REFRESH_TTL,
-                passkey: Some(passkey.to_owned()),
-                app,
-            },
-        })
-        .await?;
-    Ok(Json(json!({
+    Ok((token, expires_at))
+}
+
+fn session_answer(
+    account: &str,
+    (token, expires_at): &(String, u64),
+    new: &NewSession,
+) -> Json<Value> {
+    Json(json!({
         "accountId": account,
         "sessionToken": token,
         "expiresAt": expires_at,
-        "refreshToken": refresh,
-    })))
+        "refreshToken": new.refresh,
+    }))
 }
 
 // ---------------------------------------------------------------- public
@@ -723,6 +803,10 @@ struct RegisterFinish {
     /// this node signs its redemption with the token's key.
     #[serde(default)]
     invite: Option<String>,
+    /// The retry after `412 CONFIRM_REQUIRED`: the new passkey's assertion
+    /// over the account it creates.
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
 }
 
 async fn register_finish(
@@ -736,9 +820,12 @@ async fn register_finish(
     if !serves(&node, "") {
         return Err(wrong_node());
     }
-    // Before the challenge is spent: a person refused for a missing or bad
-    // invite starts again with one.
+    // Before a challenge is spent, on both halves: a person refused for a
+    // missing or bad invite starts again with one.
     refuse_sign_up(&node, body.invite.as_deref()).await?;
+    if let Some(confirm) = body.confirm {
+        return sign_up_confirmed(&node, confirm, body.invite.as_deref()).await;
+    }
     let Pending::Register {
         challenge, name, ..
     } = take_pending(&node, &body.challenge_id).await?
@@ -756,43 +843,129 @@ async fn register_finish(
         &body.registration,
     )
     .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
-    let account = typed_id::<32>();
+    let account = Account {
+        account_id: typed_id::<32>(),
+        name,
+        created_at: now_secs(),
+        passkeys: vec![cred.clone()],
+        // The release this account began on holds its apps until the
+        // owner approves another.
+        approved_releases: [node.own_release()].into_iter().collect(),
+        outbound_approvals: std::collections::BTreeMap::new(),
+        passkey_labels: std::collections::BTreeMap::new(),
+        aliases: std::collections::BTreeMap::new(),
+    };
+    // A registration carries no signature by the new key (attestation
+    // `none`): the new passkey signs the account it creates, and the session
+    // it opens, before the log takes it (412, then the retry).
+    let session = NewSession::new();
+    let app = app.map(|(pkg, _)| pkg);
+    let grant = RefreshGrant {
+        hash: session.hash(),
+        record: session.record(&account.account_id, &cred.id, app.clone()),
+    };
+    let statement = crate::proof::Statement::new(
+        &format!("account:{}", account.account_id),
+        "__create_account",
+        &crate::system::account_args(&account, Some(&grant)),
+    );
+    let signed = statement.challenge().map_err(ApiError::internal)?;
+    let id = put_pending(
+        &node,
+        Pending::SignUp {
+            challenge: signed,
+            expires: now_secs() + CHALLENGE_TTL,
+            statement,
+            account: Box::new(account),
+            session,
+            app,
+        },
+    )?;
+    Err(ApiError::new(
+        412,
+        "CONFIRM_REQUIRED",
+        "sign in with the new passkey to create the account",
+    )
+    .with_details(json!({
+        "challengeId": id,
+        "challenge": b64url(&signed),
+        "rpId": node.config.rp_id,
+        "allowCredentials": [cred.id],
+    })))
+}
+
+/// The sign-up's retry: the new passkey's assertion over the account, then
+/// the account and its first session. `invite` (the same token the first
+/// half carried) is redeemed for the account here, signed with its key.
+async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&str>) -> ApiResult {
+    let Pending::SignUp {
+        challenge,
+        statement,
+        account,
+        session,
+        app,
+        ..
+    } = take_pending(node, &confirm.challenge_id).await?
+    else {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "not a sign-up confirmation",
+        ));
+    };
+    let cred = account
+        .passkeys
+        .first()
+        .ok_or_else(|| ApiError::internal("a sign-up without its passkey"))?;
+    // From the origin the sign-up came from: the package's, or the cluster's.
+    let origin = claimed_app(node, &confirm.assertion.client_data_json)
+        .filter(|(pkg, _)| app.as_ref() == Some(pkg));
+    let _count = verify_assertion(
+        &rp_with(rp(node), origin.as_ref()),
+        &challenge,
+        cred,
+        &confirm.assertion,
+    )
+    .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    let account_id = account.account_id.clone();
+    let passkey = cred.id.clone();
+    let token = session_token_for(node, &account_id, &passkey, app.clone(), &session)?;
+    let consent = crate::proof::Consent {
+        statement,
+        assertion: confirm.assertion,
+    };
     let now = now_secs();
-    let invite = body
-        .invite
-        .as_deref()
-        .map(|token| crate::system::SignUpRedemption {
-            invite_key: crate::proof::invite_key(token),
-            now,
-            signature: crate::proof::sign_invite_redeem(token, &account, now),
-        });
+    let invite = invite.map(|token| crate::system::SignUpRedemption {
+        invite_key: crate::proof::invite_key(token),
+        now,
+        signature: crate::proof::sign_invite_redeem(token, &account_id, now),
+    });
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {
+            account: *account,
             invite,
-            account: Account {
-                account_id: account.clone(),
-                name,
-                created_at: now,
-                passkeys: vec![cred.clone()],
-                // The release this account began on holds its apps until the
-                // owner approves another.
-                approved_releases: [node.own_release()].into_iter().collect(),
-                outbound_approvals: std::collections::BTreeMap::new(),
-                passkey_labels: std::collections::BTreeMap::new(),
-                aliases: std::collections::BTreeMap::new(),
-            },
+            refresh: Some(RefreshGrant {
+                hash: session.hash(),
+                record: session.record(&account_id, &passkey, app),
+            }),
+            consent: serde_json::to_value(&consent).unwrap_or_default(),
         })
         .await?;
-    new_session(&node, &account, &cred.id, app.map(|(pkg, _)| pkg)).await
+    Ok(session_answer(&account_id, &token, &session))
 }
 
 async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
-    let challenge = random::<32>();
+    // The challenge states the session the sign-in opens, so the log takes
+    // its refresh token only with this assertion (`CreateRefresh`).
+    let session = NewSession::new();
+    let statement = session.sign_in_statement();
+    let challenge = statement.challenge().map_err(ApiError::internal)?;
     let id = put_pending(
         &node,
         Pending::Login {
             challenge,
             expires: now_secs() + CHALLENGE_TTL,
+            statement,
+            session,
         },
     )?;
     Ok(Json(json!({
@@ -858,6 +1031,7 @@ async fn check_assertion_for(
             .sys_write(&SystemCmd::SetSignCount {
                 credential_id: cred.id.clone(),
                 count,
+                assertion: serde_json::to_value(assertion).unwrap_or_default(),
             })
             .await
             .map_err(|e| {
@@ -883,7 +1057,13 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     if named.is_some_and(|a| !serves(&node, &a)) {
         return Err(wrong_node());
     }
-    let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id).await? else {
+    let Pending::Login {
+        challenge,
+        statement,
+        session,
+        ..
+    } = take_pending(&node, &body.challenge_id).await?
+    else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
             "not a login challenge",
@@ -891,7 +1071,19 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     };
     let (account, app) =
         check_assertion(&node, &challenge, &body.assertion, None, false, None, true).await?;
-    new_session(&node, &account, &body.assertion.credential_id, app).await
+    let consent = crate::proof::Consent {
+        statement,
+        assertion: body.assertion.clone(),
+    };
+    new_session(
+        &node,
+        &account,
+        &body.assertion.credential_id,
+        app,
+        session,
+        serde_json::to_value(&consent).unwrap_or_default(),
+    )
+    .await
 }
 
 async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -1092,13 +1284,30 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         expires_at: now_secs() + REFRESH_TTL,
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
+        key: crate::proof::refresh_key(&new_refresh),
     };
+    let new_hash = b64url(&sha256(new_refresh.as_bytes()));
+    let now = now_secs();
+    // Signed with the presented token's key: the log exchanges a token only
+    // for whoever holds it, never for a node that only saw its hash.
+    let signature = crate::proof::sign_refresh_use(
+        &body.refresh_token,
+        &crate::proof::refresh_use_message(
+            &old_hash,
+            &new_hash,
+            &record.key,
+            &record.session,
+            record.expires_at,
+            now,
+        ),
+    );
     let exchanged = node
         .sys_write(&SystemCmd::UseRefresh {
             old_hash: old_hash.clone(),
-            new_hash: b64url(&sha256(new_refresh.as_bytes())),
+            new_hash,
             record,
-            now: now_secs(),
+            now,
+            signature,
         })
         .await;
     if let Err(e) = exchanged {
@@ -1509,16 +1718,40 @@ async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
     Ok(Json(json!({ "keys": keys })))
 }
 
+/// Revoke an API key: the account's, approved with a passkey (412 first;
+/// the retry's JSON body carries `confirm`).
 async fn apikey_revoke(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(key_id): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    // Asked before the passkey: a key the account does not have is not one
+    // to approve revoking.
+    let theirs = node.sys(|s| {
+        s.api_keys
+            .values()
+            .any(|k| k.key_id == key_id && k.account == account)
+    });
+    if !theirs {
+        return Err(ApiError::not_found("no such key"));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__revoke_api_key",
+        &json!({ "keyId": key_id }),
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
     let _ok = node
         .sys_write(&SystemCmd::RevokeApiKey {
             key_id,
             actor: account,
+            consent,
         })
         .await?;
     Ok(Json(json!({})))
