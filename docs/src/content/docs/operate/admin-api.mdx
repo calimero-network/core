@@ -99,7 +99,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
 | `POST /auth/passkey/register/begin` | anyone | Start a sign-up: `{ name }` → `{ challengeId, options }` | `login` (new file) |
-| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration }` → a session | `login` |
+| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration }` → `412 CONFIRM_REQUIRED` (the new passkey signs the account it creates); the retry with `confirm` → a session | `login` |
 | `POST /auth/passkey/login/begin` | anyone | Start a sign-in | `login` |
 | `POST /auth/passkey/login/finish` | anyone | `{ challengeId, assertion }` → a session | `login` |
 | `POST /auth/passkeys/add/begin`, `/finish` | account holder | Add a passkey (a device): `/finish { challengeId, registration, confirm? }` answers `412` and is sent again with `confirm` signed by a passkey the account already has | `account device add` |
@@ -115,7 +115,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
 | `POST /auth/apikeys` | account holder (a passkey session) | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs?, confirm? }` → `{ keyId, key }`, approved with a passkey (`412` first) | `account api-key create` |
 | `GET /auth/apikeys` | account holder | The account's keys | `account api-key list` |
-| `DELETE /auth/apikeys/{key}` | account holder | Revoke a key | `account api-key revoke` |
+| `DELETE /auth/apikeys/{key}` | account holder | Revoke a key, approved with a passkey (`412` first; the retry's body carries `confirm`) | `account api-key revoke` |
 | `POST /auth/releases` | account holder | `{ version, approved, confirm? }`: approve a mero-tee release for the account's own apps (where the owner holds release approvals) | `account approve-release` |
 | `POST /auth/outbound` | account holder | `{ package, prefixes, replace, confirm? }`: approve outbound prefixes for the account's own apps | `account outbound` |
 
