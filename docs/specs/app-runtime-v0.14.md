@@ -530,7 +530,9 @@ Its result is at most 64 KiB; a larger one ends the run `Trap(HostDenied, "resul
 
 A logged run starts a compute run with `runs.start(method, args, inputs)` and asks for one to end with `runs.cancel(run)`.
 Any other kind (a view, a compute run, a migration) gets `HostDenied`.
-`start` answers soft errors in this order.
+`start` answers `no compute component` first when the app's running release ships none (a raw upload, or a release without a compute component), and records nothing.
+The run pins the release's compute component when it starts: a later upgrade does not change a run already started.
+`start` answers the other soft errors in this order.
 `not a compute method` means the method is not a compute method of the running bundle's ABI.
 `arguments too large` is over 64 KiB, `too many inputs` over 64 and `input named twice` a repeated id.
 `input is not a file of this app` means an input must be one of the app's own sealed files: a plain blob, an unknown id and a file this run just made are refused.

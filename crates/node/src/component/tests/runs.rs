@@ -132,6 +132,7 @@ fn started(run: &str) -> ComputeStart {
         },
         result_method: "onDone".into(),
         owner: "alice".into(),
+        compute_bundle: None,
     }
 }
 
@@ -262,6 +263,32 @@ fn a_run_starts_on_the_bundle_that_ran_it_whatever_is_installed_later() {
             w.record("r2").bundle.as_str()
         ),
         ("b", "b2")
+    );
+}
+
+#[test]
+fn a_run_keeps_the_compute_component_its_start_named_whatever_is_installed_later() {
+    let mut w = World::new();
+    let named = |run: &str, hash: &str| ComputeStart {
+        compute_bundle: Some(hash.into()),
+        ..started(run)
+    };
+    let a = w.call(vec![named("r1", "c1")], &[]);
+    assert!(!a.conflict, "{a:?}");
+    let upgrade = ComponentCmd::Upgrade {
+        bundle: "b2".into(),
+        base_index: w.last,
+    };
+    let _a = w.push(&upgrade);
+    let a = w.call(vec![named("r2", "c2")], &[]);
+    assert!(!a.conflict, "{a:?}");
+    w.start("r3");
+    assert_eq!(w.record("r1").compute_bundle.as_deref(), Some("c1"));
+    assert_eq!(w.record("r2").compute_bundle.as_deref(), Some("c2"));
+    assert_eq!(
+        w.record("r3").compute_bundle,
+        None,
+        "a start that names none"
     );
 }
 
@@ -1149,7 +1176,7 @@ fn state_logged_before_runs_existed_still_decodes() {
 }
 
 #[test]
-fn naming_the_owner_fills_every_start() {
+fn naming_the_app_fills_every_start() {
     let mut outcome = Outcome {
         compute_starts: vec![
             ComputeStart {
@@ -1163,8 +1190,11 @@ fn naming_the_owner_fills_every_start() {
         ],
         ..Outcome::default()
     };
-    outcome.name_owner("alice");
-    assert!(outcome.compute_starts.iter().all(|s| s.owner == "alice"));
+    outcome.name_app("alice", Some("c1"));
+    assert!(outcome
+        .compute_starts
+        .iter()
+        .all(|s| s.owner == "alice" && s.compute_bundle.as_deref() == Some("c1")));
 }
 
 #[test]

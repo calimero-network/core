@@ -603,11 +603,20 @@ impl Node {
             records: blobs,
             key: self.blob_grant_key(),
         });
+        let (owner, compute_bundle) = self
+            .sys(|s| {
+                s.apps
+                    .get(app_id)
+                    .map(|a| (a.owner.clone(), a.compute_bundle.clone()))
+            })
+            .unwrap_or_default();
         match HostCore::new(app_id, state, applied, invocation, directory) {
             Ok(host) => {
                 let host = host.with_blobs(blobs).with_files(Arc::new(files));
                 let host = match extras.runs {
-                    Some(runs) => host.with_compute(prepared.abi.clone(), runs),
+                    Some(runs) => host
+                        .with_compute(prepared.abi.clone(), runs)
+                        .with_compute_component(compute_bundle.is_some()),
                     None => host,
                 };
                 let host = match search {
@@ -630,10 +639,7 @@ impl Node {
                     .collect();
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
-                    let owner = self
-                        .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
-                        .unwrap_or_default();
-                    outcome.name_owner(&owner);
+                    outcome.name_app(&owner, compute_bundle.as_deref());
                 }
                 Ran {
                     outcome,
@@ -2371,6 +2377,7 @@ mod tests {
             },
             result_method: "onDone".into(),
             owner: String::new(),
+            compute_bundle: None,
         });
         assert!(writes(&start));
         let cancel = Outcome {
