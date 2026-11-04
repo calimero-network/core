@@ -150,10 +150,8 @@ pub fn wrap_for_job(
     )
 }
 
-/// [`wrap_for_job`] with the ephemeral key and nonce derived from `file_key`: the same run,
-/// attempt, secret and job node always wrap to the same bytes, so a new leader rebuilds the
-/// assignment its predecessor signed. What is wrapped is fixed by `wrap`, so a nonce is never
-/// used for two secrets.
+/// [`wrap_for_job`] with the ephemeral key and nonce derived from `file_key`, so a new leader
+/// rebuilds the bytes its predecessor signed; `wrap` fixes what is wrapped, so no nonce serves two secrets.
 pub fn wrap_for_job_derived(
     file_key: &[u8; 32],
     job_public: &[u8; 32],

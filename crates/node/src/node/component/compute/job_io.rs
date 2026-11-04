@@ -117,9 +117,8 @@ impl Node {
         Some(free.swap_remove(pick).2)
     }
 
-    /// The assignment of `attempt` of `rec` to `peer`, signed by the cluster identity. It is a
-    /// function of the record, the app's blob records and the job node's keys alone, so a new leader builds
-    /// the very bytes the first one committed the digest of.
+    /// The assignment of `attempt` to `peer`, signed by the cluster identity: a function of the
+    /// record, the blob records and the job node's keys alone, so a new leader builds the same bytes.
     pub(super) fn build_assignment(
         &self,
         app: &AppRecord,
@@ -262,9 +261,8 @@ impl Drive<'_> {
         }
     }
 
-    /// Sends the recorded `attempt`: the component if the job node asks for it, the assignment,
-    /// then every input if it still waits for them. The job node answers an assignment it holds
-    /// as it stands, so this is safe to repeat.
+    /// Sends the recorded `attempt`: the component if asked for, the assignment, then every input
+    /// still awaited. A job node answers an assignment it holds as it stands, so this repeats safely.
     pub(super) async fn send(&self, attempt: &Attempt) -> Sent {
         let node = self.node;
         let Ok(peer) = node.attest_job(attempt.node, self.app).await else {

@@ -110,9 +110,8 @@ pub(super) struct Stored {
     pub ids: Vec<String>,
     /// Plaintext bytes charged for them.
     pub charged: u64,
-    /// The ids are a compute run's outputs: content hashes of what a job node made, which
-    /// another leader may have registered under the same ids, so they are only deleted once the
-    /// app's blob records are known ([`Node::delete_unmarked_outputs`]).
+    /// The ids are a compute run's outputs, which another leader may have registered under the
+    /// same ids: deleted only once the blob records are known ([`Node::delete_unmarked_outputs`]).
     pub outputs: bool,
 }
 
@@ -592,10 +591,8 @@ impl Node {
         }));
     }
 
-    /// Deletes the ids of compute outputs the app holds no blob for, judged after a barrier
-    /// committed as the app's leader and a strong read: until then a final of another leader may be
-    /// about to register them. Without the barrier (not the leader, no quorum) the bytes stay: an
-    /// over-count and some orphaned bytes, never a record without its bytes.
+    /// Deletes compute outputs the app holds no blob for, judged after a leader barrier and a strong
+    /// read. Without the barrier the bytes stay: orphaned bytes, never a record without its bytes.
     pub(super) async fn delete_unmarked_outputs(&self, app_id: &str, ids: Vec<String>) {
         let Some(g) = self.hosted(app_id) else {
             return;
