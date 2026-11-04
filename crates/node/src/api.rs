@@ -40,7 +40,8 @@ use crate::system::{
     Deployments, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
 };
 use crate::types::{
-    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
+    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, NodeRole, OrgRole, RefreshRecord,
+    TeamJoin,
 };
 
 /// How long a replica move retries the second hand-over of files, and how long it pauses.
@@ -156,7 +157,7 @@ async fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
         take_local(node, id)?
     } else {
         let addr = node
-            .sys(|s| s.nodes.get(&holder).map(|n| n.addr.clone()))
+            .sys(|s| s.replica_node(&holder).map(|n| n.addr.clone()))
             .ok_or_else(unknown_challenge)?;
         let v = node
             .peer_post(&addr, "internal/challenge/take", &json!({ "id": id }))
@@ -627,6 +628,9 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
             .ok_or_else(|| ApiError::bad_request("BAD_HASH", "appHash must be 32 bytes hex"))?,
         (None, None) => [0; 32],
     };
+    if q.purpose.as_deref() == Some("jobs") {
+        return Err(ApiError::not_found("this node is not a job node"));
+    }
     #[cfg(feature = "testing")]
     if let Some(delay) = crate::testing::attestation_delay(&node.config.public_url) {
         tokio::time::sleep(delay).await;
@@ -667,6 +671,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         receipt_key: receipts.then(|| hex::encode(node.receipt_public())),
         governance: receipts.then_some(governance),
         kms,
+        job_key: None,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -4757,15 +4762,14 @@ async fn internal_cluster_key(
         return Err(ApiError::forbidden("another cluster"));
     }
     let id = body.node;
-    let addr = node.sys(|s| {
-        if s.removed_nodes.contains(&id) {
-            return None;
-        }
-        s.nodes
-            .get(&id)
-            .map(|n| n.addr.clone())
-            .or_else(|| node.config.peers.get(&id).cloned())
-    });
+    if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+        return Err(ApiError::forbidden(
+            "a job node never holds the cluster key",
+        ));
+    }
+    let addr = (!node.sys(|s| s.removed_nodes.contains(&id)))
+        .then(|| node.replica_addr(id))
+        .flatten();
     let Some(addr) = addr else {
         return Err(ApiError::forbidden(
             "not a node of this cluster: register it (/ops/nodes) first",
@@ -5638,9 +5642,10 @@ pub async fn plain_metrics(State(node): State<Arc<Node>>) -> Response {
 /// membership, the build's release; never names or state.
 fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     use std::fmt::Write as _;
-    let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
+    let (nodes, job_nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
         (
-            s.nodes.len(),
+            s.replica_nodes().count(),
+            s.job_nodes().count(),
             s.apps.len(),
             s.accounts.len(),
             s.orgs.len(),
@@ -5663,8 +5668,13 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     };
     gauge(
         "calimero_cluster_nodes",
-        "Nodes in the directory.",
+        "Replica nodes in the directory.",
         nodes as u64,
+    );
+    gauge(
+        "calimero_cluster_job_nodes",
+        "Job nodes in the directory.",
+        job_nodes as u64,
     );
     gauge(
         "calimero_apps",
@@ -5804,7 +5814,7 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
 
 /// How long `/ops/placement` waits for a node it has not attested yet to name
 /// its release; one that does not answer by then is listed with none.
-const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
+pub(crate) const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
 
 /// Where every app's replicas are, for a rebalancer (mdma): each app's id,
 /// group and replica node ids, and each node's id, zone, attested release and
@@ -5820,7 +5830,7 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             .values()
             .map(|a| json!({ "app": a.app_id, "group": a.group, "replicas": a.replicas }))
             .collect();
-        let nodes: Vec<(u64, String, usize)> = s
+        let nodes: Vec<(u64, String, NodeRole, usize)> = s
             .nodes
             .values()
             .map(|n| {
@@ -5829,21 +5839,21 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
                     .values()
                     .filter(|a| a.replicas.contains(&n.id))
                     .count();
-                (n.id, n.zone.clone(), hosted)
+                (n.id, n.zone.clone(), n.role, hosted)
             })
             .collect();
         (apps, nodes)
     });
     let releases =
-        futures_util::future::join_all(nodes.iter().map(|(id, _, _)| {
+        futures_util::future::join_all(nodes.iter().map(|(id, ..)| {
             tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))
         }))
         .await;
     let nodes: Vec<Value> = nodes
         .into_iter()
         .zip(releases)
-        .map(|((id, zone, hosted), release)| {
-            json!({ "id": id, "zone": zone, "release": release.ok().flatten(), "apps": hosted })
+        .map(|((id, zone, role, hosted), release)| {
+            json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
     Ok(Json(
@@ -6063,29 +6073,71 @@ struct NodeBody {
     zone: String,
     #[serde(default, rename = "operatorProof")]
     operator_proof: Option<OperatorProofBody>,
+    #[serde(default)]
+    role: NodeRole,
 }
 
 /// Register a node: the operator's decision, signed
-/// (`cluster / __register_node / { id, addr, zone }`, 428 first).
+/// (`cluster / __register_node / { id, addr, zone }`, plus `role` for a job node; 428 first).
 async fn ops_register_node(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(b): Json<NodeBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    let proof = operator_proof(
-        &node,
-        "cluster",
-        "__register_node",
-        &json!({ "id": b.id, "addr": b.addr, "zone": b.zone }),
-        b.operator_proof,
-    )?;
+    let st = node.system.status();
+    let member = st.voters.iter().chain(&st.learners).any(|m| *m == b.id)
+        || node.config.peers.contains_key(&b.id);
+    if b.role == NodeRole::Job && member {
+        return Err(ApiError::bad_request(
+            "NODE_HOLDS_CLUSTER",
+            "that node is a member of this cluster: it cannot be a job node",
+        ));
+    }
+    if !matches!(
+        url::Url::parse(&b.addr)
+            .map(|u| u.scheme().to_owned())
+            .as_deref(),
+        Ok("http" | "https")
+    ) {
+        return Err(ApiError::bad_request(
+            "BAD_ADDRESS",
+            "a node's address is an http or https URL",
+        ));
+    }
+    let wanted = crate::system::normalize_addr(&b.addr);
+    let taken = node
+        .config
+        .peers
+        .iter()
+        .any(|(id, addr)| *id != b.id && crate::system::normalize_addr(addr) == wanted)
+        || node.sys(|s| {
+            s.nodes
+                .values()
+                .any(|n| n.id != b.id && crate::system::normalize_addr(&n.addr) == wanted)
+        });
+    if taken {
+        return Err(ApiError::new(
+            409,
+            "ADDRESS_TAKEN",
+            "another node has that address",
+        ));
+    }
+    if b.role == NodeRole::Job {
+        node.require_upgraded_nodes().await?;
+    }
+    let mut args = json!({ "id": b.id, "addr": b.addr, "zone": b.zone });
+    if b.role != NodeRole::Replica {
+        args["role"] = json!(b.role);
+    }
+    let proof = operator_proof(&node, "cluster", "__register_node", &args, b.operator_proof)?;
     let _ok = node
         .sys_write(&SystemCmd::RegisterNode {
             node: crate::types::NodeRecord {
                 id: b.id,
                 addr: b.addr,
                 zone: b.zone,
+                role: b.role,
             },
             proof,
         })
@@ -6131,12 +6183,16 @@ async fn ops_remove_node(
             "the cluster's last voter cannot be removed",
         ));
     }
+    let in_membership = st.voters.iter().chain(&st.learners).any(|m| *m == id);
     let _ok = node.sys_write(&SystemCmd::RemoveNode { id, proof }).await?;
+    if !in_membership {
+        return Ok(Json(json!({ "status": node.system.status() })));
+    }
     let learners: Vec<u64> = node.sys(|s| {
         st.learners
             .iter()
             .copied()
-            .filter(|l| *l != id && s.nodes.contains_key(l))
+            .filter(|l| *l != id && s.replica_node(l).is_some())
             .collect()
     });
     for l in learners {
@@ -6190,7 +6246,7 @@ async fn ops_set_replicas(
             "a node is named twice",
         ));
     }
-    if target.len() < 3.min(node.sys(|s| s.nodes.len())) {
+    if target.len() < 3.min(node.sys(|s| s.replica_nodes().count())) {
         return Err(ApiError::bad_request(
             "TOO_FEW",
             "an app keeps at least 3 replicas",
@@ -6200,6 +6256,17 @@ async fn ops_set_replicas(
         return Err(ApiError::bad_request(
             "UNKNOWN_NODE",
             &format!("node {id} is not registered"),
+        ));
+    }
+    if let Some(id) = node.sys(|s| {
+        target
+            .iter()
+            .copied()
+            .find(|id| s.replica_node(id).is_none())
+    }) {
+        return Err(ApiError::bad_request(
+            "JOB_NODE",
+            &format!("node {id} is a job node: it holds no app"),
         ));
     }
     // One signature over the target covers both of the move's writes

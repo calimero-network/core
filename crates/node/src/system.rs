@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord, Org,
-    OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
+    NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
@@ -190,6 +190,10 @@ pub struct SystemState {
     /// the operator (`/ops/nodes`).
     #[serde(default)]
     pub removed_nodes: std::collections::BTreeSet<u64>,
+    /// Moves with every registration and removal of a node id, so what a
+    /// node kept about an id (an attestation) is dropped when the id changes.
+    #[serde(default)]
+    pub node_epoch: BTreeMap<u64, u64>,
     pub apps: BTreeMap<AppId, AppRecord>,
     pub next_group: u64,
     pub bundles: BTreeMap<String, BundleRecord>,
@@ -627,7 +631,38 @@ impl PublisherProof {
 /// minted (sessions live 15 minutes), with room for clock differences.
 pub const REVOKED_SESSION_KEEP_SECS: u64 = 60 * 60;
 
+/// `addr` as the same node's other spellings share it: scheme and host
+/// lowercased, the default port dropped, trailing slashes trimmed.
+#[must_use]
+pub fn normalize_addr(addr: &str) -> String {
+    match url::Url::parse(addr) {
+        Ok(u) if u.origin().is_tuple() => format!(
+            "{}{}",
+            u.origin().ascii_serialization(),
+            u.path().trim_end_matches('/')
+        ),
+        _ => addr.trim_end_matches('/').to_ascii_lowercase(),
+    }
+}
+
 impl SystemState {
+    /// The nodes that hold apps and the cluster key: every site that picks nodes for the
+    /// cluster's own work goes through this, never `nodes` directly.
+    pub fn replica_nodes(&self) -> impl Iterator<Item = &NodeRecord> {
+        self.nodes.values().filter(|n| n.role == NodeRole::Replica)
+    }
+
+    /// The replica node `id`, if it is one.
+    #[must_use]
+    pub fn replica_node(&self, id: &u64) -> Option<&NodeRecord> {
+        self.nodes.get(id).filter(|n| n.role == NodeRole::Replica)
+    }
+
+    /// The nodes that only run compute.
+    pub fn job_nodes(&self) -> impl Iterator<Item = &NodeRecord> {
+        self.nodes.values().filter(|n| n.role == NodeRole::Job)
+    }
+
     /// Sets the file bytes an app holds, and its payer's total with it.
     fn set_app_file_bytes(&mut self, app_id: &str, now: u64) {
         let Some(app) = self.apps.get(app_id) else {
@@ -2109,7 +2144,10 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
         // The fleet: the operator's signature.
         SystemCmd::RegisterNode { node, proof } => {
             let (st, used) = fresh(operator(proof)?)?;
-            let args = json!({ "id": node.id, "addr": node.addr, "zone": node.zone });
+            let mut args = json!({ "id": node.id, "addr": node.addr, "zone": node.zone });
+            if node.role != NodeRole::Replica {
+                args["role"] = json!(node.role);
+            }
             states(&st, "cluster", "__register_node", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -2949,6 +2987,17 @@ impl SystemMachine {
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node, .. } => {
+                if s.nodes.get(&node.id).is_some_and(|n| n.role != node.role) {
+                    return Err("a node's role is fixed: remove it first");
+                }
+                let addr = normalize_addr(&node.addr);
+                if s.nodes
+                    .values()
+                    .any(|n| n.id != node.id && normalize_addr(&n.addr) == addr)
+                {
+                    return Err("another node has that address");
+                }
+                *s.node_epoch.entry(node.id).or_default() += 1;
                 let _was = s.removed_nodes.remove(&node.id);
                 let _prev = s.nodes.insert(node.id, node);
                 Ok(Value::Null)
@@ -2958,6 +3007,7 @@ impl SystemMachine {
                     return Err("an app still keeps a replica on that node; move it first");
                 }
                 let _gone = s.nodes.remove(&id).ok_or("no such node")?;
+                *s.node_epoch.entry(id).or_default() += 1;
                 let _new = s.removed_nodes.insert(id);
                 Ok(Value::Null)
             }
@@ -4683,6 +4733,155 @@ mod tests {
         }
     }
 
+    fn register(m: &mut SystemMachine, id: u64, role: &str) {
+        let node = serde_json::from_value(
+            json!({ "id": id, "addr": format!("http://n{id}"), "role": role }),
+        )
+        .unwrap();
+        m.run_authorized(SystemCmd::RegisterNode {
+            node,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn job_nodes_are_listed_apart_from_replicas() {
+        let mut m = SystemMachine::default();
+        register(&mut m, 1, "replica");
+        register(&mut m, 2, "job");
+        let ids = |it: Vec<&crate::types::NodeRecord>| it.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(m.state.replica_nodes().collect()), vec![1]);
+        assert_eq!(ids(m.state.job_nodes().collect()), vec![2]);
+        assert!(m.state.replica_node(&2).is_none());
+        assert!(m.state.replica_node(&1).is_some());
+        m.run_authorized(SystemCmd::RemoveNode {
+            id: 2,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert!(m.state.job_nodes().next().is_none());
+    }
+
+    #[test]
+    fn re_registering_a_node_never_changes_its_role() {
+        let mut m = SystemMachine::default();
+        register(&mut m, 1, "replica");
+        register(&mut m, 2, "job");
+        let node = |id: u64, addr: &str, role: &str| {
+            serde_json::from_value(json!({ "id": id, "addr": addr, "role": role })).unwrap()
+        };
+        assert!(m
+            .run_authorized(SystemCmd::RegisterNode {
+                node: node(1, "u", "job"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        assert!(m
+            .run_authorized(SystemCmd::RegisterNode {
+                node: node(2, "u", "replica"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        assert_eq!(m.state.replica_nodes().count(), 1);
+        assert_eq!(m.state.job_nodes().count(), 1);
+        // The address of a node may change; so may anything after a removal.
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: node(2, "v", "job"),
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert_eq!(m.state.nodes[&2].addr, "v");
+        m.run_authorized(SystemCmd::RemoveNode {
+            id: 2,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: node(2, "v", "replica"),
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert_eq!(m.state.replica_nodes().count(), 2);
+    }
+
+    #[test]
+    fn addresses_are_compared_by_their_normal_form() {
+        use super::normalize_addr as n;
+        let one = n("http://127.0.0.1:2528/");
+        for other in [
+            "http://127.0.0.1:2528",
+            "HTTP://127.0.0.1:2528/",
+            "http://127.0.0.1:2528//",
+        ] {
+            assert_eq!(n(other), one, "{other}");
+        }
+        assert_eq!(n("http://Example.com:80/"), n("http://example.com"));
+        assert_ne!(n("http://127.0.0.1:2529"), one);
+        assert_ne!(n("https://127.0.0.1:2528"), one);
+        assert_eq!(n("https://Example.com:443/"), n("https://example.com"));
+        assert_eq!(n("http://[::1]:80/"), n("HTTP://[0:0:0:0:0:0:0:1]"));
+        assert_ne!(n("http://[::1]:2528"), n("http://[::2]:2528"));
+        // No origin to compare: the lowercased text, so distinct stay distinct.
+        assert_ne!(n("a.example:80"), n("b.example:80"));
+        assert_eq!(n("A.example:80/"), n("a.example:80"));
+    }
+
+    #[test]
+    fn a_node_cannot_take_an_address_another_node_holds() {
+        let mut m = SystemMachine::default();
+        register(&mut m, 1, "replica");
+        let node = |id: u64, addr: &str| {
+            serde_json::from_value(json!({ "id": id, "addr": addr, "role": "job" })).unwrap()
+        };
+        assert!(m
+            .run_authorized(SystemCmd::RegisterNode {
+                node: node(2, "HTTP://n1/"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: node(2, "http://n2"),
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        // The holder may re-register its own address in another spelling.
+        let own = serde_json::from_value(json!({ "id": 1, "addr": "http://N1/" })).unwrap();
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: own,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_nodes_epoch_moves_with_every_registration_and_removal() {
+        let mut m = SystemMachine::default();
+        let epoch = |m: &SystemMachine| m.state.node_epoch.get(&2).copied().unwrap_or(0);
+        register(&mut m, 2, "job");
+        let first = epoch(&m);
+        register(&mut m, 2, "job");
+        assert!(epoch(&m) > first);
+        let second = epoch(&m);
+        m.run_authorized(SystemCmd::RemoveNode {
+            id: 2,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert!(epoch(&m) > second);
+    }
+
+    #[test]
+    fn a_node_record_without_a_role_is_a_replica_and_an_unknown_role_is_refused() {
+        let n: crate::types::NodeRecord =
+            serde_json::from_value(json!({ "id": 1, "addr": "u" })).unwrap();
+        assert_eq!(n.role, crate::types::NodeRole::Replica);
+        assert!(serde_json::from_value::<crate::types::NodeRecord>(
+            json!({ "id": 1, "addr": "u", "role": "gpu" })
+        )
+        .is_err());
+    }
+
     /// The rules are written once, before anyone has an account, and an
     /// operator who restarts the cluster with other ones changes nothing.
     #[test]
@@ -5342,6 +5541,7 @@ mod tests {
                         id,
                         addr: format!("http://n{id}/"),
                         zone: String::new(),
+                        role: crate::types::NodeRole::Replica,
                     })
                     .to_vec(),
             })
@@ -6043,6 +6243,7 @@ mod tests {
             id: 9,
             addr: "http://n9/".into(),
             zone: "z".into(),
+            role: crate::types::NodeRole::Replica,
         };
         needs_signature(
             &mut m,
@@ -6055,6 +6256,24 @@ mod tests {
             },
         );
         assert!(m.state.nodes.contains_key(&9));
+        // A job node's role is part of what the operator signs.
+        let job = crate::types::NodeRecord {
+            id: 10,
+            addr: "http://n10/".into(),
+            zone: "z".into(),
+            role: crate::types::NodeRole::Job,
+        };
+        needs_signature(
+            &mut m,
+            ("cluster", "__register_node"),
+            &json!({ "id": 10, "addr": "http://n10/", "zone": "z", "role": "job" }),
+            &json!({ "id": 10, "addr": "http://n10/", "zone": "z" }),
+            |proof| SystemCmd::RegisterNode {
+                node: job.clone(),
+                proof,
+            },
+        );
+        assert_eq!(m.state.nodes[&10].role, crate::types::NodeRole::Job);
         needs_signature(
             &mut m,
             ("cluster", "__remove_node"),
