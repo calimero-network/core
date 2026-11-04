@@ -1,12 +1,12 @@
-# Rollback protection and per-app keys: design
+# Rollback protection and keys per app: design
 
 Nov 4, 2026 · Status: **rollback protection implemented** on `claude/kms-epoch-rollback`
 (core: node, client, merod) and `claude/kms-epoch-rollback` (mero-tee: mero-kms);
-**per-app keys designed, not implemented yet** (see "Per-app keys, phase 1"). Proposed text for the protocol
+**keys per app designed, not implemented yet** (see "Keys per app, phase 1"). Proposed text for the protocol
 chapters is at the end; the chapters themselves are Xabi's and are not changed here.
 
 It covers two items of `crates/node/AGENTS.md`, "Not done yet": the rollback counter
-(a mero-kms epoch) and keys per app. Earlier notes: PR #4742 (per-app keys, closed),
+(a mero-kms epoch) and keys per app. Earlier notes: PR #4742 (keys per app, closed),
 "Rollback protection: design" and "Rollback protection and org recovery" (Sandi, Oct 28).
 
 ## Short version
@@ -25,7 +25,7 @@ It covers two items of `crates/node/AGENTS.md`, "Not done yet": the rollback cou
    counter to its store's, raises the cluster epoch, and every node reports the epoch
    (`/health`, `/ops/status`; in its attested KMS evidence next), so a forced rollback
    is visible instead of silent.
-5. **Per-app keys, phase 1:** every Raft group gets its own random data key, wrapped
+5. **Keys per app, phase 1:** every Raft group gets its own random data key, wrapped
    under K_c in the node's store, and seals that group's rows with it. Deleting a group
    drops its key. Groups written before keep K_c; nothing is rewritten.
 
@@ -170,7 +170,7 @@ serving, logs it, and reports the age of its last checkpoint.
   (`a_store_from_before_the_counter_starts_and_gains_one`); a store with a counter
   refuses a KMS answer without one.
 
-## Per-app keys, phase 1
+## Keys per app, phase 1
 
 **Not in these PRs.** Rows move between nodes still sealed (a snapshot streams the
 state rows as stored and an install writes them as they arrive), so a key per group
@@ -224,7 +224,7 @@ mero-kms change and no hand-over protocol:
   `accept_rollback_starts_and_raises_the_epoch`,
   `a_store_from_before_the_counter_starts_and_gains_one`.
 - core `calimero-log`: `a_node_row_survives_a_reopen_and_opens_only_under_its_key`;
-  for per-app keys (next PR) `each_group_seals_under_its_own_key`,
+  for keys per app (next PR) `each_group_seals_under_its_own_key`,
   `a_groups_rows_do_not_open_under_another_groups_key`,
   `a_store_written_before_data_keys_opens`.
 
