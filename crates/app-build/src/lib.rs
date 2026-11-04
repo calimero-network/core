@@ -19,6 +19,8 @@ use wasmparser::Payload;
 pub const ABI_SECTION: &str = "calimero:abi";
 
 const TARGET: &str = "wasm32-wasip2";
+const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
+const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
 const HEADER_LEN: usize = 8;
 const SECTION_CUSTOM: u8 = 0;
@@ -46,19 +48,71 @@ pub struct Built {
     pub imports: Vec<String>,
 }
 
+/// An app's components: the one replicas run and, when it declares compute methods, the one
+/// job nodes run.
+#[derive(Debug)]
+pub struct BuiltApp {
+    pub app: Built,
+    pub compute: Option<Built>,
+}
+
 /// Builds the crate at `crate_dir` into `target_dir` and returns the component.
 pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
+    build(crate_dir, target_dir, false)
+}
+
+/// Builds the compute component of the crate at `crate_dir`: the same crate with
+/// `--cfg calimero_compute`, into `target_dir/compute`.
+pub fn build_compute_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
+    build(crate_dir, &target_dir.join(COMPUTE_TARGET_SUBDIR), true)
+}
+
+/// Builds the crate's app component and, when its ABI declares compute methods, its compute
+/// component.
+pub fn build_components(crate_dir: &Path, target_dir: &Path) -> EyreResult<BuiltApp> {
+    let app = build_component(crate_dir, target_dir)?;
+    let has_compute = app
+        .abi
+        .as_ref()
+        .and_then(|abi| abi["methods"].as_object())
+        .is_some_and(|methods| methods.values().any(|m| m["kind"] == "compute"));
+    let compute = has_compute
+        .then(|| build_compute_component(crate_dir, target_dir))
+        .transpose()?;
+    Ok(BuiltApp { app, compute })
+}
+
+/// `CARGO_ENCODED_RUSTFLAGS` as cargo would read it (`RUSTFLAGS` when unset), plus the compute cfg.
+fn compute_rustflags() -> String {
+    let mut flags: Vec<String> = match (
+        std::env::var("CARGO_ENCODED_RUSTFLAGS"),
+        std::env::var("RUSTFLAGS"),
+    ) {
+        (Ok(encoded), _) => encoded.split('\x1f').map(str::to_owned).collect(),
+        (Err(_), Ok(plain)) => plain.split_whitespace().map(str::to_owned).collect(),
+        _ => Vec::new(),
+    };
+    flags.retain(|flag| !flag.is_empty());
+    flags.extend(["--cfg".to_owned(), COMPUTE_CFG.to_owned()]);
+    flags.join("\x1f")
+}
+
+fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
     // Builds into one target dir race on its artifacts across threads and processes.
     std::fs::create_dir_all(target_dir)?;
     let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
-    let output = Command::new("cargo")
+    let mut cargo = Command::new("cargo");
+    let _ = cargo
         .args(["build", "--release", "--target", TARGET])
         .args(["--message-format", "json-render-diagnostics"])
         .arg("--target-dir")
         .arg(target_dir)
         .current_dir(crate_dir)
-        .stdin(Stdio::null())
-        .output()?;
+        .stdin(Stdio::null());
+    if compute {
+        let _ = cargo.env("CARGO_ENCODED_RUSTFLAGS", compute_rustflags());
+    }
+    let output = cargo.output()?;
     if !output.status.success() {
         eyre::bail!(
             "cargo build failed ({}):\n{}",
@@ -93,22 +147,48 @@ pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built>
     })
 }
 
+/// An app's components as the cache keeps them: the app component and, when it declares
+/// compute methods, the compute component.
+#[derive(Clone, Debug)]
+pub struct CachedApp {
+    pub app: Vec<u8>,
+    pub compute: Option<Vec<u8>>,
+}
+
 /// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
 ///
 /// The component is `cache_dir/<crate dir name>-<key>.wasm` (key: see [`cache_key`]); cargo's
-/// own target directory is `cache_dir/target/<crate dir name>`.
+/// own target directory is `cache_dir/target/<crate dir name>`. Use [`build_components_cached`]
+/// to get the compute component too.
 pub fn build_component_cached(
     crate_dir: &Path,
     also_hash: &[&Path],
     cache_dir: &Path,
 ) -> EyreResult<Vec<u8>> {
+    Ok(build_components_cached(crate_dir, also_hash, cache_dir)?.app)
+}
+
+/// Builds `crate_dir` like [`build_components`], reusing a result cached under `cache_dir`.
+///
+/// The app component is `<name>-<key>.wasm` and the compute one `<name>-<key>.compute.wasm`,
+/// written first, so an app file that exists says the compute decision is final too.
+pub fn build_components_cached(
+    crate_dir: &Path,
+    also_hash: &[&Path],
+    cache_dir: &Path,
+) -> EyreResult<CachedApp> {
     let name = crate_dir
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| eyre::eyre!("{} has no name", crate_dir.display()))?;
-    let cached = |key: &str| cache_dir.join(format!("{name}-{key}.wasm"));
-    if let Ok(bytes) = std::fs::read(cached(&cache_key(crate_dir, also_hash)?)) {
-        return Ok(bytes);
+    let cached = |key: &str, ext: &str| cache_dir.join(format!("{name}-{key}.{ext}"));
+    let read = |key: &str| {
+        let app = std::fs::read(cached(key, "wasm")).ok()?;
+        let compute = std::fs::read(cached(key, "compute.wasm")).ok();
+        Some(CachedApp { app, compute })
+    };
+    if let Some(hit) = read(&cache_key(crate_dir, also_hash)?) {
+        return Ok(hit);
     }
     // A miss builds under an exclusive lock per (crate, target dir), held across
     // processes (nextest runs each test in its own): the first builds and writes the
@@ -118,23 +198,32 @@ pub fn build_component_cached(
     std::fs::create_dir_all(&target_dir)?;
     let lock = lock_exclusive(&cache_dir.join("target").join(format!("{name}.build.lock")))?;
     let key = cache_key(crate_dir, also_hash)?;
-    let cached = cached(&key);
-    if let Ok(bytes) = std::fs::read(&cached) {
-        return Ok(bytes);
+    if let Some(hit) = read(&key) {
+        return Ok(hit);
     }
-    let built = build_component(crate_dir, &target_dir)?;
+    let built = build_components(crate_dir, &target_dir)?;
     // Write beside, then rename: a reader that skips the lock never sees half a file.
-    let tmp = cache_dir.join(format!("{name}-{key}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, &built.component)?;
-    std::fs::rename(&tmp, &cached)?;
+    let write = |ext: &str, bytes: &[u8]| -> EyreResult<()> {
+        let tmp = cache_dir.join(format!("{name}-{key}.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, cached(&key, ext))?;
+        Ok(())
+    };
+    if let Some(compute) = &built.compute {
+        write("compute.wasm", &compute.component)?;
+    }
+    write("wasm", &built.app.component)?;
     // Dropping `lock` closes it, which releases the lock.
     drop(lock);
-    Ok(built.component)
+    Ok(CachedApp {
+        app: built.app.component,
+        compute: built.compute.map(|c| c.component),
+    })
 }
 
 /// Bump when [`build_component`]'s post-processing (the ABI lift) changes behaviour without
 /// its source text changing; the source of this file is hashed too.
-const POST_PROCESSING_VERSION: u32 = 1;
+const POST_PROCESSING_VERSION: u32 = 2;
 
 /// The first 16 hex digits of a SHA-256 over everything that decides the built component:
 /// - every file under `crate_dir` and under each of `also_hash` (the guest's path
@@ -240,6 +329,14 @@ pub fn abi_of(component: &[u8]) -> EyreResult<Option<Value>> {
         }
     }
     Ok(None)
+}
+
+/// The component with its top-level `calimero:abi` section replaced by `abi`, for tests that
+/// need a component whose ABI says something its code does not.
+pub fn with_abi(component: &[u8], abi: &Value) -> EyreResult<Vec<u8>> {
+    let (mut out, _) = lift_abi(component)?;
+    append_custom_section(&mut out, ABI_SECTION, abi);
+    Ok(out)
 }
 
 /// Splits `bytes` (a module or component) into `(id, content)` sections.

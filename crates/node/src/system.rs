@@ -49,6 +49,12 @@ impl Default for Quotas {
 /// The prefix of every apply error that is a quota refusal.
 pub const QUOTA_PREFIX: &str = "quota exceeded";
 
+/// The refusal when an app would run a compute component.
+const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never as an app";
+
+/// The refusal when an app names a compute component its bundle's release does not ship.
+const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
+
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
@@ -74,6 +80,9 @@ pub struct PackageRef {
     /// The service's name; `None` for a single-service bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    /// The bundle is the service's compute component, not the service itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compute: bool,
 }
 
 /// Where a release's `.mpk` came from, so a node that needs it knows where to get it.
@@ -110,6 +119,10 @@ pub struct PackageVersion {
     pub source: BundleSource,
     /// Service name (`""` for a single-service bundle) -> the WASM's bundle hash.
     pub services: BTreeMap<String, String>,
+    /// Service name -> its compute component's bundle hash, for the services that ship one.
+    /// Never a service: no app runs it, and only job nodes do.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub compute: BTreeMap<String, String>,
     /// The manifest's display metadata (name, description, icon, ...).
     #[serde(default)]
     pub metadata: Value,
@@ -131,6 +144,26 @@ pub struct PackageVersion {
 }
 
 impl PackageVersion {
+    /// Every WASM the release records under `package`, with the part of the release it is:
+    /// each service, then each service's compute component.
+    fn parts<'a>(&'a self, package: &'a str) -> impl Iterator<Item = (&'a str, PackageRef)> {
+        let at = move |service: &str, compute: bool| PackageRef {
+            package: package.to_owned(),
+            version: self.version.clone(),
+            service: (!service.is_empty()).then(|| service.to_owned()),
+            compute,
+        };
+        let services = self
+            .services
+            .iter()
+            .map(move |(s, h)| (h.as_str(), at(s, false)));
+        let computes = self
+            .compute
+            .iter()
+            .map(move |(s, h)| (h.as_str(), at(s, true)));
+        services.chain(computes)
+    }
+
     /// Whether `who` installed this release, first or again.
     #[must_use]
     pub fn installed_by_any(&self, who: &str) -> bool {
@@ -800,6 +833,33 @@ impl SystemState {
             .filter(move |v| self.sees_release(v, who))
     }
 
+    /// Whether `hash` is a release's compute component, which no app runs.
+    #[must_use]
+    pub fn is_compute_bundle(&self, hash: &str) -> bool {
+        self.bundles
+            .get(hash)
+            .and_then(|b| b.package.as_ref())
+            .is_some_and(|at| at.compute)
+    }
+
+    /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
+    /// whose app component is `bundle`. Releases may share an app component and differ in
+    /// compute, so the caller names the compute hash and this checks the pair.
+    #[must_use]
+    pub fn ships_compute(&self, bundle: &str, compute: Option<&str>) -> bool {
+        let Some(compute) = compute else {
+            return true;
+        };
+        self.packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .any(|v| {
+                v.services.iter().any(|(service, main)| {
+                    main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
+                })
+            })
+    }
+
     /// Whether `who` may name the bundle `hash` for an app: it must be
     /// recorded, and if a package release ships it, one such release must be
     /// visible to `who`, or `who` uploaded the same WASM as a raw bundle.
@@ -808,6 +868,9 @@ impl SystemState {
         let Some(b) = self.bundles.get(hash) else {
             return false;
         };
+        if self.is_compute_bundle(hash) {
+            return false;
+        }
         let mut shipped = self
             .packages
             .values()
@@ -2521,6 +2584,10 @@ pub enum SystemCmd {
     UpgradeApp {
         app_id: AppId,
         bundle: String,
+        /// The compute component of the release `bundle` is taken from, which only the
+        /// caller knows when releases share an app component; `None` for a raw upload.
+        #[serde(default)]
+        compute_bundle: Option<String>,
         /// The operator upgraded it (`actor` empty): allowed only where the
         /// deployment gave it app upgrades, and then nobody else may.
         #[serde(default)]
@@ -3363,14 +3430,9 @@ impl SystemMachine {
                 if !by_operator && used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
                     return Err("quota exceeded: bundle storage");
                 }
-                for (service, hash) in &release.services {
-                    let at = PackageRef {
-                        package: package.clone(),
-                        version: release.version.clone(),
-                        service: (!service.is_empty()).then(|| service.clone()),
-                    };
-                    let b = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
-                        hash: hash.clone(),
+                for (hash, at) in release.parts(&package) {
+                    let b = s.bundles.entry(hash.to_owned()).or_insert(BundleRecord {
+                        hash: hash.to_owned(),
                         size: release.mpk_size,
                         uploaded_by: actor.clone(),
                         package: None,
@@ -3416,7 +3478,7 @@ impl SystemMachine {
                 let hashes: BTreeSet<String> = gone
                     .iter()
                     .filter_map(|v| p.versions.get(v))
-                    .flat_map(|v| v.services.values().cloned())
+                    .flat_map(|v| v.parts(&package).map(|(h, _)| h.to_owned()))
                     .collect();
                 // Two releases may ship the same WASM: a hash another release
                 // still provides stays, recorded under that release.
@@ -3425,13 +3487,9 @@ impl SystemMachine {
                         p.versions.iter().find_map(|(v, r)| {
                             let gone_here = *name == package && gone.contains(v);
                             (!gone_here)
-                                .then(|| r.services.iter().find(|(_, x)| x.as_str() == h))
+                                .then(|| r.parts(name).find(|(x, _)| *x == h))
                                 .flatten()
-                                .map(|(svc, _)| PackageRef {
-                                    package: name.clone(),
-                                    version: v.clone(),
-                                    service: (!svc.is_empty()).then(|| svc.clone()),
-                                })
+                                .map(|(_, at)| at)
                         })
                     })
                 };
@@ -3441,9 +3499,10 @@ impl SystemMachine {
                         let _prev = keep.insert(h.clone(), r);
                     }
                 }
+                let in_use = |h: &String| hashes.contains(h) && !keep.contains_key(h);
                 if s.apps
                     .values()
-                    .any(|a| hashes.contains(&a.bundle) && !keep.contains_key(&a.bundle))
+                    .any(|a| in_use(&a.bundle) || a.compute_bundle.as_ref().is_some_and(in_use))
                 {
                     return Err("an app still runs that release; delete or upgrade it first");
                 }
@@ -3473,6 +3532,12 @@ impl SystemMachine {
                 let mut app = *app;
                 if !s.bundles.contains_key(&app.bundle) {
                     return Err("unknown bundle");
+                }
+                if s.is_compute_bundle(&app.bundle) {
+                    return Err(COMPUTE_NOT_AN_APP);
+                }
+                if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
                 }
                 let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
                 if owned >= s.quotas.max_apps_per_account as usize {
@@ -3520,6 +3585,7 @@ impl SystemMachine {
             SystemCmd::UpgradeApp {
                 app_id,
                 bundle,
+                compute_bundle,
                 by_operator,
                 actor,
                 at,
@@ -3528,6 +3594,12 @@ impl SystemMachine {
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
+                }
+                if s.is_compute_bundle(&bundle) {
+                    return Err(COMPUTE_NOT_AN_APP);
+                }
+                if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
                 }
                 let operator = s.governance().app_upgrades == Authority::Operator;
                 let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
@@ -3574,6 +3646,7 @@ impl SystemMachine {
                             .map(str::to_owned),
                     });
                     a.bundle = bundle;
+                    a.compute_bundle = compute_bundle;
                 }
                 s.note_run(run.as_deref(), &app_id, None);
                 Ok(Value::Null)
@@ -5456,6 +5529,7 @@ mod tests {
             let _prev = m.state.apps.insert(id.into(), a);
         }
         let upgrade = |app: &str, actor: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: app.into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -5559,6 +5633,7 @@ mod tests {
 
         // App upgrades.
         let upgrade = |by_operator: bool, actor: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "app".into(),
             bundle: "b2".into(),
             by_operator,
@@ -5746,6 +5821,95 @@ mod tests {
         assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
     }
 
+    /// A release's compute component is recorded as the compute part of its service: no app
+    /// runs it, the app's record carries it next to `bundle` on create and upgrade, and
+    /// uninstalling the release takes it with the service.
+    #[test]
+    fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() {
+        use super::{BundleSource, PackageVersion};
+        use calimero_bundle::UpgradeAuthority;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let release = |version: &str, main: &str, job: Option<&str>| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                version: version.into(),
+                mpk: format!("mpk{version}"),
+                mpk_size: 1,
+                source: BundleSource::Upload,
+                services: BTreeMap::from([(String::new(), main.to_owned())]),
+                compute: job
+                    .map(|j| BTreeMap::from([(String::new(), j.to_owned())]))
+                    .unwrap_or_default(),
+                metadata: Value::Null,
+                outbound: Vec::new(),
+                installed_by: "alice".into(),
+                installed_at: 0,
+                installers: BTreeSet::new(),
+                upgrades: UpgradeAuthority::Owner,
+            },
+        };
+        let _ok = m
+            .run_authorized(release("1.0.0", "m1", Some("j1")))
+            .unwrap();
+        let _ok = m.run_authorized(release("1.1.0", "m2", None)).unwrap();
+        let s = &m.state;
+        assert!(s.bundles["j1"].package.as_ref().unwrap().compute);
+        assert!(!s.bundles["m1"].package.as_ref().unwrap().compute);
+        assert!(s.is_compute_bundle("j1") && !s.is_compute_bundle("m1"));
+        assert!(!s.sees_bundle("j1", "alice") && s.sees_bundle("m1", "alice"));
+        assert!(s.ships_compute("m1", Some("j1")) && s.ships_compute("m1", None));
+        assert!(!s.ships_compute("m2", Some("j1")) && !s.ships_compute("m1", Some("m1")));
+
+        let e = m
+            .run_unproven(instance("bad", "alice", "j1", None))
+            .unwrap_err();
+        assert!(e.contains("compute component"), "{e}");
+        let with_compute = |id: &str, compute: &str| SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 0, "bundle": "m1", "owner": "alice",
+                    "replicas": [1], "createdAt": 10, "computeBundle": compute,
+                }))
+                .unwrap(),
+            ),
+        };
+        let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
+        assert!(e.contains("not shipped"), "{e}");
+        let _ok = m.run_unproven(with_compute("app", "j1")).unwrap();
+        assert_eq!(m.state.apps["app"].compute_bundle.as_deref(), Some("j1"));
+
+        let upgrade = |bundle: &str, compute: Option<&str>| SystemCmd::UpgradeApp {
+            compute_bundle: compute.map(str::to_owned),
+            app_id: "app".into(),
+            bundle: bundle.into(),
+            by_operator: false,
+            actor: "alice".into(),
+            at: 0,
+            run: None,
+            consent: Value::Null,
+        };
+        let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
+        assert!(e.contains("compute component"), "{e}");
+        let e = m.run_unproven(upgrade("m2", Some("j1"))).unwrap_err();
+        assert!(e.contains("not shipped"), "{e}");
+        assert_eq!(m.state.apps["app"].bundle, "m1");
+        let _ok = m.run_unproven(upgrade("m2", None)).unwrap();
+        assert_eq!(m.state.apps["app"].compute_bundle, None);
+
+        let uninstall = |version: &str| SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some(version.into()),
+            actor: "alice".into(),
+        };
+        let _ok = m.run_unproven(uninstall("1.0.0")).unwrap();
+        assert!(!m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j1"));
+    }
+
     /// An account `id` holding the passkey `pk`.
     fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator) -> SystemCmd {
         let rp = calimero_identity::RelyingParty {
@@ -5886,6 +6050,7 @@ mod tests {
     fn an_upgrade_names_its_consent_or_its_run() {
         let (mut m, mut alice, _bob) = two_accounts();
         let upgrade = |consent: serde_json::Value, run: Option<&str>| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "app".into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -6939,6 +7104,7 @@ mod tests {
             ),
         };
         let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: id.into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -7404,6 +7570,7 @@ mod tests {
             assert_eq!(may(&m, who), expected, "{who}");
         }
         let upgrade = |actor: &str, bundle: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "inst".into(),
             bundle: bundle.into(),
             by_operator: false,

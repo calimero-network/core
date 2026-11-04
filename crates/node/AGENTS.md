@@ -180,6 +180,17 @@ is its command line.
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.
+  A service may also ship a compute component (`compute` in the manifest): it is prepared on
+  `Node::compute_engine` only (never the replica engine), and the release is refused
+  `400 COMPUTE_ABI_MISMATCH` unless its ABI lists exactly the main ABI's compute methods,
+  each with the same caps, and `400 BAD_BUNDLE` when it imports outside the compute world or
+  its ABI is not the compute world's.
+  A release without one installs and its app runs calls; it cannot run compute.
+  `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
+  `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
+  `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
+  `AppRecord::compute_bundle` carries the running release's compute hash next to `bundle`.
+  Releases may share an app component and differ in compute, so create and upgrade carry the compute hash of the release they name (`resolve_release_parts`), and apply only checks that a release ships that pair (`SystemState::ships_compute`).
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
@@ -860,7 +871,9 @@ API and system group:
   cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
 - **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
   bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
-  (`AppRecord::confirm_methods` is always empty now: a request names none).
+  (`AppRecord::confirm_methods` is always empty now: a request names none). A compute method
+  (kind `compute`) and a `computeResult` method are `WrongKind` on `/intents` and `/views` for
+  every caller, System included: only the node runs them.
 - **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
   (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
   continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed

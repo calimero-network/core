@@ -59,6 +59,7 @@ fn release(package: &str, version: &str) -> Vec<u8> {
             hash: hex::encode(sha2::Sha256::digest(&wasm)),
             size: wasm.len() as u64,
         }),
+        compute: None,
         abi: None,
         links: None,
         frontend: None,

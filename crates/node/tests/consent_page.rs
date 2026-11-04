@@ -67,6 +67,7 @@ fn release(
             size: wasm.len() as u64,
         }),
         abi: None,
+        compute: None,
         links: d.frontend.map(|f| calimero_bundle::BundleLinks {
             frontend: Some(f.to_owned()),
             github: None,

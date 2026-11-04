@@ -331,6 +331,8 @@ pub struct VerifiedWasm {
     /// Service name. `None` for single-service bundles.
     pub name: Option<String>,
     pub bytes: Arc<[u8]>,
+    /// The service's compute component, when the manifest declares one.
+    pub compute: Option<Arc<[u8]>>,
 }
 
 /// Everything a [`VerifiedBundle`] ships, digest-checked: the wasm per service
@@ -398,7 +400,7 @@ impl VerifiedBundle {
         Ok(bytes)
     }
 
-    /// Every declared wasm artifact and frontend file, checked against the signed manifest in one walk.
+    /// Every declared wasm and compute artifact and frontend file, checked against the signed manifest in one walk.
     /// Frontend rules run first; frontend reads are bounded by their declared size, wasm's are not.
     pub fn contents(&self) -> eyre::Result<VerifiedContents> {
         let frontend = self.manifest.frontend.as_ref();
@@ -410,6 +412,9 @@ impl VerifiedBundle {
         let mut wanted = BTreeMap::new();
         for artifact in &artifacts {
             let _ = wanted.insert(artifact.wasm.path.as_str(), u64::MAX);
+            if let Some(compute) = artifact.compute {
+                let _ = wanted.insert(compute.path.as_str(), u64::MAX);
+            }
         }
         for file in frontend_files {
             let bound = wanted.entry(file.path.as_str()).or_insert(0);
@@ -423,9 +428,18 @@ impl VerifiedBundle {
             // Per artifact, never per read: two services may declare different
             // digests for one path, and sharing the bytes must not share the check.
             verify_artifact_digest(artifact.wasm, &bytes)?;
+            let compute = artifact
+                .compute
+                .map(|c| {
+                    let bytes = take_artifact(&found, &c.path)?;
+                    verify_artifact_digest(c, &bytes)?;
+                    Ok::<_, eyre::Report>(bytes)
+                })
+                .transpose()?;
             wasm.push(VerifiedWasm {
                 name: artifact.name.map(str::to_owned),
                 bytes,
+                compute,
             });
         }
 
@@ -489,5 +503,7 @@ pub mod fuzz_api {
     }
 }
 
+#[cfg(test)]
+mod compute_tests;
 #[cfg(test)]
 mod sparse_entry_tests;

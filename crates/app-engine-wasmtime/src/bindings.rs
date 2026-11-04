@@ -39,7 +39,7 @@ use self::calimero::app::{
     action, blobs, context, events, files, rebuild, search, storage, types, xcall,
 };
 
-/// Links the ten `calimero:app` interfaces and `wasi:http` onto `StoreData`.
+/// Links the `calimero:app` interfaces of the app world and `wasi:http` onto `StoreData`.
 pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     let l = linker;
     types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;

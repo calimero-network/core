@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use calimero_app_build::build_component_cached;
+use calimero_app_build::{build_components_cached, CachedApp};
 use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
@@ -18,16 +18,21 @@ use calimero_node::{run, run_job, Config, JobConfig, Running, RunningJob};
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
 /// app-build's post-processing are hashed; see `calimero_app_build::cache_key`).
 pub fn component(name: &str) -> Vec<u8> {
+    components(name).app
+}
+
+/// The fixture `name`'s app component and, when it declares compute methods, its compute component.
+pub fn components(name: &str) -> CachedApp {
     build(&Path::new("apps/v2-fixtures").join(name))
 }
 
 /// The Rooms reference app (`apps/rooms`) as a component, cached like [`component`].
 pub fn rooms() -> Vec<u8> {
-    build(Path::new("apps/rooms"))
+    build(Path::new("apps/rooms")).app
 }
 
 /// Builds the guest crate at `dir` (relative to the repository root), cached by source hash.
-fn build(dir: &Path) -> Vec<u8> {
+fn build(dir: &Path) -> CachedApp {
     // Tests run in parallel threads of one process; two builds of the same crate into
     // one target directory race, so builds are serialized.
     static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -40,7 +45,7 @@ fn build(dir: &Path) -> Vec<u8> {
     let alias = root.join("crates/app-sdk");
     let wit = root.join("crates/app-wit");
     let cache: PathBuf = root.join("target/app-components");
-    build_component_cached(&root.join(dir), &[&sdk, &macros, &alias, &wit], &cache)
+    build_components_cached(&root.join(dir), &[&sdk, &macros, &alias, &wit], &cache)
         .unwrap_or_else(|e| panic!("build {}: {e}", dir.display()))
 }
 

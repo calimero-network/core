@@ -454,7 +454,10 @@ impl TestApp {
             Some(ctx),
         );
         // A failed tick counts as applied (D34).
-        if !matches!(res, Err(Failure::Trap(TrapKind::Timeout))) {
+        if !matches!(
+            res,
+            Err(Failure::Trap(TrapKind::Timeout | TrapKind::Unavailable))
+        ) {
             self.last_tick.insert(method.to_owned(), ctx.scheduled_ms);
         }
         res
@@ -616,6 +619,7 @@ impl TestApp {
             id_seq: 0,
             seed: [0; 32],
             timer: None,
+            compute: None,
         };
         let (engine, prepared) = (self.engine, self.prepared.clone());
         let http = Arc::new(HarnessHttp(self.http.clone()));
@@ -796,6 +800,7 @@ impl TestApp {
             id_seq: self.seq,
             seed: self.next_seed(),
             timer,
+            compute: None,
         };
         let state = Arc::new(self.state.clone());
         let search = Arc::new(HarnessSearch {
@@ -826,7 +831,7 @@ impl TestApp {
         if matches!(
             out.status,
             Status::Trap {
-                kind: TrapKind::Timeout,
+                kind: TrapKind::Timeout | TrapKind::Unavailable,
                 ..
             }
         ) {
@@ -958,7 +963,9 @@ impl TestApp {
             return refuse("UnknownMethod");
         };
         let starts_action = m.kind == MethodKind::Action && !view && !self.in_action;
-        if !matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action {
+        if (!matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action)
+            || m.compute_result
+        {
             return refuse("WrongKind");
         }
         if m.action_only && !self.in_action {

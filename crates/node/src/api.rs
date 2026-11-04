@@ -2323,8 +2323,9 @@ async fn ops_package_version_uninstall(
     ))
 }
 
-/// The bundle a create or upgrade names: a bundle hash, or a package release
-/// (installed from the registry first if the fleet lacks it).
+/// The bundle a create or upgrade names, with the compute component of the release it
+/// comes from: a bundle hash (a raw upload, no compute), or a package release (installed
+/// from the registry first if the fleet lacks it).
 async fn bundle_named(
     node: &Node,
     bundle: Option<String>,
@@ -2333,13 +2334,13 @@ async fn bundle_named(
     service: Option<&str>,
     actor: &str,
     frontend: bool,
-) -> Result<String, ApiError> {
+) -> Result<(String, Option<String>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release.
-        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok(b),
+        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok((b, None)),
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
-            node.resolve_release(p, version, service, actor, frontend)
+            node.resolve_release_parts(p, version, service, actor, frontend)
                 .await
         }
         _ => Err(ApiError::bad_request(
@@ -2348,6 +2349,9 @@ async fn bundle_named(
         )),
     }
 }
+
+/// A release's service name to bundle hash map.
+type Services = BTreeMap<String, String>;
 
 /// The bundle an instance of `package` from deployment `id` runs: the
 /// release the deployment offers for it (`version`, when given, must be that
@@ -2360,15 +2364,18 @@ async fn offered_bundle(
     package: &str,
     version: Option<&str>,
     service: Option<&str>,
-) -> Result<String, ApiError> {
+) -> Result<(String, Option<String>), ApiError> {
     let find = || {
         node.sys(|s| {
             let d = s.deployments.get(id)?;
-            let mut releases: Vec<(String, BTreeMap<String, String>)> = d
+            let mut releases: Vec<(String, Services, Services)> = d
                 .apps
                 .values()
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
-                .filter_map(|o| Some((o.version.clone(), s.offered_release(o)?.services.clone())))
+                .filter_map(|o| {
+                    let r = s.offered_release(o)?;
+                    Some((o.version.clone(), r.services.clone(), r.compute.clone()))
+                })
                 .collect();
             releases.sort_by(|a, b| a.0.cmp(&b.0));
             releases.dedup_by(|a, b| a.0 == b.0);
@@ -2382,7 +2389,7 @@ async fn offered_bundle(
             find().ok_or_else(|| ApiError::not_found("no such deployment"))?
         }
     };
-    let (version, services) = match releases.as_slice() {
+    let (version, services, compute) = match releases.as_slice() {
         [] => {
             return Err(ApiError::bad_request(
                 "NOT_OFFERED",
@@ -2401,7 +2408,10 @@ async fn offered_bundle(
         }
     };
     let key = service.unwrap_or_default();
-    services.get(key).cloned().ok_or_else(|| {
+    let found = services
+        .get(key)
+        .map(|b| (b.clone(), compute.get(key).cloned()));
+    found.ok_or_else(|| {
         ApiError::bad_request(
             "NO_SUCH_SERVICE",
             &format!("{package}@{version} has no service {key:?}"),
@@ -2465,7 +2475,7 @@ async fn app_create(
     }
     let owner = p.account()?;
     let now = now_secs();
-    let bundle = match &body.deployment {
+    let (bundle, compute_bundle) = match &body.deployment {
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
         Some(d) => {
@@ -2557,6 +2567,7 @@ async fn app_create(
                 metadata: body.metadata,
                 last_upgrade: None,
                 deployment: body.deployment,
+                compute_bundle,
             }),
         })
         .await?;
@@ -3582,7 +3593,7 @@ pub(crate) async fn upgrade_app(
         .service
         .clone()
         .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()));
-    let bundle = bundle_named(
+    let (bundle, compute_bundle) = bundle_named(
         node,
         body.bundle.clone(),
         package.as_deref(),
@@ -3635,6 +3646,7 @@ pub(crate) async fn upgrade_app(
         node,
         app_id,
         bundle,
+        compute_bundle,
         body.migrate,
         Upgrader {
             caller: Caller::Account {
@@ -3679,6 +3691,7 @@ async fn run_upgrade(
     node: &Node,
     app_id: String,
     bundle: String,
+    compute_bundle: Option<String>,
     migrate: Option<String>,
     who: Upgrader,
 ) -> ApiResult {
@@ -3742,6 +3755,7 @@ async fn run_upgrade(
         .sys_write(&SystemCmd::UpgradeApp {
             app_id,
             bundle,
+            compute_bundle,
             by_operator: who.by_operator,
             actor: who.actor,
             at: begun,
@@ -3844,14 +3858,14 @@ fn run_targets(
         .collect()
 }
 
-/// The bundle `version` of the package gives an app (same service), if
-/// installed and the upgrader may see it ([`upgrade_sees`]).
+/// The bundle `version` of the package gives an app (same service), with that release's
+/// compute component, if installed and the upgrader may see it ([`upgrade_sees`]).
 fn target_bundle(
     node: &Node,
     app: &crate::types::AppRecord,
     version: &str,
     who: &Upgrader,
-) -> Option<String> {
+) -> Option<(String, Option<String>)> {
     let r = node.release_of(&app.bundle)?;
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
@@ -3859,7 +3873,8 @@ fn target_bundle(
         if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
             return None;
         }
-        v.services.get(&service).cloned()
+        let bundle = v.services.get(&service).cloned()?;
+        Some((bundle, v.compute.get(&service).cloned()))
     })
 }
 
@@ -3919,12 +3934,13 @@ async fn start_run(
     let _task = tokio::spawn(async move {
         for app in apps {
             match target_bundle(&node, &app, &version, &who) {
-                Some(bundle) if bundle == app.bundle => {
-                    // Already there: done, nothing to run.
+                Some((bundle, compute_bundle)) if bundle == app.bundle => {
+                    // Same app component: nothing to run, though its compute component may differ.
                     let _r = node
                         .sys_write(&SystemCmd::UpgradeApp {
                             app_id: app.app_id.clone(),
                             bundle,
+                            compute_bundle,
                             by_operator: who.by_operator,
                             actor: who.actor.clone(),
                             at: now_secs(),
@@ -3933,11 +3949,12 @@ async fn start_run(
                         })
                         .await;
                 }
-                Some(bundle) => {
+                Some((bundle, compute_bundle)) => {
                     let _r = run_upgrade(
                         &node,
                         app.app_id.clone(),
                         bundle,
+                        compute_bundle,
                         migrate.clone(),
                         who.clone(),
                     )
@@ -8454,8 +8471,8 @@ async fn ops_upgrade(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let current = node.release_of(&app.bundle);
-    let bundle = match (body.bundle, body.version) {
-        (Some(b), _) => b,
+    let (bundle, compute_bundle) = match (body.bundle, body.version) {
+        (Some(b), _) => (b, None),
         (None, Some(version)) => {
             let package = body
                 .package
@@ -8472,7 +8489,10 @@ async fn ops_upgrade(
                     .get(&package)
                     .and_then(|p| p.versions.get(&version))
                     .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
-                    .and_then(|v| v.services.get(&service).cloned())
+                    .and_then(|v| {
+                        let bundle = v.services.get(&service).cloned()?;
+                        Some((bundle, v.compute.get(&service).cloned()))
+                    })
             })
             .ok_or_else(|| {
                 ApiError::new(
@@ -8507,6 +8527,7 @@ async fn ops_upgrade(
         &node,
         app_id,
         bundle,
+        compute_bundle,
         body.migrate,
         Upgrader {
             caller: Caller::Public,
