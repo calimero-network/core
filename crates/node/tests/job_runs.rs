@@ -239,7 +239,9 @@ impl Rig {
             app,
             alice_bundle: bundle,
             file_key,
-            bundle: common::component("compute"),
+            bundle: common::components("compute")
+                .compute
+                .expect("the compute fixture builds a compute component"),
             alice,
         }
     }
@@ -1011,6 +1013,22 @@ async fn a_job_node_takes_components_only_when_the_cluster_signed_their_name() {
     assert_eq!(job.put_bundle_signed(&rig.bundle, Some(&good)).await.0, 200);
     // A held component answers a repeat, and an assignment now finds it.
     assert_eq!(job.put_bundle_signed(&rig.bundle, Some(&good)).await.0, 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_refuses_an_app_component_even_when_the_cluster_signed_it() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let app = common::component("compute");
+    let signature = rig.leader().sign_bundle(&sha256_hex(&app)).unwrap();
+    let (status, e) = job.put_bundle_signed(&app, Some(&signature)).await;
+    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_BUNDLE")));
+    // Nothing was kept: an assignment naming it still needs the component.
+    let mut a = rig.assignment(&job, "app-component", 1, "digest", DIGEST, &[]);
+    a.bundle = sha256_hex(&app);
+    a.signature = rig.leader().sign_assignment(&a).unwrap();
+    let (status, e) = job.post(&a).await;
+    assert_eq!((status, e["error"].as_str()), (409, Some("NEED_BUNDLE")));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
