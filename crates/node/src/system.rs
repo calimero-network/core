@@ -7901,8 +7901,10 @@ mod tests {
                 "account": { "accountId": "a", "name": "a", "createdAt": 0, "passkeys": [] },
             }))
             .unwrap();
-            let mut m = SystemMachine::default();
-            m.state = restored.clone();
+            let mut m = SystemMachine {
+                state: restored.clone(),
+                ..SystemMachine::default()
+            };
             let _ok = m.run_authorized(cmd).unwrap();
             restored = m.state;
             assert!(restored.accounts.contains_key("a"));
