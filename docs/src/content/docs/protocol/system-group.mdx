@@ -218,7 +218,7 @@ same command for the same reason:
 | `maxBundleBytesPerAccount` | 1 GiB | `PutBundle`, `InstallPackage` (operator installs count against no account) |
 | `maxApiKeysPerAccount` | 50 | `CreateApiKey` |
 | `maxOrgsPerAccount` | 20 (organizations owned) | `CreateOrg` |
-| `maxAccounts` | 100 000 | `CreateAccount` (sign-up is open, so this bounds the cluster) |
+| `maxAccounts` | 100 000 | `CreateAccount` (where sign-up is `open`, this bounds the cluster) |
 | `maxFileBytesPerOrg` | 50 000 000 000 | `ChargeFileBytes` (plaintext bytes of the files of an organization's apps, or of a personal account's) |
 
 `GET /auth/usage` shows an account what it uses against them.

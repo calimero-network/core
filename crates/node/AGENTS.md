@@ -283,6 +283,24 @@ is its command line.
   `deployment_changes_carry_their_managers_consent`,
   `state_from_before_deployments_reads_with_none_and_writes_as_before`,
   `a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind`.
+- **Sign-up policy** (`Governance::sign_up`, `--sign-up open|invite|closed`,
+  left out of the governance JSON when `open`): `CreateAccount { invite }`
+  is judged at apply by `SystemState::admits` (`open`: anyone; `invite`: an
+  org invite, which joins the org, or a cluster sign-up invite; `closed`: a
+  sign-up invite only; an invite presented is checked on every policy).
+  The invite is `SignUpRedemption { inviteKey, now, signature }`, the token
+  key's `proof::sign_invite_redeem` over the new account, spent in
+  `used_proofs`; refusals start with `system::SIGN_UP_PREFIX` (`403
+  SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse first
+  (`api::refuse_sign_up`, fresh state before refusing; the finish before its
+  challenge is spent). `SystemState::sign_up_invites` (`CreateSignUpInvite`,
+  `RevokeSignUpInvite`, bounded by `MAX_SIGN_UP_INVITES` and
+  `MAX_SIGN_UP_INVITE_USES`) and `SetSignUp` are run by the operator's
+  signature until the cluster's owner is named, then the owner's passkey
+  (`SystemState::runs_sign_up`; `__sign_up`, `__create_sign_up_invite`,
+  `__revoke_sign_up_invite`). Routes: `GET /sign-up` (public), `/ops/sign-up[/invites]`,
+  `/sign-up[/invites]` (owner). Regressions: `tests/sign_up.rs`,
+  `system::tests::sign_up`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,

@@ -473,7 +473,7 @@ impl Client {
     /// new passkey to sign the account it creates (`412 CONFIRM_REQUIRED`),
     /// so a sign-up asks the passkey twice: to create it, then to sign.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
-        self.sign_up_at(passkey, name, None).await
+        self.sign_up_with(passkey, name, None, None).await
     }
 
     /// [`Self::sign_up`] from a page on `origin`: for an origin a package's
@@ -489,7 +489,34 @@ impl Client {
         name: &str,
         origin: Option<&str>,
     ) -> Result<Session> {
-        let mut body = json!({ "name": name });
+        self.sign_up_with(passkey, name, origin, None).await
+    }
+
+    /// [`Self::sign_up`] with an invite: an organization invite token (the
+    /// new account joins the organization) or a cluster sign-up invite
+    /// token, which a cluster whose sign-up is `invite` or `closed` needs
+    /// (`GET /sign-up` says which). Refused `403 SIGN_UP_REFUSED` before the
+    /// passkey is asked when the cluster would not take it.
+    pub async fn sign_up_invited(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        invite: Option<&str>,
+    ) -> Result<Session> {
+        self.sign_up_with(passkey, name, None, invite).await
+    }
+
+    /// A sign-up from `origin` (see [`Self::sign_up_at`]) with `invite` (see
+    /// [`Self::sign_up_invited`]); the invite goes on the begin, the finish
+    /// and its `412` retry.
+    pub async fn sign_up_with(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        origin: Option<&str>,
+        invite: Option<&str>,
+    ) -> Result<Session> {
+        let mut body = json!({ "name": name, "invite": invite });
         if let (Some(b), Some(o)) = (body.as_object_mut(), origin) {
             let _prev = b.insert("origin".into(), json!(o));
         }
@@ -498,7 +525,11 @@ impl Client {
         let s: Session = serde_json::from_value(
             self.post_confirmed(
                 "auth/passkey/register/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                json!({
+                    "challengeId": begin["challengeId"],
+                    "registration": registration,
+                    "invite": invite,
+                }),
                 passkey,
             )
             .await?,

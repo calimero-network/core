@@ -505,6 +505,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             outbound: authority(args.outbound_approvals),
             deployments: args.deployments.unwrap_or_default(),
             deployers: args.deployers.unwrap_or_default(),
+            sign_up: args.sign_up.unwrap_or_default(),
         },
         kms_keys,
     };
