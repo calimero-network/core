@@ -400,9 +400,8 @@ impl AppMachine {
             .collect()
     }
 
-    /// Up to `limit` records, newest start first (ties by run id, descending), all older than the
-    /// `before` key `(start_ts_ms, run)`; the key to continue from when more follow. Reads every
-    /// kept record: at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` rows per page.
+    /// Up to `limit` records older than `before` `(start_ts_ms, run)`, newest first, and the key to
+    /// continue from. Reads every kept record: at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT`.
     #[must_use]
     pub fn runs_page(
         &self,
