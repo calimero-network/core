@@ -129,7 +129,7 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--outbound-approvals owner\|operator` | `MEROD_OUTBOUND_APPROVALS` | `owner` | Who approves the URL prefixes apps may call out to. |
 | `--deployments open\|granted` | `MEROD_DEPLOYMENTS` | `open` | Who may install apps (packages, raw bundles): any account, or only accounts holding a deployer grant. Anyone may still create instances of the releases they see ([Deployers](/protocol/governance/#deployers)). |
 | `--deployers operator\|owner` | `MEROD_DEPLOYERS` | `operator` | Who grants deployers where deployments are `granted`: the operator's key, or the cluster's owner once the operator names it. |
-| `--apps-domain DOMAIN` | `MEROD_APPS_DOMAIN` | none | Serve each package's frontend at `{label}.{DOMAIN}` (a wildcard DNS name pointing at the cluster). |
+| `--apps-domain DOMAIN` | `MEROD_APPS_DOMAIN` | none | Serve each package's frontend at `{label}.{DOMAIN}`, and each deployment's at `{dlabel}.{DOMAIN}` (a wildcard DNS name pointing at the cluster). |
 | `--settings FILE` | `MEROD_SETTINGS` | none | A TOML file whose `[outbound]` table replaces the configuration's. |
 
 A boolean flag takes an optional value: `--dev` is `--dev true`, and

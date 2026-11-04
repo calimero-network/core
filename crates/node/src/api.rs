@@ -6665,9 +6665,10 @@ async fn managed_deployment(node: &Node, account: &str, id: &str) -> Result<Depl
 }
 
 /// A deployment as its managers read it.
-fn deployment_json(d: &Deployment) -> Value {
+fn deployment_json(node: &Node, d: &Deployment) -> Value {
     json!({
         "id": d.id,
+        "host": node.deployment_host(&d.id),
         "name": d.name,
         "owner": d.owner,
         "apps": d.apps.iter().map(|(app, o)| json!({
@@ -6711,8 +6712,9 @@ async fn deployment_create(
     )
     .await?;
     let id = deployment_id(consent["nonce"].as_str().unwrap_or_default());
-    Ok(Json(
-        node.sys_write(&SystemCmd::CreateDeployment {
+    let host = node.deployment_host(&id);
+    let mut out = node
+        .sys_write(&SystemCmd::CreateDeployment {
             id,
             name: body.name,
             owner: body.owner,
@@ -6720,8 +6722,10 @@ async fn deployment_create(
             at: now_secs(),
             consent,
         })
-        .await?,
-    ))
+        .await?;
+    // Its frontend host, `app_host::deployment_label`, for the resolver.
+    out["host"] = json!(host);
+    Ok(Json(out))
 }
 
 /// Offer an installed release the manager sees as `app` (adding it, or
@@ -6850,7 +6854,7 @@ async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> A
         s.deployments
             .values()
             .filter(|d| s.acts_for(&d.owner, &account))
-            .map(deployment_json)
+            .map(|d| deployment_json(&node, d))
             .collect()
     });
     Ok(Json(json!({ "deployments": deployments })))
@@ -6871,6 +6875,7 @@ async fn deployment_get(State(node): State<Arc<Node>>, Path(id): Path<String>) -
         };
         Some(json!({
             "id": d.id,
+            "host": node.deployment_host(&d.id),
             "name": d.name,
             "owner": { "kind": kind, "name": name },
             "apps": d.apps.iter().map(|(app, o)| json!({

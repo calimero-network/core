@@ -252,7 +252,8 @@ unknown or removed node, or a delivery that fails; `429 BUSY` past four at
 once). See [The cluster key](/protocol/encryption/#the-cluster-key-k_c).
 
 <Aside type="note" title="App frontends">
-  With `--apps-domain`, requests whose `Host` is `{label}.{domain}` are served
+  With `--apps-domain`, requests whose `Host` is `{label}.{domain}` (or a
+  deployment's `{dlabel}.{domain}`) are served
   before any of these routes: `GET`/`HEAD` of a package's frontend files and
   `/.well-known/calimero.json`. See [Networking](/operate/networking/#app-frontends).
 </Aside>

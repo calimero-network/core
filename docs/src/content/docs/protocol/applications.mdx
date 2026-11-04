@@ -213,6 +213,36 @@ uses `localhost`.
   node route. Responses carry a fixed content security policy with the cluster's
   API origins added to `connect-src`.
 
+### Deployment hosts
+
+Every deployment has a host of its own too, `{dlabel}.D`, where the dlabel is
+52 lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
+`SHA-256("calimero.app-host.deployment.v1\0" ‖ id)` and `id` is the
+deployment's id (32 lowercase hex characters; `app_host::deployment_label`).
+For example, deployment `0123456789abcdef0123456789abcdef` is served at
+`lprfchrsznkwfwiu7gfovvcywyujxdza3rentyjkivnw6cxescca.D`. Its own prefix keeps a
+dlabel apart from every package label.
+
+A package may be deployed on several clusters while each customer's account and
+organization live on one, and a front that routes by hostname alone (Calimero
+Cloud's resolver) cannot tell them apart by the package's host. The deployment's
+host names the deployment, and with it the cluster that holds it.
+
+- It serves the frontend of the one package the deployment offers, exactly as
+  `/d/{deployment}/` does on the package's host: `GET /` redirects to
+  `/{version}/?deployment={id}` of the release it offers; files, client routes
+  and `/app/{app}/` as above; `/d/{deployment}/` only for its own deployment.
+- `/.well-known/calimero.json` carries `"deployment": id` and lists that
+  deployment first (`null` on the package's host).
+- A deployment that offers nothing yet, or apps of several packages, has no
+  frontend: its host answers `404`.
+- It is an origin of its own, of the same package: CORS admits it, and a
+  passkey ceremony from it opens a session bound to that package, like one from
+  the package's host.
+- `POST /deployments` answers the new deployment's `host` beside its `id`, and
+  `GET /deployments` and `GET /deployments/{id}` carry it (`null` without
+  `--apps-domain`).
+
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its
 own origin it is a separate site to the browser, and a passkey ceremony from it

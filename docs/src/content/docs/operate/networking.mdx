@@ -69,8 +69,8 @@ release the app's owner (or the operator, per governance) approved.
 `--origins` are both the origins passkey ceremonies may come from and the CORS
 origins. The CORS layer allows `GET`, `POST` and `DELETE`, the `Content-Type`
 and `Authorization` headers, exposes `Retry-After`, and caches preflights for
-10 minutes. Origins of package frontends under `--apps-domain` are allowed as
-well.
+10 minutes. Origins of package frontends and deployment hosts under
+`--apps-domain` are allowed as well.
 
 ## App frontends
 
@@ -91,6 +91,12 @@ signature before a byte is served.
 - Responses carry a strict CSP whose `connect-src` adds the cluster's API
   origins.
 - An unknown label under `D` answers `404`, never a node route.
+- Each deployment has its own host too, `{dlabel}.D`
+  (`calimero_node::app_host::deployment_label` of the deployment id), serving
+  what `/d/{deployment}/` serves, as its own origin of the package; see
+  [Deployment hosts](/protocol/applications/#deployment-hosts). A front that
+  routes by hostname sends each deployment's host to the cluster holding it;
+  the deployment API returns it as `host`.
 - DNS: a wildcard record `*.D` pointing at the cluster, and a TLS certificate
   for it on the front. `merod local` uses `localhost`, so frontends are at
   `http://{label}.localhost:2501/`.

@@ -119,7 +119,8 @@ file passkey (`--dev-passkey`) on development clusters.
 ## App-bound sessions
 
 With `--apps-domain`, a passkey ceremony run from a package's frontend origin
-(`{label}.{domain}`) opens a session bound to that package. It reaches only
+(`{label}.{domain}`, or a deployment's host `{dlabel}.{domain}` offering it)
+opens a session bound to that package. It reaches only
 apps that run a release of that package, can create instances of that package
 only, and is refused credentials, API keys, approvals, upgrades, uninstalls
 and uploads. Its step-up confirmations come from its own origin only.
