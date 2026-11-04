@@ -10,7 +10,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use calimero_app_host::{
     parse_blob_id, FileError, FileInfo, FileRead, FileWrite, Files, InvocationKind, NewFile,
-    ReadError, FILE_FAILED, NO_SUCH_FILE,
+    PublishedFile, ReadError, FILE_CORRUPT, FILE_FAILED, MAX_READ_CHUNK, NOT_A_RUN_OUTPUT,
+    NO_SUCH_FILE,
 };
 use calimero_log::{Group, NodeId, Proposal, WriteError};
 use serde::{Deserialize, Serialize};
@@ -333,6 +334,25 @@ impl Files for NodeFiles {
         })
     }
 
+    fn publish(&self, id: &str) -> Result<PublishedFile, FileError> {
+        let not_an_output = || FileError::Failed(NOT_A_RUN_OUTPUT.to_owned());
+        let (record, seal) = self
+            .sealed(id)
+            .filter(|(_, s)| s.output)
+            .ok_or_else(not_an_output)?;
+        if record.size > calimero_app_host::MAX_FILE_BYTES {
+            return Err(FileError::Failed(
+                calimero_app_host::FILE_TOO_LARGE.to_owned(),
+            ));
+        }
+        Ok(PublishedFile {
+            source: id.to_owned(),
+            id: hex::encode(&seal.sha256.0),
+            size: record.size,
+            bytes: self.plaintext(id, record.size)?,
+        })
+    }
+
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         let file_key = self.file_key().ok_or(FileError::Unavailable)?;
         Ok(Box::new(SealedWriter {
@@ -342,6 +362,29 @@ impl Files for NodeFiles {
             app_id: self.app_id.clone(),
             file_key,
         }))
+    }
+}
+
+impl NodeFiles {
+    /// The whole plaintext of `id`, opened and proven like any read, held against the node's
+    /// pending budget until the entry that publishes it is proposed.
+    fn plaintext(&self, id: &str, size: u64) -> Result<Vec<u8>, FileError> {
+        let held = usize::try_from(size).map_err(|_| FileError::Unavailable)?;
+        if !self.pending.reserve(held) {
+            return Err(FileError::Unavailable);
+        }
+        let mut reader = self.open(id)?;
+        let mut bytes = Vec::with_capacity(held);
+        loop {
+            let chunk = reader.read(MAX_READ_CHUNK as usize).map_err(|e| match e {
+                ReadError::Corrupt => FileError::Failed(FILE_CORRUPT.to_owned()),
+                ReadError::Failed(why) => FileError::Failed(why),
+            })?;
+            if chunk.is_empty() {
+                return Ok(bytes);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
     }
 }
 

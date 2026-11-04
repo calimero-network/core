@@ -29,7 +29,7 @@ pub(crate) use self::compute::RUN_VIEW;
 pub(super) use self::files::Probes;
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,9 +47,7 @@ use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
 use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
-use crate::component::{
-    Applied, CallEntry, ComponentCmd, FileMark, Outcome, SysDirectory, TickEntry,
-};
+use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
 use crate::error::ApiError;
 use crate::metrics::CallPhase;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
@@ -261,31 +259,49 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
     (serde_json::to_vec(&*cmd).unwrap_or_default(), true)
 }
 
-/// The files `cmd` marks that its entry stores and charges: a final's outputs were stored and
-/// charged by the leader before it took the proposal lock, so only its result method's count.
-fn marked_files(cmd: &ComponentCmd) -> Vec<&FileMark> {
+/// The outcome of `cmd` whose files its entry stores and charges: a final's outputs were stored
+/// and charged by the leader before it took the proposal lock, so only its result method's count.
+fn stored_outcome(cmd: &ComponentCmd) -> Option<&Outcome> {
     match cmd {
-        ComponentCmd::ComputeFinal(entry) => entry.result.files.iter().collect(),
-        ComponentCmd::Call(entry) => entry.outcome.files.iter().collect(),
-        ComponentCmd::Tick(entry) => entry.outcome.files.iter().collect(),
-        ComponentCmd::Init { outcome, .. } => outcome.files.iter().collect(),
-        _ => Vec::new(),
+        ComponentCmd::ComputeFinal(entry) => Some(&entry.result),
+        ComponentCmd::Call(entry) => Some(&entry.outcome),
+        ComponentCmd::Tick(entry) => Some(&entry.outcome),
+        ComponentCmd::Init { outcome, .. } => Some(outcome),
+        _ => None,
     }
 }
 
-/// The plaintext bytes of the files `cmd` marks; none when they overflow a `u64`.
-fn new_file_bytes(cmd: &ComponentCmd) -> Option<u64> {
-    marked_files(cmd)
-        .into_iter()
-        .try_fold(0u64, |sum, f| sum.checked_add(f.size))
+/// The ids `cmd` marks as stored blobs: its new files and the plain blobs it publishes.
+fn marked_ids(cmd: &ComponentCmd) -> Vec<&str> {
+    stored_outcome(cmd).map_or_else(Vec::new, |o| {
+        let files = o.files.iter().map(|f| f.id.as_str());
+        files
+            .chain(o.published.iter().map(|p| p.id.as_str()))
+            .collect()
+    })
+}
+
+/// The plaintext bytes `cmd` charges: its new files, and the published blobs among `blobs`
+/// (the app did not hold them yet), once each; none when they overflow a `u64`.
+fn new_file_bytes(cmd: &ComponentCmd, blobs: &[Blob]) -> Option<u64> {
+    let Some(outcome) = stored_outcome(cmd) else {
+        return Some(0);
+    };
+    let mut charged = BTreeSet::new();
+    let published = outcome
+        .published
+        .iter()
+        .filter(|p| blobs.iter().any(|(id, _)| *id == p.id) && charged.insert(&p.id))
+        .map(|p| p.size);
+    (outcome.files.iter().map(|f| f.size).chain(published)).try_fold(0u64, u64::checked_add)
 }
 
 /// The blobs of `blobs` that `cmd` marks: a replaced entry marks fewer than the run made.
 fn marked_blobs(cmd: &ComponentCmd, blobs: &[Blob]) -> Vec<Blob> {
-    let marked = marked_files(cmd);
+    let marked = marked_ids(cmd);
     blobs
         .iter()
-        .filter(|(id, _)| marked.iter().any(|f| &f.id == id))
+        .filter(|(id, _)| marked.contains(&id.as_str()))
         .cloned()
         .collect()
 }
@@ -296,6 +312,7 @@ fn writes(outcome: &Outcome) -> bool {
     !outcome.diff.is_empty()
         || !outcome.events.is_empty()
         || !outcome.files.is_empty()
+        || !outcome.published.is_empty()
         || moves_runs(outcome)
 }
 
@@ -671,6 +688,7 @@ impl Node {
         });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        let held = Arc::clone(&blobs);
         let files = NodeFiles::new(self, app_id, Arc::clone(&blobs), invocation.kind);
         let pending = files.pending();
         let blobs = Arc::new(RunBlobs {
@@ -703,11 +721,21 @@ impl Node {
                     None => host,
                 };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
-                let blobs = out
+                let mut blobs: Vec<Blob> = out
                     .new_files
                     .iter_mut()
                     .map(|f| (f.id.clone(), std::mem::take(&mut f.ciphertext)))
                     .collect();
+                // A blob the app already holds (or that another publish of this run made) is
+                // neither stored nor charged again.
+                for p in &mut out.published {
+                    let known = calimero_app_host::parse_blob_id(&p.id)
+                        .is_some_and(|id| held.contains_key(&id))
+                        || blobs.iter().any(|(id, _)| *id == p.id);
+                    if !known {
+                        blobs.push((p.id.clone(), std::mem::take(&mut p.bytes)));
+                    }
+                }
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
                     outcome.name_owner(&owner);
@@ -779,7 +807,7 @@ impl Node {
         {
             return Err(final_too_large());
         }
-        let charged = new_file_bytes(&cmd)
+        let charged = new_file_bytes(&cmd, blobs)
             .ok_or_else(|| ApiError::internal("the sizes of the new files overflow"))?;
         if replaced && charged == 0 {
             return Ok((bytes, Stored::default()));
@@ -2531,12 +2559,12 @@ mod tests {
             id_seq: 0,
         };
         assert_eq!(
-            new_file_bytes(&ComponentCmd::ComputeFinal(Box::new(entry))),
+            new_file_bytes(&ComponentCmd::ComputeFinal(Box::new(entry)), &[]),
             Some(4),
             "the outputs were charged before the entry"
         );
         let attempt = ComponentCmd::Barrier;
-        assert_eq!(new_file_bytes(&attempt), Some(0));
+        assert_eq!(new_file_bytes(&attempt, &[]), Some(0));
     }
 
     fn big_final(result_bytes: usize, outputs: usize) -> ComponentCmd {
@@ -2572,9 +2600,37 @@ mod tests {
     }
 
     #[test]
+    fn a_published_blob_is_charged_once_and_only_when_the_run_made_its_bytes() {
+        let publish = |id: &str, source: &str| crate::component::PublishedMark {
+            source: source.to_owned(),
+            id: id.to_owned(),
+            size: 7,
+        };
+        let cmd = ComponentCmd::Call(Box::new(crate::component::CallEntry {
+            outcome: Outcome {
+                published: vec![
+                    publish("aa", "s1"),
+                    publish("aa", "s2"),
+                    publish("bb", "s3"),
+                ],
+                ..Outcome::default()
+            },
+            ..serde_json::from_value(json!({
+                "method": "m", "args": null,
+                "caller": { "kind": "account", "account": "a" }, "tsMs": 0, "baseIndex": 0,
+                "idTerm": 0, "idSeq": 0, "outcome": { "status": "ok" }
+            }))
+            .unwrap()
+        }));
+        let blobs: Vec<Blob> = vec![("aa".into(), vec![1])];
+        assert_eq!(new_file_bytes(&cmd, &blobs), Some(7), "bb was already held");
+        assert_eq!(marked_blobs(&cmd, &blobs).len(), 1);
+    }
+
+    #[test]
     fn an_oversized_final_loses_only_its_result_methods_outcome() {
         let mut cmd = big_final(2 * calimero_log::MAX_ENTRY_BYTES, 3);
-        assert_eq!(new_file_bytes(&cmd), Some(10), "the result's file");
+        assert_eq!(new_file_bytes(&cmd, &[]), Some(10), "the result's file");
         let (bytes, replaced) = entry_bytes(&mut cmd);
         assert!(replaced && bytes.len() <= calimero_log::MAX_ENTRY_BYTES);
         let ComponentCmd::ComputeFinal(entry) = &cmd else {
@@ -2582,7 +2638,11 @@ mod tests {
         };
         assert_eq!(entry.outputs.len(), 3, "the outputs stay");
         assert!(entry.result.diff.is_empty() && entry.result.files.is_empty());
-        assert_eq!(new_file_bytes(&cmd), Some(0), "nothing is left to charge");
+        assert_eq!(
+            new_file_bytes(&cmd, &[]),
+            Some(0),
+            "nothing is left to charge"
+        );
         let blobs: Vec<Blob> = [0usize, 9_999]
             .iter()
             .map(|i| (format!("{i:064x}"), vec![1]))
@@ -2610,7 +2670,7 @@ mod tests {
             second.size = 1;
             entry.result.files.push(second);
         }
-        assert_eq!(new_file_bytes(&cmd), None);
+        assert_eq!(new_file_bytes(&cmd, &[]), None);
     }
 
     #[test]

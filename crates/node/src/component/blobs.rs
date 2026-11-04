@@ -43,6 +43,8 @@ pub const MAX_BLOB_MIME_BYTES: usize = 127;
 pub const MAX_GRANT_BYTES: usize = 128;
 /// Blobs one `BlobsCollected` entry names at most.
 pub const COLLECT_BATCH: usize = 64;
+/// The content type of a published output: its bytes carry no type of their own.
+const PUBLISHED_MIME: &str = "application/octet-stream";
 
 /// What the host records of one of a component app's blobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,7 +218,7 @@ impl BlobTable {
         }
         let record = BlobRecord {
             size,
-            mime: String::new(),
+            mime: PUBLISHED_MIME.to_owned(),
             refs: 0,
             idle_since_ms: ts_ms,
             file: None,
