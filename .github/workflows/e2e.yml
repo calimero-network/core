@@ -316,18 +316,19 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          # The compute fixture the script builds from this checkout.
+          # The compute fixture's two components, built from this checkout.
           targets: wasm32-wasip2
           shared-key: ci-checks
           save-if: false
 
       # Optimized like the product (sealing 47 MiB files in a debug build misses the push deadline), without fat LTO.
-      - name: Build merod, meroctl and the component builder
+      - name: Build merod, meroctl, the component builder and the signer
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo build --release -p merod -p meroctl -p calimero-app-build
+        run: cargo build --release -p merod -p meroctl -p calimero-app-build -p mero-sign
 
+      # Builds app.wasm and compute.wasm, packs and signs them as one .mpk, and installs that.
       - name: Compute scenarios
         run: python3 -I crates/node/tests/fault/compute_e2e.py --skip-cargo-tests
 
