@@ -37,7 +37,6 @@ tracing.workspace = true
 url.workspace = true
 wasmparser.workspace = true
 
-calimero-account.workspace = true
 calimero-app-downloader.workspace = true
 calimero-app-engine-wasmtime.workspace = true
 calimero-app-host.workspace = true

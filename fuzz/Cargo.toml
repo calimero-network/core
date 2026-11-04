@@ -9,7 +9,6 @@ cargo-fuzz = true
 
 # Shared dependencies resolve to the root Cargo.lock, which scripts/fuzz.sh copies in.
 [dependencies]
-borsh = "*"
 axum = "*"
 calimero-bundle = { path = "../crates/bundle" }
 calimero-identity = { path = "../crates/identity", features = ["testing"] }

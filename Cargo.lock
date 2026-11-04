@@ -666,16 +666,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-account"
-version = "0.0.0"
-dependencies = [
- "borsh",
- "calimero-primitives",
- "hex",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "calimero-app-build"
 version = "0.0.0"
 dependencies = [
@@ -915,7 +905,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "borsh",
- "calimero-account",
  "calimero-app-build",
  "calimero-app-downloader",
  "calimero-app-engine-wasmtime",

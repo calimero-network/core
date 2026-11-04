@@ -18,7 +18,6 @@ exclude = [
 [workspace]
 resolver = "2"
 members = [
-    "./crates/account",
     "./crates/app-downloader",
     "./crates/app-build",
     "./crates/app-engine-wasmtime",
@@ -138,7 +137,6 @@ calimero-app-sdk-macros = { path = "./crates/app-sdk-macros" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-outbound = { path = "./crates/outbound" }
-calimero-account = { path = "./crates/account" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-log = { path = "./crates/log" }
 calimero-sealed = { path = "./crates/sealed" }

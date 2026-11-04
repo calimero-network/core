@@ -49,7 +49,6 @@ node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left
 ## Shared types
 
 - [primitives](primitives/AGENTS.md) (`calimero-primitives`) - ids, keys, hashes, wire types.
-- [account](account/AGENTS.md) (`calimero-account`) - `AccountId`, device ids and credentials.
 
 ## Build and development
 
