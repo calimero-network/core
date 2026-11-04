@@ -7022,8 +7022,16 @@ mod tests {
             }
         }
 
+        /// Alice (an account from before, whatever the policy) owns `org`,
+        /// which has a one-use member invite under `token`.
         fn org_invite(m: &mut SystemMachine, token: &str) {
-            let _ok = m.run(account("alice")).unwrap();
+            let _prev = m.state.accounts.insert(
+                "alice".into(),
+                serde_json::from_value(
+                    json!({ "accountId": "alice", "name": "a", "createdAt": 0, "passkeys": [] }),
+                )
+                .unwrap(),
+            );
             let _prev = m.state.orgs.insert(
                 "org".into(),
                 serde_json::from_value(json!({
@@ -7105,10 +7113,7 @@ mod tests {
             let mut m = machine(SignUp::Closed);
             let e = refused(m.run(signing_up("a", None, 10)));
             assert!(e.contains("pre-authorized"), "{e}");
-            // Alice exists from before the cluster closed (the org's owner).
-            m.state.governance.as_mut().unwrap().sign_up = SignUp::Open;
             org_invite(&mut m, "inv_org");
-            m.state.governance.as_mut().unwrap().sign_up = SignUp::Closed;
             let _e = refused(m.run(signing_up("a", Some("inv_org"), 10)));
             assert_eq!(m.state.invites.len(), 1, "a refusal spends nothing");
             let _ok = m.run(sign_up_invite("sup_one", 1, 50)).unwrap();
