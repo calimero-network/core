@@ -245,6 +245,14 @@ pub struct CallRequest {
     /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_from: Option<String>,
+    /// The system index the request's read-index round named on the node that
+    /// judged it (`Principal::sys_index`): every system write committed before
+    /// the request arrived is at or below it. The replica that runs the call
+    /// waits to apply it ([`Node::sys_fresh_from`]) instead of running a round
+    /// of its own. Set only by the API and the node's own runners; peers pass
+    /// it along on `internal/call`. `None`: the leader runs a round itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sys_index: Option<u64>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -276,6 +284,7 @@ impl CallRequest {
             xcall: None,
             action: None,
             sync_from: None,
+            sys_index: None,
         }
     }
 
@@ -480,6 +489,9 @@ pub struct Node {
     this: Mutex<Weak<Node>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
     sys_reads: ReadRounds,
+    /// Read-index rounds this node began on the system group
+    /// (`calimero_system_read_rounds_total`).
+    pub sys_rounds: std::sync::atomic::AtomicU64,
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
@@ -770,6 +782,7 @@ impl Node {
             issuer_tries: Mutex::new(HashMap::new()),
             job_peers: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
+            sys_rounds: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
@@ -1086,37 +1099,76 @@ impl Node {
     /// catch up, for a caller that must not answer from a stale one.
     /// Callers that wait at the same moment share one round (`ReadRounds`).
     pub async fn sys_fresh(&self) -> bool {
+        self.sys_fresh_index().await.1
+    }
+
+    /// [`Node::sys_fresh`], answering also the index the round named (`None`
+    /// when no leader answered), for a request to carry to the other checks it
+    /// makes ([`Node::sys_fresh_from`]), here or on the app's leader.
+    pub async fn sys_fresh_index(&self) -> (Option<u64>, bool) {
+        let index = self.sys_round().await;
+        let caught_up = match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => false,
+        };
+        (index, caught_up)
+    }
+
+    /// Fresh system state for a request whose read-index round already named
+    /// `index` (`Principal::sys_index`, `CallRequest::sys_index`): wait to
+    /// apply it here, with no round of its own. `None`: run a round
+    /// ([`Node::sys_fresh`]).
+    ///
+    /// Why that is as fresh as a round of its own: a round answers the system
+    /// leader's applied index after it confirmed it still leads, and a caller
+    /// takes only a round begun after it arrived (`ReadRounds`), so every
+    /// system write committed before the request arrived is at or below
+    /// `index`. Raft's log matching makes the entries up to `index` the same on
+    /// every replica, and a replica's applied index only grows, so a state at
+    /// or past `index`, on this node or any other, holds each of those writes:
+    /// the removal, revocation or demotion committed before the request is
+    /// seen by every check made for it. A write committed after the request
+    /// arrived is concurrent with it, and either order is linearizable. When
+    /// this replica cannot apply `index` in `Config::read_wait`, a round of its
+    /// own would name an index at least as high, which it could not apply
+    /// either; the read goes ahead best effort, as `sys_fresh` does.
+    pub async fn sys_fresh_from(&self, index: Option<u64>) -> bool {
+        match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => self.sys_fresh().await,
+        }
+    }
+
+    /// The index of a read-index round begun after this caller arrived,
+    /// shared with the callers waiting at the same moment (`ReadRounds`).
+    async fn sys_round(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
 
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
-        let index = {
-            let _turn = rounds.turn.lock().await;
-            let (round, index) = *rounds
-                .finished
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if round > arrived {
-                index
-            } else {
-                let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
-                let index = self.sys_read_index().await;
-                *rounds
-                    .finished
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
-                index
-            }
-        };
-        match index {
-            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
-            None => false,
+        let _turn = rounds.turn.lock().await;
+        let (round, index) = *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if round > arrived {
+            return index;
         }
+        let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
+        let index = self.sys_read_index().await;
+        *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+        index
     }
 
     /// One read-index round: the system leader's applied index, once it has
     /// confirmed it leads. `None` when no leader answers.
     async fn sys_read_index(&self) -> Option<u64> {
+        let _prev = self
+            .sys_rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.system.read_strong(|_, applied| applied).await {
             Ok(i) => Some(i),
             Err(WriteError::NotLeader {
@@ -2348,8 +2400,9 @@ impl Node {
     ) -> Result<Applied, WriteError> {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
-        // change committed before the call, wherever it was committed.
-        self.sys_fresh().await;
+        // change committed before the call, wherever it was committed: the
+        // round the API made for the request covers it (`sys_fresh_from`).
+        self.sys_fresh_from(req.sys_index).await;
         if req.host && req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }

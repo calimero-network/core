@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::node::{CallRequest, NOT_REACHED};
+use calimero_node::types::Caller;
 use calimero_node::{run, Running};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -85,6 +87,10 @@ struct ProxiedCluster {
 
 impl ProxiedCluster {
     async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    async fn start_with(configure: impl Fn(&mut calimero_node::Config)) -> Self {
         // `free_port` hands the port back before the node binds it, so another
         // test can take it meanwhile: a start that loses that race tries again
         // on other ports, as `Cluster::start_with` does.
@@ -127,6 +133,7 @@ impl ProxiedCluster {
                 // A held follower must not start an election while it waits.
                 config.raft.election_min_ms = 5_000;
                 config.raft.election_max_ms = 6_000;
+                configure(&mut config);
                 match run(config).await {
                     Ok(r) => nodes.push(r),
                     Err(e) => {
@@ -606,4 +613,181 @@ async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() 
         .unwrap()
         .expect_err("a deployment deleted before the request must be gone");
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
+/// Read-index rounds every node began on the system group so far
+/// (`calimero_system_read_rounds_total`).
+fn rounds(c: &ProxiedCluster) -> u64 {
+    c.nodes
+        .iter()
+        .map(|r| r.node.sys_rounds.load(std::sync::atomic::Ordering::SeqCst))
+        .sum()
+}
+
+/// A client's call costs one read-index round on the system group, whichever
+/// node it enters and wherever the app's leader is: the round the gate makes
+/// for the request covers the checks the app's leader makes before it runs
+/// the call (`Node::sys_fresh_from`). Before, the leader ran a round of its
+/// own (two per call, three when the call entered a follower replica first);
+/// a strong view was one, and stays one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_costs_one_system_read_round() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let _warm = alice
+        .call(&app, "set", json!({ "key": "k", "value": "0" }), None)
+        .await
+        .unwrap();
+    for entry in 0..3 {
+        // Alice's session on the node the requests enter.
+        let client = c.client(entry);
+        let _s = client.sign_in(&mut pk).await.unwrap();
+        for n in 0..3 {
+            let before = rounds(&c);
+            let _r = client
+                .call(
+                    &app,
+                    "set",
+                    json!({ "key": "k", "value": n.to_string() }),
+                    None,
+                )
+                .await
+                .unwrap();
+            let call = rounds(&c) - before;
+            let before = rounds(&c);
+            let _v = client
+                .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+                .await
+                .unwrap();
+            let view = rounds(&c) - before;
+            assert_eq!(
+                (call, view),
+                (1, 1),
+                "system read rounds of one call and one strong view entering node {entry}"
+            );
+        }
+    }
+}
+
+/// A revocation committed before a call's round holds on the app's leader,
+/// though the leader has not applied it when the call reaches it, and no node
+/// runs a round for the call there: the call carries the index its gate's
+/// round named (`CallRequest::sys_index`) and the leader waits to apply it
+/// (`Node::sys_fresh_from`). Without that wait the leader would run the call
+/// on its stale grant and commit it.
+///
+/// Apps get two replicas, so a later app is led by a node other than the
+/// system leader (placement takes the least loaded, then the lowest id); its
+/// leader's peer traffic, the system appends included, is held. The call is
+/// handed to the leader as `internal/call` hands it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
+    let c = ProxiedCluster::start_with(|cfg| cfg.replicas = 2).await;
+    let sys_leader = c.system_leader();
+    let (alice, _a) = signed_up(&c, sys_leader, "alice").await;
+    let (bob, _b) = signed_up(&c, sys_leader, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let mut placed = None;
+    for n in 0..4 {
+        let app = alice
+            .create_app(&format!("kv{n}"), &bundle, json!({}))
+            .await
+            .unwrap();
+        let mut leader = None;
+        for _ in 0..100 {
+            leader = (0..3).find(|i| {
+                c.nodes[*i]
+                    .node
+                    .hosted(&app)
+                    .is_some_and(|g| g.status().is_leader)
+            });
+            if leader.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let leader = leader.expect("the app has a leader");
+        if leader != sys_leader {
+            placed = Some((app, leader));
+            break;
+        }
+    }
+    let (app, app_leader) = placed.expect("an app led by a node other than the system leader");
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        )
+        .await
+        .unwrap();
+    let leader_node = std::sync::Arc::clone(&c.nodes[app_leader].node);
+    let reaches = || {
+        leader_node.sys(|s| {
+            s.apps
+                .get(&app)
+                .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
+        })
+    };
+    for _ in 0..100 {
+        if reaches() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reaches(), "the app's leader must hold the grant");
+    let bob_call = |value: &str| {
+        CallRequest::new(
+            app.clone(),
+            "set".into(),
+            json!({ "key": "k", "value": value }),
+            Caller::Account {
+                account: bob_id.clone(),
+            },
+        )
+    };
+    let granted = leader_node.call_component(&bob_call("0")).await.unwrap();
+    assert!(granted.error.is_null(), "granted: {:?}", granted.error);
+
+    // Hold the app's leader, revoke Bob through the system leader, then make
+    // the round a request would make now.
+    c.hold[app_leader].send_replace(true);
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    let (index, _caught_up) = c.nodes[sys_leader].node.sys_fresh_index().await;
+    let index = index.expect("the system leader names its index");
+    assert!(
+        reaches(),
+        "the app's leader must not have applied the revocation"
+    );
+
+    let before = rounds(&c);
+    let call = tokio::spawn({
+        let node = std::sync::Arc::clone(&leader_node);
+        let req = CallRequest {
+            sys_index: Some(index),
+            ..bob_call("1")
+        };
+        async move { node.call_component(&req).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[app_leader].send_replace(false);
+    let answer = call.await.unwrap().expect("an answer");
+    assert_eq!(
+        answer.error.as_str(),
+        Some(NOT_REACHED),
+        "a revocation committed before the round must hold: {:?}",
+        answer.result
+    );
+    assert_eq!(rounds(&c), before, "the call must run no round of its own");
 }

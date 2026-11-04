@@ -663,6 +663,15 @@ is its command line.
   and team reads use it, and so does an access check before it refuses.
   Concurrent callers share a round (`ReadRounds`): one that arrives while a
   round runs waits for the next one, never takes the one already under way.
+  One round per request: `principal` (or `gate`, anonymous) keeps the index its
+  round named (`Principal::sys_index`, `Node::sys_fresh_index`); the request's
+  later checks and the app leader's (`CallRequest::sys_index`, carried on
+  `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
+  argument that this is as fresh as a round of their own) instead of running
+  another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  Regressions: `a_call_costs_one_system_read_round`,
+  `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
+  (`tests/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
