@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
-use calimero_app_build::build_component;
+use calimero_app_build::{build_component, build_components, BuiltApp};
 use calimero_app_engine_wasmtime::{
     WasmtimeEngine, CANCELLED, MAX_RANDOM_BYTES_PER_CALL, WALL_CLOCK_EXCEEDED,
 };
@@ -1158,4 +1158,101 @@ fn a_compute_run_reads_its_run_id_through_the_job_interface() {
     let out = engine.invoke(&app, compute_host("id", 1), compute_budget());
     assert_eq!(out.status, Status::Ok, "{:?}", out.status);
     assert_eq!(out.result, b"run-1");
+}
+
+/// The compute fixture app, built once: its app component and its compute component.
+fn compute_fixture() -> &'static BuiltApp {
+    static BUILT: OnceLock<BuiltApp> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("compute-fixture");
+        build_components(&dir, &target).unwrap_or_else(|e| panic!("build fixture: {e}"))
+    })
+}
+
+fn fixture_compute() -> &'static [u8] {
+    &compute_fixture()
+        .compute
+        .as_ref()
+        .expect("the fixture has compute methods")
+        .component
+}
+
+#[test]
+fn the_fixtures_compute_component_prepares_on_the_compute_engine_and_not_on_a_replica() {
+    let prepared = compute_engine()
+        .prepare("fixture-compute", fixture_compute())
+        .expect("compute engine");
+    assert!(prepared.abi.methods.contains_key("digest"));
+    assert!(!prepared.abi.methods.contains_key("onDone"));
+
+    let err = fixture()
+        .engine
+        .prepare("fixture-compute", fixture_compute())
+        .err()
+        .expect("a replica engine refuses a compute component");
+    assert!(
+        matches!(&err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/job")),
+        "{err:?}"
+    );
+    compute_engine()
+        .prepare("fixture-app", &compute_fixture().app.component)
+        .err()
+        .expect("a job node refuses the app component");
+}
+
+#[test]
+fn a_compute_run_of_the_fixture_writes_its_input_xor_the_seeded_stream() {
+    // The input: the `files` guest's 1.25 MiB pattern, kept in a store the run reads.
+    let fx = fixture();
+    let writer = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+    let call = host(InvocationKind::Call, "write", b"").with_files(Arc::new(files.clone()));
+    let made = fx.engine.invoke(&writer, call, heavy());
+    assert_eq!(made.status, Status::Ok, "{:?}", made.status);
+    files.apply(&made.new_files);
+    let input_id = String::from_utf8(made.result).unwrap();
+    let input: Vec<u8> = (0..1024 * 1024 + 256 * 1024)
+        .map(|i| (i % 251) as u8)
+        .collect();
+
+    let seed = 9;
+    let engine = compute_engine();
+    let app = engine
+        .prepare("fixture-compute", fixture_compute())
+        .expect("prepare");
+    let run = || {
+        let host = compute_host("digest", seed);
+        let mut inv = host.invocation().clone();
+        inv.compute.as_mut().unwrap().inputs = vec![input_id.clone()];
+        let host = HostCore::new(
+            "app-1",
+            Arc::new(BTreeMap::<Vec<u8>, Vec<u8>>::new()),
+            0,
+            inv,
+            Arc::new(TestDir {
+                panic_on_org: false,
+            }),
+        )
+        .unwrap()
+        .with_files(Arc::new(files.clone()));
+        let budget = Budget {
+            fuel: 20_000_000_000,
+            wall_clock: Duration::from_secs(60),
+            memory_pages: 4_096,
+        };
+        engine.invoke(&app, host, budget)
+    };
+    let (a, b) = (run(), run());
+    assert_eq!(a.status, Status::Ok, "{:?}", a.status);
+
+    let mut stream = vec![0u8; input.len()];
+    compute_host("digest", seed).random_fill(&mut stream);
+    let expected: Vec<u8> = input.iter().zip(&stream).map(|(i, k)| i ^ k).collect();
+    assert_eq!(a.new_files.len(), 1);
+    assert_eq!(a.new_files[0].size, expected.len() as u64);
+    assert_eq!(a.new_files[0].sha256, Sha256::digest(&expected).to_vec());
+    assert_eq!(a.new_files[0], b.new_files[0]);
+    let hash = hex::encode(Sha256::digest(&input));
+    assert_eq!(a.result, format!("[\"{hash}\"]").into_bytes());
 }

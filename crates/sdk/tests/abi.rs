@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use calimero_app_build::{build_component, Built};
+use calimero_app_build::{build_component, build_compute_component, Built};
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
     Abi, Budget, Caller, ComputeCaps, ComputeCtx, Directory, Engine, HostCore, Invocation,
@@ -24,6 +24,16 @@ fn built() -> &'static Built {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/sample");
         let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
         build_component(&dir, &target).unwrap_or_else(|e| panic!("build sample: {e}"))
+    })
+}
+
+fn built_compute() -> &'static Built {
+    static BUILT: OnceLock<Built> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/sample");
+        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
+        build_compute_component(&dir, &target)
+            .unwrap_or_else(|e| panic!("build sample compute: {e}"))
     })
 }
 
@@ -487,12 +497,12 @@ fn wide_integers_refuse_leading_zeros_and_plus() {
     assert_eq!(ok_json(&out), json!("0"));
 }
 
-/// Runs `method` as a compute run on a compute engine.
+/// Runs `method` as a compute run of the sample's compute component on a compute engine.
 fn compute_run(kind: InvocationKind, caller: Caller, method: &str, args: &[u8]) -> Outcome {
     let engine = WasmtimeEngine::for_compute().expect("compute engine");
     let prepared = engine
-        .prepare("sample-hash", &built().component)
-        .unwrap_or_else(|e| panic!("prepare sample: {e}"));
+        .prepare("sample-compute-hash", &built_compute().component)
+        .unwrap_or_else(|e| panic!("prepare sample compute: {e}"));
     let inv = Invocation {
         kind,
         method: method.to_owned(),
@@ -529,7 +539,7 @@ fn compute_run(kind: InvocationKind, caller: Caller, method: &str, args: &[u8]) 
 }
 
 #[test]
-fn a_compute_method_runs_only_as_an_action_whatever_the_caller() {
+fn a_compute_method_runs_as_an_action_whatever_the_caller() {
     let public = compute_run(
         InvocationKind::Action,
         Caller::Public,
@@ -545,22 +555,29 @@ fn a_compute_method_runs_only_as_an_action_whatever_the_caller() {
     );
     assert_eq!(ok_json(&system), json!("run-9:2:3"));
 
-    let call = compute_run(
-        InvocationKind::Call,
-        Caller::System,
-        "checksum",
-        br#"{"rounds":3}"#,
-    );
-    assert_eq!(app_error(&call).0, "WrongKind");
-    let view = compute_run(
-        InvocationKind::View,
-        Caller::System,
-        "checksum",
-        br#"{"rounds":3}"#,
-    );
-    assert_eq!(app_error(&view).0, "NotAView");
     let other = compute_run(InvocationKind::Action, Caller::System, "bump", b"{}");
-    assert_eq!(app_error(&other).0, "WrongKind");
+    assert_eq!(app_error(&other).0, "UnknownMethod");
+}
+
+#[test]
+fn the_app_component_leaves_compute_methods_to_the_compute_component() {
+    let mut app = App::new();
+    let call = app.call("checksum", br#"{"rounds":3}"#);
+    assert_eq!(app_error(&call).0, "UnknownMethod");
+    let view = app.view("checksum", br#"{"rounds":3}"#);
+    assert_eq!(app_error(&view).0, "UnknownMethod");
+    let abi = Abi::from_json(built().abi.as_ref().unwrap()).unwrap();
+    assert!(matches!(
+        abi.methods["checksum"].kind,
+        MethodKind::Compute(_)
+    ));
+
+    let compute = Abi::from_json(built_compute().abi.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        compute.methods.keys().collect::<Vec<_>>(),
+        ["checksum"],
+        "the compute ABI lists compute methods only"
+    );
 }
 
 #[test]
