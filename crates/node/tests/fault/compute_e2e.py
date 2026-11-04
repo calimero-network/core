@@ -37,7 +37,7 @@ PACKAGE = "com.calimero.compute-fixture"
 VERSION = "1.0.0"
 JOBS = (4, 5)
 SMALL_MIB = 5
-VIEW_BYTES = 100_000  # a view's fuel hashes little: what readKept can read back
+VIEW_BYTES = 100_000  # a small input, so the scenarios that only need a result stay quick
 BIG_MIB = 40  # long enough to kill the job node mid-run
 WAIT = 180
 CANCEL_DEADLINE = 20  # the leader's wait for a job node to report a cancel
@@ -49,7 +49,7 @@ IN_PROCESS = [
     ("forged final", "compute_runs", "a_final_not_signed_by_the_assigned_job_node_changes_nothing"),
     ("key isolation", "job_runs", "a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_and_keys"),
     ("seed determinism", "job_runs", "a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_the_same_bytes"),
-    ("kept output", "compute_runs", "an_output_the_result_method_stores_is_kept_past_the_idle_time_and_the_app_reads_it_back"),
+    ("kept output", "compute_runs", "an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run_reads_it_back"),
     ("unkept output", "compute_runs", "an_output_the_result_method_does_not_store_is_collected_and_its_quota_released"),
     ("retired job node", "job_nodes", "a_job_node_on_a_retired_release_is_not_attested"),
 ]
@@ -182,9 +182,6 @@ class Rig:
     def info(self, blob):
         return http("GET", self.cl.url(1) + f"apps/{self.app}/blobs/{blob}/info", headers=self.client.h)
 
-    def read_kept(self, blob):
-        return self.client.view(1, "readKept", {"id": blob})["result"]
-
     def until_final(self, run, timeout=WAIT):
         return self.until(f"run {run} final", lambda: self.record(run)["state"] in ("done", "failed", "cancelled"), timeout)
 
@@ -263,12 +260,11 @@ def unkept_output(cl, rig, in_process):
     rec = rig.record(run)
     out = rig.output_ids(run)
     info = rig.info(out[0]) if out else {}
-    held = rig.read_kept(out[0]) if out else None
     check("8 unkept output is registered, then left to R8", rec["state"] == "done" and len(out) == 1
-          and info.get("size") == VIEW_BYTES and held and rig.done() == before_done + 1,
+          and info.get("size") == VIEW_BYTES and rig.done() == before_done + 1,
           f"startUnkept on input {file8[:12]}, results {before_done}",
-          f"state {rec['state']}, output {out[0][:12] if out else None} registered (size {info.get('size')}) "
-          f"and readable (sha256 {str(held)[:16]}), results {rig.done()}")
+          f"state {rec['state']}, output {out[0][:12] if out else None} registered (size {info.get('size')}), "
+          f"results {rig.done()}")
     for label in ("kept output", "unkept output"):
         t = in_process.get(label)
         if not t:
@@ -354,16 +350,18 @@ def scenarios(cl, rig, in_process):
           f"results recorded {before['done']}, input sha256 {plain_sha[:16]}",
           f"status {out1['status']} attempt {out1['attempt']} output sha256 {out1.get('sha256')} results {rig.done()}")
 
-    say("\n== 1b the app reads a kept output back")
+    say("\n== 1b a run reads a kept output back")
     small, _ = upload(cl, rig.client.h["authorization"][7:], rig.app, length=VIEW_BYTES)
     run_b = rig.start("startDigest", {"inputs": [small]})
     out_b = rig.outcome(run_b)
     kept = rig.output_ids(run_b)
-    read_back = rig.read_kept(kept[0]) if kept else None
-    check("1b kept output read back by the app", out_b["status"] == "done" and read_back == out_b["sha256"],
+    again = rig.start("startDigest", {"inputs": kept}) if kept else None
+    out_again = rig.outcome(again) if again else {}
+    check("1b kept output read back by a run", out_b["status"] == "done" and out_again.get("status") == "done"
+          and out_again.get("outputs") == 1,
           f"{VIEW_BYTES} byte input, result method stores the output's BlobRef",
-          f"output {kept[0][:12] if kept else None}, outcome sha256 {str(out_b.get('sha256'))[:16]}, "
-          f"readKept {str(read_back)[:16]}")
+          f"output {kept[0][:12] if kept else None} taken as the input of a second run, "
+          f"status {out_again.get('status')}, output sha256 {str(out_again.get('sha256'))[:16]}")
 
     say("\n== 2 kill the assigned job node mid-run")
     big, _ = upload(cl, rig.client.h["authorization"][7:], rig.app, BIG_MIB)

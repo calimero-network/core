@@ -297,9 +297,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # Compute actions against real processes: three replicas and two job nodes
-  # (crates/node/tests/fault/compute_e2e.py), which merobox's cloud-v2 backend
-  # cannot start.
+  # Compute actions on real processes (three replicas, two job nodes), which merobox cannot start.
   compute-e2e:
     name: compute actions, real processes
     runs-on: big-machine
