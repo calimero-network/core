@@ -151,6 +151,31 @@ fn a_job_is_seen_by_its_submitter_and_admins_only() {
 }
 
 #[test]
+fn a_job_is_shared_by_its_submitter_or_an_admin_only() {
+    let mut t = app();
+    let file = t.upload_blob(b"name\nJane\n", "text/csv");
+    t.as_("ada")
+        .call("setPolicy", json!({ "policy": policy() }))
+        .unwrap();
+    let id = t
+        .as_("bob")
+        .call("submit", json!({ "file": file }))
+        .unwrap();
+    let id = id.as_str().unwrap().to_owned();
+
+    for who in ["cy", "gus"] {
+        let r = t.as_(who).call("share", json!({ "job": id }));
+        assert_eq!(code(r), "NotFound", "{who}");
+    }
+    // The harness runs no compute, so the job never finishes: the submitter and an admin get as
+    // far as the job's state.
+    for who in ["bob", "ada"] {
+        let r = t.as_(who).call("share", json!({ "job": id }));
+        assert_eq!(code(r), "NotDone", "{who}");
+    }
+}
+
+#[test]
 fn the_compute_component_imports_only_what_a_job_node_allows() {
     let engine = WasmtimeEngine::for_compute().expect("compute engine");
     engine
