@@ -184,6 +184,11 @@ pub fn redact_part<R: Read, W: Write>(
     Ok(stats)
 }
 
+/// The bytes `cells` take as a JSON array, escapes included.
+fn json_len(cells: &[String]) -> usize {
+    serde_json::to_vec(cells).map_or(usize::MAX, |v| v.len())
+}
+
 /// The first redacted rows that fit `max_rows` and `max_bytes`, and the file's total row count.
 pub fn preview<R: Read>(
     input: R,
@@ -198,7 +203,7 @@ pub fn preview<R: Read>(
         header: header.iter().map(str::to_owned).collect(),
         ..Preview::default()
     };
-    let mut bytes: usize = out.header.iter().map(|c| c.len() + 3).sum();
+    let mut bytes = json_len(&out.header);
     let mut full = false;
     let mut record = StringRecord::new();
     while input.read_record(&mut record)? {
@@ -207,13 +212,14 @@ pub fn preview<R: Read>(
             continue;
         }
         let (row, changed) = redactor.row(&record);
-        bytes += row.iter().map(|c| c.len() + 3).sum::<usize>() + 2;
+        let row: Vec<String> = row.iter().map(str::to_owned).collect();
+        bytes += json_len(&row) + 1;
         if bytes > max_bytes {
             full = true;
             continue;
         }
         out.cells += changed;
-        out.rows.push(row.iter().map(str::to_owned).collect());
+        out.rows.push(row);
     }
     Ok(out)
 }
@@ -362,6 +368,25 @@ mod tests {
         })
         .unwrap();
         assert_eq!(seen.last(), Some(&(3, 3)));
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_hide_the_first_column() {
+        let p = policy(&[("ssn", Rule::Drop)]);
+        let (out, _) = run("\u{feff}ssn,id\n123,1\n".as_bytes(), &p, 0, 10);
+        assert_eq!(out, "ssn,id\n,1\n");
+    }
+
+    #[test]
+    fn preview_stays_under_the_cap_when_json_escaping_inflates_cells() {
+        let p = policy(&[]);
+        let mut input = String::from("id,note\n");
+        for i in 0..2000 {
+            input += &format!("{i},\"{}\"\n", "\u{1}".repeat(300));
+        }
+        let pv = preview(input.as_bytes(), &p, 500, 48 * 1024).unwrap();
+        assert!(!pv.rows.is_empty());
+        assert!(serde_json::to_vec(&pv).unwrap().len() < 64 * 1024);
     }
 
     #[test]
