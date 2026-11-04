@@ -395,8 +395,8 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
-// Available only while handling a compute run: kind = action with a run id.
-interface compute {
+// What a compute component sees of its run; only the compute world imports it.
+interface job {
   use types.{blob-id, action-id};
   run-id: func() -> option<action-id>;
   inputs: func() -> list<blob-id>;
@@ -426,7 +426,6 @@ world app {
   import events;
   import blobs;
   import files;
-  import compute;
   import xcall;
   import action;
 
@@ -446,6 +445,26 @@ world app {
 
   use types.{invocation-kind, app-error};
   export handle: func(kind: invocation-kind, method: string, args: list<u8>) -> result<list<u8>, app-error>;
+}
+
+// The compute methods of an app, built as a second component for job nodes: no state, xcall or
+// network, so the install-time import check is the sandbox.
+world compute {
+  import types;
+  import files;
+  import job;
+  import wasi:io/error@0.2.12;
+  import wasi:io/poll@0.2.12;
+  import wasi:io/streams@0.2.12;
+  import wasi:clocks/wall-clock@0.2.12;
+  import wasi:clocks/monotonic-clock@0.2.12;
+  import wasi:random/random@0.2.12;
+  import wasi:cli/stdout@0.2.12;
+  import wasi:cli/stderr@0.2.12;
+  import wasi:cli/environment@0.2.12;
+
+  use types.{app-error};
+  export run: func(method: string, args: list<u8>) -> result<list<u8>, app-error>;
 }
 ```
 
@@ -480,7 +499,8 @@ A component built against 0.5.0 keeps installing and running: the engine accepts
 ### Compute methods
 
 A method declares itself a compute method in the ABI with `"kind": "compute"` and `"compute": { "fuel": u64, "memoryMib": u32, "wallSecs": u32, "result": "<method>" }`; `fuel` is required, memory defaults to 4,096 MiB and wall time to 900 s.
-`result` names a method of the same ABI that carries `"computeResult": true`.
+`result` names a method of the app component's ABI that carries `"computeResult": true`.
+The compute component's ABI (world `calimero:app/compute@0.5.1`) lists the compute methods only, so the host does not look for the result methods there.
 The host refuses at install (`BadAbi`) a compute method whose fuel is over 10^12, memory over 4,096 MiB or wall time over 900 s, or whose `result` is not a `computeResult` method; so does `compute` on any other kind.
 The SDK writes them from `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]` on a method without `self`, and `#[app::compute_result]` on a call method.
 The node never lets a client reach either: `/intents` and `/views` answer `WrongKind` for a compute method and for a `computeResult` method, whoever the caller is.
