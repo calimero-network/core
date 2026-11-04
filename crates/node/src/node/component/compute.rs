@@ -100,9 +100,8 @@ pub(super) struct Watch {
     staged: Option<Vec<FileMark>>,
     /// The run ended: nothing is kept of it.
     finished: bool,
-    /// The finals this leader proposed whose answer is not known, by the ids their entries were
-    /// built with, and whether a job reported: counted when the run is later seen ended with one
-    /// of those very entries.
+    /// The finals this leader proposed whose answer is unknown, by entry ids, and whether a job
+    /// reported: counted when the run is seen ended with one of those entries.
     proposed: Vec<((u64, u64), bool)>,
     /// A final the state refused for good, with the cancel flag it was built under: not
     /// proposed again until the record changes.
@@ -249,9 +248,8 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ComputeState {
-    /// The run's watch for this term and attempt. A watch of another term keeps the outputs it
-    /// staged when the attempt is the same, so a new term does not charge them again; the staged
-    /// outputs of another attempt come back to be undone.
+    /// The run's watch for this term and attempt. Outputs staged for the same attempt carry over
+    /// a new term (charged once); another attempt's come back to be undone.
     fn take(
         &self,
         app: &str,
@@ -509,10 +507,8 @@ impl Node {
         }
     }
 
-    /// Deals with what this node kept of runs that have ended: outputs it staged for a final that
-    /// did not commit are undone unless the app holds them as blobs (a final that did commit, by
-    /// this node or another, owns them), and a final it proposed that did commit is counted.
-    /// A run still active is left alone, whoever leads it.
+    /// For ended runs: undoes outputs staged for a final that did not commit (unless the app holds
+    /// them as blobs) and counts a final this node proposed that did. Active runs are left alone.
     fn sweep_watches(&self) {
         for (key, watch) in self.compute.candidates() {
             let (app_id, run) = &key;
@@ -766,10 +762,8 @@ impl Drive<'_> {
         }
     }
 
-    /// Chooses a job node (not one of `avoid` while another is free), hands it the attempt and
-    /// only then commits it, so a job node that is busy or unreachable spends no attempt; the
-    /// next candidate is tried instead. The lock is held only to choose and reserve a place.
-    /// Whether a job node was found.
+    /// Chooses a job node (not one of `avoid` while another is free), hands it the attempt and only
+    /// then commits it, so a busy or unreachable node spends no attempt. Whether one was found.
     async fn assign(&self, avoid: &[NodeId], watch: &mut Watch) -> bool {
         let attempt = u32::try_from(self.rec.attempts.len())
             .unwrap_or(u32::MAX)
@@ -806,9 +800,8 @@ impl Drive<'_> {
         }
     }
 
-    /// Builds and delivers the attempt to `peer`, then commits it. `None`: the job node could not
-    /// take it. `Some(false)`: it took it but the attempt was not committed as ours, and its run
-    /// is dropped again.
+    /// Delivers the attempt to `peer`, then commits it. `None`: it was not taken. `Some(false)`: it
+    /// was taken but not committed as ours, and the job node's run is dropped.
     async fn place_on(
         &self,
         peer: &crate::node::JobPeer,
@@ -1012,9 +1005,8 @@ impl Drive<'_> {
         self.end(&plan, watch).await;
     }
 
-    /// A cancel was requested. A job that finished first is taken as it reports; otherwise its
-    /// run is stopped and the run ends cancelled with the usage the job node signed, or with none.
-    /// A run that does not stop is asked again each round, until [`CANCEL_DEADLINE`].
+    /// A cancel was requested: a job that finished first is taken as it reports, else the run is
+    /// stopped and ends cancelled, asked again each round until [`CANCEL_DEADLINE`].
     async fn cancel(&self, watch: &mut Watch) {
         let Some(attempt) = self.rec.attempts.last() else {
             self.end_cancelled(watch).await;
@@ -1301,9 +1293,8 @@ impl Drive<'_> {
     }
 }
 
-/// The usage of the run's final, and whether a job reported it, if that final is one of the
-/// entries this node proposed: matched by the ids the entry was built with, never by what it
-/// says, which another leader's final may say as well.
+/// The usage of the run's final and whether a job reported it, if that final is one this node
+/// proposed: matched by entry ids, never by content, which another leader's final may share.
 fn ended_with_a_proposed(
     record: Option<&RunRecord>,
     proposed: &[((u64, u64), bool)],

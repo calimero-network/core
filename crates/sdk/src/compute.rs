@@ -171,10 +171,8 @@ pub struct ComputeUsage {
     pub fuel: u64,
 }
 
-/// The outcome the node hands a `#[app::compute_result]` method: it takes this as its one
-/// parameter, whatever its name. `reason` is the failure's name (`fuel`, `memory`, `time`, `trap`,
-/// `app-error`, `integrity`, `lost`, `timeout`, `refused`, `quota`) and `result` the compute
-/// method's return bytes as standard base64, present only when the run is done.
+/// The outcome a `#[app::compute_result]` method takes as its one parameter. `reason` names the
+/// failure as the run's record does; `result` is the method's return as base64, set only when done.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeOutcome {
@@ -199,14 +197,14 @@ mod tests {
     #[test]
     fn an_outcome_reads_the_nodes_json() {
         let outcome: ComputeOutcome = serde_json::from_value(json!({
-            "run": "r1", "method": "digest", "attempt": 2, "status": "failed", "reason": "time",
+            "run": "r1", "method": "digest", "attempt": 2, "status": "failed", "reason": "fuel",
             "result": null,
             "outputs": [{ "id": "ab".repeat(32), "size": "12", "sha256": "cd" }],
             "usage": { "cpuSeconds": 1.5, "gibSeconds": 0.25, "fuel": "99" },
         }))
         .unwrap();
         assert_eq!(outcome.status, ComputeStatus::Failed);
-        assert_eq!(outcome.reason.as_deref(), Some("time"));
+        assert_eq!(outcome.reason.as_deref(), Some("fuel"));
         assert_eq!(outcome.outputs[0].size, 12);
         assert_eq!(outcome.outputs[0].id.id(), "ab".repeat(32));
         assert_eq!(outcome.usage.fuel, 99);

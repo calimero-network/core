@@ -6462,9 +6462,8 @@ async fn app_abi(
     Ok(Json(json!({ "bundle": bundle, "abi": abi })))
 }
 
-/// A compute run's record without its arguments or keys, and its progress when the app's leader
-/// answers: whoever reaches the app may read it, the plaintext sizes and hashes of its files only
-/// those who may list the files.
+/// A compute run's record without its arguments or keys: whoever reaches the app may read it, but
+/// file sizes, hashes, progress and the failure text only those who may list its files.
 async fn app_run(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
