@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{Org, TestApp};
+use calimero_sdk::testing::{Org, TestApp};
 use serde_json::Value;
 
 /// The harness's clock at `init`.

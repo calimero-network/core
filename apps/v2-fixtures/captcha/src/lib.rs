@@ -14,9 +14,9 @@
 //! The exchange is recorded in this app's log entry, so a retry of the same call replays
 //! the answer and never spends the token twice.
 
-use calimero_app_sdk::env::Caller;
-use calimero_app_sdk::prelude::*;
-use calimero_app_sdk::Request;
+use calimero_sdk::env::Caller;
+use calimero_sdk::prelude::*;
+use calimero_sdk::Request;
 
 /// Cloudflare Turnstile's token check.
 pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";

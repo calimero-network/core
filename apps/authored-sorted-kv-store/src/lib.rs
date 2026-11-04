@@ -30,7 +30,7 @@
 //! topic's slice, so such a flood under another topic does not slow it. `flood` and
 //! `countAll` exist to demonstrate exactly that (see `scenarios/authored-sorted-kv-store.json`).
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// A note as stored.
 #[derive(Record)]

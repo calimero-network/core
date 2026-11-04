@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// The store.
 #[app::state(version = 1)]

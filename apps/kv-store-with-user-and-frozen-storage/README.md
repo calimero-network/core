@@ -1,6 +1,6 @@
 # kv-store-with-user-and-frozen-storage
 
-A key-value store on the component SDK (`calimero-app-sdk`) with two more kinds
+A key-value store on the component SDK (`calimero-sdk`) with two more kinds
 of state beside the shared items, each a collection that holds a rule (v1 used
 `UserStorage` and `FrozenStorage`):
 

@@ -18,7 +18,7 @@
 //! Access: any org member (or above) files, moves and assigns issues and reads the lists;
 //! guests and outsiders get `Forbidden`.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// The statuses an issue moves through, in board order.
 pub const STATUSES: [&str; 3] = ["open", "in_progress", "closed"];
@@ -65,7 +65,7 @@ pub struct IssueView {
     pub status: String,
     pub assignee: Option<String>,
     pub labels: Vec<String>,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub created_at: u64,
 }
 

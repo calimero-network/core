@@ -16,8 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use calimero_app_sdk::prelude::*;
-use calimero_app_sdk::StorageError;
+use calimero_sdk::prelude::*;
+use calimero_sdk::StorageError;
 use sha2::{Digest, Sha256};
 
 /// v1's content address: the SHA-256 of a string's borsh encoding (its length as a

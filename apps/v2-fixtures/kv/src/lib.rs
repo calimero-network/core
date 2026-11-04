@@ -1,8 +1,8 @@
 //! The cluster tests' key-value fixture on the v2 SDK (v1's `apps/kv-store`, cut to what the
 //! cluster tests call). Method names and arguments are the ABI's camelCase ones.
 
-use calimero_app_sdk::prelude::*;
-use calimero_app_sdk::Request;
+use calimero_sdk::prelude::*;
+use calimero_sdk::Request;
 
 #[derive(Record)]
 #[table(key = "key")]
