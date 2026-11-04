@@ -66,7 +66,7 @@ fn harness_runs_the_real_component() {
 }
 
 #[test]
-fn files_made_in_calls_are_readable_after_they_commit() {
+fn files_made_in_calls_are_kept_after_they_commit_and_a_view_cannot_read_them() {
     let mut t = app();
     let id = t
         .as_("bob")
@@ -74,16 +74,12 @@ fn files_made_in_calls_are_readable_after_they_commit() {
         .unwrap();
     let id: BlobRef = serde_json::from_value(id).unwrap();
     assert_eq!(t.file(&id), Some(b"hello".to_vec()));
-    assert_eq!(
-        t.as_("bob").view("fileLen", json!({ "id": id })),
-        Ok(json!("5"))
-    );
+    // Only a compute run opens a sealed file.
+    let read = t.as_("bob").view("fileLen", json!({ "id": id }));
+    assert!(matches!(read, Err(Failure::Trap(_))), "{read:?}");
 
     let seeded = t.add_file(b"seeded bytes");
-    assert_eq!(
-        t.as_("bob").view("fileLen", json!({ "id": seeded })),
-        Ok(json!("12"))
-    );
+    assert_eq!(t.file(&seeded), Some(b"seeded bytes".to_vec()));
 }
 
 #[test]

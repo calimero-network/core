@@ -482,13 +482,14 @@ Rules the host enforces, whatever the guest says:
 The `files` interface, added in 0.5.1, gives an app encrypted byte streams that the node stores on the app's replicas.
 A file is a sealed blob: it shares the blob id namespace and the `blob-id` and `blob-info` types, and the host records which ids are sealed files.
 `create`, `writer.write` and `writer.finish` work only in invocations that become log entries (call, timer, init, xcall delivery); anywhere else they trap `HostDenied`.
-`open`, `reader.read` and `info` work in every kind except migrate, so an action may read a file but never write one.
-An action may send a file it read out over outbound HTTP (D76).
+`info` works in every kind except migrate.
+`open` and `reader.read` work only in a compute run (below): anywhere else `open` traps `HostDenied`, so a call, view, timer or action can create a file and see its size and hash but never read its bytes.
 `finish` returns the file's blob id, which the app stores as a typed `BlobRef` in state.
 Retention is R8: the host counts the `BlobRef`s in state, a file no state refers to is collected, and a call that finishes a file without storing its id leaves nothing behind.
 There is no `delete`: dropping the reference is the delete, as for blobs.
 `blobs.info` answers for a file id with the plaintext size and SHA-256 and an empty `mime`, and so does `files.info`.
-`blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one, so a file is readable only by the app's code.
+`blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one.
+So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 A `BlobRef` to a file the app holds, or finished earlier in the same run, may be stored.
 A file exists only once the run that finished it commits.
 A run holds at most 16 open readers and writers, writes at most 47 MiB to a file and 64 MiB in all, and reads at most 1 MiB per `read`.

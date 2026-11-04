@@ -973,6 +973,41 @@ fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
     })
 }
 
+/// Reads a sealed file through the provider a compute run reads with, the only reader a guest
+/// has. Opens it `open` times at once and reads the first. Tests only.
+#[cfg(feature = "testing")]
+impl Node {
+    pub fn read_sealed_file(&self, app_id: &str, id: &str, open: usize) -> Result<Vec<u8>, String> {
+        let blobs = self
+            .hosted(app_id)
+            .map(|g| g.read_local(|m, _| Arc::clone(&m.state.component.blobs.records)))
+            .unwrap_or_default();
+        off_workers(|| {
+            let files = NodeFiles::new(self, app_id, blobs, InvocationKind::Action);
+            let open_one = || {
+                files.open(id).map_err(|e| match e {
+                    FileError::Failed(reason) => reason,
+                    FileError::Unavailable => calimero_app_host::FILE_UNAVAILABLE.to_owned(),
+                })
+            };
+            let mut readers = (0..open.max(1))
+                .map(|_| open_one())
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = readers[0].read(1 << 20).map_err(|e| match e {
+                    ReadError::Failed(reason) => reason,
+                    ReadError::Corrupt => calimero_app_host::FILE_CORRUPT.to_owned(),
+                })?;
+                if chunk.is_empty() {
+                    return Ok(bytes);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
