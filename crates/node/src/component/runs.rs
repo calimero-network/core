@@ -162,6 +162,9 @@ pub struct Final {
     pub id_term: u64,
     #[serde(default)]
     pub id_seq: u64,
+    /// The failure text of the job's signed report, if it carried one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 /// The record of one run.
@@ -211,6 +214,10 @@ pub enum FailedReason {
     Timeout,
     /// The outputs would pass the payer's stored-file quota.
     Quota,
+    /// The queue granted no place within its wait.
+    NotGranted,
+    /// The final did not fit the log even without its result method.
+    TooLarge,
 }
 
 impl From<FailReason> for FailedReason {
@@ -218,7 +225,6 @@ impl From<FailReason> for FailedReason {
         match reason {
             FailReason::Fuel => Self::Fuel,
             FailReason::Memory => Self::Memory,
-            FailReason::Time => Self::Time,
             FailReason::Trap => Self::Trap,
             FailReason::AppError => Self::AppError,
             FailReason::Integrity => Self::Integrity,
@@ -237,7 +243,12 @@ impl FailedReason {
             Self::AppError => Some(FailReason::AppError),
             Self::Integrity => Some(FailReason::Integrity),
             Self::Cancelled => Some(FailReason::Cancelled),
-            Self::Lost | Self::Timeout | Self::Refused | Self::Quota => None,
+            Self::Lost
+            | Self::Timeout
+            | Self::Refused
+            | Self::Quota
+            | Self::NotGranted
+            | Self::TooLarge => None,
         }
     }
 }
@@ -546,6 +557,11 @@ impl AppMachine {
             ts_ms: entry.ts_ms,
             id_term: entry.id_term,
             id_seq: entry.id_seq,
+            message: entry
+                .report
+                .as_ref()
+                .map(|r| r.message.clone())
+                .unwrap_or_default(),
         });
         Self::write_run(tx, &record);
         self.finish_run(tx, &entry.run);
@@ -730,10 +746,10 @@ impl AppMachine {
                 Err(ATTEMPTS_LEFT)
             }
             FinalOutcome::Failed {
-                reason: FailedReason::Timeout,
+                reason: FailedReason::Timeout | FailedReason::TooLarge,
             } if record.state != RunState::Running => Err(NOT_RUNNING),
             FinalOutcome::Failed {
-                reason: FailedReason::Refused,
+                reason: FailedReason::Refused | FailedReason::NotGranted,
             } if !record.attempts.is_empty() => Err(ASSIGNED),
             _ if entry.usage != ReportUsage::default() => Err(LEADER_USAGE),
             _ => Ok(()),

@@ -13,7 +13,7 @@ use crate::component::{Attempt, FailedReason, FileMark, FinalOutcome, RunRecord,
 use crate::files::{sealed_len, wrap_key, FileOpener, CHUNK_BYTES};
 use crate::job_wire::{hash_bytes, FailReason, Report, ReportStatus};
 use crate::node::job::busy_here;
-use crate::node::{JobPeer, QUOTA_EXCEEDED};
+use crate::node::{JobPeer, QUOTA_EXCEEDED, REJECTED};
 
 /// What storing a report's outputs came to.
 enum Staging {
@@ -26,6 +26,12 @@ enum Staging {
     Lost,
     /// The outputs would pass the payer's quota.
     Quota,
+}
+
+/// Whether a failed charge may still have been applied: a refusal by `apply` changed nothing,
+/// while a write that stalled or lost its answer may have committed.
+fn charge_may_have_landed(error: &crate::error::ApiError) -> bool {
+    error.code != REJECTED && error.code != QUOTA_EXCEEDED
 }
 
 /// The arguments of the result method: the run's outcome as JSON, 64-bit integers as decimal
@@ -135,8 +141,9 @@ impl Drive<'_> {
                         if e.code == QUOTA_EXCEEDED {
                             return Staging::Quota;
                         }
-                        // The charge may have landed before the answer was lost.
-                        node.refund_files(app_id, total).await;
+                        if charge_may_have_landed(&e) {
+                            node.refund_files(app_id, total).await;
+                        }
                         return Staging::Wait;
                     }
                 }
@@ -236,5 +243,21 @@ impl Drive<'_> {
             sha256: Bytes(plain_hash.to_vec()),
             wrapped_key: Bytes(wrapped),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ApiError;
+
+    #[test]
+    fn only_a_charge_that_may_have_committed_is_refunded() {
+        let rejected = ApiError::bad_request(REJECTED, "no such app");
+        let quota = ApiError::new(429, QUOTA_EXCEEDED, "quota exceeded");
+        let stalled = ApiError::unavailable("the system group did not answer");
+        assert!(!charge_may_have_landed(&rejected));
+        assert!(!charge_may_have_landed(&quota));
+        assert!(charge_may_have_landed(&stalled));
     }
 }
