@@ -1,6 +1,6 @@
 # Organization recovery
 
-Status: proposed (draft PR `claude/org-recovery`).
+Status: implemented (PR #4837). The three choices below were agreed with Sandi.
 
 ## Problem
 
@@ -42,7 +42,7 @@ The recovering account is not a member yet; it reads the pending recovery's time
 
 - `RECOVERY_DELAY_SECS` = 72 hours between start and finish, judged at the commands' own times (stamped by the node that takes the request, replicated with it), never at apply.
 - One pending recovery per organization: a second start is refused (`409 RECOVERY_PENDING`) until the owner cancels or the pending one finishes. A seed holder cannot replace a pending recovery with their own.
-- `MAX_RECOVERY_NONCE_BYTES` (64) bounds the nonce; the key and signature have fixed sizes.
+- `MAX_RECOVERY_NONCE_BYTES` (64) bounds the nonce; `MAX_RECOVERY_KEY_CHARS` and `MAX_RECOVERY_SIGNATURE_CHARS` bound the key and signature text before decoding.
 - No per-node attempt counter: a wrong seed is refused at the API before anything is logged, and guessing a 256-bit seed is not a threat a counter changes. The general request limits apply.
 
 ## What is logged
@@ -76,7 +76,7 @@ This is the property we keep: no party but the seed holder can take an organizat
 ## Migration
 
 Organizations written before this change have no key (`Org::recovery` is `#[serde(default, skip_serializing_if = "Option::is_none")]`), so a snapshot from before reads with none and writes the same bytes (`state_from_before_recovery_reads_with_none_and_writes_as_before`).
-Their owners set one later with the owner route; until then `start` answers `409 NO_RECOVERY_KEY`.
+Their owners set one later with the owner route; until then `start` answers `403 WRONG_RECOVERY_KEY`, as for a wrong seed or an unknown organization, so an outsider learns nothing about which organizations exist or hold a key.
 The new system commands are not understood by a node on an earlier release; as for every system command, a cluster runs one release.
 
 ## Choices
