@@ -1,0 +1,6 @@
+{
+  "policy": { "salt": "pepper", "columns": { "name": "pseudonym", "email": "mask", "note": "scan" } },
+  "job": "example",
+  "start": 0,
+  "rows": 100
+}

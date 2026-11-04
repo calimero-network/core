@@ -4,6 +4,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_sdk::compute::{ComputeOutcome, ComputeStatus};
+use calimero_sdk::prelude::app;
 use calimero_sdk::BlobRef;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,9 @@ use crate::rules::{Policy, Preview};
 
 /// The most parts a job is split into; a larger file gets larger parts.
 pub const MAX_PARTS: u64 = 256;
+
+/// Publishes a run's output as a plain blob.
+pub type Publisher<'a> = dyn FnMut(&BlobRef) -> app::Result<BlobRef> + 'a;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +35,8 @@ pub struct Part {
     pub status: Status,
     pub cells: u64,
     pub output: Option<BlobRef>,
+    /// The plain blob `share` made of the output, which a grant can hand out.
+    pub published: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,6 +75,7 @@ pub struct PartView {
     pub status: Status,
     pub rows: u32,
     pub output: Option<BlobRef>,
+    pub published: Option<BlobRef>,
 }
 
 /// `(start, rows)` of each part of a file of `total` rows: `per_part` rows each, raised so there are at most `MAX_PARTS`.
@@ -133,6 +140,7 @@ impl Job {
                 status: Status::Queued,
                 cells: 0,
                 output: None,
+                published: None,
             })
             .collect();
         self.status = if self.parts.is_empty() {
@@ -161,6 +169,18 @@ impl Job {
         true
     }
 
+    /// Publishes the output of each part not yet published, at most `max` of them; a refused
+    /// publish fails the call, so nothing of it is kept.
+    pub fn share(&mut self, publish: &mut Publisher, max: usize) -> app::Result<()> {
+        let unpublished = self.parts.iter_mut().filter(|p| p.published.is_none());
+        for part in unpublished.take(max) {
+            if let Some(output) = part.output {
+                part.published = Some(publish(&output)?);
+            }
+        }
+        Ok(())
+    }
+
     /// Fails the job and the parts not yet done.
     pub fn fail(&mut self, reason: String) {
         self.status = Status::Failed;
@@ -187,6 +207,7 @@ impl Job {
                     status: p.status,
                     rows: p.rows,
                     output: p.output,
+                    published: p.published,
                 })
                 .collect(),
             preview: self.preview.clone(),
@@ -235,6 +256,59 @@ mod tests {
             .unwrap()
             .extend(json.as_object().unwrap().clone());
         serde_json::from_value(base).unwrap()
+    }
+
+    /// A publisher that records what it was asked to publish and answers a blob per call.
+    fn publisher(
+        calls: &mut Vec<BlobRef>,
+    ) -> impl FnMut(&BlobRef) -> calimero_sdk::Result<BlobRef> + '_ {
+        |output| {
+            calls.push(*output);
+            Ok(blob(100 + calls.len() as u8))
+        }
+    }
+
+    fn done(total: u64, per_part: u32) -> Job {
+        let mut job = running(total, per_part);
+        for i in 0..job.parts.len() {
+            assert!(job.part_done(i, blob(i as u8 + 10), 1));
+        }
+        job
+    }
+
+    #[test]
+    fn sharing_publishes_each_done_part_once_and_keeps_the_blobs() {
+        let mut job = done(10, 4);
+        let mut calls = Vec::new();
+        job.share(&mut publisher(&mut calls), 16).unwrap();
+        assert_eq!(calls, [blob(10), blob(11), blob(12)]);
+        let view = job.view("j");
+        assert!(view.parts.iter().all(|p| p.published.is_some()));
+        job.share(&mut publisher(&mut calls), 16).unwrap();
+        assert_eq!(calls.len(), 3, "a published part is not published again");
+    }
+
+    #[test]
+    fn sharing_publishes_at_most_the_cap_a_call_and_the_next_call_continues() {
+        let mut job = done(10, 1);
+        let mut calls = Vec::new();
+        job.share(&mut publisher(&mut calls), 4).unwrap();
+        assert_eq!(calls.len(), 4);
+        job.share(&mut publisher(&mut calls), 4).unwrap();
+        assert_eq!(calls.len(), 8);
+        job.share(&mut publisher(&mut calls), 4).unwrap();
+        assert_eq!(calls.len(), 10);
+        assert!(job.view("j").parts.iter().all(|p| p.published.is_some()));
+    }
+
+    #[test]
+    fn a_publish_the_host_refuses_leaves_the_part_unpublished() {
+        let mut job = done(4, 4);
+        let refuse = |_: &BlobRef| -> calimero_sdk::Result<BlobRef> {
+            Err(calimero_sdk::AppError::new("Compute"))
+        };
+        assert!(job.share(&mut { refuse }, 16).is_err());
+        assert_eq!(job.parts[0].published, None);
     }
 
     #[test]

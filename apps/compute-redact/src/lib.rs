@@ -5,7 +5,8 @@
 //! arguments are the ABI's camelCase ones.
 //!
 //! The rules engine is `rules` and runs in the compute component; `jobs` is a job's state.
-//! Who may share a job's output is not decided here: delivery comes with `files::publish`.
+//! `share` publishes a done job's outputs as plain blobs, for its submitter or an admin; a grant
+//! (`blobs.grant`) then hands each out.
 
 mod jobs;
 mod rules;
@@ -17,7 +18,7 @@ use calimero_sdk::{files, BlobRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use jobs::{decode, Job, JobView, Status};
+use jobs::{decode, Job, JobView, Publisher, Status};
 use rules::{Policy, Preview};
 
 /// Runs active at once in this app.
@@ -30,6 +31,8 @@ const PREVIEW_BYTES: usize = 48 * 1024;
 const DEFAULT_ROWS_PER_PART: u32 = 50_000;
 /// Jobs one `jobs` call lists at most.
 const PAGE: u32 = 1000;
+/// Outputs one `share` call publishes at most, which is the host's cap on a logged call.
+const SHARE_BATCH: usize = 16;
 
 /// A run to make: a job's preview (`part` none) or one of its parts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +70,7 @@ pub enum Error {
     BadPolicy { reason: String },
     NoSuchFile,
     NotFound { id: String },
+    NotDone { id: String },
     NoInput,
     Csv { message: String },
 }
@@ -156,6 +160,16 @@ impl Redact {
         Ok(id)
     }
 
+    /// Publishes the outputs of the done job `id` as plain blobs and answers the job, whose parts
+    /// now name them. Its submitter and admins only. A job of more than 16 parts takes one call
+    /// per 16; an output past 47 MiB cannot be published, so size the parts below it.
+    pub fn share(&mut self, job: String) -> app::Result<JobView> {
+        if !self.jobs.get(&job)?.is_some_and(|j| self.may_see(&j)) {
+            return Err(Error::NotFound { id: job }.into());
+        }
+        self.share_done(job, &mut compute::publish)
+    }
+
     /// Receives a run's outcome: the preview plans the parts, a part's output is kept, a failed
     /// run fails its job; then free slots go to waiting tasks.
     #[app::compute_result]
@@ -231,6 +245,19 @@ impl Redact {
 }
 
 impl Redact {
+    /// Publishes a done job's next outputs through `publish`; the job must be there and visible.
+    fn share_done(&mut self, id: String, publish: &mut Publisher) -> app::Result<JobView> {
+        let Some(mut job) = self.jobs.get(&id)? else {
+            return Err(Error::NotFound { id }.into());
+        };
+        if job.status != Status::Done {
+            return Err(Error::NotDone { id }.into());
+        }
+        job.share(publish, SHARE_BATCH)?;
+        self.jobs.insert(&id, &job)?;
+        Ok(job.view(&id))
+    }
+
     fn may_see(&self, job: &Job) -> bool {
         role().is_some_and(|r| r >= OrgRole::Admin) || account().as_deref() == Some(&job.submitter)
     }
@@ -482,6 +509,33 @@ mod tests {
         let job = app.jobs.get(&id).unwrap().unwrap();
         assert_eq!(job.status, Status::Failed);
         assert_eq!(app.runs.len().unwrap(), 0);
+    }
+
+    fn done_job(n: u8) -> Job {
+        let mut job = job(n, 10);
+        job.previewed(serde_json::from_value(preview_of(15)).unwrap());
+        for i in 0..2 {
+            assert!(job.part_done(i, blob(50 + i as u8), 1));
+        }
+        job
+    }
+
+    fn publish_as_new(output: &BlobRef) -> app::Result<BlobRef> {
+        Ok(blob(output.id().len() as u8))
+    }
+
+    #[test]
+    fn sharing_a_done_job_publishes_its_parts_and_a_job_still_running_is_refused() {
+        let mut app = Redact::load();
+        let id = app.enqueue(job(1, 10)).unwrap();
+        let err = app.share_done(id.clone(), &mut publish_as_new).unwrap_err();
+        assert_eq!(err.code, "NotDone");
+
+        app.jobs.insert(&id, &done_job(1)).unwrap();
+        let view = app.share_done(id.clone(), &mut publish_as_new).unwrap();
+        assert!(view.parts.iter().all(|p| p.published.is_some()));
+        let stored = app.jobs.get(&id).unwrap().unwrap();
+        assert!(stored.parts.iter().all(|p| p.published.is_some()));
     }
 
     #[test]
