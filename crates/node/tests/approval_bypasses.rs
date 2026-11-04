@@ -566,6 +566,145 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
     assert_eq!(joined["org"], json!(org), "{joined}");
 }
 
+/// What every node holds of alice's sign-ins and keys: her passkey's
+/// counter, whether a refresh token is kept under `hash`, whether her API key
+/// `key_id` is live, and whether `account` exists.
+async fn sign_ins(
+    c: &Cluster,
+    alice: &str,
+    hashes: &[String],
+    key_id: &str,
+    account: &str,
+) -> Vec<Value> {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| {
+            r.node.sys(|s| {
+                json!({
+                    "counter": s.accounts[alice].passkeys[0].sign_count,
+                    "refresh": hashes.iter().map(|h| s.refresh.get(h).map(|r| r.account.clone())).collect::<Vec<_>>(),
+                    "key": s.api_keys.values().any(|k| k.key_id == key_id),
+                    "account": s.accounts.contains_key(account),
+                })
+            })
+        })
+        .collect()
+}
+
+/// The hash the log keeps a refresh token under.
+fn refresh_hash(token: &str) -> String {
+    calimero_identity::b64url(&calimero_identity::sha256(token.as_bytes()))
+}
+
+/// Before, a system leader (decision 7: possibly a node on an unapproved
+/// release) could log, without any proof: a refresh token of its own for any
+/// account (`CreateRefresh`), then exchange it for a session on an honest
+/// node; the exchange of a victim's refresh token for one of its own
+/// (`UseRefresh`), taking the session over; a passkey's counter at its
+/// maximum (`SetSignCount`), locking the passkey out; the revocation of
+/// anyone's API key (`RevokeApiKey`); and an account holding a victim's new
+/// credential under an id and a release it picks (`CreateAccount`), so the
+/// victim's sign-up is refused and their passkey opens the leader's account.
+/// Now each carries the proof its maker can give, and every node refuses it
+/// without.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_sessions_counters_key_revocations_and_accounts_are_refused() {
+    let c = split_cluster().await;
+    let (alice_client, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice = alice_client.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (key_id, _key) = alice_client
+        .create_api_key(json!({ "label": "ci" }), &mut alice_pk)
+        .await
+        .unwrap();
+    let alices_refresh = alice_client.session().await.unwrap().refresh_token;
+    let session = running(&c, 0)
+        .node
+        .sys(|s| s.refresh[&refresh_hash(&alices_refresh)].session.clone());
+    let theirs = "rt_the_leaders_own";
+    let also_theirs = "rt_the_leaders_next";
+    let mut victim = SoftAuthenticator::new("localhost", harness::ORIGIN);
+    let rp = calimero_identity::RelyingParty {
+        id: "localhost".into(),
+        origins: vec![harness::ORIGIN.into()],
+        require_uv: false,
+    };
+    let challenge = calimero_identity::random::<32>();
+    let victims =
+        calimero_identity::verify_registration(&rp, &challenge, &victim.register(&challenge))
+            .unwrap();
+    let hashes = [
+        refresh_hash(theirs),
+        refresh_hash(also_theirs),
+        refresh_hash(&alices_refresh),
+    ];
+    let before = sign_ins(&c, &alice, &hashes, &key_id, "made-by-the-leader").await;
+    assert_eq!(before[0]["key"], json!(true));
+    assert_eq!(before[0]["refresh"][2], json!(alice));
+
+    let expires = calimero_node::types::now_secs() + 3600;
+    let record = json!({
+        "account": alice, "session": session, "expiresAt": expires,
+        "passkey": alice_pk.credential_id(),
+    });
+    let forged = [
+        (
+            "a refresh token of the leader's own for alice",
+            json!({ "op": "createRefresh", "hash": refresh_hash(theirs), "record": record }),
+        ),
+        (
+            "alice's refresh token exchanged for the leader's",
+            json!({
+                "op": "useRefresh", "old_hash": refresh_hash(&alices_refresh),
+                "new_hash": refresh_hash(also_theirs), "record": record,
+                "now": calimero_node::types::now_secs(),
+            }),
+        ),
+        (
+            "alice's passkey counter at its maximum",
+            json!({ "op": "setSignCount", "credential_id": alice_pk.credential_id(), "count": u32::MAX }),
+        ),
+        (
+            "alice's API key revoked",
+            json!({ "op": "revokeApiKey", "key_id": key_id, "actor": alice }),
+        ),
+        (
+            "an account for the victim's new passkey, on the leader's release",
+            json!({ "op": "createAccount", "account": {
+                "accountId": "made-by-the-leader", "name": "victim", "createdAt": 0,
+                "passkeys": [victims], "approvedReleases": ["2.0.0"],
+            } }),
+        ),
+    ];
+    for (what, cmd) in &forged {
+        let e = append(&c, cmd).await.unwrap_err();
+        assert!(!e.starts_with("malformed"), "{what}: {e}");
+    }
+    assert_eq!(
+        sign_ins(&c, &alice, &hashes, &key_id, "made-by-the-leader").await,
+        before,
+        "nothing applied anywhere"
+    );
+
+    // The leader's tokens open nothing; alice's own still refreshes, her
+    // passkey still signs in, and the victim's sign-up goes through.
+    for token in [theirs, also_theirs] {
+        let e = c
+            .client(0)
+            .post("auth/refresh", json!({ "refreshToken": token }))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
+    }
+    let _s = alice_client.refresh().await.unwrap();
+    let _s = c.client(1).sign_in(&mut alice_pk).await.unwrap();
+    let _s = c.client(1).sign_up(&mut victim, "victim").await.unwrap();
+}
+
 /// The decisions master added since (#4771) carry their proofs too, checked
 /// where they apply: binding a package's key to an organization needs a
 /// passkey consent of an `APPROVE_RELEASES` holder over that key's binding

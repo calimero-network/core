@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord, Org,
-    OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
+    NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
@@ -25,8 +25,9 @@ pub struct Quotas {
     pub max_bundle_bytes_per_account: u64,
     pub max_api_keys_per_account: u32,
     pub max_orgs_per_account: u32,
-    /// Accounts the cluster takes in all: sign-up is open, so this is what
-    /// keeps it from growing without bound (Xil's review, issue 12).
+    /// Accounts the cluster takes in all: where sign-up is open
+    /// ([`Governance::sign_up`]), this is what keeps it from growing without
+    /// bound (Xil's review, issue 12).
     pub max_accounts: u32,
     /// Plaintext bytes of the files an organization's (or a personal account's) apps hold.
     pub max_file_bytes_per_org: u64,
@@ -189,6 +190,10 @@ pub struct SystemState {
     /// the operator (`/ops/nodes`).
     #[serde(default)]
     pub removed_nodes: std::collections::BTreeSet<u64>,
+    /// Moves with every registration and removal of a node id, so what a
+    /// node kept about an id (an attestation) is dropped when the id changes.
+    #[serde(default)]
+    pub node_epoch: BTreeMap<u64, u64>,
     pub apps: BTreeMap<AppId, AppRecord>,
     pub next_group: u64,
     pub bundles: BTreeMap<String, BundleRecord>,
@@ -253,6 +258,15 @@ pub struct SystemState {
     /// decisions are signed with.
     #[serde(default)]
     pub operator_key: Option<crate::proof::OperatorKey>,
+    /// The log index from which sign-ups, sign-ins, refreshes, counters and
+    /// API key revocations carry their proofs ([`SystemCmd::is_session_command`]):
+    /// genesis's, or that of the [`SystemCmd::RequireSessionProofs`] the first
+    /// leader on a release that makes them wrote. Entries before it, logged by
+    /// releases that made none, apply as they did when a restart replays them.
+    /// `None` (state from before): none required yet. Left out when `None`,
+    /// so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_proofs_from: Option<u64>,
     /// Who may install apps where deployments are granted
     /// ([`Governance::deployments`]), by [`Deployer::key`]
     /// (`account:<id>`, `org:<id>`); [`SystemState::may_deploy`] judges them.
@@ -275,6 +289,73 @@ pub struct SystemState {
     /// `app_file_bytes` summed per payer, kept in step by `set_app_file_bytes`.
     #[serde(default)]
     pub payer_file_bytes: BTreeMap<String, u64>,
+    /// Cluster sign-up invites (`CreateSignUpInvite`), by the token's Ed25519
+    /// public key ([`crate::proof::invite_key`]): what lets someone create an
+    /// account where sign-up is `invite` or `closed`. Left out when empty, so
+    /// state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sign_up_invites: BTreeMap<String, SignUpInvite>,
+}
+
+/// A cluster sign-up invite: issued by the operator (its signature) or the
+/// cluster's owner (a passkey), it lets `uses_left` people create an account
+/// before `expires_at`, whatever the sign-up policy. Where sign-up is
+/// `closed` it is the only way in: a pre-authorization.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignUpInvite {
+    /// Unix seconds; judged against the sign-up's own time.
+    pub expires_at: u64,
+    pub uses_left: u32,
+    /// [`OPERATOR`], or the owner-side account.
+    pub created_by: AccountId,
+    /// Unix seconds.
+    pub created_at: u64,
+}
+
+/// An invite presented at sign-up (`CreateAccount::invite`): the token's
+/// public key and its key's signature over the new account and the time
+/// ([`crate::proof::sign_invite_redeem`]), made by the node the person gave
+/// the token to. An organization invite or a cluster sign-up invite.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignUpRedemption {
+    pub invite_key: String,
+    /// Unix seconds, signed: the invite's expiry is judged against it.
+    pub now: u64,
+    pub signature: String,
+}
+
+/// How the sign-up policy let an account in ([`SystemState::admits`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// No invite, on an `open` cluster.
+    Open,
+    /// An organization invite: the account joins its organization.
+    OrgInvite,
+    /// A cluster sign-up invite.
+    SignUpInvite,
+}
+
+/// The prefix of every apply error that refuses a sign-up under the
+/// cluster's policy; the API answers it `403 SIGN_UP_REFUSED`.
+pub const SIGN_UP_PREFIX: &str = "sign-up refused";
+
+/// How many cluster sign-up invites a cluster keeps at once.
+pub const MAX_SIGN_UP_INVITES: usize = 10_000;
+
+/// How many accounts one cluster sign-up invite may create.
+pub const MAX_SIGN_UP_INVITE_USES: u32 = 10_000;
+
+/// What a cluster sign-up invite's issuer signs (`cluster /
+/// __create_sign_up_invite / ...`): its public key and its terms.
+#[must_use]
+pub fn sign_up_invite_args(invite_key: &str, invite: &SignUpInvite) -> Value {
+    json!({
+        "inviteKey": invite_key,
+        "uses": invite.uses_left,
+        "expiresAt": invite.expires_at,
+    })
 }
 
 /// An owner's list of the apps it offers on this cluster. Customers create
@@ -363,7 +444,7 @@ pub fn deployment_segment_fits(s: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub use calimero_client::attest::{Authority, Deployers, Deployments, Governance};
+pub use calimero_client::attest::{Authority, Deployers, Deployments, Governance, SignUp};
 
 /// An account, or an organization, as a deployer or the cluster's owner.
 /// Its JSON names the kind: `{"account":"<id>"}`, `{"org":"<id>"}`.
@@ -550,7 +631,38 @@ impl PublisherProof {
 /// minted (sessions live 15 minutes), with room for clock differences.
 pub const REVOKED_SESSION_KEEP_SECS: u64 = 60 * 60;
 
+/// `addr` as the same node's other spellings share it: scheme and host
+/// lowercased, the default port dropped, trailing slashes trimmed.
+#[must_use]
+pub fn normalize_addr(addr: &str) -> String {
+    match url::Url::parse(addr) {
+        Ok(u) if u.origin().is_tuple() => format!(
+            "{}{}",
+            u.origin().ascii_serialization(),
+            u.path().trim_end_matches('/')
+        ),
+        _ => addr.trim_end_matches('/').to_ascii_lowercase(),
+    }
+}
+
 impl SystemState {
+    /// The nodes that hold apps and the cluster key: every site that picks nodes for the
+    /// cluster's own work goes through this, never `nodes` directly.
+    pub fn replica_nodes(&self) -> impl Iterator<Item = &NodeRecord> {
+        self.nodes.values().filter(|n| n.role == NodeRole::Replica)
+    }
+
+    /// The replica node `id`, if it is one.
+    #[must_use]
+    pub fn replica_node(&self, id: &u64) -> Option<&NodeRecord> {
+        self.nodes.get(id).filter(|n| n.role == NodeRole::Replica)
+    }
+
+    /// The nodes that only run compute.
+    pub fn job_nodes(&self) -> impl Iterator<Item = &NodeRecord> {
+        self.nodes.values().filter(|n| n.role == NodeRole::Job)
+    }
+
     /// Sets the file bytes an app holds, and its payer's total with it.
     fn set_app_file_bytes(&mut self, app_id: &str, now: u64) {
         let Some(app) = self.apps.get(app_id) else {
@@ -802,6 +914,122 @@ impl SystemState {
         match owner {
             Deployer::Account(a) => a == account,
             Deployer::Org(o) => self.manages_apps(o, account, None),
+        }
+    }
+
+    /// Whether the cluster's sign-up policy lets an account in with `invite`
+    /// (none, an organization invite or a cluster sign-up invite), and how.
+    /// `open` takes anyone, `invite` an invite of either kind, `closed` a
+    /// cluster sign-up invite only. An invite presented is checked whatever
+    /// the policy: unknown, expired or used up is a refusal, never an account
+    /// created without it.
+    ///
+    /// # Errors
+    /// The refusal, starting with [`SIGN_UP_PREFIX`].
+    pub fn admits(&self, invite: Option<&SignUpRedemption>) -> Result<Admission, &'static str> {
+        self.admits_key(invite.map(|r| (r.invite_key.as_str(), r.now)))
+    }
+
+    /// [`Self::admits`] for an invite key presented at `now`.
+    ///
+    /// # Errors
+    /// The refusal, starting with [`SIGN_UP_PREFIX`].
+    pub fn admits_key(&self, invite: Option<(&str, u64)>) -> Result<Admission, &'static str> {
+        let admission = match invite {
+            None => Admission::Open,
+            Some((key, now)) => {
+                if let Some(i) = self.sign_up_invites.get(key) {
+                    if i.expires_at <= now || i.uses_left == 0 {
+                        return Err("sign-up refused: the invite has expired");
+                    }
+                    Admission::SignUpInvite
+                } else if let Some(i) = self.invites.get(key) {
+                    if i.expires_at <= now || i.uses_left == 0 {
+                        return Err("sign-up refused: the invite has expired");
+                    }
+                    if !self.orgs.contains_key(&i.org) {
+                        return Err("sign-up refused: the invite's organization is gone");
+                    }
+                    Admission::OrgInvite
+                } else {
+                    return Err("sign-up refused: unknown invite");
+                }
+            }
+        };
+        match (self.governance().sign_up, admission) {
+            (SignUp::Open, _)
+            | (SignUp::Invite, Admission::OrgInvite | Admission::SignUpInvite)
+            | (SignUp::Closed, Admission::SignUpInvite) => Ok(admission),
+            (SignUp::Invite, Admission::Open) => {
+                Err("sign-up refused: this cluster takes new accounts by invite only")
+            }
+            (SignUp::Closed, _) => Err(
+                "sign-up refused: this cluster takes only accounts its operator or owner pre-authorized with a sign-up invite",
+            ),
+        }
+    }
+
+    /// Spend one use of an organization invite for `account`, which joins
+    /// the organization (and the teams the invite names) at the invite's role,
+    /// or keeps a higher one. Everything is checked before anything changes.
+    fn redeem_org_invite(
+        &mut self,
+        invite_key: &str,
+        account: &str,
+        now: u64,
+    ) -> Result<OrgId, &'static str> {
+        let inv = self.invites.get(invite_key).ok_or("unknown invite")?;
+        if inv.expires_at <= now || inv.uses_left == 0 {
+            return Err("invite expired");
+        }
+        if !self.orgs.contains_key(&inv.org) {
+            return Err("no such organization");
+        }
+        let inv = self.invites.get_mut(invite_key).ok_or("unknown invite")?;
+        inv.uses_left -= 1;
+        let inv = inv.clone();
+        if inv.uses_left == 0 {
+            let _prev = self.invites.remove(invite_key);
+        }
+        let o = self.orgs.get_mut(&inv.org).ok_or("no such organization")?;
+        let role = o
+            .members
+            .get(account)
+            .copied()
+            .map_or(inv.role, |r| r.max(inv.role));
+        let _prev = o.members.insert(account.to_owned(), role);
+        for t in &inv.teams {
+            if let Some(team) = o.teams.get_mut(t) {
+                let _prev = team.members.entry(account.to_owned()).or_insert(false);
+            }
+        }
+        Ok(inv.org)
+    }
+
+    /// Spend one use of a cluster sign-up invite; the last use removes it.
+    fn spend_sign_up_invite(&mut self, invite_key: &str) {
+        let Some(i) = self.sign_up_invites.get_mut(invite_key) else {
+            return;
+        };
+        i.uses_left = i.uses_left.saturating_sub(1);
+        if i.uses_left == 0 {
+            let _gone = self.sign_up_invites.remove(invite_key);
+        }
+    }
+
+    /// Whether `actor` runs the cluster's sign-up now (its policy and its
+    /// sign-up invites): the operator until the cluster's owner is named
+    /// (where governance says `deployers: owner`), then whoever acts for the
+    /// owner, never the operator.
+    ///
+    /// # Errors
+    /// Someone else.
+    pub fn runs_sign_up(&self, actor: &str) -> Result<(), &'static str> {
+        match self.deployers_owner() {
+            None if actor == OPERATOR => Ok(()),
+            None => Err("the operator runs this cluster's sign-up"),
+            Some(owner) if actor != OPERATOR && self.acts_for(owner, actor) => Ok(()),
+            Some(_) => Err("this cluster's owner runs its sign-up"),
         }
     }
 
@@ -1082,6 +1310,19 @@ impl SystemState {
         sets.is_empty() || sets.iter().any(|set| set.contains(release))
     }
 
+    /// Whether an entry at `index` must carry its session proof
+    /// ([`Self::session_proofs_from`]).
+    #[must_use]
+    pub fn proves_sessions(&self, index: u64) -> bool {
+        self.session_proofs_from.is_some_and(|from| index >= from)
+    }
+
+    /// Whether a refresh token was ever issued under `hash` and is still
+    /// remembered (live or exchanged).
+    fn refresh_known(&self, hash: &str) -> bool {
+        self.refresh.contains_key(hash) || self.rotated_refresh.contains_key(hash)
+    }
+
     /// Revoke `session`: its refresh tokens go and its tokens stop verifying.
     fn revoke_session(&mut self, session: &str, now: u64) {
         self.refresh.retain(|_, r| r.session != session);
@@ -1244,6 +1485,17 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
         (None, ..) => Err("the operator grants this cluster's deployers, with its signature"),
         (Some(_), None, Some(consent)) => fresh(consent_of(actor, consent)?),
         (Some(_), ..) => Err("this cluster's owner grants its deployers, with a passkey"),
+    };
+    // The sign-up policy and sign-up invites: the same two parties.
+    let sign_up_proof = |actor: &str, proof: Option<&Value>, consent: Option<&Value>| match (
+        s.deployers_owner(),
+        proof,
+        consent,
+    ) {
+        (None, Some(proof), None) if actor == OPERATOR => fresh(operator(proof)?),
+        (None, ..) => Err("the operator runs this cluster's sign-up, with its signature"),
+        (Some(_), None, Some(consent)) => fresh(consent_of(actor, consent)?),
+        (Some(_), ..) => Err("this cluster's owner runs its sign-up, with a passkey"),
     };
 
     match cmd {
@@ -1600,6 +1852,133 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             )?;
             Ok(Some(used))
         }
+        SystemCmd::RevokeApiKey {
+            key_id,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("account:{actor}"), "__revoke_api_key", &|a| {
+                *a == json!({ "keyId": key_id })
+            })?;
+            Ok(Some(used))
+        }
+        // Sessions. A sign-up: the new passkey's assertion over the whole
+        // account and the session it opens, so a node that saw someone's new
+        // credential cannot register it first under an account and a release
+        // of its own.
+        SystemCmd::CreateAccount {
+            account,
+            invite,
+            refresh,
+            consent,
+        } => {
+            let (st, used) = fresh(crate::proof::verify_sign_in(consent, &account.passkeys)?)?;
+            // An invite at sign-up: the token's key signs it, as a redemption
+            // of the new account, so only the node the person gave it to can.
+            // Its mark is spent where the account applies (`run_authorized`).
+            if let Some(r) = invite {
+                if !s.invites.contains_key(&r.invite_key)
+                    && !s.sign_up_invites.contains_key(&r.invite_key)
+                {
+                    return Err("sign-up refused: unknown invite");
+                }
+                let redeemed = crate::proof::verify_invite_redeem(
+                    &r.invite_key,
+                    &account.account_id,
+                    r.now,
+                    &r.signature,
+                )?;
+                if s.used_proofs.contains(&redeemed) {
+                    return Err("that redemption was used already");
+                }
+            }
+            if refresh
+                .as_ref()
+                .is_some_and(|g| g.record.account != account.account_id)
+            {
+                return Err("the consent is for another change");
+            }
+            let args = account_args(account, refresh.as_ref());
+            states(
+                &st,
+                &format!("account:{}", account.account_id),
+                "__create_account",
+                &|a| *a == args,
+            )?;
+            Ok(Some(used))
+        }
+        // A sign-in: the assertion it took, by the passkey the session names,
+        // over a challenge that states this refresh token.
+        SystemCmd::CreateRefresh {
+            hash,
+            record,
+            consent,
+        } => {
+            let passkey: Vec<Credential> = s
+                .accounts
+                .get(&record.account)
+                .ok_or("unknown account")?
+                .passkeys
+                .iter()
+                .filter(|c| record.passkey.as_deref() == Some(c.id.as_str()))
+                .cloned()
+                .collect();
+            let (st, used) = fresh(crate::proof::verify_sign_in(consent, &passkey)?)?;
+            let args = sign_in_args(hash, record);
+            states(&st, "session", "__sign_in", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        // An exchange: the old token's key, over the new token and the
+        // session it continues, which stays the old one's.
+        SystemCmd::UseRefresh {
+            old_hash,
+            new_hash,
+            record,
+            now,
+            signature,
+        } => {
+            let old = s.refresh.get(old_hash).ok_or("unknown refresh token")?;
+            if old.key.is_empty() {
+                return Err("this refresh token has no key; sign in again");
+            }
+            if old.account != record.account
+                || old.session != record.session
+                || old.passkey != record.passkey
+                || old.app != record.app
+            {
+                return Err("the exchange is for another session");
+            }
+            let message = crate::proof::refresh_use_message(
+                old_hash,
+                new_hash,
+                &record.key,
+                &record.session,
+                record.expires_at,
+                *now,
+            );
+            crate::proof::verify_refresh_use(&old.key, &message, signature)?;
+            Ok(None)
+        }
+        // A counter: an assertion of that passkey carrying it. Only the
+        // authenticator signs a counter, so none is set past what it reached.
+        SystemCmd::SetSignCount {
+            credential_id,
+            count,
+            assertion,
+        } => {
+            let (_, credential) = s
+                .account_of_credential(credential_id)
+                .ok_or("unknown credential")?;
+            let assertion: calimero_identity::Assertion = serde_json::from_value(assertion.clone())
+                .map_err(|_| "the counter carries no assertion")?;
+            let carried = calimero_identity::assertion_counter(credential, &assertion)
+                .map_err(|_| "the assertion does not verify")?;
+            if carried != *count {
+                return Err("the assertion carries another counter");
+            }
+            Ok(None)
+        }
         // Memberships: the actor's passkey consent over exactly this change
         // (a member leaving consents to that too). Who may make it is the
         // command's own rule (`run_authorized`).
@@ -1728,10 +2107,112 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             }
             Ok(Some(used))
         }
+        // Recovery: setting the key and cancelling are the owner's passkey
+        // consent, finishing the recovering account's; starting is the
+        // recovery key's signature, checked against the key the organization
+        // holds now, so a rotated key's signatures are refused.
+        SystemCmd::SetRecoveryKey {
+            org,
+            public_key,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "publicKey": public_key });
+            states(&st, &format!("org:{org}"), "__set_recovery_key", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::StartRecovery {
+            org,
+            account,
+            nonce,
+            signature,
+            ..
+        } => {
+            let key = s
+                .orgs
+                .get(org)
+                .ok_or("no such organization")?
+                .recovery
+                .as_ref()
+                .ok_or(NO_RECOVERY_KEY)?;
+            let used =
+                crate::proof::verify_recovery(&key.public_key, org, account, nonce, signature)?;
+            if s.used_proofs.contains(&used) {
+                return Err("that recovery signature was used already");
+            }
+            Ok(Some(used))
+        }
+        SystemCmd::CancelRecovery {
+            org,
+            account,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "account": account });
+            states(&st, &format!("org:{org}"), "__cancel_recovery", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::FinishRecovery {
+            org,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "org": org });
+            states(&st, &format!("org:{org}"), "__finish_recovery", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetSignUp {
+            policy,
+            actor,
+            proof,
+            consent,
+        } => {
+            let (st, used) = sign_up_proof(actor, proof.as_ref(), consent.as_ref())?;
+            let args = json!({ "policy": policy });
+            states(&st, "cluster", "__sign_up", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::CreateSignUpInvite {
+            invite_key,
+            invite,
+            actor,
+            proof,
+            consent,
+        } => {
+            let (st, used) = sign_up_proof(actor, proof.as_ref(), consent.as_ref())?;
+            let args = sign_up_invite_args(invite_key, invite);
+            states(&st, "cluster", "__create_sign_up_invite", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RevokeSignUpInvite {
+            invite_key,
+            actor,
+            proof,
+            consent,
+        } => {
+            let (st, used) = sign_up_proof(actor, proof.as_ref(), consent.as_ref())?;
+            let args = json!({ "inviteKey": invite_key });
+            states(&st, "cluster", "__revoke_sign_up_invite", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         // The fleet: the operator's signature.
         SystemCmd::RegisterNode { node, proof } => {
             let (st, used) = fresh(operator(proof)?)?;
-            let args = json!({ "id": node.id, "addr": node.addr, "zone": node.zone });
+            let mut args = json!({ "id": node.id, "addr": node.addr, "zone": node.zone });
+            if node.role != NodeRole::Replica {
+                args["role"] = json!(node.role);
+            }
             states(&st, "cluster", "__register_node", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -1798,6 +2279,52 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
         "allowConfirm": record.allow_confirm,
         "expiresAt": record.expires_at,
     })
+}
+
+impl SystemCmd {
+    /// The commands whose proofs a cluster requires only from
+    /// [`SystemState::session_proofs_from`] on.
+    #[must_use]
+    pub const fn is_session_command(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateAccount { .. }
+                | Self::CreateRefresh { .. }
+                | Self::UseRefresh { .. }
+                | Self::SetSignCount { .. }
+                | Self::RevokeApiKey { .. }
+        )
+    }
+}
+
+/// A refresh token as the log keeps it: under its hash, with its record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshGrant {
+    pub hash: String,
+    pub record: RefreshRecord,
+}
+
+/// What a sign-in's challenge states (`session / __sign_in`): the refresh
+/// token it opens, by hash and key, its session and its expiry. Made before
+/// the passkey is asked, so it names no account: the passkey that signs it
+/// names the account, and must be the one the record names.
+#[must_use]
+pub fn sign_in_args(hash: &str, record: &RefreshRecord) -> Value {
+    json!({
+        "refresh": hash,
+        "key": record.key,
+        "session": record.session,
+        "expiresAt": record.expires_at,
+    })
+}
+
+/// What a new account's passkey signs at sign-up (`account:<id> /
+/// __create_account`): the whole account (its passkey, name and approved
+/// release among it) and the session the sign-up opens.
+#[must_use]
+pub fn account_args(account: &Account, refresh: Option<&RefreshGrant>) -> Value {
+    json!({ "account": account, "refresh": refresh })
 }
 
 /// What a person consents to when creating an invite: its public key
@@ -1911,8 +2438,23 @@ pub enum SystemCmd {
         access: Access,
         actor: AccountId,
     },
+    /// A new account, with the session its sign-up opens. Carries the new
+    /// passkey's assertion over [`account_args`] (`account:<id> /
+    /// __create_account`): only the passkey's holder makes the account it
+    /// opens, with the release and the session it states. Judged against the
+    /// cluster's sign-up policy ([`Governance::sign_up`]); `invite`: an
+    /// organization invite (the account joins it) or a cluster sign-up
+    /// invite, spent once here.
     CreateAccount {
         account: Account,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<SignUpRedemption>,
+        /// The sign-up's first refresh token.
+        #[serde(default)]
+        refresh: Option<RefreshGrant>,
+        /// The new passkey's consent ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
     /// A new passkey, approved by one the account already has.
     AddPasskey {
@@ -1942,9 +2484,13 @@ pub enum SystemCmd {
         hash: String,
         now: u64,
     },
+    /// A passkey's counter moved: carries the assertion that moved it,
+    /// which only the authenticator signs.
     SetSignCount {
         credential_id: String,
         count: u32,
+        #[serde(default)]
+        assertion: Value,
     },
     CreateApiKey {
         hash: String,
@@ -1956,16 +2502,28 @@ pub enum SystemCmd {
     RevokeApiKey {
         key_id: String,
         actor: AccountId,
+        /// The actor's passkey consent (`account:<a> / __revoke_api_key /
+        /// { keyId }`, [`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
     },
+    /// A sign-in's refresh token: carries the sign-in's assertion, whose
+    /// challenge states [`sign_in_args`] (`session / __sign_in`).
     CreateRefresh {
         hash: String,
         record: RefreshRecord,
+        #[serde(default)]
+        consent: Value,
     },
+    /// A refresh token exchanged for the next: signed with the old token's
+    /// key ([`crate::proof::refresh_use_message`]), which only its holder has.
     UseRefresh {
         old_hash: String,
         new_hash: String,
         record: RefreshRecord,
         now: u64,
+        #[serde(default)]
+        signature: String,
     },
     RevokeSession {
         session: String,
@@ -1987,6 +2545,13 @@ pub enum SystemCmd {
         /// the start, so its apps run where the org began.
         #[serde(default)]
         release: Option<String>,
+        /// The organization's recovery key (base64url Ed25519 public key),
+        /// if the creator set one ([`crate::types::OrgRecovery`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_key: Option<String>,
+        /// When it was created (Unix seconds; the recovery key's `setAt`).
+        #[serde(default)]
+        at: u64,
     },
     /// The cluster's rules, from the first leader's configuration. Accepted
     /// once, before anyone has an account: after that they are fixed, so an
@@ -2004,7 +2569,18 @@ pub enum SystemCmd {
         /// joins through the operator's signed `RegisterNode`.
         #[serde(default)]
         nodes: Vec<NodeRecord>,
+        /// Session commands carry their proofs from genesis on
+        /// ([`SystemState::session_proofs_from`]). Absent (`false`) in a
+        /// genesis an earlier release logged: replayed, it requires nothing.
+        #[serde(default)]
+        session_proofs: bool,
     },
+    /// From this entry on, the session commands carry their proofs
+    /// ([`SystemState::session_proofs_from`]). Written once by the first
+    /// system leader on a release that makes them, in a cluster begun before
+    /// (genesis sets it in a new one). It only ever tightens: a node that
+    /// logs it early takes nothing from anyone.
+    RequireSessionProofs,
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
@@ -2092,6 +2668,40 @@ pub enum SystemCmd {
     SetDeploymentsGranted {
         #[serde(default)]
         proof: Value,
+    },
+    /// Set the cluster's sign-up policy (`cluster / __sign_up / { policy }`):
+    /// the operator's signature (`proof`) until the cluster's owner is named,
+    /// then the owner-side account's passkey (`consent`), never the other.
+    /// It changes the governance every receipt key attests.
+    SetSignUp {
+        policy: SignUp,
+        actor: AccountId,
+        #[serde(default)]
+        proof: Option<Value>,
+        #[serde(default)]
+        consent: Option<Value>,
+    },
+    /// A cluster sign-up invite, recorded under its token's public key (the
+    /// token is never logged), authorized as [`SystemCmd::SetSignUp`] over
+    /// [`sign_up_invite_args`] (`__create_sign_up_invite`).
+    CreateSignUpInvite {
+        invite_key: String,
+        invite: SignUpInvite,
+        actor: AccountId,
+        #[serde(default)]
+        proof: Option<Value>,
+        #[serde(default)]
+        consent: Option<Value>,
+    },
+    /// Withdraw a cluster sign-up invite (`__revoke_sign_up_invite`,
+    /// `{ inviteKey }`); accounts it created stay.
+    RevokeSignUpInvite {
+        invite_key: String,
+        actor: AccountId,
+        #[serde(default)]
+        proof: Option<Value>,
+        #[serde(default)]
+        consent: Option<Value>,
     },
     /// The operator names the cluster's owner where governance says
     /// `deployers: owner` (`cluster / __cluster_owner / { owner }`): once; it
@@ -2337,6 +2947,45 @@ pub enum SystemCmd {
         #[serde(default)]
         signature: String,
     },
+    /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
+    /// key: the owner's, with their passkey consent (`org:<org> /
+    /// __set_recovery_key / { publicKey }`). Cancels a pending recovery.
+    SetRecoveryKey {
+        org: OrgId,
+        public_key: Option<String>,
+        at: u64,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Start handing `org` to `account`: `signature` is the recovery key's
+    /// ([`calimero_identity::recovery::sign_recovery`]) over `org`, `account`
+    /// and `nonce`, made by whoever holds the seed. It may finish
+    /// [`crate::types::RECOVERY_DELAY_SECS`] after `at`.
+    StartRecovery {
+        org: OrgId,
+        account: AccountId,
+        nonce: String,
+        signature: String,
+        at: u64,
+    },
+    /// Cancel the recovery handing `org` to `account`: the owner's, with
+    /// their passkey consent (`__cancel_recovery / { account }`).
+    CancelRecovery {
+        org: OrgId,
+        account: AccountId,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Finish a recovery once its delay passed: the account it names, with
+    /// its passkey consent (`__finish_recovery / { org }`). The account
+    /// becomes the owner; the previous owner leaves the organization and its
+    /// apps there become the new owner's.
+    FinishRecovery {
+        org: OrgId,
+        at: u64,
+        actor: AccountId,
+        consent: Value,
+    },
 }
 
 /// The longest passkey label or alias, in characters.
@@ -2359,6 +3008,9 @@ fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
 #[derive(Default)]
 pub struct SystemMachine {
     pub state: SystemState,
+    /// The log index of the entry being applied (0 outside the log, in
+    /// tests): what [`SystemState::session_proofs_from`] is judged against.
+    index: u64,
 }
 
 fn ok(v: Value) -> Vec<u8> {
@@ -2387,7 +3039,14 @@ impl SystemMachine {
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
     fn run(&mut self, cmd: SystemCmd) -> Result<Value, String> {
-        let used = authorize(&self.state, &cmd).map_err(str::to_owned)?;
+        // An entry logged before the cluster required session proofs applies
+        // as it did then: a restart replays it, and every replica must reach
+        // the answer the release that logged it reached.
+        let used = if cmd.is_session_command() && !self.state.proves_sessions(self.index) {
+            None
+        } else {
+            authorize(&self.state, &cmd).map_err(str::to_owned)?
+        };
         if let Some(stall) = self.new_work_refusal(&cmd) {
             return Err(stall.message());
         }
@@ -2435,9 +3094,21 @@ impl SystemMachine {
     /// Apply `cmd` by its own rules, its proof already judged ([`Self::run`]).
     #[allow(clippy::too_many_lines, reason = "one arm per command")]
     fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
+        let index = self.index;
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node, .. } => {
+                if s.nodes.get(&node.id).is_some_and(|n| n.role != node.role) {
+                    return Err("a node's role is fixed: remove it first");
+                }
+                let addr = normalize_addr(&node.addr);
+                if s.nodes
+                    .values()
+                    .any(|n| n.id != node.id && normalize_addr(&n.addr) == addr)
+                {
+                    return Err("another node has that address");
+                }
+                *s.node_epoch.entry(node.id).or_default() += 1;
                 let _was = s.removed_nodes.remove(&node.id);
                 let _prev = s.nodes.insert(node.id, node);
                 Ok(Value::Null)
@@ -2447,6 +3118,7 @@ impl SystemMachine {
                     return Err("an app still keeps a replica on that node; move it first");
                 }
                 let _gone = s.nodes.remove(&id).ok_or("no such node")?;
+                *s.node_epoch.entry(id).or_default() += 1;
                 let _new = s.removed_nodes.insert(id);
                 Ok(Value::Null)
             }
@@ -2918,7 +3590,12 @@ impl SystemMachine {
                 app.access = access;
                 Ok(Value::Null)
             }
-            SystemCmd::CreateAccount { account } => {
+            SystemCmd::CreateAccount {
+                account,
+                invite,
+                refresh,
+                ..
+            } => {
                 // The first account waits for genesis: the rules it joins
                 // under are fixed before anyone relies on them.
                 if s.governance.is_none() && s.accounts.is_empty() {
@@ -2927,6 +3604,8 @@ impl SystemMachine {
                 if s.accounts.contains_key(&account.account_id) {
                     return Err("account exists");
                 }
+                // Judged before anything changes: a refusal leaves no trace.
+                let admission = s.admits(invite.as_ref())?;
                 if s.accounts.len() >= s.quotas.max_accounts as usize {
                     return Err("quota exceeded: accounts");
                 }
@@ -2935,14 +3614,40 @@ impl SystemMachine {
                         return Err("credential already registered");
                     }
                 }
+                if refresh.as_ref().is_some_and(|g| s.refresh_known(&g.hash)) {
+                    return Err("refresh token already issued");
+                }
                 for c in &account.passkeys {
                     let _prev = s
                         .credentials
                         .insert(c.id.clone(), account.account_id.clone());
                 }
+                if let Some(RefreshGrant { hash, record }) = refresh {
+                    let _prev = s.refresh.insert(hash, record);
+                }
                 let id = account.account_id.clone();
                 let _prev = s.accounts.insert(id.clone(), account);
-                Ok(json!({ "accountId": id }))
+                if let Some(r) = &invite {
+                    let _new = s.used_proofs.insert(crate::proof::invite_redeem_used(
+                        &r.invite_key,
+                        &id,
+                        r.now,
+                    ));
+                }
+                let org = match (admission, invite) {
+                    (Admission::OrgInvite, Some(r)) => {
+                        Some(s.redeem_org_invite(&r.invite_key, &id, r.now)?)
+                    }
+                    (Admission::SignUpInvite, Some(r)) => {
+                        s.spend_sign_up_invite(&r.invite_key);
+                        None
+                    }
+                    _ => None,
+                };
+                Ok(match org {
+                    Some(org) => json!({ "accountId": id, "org": org }),
+                    None => json!({ "accountId": id }),
+                })
             }
             SystemCmd::AddPasskey {
                 account,
@@ -3015,6 +3720,7 @@ impl SystemMachine {
             SystemCmd::SetSignCount {
                 credential_id,
                 count,
+                ..
             } => {
                 let account = s
                     .credentials
@@ -3027,8 +3733,9 @@ impl SystemMachine {
                     .iter_mut()
                     .find(|c| c.id == credential_id)
                     .ok_or("unknown credential")?;
-                // Counters only move forward, whatever order logins committed in.
-                if count != 0 && count <= cred.sign_count {
+                // Counters only move forward, whatever order logins committed
+                // in; a passkey that does not count (0) has nothing to record.
+                if count <= cred.sign_count {
                     return Err("stale signature counter");
                 }
                 cred.sign_count = count;
@@ -3050,7 +3757,7 @@ impl SystemMachine {
                 let _prev = s.api_keys.insert(hash, record);
                 Ok(json!({ "keyId": id }))
             }
-            SystemCmd::RevokeApiKey { key_id, actor } => {
+            SystemCmd::RevokeApiKey { key_id, actor, .. } => {
                 let before = s.api_keys.len();
                 s.api_keys
                     .retain(|_, r| !(r.key_id == key_id && r.account == actor));
@@ -3059,7 +3766,10 @@ impl SystemMachine {
                 }
                 Ok(Value::Null)
             }
-            SystemCmd::CreateRefresh { hash, record } => {
+            SystemCmd::CreateRefresh { hash, record, .. } => {
+                if s.refresh_known(&hash) {
+                    return Err("refresh token already issued");
+                }
                 let _prev = s.refresh.insert(hash, record);
                 Ok(Value::Null)
             }
@@ -3068,7 +3778,11 @@ impl SystemMachine {
                 new_hash,
                 record,
                 now,
+                ..
             } => {
+                if s.refresh_known(&new_hash) {
+                    return Err("refresh token already issued");
+                }
                 let old = s.refresh.remove(&old_hash).ok_or("unknown refresh token")?;
                 if old.expires_at <= now || old.account != record.account {
                     return Err("refresh token expired");
@@ -3106,10 +3820,13 @@ impl SystemMachine {
                 name,
                 actor,
                 release,
+                recovery_key,
+                at,
             } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
                 }
+                let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
                 if s.orgs.contains_key(&org_id) {
                     return Err("organization exists");
                 }
@@ -3137,6 +3854,7 @@ impl SystemMachine {
                         metadata: Value::Null,
                         member_metadata: BTreeMap::new(),
                         upgrade_runs: BTreeMap::new(),
+                        recovery,
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -3146,6 +3864,7 @@ impl SystemMachine {
                 release,
                 operator_key,
                 nodes,
+                session_proofs,
             } => {
                 if s.governance.is_some() || !s.accounts.is_empty() {
                     return Err("the cluster's governance is fixed at genesis");
@@ -3161,7 +3880,17 @@ impl SystemMachine {
                 for node in nodes {
                     let _prev = s.nodes.insert(node.id, node);
                 }
+                if session_proofs {
+                    s.session_proofs_from = Some(index);
+                }
                 Ok(json!({ "governance": governance }))
+            }
+            SystemCmd::RequireSessionProofs => {
+                if s.session_proofs_from.is_some() {
+                    return Err("session proofs are required already");
+                }
+                s.session_proofs_from = Some(index);
+                Ok(Value::Null)
             }
             SystemCmd::SetOperatorRelease {
                 version,
@@ -3382,6 +4111,53 @@ impl SystemMachine {
                 }
                 g.deployments = Deployments::Granted;
                 Ok(json!({ "governance": g }))
+            }
+            SystemCmd::SetSignUp { policy, actor, .. } => {
+                s.runs_sign_up(&actor)?;
+                let g = s
+                    .governance
+                    .as_mut()
+                    .ok_or("the cluster has no governance yet")?;
+                g.sign_up = policy;
+                Ok(json!({ "governance": g }))
+            }
+            SystemCmd::CreateSignUpInvite {
+                invite_key,
+                invite,
+                actor,
+                ..
+            } => {
+                s.runs_sign_up(&actor)?;
+                if invite.created_by != actor {
+                    return Err("a sign-up invite names who issued it");
+                }
+                hex32(&invite_key).ok_or("an invite key is 32 bytes, hex")?;
+                if s.invites.contains_key(&invite_key)
+                    || s.sign_up_invites.contains_key(&invite_key)
+                {
+                    return Err("invite exists");
+                }
+                if s.sign_up_invites.len() >= MAX_SIGN_UP_INVITES {
+                    return Err("quota exceeded: sign-up invites");
+                }
+                if invite.uses_left == 0 || invite.uses_left > MAX_SIGN_UP_INVITE_USES {
+                    return Err("a sign-up invite creates 1 to 10000 accounts");
+                }
+                if invite.expires_at <= invite.created_at {
+                    return Err("a sign-up invite expires after it is made");
+                }
+                let _prev = s.sign_up_invites.insert(invite_key.clone(), invite);
+                Ok(json!({ "inviteKey": invite_key }))
+            }
+            SystemCmd::RevokeSignUpInvite {
+                invite_key, actor, ..
+            } => {
+                s.runs_sign_up(&actor)?;
+                let _gone = s
+                    .sign_up_invites
+                    .remove(&invite_key)
+                    .ok_or("no such sign-up invite")?;
+                Ok(json!({ "inviteKey": invite_key }))
             }
             SystemCmd::SetClusterOwner { owner, proof: _ } => {
                 if s.governance().deployers != Deployers::Owner {
@@ -3977,6 +4753,9 @@ impl SystemMachine {
                 if invite.role > role || (invite.role == OrgRole::Owner) {
                     return Err("cannot invite above your own role");
                 }
+                if s.sign_up_invites.contains_key(&invite_key) {
+                    return Err("invite exists");
+                }
                 let _prev = s.invites.insert(invite_key, invite);
                 Ok(Value::Null)
             }
@@ -3989,31 +4768,130 @@ impl SystemMachine {
                 if !s.accounts.contains_key(&account) {
                     return Err("unknown account");
                 }
-                let inv = s.invites.get_mut(&invite_key).ok_or("unknown invite")?;
-                if inv.expires_at <= now || inv.uses_left == 0 {
-                    return Err("invite expired");
+                let org = s.redeem_org_invite(&invite_key, &account, now)?;
+                Ok(json!({ "org": org }))
+            }
+            SystemCmd::SetRecoveryKey {
+                org,
+                public_key,
+                at,
+                actor,
+                ..
+            } => {
+                let recovery = public_key.map(|k| recovery_key_of(k, at)).transpose()?;
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.role(&actor) != Some(OrgRole::Owner) {
+                    return Err(OWNER_ONLY_RECOVERY);
                 }
-                inv.uses_left -= 1;
-                let inv = inv.clone();
-                if inv.uses_left == 0 {
-                    let _prev = s.invites.remove(&invite_key);
+                // A new key, or none: a recovery under way ends with the old one.
+                o.recovery = recovery;
+                Ok(Value::Null)
+            }
+            SystemCmd::StartRecovery {
+                org, account, at, ..
+            } => {
+                if !s.accounts.contains_key(&account) {
+                    return Err("unknown account");
                 }
-                let o = s.orgs.get_mut(&inv.org).ok_or("no such organization")?;
-                let role = o
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.role(&account) == Some(OrgRole::Owner) {
+                    return Err("that account owns the organization already");
+                }
+                let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
+                if r.pending.is_some() {
+                    return Err(RECOVERY_PENDING);
+                }
+                let pending = crate::types::PendingRecovery {
+                    account,
+                    started_at: at,
+                    ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
+                };
+                let out = json!({ "startedAt": pending.started_at, "readyAt": pending.ready_at });
+                r.pending = Some(pending);
+                Ok(out)
+            }
+            SystemCmd::CancelRecovery {
+                org,
+                account,
+                actor,
+                ..
+            } => {
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.role(&actor) != Some(OrgRole::Owner) {
+                    return Err(OWNER_ONLY_RECOVERY);
+                }
+                let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
+                if r.pending.as_ref().map(|p| &p.account) != Some(&account) {
+                    return Err(NO_RECOVERY_PENDING);
+                }
+                r.pending = None;
+                Ok(Value::Null)
+            }
+            SystemCmd::FinishRecovery { org, at, actor, .. } => {
+                if !s.accounts.contains_key(&actor) {
+                    return Err("unknown account");
+                }
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
+                let Some(p) = r.pending.as_ref().filter(|p| p.account == actor) else {
+                    return Err(NO_RECOVERY_PENDING);
+                };
+                if at < p.ready_at {
+                    return Err(RECOVERY_NOT_READY);
+                }
+                r.pending = None;
+                let previous: Vec<AccountId> = o
                     .members
-                    .get(&account)
-                    .copied()
-                    .map_or(inv.role, |r| r.max(inv.role));
-                let _prev = o.members.insert(account.clone(), role);
-                for t in &inv.teams {
-                    if let Some(team) = o.teams.get_mut(t) {
-                        let _prev = team.members.entry(account.clone()).or_insert(false);
+                    .iter()
+                    .filter(|(_, r)| **r == OrgRole::Owner)
+                    .map(|(a, _)| a.clone())
+                    .collect();
+                for a in &previous {
+                    let _prev = o.members.remove(a);
+                    let _caps = o.capabilities.remove(a);
+                    let _meta = o.member_metadata.remove(a);
+                    for t in o.teams.values_mut() {
+                        let _prev = t.members.remove(a);
+                        let _was = t.read_only.remove(a);
+                        let _caps = t.capabilities.remove(a);
                     }
                 }
-                Ok(json!({ "org": inv.org }))
+                let _prev = o.members.insert(actor.clone(), OrgRole::Owner);
+                // The previous owner's apps in the organization reach their
+                // owner whatever the membership: they move with it.
+                for app in s.apps.values_mut() {
+                    if app.org.as_deref() == Some(org.as_str()) && previous.contains(&app.owner) {
+                        app.owner.clone_from(&actor);
+                    }
+                }
+                Ok(json!({ "org": org, "previousOwners": previous }))
             }
         }
     }
+}
+
+/// A refusal: the organization holds no recovery key.
+pub const NO_RECOVERY_KEY: &str = "this organization has no recovery key";
+/// A refusal: a recovery is under way already.
+pub const RECOVERY_PENDING: &str = "a recovery of this organization is under way";
+/// A refusal: no recovery under way for that account.
+pub const NO_RECOVERY_PENDING: &str =
+    "no recovery of this organization is under way for that account";
+/// A refusal: the recovery's delay has not passed.
+pub const RECOVERY_NOT_READY: &str = "the recovery may finish only once its delay has passed";
+/// A refusal: someone but the owner manages the recovery key.
+pub const OWNER_ONLY_RECOVERY: &str = "only the organization's owner manages its recovery";
+
+/// A recovery key as the organization keeps it, refused unless it is an
+/// Ed25519 public key.
+fn recovery_key_of(public_key: String, at: u64) -> Result<crate::types::OrgRecovery, &'static str> {
+    let _key = calimero_identity::recovery::parse_public(&public_key)
+        .map_err(|_| "a recovery key is a base64url Ed25519 public key")?;
+    Ok(crate::types::OrgRecovery {
+        public_key,
+        set_at: at,
+        pending: None,
+    })
 }
 
 impl Machine for SystemMachine {
@@ -4021,10 +4899,11 @@ impl Machine for SystemMachine {
 
     fn apply(
         &mut self,
-        _index: u64,
+        index: u64,
         command: &[u8],
         _state: &mut calimero_log::StateTx<'_>,
     ) -> Vec<u8> {
+        self.index = index;
         match serde_json::from_slice::<SystemCmd>(command) {
             Ok(cmd) => match self.run(cmd) {
                 Ok(v) => ok(v),
@@ -4063,11 +4942,15 @@ mod tests {
                 json!({ "accountId": id, "name": id, "createdAt": 0, "passkeys": [] }),
             )
             .unwrap(),
+            invite: None,
+            refresh: None,
+            consent: serde_json::Value::Null,
         }
     }
 
     fn genesis(governance: Governance) -> SystemCmd {
         SystemCmd::Genesis {
+            session_proofs: true,
             governance,
             release: Some("2.0.0".into()),
             operator_key: None,
@@ -4082,6 +4965,155 @@ mod tests {
             outbound: who,
             ..Governance::default()
         }
+    }
+
+    fn register(m: &mut SystemMachine, id: u64, role: &str) {
+        let node = serde_json::from_value(
+            json!({ "id": id, "addr": format!("http://n{id}"), "role": role }),
+        )
+        .unwrap();
+        m.run_authorized(SystemCmd::RegisterNode {
+            node,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn job_nodes_are_listed_apart_from_replicas() {
+        let mut m = SystemMachine::default();
+        register(&mut m, 1, "replica");
+        register(&mut m, 2, "job");
+        let ids = |it: Vec<&crate::types::NodeRecord>| it.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(m.state.replica_nodes().collect()), vec![1]);
+        assert_eq!(ids(m.state.job_nodes().collect()), vec![2]);
+        assert!(m.state.replica_node(&2).is_none());
+        assert!(m.state.replica_node(&1).is_some());
+        m.run_authorized(SystemCmd::RemoveNode {
+            id: 2,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert!(m.state.job_nodes().next().is_none());
+    }
+
+    #[test]
+    fn re_registering_a_node_never_changes_its_role() {
+        let mut m = SystemMachine::default();
+        register(&mut m, 1, "replica");
+        register(&mut m, 2, "job");
+        let node = |id: u64, addr: &str, role: &str| {
+            serde_json::from_value(json!({ "id": id, "addr": addr, "role": role })).unwrap()
+        };
+        assert!(m
+            .run_authorized(SystemCmd::RegisterNode {
+                node: node(1, "u", "job"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        assert!(m
+            .run_authorized(SystemCmd::RegisterNode {
+                node: node(2, "u", "replica"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        assert_eq!(m.state.replica_nodes().count(), 1);
+        assert_eq!(m.state.job_nodes().count(), 1);
+        // The address of a node may change; so may anything after a removal.
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: node(2, "v", "job"),
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert_eq!(m.state.nodes[&2].addr, "v");
+        m.run_authorized(SystemCmd::RemoveNode {
+            id: 2,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: node(2, "v", "replica"),
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert_eq!(m.state.replica_nodes().count(), 2);
+    }
+
+    #[test]
+    fn addresses_are_compared_by_their_normal_form() {
+        use super::normalize_addr as n;
+        let one = n("http://127.0.0.1:2528/");
+        for other in [
+            "http://127.0.0.1:2528",
+            "HTTP://127.0.0.1:2528/",
+            "http://127.0.0.1:2528//",
+        ] {
+            assert_eq!(n(other), one, "{other}");
+        }
+        assert_eq!(n("http://Example.com:80/"), n("http://example.com"));
+        assert_ne!(n("http://127.0.0.1:2529"), one);
+        assert_ne!(n("https://127.0.0.1:2528"), one);
+        assert_eq!(n("https://Example.com:443/"), n("https://example.com"));
+        assert_eq!(n("http://[::1]:80/"), n("HTTP://[0:0:0:0:0:0:0:1]"));
+        assert_ne!(n("http://[::1]:2528"), n("http://[::2]:2528"));
+        // No origin to compare: the lowercased text, so distinct stay distinct.
+        assert_ne!(n("a.example:80"), n("b.example:80"));
+        assert_eq!(n("A.example:80/"), n("a.example:80"));
+    }
+
+    #[test]
+    fn a_node_cannot_take_an_address_another_node_holds() {
+        let mut m = SystemMachine::default();
+        register(&mut m, 1, "replica");
+        let node = |id: u64, addr: &str| {
+            serde_json::from_value(json!({ "id": id, "addr": addr, "role": "job" })).unwrap()
+        };
+        assert!(m
+            .run_authorized(SystemCmd::RegisterNode {
+                node: node(2, "HTTP://n1/"),
+                proof: serde_json::Value::Null,
+            })
+            .is_err());
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: node(2, "http://n2"),
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        // The holder may re-register its own address in another spelling.
+        let own = serde_json::from_value(json!({ "id": 1, "addr": "http://N1/" })).unwrap();
+        m.run_authorized(SystemCmd::RegisterNode {
+            node: own,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_nodes_epoch_moves_with_every_registration_and_removal() {
+        let mut m = SystemMachine::default();
+        let epoch = |m: &SystemMachine| m.state.node_epoch.get(&2).copied().unwrap_or(0);
+        register(&mut m, 2, "job");
+        let first = epoch(&m);
+        register(&mut m, 2, "job");
+        assert!(epoch(&m) > first);
+        let second = epoch(&m);
+        m.run_authorized(SystemCmd::RemoveNode {
+            id: 2,
+            proof: serde_json::Value::Null,
+        })
+        .unwrap();
+        assert!(epoch(&m) > second);
+    }
+
+    #[test]
+    fn a_node_record_without_a_role_is_a_replica_and_an_unknown_role_is_refused() {
+        let n: crate::types::NodeRecord =
+            serde_json::from_value(json!({ "id": 1, "addr": "u" })).unwrap();
+        assert_eq!(n.role, crate::types::NodeRole::Replica);
+        assert!(serde_json::from_value::<crate::types::NodeRecord>(
+            json!({ "id": 1, "addr": "u", "role": "gpu" })
+        )
+        .is_err());
     }
 
     /// The rules are written once, before anyone has an account, and an
@@ -4548,12 +5580,17 @@ mod tests {
         let credential =
             calimero_identity::verify_registration(&rp, &challenge, &pk.register(&challenge))
                 .unwrap();
+        let account: crate::types::Account = serde_json::from_value(json!({
+            "accountId": id, "name": id, "createdAt": 0,
+            "passkeys": [credential], "approvedReleases": ["1.0.0"],
+        }))
+        .unwrap();
+        let args = super::account_args(&account, None);
         SystemCmd::CreateAccount {
-            account: serde_json::from_value(json!({
-                "accountId": id, "name": id, "createdAt": 0,
-                "passkeys": [credential], "approvedReleases": ["1.0.0"],
-            }))
-            .unwrap(),
+            consent: consent(pk, &format!("account:{id}"), "__create_account", &args),
+            account,
+            invite: None,
+            refresh: None,
         }
     }
 
@@ -4729,6 +5766,7 @@ mod tests {
         let mut m = SystemMachine::default();
         let _ok = m
             .run(SystemCmd::Genesis {
+                session_proofs: true,
                 governance: all(Authority::Owner),
                 release: Some("2.0.0".into()),
                 operator_key: Some(operator_signer().1),
@@ -4737,6 +5775,7 @@ mod tests {
                         id,
                         addr: format!("http://n{id}/"),
                         zone: String::new(),
+                        role: crate::types::NodeRole::Replica,
                     })
                     .to_vec(),
             })
@@ -4913,6 +5952,370 @@ mod tests {
         assert!(m.state.api_keys.contains_key("h1"));
     }
 
+    /// A cluster begun before session proofs replays what it logged then as
+    /// it applied it, proofless, and requires the proofs from the entry its
+    /// first leader on this release wrote; genesis requires them from the
+    /// start. The mark is written once and only tightens.
+    #[test]
+    fn session_commands_logged_before_their_proofs_apply_as_they_did() {
+        let mut m = SystemMachine::default();
+        m.state.governance = Some(Governance::default());
+        m.index = 3;
+        let _ok = m.run(account("alice")).unwrap();
+        m.index = 5;
+        let _ok = m.run(SystemCmd::RequireSessionProofs).unwrap();
+        assert_eq!(m.state.session_proofs_from, Some(5));
+        assert!(m.run(SystemCmd::RequireSessionProofs).is_err(), "once");
+        m.index = 6;
+        assert!(m.run(account("bob")).is_err(), "proofless after the mark");
+        // A restart from a snapshot before the mark replays what came before it.
+        m.index = 4;
+        let _ok = m.run(account("carol")).unwrap();
+
+        let mut fresh = SystemMachine {
+            index: 1,
+            ..SystemMachine::default()
+        };
+        let _ok = fresh.run(genesis(all(Authority::Owner))).unwrap();
+        assert_eq!(fresh.state.session_proofs_from, Some(1));
+        fresh.index = 2;
+        assert!(
+            fresh.run(account("alice")).is_err(),
+            "required from genesis"
+        );
+        // State from before reads without the mark and writes as it did.
+        let before = serde_json::to_value(SystemState::default()).unwrap();
+        assert!(before.get("sessionProofsFrom").is_none());
+    }
+
+    /// A refresh token for `account`'s `passkey`, as the API makes one: the
+    /// token, its hash, and its record.
+    fn refresh_token(
+        account: &str,
+        passkey: &str,
+        session: &str,
+    ) -> (String, String, crate::types::RefreshRecord) {
+        let token = format!(
+            "rt_{}",
+            calimero_identity::b64url(&calimero_identity::random::<32>())
+        );
+        let hash = calimero_identity::b64url(&calimero_identity::sha256(token.as_bytes()));
+        let record = crate::types::RefreshRecord {
+            account: account.into(),
+            session: session.into(),
+            expires_at: 99,
+            passkey: Some(passkey.into()),
+            app: None,
+            key: crate::proof::refresh_key(&token),
+        };
+        (token, hash, record)
+    }
+
+    /// A sign-in's refresh token applies only with that sign-in's assertion,
+    /// by the passkey its record names, over a challenge stating that token;
+    /// once.
+    #[test]
+    fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let (_token, hash, record) = refresh_token("alice", &alice.credential_id(), "s1");
+        let create = |consent| SystemCmd::CreateRefresh {
+            hash: hash.clone(),
+            record: record.clone(),
+            consent,
+        };
+        let args = super::sign_in_args(&hash, &record);
+        // Bob's passkey does not sign alice in, nor does a record naming bob's
+        // passkey take alice's assertion.
+        let c = consent(&mut bob, "session", "__sign_in", &args);
+        assert!(m.run(create(c)).is_err());
+        let c = consent(&mut alice, "session", "__sign_in", &args);
+        let mut bobs = record.clone();
+        bobs.passkey = Some(bob.credential_id());
+        assert!(m
+            .run(SystemCmd::CreateRefresh {
+                hash: hash.clone(),
+                record: bobs,
+                consent: c,
+            })
+            .is_err());
+        // An assertion over another token: refused.
+        let (_t, other_hash, other) = refresh_token("alice", &alice.credential_id(), "s1");
+        let c = consent(
+            &mut alice,
+            "session",
+            "__sign_in",
+            &super::sign_in_args(&other_hash, &other),
+        );
+        assert!(m.run(create(c)).is_err());
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("session", "__sign_in"),
+            &args,
+            &json!({ "refresh": hash, "key": "00", "session": "s1", "expiresAt": 99 }),
+            create,
+        );
+        assert_eq!(m.state.refresh[&hash].account, "alice");
+    }
+
+    /// A refresh token is exchanged only with its own key's signature, for
+    /// the session it already belongs to.
+    #[test]
+    fn a_refresh_token_is_exchanged_with_its_own_key() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let (token, hash, record) = refresh_token("alice", &alice.credential_id(), "s1");
+        let c = consent(
+            &mut alice,
+            "session",
+            "__sign_in",
+            &super::sign_in_args(&hash, &record),
+        );
+        let _ok = m
+            .run(SystemCmd::CreateRefresh {
+                hash: hash.clone(),
+                record: record.clone(),
+                consent: c,
+            })
+            .unwrap();
+        let (next, next_hash, next_record) = refresh_token("alice", &alice.credential_id(), "s1");
+        let message = |r: &crate::types::RefreshRecord| {
+            crate::proof::refresh_use_message(
+                &hash,
+                &next_hash,
+                &r.key,
+                &r.session,
+                r.expires_at,
+                5,
+            )
+        };
+        let exchange =
+            |record: crate::types::RefreshRecord, signature: String| SystemCmd::UseRefresh {
+                old_hash: hash.clone(),
+                new_hash: next_hash.clone(),
+                record,
+                now: 5,
+                signature,
+            };
+        for (why, cmd) in [
+            ("unsigned", exchange(next_record.clone(), String::new())),
+            (
+                "signed with another token",
+                exchange(
+                    next_record.clone(),
+                    crate::proof::sign_refresh_use(&next, &message(&next_record)),
+                ),
+            ),
+            (
+                "into another session",
+                exchange(
+                    crate::types::RefreshRecord {
+                        session: "s2".into(),
+                        ..next_record.clone()
+                    },
+                    crate::proof::sign_refresh_use(
+                        &token,
+                        &message(&crate::types::RefreshRecord {
+                            session: "s2".into(),
+                            ..next_record.clone()
+                        }),
+                    ),
+                ),
+            ),
+            (
+                "signed over another expiry",
+                exchange(
+                    next_record.clone(),
+                    crate::proof::sign_refresh_use(
+                        &token,
+                        &message(&crate::types::RefreshRecord {
+                            expires_at: 1,
+                            ..next_record.clone()
+                        }),
+                    ),
+                ),
+            ),
+        ] {
+            assert!(m.run(cmd).is_err(), "{why}");
+        }
+        assert!(m.state.refresh.contains_key(&hash));
+        let signed = crate::proof::sign_refresh_use(&token, &message(&next_record));
+        let _ok = m
+            .run(exchange(next_record.clone(), signed.clone()))
+            .unwrap();
+        assert!(m.state.refresh.contains_key(&next_hash));
+        assert!(m.run(exchange(next_record, signed)).is_err(), "replayed");
+
+        // A token from before keys is not exchanged at all.
+        let (old, old_hash, mut keyless) = refresh_token("alice", &alice.credential_id(), "s3");
+        keyless.key = String::new();
+        let _prev = m.state.refresh.insert(old_hash.clone(), keyless.clone());
+        let (_n, new_hash, new_record) = refresh_token("alice", &alice.credential_id(), "s3");
+        let message = crate::proof::refresh_use_message(
+            &old_hash,
+            &new_hash,
+            &new_record.key,
+            "s3",
+            new_record.expires_at,
+            5,
+        );
+        assert_eq!(
+            m.run(SystemCmd::UseRefresh {
+                old_hash,
+                new_hash,
+                record: new_record,
+                now: 5,
+                signature: crate::proof::sign_refresh_use(&old, &message),
+            })
+            .unwrap_err(),
+            "this refresh token has no key; sign in again"
+        );
+    }
+
+    /// An account is created only by its own new passkey, over the whole
+    /// account and the session its sign-up opens; never with a refresh token
+    /// for another account.
+    #[test]
+    fn an_account_is_created_by_its_own_passkey() {
+        let (mut m, _alice, mut bob, _carol) = proven_cluster();
+        let mut dave = Soft::new("localhost", "http://localhost:3000");
+        let SystemCmd::CreateAccount { account, .. } = account_with("dave", &mut dave) else {
+            unreachable!()
+        };
+        let (_token, hash, record) = refresh_token("dave", &dave.credential_id(), "s1");
+        let grant = super::RefreshGrant { hash, record };
+        let create = |refresh: Option<super::RefreshGrant>, consent| SystemCmd::CreateAccount {
+            account: account.clone(),
+            invite: None,
+            refresh,
+            consent,
+        };
+        let args = super::account_args(&account, Some(&grant));
+        let mut elsewhere = account.clone();
+        elsewhere.approved_releases = ["9.9.9".to_owned()].into_iter().collect();
+        let (_t, h, alices) = refresh_token("alice", &dave.credential_id(), "s1");
+        let for_alice = super::RefreshGrant {
+            hash: h,
+            record: alices,
+        };
+        for (why, cmd) in [
+            (
+                "no consent",
+                create(Some(grant.clone()), serde_json::Value::Null),
+            ),
+            (
+                "another passkey's",
+                create(
+                    Some(grant.clone()),
+                    consent(&mut bob, "account:dave", "__create_account", &args),
+                ),
+            ),
+            (
+                "over another release",
+                create(
+                    Some(grant.clone()),
+                    consent(
+                        &mut dave,
+                        "account:dave",
+                        "__create_account",
+                        &super::account_args(&elsewhere, Some(&grant)),
+                    ),
+                ),
+            ),
+            (
+                "a refresh token for alice",
+                create(
+                    Some(for_alice.clone()),
+                    consent(
+                        &mut dave,
+                        "account:dave",
+                        "__create_account",
+                        &super::account_args(&account, Some(&for_alice)),
+                    ),
+                ),
+            ),
+        ] {
+            assert!(m.run(cmd).is_err(), "{why}");
+        }
+        assert!(!m.state.accounts.contains_key("dave"));
+        let real = consent(&mut dave, "account:dave", "__create_account", &args);
+        let _ok = m.run(create(Some(grant.clone()), real)).unwrap();
+        assert!(m.state.accounts.contains_key("dave"));
+        assert_eq!(m.state.refresh[&grant.hash].account, "dave");
+    }
+
+    /// An API key is revoked only with its account's passkey consent over
+    /// that key, once.
+    #[test]
+    fn an_api_key_is_revoked_with_its_accounts_passkey() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+            "keyId": "k1", "account": "alice", "label": "ci", "apps": null,
+            "methods": null, "readOnly": false, "allowConfirm": false, "expiresAt": 99,
+        }))
+        .unwrap();
+        let _prev = m.state.api_keys.insert("h1".into(), record.clone());
+        let _prev = m.state.api_keys.insert(
+            "h2".into(),
+            crate::types::ApiKeyRecord {
+                key_id: "k2".into(),
+                ..record
+            },
+        );
+        let revoke = |consent| SystemCmd::RevokeApiKey {
+            key_id: "k1".into(),
+            actor: "alice".into(),
+            consent,
+        };
+        let args = json!({ "keyId": "k1" });
+        let c = consent(&mut bob, "account:alice", "__revoke_api_key", &args);
+        assert!(m.run(revoke(c)).is_err(), "bob's passkey");
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__revoke_api_key"),
+            &args,
+            &json!({ "keyId": "k2" }),
+            revoke,
+        );
+        assert!(!m.state.api_keys.contains_key("h1"));
+        assert!(m.state.api_keys.contains_key("h2"));
+    }
+
+    /// A passkey's counter moves only to what an assertion of that passkey
+    /// carries.
+    #[test]
+    fn a_counter_moves_with_the_assertion_that_moved_it() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let id = alice.credential_id();
+        let set = |count, assertion: &calimero_identity::Assertion| SystemCmd::SetSignCount {
+            credential_id: id.clone(),
+            count,
+            assertion: serde_json::to_value(assertion).unwrap(),
+        };
+        let theirs = calimero_identity::Assertion {
+            credential_id: id.clone(),
+            ..bob.assert(&[1; 32])
+        };
+        let a = alice.assert(&[1; 32]);
+        let carried = calimero_identity::assertion_counter(
+            &m.state.account_of_credential(&id).unwrap().1.clone(),
+            &a,
+        )
+        .unwrap();
+        assert!(m
+            .run(SystemCmd::SetSignCount {
+                credential_id: id.clone(),
+                count: u32::MAX,
+                assertion: serde_json::Value::Null,
+            })
+            .is_err());
+        assert!(m.run(set(u32::MAX, &a)).is_err(), "past what it carries");
+        assert!(m.run(set(carried, &theirs)).is_err(), "bob's signature");
+        let _ok = m.run(set(carried, &a)).unwrap();
+        assert_eq!(m.state.accounts["alice"].passkeys[0].sign_count, carried);
+        assert!(m.run(set(carried, &a)).is_err(), "replayed");
+    }
+
     /// Membership changes apply only with the actor's passkey consent over
     /// exactly that change, once; a member leaving consents too.
     #[test]
@@ -5074,6 +6477,7 @@ mod tests {
             id: 9,
             addr: "http://n9/".into(),
             zone: "z".into(),
+            role: crate::types::NodeRole::Replica,
         };
         needs_signature(
             &mut m,
@@ -5086,6 +6490,24 @@ mod tests {
             },
         );
         assert!(m.state.nodes.contains_key(&9));
+        // A job node's role is part of what the operator signs.
+        let job = crate::types::NodeRecord {
+            id: 10,
+            addr: "http://n10/".into(),
+            zone: "z".into(),
+            role: crate::types::NodeRole::Job,
+        };
+        needs_signature(
+            &mut m,
+            ("cluster", "__register_node"),
+            &json!({ "id": 10, "addr": "http://n10/", "zone": "z", "role": "job" }),
+            &json!({ "id": 10, "addr": "http://n10/", "zone": "z" }),
+            |proof| SystemCmd::RegisterNode {
+                node: job.clone(),
+                proof,
+            },
+        );
+        assert_eq!(m.state.nodes[&10].role, crate::types::NodeRole::Job);
         needs_signature(
             &mut m,
             ("cluster", "__remove_node"),
@@ -5936,6 +7358,7 @@ mod tests {
         let mut m = SystemMachine::default();
         let _ok = m
             .run(SystemCmd::Genesis {
+                session_proofs: true,
                 governance: Governance {
                     deployments: Deployments::Granted,
                     deployers: Deployers::Owner,
@@ -6622,5 +8045,590 @@ mod tests {
         let _ok = m.run_unproven(charge("b", -50)).unwrap();
         let _ok = m.run_unproven(transfer).unwrap();
         assert_eq!(m.state.file_bytes("account:bob"), 80);
+    }
+
+    // ------------------------------------------------------------ recovery
+
+    use super::{
+        NO_RECOVERY_KEY, NO_RECOVERY_PENDING, OWNER_ONLY_RECOVERY, RECOVERY_NOT_READY,
+        RECOVERY_PENDING,
+    };
+
+    const SEED: [u8; 32] = [9; 32];
+
+    fn set_key(key: Option<String>, actor: &str, consent: serde_json::Value) -> SystemCmd {
+        SystemCmd::SetRecoveryKey {
+            org: "org".into(),
+            public_key: key,
+            at: 10,
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    fn start(seed: &[u8; 32], account: &str, nonce: &str, at: u64) -> SystemCmd {
+        start_signed_for(seed, account, account, nonce, at)
+    }
+
+    /// A start for `account` carrying a signature the seed made for `signed_for`.
+    fn start_signed_for(
+        seed: &[u8; 32],
+        account: &str,
+        signed_for: &str,
+        nonce: &str,
+        at: u64,
+    ) -> SystemCmd {
+        SystemCmd::StartRecovery {
+            org: "org".into(),
+            account: account.into(),
+            nonce: nonce.into(),
+            signature: calimero_identity::recovery::sign_recovery(seed, "org", signed_for, nonce),
+            at,
+        }
+    }
+
+    fn public(seed: &[u8; 32]) -> String {
+        calimero_identity::recovery::recovery_public(seed)
+    }
+
+    /// The owner (and only the owner) sets the key with a passkey; then the
+    /// seed, and nothing else, starts a recovery for the account it signed
+    /// for; the owner cancels with a passkey; the recovering account finishes
+    /// with its own passkey once the delay passed, and takes the
+    /// organization and the previous owner's apps in it.
+    #[test]
+    fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
+        let (mut m, mut alice, mut bob, mut carol) = proven_cluster();
+        let _ = m
+            .state
+            .apps
+            .get_mut("app")
+            .map(|a| a.org = Some("org".into()));
+        let key = Some(public(&SEED));
+        let args = json!({ "publicKey": key });
+
+        // No key yet: the seed starts nothing.
+        assert_eq!(
+            m.run(start(&SEED, "carol", "n0", 100)).unwrap_err(),
+            NO_RECOVERY_KEY
+        );
+        // A member's own passkey does not set it.
+        let by_bob = consent(&mut bob, "org:org", "__set_recovery_key", &args);
+        assert_eq!(
+            m.run(set_key(key.clone(), "bob", by_bob)).unwrap_err(),
+            OWNER_ONLY_RECOVERY
+        );
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_recovery_key"),
+            &args,
+            &json!({ "publicKey": public(&[1; 32]) }),
+            |c| set_key(key.clone(), "alice", c),
+        );
+        assert_eq!(m.state.orgs["org"].recovery.as_ref().unwrap().set_at, 10);
+
+        // A wrong seed, a signature for another account, and another org's
+        // signature are refused where the command applies.
+        assert!(m.run(start(&[1; 32], "carol", "n1", 100)).is_err());
+        assert!(m
+            .run(start_signed_for(&SEED, "carol", "bob", "n1", 100))
+            .is_err());
+        let mut other_org = start(&SEED, "carol", "n1", 100);
+        if let SystemCmd::StartRecovery { org, .. } = &mut other_org {
+            *org = "elsewhere".into();
+        }
+        assert!(m.run(other_org).is_err());
+
+        // The seed's signature for carol: pending, and only one at a time.
+        let out = m.run(start(&SEED, "carol", "n1", 100)).unwrap();
+        assert_eq!(
+            out["readyAt"],
+            json!(100 + crate::types::RECOVERY_DELAY_SECS)
+        );
+        assert_eq!(
+            m.run(start(&SEED, "bob", "n2", 101)).unwrap_err(),
+            RECOVERY_PENDING
+        );
+
+        // The owner cancels; the same signature cannot start it again.
+        let cancel = |actor: &str, c| SystemCmd::CancelRecovery {
+            org: "org".into(),
+            account: "carol".into(),
+            actor: actor.into(),
+            consent: c,
+        };
+        let by_bob = consent(
+            &mut bob,
+            "org:org",
+            "__cancel_recovery",
+            &json!({ "account": "carol" }),
+        );
+        assert_eq!(
+            m.run(cancel("bob", by_bob)).unwrap_err(),
+            OWNER_ONLY_RECOVERY
+        );
+        let by_alice = consent(
+            &mut alice,
+            "org:org",
+            "__cancel_recovery",
+            &json!({ "account": "carol" }),
+        );
+        let _ok = m.run(cancel("alice", by_alice)).unwrap();
+        assert_eq!(
+            m.run(start(&SEED, "carol", "n1", 100)).unwrap_err(),
+            "that recovery signature was used already"
+        );
+
+        // Started again; finished only by carol, with her passkey, after the delay.
+        let _ok = m.run(start(&SEED, "carol", "n3", 200)).unwrap();
+        let ready = 200 + crate::types::RECOVERY_DELAY_SECS;
+        let finish = |actor: &str, at: u64, c| SystemCmd::FinishRecovery {
+            org: "org".into(),
+            at,
+            actor: actor.into(),
+            consent: c,
+        };
+        let args = json!({ "org": "org" });
+        let early = consent(&mut carol, "org:org", "__finish_recovery", &args);
+        assert_eq!(
+            m.run(finish("carol", ready - 1, early)).unwrap_err(),
+            RECOVERY_NOT_READY
+        );
+        let by_bob = consent(&mut bob, "org:org", "__finish_recovery", &args);
+        assert_eq!(
+            m.run(finish("bob", ready, by_bob)).unwrap_err(),
+            NO_RECOVERY_PENDING
+        );
+        let by_alice_for_carol = consent(&mut alice, "org:org", "__finish_recovery", &args);
+        assert!(m.run(finish("carol", ready, by_alice_for_carol)).is_err());
+        let done = m
+            .run(finish(
+                "carol",
+                ready,
+                consent(&mut carol, "org:org", "__finish_recovery", &args),
+            ))
+            .unwrap();
+        assert_eq!(done["previousOwners"], json!(["alice"]));
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.role("carol"), Some(OrgRole::Owner));
+        assert_eq!(o.role("alice"), None, "the previous owner left");
+        assert_eq!(o.role("bob"), Some(OrgRole::Member));
+        assert!(o.recovery.as_ref().unwrap().pending.is_none());
+        assert_eq!(
+            m.state.apps["app"].owner, "carol",
+            "the org's apps moved with it"
+        );
+        // Alice's passkeys and account are her own still.
+        assert!(m.state.accounts.contains_key("alice"));
+    }
+
+    /// Rotating the key cancels a pending recovery and retires the old seed;
+    /// removing it leaves nothing to recover with.
+    #[test]
+    fn rotating_the_recovery_key_retires_the_old_seed() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let set = |m: &mut SystemMachine, alice: &mut Soft, key: Option<String>| {
+            let c = consent(
+                alice,
+                "org:org",
+                "__set_recovery_key",
+                &json!({ "publicKey": key }),
+            );
+            m.run(set_key(key, "alice", c)).unwrap();
+        };
+        set(&mut m, &mut alice, Some(public(&SEED)));
+        let _ok = m.run(start(&SEED, "carol", "n1", 100)).unwrap();
+        set(&mut m, &mut alice, Some(public(&[2; 32])));
+        assert!(m.state.orgs["org"]
+            .recovery
+            .as_ref()
+            .unwrap()
+            .pending
+            .is_none());
+        assert!(
+            m.run(start(&SEED, "carol", "n2", 100)).is_err(),
+            "the old seed"
+        );
+        let _ok = m.run(start(&[2; 32], "carol", "n2", 100)).unwrap();
+        set(&mut m, &mut alice, None);
+        assert!(m.state.orgs["org"].recovery.is_none());
+        assert_eq!(
+            m.run(start(&[2; 32], "carol", "n3", 100)).unwrap_err(),
+            NO_RECOVERY_KEY
+        );
+        // A key that is not an Ed25519 public key is refused.
+        let bad = Some("not-a-key".to_owned());
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__set_recovery_key",
+            &json!({ "publicKey": bad }),
+        );
+        assert!(m.run(set_key(bad, "alice", c)).is_err());
+    }
+
+    /// An organization written before recovery keys reads with none and
+    /// writes back the same bytes, so a snapshot from before restores
+    /// unchanged; its owner can set a key afterwards.
+    #[test]
+    fn state_from_before_recovery_reads_with_none_and_writes_as_before() {
+        let written = json!({
+            "orgId": "org", "name": "Docs", "members": { "alice": "owner" }, "teams": {},
+            "defaultCapabilities": crate::types::caps::DEFAULT, "capabilities": {},
+            "approvedReleases": ["2.0.0"], "outboundApprovals": {}, "metadata": null,
+            "memberMetadata": {}, "upgradeRuns": {},
+        });
+        let org: crate::types::Org = serde_json::from_value(written.clone()).unwrap();
+        assert!(org.recovery.is_none());
+        assert_eq!(serde_json::to_value(&org).unwrap(), written);
+        // `CreateOrg` as the previous release logged it.
+        let cmd: SystemCmd = serde_json::from_value(json!({
+            "op": "createOrg", "org_id": "o2", "name": "N", "actor": "alice", "release": null,
+        }))
+        .unwrap();
+        assert!(matches!(
+            cmd,
+            SystemCmd::CreateOrg {
+                recovery_key: None,
+                at: 0,
+                ..
+            }
+        ));
+
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let _prev = m.state.orgs.insert("org".into(), org);
+        let before = serde_json::to_value(&m.state).unwrap();
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+        let key = Some(public(&SEED));
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__set_recovery_key",
+            &json!({ "publicKey": key }),
+        );
+        let _ok = m.run(set_key(key.clone(), "alice", c)).unwrap();
+        assert_eq!(
+            m.state.orgs["org"].recovery.as_ref().map(|r| &r.public_key),
+            key.as_ref()
+        );
+    }
+
+    mod sign_up {
+        use serde_json::json;
+
+        use super::super::{
+            Governance, SignUp, SignUpInvite, SignUpRedemption, SystemCmd, SystemMachine,
+            SystemState, OPERATOR, SIGN_UP_PREFIX,
+        };
+        use super::{account_with, operator_signed};
+
+        fn machine(policy: SignUp) -> SystemMachine {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let mut m = SystemMachine::default();
+            let _ok = m
+                .run(SystemCmd::Genesis {
+                    governance: Governance {
+                        sign_up: policy,
+                        ..Governance::default()
+                    },
+                    release: Some("1.0.0".into()),
+                    operator_key: Some(crate::proof::OperatorKey {
+                        key: hex::encode(key.verifying_key().to_bytes()),
+                        cluster: "c".into(),
+                    }),
+                    nodes: Vec::new(),
+                    session_proofs: true,
+                })
+                .unwrap();
+            m
+        }
+
+        /// `id`'s account with its passkey's consent, presenting `token`
+        /// (signed for `id` at `now`).
+        fn signing_up(id: &str, token: Option<&str>, now: u64) -> SystemCmd {
+            let mut pk = calimero_identity::testing::SoftAuthenticator::new(
+                "localhost",
+                "http://localhost:3000",
+            );
+            let SystemCmd::CreateAccount {
+                account,
+                refresh,
+                consent,
+                ..
+            } = account_with(id, &mut pk)
+            else {
+                unreachable!()
+            };
+            SystemCmd::CreateAccount {
+                account,
+                invite: token.map(|t| SignUpRedemption {
+                    invite_key: crate::proof::invite_key(t),
+                    now,
+                    signature: crate::proof::sign_invite_redeem(t, id, now),
+                }),
+                refresh,
+                consent,
+            }
+        }
+
+        fn sign_up_invite(token: &str, uses: u32, expires_at: u64) -> SystemCmd {
+            let invite = SignUpInvite {
+                expires_at,
+                uses_left: uses,
+                created_by: OPERATOR.into(),
+                created_at: 1,
+            };
+            let key = crate::proof::invite_key(token);
+            let args = super::super::sign_up_invite_args(&key, &invite);
+            SystemCmd::CreateSignUpInvite {
+                invite_key: key,
+                invite,
+                actor: OPERATOR.into(),
+                proof: Some(operator_signed("cluster", "__create_sign_up_invite", &args)),
+                consent: None,
+            }
+        }
+
+        /// Alice (an account from before, whatever the policy) owns `org`,
+        /// which has a one-use member invite under `token`.
+        fn org_invite(m: &mut SystemMachine, token: &str) {
+            let _prev = m.state.accounts.insert(
+                "alice".into(),
+                serde_json::from_value(
+                    json!({ "accountId": "alice", "name": "a", "createdAt": 0, "passkeys": [] }),
+                )
+                .unwrap(),
+            );
+            let _prev = m.state.orgs.insert(
+                "org".into(),
+                serde_json::from_value(json!({
+                    "orgId": "org", "name": "Docs", "members": { "alice": "owner" }, "teams": {}
+                }))
+                .unwrap(),
+            );
+            let _prev = m.state.invites.insert(
+                crate::proof::invite_key(token),
+                serde_json::from_value(json!({
+                    "org": "org", "role": "member", "teams": [], "expiresAt": 100, "usesLeft": 1,
+                }))
+                .unwrap(),
+            );
+        }
+
+        fn refused(r: Result<serde_json::Value, String>) -> String {
+            let e = r.unwrap_err();
+            assert!(e.starts_with(SIGN_UP_PREFIX), "{e}");
+            e
+        }
+
+        /// Open takes anyone, as before; an invite presented there is still
+        /// checked and, for an organization's, joins it.
+        #[test]
+        fn an_open_cluster_takes_anyone() {
+            let mut m = machine(SignUp::Open);
+            let _ok = m.run(signing_up("a", None, 10)).unwrap();
+            let _e = refused(m.run(signing_up("b", Some("inv_unknown"), 10)));
+            assert!(!m.state.accounts.contains_key("b"));
+            org_invite(&mut m, "inv_org");
+            let v = m.run(signing_up("c", Some("inv_org"), 10)).unwrap();
+            assert_eq!(v["org"], "org");
+            assert!(m.state.orgs["org"].members.contains_key("c"));
+        }
+
+        /// Invite: refused without one, with an unknown, expired or used
+        /// one, or a forged signature; taken with an organization invite (the
+        /// account joins) and with a sign-up invite (spent per account).
+        #[test]
+        fn an_invite_cluster_takes_only_invited_people() {
+            let mut m = machine(SignUp::Invite);
+            let e = refused(m.run(signing_up("a", None, 10)));
+            assert!(e.contains("invite only"), "{e}");
+            let _e = refused(m.run(signing_up("a", Some("inv_unknown"), 10)));
+
+            org_invite(&mut m, "inv_org");
+            let _e = refused(m.run(signing_up("a", Some("inv_org"), 100)));
+            let SystemCmd::CreateAccount {
+                account,
+                refresh,
+                consent,
+                ..
+            } = signing_up("a", None, 10)
+            else {
+                unreachable!()
+            };
+            let forged = SystemCmd::CreateAccount {
+                account,
+                invite: Some(SignUpRedemption {
+                    invite_key: crate::proof::invite_key("inv_org"),
+                    now: 10,
+                    signature: crate::proof::sign_invite_redeem("inv_guess", "a", 10),
+                }),
+                refresh,
+                consent,
+            };
+            assert!(m.run(forged).is_err(), "not the token's key");
+            let _ok = m.run(signing_up("a", Some("inv_org"), 10)).unwrap();
+            assert_eq!(
+                m.state.orgs["org"].members["a"],
+                crate::types::OrgRole::Member
+            );
+            let _e = refused(m.run(signing_up("b", Some("inv_org"), 10)));
+
+            let _ok = m.run(sign_up_invite("sup_two", 2, 50)).unwrap();
+            let _ok = m.run(signing_up("b", Some("sup_two"), 10)).unwrap();
+            assert_eq!(
+                m.state.sign_up_invites[&crate::proof::invite_key("sup_two")].uses_left,
+                1
+            );
+            let _e = refused(m.run(signing_up("c", Some("sup_two"), 50)));
+            let _ok = m.run(signing_up("c", Some("sup_two"), 11)).unwrap();
+            assert!(
+                m.state.sign_up_invites.is_empty(),
+                "the last use removes it"
+            );
+            let _e = refused(m.run(signing_up("d", Some("sup_two"), 12)));
+            assert_eq!(m.state.accounts.len(), 4);
+        }
+
+        /// Closed: only a sign-up invite (a pre-authorization) lets anyone
+        /// in; an organization invite does not.
+        #[test]
+        fn a_closed_cluster_takes_only_preauthorized_people() {
+            let mut m = machine(SignUp::Closed);
+            let e = refused(m.run(signing_up("a", None, 10)));
+            assert!(e.contains("pre-authorized"), "{e}");
+            org_invite(&mut m, "inv_org");
+            let _e = refused(m.run(signing_up("a", Some("inv_org"), 10)));
+            assert_eq!(m.state.invites.len(), 1, "a refusal spends nothing");
+            let _ok = m.run(sign_up_invite("sup_one", 1, 50)).unwrap();
+            let _ok = m.run(signing_up("a", Some("sup_one"), 10)).unwrap();
+            let _e = refused(m.run(signing_up("b", Some("sup_one"), 10)));
+        }
+
+        /// The policy and sign-up invites change only with the operator's
+        /// signature over exactly that change, once; with the cluster's owner
+        /// named (`deployers: owner`), only with the owner's passkey.
+        #[test]
+        fn the_policy_changes_only_with_the_operators_signature() {
+            let mut m = machine(SignUp::Open);
+            let set = |policy: SignUp, proof: Option<serde_json::Value>| SystemCmd::SetSignUp {
+                policy,
+                actor: OPERATOR.into(),
+                proof,
+                consent: None,
+            };
+            let closed = json!({ "policy": "closed" });
+            assert!(m.run(set(SignUp::Closed, None)).is_err(), "no signature");
+            let wrong = operator_signed("cluster", "__sign_up", &json!({ "policy": "invite" }));
+            assert!(
+                m.run(set(SignUp::Closed, Some(wrong))).is_err(),
+                "another change"
+            );
+            let mut forged = operator_signed("cluster", "__sign_up", &closed);
+            forged["signature"] = json!("00".repeat(64));
+            assert!(m.run(set(SignUp::Closed, Some(forged))).is_err(), "forged");
+            let as_alice = SystemCmd::SetSignUp {
+                policy: SignUp::Closed,
+                actor: "alice".into(),
+                proof: Some(operator_signed("cluster", "__sign_up", &closed)),
+                consent: None,
+            };
+            assert!(m.run(as_alice).is_err(), "only the operator signs");
+            assert_eq!(m.state.governance().sign_up, SignUp::Open);
+            let proof = operator_signed("cluster", "__sign_up", &closed);
+            let _ok = m.run(set(SignUp::Closed, Some(proof.clone()))).unwrap();
+            assert_eq!(m.state.governance().sign_up, SignUp::Closed);
+            assert!(m.run(set(SignUp::Closed, Some(proof))).is_err(), "replay");
+
+            // A sign-up invite and its revocation: signed, once.
+            let SystemCmd::CreateSignUpInvite {
+                invite_key, invite, ..
+            } = sign_up_invite("sup_x", 1, 50)
+            else {
+                unreachable!()
+            };
+            let unsigned = SystemCmd::CreateSignUpInvite {
+                invite_key,
+                invite,
+                actor: OPERATOR.into(),
+                proof: None,
+                consent: None,
+            };
+            assert!(m.run(unsigned).is_err(), "no signature");
+            let _ok = m.run(sign_up_invite("sup_x", 1, 50)).unwrap();
+            let key = crate::proof::invite_key("sup_x");
+            let revoke = |proof| SystemCmd::RevokeSignUpInvite {
+                invite_key: key.clone(),
+                actor: OPERATOR.into(),
+                proof,
+                consent: None,
+            };
+            assert!(m.run(revoke(None)).is_err());
+            let args = json!({ "inviteKey": key });
+            let _ok = m
+                .run(revoke(Some(operator_signed(
+                    "cluster",
+                    "__revoke_sign_up_invite",
+                    &args,
+                ))))
+                .unwrap();
+            let _e = refused(m.run(signing_up("a", Some("sup_x"), 10)));
+
+            // Once the cluster's owner is named, the operator's signature no
+            // longer changes the policy.
+            m.state.governance.as_mut().unwrap().deployers = super::super::Deployers::Owner;
+            let _e = refused(m.run(signing_up("owner", None, 10)));
+            let _prev = m.state.accounts.insert(
+                "owner".into(),
+                serde_json::from_value(
+                    json!({ "accountId": "owner", "name": "o", "createdAt": 0, "passkeys": [] }),
+                )
+                .unwrap(),
+            );
+            m.state.cluster_owner = Some(super::super::Deployer::Account("owner".into()));
+            let open = json!({ "policy": "open" });
+            let e = m
+                .run(set(
+                    SignUp::Open,
+                    Some(operator_signed("cluster", "__sign_up", &open)),
+                ))
+                .unwrap_err();
+            assert!(e.contains("owner"), "{e}");
+            assert!(m.state.runs_sign_up("owner").is_ok());
+            assert!(m.state.runs_sign_up(OPERATOR).is_err());
+        }
+
+        /// State from before sign-up policies reads as `open` with no
+        /// sign-up invites, and writes the bytes it did; a `CreateAccount`
+        /// from before (no `invite`) applies as before.
+        #[test]
+        fn state_from_before_sign_up_reads_as_open() {
+            let mut m = SystemMachine::default();
+            let _ok = m
+                .run_authorized(super::genesis(Governance::default()))
+                .unwrap();
+            let old = serde_json::to_value(&m.state).unwrap();
+            assert!(old.get("signUpInvites").is_none(), "{old}");
+            assert!(old["governance"].get("signUp").is_none(), "{old}");
+            let mut restored: SystemState = serde_json::from_value(old.clone()).unwrap();
+            assert_eq!(restored.governance().sign_up, SignUp::Open);
+            assert!(restored.sign_up_invites.is_empty());
+            assert_eq!(serde_json::to_value(&restored).unwrap(), old);
+            // A command the previous release logged.
+            let cmd: SystemCmd = serde_json::from_value(json!({
+                "op": "createAccount",
+                "account": { "accountId": "a", "name": "a", "createdAt": 0, "passkeys": [] },
+            }))
+            .unwrap();
+            let mut m = SystemMachine {
+                state: restored.clone(),
+                ..SystemMachine::default()
+            };
+            let _ok = m.run_authorized(cmd).unwrap();
+            restored = m.state;
+            assert!(restored.accounts.contains_key("a"));
+        }
     }
 }

@@ -318,6 +318,36 @@ pub fn verify_consent(
     credential: &Credential,
     assertion: &Assertion,
 ) -> Result<(), Error> {
+    signed_by(credential, assertion, Some(challenge), true).map(|_| ())
+}
+
+/// [`verify_consent`] for a sign-in: the user present, verified or not, as
+/// the sign-in itself asked ([`verify_assertion`] without user verification).
+/// Answers the counter the assertion carries.
+pub fn verify_sign_in(
+    challenge: &[u8],
+    credential: &Credential,
+    assertion: &Assertion,
+) -> Result<u32, Error> {
+    signed_by(credential, assertion, Some(challenge), false)
+}
+
+/// The counter a genuine assertion of `credential` carries, whatever it was
+/// made for: what proves a counter moved, as only the authenticator signs a
+/// counter.
+pub fn assertion_counter(credential: &Credential, assertion: &Assertion) -> Result<u32, Error> {
+    signed_by(credential, assertion, None, false)
+}
+
+/// `assertion` is `credential`'s `webauthn.get` signature, with the user
+/// present (and verified, with `verified`), over `challenge` when one is
+/// named. Answers the counter it carries.
+fn signed_by(
+    credential: &Credential,
+    assertion: &Assertion,
+    challenge: Option<&[u8]>,
+    verified: bool,
+) -> Result<u32, Error> {
     if assertion.credential_id != credential.id {
         return Err(Error::Mismatch("credential"));
     }
@@ -327,20 +357,23 @@ pub fn verify_consent(
     if cd.kind != "webauthn.get" {
         return Err(Error::Mismatch("ceremony type"));
     }
-    if b64(&cd.challenge)? != challenge {
-        return Err(Error::Mismatch("challenge"));
+    if let Some(challenge) = challenge {
+        if b64(&cd.challenge)? != challenge {
+            return Err(Error::Mismatch("challenge"));
+        }
     }
     let auth_bytes = b64(&assertion.authenticator_data)?;
     let auth = parse_auth_data(&auth_bytes)?;
     if auth.flags & FLAG_UP == 0 {
         return Err(Error::Mismatch("user presence"));
     }
-    if auth.flags & FLAG_UV == 0 {
+    if verified && auth.flags & FLAG_UV == 0 {
         return Err(Error::Mismatch("user verification"));
     }
     let mut message = auth_bytes;
     message.extend_from_slice(digest(&SHA256, &client_data).as_ref());
     credential
         .public_key
-        .verify(&message, &b64(&assertion.signature)?)
+        .verify(&message, &b64(&assertion.signature)?)?;
+    Ok(auth.sign_count)
 }

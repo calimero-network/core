@@ -53,6 +53,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   chunks. Every node of a cluster shares K_r, so a follower opens a leader's file.
   Installing writes the next state generation (`group ‖ generation ‖ key`) and
   switches in one batch: a crash mid-install keeps the old state.
+- Node rows: `Engine::put_node_meta`/`get_node_meta` keep rows of the node's own in
+  `meta` under group id `NODE_ROWS` (`u64::MAX`, which no group takes), sealed and
+  synced like a vote: the node's rollback counter lives in the same store as the
+  data, so a copy of the store carries the counter it had.
 - Migration (`legacy.rs`): a data dir holding the previous redb file (`log.redb`) is
   migrated on `Engine::open` (entries, vote, commit and purge marks, blobs; the old
   whole-state snapshot is imported by the group's machine via `Machine::import`) and

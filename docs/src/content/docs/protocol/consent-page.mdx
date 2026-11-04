@@ -140,11 +140,11 @@ top to bottom:
    withdrawal stops and that nothing is deleted), then `attention`, the things
    not to miss. For an upgrade that is the "Needs your attention" list, each
    entry present only when it applies: sends data to new addresses (hosts
-   only), adds a new sign-in address, can now delete data (methods added or
-   newly destructive), rewrites stored data once (a migration), removes
-   features (methods removed), a refused plan, another publisher key; with
-   none, "No new permissions." A withdrawal of the last approved release is
-   flagged too.
+   only), adds a new sign-in address, lets anyone use methods without signing
+   in (methods added or newly public), declares its stored data at another
+   state version although an update runs no migration, removes features
+   (methods removed), another publisher key; with none, "No new permissions."
+   A withdrawal of the last approved release is flagged too.
 5. **How you know this is legit**: checks a person can make. The page is
    served by their node at *host*, not by the app; the passkey will ask to
    sign in to `rpId`, and any other site means cancel; for an upgrade or
@@ -164,7 +164,7 @@ top to bottom:
 | --- | --- |
 | **Release** | The version; whether it is already approved and what is approved now; which of the cluster's nodes attest it; this node's profile if it runs it; the release's signed measurements per profile and their digest (on mock attestation it says there are none); links to the signed release and its Sigstore-signed `published-mrtds.json`, with how to verify them independently; the deadline, if any |
 | **Release withdrawal** | The version; whether it is approved now (if not, that withdrawing changes nothing) and what else is; whether it is the only approved release, which the node refuses to withdraw; which of the cluster's nodes attest it; this node's profile if it runs it. No measurements: a withdrawal lets nothing in, so it never waits on fetching them. The page says what changes: the nodes that hold the data send nodes on that release no more Raft entries or snapshots, and no app is placed or moved onto them; and what does not: nothing is deleted or moved, a replica already there keeps what it holds until the operator moves it, and one that leads an app keeps leading it until leadership moves |
-| **Upgrade** | The app, current and target version, the publisher's key and author, and a **capability sheet** computed from the two signed manifests and the ABIs their WASM embeds: outbound prefixes added and removed; frontend origin and aliases, with every **new sign-in origin** listed (a page there could act in the app as the person); interfaces used and exported; public methods added, removed or changed (view or write, xcall entry point, event handler, destructive); events; timers; whether a migration runs and between which state versions, or why the upgrade would be refused; SDK and build information; the `.mpk`, WASM and manifest hashes |
+| **Upgrade** | The app, current and target version, the publisher's key and author, and a **capability sheet** computed from the two signed manifests and the `calimero:abi` section each component embeds: outbound prefixes added and removed; frontend origin and aliases, with every **new sign-in origin** listed (a page there could act in the app as the person); interfaces used and exported; methods added, removed or changed (kind, passkey confirmation, public and its rate, accepted from the system, other apps or only the app's actions, parameters and result); events; timers; the state version each side declares (an update is code only: no migration runs); SDK and build information; the `.mpk`, WASM and manifest hashes |
 | **Outbound** | The package and its publisher key, the release whose declarations are listed, the prefixes being approved, which of them are new, which are already approved |
 
 Each kind's model also keeps the engineer's wording: `headline`, `before`
@@ -177,7 +177,7 @@ and `notes`, shown under *Technical details*.
 | --- | --- | --- |
 | `title` | all | The headline in plain words |
 | `points` | all | Two to five plain sentences: what approving means |
-| `attention` | all | `[{ "flag", "text", "items" }]`, what not to miss; `items` are hosts, origins or method names. Flags: `refused`, `sendsData`, `newSignIn`, `deletesData`, `migration`, `removesFeatures`, `newPublisherKey` (upgrade), `lastApproved` (withdrawal). Empty: no new permissions |
+| `attention` | all | `[{ "flag", "text", "items" }]`, what not to miss; `items` are hosts, origins or method names. Flags: `sendsData`, `newSignIn`, `newPublic`, `stateVersion`, `removesFeatures`, `newPublisherKey` (upgrade), `lastApproved` (withdrawal). Empty: no new permissions |
 | `app` | upgrade, outbound | `{ "name", "package" }`: the manifest's display name and the package id |
 | `publisher` | upgrade, outbound | `{ "name", "signer", "keyChanged", "org" }`: the manifest's author (`null` when it names none), the verified signing key (`did:key`), whether it differs from the running version's, and the organization the key is bound to on this cluster (`{ "id", "name" }`, from `BindPublisher`; `null` while unbound). The page names that organization as the publisher when there is one |
 | `release.deadline` | release | `{ "after", "afterSecs", "passed" }` when the operator set an end-of-new-work deadline for the version (`SetReleaseDeadline`, `GET /releases`), else `null`; `points` then say it in plain words ("After Nov 15, 2026 (UTC), new apps, installs and updates for Acme's apps pause until this version (or a newer one) is approved") |

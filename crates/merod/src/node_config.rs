@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use calimero_node::system::{Authority, Deployers, Deployments};
+use calimero_node::system::{Authority, Deployers, Deployments, SignUp};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +61,15 @@ fn deployers(s: &str) -> Result<Deployers, String> {
     }
 }
 
+fn sign_up(s: &str) -> Result<SignUp, String> {
+    match s {
+        "open" => Ok(SignUp::Open),
+        "invite" => Ok(SignUp::Invite),
+        "closed" => Ok(SignUp::Closed),
+        other => Err(format!("{other:?}: expected open, invite or closed")),
+    }
+}
+
 #[derive(Clone, Debug, Default, Args, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NodeArgs {
@@ -100,6 +109,11 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_STORAGE_KEY")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_key: Option<String>,
+    /// Run as a job node: it runs compute for the cluster's apps and holds no
+    /// app, no vote and no key of the cluster; flags that would give it one are refused.
+    #[arg(long, env = "MEROD_JOB_NODE", num_args = 0..=1, default_missing_value = "true")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_node: Option<bool>,
     /// The passkey (WebAuthn) relying party id [default: localhost]. It must
     /// be a registrable suffix of every host that runs a passkey ceremony:
     /// each `--origins` host and `--apps-domain` must equal it or be a
@@ -215,6 +229,15 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_DEPLOYERS", value_parser = deployers)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployers: Option<Deployers>,
+    /// Who may create an account: `open` (anyone who reaches the cluster),
+    /// `invite` (an organization invite or a cluster sign-up invite) or
+    /// `closed` (only a cluster sign-up invite the operator or owner issued)
+    /// [default: open]. Written at first start and attested; later changed
+    /// only by the operator's signature (`POST /ops/sign-up`) or, once named,
+    /// the cluster owner's passkey (`POST /sign-up`).
+    #[arg(long, env = "MEROD_SIGN_UP", value_parser = sign_up)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_up: Option<SignUp>,
     /// Serve app frontends from their releases at `{label}.{DOMAIN}`, one
     /// origin per package (a wildcard DNS name pointing at the cluster).
     #[arg(long, env = "MEROD_APPS_DOMAIN")]
@@ -232,6 +255,44 @@ pub struct NodeArgs {
 }
 
 impl NodeArgs {
+    /// The first flag given that a job node has no use for: it has no store,
+    /// key, KMS, API, apps or system group.
+    #[must_use]
+    pub fn job_node_conflicts(&self) -> Option<&'static str> {
+        [
+            ("--public-url", self.public_url.is_some()),
+            ("--bootstrap", self.bootstrap == Some(true)),
+            ("--storage-key", self.storage_key.is_some()),
+            ("--storage-key-file", self.storage_key_file.is_some()),
+            ("--kms-url", self.kms_url.is_some()),
+            ("--kms-identity", self.kms_identity.is_some()),
+            ("--kms-disk-evidence", self.kms_disk_evidence.is_some()),
+            ("--ops-token", self.ops_token.is_some()),
+            ("--ops-token-sha256", self.ops_token_sha256.is_some()),
+            ("--metrics-listen", self.metrics_listen.is_some()),
+            ("--replicas", self.replicas.is_some()),
+            ("--backup-dir", self.backup_dir.is_some()),
+            ("--registry-url", self.registry_url.is_some()),
+            (
+                "--allow-unsigned-bundles",
+                self.allow_unsigned_bundles == Some(true),
+            ),
+            ("--release-approvals", self.release_approvals.is_some()),
+            ("--app-upgrades", self.app_upgrades.is_some()),
+            ("--outbound-approvals", self.outbound_approvals.is_some()),
+            ("--apps-domain", self.apps_domain.is_some()),
+            (
+                "--settings",
+                self.settings.is_some() || self.outbound.is_some(),
+            ),
+            ("--rp-id", self.rp_id.is_some()),
+            ("--origins", !self.origins.is_empty()),
+            ("--operator-key", self.operator_key.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag))
+    }
+
     /// These values, and `base`'s where these leave one out.
     #[must_use]
     pub fn over(self, base: Self) -> Self {
@@ -251,6 +312,7 @@ impl NodeArgs {
             bootstrap: self.bootstrap.or(base.bootstrap),
             cluster: self.cluster.or(base.cluster),
             dev: self.dev.or(base.dev),
+            job_node: self.job_node.or(base.job_node),
             storage_key: self.storage_key.or(base.storage_key),
             rp_id: self.rp_id.or(base.rp_id),
             origins: list(self.origins, base.origins),
@@ -275,6 +337,7 @@ impl NodeArgs {
             outbound_approvals: self.outbound_approvals.or(base.outbound_approvals),
             deployments: self.deployments.or(base.deployments),
             deployers: self.deployers.or(base.deployers),
+            sign_up: self.sign_up.or(base.sign_up),
             apps_domain: self.apps_domain.or(base.apps_domain),
             settings: self.settings.or(base.settings),
             outbound: self.outbound.or(base.outbound),
@@ -470,6 +533,69 @@ mod tests {
             Some(false),
             "`--dev false` turns the file's off"
         );
+    }
+
+    #[test]
+    fn a_job_node_refuses_the_flags_of_a_node_that_holds_a_cluster() {
+        let job = NodeArgs {
+            job_node: Some(true),
+            node_id: Some(9),
+            peers: vec!["1=http://a:2528".into()],
+            ..NodeArgs::default()
+        };
+        assert_eq!(job.job_node_conflicts(), None);
+        // A flag given its default or false value asks for nothing.
+        let off = NodeArgs {
+            bootstrap: Some(false),
+            replicas: None,
+            allow_unsigned_bundles: Some(false),
+            ..job.clone()
+        };
+        assert_eq!(off.job_node_conflicts(), None);
+        let url = NodeArgs {
+            public_url: Some("http://a".into()),
+            ..job.clone()
+        };
+        assert_eq!(url.job_node_conflicts(), Some("--public-url"));
+        for (flag, args) in [
+            (
+                "--bootstrap",
+                NodeArgs {
+                    bootstrap: Some(true),
+                    ..job.clone()
+                },
+            ),
+            (
+                "--storage-key",
+                NodeArgs {
+                    storage_key: Some("aa".into()),
+                    ..job.clone()
+                },
+            ),
+            (
+                "--kms-url",
+                NodeArgs {
+                    kms_url: Some("http://kms".into()),
+                    ..job.clone()
+                },
+            ),
+            (
+                "--replicas",
+                NodeArgs {
+                    replicas: Some(3),
+                    ..job.clone()
+                },
+            ),
+            (
+                "--origins",
+                NodeArgs {
+                    origins: vec!["http://o".into()],
+                    ..job.clone()
+                },
+            ),
+        ] {
+            assert_eq!(args.job_node_conflicts(), Some(flag));
+        }
     }
 
     #[test]
