@@ -560,6 +560,21 @@ fn a_compute_method_runs_as_an_action_whatever_the_caller() {
 }
 
 #[test]
+fn a_compute_method_asking_a_host_call_its_world_lacks_traps() {
+    let compute = built_compute();
+    assert!(compute
+        .imports
+        .iter()
+        .all(|i| !i.starts_with("calimero:app/context")));
+    let out = compute_run(InvocationKind::Action, Caller::System, "peek", b"{}");
+    assert!(
+        matches!(out.status, Status::Trap { .. }),
+        "{:?}",
+        out.status
+    );
+}
+
+#[test]
 fn the_app_component_leaves_compute_methods_to_the_compute_component() {
     let mut app = App::new();
     let call = app.call("checksum", br#"{"rounds":3}"#);
@@ -575,7 +590,7 @@ fn the_app_component_leaves_compute_methods_to_the_compute_component() {
     let compute = Abi::from_json(built_compute().abi.as_ref().unwrap()).unwrap();
     assert_eq!(
         compute.methods.keys().collect::<Vec<_>>(),
-        ["checksum"],
+        ["checksum", "peek"],
         "the compute ABI lists compute methods only"
     );
 }

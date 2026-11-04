@@ -298,6 +298,12 @@ impl Rooms {
         Ok(format!("{run}:{}:{rounds}", compute::inputs().len()))
     }
 
+    /// A compute run that asks a host call its world lacks: the call is a trapping stub.
+    #[app::compute(fuel = 5_000_000_000, memory_mib = 512, wall_secs = 60, result = "on_checksum")]
+    pub fn peek() -> app::Result<String> {
+        Ok(env::app_id())
+    }
+
     /// Receives the outcome of `checksum`.
     #[app::compute_result]
     pub fn on_checksum(&mut self) -> app::Result<()> {
