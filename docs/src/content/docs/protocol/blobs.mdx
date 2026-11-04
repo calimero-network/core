@@ -180,7 +180,8 @@ The plaintext counts against the organization's file quota from the entry until 
 Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
 The owner's delete does not remove a published blob, so its charge is released only by that retention.
 Publishing an output the app already holds as a plain blob stores and charges nothing again.
-A run publishes at most 16 outputs, each at most 47 MiB.
+A run publishes at most 16 outputs, each at most 47 MiB and 64 MiB together.
+Past that `publish` answers the soft error `run published too much` and records nothing.
 
 ## Limits
 

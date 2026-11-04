@@ -10,8 +10,8 @@ use calimero_app_host::{
     NewFile, OrgRole, Outcome, ReadError, ReaderId, Status, TimerCtx, TrapKind, Usage, WriterId,
     FILES_DISABLED, FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW,
     FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
-    MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NOT_A_RUN_OUTPUT, NO_SUCH_FILE,
-    RUN_WROTE_TOO_MUCH,
+    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
+    NOT_A_RUN_OUTPUT, NO_SUCH_FILE, RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
 
 struct NoDirectory;
@@ -950,6 +950,24 @@ fn a_run_may_publish_a_bounded_number_of_files() {
         let answer = h.compute_publish(&id).unwrap();
         assert_eq!(answer.is_ok(), n < MAX_PUBLISHED_PER_RUN, "{n}");
     }
+}
+
+#[test]
+fn a_run_may_publish_a_bounded_number_of_bytes() {
+    let files = MemoryFiles::default();
+    let big = |n: u8| {
+        let id = files.insert(&vec![n; (MAX_PUBLISHED_BYTES / 2 + 1) as usize]);
+        files.mark_output(&id);
+        id
+    };
+    let (first, second) = (big(1), big(2));
+    let mut h = call_host(&files);
+    assert!(h.compute_publish(&first).unwrap().is_ok());
+    assert_eq!(
+        h.compute_publish(&second).unwrap().unwrap_err(),
+        RUN_PUBLISHED_TOO_MUCH
+    );
+    assert_eq!(finish(h, Status::Ok).published.len(), 1);
 }
 
 /// A store whose sealed files are named by their ciphertext, so a published plain blob's id is
