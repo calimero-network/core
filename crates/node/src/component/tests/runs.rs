@@ -1641,6 +1641,68 @@ fn an_unreadable_run_record_makes_the_host_fail_closed() {
 }
 
 #[test]
+fn a_run_the_queue_never_granted_ends_not_granted_only_before_any_attempt() {
+    let unserved = FinalOutcome::Failed {
+        reason: FailedReason::NotGranted,
+    };
+    let mut w = World::new();
+    w.start("r1");
+    let mut entry = leader(&w, "r1", unserved);
+    entry.attempt = 0;
+    entry.base_index = w.last;
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(w.state("r1"), RunState::Failed);
+    w.start("r2");
+    let _a = w.assign("r2", &job_key(1));
+    let mut late = leader(&w, "r2", unserved);
+    late.base_index = w.last;
+    assert_eq!(why(&w.finish(late)), "the run was assigned");
+}
+
+#[test]
+fn a_final_too_large_for_the_log_ends_a_running_run_with_its_own_reason() {
+    let too_large = FinalOutcome::Failed {
+        reason: FailedReason::TooLarge,
+    };
+    let mut w = World::new();
+    w.start("r1");
+    let queued = leader(&w, "r1", too_large);
+    assert_eq!(why(&w.finish(queued)), "the run was never assigned");
+    let _a = w.assign("r1", &job_key(1));
+    let mut entry = leader(&w, "r1", too_large);
+    entry.base_index = w.last;
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(w.state("r1"), RunState::Failed);
+}
+
+#[test]
+fn a_failed_reports_message_is_recorded_with_the_final() {
+    let k = job_key(1);
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &k);
+    let mut entry = w.done("r1", &k);
+    let failed = Report {
+        message: "Denied: no".into(),
+        ..report(
+            "r1",
+            1,
+            ReportStatus::Failed,
+            Some(FailReason::AppError),
+            &[],
+        )
+    };
+    entry.signature = Some(sign_report(&k, &DIGEST, &failed).unwrap());
+    entry.report = Some(failed);
+    entry.outputs.clear();
+    entry.outcome = FinalOutcome::Failed {
+        reason: FailedReason::AppError,
+    };
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(w.record("r1").final_.unwrap().message, "Denied: no");
+}
+
+#[test]
 fn the_host_is_told_which_runs_are_being_cancelled() {
     let mut w = World::new();
     w.start("r1");

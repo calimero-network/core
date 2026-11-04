@@ -472,7 +472,7 @@ is its command line.
   The result method runs with `runs_provider(Some(run))`, which leaves out the run that is ending, so its own start of the same job is a new run.
   `new_file_bytes` counts only the new files of a final's result method for the one charge gate, and `None` on overflow refuses the entry: the leader charged and stored the outputs before it took the proposal lock.
   A final over the log's cap loses only its result method's outcome, and its outputs stay registered.
-  A final over the cap even without it is not built (`FINAL_TOO_LARGE`), and the leader ends the run `Failed{timeout}`.
+  A final over the cap even without it is not built (`FINAL_TOO_LARGE`), and the leader ends the run `Failed{tooLarge}`, its own reason, not a timeout.
   A run record that cannot be read makes the host deny start and cancel (`RUN_RECORDS_UNREADABLE`).
   A run being cancelled is not the answer to a start of the same job.
   Applying a final records it, releases the inputs, registers the outputs, then applies `result` as a call's outcome (only if its status is `Ok`; its own starts and cancels included).
@@ -506,7 +506,11 @@ is its command line.
   The assignment is built and delivered (component, assignment, inputs) to that node first, and only then is the attempt committed with the job key and the digest, so a busy or unreachable node (503 is not a failed channel) spends no attempt and the next candidate is tried.
   A delivered run whose attempt did not commit is deleted.
   Choosing and reserving a place is serialized (`assigning`, `reserved`), the transfers are not.
-  A granted run that no job node takes for `QUEUED_RUN_TIMEOUT` (10 min) ends `Failed{refused}`.
+  A granted run that no job node takes for `QUEUED_RUN_TIMEOUT` (10 min) ends `Failed{refused}`, and one the queue grants no place in that time (no job node, or every place held) ends `Failed{notGranted}`; `NotGranted` and `Refused` need a run with no attempt.
+  A run whose pinned compute component is no longer installed (a fresh system read confirms it) ends `Failed{refused}` at once.
+  A wall clock that ran out on a job node is a lost attempt, so such a run is retried and ends `Failed{lost}` after `MAX_ATTEMPTS`.
+  A new term keeps the outputs staged for the same attempt (`ComputeState::take`) so they are charged once, and a charge that failed is refunded only if it may have committed (`charge_may_have_landed`).
+  The run's record and the `GET /apps/{app}/runs/{run}` answer show progress and the failure text (`final.message`, the job's signed `Report::message`) only to those who may list the app's files.
   The leader assigns and pushes only the run's compute component (`RunRecord.compute_bundle`, named by `Assignment.bundle`, fetched by `push_bundle` through `bundle_wasm` and signed with `sign_bundle`), never the app component.
   A queued run recorded without one (only a record from before compute components existed) ends `Failed{refused}` at once, before a slot is taken or a job node contacted.
   Usage is billed to the run's `bundle`, the app component that started it, and the result method runs on the replicas' app component.

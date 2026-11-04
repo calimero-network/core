@@ -147,22 +147,6 @@ impl Compute {
         Ok(())
     }
 
-    /// The SHA-256 of the output `id`, read back from the file.
-    #[app::view]
-    pub fn read_kept(&self, id: BlobRef) -> app::Result<String> {
-        let mut reader = calimero_sdk::files::open(&id)?;
-        let mut hash = Sha256::new();
-        let mut buf = vec![0u8; PIECE];
-        loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            hash.update(&buf[..n]);
-        }
-        Ok(hex(&hash.finalize()))
-    }
-
     /// The outcome recorded for `run`, as JSON text, if its result method ran.
     #[app::view]
     pub fn outcome(&self, run: RunId) -> app::Result<Option<String>> {

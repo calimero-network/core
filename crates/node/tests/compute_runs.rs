@@ -229,6 +229,7 @@ impl Rig {
             attempt: 1,
             status,
             reason: None,
+            message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
             usage: ReportUsage::default(),
@@ -398,7 +399,7 @@ async fn a_cancel_ends_the_run_and_stops_the_job() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_run_that_breaks_a_cap_fails_with_its_reason_and_registers_nothing() {
     let rig = Rig::start(&[JOB_A]).await;
-    for (method, reason) in [("spin", "time"), ("hog", "memory"), ("burn", "fuel")] {
+    for (method, reason) in [("hog", "memory"), ("burn", "fuel")] {
         let run = rig.begin("startRun", json!({ "method": method })).await;
         let outcome = rig.outcome(&run).await;
         assert_eq!(outcome["status"], "failed", "{method}: {outcome}");
@@ -425,6 +426,7 @@ async fn a_final_not_signed_by_the_assigned_job_node_changes_nothing() {
         attempt: 1,
         status: ReportStatus::Done,
         reason: None,
+        message: String::new(),
         result: Vec::new(),
         outputs: Vec::new(),
         usage: ReportUsage::default(),
@@ -463,7 +465,7 @@ async fn a_final_not_signed_by_the_assigned_job_node_changes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_new_leader_keeps_polling_the_same_attempt() {
     let mut rig = Rig::start(&[JOB_A]).await;
-    let run = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let run = rig.begin("startRun", json!({ "method": "burn" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
         .await;
     let old = rig.c.app_leader(&rig.app).unwrap();
@@ -493,7 +495,7 @@ async fn a_new_leader_keeps_polling_the_same_attempt() {
     assert_eq!(
         record.final_.unwrap().outcome,
         FinalOutcome::Failed {
-            reason: FailedReason::Time
+            reason: FailedReason::Fuel
         }
     );
 }
@@ -571,7 +573,7 @@ async fn a_result_over_the_cap_fails_the_run_and_registers_nothing() {
 async fn runs_that_meet_on_a_job_node_all_complete_without_a_lost_attempt() {
     let rig = Rig::start(&[JOB_A, JOB_B]).await;
     let mut runs = Vec::new();
-    for method in ["burn", "burn", "spin", "spin"] {
+    for method in ["burn", "burn", "hog", "hog"] {
         runs.push(rig.begin("startRun", json!({ "method": method })).await);
     }
     for run in &runs {
@@ -789,14 +791,14 @@ async fn an_outage_of_the_system_group_does_not_lose_a_running_attempt() {
         lost_after: Duration::from_secs(4),
         ..ComputeLimits::default()
     });
-    let run = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let run = rig.begin("startRun", json!({ "method": "burn" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
         .await;
     rig.outage(true);
     tokio::time::sleep(Duration::from_secs(10)).await;
     rig.outage(false);
     let outcome = rig.outcome_within(&run, 60).await;
-    assert_eq!(outcome["reason"], "time", "{outcome}");
+    assert_eq!(outcome["reason"], "fuel", "{outcome}");
     assert_eq!(rig.record(&run).attempts.len(), 1, "no new attempt");
 }
 
@@ -807,16 +809,16 @@ async fn a_report_waiting_through_an_outage_past_the_deadline_still_ends_the_run
         deadline_grace: Duration::from_secs(1),
         ..ComputeLimits::default()
     });
-    let run = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let run = rig.begin("startRun", json!({ "method": "burn" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
         .await;
     rig.outage(true);
-    // The job hits its 2 s wall cap and reports meanwhile; the deadline is 3 s.
+    // The job reports at once and the leader is out of reach meanwhile; the deadline is 3 s.
     tokio::time::sleep(Duration::from_secs(8)).await;
     rig.outage(false);
     let outcome = rig.outcome_within(&run, 60).await;
     assert_eq!(
-        outcome["reason"], "time",
+        outcome["reason"], "fuel",
         "the job's own report, not a timeout: {outcome}"
     );
     assert_eq!(rig.record(&run).attempts.len(), 1);
@@ -1179,9 +1181,9 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_output_the_result_method_stores_is_kept_past_the_idle_time_and_the_app_reads_it_back() {
+async fn an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run_reads_it_back() {
     let rig = Rig::start(&[JOB_A]).await;
-    let plain = input()[..100_000].to_vec(); // a view's fuel hashes little
+    let plain = input();
     let file = rig.upload(&plain).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let outcome = rig.outcome(&run).await;
@@ -1198,19 +1200,22 @@ async fn an_output_the_result_method_stores_is_kept_past_the_idle_time_and_the_a
         "an input nobody stored is forgotten"
     );
     assert!(rig.holds_bytes(&output));
-    let read = rig
-        .alice
-        .view(
-            &rig.app,
-            "readKept",
-            json!({ "id": output }),
-            Consistency::Strong,
-        )
-        .await
-        .unwrap();
+    // Only a compute run opens a sealed file: a second run takes the output as its input.
+    let first = expected_output(
+        &plain,
+        noise_seed(&rig.leader().app_file_key(&rig.app), &run),
+    );
+    let again = rig
+        .begin("startDigest", json!({ "inputs": [output] }))
+        .await;
+    let outcome = rig.outcome(&again).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    let seed = noise_seed(&rig.leader().app_file_key(&rig.app), &again);
+    let expected = sha256_hex(&expected_output(&first, seed));
     assert_eq!(
-        read.result, outcome["sha256"],
-        "the app reads the output back"
+        outcome["sha256"],
+        json!(expected),
+        "a run reads the output back"
     );
 }
 
@@ -1264,42 +1269,83 @@ async fn a_job_node_is_only_ever_given_the_compute_component() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_run_recorded_without_a_compute_component_is_refused_without_a_job_node() {
-    let rig = Rig::start(&[JOB_A]).await;
-    let g = rig.leader().hosted(&rig.app).unwrap();
-    let mut outcome = Outcome::default();
-    outcome.compute_starts.push(ComputeStart {
-        run: "old".into(),
-        method: "digest".into(),
-        args: Default::default(),
-        inputs: Vec::new(),
-        caps: RunCaps {
-            fuel: 1_000_000,
-            memory_mib: 64,
-            wall_secs: 30,
-        },
-        result_method: "onDone".into(),
-        owner: "o".into(),
-        compute_bundle: None,
-    });
-    let entry = ComponentCmd::Call(Box::new(CallEntry {
-        method: "ping".into(),
-        args: json!({}),
-        caller: Caller::System,
-        idempotency_key: None,
-        consent: None,
-        ts_ms: 1,
-        base_index: g.read_local(|m, _| m.state.last_index),
-        id_term: 0,
-        id_seq: 0,
-        outcome,
-        xcall: None,
-    }));
-    let _answer = g.write(serde_json::to_vec(&entry).unwrap()).await.unwrap();
-    assert_eq!(rig.record("old").compute_bundle, None);
+async fn a_run_whose_compute_component_is_missing_is_refused_promptly_without_a_job_node() {
+    // The group runs no compute component, or one that is not installed any more.
+    for (name, compute) in [("none", None), ("gone", Some("00".repeat(32)))] {
+        let rig = Rig::start(&[JOB_A]).await;
+        let g = rig.leader().hosted(&rig.app).unwrap();
+        let (bundle, base) =
+            g.read_local(|m, _| (m.state.bundle.clone().unwrap(), m.state.last_index));
+        let upgrade = ComponentCmd::Upgrade {
+            bundle,
+            compute_bundle: compute,
+            base_index: base,
+        };
+        let _answer = g
+            .write(serde_json::to_vec(&upgrade).unwrap())
+            .await
+            .unwrap();
+        let mut outcome = Outcome::default();
+        outcome.compute_starts.push(ComputeStart {
+            run: "old".into(),
+            method: "digest".into(),
+            args: Default::default(),
+            inputs: Vec::new(),
+            caps: RunCaps {
+                fuel: 1_000_000,
+                memory_mib: 64,
+                wall_secs: 30,
+            },
+            result_method: "onDone".into(),
+            owner: "o".into(),
+        });
+        let entry = ComponentCmd::Call(Box::new(CallEntry {
+            method: "ping".into(),
+            args: json!({}),
+            caller: Caller::System,
+            idempotency_key: None,
+            consent: None,
+            ts_ms: 1,
+            base_index: g.read_local(|m, _| m.state.last_index),
+            id_term: 0,
+            id_seq: 0,
+            outcome,
+            xcall: None,
+        }));
+        let _answer = g.write(serde_json::to_vec(&entry).unwrap()).await.unwrap();
+        let rec = until_ended(&rig, "old", 30).await;
+        assert_eq!(
+            rec.final_.unwrap().outcome,
+            failed(FailedReason::Refused),
+            "{name}"
+        );
+        assert!(rec.attempts.is_empty(), "no job node was given the run");
+        assert!(rig.jobs[0].running.held_bundles().is_empty());
+    }
+}
 
-    let rec = until_ended(&rig, "old", 30).await;
-    assert_eq!(rec.final_.unwrap().outcome, failed(FailedReason::Refused));
-    assert!(rec.attempts.is_empty(), "no job node was given the run");
-    assert!(rig.jobs[0].running.held_bundles().is_empty());
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_that_outlasts_its_wall_clock_is_retried_and_ends_lost_not_timed_out() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let rec = until_ended(&rig, &run, 120).await;
+    assert_eq!(rec.final_.unwrap().outcome, failed(FailedReason::Lost));
+    assert_eq!(rec.attempts.len(), 3, "every attempt was spent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_the_queue_never_grants_ends_not_granted_instead_of_waiting_forever() {
+    let rig = Rig::start(&[]).await;
+    rig.limits(ComputeLimits {
+        queued_timeout: Duration::from_secs(2),
+        outage_credit: Duration::from_secs(1),
+        ..ComputeLimits::default()
+    });
+    let run = rig.begin("startDigest", json!({ "inputs": [] })).await;
+    let rec = until_ended(&rig, &run, 60).await;
+    assert_eq!(
+        rec.final_.unwrap().outcome,
+        failed(FailedReason::NotGranted)
+    );
+    assert!(rec.attempts.is_empty());
 }

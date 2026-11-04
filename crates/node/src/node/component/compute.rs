@@ -109,6 +109,8 @@ pub(super) struct Watch {
     refused: Option<(u32, FinalOutcome, bool)>,
     /// The healthy time and the app time since which a granted run found no job node to take it.
     unplaced_since: Option<(Duration, u64)>,
+    /// The same for a run the queue has not granted a place.
+    waiting_since: Option<(Duration, u64)>,
 }
 
 impl Watch {
@@ -132,6 +134,7 @@ impl Watch {
             proposed: Vec::new(),
             refused: None,
             unplaced_since: None,
+            waiting_since: None,
         }
     }
 
@@ -179,9 +182,37 @@ impl Watch {
     /// Whether the run has been without a job node for `limit` of healthy time, or for `ceiling`
     /// more than that of app time whatever the leader saw.
     fn unplaced_too_long(&mut self, limit: Duration, ceiling: Duration, now_ms: u64) -> bool {
-        let (healthy, ms) = *self.unplaced_since.get_or_insert((self.healthy, now_ms));
+        Self::over(
+            &mut self.unplaced_since,
+            self.healthy,
+            limit,
+            ceiling,
+            now_ms,
+        )
+    }
+
+    /// Whether the queue has granted the run no place for `limit` of healthy time, or for
+    /// `ceiling` more than that of app time.
+    fn waiting_too_long(&mut self, limit: Duration, ceiling: Duration, now_ms: u64) -> bool {
+        Self::over(
+            &mut self.waiting_since,
+            self.healthy,
+            limit,
+            ceiling,
+            now_ms,
+        )
+    }
+
+    fn over(
+        since: &mut Option<(Duration, u64)>,
+        healthy_now: Duration,
+        limit: Duration,
+        ceiling: Duration,
+        now_ms: u64,
+    ) -> bool {
+        let (healthy, ms) = *since.get_or_insert((healthy_now, now_ms));
         let app = Duration::from_millis(now_ms.saturating_sub(ms));
-        self.healthy.saturating_sub(healthy) >= limit || app >= limit + ceiling
+        healthy_now.saturating_sub(healthy) >= limit || app >= limit + ceiling
     }
 
     /// The report held for `attempt`, if it is that attempt's.
@@ -218,12 +249,32 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ComputeState {
-    fn take(&self, app: &str, run: &str, term: u64, attempt: u32) -> Watch {
-        locked(&self.watches)
-            .get(&(app.to_owned(), run.to_owned()))
-            .filter(|w| w.term == term && w.attempt == attempt)
-            .cloned()
-            .unwrap_or_else(|| Watch::new(term, attempt))
+    /// The run's watch for this term and attempt. A watch of another term keeps the outputs it
+    /// staged when the attempt is the same, so a new term does not charge them again; the staged
+    /// outputs of another attempt come back to be undone.
+    fn take(
+        &self,
+        app: &str,
+        run: &str,
+        term: u64,
+        attempt: u32,
+    ) -> (Watch, Option<Vec<FileMark>>) {
+        let key = (app.to_owned(), run.to_owned());
+        let mut watches = locked(&self.watches);
+        let Some(old) = watches.get(&key).cloned() else {
+            return (Watch::new(term, attempt), None);
+        };
+        if old.term == term && old.attempt == attempt {
+            return (old, None);
+        }
+        let _gone = watches.remove(&key);
+        let mut fresh = Watch::new(term, attempt);
+        if old.attempt == attempt {
+            fresh.staged = old.staged;
+            (fresh, None)
+        } else {
+            (fresh, old.staged)
+        }
     }
 
     fn put(&self, app: &str, run: &str, watch: Watch) {
@@ -381,7 +432,7 @@ fn run_path(app: &str, run: &str, attempt: u32) -> String {
 }
 
 /// The record of a run as the API shows it: no arguments, no keys, and the plaintext sizes and
-/// hashes of its files only when `files`.
+/// hashes of its files, its progress and its failure text only when `files`.
 fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Value {
     let marks = |outputs: &[FileMark]| -> Vec<Value> {
         outputs
@@ -424,8 +475,11 @@ fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Val
             "outputs": marks(&f.outputs),
             "usage": f.usage,
             "tsMs": f.ts_ms,
+            "message": (files && !f.message.is_empty()).then_some(&f.message),
         })),
-        "progress": progress.map(|(percent, step)| json!({ "percent": percent, "step": step })),
+        "progress": progress
+            .filter(|_| files)
+            .map(|(percent, step)| json!({ "percent": percent, "step": step })),
     })
 }
 
@@ -557,7 +611,10 @@ impl Node {
             return;
         };
         let attempts = u32::try_from(rec.attempts.len()).unwrap_or(u32::MAX);
-        let mut watch = self.compute.take(&app.app_id, run, term, attempts);
+        let (mut watch, orphaned) = self.compute.take(&app.app_id, run, term, attempts);
+        if let Some(marks) = orphaned {
+            self.discard_unowned(g, &app.app_id, &marks);
+        }
         watch.tick(Instant::now(), self.sys_fresh().await);
         let drive = Drive {
             node: self,
@@ -614,12 +671,19 @@ impl Drive<'_> {
     async fn place(&self, watch: &mut Watch) {
         let refused = FinalPlan::failed(self.rec, FailedReason::Refused);
         // Only a run recorded before compute components existed lacks one.
-        if self.rec.compute_bundle.is_none() {
+        if self.rec.compute_bundle.is_none() || self.component_is_gone().await {
             self.end(&refused, watch).await;
             return;
         }
         match self.acquire().await {
-            Acquired::Waiting => {}
+            Acquired::Waiting => {
+                let limits = self.node.limits();
+                let now_ms = self.node.clock.now_ms();
+                if watch.waiting_too_long(limits.queued_timeout, limits.outage_credit, now_ms) {
+                    let unserved = FinalPlan::failed(self.rec, FailedReason::NotGranted);
+                    self.end(&unserved, watch).await;
+                }
+            }
             Acquired::Refused => {
                 self.end(&refused, watch).await;
             }
@@ -636,6 +700,20 @@ impl Drive<'_> {
                 }
             }
         }
+    }
+
+    /// Whether the compute component the run pinned is no longer installed (its release was
+    /// uninstalled), judged on the system state as of now.
+    async fn component_is_gone(&self) -> bool {
+        let Some(hash) = &self.rec.compute_bundle else {
+            return false;
+        };
+        let known = |node: &Node| node.sys(|s| s.bundles.contains_key(hash));
+        if known(self.node) {
+            return false;
+        }
+        let _fresh = self.node.sys_fresh().await;
+        !known(self.node)
     }
 
     async fn acquire(&self) -> Acquired {
@@ -1029,12 +1107,12 @@ impl Drive<'_> {
             Landed::TooLarge => {
                 watch.proposed.clear();
                 self.discard_staged(watch);
-                let timeout = FinalPlan::failed(self.rec, FailedReason::Timeout);
+                let too_large = FinalPlan::failed(self.rec, FailedReason::TooLarge);
                 if matches!(
-                    self.commit_final(&timeout, &mut None).await,
+                    self.commit_final(&too_large, &mut None).await,
                     Landed::Committed
                 ) {
-                    self.after_final(&timeout, watch).await;
+                    self.after_final(&too_large, watch).await;
                 }
             }
         }
@@ -1299,6 +1377,51 @@ mod tests {
     }
 
     #[test]
+    fn a_run_the_queue_never_granted_ends_only_after_its_limit_of_healthy_time() {
+        let mut watch = Watch::new(1, 0);
+        let start = Instant::now();
+        let (limit, ceiling) = (Duration::from_secs(600), Duration::from_secs(60));
+        watch.tick(start, true);
+        assert!(!watch.waiting_too_long(limit, ceiling, 0));
+        watch.tick(start + limit - Duration::from_secs(1), true);
+        assert!(!watch.waiting_too_long(limit, ceiling, 0));
+        watch.tick(start + limit, true);
+        assert!(watch.waiting_too_long(limit, ceiling, 0));
+        assert!(
+            !watch.unplaced_too_long(limit, ceiling, 0),
+            "the two waits are separate clocks"
+        );
+    }
+
+    #[test]
+    fn a_new_term_keeps_the_outputs_staged_for_the_same_attempt_and_hands_back_another_attempts() {
+        let state = ComputeState::default();
+        let marks = vec![FileMark {
+            id: "ab".repeat(32),
+            size: 3,
+            sha256: calimero_log::Bytes(vec![1; 32]),
+            wrapped_key: calimero_log::Bytes(vec![2; 8]),
+        }];
+        let mut old = Watch::new(1, 1);
+        old.staged = Some(marks.clone());
+        state.put("app", "run", old);
+        let (same, orphaned) = state.take("app", "run", 2, 1);
+        assert_eq!(same.staged, Some(marks.clone()));
+        assert!(orphaned.is_none(), "charged once, carried over");
+
+        let mut old = Watch::new(2, 1);
+        old.staged = Some(marks.clone());
+        state.put("app", "run", old);
+        let (fresh, orphaned) = state.take("app", "run", 2, 2);
+        assert!(fresh.staged.is_none());
+        assert_eq!(
+            orphaned,
+            Some(marks),
+            "another attempt's outputs are undone"
+        );
+    }
+
+    #[test]
     fn a_run_without_a_job_node_is_refused_at_the_app_time_ceiling_without_healthy_rounds() {
         let mut watch = Watch::new(1, 0);
         let (limit, ceiling) = (Duration::from_secs(600), Duration::from_secs(60));
@@ -1328,6 +1451,7 @@ mod tests {
             ts_ms: 0,
             id_term: id.0,
             id_seq: id.1,
+            message: String::new(),
         });
         rec
     }
@@ -1389,6 +1513,24 @@ mod tests {
     }
 
     #[test]
+    fn progress_and_the_failure_text_are_shown_only_to_those_who_list_files() {
+        let mut rec = ended((1, 1));
+        if let Some(f) = rec.final_.as_mut() {
+            f.message = "Denied: no".into();
+        }
+        let progress = Some((40, "hashing".to_owned()));
+        let seen = run_json(&rec, progress.clone(), true);
+        assert_eq!(
+            seen["progress"],
+            json!({ "percent": 40, "step": "hashing" })
+        );
+        assert_eq!(seen["final"]["message"], json!("Denied: no"));
+        let hidden = run_json(&rec, progress, false);
+        assert!(hidden["progress"].is_null(), "{hidden}");
+        assert!(hidden["final"]["message"].is_null(), "{hidden}");
+    }
+
+    #[test]
     fn a_held_report_serves_only_its_own_attempt() {
         let mut watch = Watch::new(1, 2);
         let report = Report {
@@ -1397,6 +1539,7 @@ mod tests {
             attempt: 1,
             status: ReportStatus::Done,
             reason: None,
+            message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
             usage: ReportUsage::default(),

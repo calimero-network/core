@@ -681,6 +681,9 @@ pub(crate) fn blob_too_large() -> ApiError {
 /// The code of a command the system log refused for a quota.
 pub const QUOTA_EXCEEDED: &str = "QUOTA_EXCEEDED";
 
+/// The code of a system command that `apply` refused: it changed nothing.
+pub const REJECTED: &str = "REJECTED";
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, QUOTA_EXCEEDED, reason)
@@ -693,7 +696,7 @@ pub fn rejected(reason: &str) -> ApiError {
     } else if let Some(code) = recovery_code(reason) {
         ApiError::new(409, code, reason)
     } else {
-        ApiError::bad_request("REJECTED", reason)
+        ApiError::bad_request(REJECTED, reason)
     }
 }
 
