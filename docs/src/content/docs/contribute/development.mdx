@@ -18,33 +18,24 @@ meet.
   and build `meroctl` natively; run the node's test suites in a Linux
   container or VM.
 - **Rust** pinned by `rust-toolchain.toml` (`1.98.0`, with `clippy` and
-  `rustfmt`), and the WASM target:
-
-  ```bash
-  rustup target add wasm32-unknown-unknown
-  ```
+  `rustfmt`), and the `wasm32-wasip2` target apps build for (the toolchain
+  file lists it; `rustup target add wasm32-wasip2` otherwise).
 
 - **System packages:** `clang`, `libclang-dev`, `make`, `pkg-config`,
   `libssl-dev`.
-- **cargo mero**, to build apps with their embedded ABI:
-
-  ```bash
-  PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-  ```
 
 ## Build
 
 ```bash
 cargo build -p merod -p meroctl          # the two binaries
 cargo check --workspace                  # everything
-cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml   # one app, with its ABI
-./scripts/build-all-apps.sh              # every app in apps/
+cargo run -p calimero-app-build --bin mero-app-build -- apps/kv-store --out kv_store.wasm   # one app's component
+cargo test --manifest-path apps/kv-store/Cargo.toml   # an app's own tests, on the real engine
 ```
 
-The node reads timers, handlers, xcall entry points, migrations and search
-exports from the bundle's embedded ABI, so build apps the node will run with
-`cargo mero build`; a plain `cargo build --target wasm32-unknown-unknown`
-bundle runs, but without those.
+An app is a `calimero:app` component; the node reads its ABI (methods, views,
+confirm methods, timers, search fields) from the component's own `calimero:abi`
+section. A WASM core module (an SDK 0.12 app) is refused.
 
 ## Run local nodes
 
@@ -60,7 +51,7 @@ then, in another terminal:
 ```bash
 cargo run -p meroctl -- node add local http://127.0.0.1:2501/ --allow-mock
 cargo run -p meroctl -- login --dev-passkey ./dev-passkey.json --name dev
-cargo run -p meroctl -- app install --path target/wasm32-unknown-unknown/app-release/kv_store.wasm
+cargo run -p meroctl -- context create --name kv --path kv_store.wasm
 ```
 
 `merod local` runs every node in one process, with mock attestation and the
@@ -120,7 +111,7 @@ Run these locally; they are what the required checks are built from:
 
 ```bash
 cargo fmt --check
-cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets \
   --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 ```

@@ -36,7 +36,6 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   downloads) write their own and answer `null`, which is not printed.
 
 ```bash
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
-cargo test -p meroctl        # every command group against an in-process 3-node cluster
+cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)
 cargo run -p meroctl -- --help
 ```

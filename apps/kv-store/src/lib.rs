@@ -3,8 +3,7 @@
 //! count; every change emits an event to everyone the app reaches.
 //!
 //! Method names and arguments are the ABI's camelCase ones (`updateIfExists`,
-//! `getOrInsert`, `getResult`, ..). The wasmer build of the same store, which the node's
-//! own tests run, is `apps/wasmer-fixtures/kv-store`.
+//! `getOrInsert`, `getResult`, ..).
 
 use std::collections::BTreeMap;
 

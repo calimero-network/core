@@ -1,12 +1,10 @@
 # calimero-search - Per-App Full-Text Search
 
-The index engine behind `env::search_query`: one tantivy index per `(app, index)`
-pair, derived from the app's state and never replicated. Apps opt in through
-the SDK (`#[derive(app::Searchable)]` + `app::search_indexes!`). The node side,
-which keeps the indexes and feeds them, is `calimero-node`'s
-`services::Search` (wasmer apps) and `component::search::ComponentSearch`
-(`calimero:app` components, which declare fields with `#[table(search = [..])]`
-instead of exports). The user-facing guide is the docs site's
+The index engine behind an app's search: one tantivy index per searchable table,
+derived from the app's state and never replicated. An app opts in by naming a
+table's text fields (`#[table(search = [..])]`); the node side, which keeps the
+indexes and feeds them, is `calimero-node`'s `component::search::ComponentSearch`.
+The user-facing guide is the docs site's
 [Full-text search](../../docs/src/content/docs/build/guides/search.mdx) page.
 
 ## Package Identity

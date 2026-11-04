@@ -72,7 +72,7 @@ point **on the host**, writes it to `res/abi.json`, and embeds a canonicalized
 copy into the wasm as the `calimero_abi_v1` custom section.
 The section is part of the module's bytes, so it is covered by the blob's
 content hash and cannot drift from the code it describes.
-See [the cargo mero toolchain](/build/cargo-mero/) for the rest of the pipeline.
+See [the cargo mero toolchain](/build/packaging-signing/) for the rest of the pipeline.
 
 ## What you actually do
 
@@ -275,7 +275,7 @@ Catching that before a release is much cheaper than after an install.
   `#[app::event]` enum. (A gated *struct field* is fine: that description comes
   from a derive, which runs after `cfg` is applied.) Express a variant as whole
   gated items instead - see
-  [cargo mero's feature docs](/build/cargo-mero/).
+  [cargo mero's feature docs](/build/packaging-signing/).
 - **Gate on features, not on the target.** Extraction compiles on the host, so
   an ABI-visible item gated on `target_arch` describes its *host* form rather
   than its wasm one. Features are shared between extraction and the wasm build;
@@ -305,7 +305,7 @@ Catching that before a release is much cheaper than after an install.
   <LinkCard
     title="cargo mero toolchain"
     description="The build that extracts the manifest and embeds it, plus the feature flags it shares with the wasm."
-    href="/build/cargo-mero/"
+    href="/build/packaging-signing/"
   />
   <LinkCard
     title="Upgrades & migration"

@@ -6,8 +6,7 @@ writer set storage checked on every node; here a writer set is rows of the `writ
 table (`(field, account)`, a count per field) and every write checks the caller against
 it first. The app owner, who runs `init`, is the first writer of both fields.
 
-The wasmer `SharedStorage` build, which `calimero-node`'s `shared_storage` test runs, is
-[`../wasmer-fixtures/kv-store-with-shared-storage`](../wasmer-fixtures/kv-store-with-shared-storage).
+`calimero-node`'s `shared_storage` test runs this component on a cluster.
 
 ## ABI
 

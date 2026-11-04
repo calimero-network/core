@@ -79,7 +79,7 @@ src/
 
 Every ID type in the workspace (`ContextId`, `ApplicationId`, `BlobId`, `PublicKey`) is the same 32-byte `Hash` wrapped in a distinct newtype, so the compiler - not a convention - stops a `BlobId` from being passed where an `ApplicationId` is expected. `Hash` itself stores only the raw bytes and computes its base58 form on demand (`Display`, `to_base58`, `encode_base58`), trading a cached string for a `Copy` struct that stays cheap on hot paths like delta-store iteration and RocksDB key parsing.
 
-This crate has no dependency on any other Calimero crate - it is the leaf that `calimero-crypto`, `calimero-storage`, `calimero-node`, `calimero-server`, and the rest of the workspace (25+ crates) depend on for the IDs and keys that cross module boundaries. `CrdtType` living here (rather than in `calimero-storage`) is what lets both the storage merge dispatcher and the sync wire protocol agree on one enum without either depending on the other.
+This crate has no dependency on any other Calimero crate - it is the leaf that `calimero-node`, `calimero-bundle`, `calimero-search` and the rest of the workspace depend on for the IDs and keys that cross module boundaries. `CrdtType` living here (rather than in `calimero-storage`) is what lets both the storage merge dispatcher and the sync wire protocol agree on one enum without either depending on the other.
 
 ## Invariants and Gotchas
 

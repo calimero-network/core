@@ -28,6 +28,7 @@ export default defineConfig({
     '/cloud/operate/': '/core/operate/deployment/',
     '/cloud/coming-from-v1/': '/core/protocol/glossary/',
     '/build/delegated-execution-client/': '/core/protocol/write-path/',
+    '/build/cargo-mero/': '/core/build/packaging-signing/',
   },
   integrations: [
     starlight({
@@ -106,7 +107,6 @@ export default defineConfig({
                 'build/guides/outbound',
                 'build/guides/access-control',
                 'build/guides/securing-state',
-                'build/cargo-mero',
                 'build/packaging-signing',
                 'build/examples',
                 'build/testing',

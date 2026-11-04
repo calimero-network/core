@@ -1,209 +1,77 @@
 ---
 title: Quickstart
-description: Build a Calimero app to WASM, install it on a node, attach it to a context, and call a method.
+description: Build a Calimero app into a calimero:app component, create it on a local cluster, and call a method.
 sidebar:
   order: 2
 ---
 
-import { Steps, Aside, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
-import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-This walks from an empty crate to a method call. The two binaries you use are
-**`merod`** (the node daemon — `init`, `run`) and **`meroctl`** (the operator
-CLI — `app`, `context`, `namespace`, `call`).
+This walks from an app's crate to a method call on a local cluster. An app is
+a `calimero:app` component, written with the Rust SDK (`calimero-app-sdk`) and
+built with `calimero-app-build`; the [tutorial](/build/tutorial/) is the long
+form, checking output at every step.
 
 <Aside type="note">
-  Commands here are grounded in the in-repo CLI definitions
-  (`crates/merod/src/cli/`, `crates/meroctl/src/cli/`) and the
-  [cargo mero toolchain](/build/cargo-mero/) (`tools/cargo-mero/`). Calimero is
-  pre-1.0, so flags can still change between releases — run
-  `meroctl <command> --help` to confirm them for your build.
+  The commands are taken from `apps/kv-store/`, `crates/app-build` and the CLI
+  definitions (`crates/meroctl/src`). Run `meroctl <command> --help` to confirm
+  them for your build; every command is in the
+  [meroctl reference](/operate/meroctl/).
 </Aside>
 
-## 1. Write and build the app
-
 <Steps>
 
-1. Scaffold an app with the [cargo mero toolchain](/build/cargo-mero/):
+1. **Rust with the `wasm32-wasip2` target** (core's `rust-toolchain.toml`
+   lists it):
 
    ```sh
-   cargo mero new my-app
-   cd my-app
+   rustup target add wasm32-wasip2
    ```
 
-   This writes a ready-to-build crate: `Cargo.toml` (SDK pins, the app-id
-   metadata, and the build profiles), a working `src/lib.rs` with a
-   TestHost test, and `GUIDE.md` (the app's guide for agents). The
-   [tutorial](/build/tutorial/) walks the generated manifest field by field.
-
-2. The generated `src/lib.rs` is already a working app: a state struct plus
-   methods. This is the shape every Calimero app follows (see
-   [SDK macros](/build/sdk-macros/)):
-
-   ```rust
-   use calimero_sdk::app;
-   use calimero_storage::collections::{LwwRegister, UnorderedMap};
-
-   #[app::state]
-   pub struct KvStore {
-       items: UnorderedMap<String, LwwRegister<String>>,
-   }
-
-   #[app::logic]
-   impl KvStore {
-       #[app::init]
-       pub fn init() -> KvStore {
-           KvStore { items: UnorderedMap::new() }
-       }
-
-       pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-           self.items.insert(key, value.into())?;
-           Ok(())
-       }
-
-       #[app::view]
-       pub fn get(&self, key: String) -> app::Result<Option<String>> {
-           Ok(self.items.get(&key)?.map(|v| v.get().clone()))
-       }
-   }
-   ```
-
-3. Build to WASM with the [cargo mero toolchain](/build/cargo-mero/):
+2. **Test the app** on the real engine, with no node (`TestApp`, in
+   `calimero-app-sdk`'s `testing` module):
 
    ```sh
-   cargo mero build
+   cargo test --manifest-path apps/kv-store/Cargo.toml
    ```
 
-   One command compiles, optimizes, and embeds the ABI; the wasm lands at
-   `res/<crate_name>.wasm`.
-
-4. Package and sign it into the installable `.mpk`:
+3. **Build the component**:
 
    ```sh
-   cargo mero bundle --dev --no-icon
+   cargo run -p calimero-app-build --bin mero-app-build -- apps/kv-store --out kv_store.wasm
    ```
 
-   The bundle is named from the manifest's `package` and `version`, not the
-   crate name: `dist/com.example.my-app-0.1.0.mpk`. `--dev` signs with the
-   well-known development key, which the registry refuses - see
-   [Packaging & signing](/build/packaging-signing/) for release keys.
+4. **Start a development cluster** and sign in (mock attestation, a passkey in
+   a file):
+
+   ```sh
+   cargo run -p merod -- local
+   meroctl node add local http://127.0.0.1:2501/ --allow-mock
+   meroctl login --dev-passkey ./dev-passkey.json --name alice
+   ```
+
+5. **Create an instance and call it**:
+
+   ```sh
+   meroctl context create --name my-kv --path kv_store.wasm --alias my-kv
+   meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
+   meroctl call -c my-kv get --args '{"key": "hello"}' --view
+   ```
+
+6. **Package it for a real cluster**: a signed `.mpk`
+   ([Packaging & signing](/build/packaging-signing/)):
+
+   ```sh
+   python3 -I scripts/pack-component.py --wasm kv_store.wasm --package com.example.kv \
+     --app-version 0.1.0 --out dist/com.example.kv-0.1.0.mpk
+   ```
 
 </Steps>
-
-## 2. Run a node
-
-<Steps>
-
-1. Initialize a node's config and data directory, then run it:
-
-   ```sh
-   merod --node node1 init --server-port 2428 --swarm-port 2528
-   merod --node node1 run
-   ```
-
-   `init` defaults to `--auth-mode proxy`, which authenticates no caller.
-   Any page served from localhost can then reach the node API, so use it only on a development machine.
-
-   `merod --node node1 init --help` lists the full set (swarm/server host and
-   port, boot nodes, mDNS, auth mode). Config and data live under
-   `CALIMERO_HOME` / `--home`.
-
-</Steps>
-
-## 3. Install the app, attach a context, call a method
-
-`meroctl` talks to a running node. Select the node with `--node node1` (a
-configured alias) or `--api <URL>`.
-
-<Steps>
-
-1. **Install** the signed bundle. The node returns an application id:
-
-   ```sh
-   meroctl --node node1 app install --path ./dist/com.example.my-app-0.1.0.mpk
-   ```
-
-   List what is installed with `meroctl --node node1 app ls`.
-
-   Only a signed `.mpk` installs: its `package` and `signerId` are what the
-   application id is derived from, so every node derives the same one.
-   Run `cargo mero bundle` to produce it - see
-   [Packaging & signing](/build/packaging-signing/).
-
-2. **Attach the app to a context.** A context is a running instance of an app
-   over a shared state. The simplest entry is to create a namespace bound to the
-   application id:
-
-   ```sh
-   meroctl --node node1 namespace create --application-id <app-id>
-   ```
-
-   :::note
-   `namespace create` only needs `--application-id` — a namespace is a root
-   group, so this single command bootstraps the group for you. The lower-level
-   `meroctl context create` requires **both** `--application-id` and a
-   `--group-id` (it attaches a context to an existing group), plus optional
-   `--as`, `--name`, and `--params`. Start with `namespace create` unless you
-   already have a group to attach to.
-   :::
-
-3. **Call a method** on the context. Mutations and views both go through the
-   top-level `call` command — whether a call mutates or is a read-only view is
-   decided by the method's own `#[app::view]` marker, not a CLI flag:
-
-   ```sh
-   # mutate
-   meroctl --node node1 call set \
-     --context <context-id> \
-     --args '{"key": "hello", "value": "world"}'
-
-   # view
-   meroctl --node node1 call get \
-     --context <context-id> \
-     --args '{"key": "hello"}'
-   ```
-
-   `--args` takes JSON matching the method's parameters. `<context-id>` accepts a
-   context id or an alias you created with `--name`.
-
-</Steps>
-
-These three commands trace one path from a built artifact to a method result —
-install the code, attach a context over shared state, then call into it:
-
-<SeqDiagram id="d-build-quickstart" title="Install, attach, and call"
-  lanes={[
-    { label: 'You (CLI)', color: '#3fb950' },
-    { label: 'Node', color: '#58a6ff' },
-    { label: 'Context', color: '#a371f7' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'app install --path com.example.my-app-0.1.0.mpk' },
-    { from: 1, to: 0, label: 'application id', dashed: true },
-    { from: 0, to: 1, label: 'namespace create --application-id' },
-    { from: 1, to: 2, label: 'bootstrap root group + attach app' },
-    { from: 1, to: 0, label: 'context id', dashed: true },
-    { type: 'divider', label: 'context is live over shared state' },
-    { from: 0, to: 1, label: 'call set --args {"key","value"}' },
-    { from: 1, to: 2, label: 'run set: mutate state' },
-    { from: 1, to: 0, label: 'result', dashed: true },
-    { from: 0, to: 1, label: 'call get --args {"key"}' },
-    { from: 1, to: 2, label: 'run get: read state' },
-    { from: 1, to: 0, label: '"world"', dashed: true },
-  ]} />
-
-<Aside type="tip" title="Test before you ship">
-  The SDK ships a native in-process harness (`calimero_sdk::testing::TestHost`,
-  enabled by the `calimero-storage` `testing` feature). You can drive your app's
-  methods and assert on state under plain `cargo test`, with no node and no WASM
-  build. See the `tests/` directories of the example apps.
-</Aside>
 
 ## Next steps
 
 <CardGrid>
   <LinkCard title="Build your first app" href="/build/tutorial/" description="The guided long-form walkthrough, checking output at every step." />
-  <LinkCard title="Collections" href="/build/collections/" description="The CRDT types your state is built from and how they merge." />
-  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The full set of #[app::*] attributes that define an app." />
   <LinkCard title="Example apps" href="/build/examples/" description="A tour of the in-repo apps under apps/ and what each teaches." />
+  <LinkCard title="Writing apps for a cluster" href="/cloud/apps/" description="What an app sees once it runs on a cluster." />
 </CardGrid>

@@ -5,9 +5,6 @@ example (`calimero-app-sdk`, built for `wasm32-wasip2` into a `calimero:app` com
 State is one `UnorderedMap<String, String>`, which keeps its own count of keys; every change
 emits an event to the app's whole audience.
 
-The wasmer build of the same store, which the node's own tests, the size gate and the
-release's test bundle use, is [`../wasmer-fixtures/kv-store`](../wasmer-fixtures/kv-store).
-
 ## ABI
 
 Names are camelCase; `u64` values travel as decimal strings. Errors are
