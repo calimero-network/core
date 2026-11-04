@@ -30,6 +30,7 @@ pub mod local;
 pub mod membership;
 pub mod metrics;
 pub mod node;
+pub mod origins;
 pub mod packages;
 pub mod placement;
 pub mod presence;
@@ -89,8 +90,9 @@ impl Running {
     }
 }
 
-/// The configured origins, and every package's frontend origin
-/// (`app_host`), whose sessions are bound to their package.
+/// The configured origins, every package's frontend origin (`app_host`)
+/// and every origin a package's manager registered (`origins`), whose
+/// sessions are bound to their package.
 fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
     use axum::http::{header, HeaderValue, Method};
     let origins: Vec<HeaderValue> = node
@@ -103,7 +105,7 @@ fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
     let allow = tower_http::cors::AllowOrigin::predicate(move |origin: &HeaderValue, _| {
         origins.contains(origin)
             || (weak.upgrade().zip(origin.to_str().ok()))
-                .is_some_and(|(n, o)| n.app_origin_package(o).is_some())
+                .is_some_and(|(n, o)| crate::api::app_origin(&n, o).is_some())
     });
     tower_http::cors::CorsLayer::new()
         .allow_origin(allow)

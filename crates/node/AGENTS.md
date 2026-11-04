@@ -603,6 +603,31 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, and it creates instances
   of its own package only. Its step-ups come from its own origin only.
+- **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
+  identities "Registered origins"): a package's manager
+  (`SystemState::manages_package`: the bound publisher's org-wide
+  `MANAGE_APPLICATION` holders, else `PackageRecord::owner`) registers a web
+  origin of their own (`GET|POST|DELETE /package-origins/{package}`;
+  `AddPackageOrigin`/`RemovePackageOrigin`, passkey consent `package:{p} /
+  __add_origin / { origin, rpId }`, `__remove_origin / { origin }`, checked in
+  `authorize`). Each carries its own rp-id (the host or a parent; never the
+  cluster's rp-id or a parent, `origins::covers_cluster`). `api::app_origin`
+  is the one lookup (served first, then registered) for ceremonies
+  (`claimed_app`, `rp_with`: a registered origin alone under its rp-id), CORS
+  (`lib.rs`) and the consent page's `returnTo`; begin routes take `origin`
+  (`403 ORIGIN_NOT_REGISTERED`). Sessions opened there are bound like a served
+  frontend's and name the origin (`SessionClaims::origin`,
+  `RefreshRecord::origin`, kept by a sign-up's `Pending::SignUp` and stated
+  nowhere in the sign-in challenge, like `app`); `principal` and `refresh`
+  refuse them once it is removed, and `UseRefresh` refuses an exchange that
+  changes it. A sign-up there answers its `412` with the origin's rp-id and
+  takes the confirmation from that origin only; the sign-up policy judges it
+  like any other (`a_registered_origin_signs_up_only_whom_the_cluster_takes`). `UninstallPackage` of the last release forgets them. Limits
+  `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`; `http` only for
+  `localhost` names on a `--dev` node (`allow_package_uploads`). Regressions:
+  `tests/package_origins.rs`, `package_origins_carry_their_managers_consent`,
+  `package_origins_are_unique_bounded_and_go_with_their_package`,
+  `state_from_before_package_origins_reads_with_none_and_writes_as_before`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
   `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,

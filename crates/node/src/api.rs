@@ -53,6 +53,8 @@ const CHALLENGE_TTL: u64 = 5 * 60;
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
+mod origins;
+
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
 /// holds it (`internal/challenge/take`), so a challenge is still used once.
@@ -80,6 +82,10 @@ pub enum Pending {
         account: Box<Account>,
         session: NewSession,
         app: Option<String>,
+        /// The registered origin the sign-up came from, which the session
+        /// names (`SessionClaims::origin`).
+        #[serde(default)]
+        origin: Option<String>,
     },
     AddPasskey {
         challenge: [u8; 32],
@@ -206,20 +212,68 @@ async fn internal_challenge_take(
     ))
 }
 
-/// The package whose frontend origin a ceremony claims (unverified: the
-/// ceremony is then checked against that origin), and the origin.
-fn claimed_app(node: &Node, client_data_json: &str) -> Option<(String, String)> {
-    let origin = calimero_identity::claimed_origin(client_data_json)?;
-    let package = node.app_origin_package(&origin)?;
-    Some((package, origin))
+/// A package's frontend origin a ceremony comes from: one the node serves
+/// (`app_host`), or one its manager registered (`crate::origins`).
+#[derive(Clone, Debug)]
+pub(crate) struct AppOrigin {
+    pub(crate) package: String,
+    pub(crate) origin: String,
+    /// A registered origin's rp-id; `None` for a served frontend, whose
+    /// ceremonies use the cluster's.
+    pub(crate) rp_id: Option<String>,
+}
+
+impl AppOrigin {
+    /// The origin a session opened here names (`SessionClaims::origin`):
+    /// only a registered one, which can be removed.
+    fn registered(&self) -> Option<String> {
+        self.rp_id.as_ref().map(|_| self.origin.clone())
+    }
+}
+
+/// The package frontend `origin` is, if any: a served one first, else a
+/// registered one whose rp-id cannot answer for the cluster's passkeys.
+pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
+    if let Some(package) = node.app_origin_package(origin) {
+        return Some(AppOrigin {
+            package,
+            origin: origin.to_owned(),
+            rp_id: None,
+        });
+    }
+    let held = node.sys(|s| s.package_origins.get(origin).cloned())?;
+    if crate::origins::covers_cluster(&held.rp_id, &node.config.rp_id) {
+        return None;
+    }
+    Some(AppOrigin {
+        package: held.package,
+        origin: origin.to_owned(),
+        rp_id: Some(held.rp_id),
+    })
+}
+
+/// The package frontend a ceremony claims to come from (unverified: the
+/// ceremony is then checked against that origin).
+fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
+    app_origin(node, &calimero_identity::claimed_origin(client_data_json)?)
 }
 
 /// The relying party for a ceremony that may come from `app`'s frontend
-/// origin as well as the cluster's own.
-fn rp_with(base: RelyingParty, app: Option<&(String, String)>) -> RelyingParty {
+/// origin: a served one as well as the cluster's own origins; a registered
+/// one alone, under its own rp-id.
+fn rp_with(base: RelyingParty, app: Option<&AppOrigin>) -> RelyingParty {
     let mut rp = base;
-    if let Some((_, origin)) = app {
-        rp.origins.push(origin.clone());
+    match app {
+        Some(AppOrigin {
+            origin,
+            rp_id: Some(id),
+            ..
+        }) => {
+            rp.id.clone_from(id);
+            rp.origins = vec![origin.clone()];
+        }
+        Some(a) => rp.origins.push(a.origin.clone()),
+        None => {}
     }
     rp
 }
@@ -370,6 +424,12 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
             ));
         }
     }
+    // A session opened on a registered origin ends when the origin is removed.
+    if let Some(origin) = &claims.origin {
+        if !origin_holds(node, claims.app.as_deref(), origin) {
+            return Err(origin_gone());
+        }
+    }
     Ok(Some(Principal {
         caller: Caller::Account {
             account: claims.account.clone(),
@@ -380,6 +440,21 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
         consent_page: false,
         sys_index,
     }))
+}
+
+/// Whether `origin` is still registered for `package`.
+fn origin_holds(node: &Node, package: Option<&str>, origin: &str) -> bool {
+    node.sys(|s| {
+        s.package_origins
+            .get(origin)
+            .is_some_and(|o| Some(o.package.as_str()) == package)
+    })
+}
+
+fn origin_gone() -> ApiError {
+    ApiError::unauthenticated(
+        "the origin this session was opened on is no longer registered for its app; sign in again",
+    )
 }
 
 /// Check a session token: signed by the receipt key of the node it names,
@@ -516,13 +591,20 @@ impl NewSession {
         b64url(&sha256(self.refresh.as_bytes()))
     }
 
-    fn record(&self, account: &str, passkey: &str, app: Option<String>) -> RefreshRecord {
+    fn record(
+        &self,
+        account: &str,
+        passkey: &str,
+        app: Option<String>,
+        origin: Option<String>,
+    ) -> RefreshRecord {
         RefreshRecord {
             account: account.to_owned(),
             session: self.session.clone(),
             expires_at: self.expires_at,
             passkey: Some(passkey.to_owned()),
             app,
+            origin,
             key: crate::proof::refresh_key(&self.refresh),
         }
     }
@@ -531,7 +613,7 @@ impl NewSession {
     /// record's account, passkey and package are not known yet and not
     /// stated; the passkey that signs names them.
     fn sign_in_statement(&self) -> crate::proof::Statement {
-        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None));
+        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None, None));
         crate::proof::Statement::new("session", "__sign_in", &args)
     }
 }
@@ -542,15 +624,20 @@ async fn new_session(
     node: &Node,
     account: &str,
     passkey: &str,
-    app: Option<String>,
+    from: Option<AppOrigin>,
     new: NewSession,
     consent: Value,
 ) -> ApiResult {
-    let token = session_token_for(node, account, passkey, app.clone(), &new)?;
+    let origin = from.as_ref().and_then(AppOrigin::registered);
+    let app = from.map(|a| a.package);
+    if let (Some(package), Some(origin)) = (&app, &origin) {
+        info!(%package, %origin, "a session opened on a registered origin");
+    }
+    let token = session_token_for(node, account, passkey, app.clone(), origin.clone(), &new)?;
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
             hash: new.hash(),
-            record: new.record(account, passkey, app),
+            record: new.record(account, passkey, app, origin),
             consent,
         })
         .await?;
@@ -563,6 +650,7 @@ fn session_token_for(
     account: &str,
     passkey: &str,
     app: Option<String>,
+    origin: Option<String>,
     new: &NewSession,
 ) -> Result<(String, u64), ApiError> {
     let expires_at = now_secs() + SESSION_TTL;
@@ -574,6 +662,7 @@ fn session_token_for(
             expires_at,
             passkey: Some(passkey.to_owned()),
             app,
+            origin,
             node: 0,
             key: String::new(),
         },
@@ -740,12 +829,58 @@ async fn app_attestation(
 struct RegisterBegin {
     #[serde(default)]
     name: String,
+    /// The page's origin, for a registered origin's rp-id.
+    #[serde(default)]
+    origin: Option<String>,
     /// The invite the person signs up with (an organization invite token or
     /// a cluster sign-up invite token), checked here so a cluster whose
     /// sign-up is not open refuses before the passkey ceremony; the finish
     /// carries it again.
     #[serde(default)]
     invite: Option<String>,
+}
+
+/// What a sign-in begins with: the page's origin, when it is a registered
+/// one (its rp-id differs from the cluster's).
+// Open to other fields: clients sent arbitrary bodies here before it took any.
+#[derive(Deserialize, Default)]
+struct LoginBegin {
+    #[serde(default)]
+    origin: Option<String>,
+}
+
+/// The rp-id a ceremony begun on `origin` uses: the cluster's for its own
+/// origins and the frontends it serves (and when no origin is named), a
+/// registered origin's own; any other origin is refused, `403
+/// ORIGIN_NOT_REGISTERED`.
+async fn begin_rp_id(node: &Node, origin: Option<&str>) -> Result<String, ApiError> {
+    let cluster = node.config.rp_id.clone();
+    let Some(origin) = origin else {
+        return Ok(cluster);
+    };
+    // The cluster's own origins, and the nodes' own (a page a node serves).
+    if node
+        .config
+        .origins
+        .iter()
+        .any(|o| o.trim_end_matches('/') == origin)
+        || node.api_origins().iter().any(|o| o == origin)
+    {
+        return Ok(cluster);
+    }
+    let mut found = app_origin(node, origin);
+    if found.is_none() {
+        // Registered through another node a moment ago, perhaps.
+        let _caught_up = node.sys_fresh().await;
+        found = app_origin(node, origin);
+    }
+    found.map(|a| a.rp_id.unwrap_or(cluster)).ok_or_else(|| {
+        ApiError::new(
+            403,
+            "ORIGIN_NOT_REGISTERED",
+            "this origin is not one of the cluster's, nor registered for an app",
+        )
+    })
 }
 
 /// Refuse a sign-up the cluster's policy would refuse (`403
@@ -785,6 +920,7 @@ async fn register_begin(
     Json(body): Json<RegisterBegin>,
 ) -> ApiResult {
     refuse_sign_up(&node, body.invite.as_deref()).await?;
+    let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     let challenge = random::<32>();
     let user_id = random::<16>();
     let name = if body.name.is_empty() {
@@ -804,7 +940,7 @@ async fn register_begin(
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
-            "rp": { "id": node.config.rp_id, "name": "Calimero" },
+            "rp": { "id": rp_id, "name": "Calimero" },
             "user": { "id": b64url(&user_id), "name": name, "displayName": name },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "timeout": 60000,
@@ -881,10 +1017,16 @@ async fn register_finish(
     // `none`): the new passkey signs the account it creates, and the session
     // it opens, before the log takes it (412, then the retry).
     let session = NewSession::new();
-    let app = app.map(|(pkg, _)| pkg);
+    // The new passkey belongs to the rp-id of the origin it was made on.
+    let rp_id = app
+        .as_ref()
+        .and_then(|a| a.rp_id.clone())
+        .unwrap_or_else(|| node.config.rp_id.clone());
+    let origin = app.as_ref().and_then(AppOrigin::registered);
+    let app = app.map(|a| a.package);
     let grant = RefreshGrant {
         hash: session.hash(),
-        record: session.record(&account.account_id, &cred.id, app.clone()),
+        record: session.record(&account.account_id, &cred.id, app.clone(), origin.clone()),
     };
     let statement = crate::proof::Statement::new(
         &format!("account:{}", account.account_id),
@@ -901,6 +1043,7 @@ async fn register_finish(
             account: Box::new(account),
             session,
             app,
+            origin,
         },
     )?;
     Err(ApiError::new(
@@ -911,7 +1054,7 @@ async fn register_finish(
     .with_details(json!({
         "challengeId": id,
         "challenge": b64url(&signed),
-        "rpId": node.config.rp_id,
+        "rpId": rp_id,
         "allowCredentials": [cred.id],
     })))
 }
@@ -926,6 +1069,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         account,
         session,
         app,
+        origin,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
     else {
@@ -938,11 +1082,17 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         .passkeys
         .first()
         .ok_or_else(|| ApiError::internal("a sign-up without its passkey"))?;
-    // From the origin the sign-up came from: the package's, or the cluster's.
-    let origin = claimed_app(node, &confirm.assertion.client_data_json)
-        .filter(|(pkg, _)| app.as_ref() == Some(pkg));
+    // From the origin the sign-up came from: the package's (the registered
+    // origin itself, for one), or the cluster's.
+    let from = claimed_app(node, &confirm.assertion.client_data_json)
+        .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
+    if origin.is_some() && from.is_none() {
+        return Err(ApiError::unauthenticated(
+            "confirm the sign-up on the origin it began on",
+        ));
+    }
     let _count = verify_assertion(
-        &rp_with(rp(node), origin.as_ref()),
+        &rp_with(rp(node), from.as_ref()),
         &challenge,
         cred,
         &confirm.assertion,
@@ -950,7 +1100,14 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
     let account_id = account.account_id.clone();
     let passkey = cred.id.clone();
-    let token = session_token_for(node, &account_id, &passkey, app.clone(), &session)?;
+    let token = session_token_for(
+        node,
+        &account_id,
+        &passkey,
+        app.clone(),
+        origin.clone(),
+        &session,
+    )?;
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
@@ -967,7 +1124,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
             invite,
             refresh: Some(RefreshGrant {
                 hash: session.hash(),
-                record: session.record(&account_id, &passkey, app),
+                record: session.record(&account_id, &passkey, app, origin),
             }),
             consent: serde_json::to_value(&consent).unwrap_or_default(),
         })
@@ -975,7 +1132,9 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     Ok(session_answer(&account_id, &token, &session))
 }
 
-async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
+async fn login_begin(State(node): State<Arc<Node>>, body: Option<Json<LoginBegin>>) -> ApiResult {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     // The challenge states the session the sign-in opens, so the log takes
     // its refresh token only with this assertion (`CreateRefresh`).
     let session = NewSession::new();
@@ -992,7 +1151,7 @@ async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
     )?;
     Ok(Json(json!({
         "challengeId": id,
-        "options": { "challenge": b64url(&challenge), "rpId": node.config.rp_id, "userVerification": "preferred", "timeout": 60000 }
+        "options": { "challenge": b64url(&challenge), "rpId": rp_id, "userVerification": "preferred", "timeout": 60000 }
     })))
 }
 
@@ -1015,7 +1174,7 @@ async fn check_assertion(
     step_up: bool,
     bound: Option<&str>,
     any_app: bool,
-) -> Result<(String, Option<String>), ApiError> {
+) -> Result<(String, Option<AppOrigin>), ApiError> {
     let base = if step_up { rp_step_up(node) } else { rp(node) };
     check_assertion_for(node, base, challenge, assertion, account, bound, any_app).await
 }
@@ -1030,9 +1189,9 @@ async fn check_assertion_for(
     account: Option<&str>,
     bound: Option<&str>,
     any_app: bool,
-) -> Result<(String, Option<String>), ApiError> {
+) -> Result<(String, Option<AppOrigin>), ApiError> {
     let app = claimed_app(node, &assertion.client_data_json)
-        .filter(|(pkg, _)| any_app || bound == Some(pkg.as_str()));
+        .filter(|a| any_app || bound == Some(a.package.as_str()));
     let (owner, cred) = node
         .sys_until(|s| {
             s.account_of_credential(&assertion.credential_id)
@@ -1064,7 +1223,7 @@ async fn check_assertion_for(
                 }
             })?;
     }
-    Ok((owner, app.map(|(pkg, _)| pkg)))
+    Ok((owner, app))
 }
 
 async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
@@ -1299,6 +1458,14 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
     if !serves(&node, &rec.account) {
         return Err(wrong_node());
     }
+    if let Some(origin) = &rec.origin {
+        // Judged on the cluster's latest state: a removal made through
+        // another node holds here at once.
+        let _caught_up = node.sys_fresh().await;
+        if !origin_holds(&node, rec.app.as_deref(), origin) {
+            return Err(origin_gone());
+        }
+    }
     let new_refresh = format!("rt_{}", b64url(&random::<32>()));
     let record = RefreshRecord {
         account: rec.account.clone(),
@@ -1306,6 +1473,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         expires_at: now_secs() + REFRESH_TTL,
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
+        origin: rec.origin.clone(),
         key: crate::proof::refresh_key(&new_refresh),
     };
     let new_hash = b64url(&sha256(new_refresh.as_bytes()));
@@ -1358,6 +1526,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             expires_at,
             passkey: rec.passkey,
             app: rec.app,
+            origin: rec.origin,
             node: 0,
             key: String::new(),
         },
@@ -1628,6 +1797,10 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         "via": if p.api_key.is_some() { "apiKey" } else { "session" },
         // The passkey (device) this session was opened with.
         "passkeyId": p.session.as_ref().and_then(|s| s.passkey.clone()),
+        // The package a frontend's session is bound to, and the registered
+        // origin that opened it.
+        "app": p.bound_app(),
+        "origin": p.session.as_ref().and_then(|s| s.origin.clone()),
         // Releases approved to hold this account's own apps.
         "approvedReleases": acc.approved_releases,
         // Outbound prefixes approved for this account's own apps, by signer.
@@ -2658,6 +2831,14 @@ async fn step_up(
                 .map(|a| a.passkeys.iter().map(|c| c.id.clone()).collect())
                 .unwrap_or_default()
         });
+        // A session opened on a registered origin steps up there, under its rp-id.
+        let rp_id = p
+            .session
+            .as_ref()
+            .and_then(|s| s.origin.as_deref())
+            .and_then(|o| app_origin(node, o))
+            .and_then(|a| a.rp_id)
+            .unwrap_or_else(|| node.config.rp_id.clone());
         return Err(ApiError::new(
             412,
             "CONFIRM_REQUIRED",
@@ -2666,7 +2847,7 @@ async fn step_up(
         .with_details(json!({
             "challengeId": id,
             "challenge": b64url(&challenge),
-            "rpId": node.config.rp_id,
+            "rpId": rp_id,
             "allowCredentials": creds,
         })));
     };
@@ -8219,6 +8400,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/packages/install", post(package_install))
         .route("/packages/{package}", get(package_get).delete(package_uninstall))
         .route("/packages/{package}/{version}", delete(package_version_uninstall))
+        .route(
+            "/package-origins/{package}",
+            get(origins::list).post(origins::add).delete(origins::remove),
+        )
         .route("/apps", post(app_create).get(app_list))
         .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/metadata", post(app_metadata))

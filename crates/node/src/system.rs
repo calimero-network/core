@@ -283,6 +283,12 @@ pub struct SystemState {
     /// empty, so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deployments: BTreeMap<String, Deployment>,
+    /// Web origins packages' managers registered for their frontends
+    /// (`AddPackageOrigin`), by origin: a passkey ceremony there opens a
+    /// session bound to the package ([`crate::origins`]). Left out when
+    /// empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package_origins: BTreeMap<String, crate::origins::PackageOrigin>,
     /// Plaintext bytes of the files each app holds (`ChargeFileBytes`).
     #[serde(default)]
     pub app_file_bytes: BTreeMap<AppId, u64>,
@@ -1792,6 +1798,35 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             )?;
             Ok(Some(used))
         }
+        SystemCmd::AddPackageOrigin {
+            package,
+            origin,
+            rp_id,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("package:{package}"), "__add_origin", &|a| {
+                *a == json!({ "origin": origin, "rpId": rp_id })
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemovePackageOrigin {
+            package,
+            origin,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(
+                &st,
+                &format!("package:{package}"),
+                "__remove_origin",
+                &|a| *a == json!({ "origin": origin }),
+            )?;
+            Ok(Some(used))
+        }
         SystemCmd::DeleteOrg {
             org,
             actor,
@@ -1946,6 +1981,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                 || old.session != record.session
                 || old.passkey != record.passkey
                 || old.app != record.app
+                || old.origin != record.origin
             {
                 return Err("the exchange is for another session");
             }
@@ -2749,6 +2785,27 @@ pub enum SystemCmd {
         #[serde(default)]
         consent: Value,
     },
+    /// Register `origin` for `package`'s frontend, its ceremonies verified
+    /// against `rp_id` (`package:{package} / __add_origin / { origin, rpId }`,
+    /// the manager's passkey `consent`; [`crate::origins`]).
+    AddPackageOrigin {
+        package: String,
+        origin: String,
+        rp_id: String,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove a registered origin (`package:{package} / __remove_origin /
+    /// { origin }`): the sessions opened there end with it.
+    RemovePackageOrigin {
+        package: String,
+        origin: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
     /// Remove a deployment that offers nothing and no instance came from
     /// (`__delete_deployment / {}`).
     DeleteDeployment {
@@ -3311,6 +3368,7 @@ impl SystemMachine {
                 }
                 if p.versions.is_empty() {
                     let _prev = s.packages.remove(&package);
+                    s.forget_origins(&package);
                 }
                 Ok(json!({ "removed": gone }))
             }
@@ -4265,6 +4323,20 @@ impl SystemMachine {
                 }
                 Ok(out)
             }
+            SystemCmd::AddPackageOrigin {
+                package,
+                origin,
+                rp_id,
+                actor,
+                at,
+                consent: _,
+            } => s.add_package_origin(package, origin, &rp_id, actor, at),
+            SystemCmd::RemovePackageOrigin {
+                package,
+                origin,
+                actor,
+                consent: _,
+            } => s.remove_package_origin(&package, &origin, &actor),
             SystemCmd::WithdrawApp {
                 deployment,
                 app,
@@ -4926,12 +4998,13 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod tests {
 
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         Authority, Governance, OrgRole, Quotas, ReleaseScope, SystemCmd, SystemMachine,
-        SystemState, QUOTA_PREFIX,
+        SystemState, OPERATOR, QUOTA_PREFIX,
     };
+    use crate::types::RefreshRecord;
 
     // The tests above `account_with` judge each command's own authority rules
     // (`run_authorized`); the proofs `run` also requires are tested below it.
@@ -6006,6 +6079,7 @@ mod tests {
             expires_at: 99,
             passkey: Some(passkey.into()),
             app: None,
+            origin: None,
             key: crate::proof::refresh_key(&token),
         };
         (token, hash, record)
@@ -6132,6 +6206,18 @@ mod tests {
                             ..next_record.clone()
                         }),
                     ),
+                ),
+            ),
+            // A session keeps the registered origin it was opened on, so
+            // removing the origin still ends it after an exchange.
+            (
+                "onto another origin",
+                exchange(
+                    crate::types::RefreshRecord {
+                        origin: Some("https://elsewhere.example.com".into()),
+                        ..next_record.clone()
+                    },
+                    crate::proof::sign_refresh_use(&token, &message(&next_record)),
                 ),
             ),
         ] {
@@ -8045,6 +8131,253 @@ mod tests {
         let _ok = m.run_unproven(charge("b", -50)).unwrap();
         let _ok = m.run_unproven(transfer).unwrap();
         assert_eq!(m.state.file_bytes("account:bob"), 80);
+    }
+
+    // ------------------------------------------------------------ package origins
+
+    const NOTES: &str = "https://notes.example.com";
+
+    fn add_origin(
+        actor: &str,
+        package: &str,
+        origin: &str,
+        rp_id: &str,
+        consent: Value,
+    ) -> SystemCmd {
+        SystemCmd::AddPackageOrigin {
+            package: package.into(),
+            origin: origin.into(),
+            rp_id: rp_id.into(),
+            actor: actor.into(),
+            at: 1,
+            consent,
+        }
+    }
+
+    fn remove_origin(actor: &str, origin: &str, consent: Value) -> SystemCmd {
+        SystemCmd::RemovePackageOrigin {
+            package: "p".into(),
+            origin: origin.into(),
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    /// Package `q`, its first release installed by `by`.
+    fn install_q(by: &str) -> SystemCmd {
+        SystemCmd::InstallPackage {
+            package: "q".into(),
+            signer_id: "did:key:q".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "q1", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-q" }, "installedBy": by, "installedAt": 1
+            }))
+            .unwrap(),
+        }
+    }
+
+    /// Registering and removing a package's origin applies only with its
+    /// manager's passkey consent over exactly that change, once; anyone
+    /// else's, however valid, is refused where it applies.
+    #[test]
+    fn package_origins_carry_their_managers_consent() {
+        let (mut m, mut alice, mut bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let args = json!({ "origin": NOTES, "rpId": "notes.example.com" });
+        let by_bob = consent(&mut bob, "package:p", "__add_origin", &args);
+        assert!(
+            m.run(add_origin("bob", "p", NOTES, "notes.example.com", by_bob))
+                .unwrap_err()
+                .contains("manager"),
+            "not the package's manager"
+        );
+        for (why, rp_id, c) in [
+            ("no consent", "notes.example.com", Value::Null),
+            (
+                "over another rpId",
+                "example.com",
+                consent(&mut alice, "package:p", "__add_origin", &args),
+            ),
+            (
+                "over another package",
+                "notes.example.com",
+                consent(&mut alice, "package:q", "__add_origin", &args),
+            ),
+        ] {
+            assert!(
+                m.run(add_origin("alice", "p", NOTES, rp_id, c)).is_err(),
+                "{why}"
+            );
+        }
+        assert!(m.state.package_origins.is_empty());
+        let c = consent(&mut alice, "package:p", "__add_origin", &args);
+        let _ok = m
+            .run(add_origin(
+                "alice",
+                "p",
+                NOTES,
+                "notes.example.com",
+                c.clone(),
+            ))
+            .unwrap();
+        assert_eq!(m.state.package_origins[NOTES].package, "p");
+        assert_eq!(m.state.package_origins[NOTES].rp_id, "notes.example.com");
+        assert!(
+            m.run(add_origin("alice", "p", NOTES, "notes.example.com", c))
+                .unwrap_err()
+                .contains("used already"),
+            "a consent is spent once"
+        );
+
+        let gone = json!({ "origin": NOTES });
+        let by_bob = consent(&mut bob, "package:p", "__remove_origin", &gone);
+        assert!(m.run(remove_origin("bob", NOTES, by_bob)).is_err());
+        let wrong = consent(
+            &mut alice,
+            "package:p",
+            "__remove_origin",
+            &json!({ "origin": "https://x.example.com" }),
+        );
+        assert!(m.run(remove_origin("alice", NOTES, wrong)).is_err());
+        assert!(m.state.package_origins.contains_key(NOTES));
+        let c = consent(&mut alice, "package:p", "__remove_origin", &gone);
+        let _ok = m.run(remove_origin("alice", NOTES, c)).unwrap();
+        assert!(m.state.package_origins.is_empty());
+    }
+
+    /// A package's publisher manages its origins once its key is bound: the
+    /// first installer no longer does; the operator never does.
+    #[test]
+    fn a_bound_publisher_manages_its_packages_origins() {
+        let (mut m, _alice, _bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        assert!(m.state.manages_package("p", "alice"));
+        assert!(!m.state.manages_package("p", "bob"));
+        assert!(!m.state.manages_package("p", OPERATOR));
+        assert!(!m.state.manages_package("nope", "alice"));
+        let _ok = m
+            .run_unproven(SystemCmd::CreateOrg {
+                org_id: "o".into(),
+                name: "o".into(),
+                actor: "bob".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+            })
+            .unwrap();
+        let _prev = m.state.publishers.insert(
+            "did:key:z".into(),
+            super::PublisherBinding {
+                org: "o".into(),
+                generation: 1,
+            },
+        );
+        assert!(m.state.manages_package("p", "bob"));
+        assert!(!m.state.manages_package("p", "alice"));
+    }
+
+    /// One package per origin; at most `MAX_ORIGINS_PER_PACKAGE` per
+    /// package; an origin or rp-id that does not fit is refused at apply too;
+    /// a package uninstalled takes its origins with it.
+    #[test]
+    fn package_origins_are_unique_bounded_and_go_with_their_package() {
+        use crate::origins::MAX_ORIGINS_PER_PACKAGE;
+        let (mut m, _alice, _bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let _ok = m.run_unproven(install_q("bob")).unwrap();
+        let add = |m: &mut SystemMachine, who: &str, pkg: &str, origin: &str, rp: &str| {
+            m.run_unproven(add_origin(who, pkg, origin, rp, Value::Null))
+        };
+        let _ok = add(&mut m, "alice", "p", NOTES, "example.com").unwrap();
+        // Again, the same: answered as it stands.
+        let _ok = add(&mut m, "alice", "p", NOTES, "example.com").unwrap();
+        assert!(
+            add(&mut m, "alice", "p", NOTES, "notes.example.com").is_err(),
+            "another rpId"
+        );
+        assert!(
+            add(&mut m, "bob", "q", NOTES, "notes.example.com")
+                .unwrap_err()
+                .contains("another package"),
+            "first come"
+        );
+        for (origin, rp) in [
+            ("http://notes.example.com", "notes.example.com"),
+            ("https://notes.example.com/", "notes.example.com"),
+            ("https://x.example.com", "other.com"),
+            ("https://x.example.com", "com"),
+        ] {
+            assert!(
+                add(&mut m, "alice", "p", origin, rp).is_err(),
+                "{origin} {rp}"
+            );
+        }
+        for i in 1..MAX_ORIGINS_PER_PACKAGE {
+            let _ok = add(
+                &mut m,
+                "alice",
+                "p",
+                &format!("https://n{i}.example.com"),
+                "example.com",
+            )
+            .unwrap();
+        }
+        assert!(add(
+            &mut m,
+            "alice",
+            "p",
+            "https://more.example.com",
+            "example.com"
+        )
+        .unwrap_err()
+        .starts_with(QUOTA_PREFIX));
+        let _ok = add(&mut m, "bob", "q", "https://q.example.org", "q.example.org").unwrap();
+
+        let _ok = m
+            .run_unproven(SystemCmd::UninstallPackage {
+                package: "p".into(),
+                version: None,
+                actor: "alice".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            m.state.package_origins.keys().collect::<Vec<_>>(),
+            ["https://q.example.org"],
+            "p's origins went with it"
+        );
+    }
+
+    /// State, refresh records and session claims from before package origins
+    /// read with none and write the bytes they did.
+    #[test]
+    fn state_from_before_package_origins_reads_with_none_and_writes_as_before() {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let refresh: RefreshRecord = serde_json::from_value(json!({
+            "account": "alice", "session": "s", "expiresAt": 9, "passkey": "c", "app": "p"
+        }))
+        .unwrap();
+        assert_eq!(refresh.origin, None);
+        let _prev = m.state.refresh.insert("h".into(), refresh);
+        let before = serde_json::to_value(&m.state).unwrap();
+        assert!(before.get("packageOrigins").is_none(), "{before}");
+        assert!(before["refresh"]["h"].get("origin").is_none(), "{before}");
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert!(restored.package_origins.is_empty());
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+
+        // A token minted before names no origin, and verifies as it did.
+        let claims: calimero_identity::SessionClaims = serde_json::from_value(json!({
+            "account": "alice", "session": "s", "expires_at": 9, "app": "p", "node": 1, "key": "k"
+        }))
+        .unwrap();
+        assert_eq!(claims.origin, None);
+        assert!(serde_json::to_value(&claims)
+            .unwrap()
+            .get("origin")
+            .is_none());
     }
 
     // ------------------------------------------------------------ recovery

@@ -11,7 +11,9 @@ machines, short session tokens any node verifies, and step-up consent challenges
 - Session tokens: `v2.<claims b64url>.<Ed25519 b64url>` (`mint_session`,
   `verify_session`), signed by the issuing node's attested receipt key over
   `"calimero.session.v2\0" || claims`; the claims name the node and its key.
-  Which issuer may vouch for an account is the node's to judge. Test:
+  Which issuer may vouch for an account is the node's to judge. `app` binds
+  a session to a package's frontend; `origin` names the registered web origin
+  that opened it (the node ends it when the origin is removed). Test:
   `node_signed_session_tokens`.
 - `verify_consent`: the part of a step-up assertion every replica can check
   from the system state alone (credential, challenge, UP and UV, signature),

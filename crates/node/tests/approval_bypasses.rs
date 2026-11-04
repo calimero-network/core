@@ -990,6 +990,7 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
             expires_at: calimero_node::types::now_secs() + 600,
             passkey: None,
             app: None,
+            origin: None,
             node: 0,
             key: String::new(),
         });
