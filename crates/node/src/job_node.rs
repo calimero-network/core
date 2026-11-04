@@ -144,6 +144,13 @@ impl RunningJob {
         self.job.outputs_fail.store(true, Ordering::Relaxed);
     }
 
+    /// The hashes of the components this node holds. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn held_bundles(&self) -> Vec<String> {
+        self.job.bundles.hashes()
+    }
+
     /// Signs `report` as this node's job key would for the assignment with `digest`. Tests only.
     #[cfg(feature = "testing")]
     pub fn sign_report(

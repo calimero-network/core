@@ -157,13 +157,17 @@ impl Node {
                 )?,
             });
         }
+        let bundle = rec
+            .compute_bundle
+            .clone()
+            .ok_or_else(|| eyre::eyre!("the run has no compute component"))?;
         let mut assignment = Assignment {
             app: app.app_id.clone(),
             run: rec.run.clone(),
             attempt,
             method: rec.method.clone(),
             args: rec.args.0.clone(),
-            bundle: rec.bundle.clone(),
+            bundle,
             caller: rec.caller.clone(),
             owner: rec.owner.clone(),
             start_ts_ms: rec.start_ts_ms,
@@ -322,7 +326,11 @@ impl Drive<'_> {
     }
 
     async fn push_bundle(&self, peer: &JobPeer) -> eyre::Result<()> {
-        let hash = &self.rec.bundle;
+        let hash = self
+            .rec
+            .compute_bundle
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("the run has no compute component"))?;
         let bytes = self.node.bundle_wasm(hash).await?;
         let signature = self.node.sign_bundle(hash)?;
         let answer = self
