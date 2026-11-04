@@ -2462,6 +2462,7 @@ async fn app_create(
                 metadata: body.metadata,
                 last_upgrade: None,
                 deployment: body.deployment,
+                compute_bundle: None,
             }),
         })
         .await?;

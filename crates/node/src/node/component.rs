@@ -379,6 +379,12 @@ impl Node {
         &self.wasm
     }
 
+    /// The engine a release's compute components are prepared on.
+    #[must_use]
+    pub fn compute_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {
+        &self.compute_wasm
+    }
+
     /// The executor `bundle` runs on, from its WASM (the bytes of its package's
     /// service, or of the raw upload).
     pub async fn executor_of(&self, bundle: &str) -> Result<Executor, ApiError> {

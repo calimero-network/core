@@ -180,6 +180,17 @@ is its command line.
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.
+  A service may also ship a compute component (`compute` in the manifest): it is prepared on
+  `Node::compute_engine` only (never the replica engine), and the release is refused
+  `400 COMPUTE_ABI_MISMATCH` unless its ABI lists exactly the main ABI's compute methods,
+  each with the same caps, and `400 BAD_BUNDLE` when it imports outside the compute world or
+  its ABI is not the compute world's.
+  A release without one installs and its app runs calls; it cannot run compute.
+  `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
+  `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
+  `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
+  `AppRecord::compute_bundle` carries the running release's compute hash, set at apply next
+  to `bundle` on create and upgrade (`SystemState::compute_of`).
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM

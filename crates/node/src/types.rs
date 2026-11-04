@@ -139,6 +139,10 @@ pub struct AppRecord {
     /// The arguments `init` ran with (JSON; `null` for none).
     #[serde(default)]
     pub init_args: serde_json::Value,
+    /// The compute component of the release `bundle` came from, set with `bundle` at create
+    /// and upgrade; `None` when that release ships none (or `bundle` is a raw upload).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_bundle: Option<String>,
     /// The app instance's metadata: a title, an icon.
     /// Set by its owner or an admin of its organization.
     #[serde(default)]
