@@ -746,11 +746,13 @@ async fn begin_rp_id(node: &Node, origin: Option<&str>) -> Result<String, ApiErr
     let Some(origin) = origin else {
         return Ok(cluster);
     };
+    // The cluster's own origins, and the nodes' own (a page a node serves).
     if node
         .config
         .origins
         .iter()
         .any(|o| o.trim_end_matches('/') == origin)
+        || node.api_origins().iter().any(|o| o == origin)
     {
         return Ok(cluster);
     }

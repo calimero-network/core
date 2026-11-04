@@ -7,9 +7,9 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-use calimero_client::{Client, Passkey, Session};
+use calimero_client::Passkey;
 use calimero_identity::testing::SoftAuthenticator;
-use serde_json::{json, Value};
+use serde_json::json;
 
 #[path = "harness/cluster.rs"]
 #[allow(
@@ -88,53 +88,6 @@ fn status(e: &calimero_client::Error) -> u16 {
     e.to_string()[..3].parse().unwrap()
 }
 
-/// Sign up on `origin`, as a page there would: the ceremony begins naming
-/// the origin and uses the rp-id the node answers.
-async fn sign_up_on(client: &Client, pk: &mut SoftAuthenticator, origin: &str) -> Session {
-    let begin = client
-        .post(
-            "auth/passkey/register/begin",
-            json!({ "name": "carol", "origin": origin }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(begin["options"]["rp"]["id"], SITE_RP, "{begin}");
-    let registration = pk.create(&begin["options"]);
-    let s: Session = serde_json::from_value(
-        client
-            .post(
-                "auth/passkey/register/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
-            )
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    client.use_session(s.clone()).await;
-    s
-}
-
-/// Sign in on `origin`: the node's answer, or its refusal.
-async fn sign_in_on(
-    client: &Client,
-    pk: &mut SoftAuthenticator,
-    origin: &str,
-) -> Result<Value, Box<calimero_client::Error>> {
-    let begin = client
-        .post("auth/passkey/login/begin", json!({ "origin": origin }))
-        .await
-        .map_err(Box::new)?;
-    let challenge =
-        calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
-    client
-        .post(
-            "auth/passkey/login/finish",
-            json!({ "challengeId": begin["challengeId"], "assertion": pk.get(&challenge) }),
-        )
-        .await
-        .map_err(Box::new)
-}
-
 /// Whether the node lets a browser page on `origin` call it (a CORS preflight).
 async fn cors_allows(url: &str, origin: &str) -> bool {
     let r = reqwest::Client::new()
@@ -187,6 +140,18 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .unwrap_err();
     assert_eq!(status(&e), 400, "an unregistered origin: {e}");
     assert!(!cors_allows(&c.urls[0], SITE).await);
+    // The cluster's own origin, and a node's, begin as before, under the
+    // cluster's rp-id.
+    for origin in [
+        ORIGIN.to_owned(),
+        c.urls[1].trim_end_matches('/').to_owned(),
+    ] {
+        let begin = carol
+            .post("auth/passkey/login/begin", json!({ "origin": origin }))
+            .await
+            .unwrap();
+        assert_eq!(begin["options"]["rpId"], "localhost", "{origin}: {begin}");
+    }
 
     // Bob is not the package's manager: refused, and his own valid passkey
     // consent over the change, logged without the API, is refused at apply.
@@ -237,6 +202,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
             json!({ "origin": "https://notes.example.com/app" }),
             "BAD_ORIGIN",
         ),
+        (json!({ "origin": "not an origin" }), "BAD_ORIGIN"),
         (
             json!({ "origin": SITE, "rpId": "example.org" }),
             "BAD_RP_ID",
@@ -289,7 +255,15 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
 
     // Carol signs up on the site: a passkey for its rp-id, and a session
     // bound to NOTES that names the site.
-    let s = sign_up_on(&carol, &mut carol_pk, SITE).await;
+    let begin = carol
+        .post("auth/passkey/login/begin", json!({ "origin": SITE }))
+        .await
+        .unwrap();
+    assert_eq!(begin["options"]["rpId"], SITE_RP, "{begin}");
+    let s = carol
+        .sign_up_at(&mut carol_pk, "carol", Some(SITE))
+        .await
+        .unwrap();
     let me = carol.me().await.unwrap();
     assert_eq!(
         (me["app"].as_str(), me["origin"].as_str()),
@@ -343,13 +317,14 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     // Alice's cluster passkey does not sign in on the site (another rp-id).
     let alice_there = c.client(1);
     let mut alice_on_site = SoftAuthenticator::with_key(&alice_pk, "localhost", SITE);
-    let e = sign_in_on(&alice_there, &mut alice_on_site, SITE)
+    let e = alice_there
+        .sign_in_at(&mut alice_on_site, Some(SITE))
         .await
         .unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
     // Carol signs in again there.
     let again = c.client(1);
-    let _s = sign_in_on(&again, &mut carol_pk, SITE).await.unwrap();
+    let _s = again.sign_in_at(&mut carol_pk, Some(SITE)).await.unwrap();
 
     // Removal: the sessions opened there end, their refresh with them, and
     // the site may not begin a ceremony or call the node any more.
@@ -364,7 +339,9 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         let e = client.refresh().await.unwrap_err();
         assert_eq!(status(&e), 401, "{e}");
     }
-    let e = sign_in_on(&c.client(2), &mut carol_pk, SITE)
+    let e = c
+        .client(2)
+        .sign_in_at(&mut carol_pk, Some(SITE))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_NOT_REGISTERED"), "{e}");

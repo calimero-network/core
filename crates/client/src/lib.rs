@@ -471,9 +471,27 @@ impl Client {
 
     /// Create an account with a new passkey and sign in.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
-        let begin = self
-            .post("auth/passkey/register/begin", json!({ "name": name }))
-            .await?;
+        self.sign_up_at(passkey, name, None).await
+    }
+
+    /// [`Self::sign_up`] from a page on `origin`: for an origin a package's
+    /// manager registered, the node answers its own rp-id, and the session is
+    /// bound to that package.
+    ///
+    /// # Errors
+    /// As [`Self::post`]; `403 ORIGIN_NOT_REGISTERED` for an origin the
+    /// cluster does not know.
+    pub async fn sign_up_at(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        origin: Option<&str>,
+    ) -> Result<Session> {
+        let mut body = json!({ "name": name });
+        if let (Some(b), Some(o)) = (body.as_object_mut(), origin) {
+            let _prev = b.insert("origin".into(), json!(o));
+        }
+        let begin = self.post("auth/passkey/register/begin", body).await?;
         let registration = passkey.create(&begin["options"]);
         let s: Session = serde_json::from_value(
             self.post(
@@ -522,7 +540,20 @@ impl Client {
 
     /// Sign in with an existing passkey.
     pub async fn sign_in(&self, passkey: &mut dyn Passkey) -> Result<Session> {
-        let begin = self.post("auth/passkey/login/begin", json!({})).await?;
+        self.sign_in_at(passkey, None).await
+    }
+
+    /// [`Self::sign_in`] from a page on `origin` (see [`Self::sign_up_at`]).
+    ///
+    /// # Errors
+    /// As [`Self::sign_up_at`].
+    pub async fn sign_in_at(
+        &self,
+        passkey: &mut dyn Passkey,
+        origin: Option<&str>,
+    ) -> Result<Session> {
+        let body = origin.map_or_else(|| json!({}), |o| json!({ "origin": o }));
+        let begin = self.post("auth/passkey/login/begin", body).await?;
         let challenge = calimero_identity::from_b64url(
             begin["options"]["challenge"].as_str().unwrap_or_default(),
         )
