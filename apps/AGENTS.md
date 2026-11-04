@@ -15,7 +15,8 @@ on wasmer, were removed with that engine).
 ```bash
 rustup target add wasm32-wasip2                       # once (rust-toolchain.toml lists it)
 cargo test --manifest-path apps/<app>/Cargo.toml      # harness tests + app-level scenarios
-cargo run -p calimero-app-build --bin mero-app-build -- apps/<app> --out <app>.wasm
+scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+mero-app-build apps/<app> --out <app>.wasm
 python3 -I scripts/pack-component.py --wasm <app>.wasm --package <id> --app-version 1.0.0 \
   --out dist/<id>-1.0.0.mpk                           # a signed single-service .mpk (dev key)
 ```
@@ -23,7 +24,7 @@ python3 -I scripts/pack-component.py --wasm <app>.wasm --package <id> --app-vers
 ## Testing a compute method locally
 
 A compute method (`#[app::compute]`) is tested alone, with no app component, cluster or job node.
-Put `mero-compute` on PATH once with `scripts/install-mero-compute.sh`.
+Put `mero-app-build` and `mero-compute` on PATH once with `scripts/install-mero-app-build.sh` and `scripts/install-mero-compute.sh`.
 `mero-app-build` writes the compute component as `compute.component.wasm` beside `--out`.
 
 ```bash

@@ -13,7 +13,7 @@ inspected with `merod inspect` (`crates/merod`).
 Everything here is a Rust crate.
 
 An app is a `calimero:app` component, built with `calimero-app-build`
-(`cargo run -p calimero-app-build --bin mero-app-build -- <crate-dir> --out <file>`)
+(`mero-app-build <crate-dir> --out <file>`, put on PATH by `scripts/install-mero-app-build.sh`)
 and packed into a signed single-service `.mpk` with `scripts/pack-component.py`, which
 signs through `mero-sign`. The SDK 0.12 tools (`cargo-mero`, `mero-abi`,
 `storage-cost`, `storage-compare`, `state-disk-cost`) were removed with the wasmer

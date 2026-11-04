@@ -208,9 +208,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
 
-      - name: Install mero-compute
+      - name: Install mero-app-build and mero-compute
         if: ${{ !cancelled() }}
-        run: scripts/install-mero-compute.sh
+        run: |
+          scripts/install-mero-app-build.sh
+          scripts/install-mero-compute.sh
 
       # The tool a developer tests a compute method with, run end to end on the fixture: a
       # digest of 300 KB must write one output of the same size, identically twice.
@@ -220,7 +222,7 @@ jobs:
           set -euo pipefail
           out=target/mero-compute-check
           rm -rf "$out" && mkdir -p "$out"
-          cargo run -q -p calimero-app-build --bin mero-app-build -- \
+          mero-app-build \
             apps/v2-fixtures/compute --target-dir "$out/build" --out "$out/app.wasm"
           head -c 300000 /dev/urandom > "$out/input.bin"
           mero-compute run "$out/compute.component.wasm" --method digest \
