@@ -84,7 +84,7 @@ export default defineConfig({
         {
           // Overview, quickstart and writing apps.
           label: 'Get started',
-          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps'],
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/deploy-from-ci'],
         },
         {
           label: 'Build',

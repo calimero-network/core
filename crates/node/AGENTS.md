@@ -362,6 +362,18 @@ is its command line.
   Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
   `membership::tests`.
 - **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` records it; only the operator's signed `/ops/nodes` registers it again. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Upgrade keys** (`ApiKeyRecord::upgrades`, `types::UpgradeScope`; docs: protocol
+  "Upgrade keys", cloud "Deploy from CI"): `POST /auth/apikeys { upgrades: { app,
+  package? } }` (passkey consent; `api_key_args` states `upgrades` only when set, so
+  other keys' consents read as before) makes a key bound to one app, its package and
+  that package's pinned signer, plus the public half of an Ed25519 key derived from the
+  key (`proof::api_key_public`). `api::principal` refuses it everywhere (`403
+  UPGRADE_KEY_ONLY`); only `app_upgrade` takes it (`api::credential`), for `{ version }`
+  of its package (`SystemState::key_may_upgrade`), signing the statement in place of
+  the step-up (`proof::sign_key_upgrade`, carried in `UpgradeApp::consent`). `authorize`
+  verifies it under the key the log holds then (revoked or expired: refused) and spends
+  it; every other upgrade rule is unchanged. `UpgradeRecord::api_key` names the key
+  (`lastUpgrade.apiKey`). Regressions: `tests/upgrade_keys.rs`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is

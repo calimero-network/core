@@ -192,6 +192,9 @@ pub struct UpgradeRecord {
     /// The organization-wide run it was part of, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// The upgrade key (its id) that made it, in place of a passkey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 /// An upgrade of many apps at once, with cascade: every
@@ -261,6 +264,25 @@ pub struct ApiKeyRecord {
     #[serde(default)]
     pub allow_confirm: bool,
     pub expires_at: u64,
+    /// A key that upgrades one app and does nothing else: no passkey on each
+    /// upgrade, only to signed releases of one package by its pinned signer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrades: Option<UpgradeScope>,
+}
+
+/// What an upgrade key ([`ApiKeyRecord::upgrades`]) may do: upgrade `app`
+/// to a release of `package` signed by `signer`, proving each upgrade with
+/// the Ed25519 key its secret stands for (`proof::api_key_public`), so a
+/// node that saw only the log cannot forge one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradeScope {
+    pub app: AppId,
+    pub package: String,
+    /// The package's pinned signer (`did:key`) when the key was made.
+    pub signer: String,
+    /// The key's public half, hex.
+    pub proof_key: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

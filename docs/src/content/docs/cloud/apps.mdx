@@ -60,7 +60,8 @@ of one a node's data still holds; such an app can still be listed and deleted.
   of its own app and send HTTPS.
 - **Upgrades.** `POST /apps/{app}/upgrade { version }` (or `{ bundle }` on a
   development cluster) swaps the bundle; the state carries over as it is, and a
-  named migration is refused (`MigrationsNotSupported`).
+  named migration is refused (`MigrationsNotSupported`). From CI, use an
+  [upgrade key](/cloud/deploy-from-ci/) instead of a passkey.
 - **Outbound HTTPS** (from an action, or `env::fetch` as one recorded request
   of a call; never a view, init or a read-only member's call) goes only under a
   prefix its signed manifest declares (`outbound`), to a host the operator

@@ -129,6 +129,42 @@ the key is shown once. A key may be scoped:
 - `allowConfirm`: may carry the account holder's passkey assertion for a confirm
   method (it can never produce one);
 - `ttlSecs`: lifetime, at most and by default one year.
+- `upgrades: { app, package? }`: an [upgrade key](#upgrade-keys), which takes
+  none of the fields above but `ttlSecs`.
+
+## Upgrade keys
+
+A deploy from CI cannot answer a passkey step-up. An **upgrade key** is an API
+key whose scope is one app's upgrades: `POST /auth/apikeys { label, ttlSecs?,
+upgrades: { app, package? } }`, approved with the passkey of someone who [may
+upgrade](/protocol/upgrades/#who-may-upgrade) the app. Its record keeps the
+app, the package (by default the one the app runs) and that package's pinned
+signer, and the public half of an Ed25519 key derived from the key itself
+(`proof::api_key_public`: seed `SHA-256("calimero.api-key.v1\0" || key)`); the
+passkey consent covers all four.
+
+- **What it does**: `POST /apps/{app}/upgrade { version }` for its app, with no
+  step-up, to a release of its package installed under the signer it names (a
+  registry release is installed first, as for a session). The node signs the
+  upgrade's statement (`<app> / __upgrade / { bundle, migrate, manifest }`) with
+  the derived key, and the directory's `UpgradeApp` carries that signature in
+  place of a passkey consent. Every replica checks it where it applies, against
+  the key as the log holds it then, and spends it once; a node that saw only
+  the log cannot sign one.
+- **What it does not**: every other route, reads included, answers `403
+  UPGRADE_KEY_ONLY`. A raw bundle, another package, another signer and another
+  app are refused `403`.
+- **The rules that still apply**: governance holding app upgrades for owners,
+  the key's account still [may upgrade](/protocol/upgrades/#who-may-upgrade) the
+  app (a member who lost `MANAGE_APPLICATION` takes the key's power with them),
+  an owner release is never moved to a publisher one, [release
+  deadlines](/protocol/governance/#release-deadlines), and [deployer
+  grants](/protocol/governance/#deployers) for a registry install.
+- **Revoking** it (`DELETE /auth/apikeys/{key}`) stops it on every node at once,
+  for an upgrade logged later too. It also ends with its `ttlSecs`.
+- **What is logged**: the app's `lastUpgrade` names the account and the key
+  (`apiKey`), in `GET /auth/apps` and `GET /orgs/{org}/apps`; the node logs
+  each such upgrade with the app, the key's id and the bundle.
 
 ## Which credential may do what
 
@@ -137,6 +173,7 @@ the key is shown once. A key may be scoped:
 | Call and read apps it reaches | ✓ | that package's apps only | ✓ | within scope |
 | Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
 | Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
+| Upgrade one app to signed releases of its package, without a step-up | — | — | — | an [upgrade key](#upgrade-keys), and nothing else |
 | Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
 | Ask for an approval on the node's consent page | ✓ | ✓ (returns to its own origin) | — | — |
 
