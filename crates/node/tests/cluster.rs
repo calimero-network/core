@@ -2498,7 +2498,8 @@ async fn presence_reaches_every_node_and_expires() {
 
 // ---------------------------------------------------------------- app frontends
 
-/// App frontends: each package's frontend on its own origin, served from the
+/// App frontends: each package's frontend on its own origin (and on its
+/// cluster's host for it, `cluster_label`), served from the
 /// release's verified `.mpk` under a strict CSP, with client routes and deep
 /// links; and a passkey session opened from that origin is bound to the
 /// package, reaching its apps and nothing else of the account.
@@ -2662,9 +2663,71 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .await
         .is_err());
 
+    // The package's host on this cluster, `cluster_label`, is the same site
+    // and the same origin of the package; one made for another cluster is not.
+    let cluster_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::cluster_label(&c.name, "com.test.site")
+    );
+    let cluster_origin = format!("http://{cluster_host}:{port}");
+    let on_cluster = reqwest::Client::builder()
+        .resolve(&cluster_host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let root = on_cluster
+        .get(format!("{cluster_origin}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(root.headers()["location"], "/0.1.0/");
+    let page = on_cluster
+        .get(format!("{cluster_origin}/0.1.0/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.bytes().await.unwrap().as_ref(), html);
+    let known: Value = on_cluster
+        .get(format!("{cluster_origin}/.well-known/calimero.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(known["package"], json!("com.test.site"));
+    let elsewhere = format!(
+        "{}.localhost",
+        calimero_node::app_host::cluster_label("another", "com.test.site")
+    );
+    let r = reqwest::Client::builder()
+        .resolve(&elsewhere, ([127, 0, 0, 1], port).into())
+        .build()
+        .unwrap()
+        .get(format!("http://{elsewhere}:{port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "another cluster's host is not served here");
+    let carol_there = c.client(0);
+    let mut there_key = SoftAuthenticator::with_key(&carol_key, "localhost", &cluster_origin);
+    let _s = carol_there.sign_in(&mut there_key).await.unwrap();
+    let _ = carol_there
+        .call(&mine, "set", json!({ "key": "k", "value": "w" }), None)
+        .await
+        .unwrap();
+    assert!(carol_there
+        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .is_err());
+    assert!(carol_there
+        .create_api_key(json!({ "label": "k" }), &mut there_key)
+        .await
+        .is_err());
+
     // The same person on the cluster's own origin is not bound.
     let carol_home = c.client(2);
-    let mut home_key = SoftAuthenticator::with_key(&carol_key, "localhost", ORIGIN);
+    let mut home_key = SoftAuthenticator::with_key(&there_key, "localhost", ORIGIN);
     let _s = carol_home.sign_in(&mut home_key).await.unwrap();
     let _ = carol_home
         .call(&other, "set", json!({ "key": "k", "value": "v" }), None)

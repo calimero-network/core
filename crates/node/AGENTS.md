@@ -576,7 +576,17 @@ is its command line.
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins in `connect-src`, `/.well-known/calimero.json` (with the deployments
   offering the package); an unknown label under
-  D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
+  D is a 404, never a node route. Each package is also at
+  `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
+  and origin (for mdma's hostname resolver; another cluster's label 404s;
+  regression in `app_frontends_are_served_and_their_sessions_are_bound`,
+  vector in `cluster_labels_match_the_resolvers_vector`). Each deployment has its own host too,
+  `{deployment_label(id)}.D` (`app_host::Site`): the one package it offers
+  (404 while it offers none or several), `/` → what `/d/{deployment}/` gives,
+  `/d/` only for itself, well-known `deployment` set and listed first; the
+  deployment API answers its `host`. Regression:
+  `each_deployment_serves_its_frontend_on_its_own_host`. App origins (both
+  kinds) pass CORS, and a passkey ceremony
   from one opens a session bound to its package (`SessionClaims::app`, carried
   by refresh): `Principal::within` keeps it to that package's apps (gate, app
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
