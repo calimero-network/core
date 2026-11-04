@@ -374,6 +374,26 @@ fn a_guest_publishes_a_run_output_in_a_call_and_is_denied_in_a_view() {
 }
 
 #[test]
+fn a_guest_reads_who_uploaded_a_file() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+    let uploaded = files.insert_by(b"theirs", "bob");
+    let made = files.insert(b"made by a call");
+    for (id, expected) in [
+        (uploaded.as_str(), "bob"),
+        (made.as_str(), ""),
+        ("nope", ""),
+    ] {
+        let view = host(InvocationKind::View, "uploader", id.as_bytes())
+            .with_files(Arc::new(files.clone()));
+        let out = fx.engine.invoke(&app, view, Budget::view());
+        assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+        assert_eq!(out.result, expected.as_bytes(), "{id}");
+    }
+}
+
+#[test]
 fn a_node_without_files_gives_the_guest_a_soft_error() {
     let fx = fixture();
     let app = prepare(&fx, "files");

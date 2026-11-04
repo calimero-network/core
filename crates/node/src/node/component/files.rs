@@ -51,6 +51,8 @@ pub(in crate::node) const MAX_OPEN_FILE_BYTES: usize = 1 << 30;
 pub(in crate::node) const MAX_RUN_OPEN_BYTES: usize = 256 << 20;
 /// The ciphertext bytes the new files of all runs of the node hold until their entries are proposed.
 pub(in crate::node) const MAX_PENDING_FILE_BYTES: usize = 256 << 20;
+/// Bytes of the account id a peer names as a file's uploader.
+const MAX_UPLOADER_BYTES: usize = 128;
 /// The bytes being pushed to replicas at once, across all calls of the node.
 pub(in crate::node) const MAX_PUSH_BYTES: usize = 512 << 20;
 /// Files whose bytes a removal deletes at once.
@@ -339,6 +341,10 @@ impl Files for NodeFiles {
             size: record.size,
             sha256: seal.sha256.0.clone(),
         })
+    }
+
+    fn uploader(&self, id: &str) -> Option<String> {
+        self.sealed(id)?.1.uploader.clone()
     }
 
     fn publish(&self, id: &str) -> Result<PublishedFile, FileError> {
@@ -854,6 +860,7 @@ impl Node {
         &self,
         app: &AppRecord,
         bytes: &[u8],
+        uploader: &str,
     ) -> Result<Uploaded, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
             return Err(crate::node::blob_too_large());
@@ -867,9 +874,13 @@ impl Node {
         let mut leader: Option<String> = None;
         for _attempt in 0..30 {
             let done = if let Some(addr) = leader.take() {
-                self.forward_upload(&addr, &app.app_id, &key, bytes).await
+                self.forward_upload(&addr, &app.app_id, &key, bytes, uploader)
+                    .await
             } else if let Some(g) = self.replica_group(app) {
-                match self.upload_local(&g, &app.app_id, &key, bytes).await {
+                match self
+                    .upload_local(&g, &app.app_id, &key, bytes, uploader)
+                    .await
+                {
                     Ok(uploaded) => Ok(uploaded),
                     Err(Upload::Refused(e)) => Err(e),
                     Err(Upload::Elsewhere(addr)) => {
@@ -878,7 +889,8 @@ impl Node {
                     }
                 }
             } else if let Some(addr) = self.other_replica(app) {
-                self.forward_upload(&addr, &app.app_id, &key, bytes).await
+                self.forward_upload(&addr, &app.app_id, &key, bytes, uploader)
+                    .await
             } else {
                 Err(last.clone())
             };
@@ -905,14 +917,18 @@ impl Node {
         app_id: &str,
         key: &str,
         bytes: &[u8],
+        uploader: &str,
     ) -> Result<Uploaded, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
             return Err(crate::node::blob_too_large());
         }
+        if !valid_uploader(uploader) {
+            return Err(ApiError::bad_request("BAD_REQUEST", "unusable uploader"));
+        }
         let g = self
             .hosted(app_id)
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-        match self.upload_local(&g, app_id, key, bytes).await {
+        match self.upload_local(&g, app_id, key, bytes, uploader).await {
             Ok(uploaded) => Ok(uploaded),
             Err(Upload::Refused(e)) => Err(e),
             Err(Upload::Elsewhere(Some(addr))) => {
@@ -931,10 +947,12 @@ impl Node {
         app_id: &str,
         key: &str,
         bytes: &[u8],
+        uploader: &str,
     ) -> Result<Uploaded, ApiError> {
         let body = json!({
             "app": app_id,
             "key": key,
+            "uploader": uploader,
             "bytes": calimero_log::Bytes(bytes.to_vec()),
         });
         let answer = self
@@ -954,6 +972,7 @@ impl Node {
         app_id: &str,
         key: &str,
         bytes: &[u8],
+        uploader: &str,
     ) -> Result<Uploaded, Upload> {
         let status = g.status();
         if !status.is_leader {
@@ -980,7 +999,8 @@ impl Node {
             self.refund_files(app_id, size).await;
             return Err(Upload::Refused(e));
         }
-        self.commit_mark(g, app_id, FileMark::from(file), key).await
+        self.commit_mark(g, app_id, FileMark::from(file), key, uploader)
+            .await
     }
 
     /// Commits the mark of a file whose bytes are stored. When the commit fails, the leader says
@@ -991,8 +1011,9 @@ impl Node {
         app_id: &str,
         mark: FileMark,
         key: &str,
+        uploader: &str,
     ) -> Result<Uploaded, Upload> {
-        let error = match self.propose_mark(g, &mark, key).await {
+        let error = match self.propose_mark(g, &mark, key, uploader).await {
             Ok(answer) if answer.status == crate::app::Status::Ok => {
                 // A record under this key from another upload wins: ours is not marked.
                 return match uploaded(&answer) {
@@ -1058,6 +1079,7 @@ impl Node {
         g: &Group<AppMachine>,
         mark: &FileMark,
         key: &str,
+        uploader: &str,
     ) -> Result<crate::component::Applied, WriteError> {
         #[cfg(feature = "testing")]
         let fault = self
@@ -1073,9 +1095,9 @@ impl Node {
             // Another upload commits under this key first.
             let mut other = mark.clone();
             other.id = "ab".repeat(32);
-            let _ = self.append_mark(g, &other, key).await;
+            let _ = self.append_mark(g, &other, key, uploader).await;
         }
-        let proposed = self.append_mark(g, mark, key).await?;
+        let proposed = self.append_mark(g, mark, key, uploader).await?;
         #[cfg(feature = "testing")]
         if fault == 2 {
             return Err(WriteError::Unavailable("injected after".into()));
@@ -1088,6 +1110,7 @@ impl Node {
         g: &Group<AppMachine>,
         mark: &FileMark,
         key: &str,
+        uploader: &str,
     ) -> Result<calimero_log::Proposed, WriteError> {
         g.propose(|m, _| match m.component_replay(&Caller::System, key) {
             Some(prev) => Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default()),
@@ -1096,12 +1119,18 @@ impl Node {
                     mark: mark.clone(),
                     ts_ms: self.stamp(m),
                     key: Some(key.to_owned()),
+                    uploader: Some(uploader.to_owned()),
                 })
                 .unwrap_or_default(),
             ),
         })
         .await
     }
+}
+
+/// Whether a peer's uploader is an account id: printable ASCII, at most [`MAX_UPLOADER_BYTES`].
+fn valid_uploader(who: &str) -> bool {
+    !who.is_empty() && who.len() <= MAX_UPLOADER_BYTES && who.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// Whether the app holds the blob with hex id `id`: a file registered by a final or an upload.
@@ -1174,6 +1203,17 @@ impl Node {
 mod tests {
     use super::*;
     use crate::component::FileMark;
+
+    #[test]
+    fn an_uploader_a_peer_names_is_an_account_id_not_free_text() {
+        assert!(valid_uploader(
+            "vFtvwMfpnAQxoUWzlvp86ysNqE_C8XEG5MjtwRs1oNM"
+        ));
+        for bad in ["", "a b", "caf\u{e9}", &"a".repeat(MAX_UPLOADER_BYTES + 1)] {
+            assert!(!valid_uploader(bad), "{bad:?}");
+        }
+        assert!(valid_uploader(&"a".repeat(MAX_UPLOADER_BYTES)));
+    }
 
     #[tokio::test]
     async fn a_member_that_does_not_answer_by_the_deadline_is_refused() {
@@ -1295,6 +1335,7 @@ mod tests {
             sha256: mark.sha256.clone(),
             wrapped_key: mark.wrapped_key.clone(),
             output: false,
+            uploader: None,
         };
         let mut reader = SealedReader::new(
             ciphertext,

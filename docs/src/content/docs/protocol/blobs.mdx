@@ -128,6 +128,11 @@ The leader seals it as a run's files are sealed, stores it on a majority of the 
 Only the app's owner and the members (not guests) of its organization may upload and list files, even where the app is public.
 The reason is that a file's SHA-256 is the plaintext's, and would let anyone confirm a guessed document.
 `GET /apps/{app}/blobs` lists the files after the blobs, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and SHA-256, to those people only.
+
+The committed entry also records the account that uploaded the file, taken from the authenticated session or API key of the upload, never from a field of the request; a node that forwards the upload to the leader names it, and the leader refuses a name that is no account id.
+The app reads it with `runs.uploader` (`files::uploader` in the Rust SDK), which answers none for a file a call or a run made and for an unknown id.
+Every upload is sealed under a key of its own, so the same bytes uploaded twice are two files with two ids and two uploaders; the entry of an id the app already holds is refused, so a later upload never replaces the first uploader.
+A compute run does not see it.
 Everyone else gets the list without files, and `404` for a file's info, as for an id the app does not hold.
 Neither answer ever carries the key or any content.
 An uploaded file is held like any file: for an hour unless the app stores a `BlobRef` to it.

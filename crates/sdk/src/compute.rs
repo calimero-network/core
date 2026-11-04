@@ -67,6 +67,10 @@ mod backend {
     pub fn publish(_id: &str) -> Result<String, String> {
         core::arch::wasm32::unreachable()
     }
+
+    pub fn uploader(_id: &str) -> Option<String> {
+        core::arch::wasm32::unreachable()
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
@@ -94,6 +98,10 @@ mod backend {
     pub fn publish(id: &str) -> Result<String, String> {
         runs::publish(id)
     }
+
+    pub fn uploader(id: &str) -> Option<String> {
+        runs::uploader(id)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -118,6 +126,10 @@ mod backend {
 
     pub fn publish(_id: &str) -> Result<String, String> {
         Err(super::NOT_A_RUN_OUTPUT.to_owned())
+    }
+
+    pub fn uploader(_id: &str) -> Option<String> {
+        None
     }
 }
 
@@ -156,6 +168,12 @@ pub fn start<A: Serialize + ?Sized>(method: &str, args: &A, inputs: &[BlobRef]) 
 /// Asks for an active run to end: its result method then receives a cancelled outcome.
 pub fn cancel(run: &RunId) -> Result<()> {
     backend::cancel(run.as_str()).map_err(fail)
+}
+
+/// The account that uploaded the sealed file `id`, fixed at its upload; none for a file a call
+/// or a run made, and for an id the app does not hold. Not callable in a compute run.
+pub(crate) fn uploader(id: &BlobRef) -> Option<String> {
+    backend::uploader(&id.id())
 }
 
 /// Turns the output of one of this app's done compute runs into a plain blob, which downloads

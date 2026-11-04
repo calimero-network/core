@@ -455,6 +455,9 @@ pub enum ComponentCmd {
         /// The request's idempotency key: a retry of a committed command replays its answer.
         #[serde(default)]
         key: Option<String>,
+        /// The authenticated account that uploaded it.
+        #[serde(default)]
+        uploader: Option<String>,
     },
     /// Applies as nothing: committed through the leader to settle which earlier entries stand.
     #[serde(rename = "componentBarrier")]
@@ -1191,12 +1194,17 @@ impl AppMachine {
                     parse_hex32(&id).is_some_and(|raw| c.blobs.upload(tx, raw, size, &mime, ts_ms));
                 host_answer(index, held, "the app holds too many blobs")
             }
-            Ok(ComponentCmd::File { mark, ts_ms, key }) => {
+            Ok(ComponentCmd::File {
+                mark,
+                ts_ms,
+                key,
+                uploader,
+            }) => {
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
                 let raw = parse_hex32(&mark.id).filter(|id| !c.blobs.records.contains_key(id));
                 let a = if raw.is_some() {
-                    c.blobs.add_file(tx, &mark, ts_ms);
+                    c.blobs.add_uploaded(tx, &mark, ts_ms, uploader);
                     Applied {
                         result: json!({ "mark": mark }),
                         ..host_answer(index, true, "")
@@ -1774,12 +1782,49 @@ mod tests {
     }
 
     fn file_cmd(n: u8, ts_ms: u64, key: Option<&str>) -> Vec<u8> {
+        file_by(n, ts_ms, key, None)
+    }
+
+    fn file_by(n: u8, ts_ms: u64, key: Option<&str>, uploader: Option<&str>) -> Vec<u8> {
         serde_json::to_vec(&ComponentCmd::File {
             mark: mark(n),
             ts_ms,
             key: key.map(str::to_owned),
+            uploader: uploader.map(str::to_owned),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn an_uploaded_file_records_who_uploaded_it_and_no_later_upload_replaces_that() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        assert_eq!(
+            r.apply(2, &file_by(1, 5, None, Some("bob"))).status,
+            Status::Ok
+        );
+        let who = |r: &Rig, n: u8| r.machine.file_uploader(&[n; 32]);
+        assert_eq!(who(&r, 1), Some("bob".to_owned()));
+        let again = r.apply(3, &file_by(1, 6, None, Some("cy")));
+        assert_eq!(
+            again.status,
+            Status::AppError,
+            "the same id is the same file"
+        );
+        assert_eq!(who(&r, 1), Some("bob".to_owned()));
+        let _a = r.apply(4, &file_by(2, 7, None, None));
+        assert_eq!(who(&r, 2), None);
+        let made = r.apply(5, &file_call(4, 8, Status::Ok, vec![mark(3)], vec![]));
+        assert_eq!(made.status, Status::Ok);
+        assert_eq!(who(&r, 3), None, "a file a call made has no uploader");
+        assert_eq!(who(&r, 9), None, "an unknown id");
+    }
+
+    #[test]
+    fn a_record_stored_before_uploaders_existed_still_loads() {
+        let old = json!({ "sha256": "", "wrappedKey": "" });
+        let seal: blobs::FileSeal = serde_json::from_value(old).unwrap();
+        assert_eq!(seal.uploader, None);
     }
 
     fn collected(ids: &[String]) -> Vec<u8> {

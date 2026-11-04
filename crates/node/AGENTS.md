@@ -1190,6 +1190,8 @@ API and system group:
   `StorageStats::files` carries each file's id, size and SHA-256 for these routes, and `internal/storage` sends it to a peer.
   A node that does not lead the app seals and stores nothing: it passes the body to the leader (`internal/file-upload`, one hop; a follower answers `421 NOT_LEADER` with `details.leaderUrl` and the receiver follows it).
   The leader (`Node::upload_local`) seals through `NodeFiles::create`, holding the node-wide pending budget, charges the quota, pushes to its group's voters and commits `ComponentCmd::File` under a key made per HTTP request.
+  The command carries the uploader (`uploader`, a serde default), the account the API's `principal` derived, which `internal/file-upload` passes along and refuses unless it is an account id (`valid_uploader`); `BlobTable::add_uploaded` stores it as `FileSeal::uploader`, and files made by calls and runs have none.
+  `NodeFiles::uploader` answers it to `runs.uploader`; an id already held is refused (`file exists`), so a second upload never replaces the first uploader.
   Only a forward retried inside that request replays the first answer; a recorded answer for another file wins and the new file is undone.
   `apply` records the file as an unreferenced blob stamped with the entry's `ts_ms`, as `Node::component_blob_cmd` stamps an upload, so a client has the idle time to attach it.
   If the commit fails, a `componentBarrier` entry (applies as nothing) is committed through the leader, so the failed entry has either committed or never will.

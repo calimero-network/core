@@ -714,6 +714,12 @@ impl TestApp {
         BlobRef::parse(&self.files.insert(bytes)).expect("a file id is a blob id")
     }
 
+    /// [`Self::add_file`] as a file `uploader` uploaded.
+    #[must_use]
+    pub fn add_file_by(&self, bytes: &[u8], uploader: &str) -> BlobRef {
+        BlobRef::parse(&self.files.insert_by(bytes, uploader)).expect("a file id is a blob id")
+    }
+
     /// Puts a file in the store as the output of a done compute run: the only kind of file
     /// `compute::publish` accepts.
     #[must_use]

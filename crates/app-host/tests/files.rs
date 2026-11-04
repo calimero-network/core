@@ -953,6 +953,35 @@ fn a_run_may_publish_a_bounded_number_of_files() {
 }
 
 #[test]
+fn the_uploader_of_a_file_is_known_to_the_app_and_not_to_a_compute_run() {
+    let files = MemoryFiles::default();
+    let uploaded = files.insert_by(b"theirs", "bob");
+    let made = files.insert(b"made by a call");
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::View,
+        InvocationKind::Action,
+    ] {
+        let h = host(inv(kind), Arc::new(files.clone()));
+        assert_eq!(
+            h.files_uploader(&uploaded).unwrap(),
+            Some("bob".to_owned()),
+            "{kind:?}"
+        );
+        assert_eq!(h.files_uploader(&made).unwrap(), None);
+        assert_eq!(h.files_uploader("nope").unwrap(), None);
+    }
+    denied(host(inv(InvocationKind::Migrate), Arc::new(files.clone())).files_uploader(&uploaded));
+    let mut run = inv(InvocationKind::Action);
+    run.compute = Some(calimero_app_host::ComputeCtx {
+        run_id: "r".to_owned(),
+        owner: "owner".to_owned(),
+        inputs: vec![uploaded.clone()],
+    });
+    denied(host(run, Arc::new(files)).files_uploader(&uploaded));
+}
+
+#[test]
 fn a_run_may_publish_a_bounded_number_of_bytes() {
     let files = MemoryFiles::default();
     let big = |n: u8| {
