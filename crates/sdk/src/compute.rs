@@ -125,9 +125,8 @@ pub fn progress(percent: u8, step: &str) {
     backend::progress(percent, step);
 }
 
-/// Starts the compute method `method` on `inputs`, and answers the run's id; the run exists once
-/// the call that started it commits, and is queued until a job node takes it. A run with the same
-/// method, arguments and inputs that is still active is answered instead of a second one.
+/// Starts the compute method `method` on `inputs` and answers the run's id; the run exists once
+/// the call commits. The same active run (method, arguments, inputs) is answered, not a second.
 pub fn start<A: Serialize + ?Sized>(method: &str, args: &A, inputs: &[BlobRef]) -> Result<RunId> {
     let args = match serde_json::to_value(args).map_err(|e| fail(e.to_string()))? {
         serde_json::Value::Null => Vec::new(),
