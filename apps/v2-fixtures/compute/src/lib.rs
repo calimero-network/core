@@ -25,6 +25,8 @@ pub struct Compute {
     /// What `onThen` got from starting the next run, by the finished run's id: the new run's
     /// id or the error text.
     chained: UnorderedMap<String, String>,
+    /// The plain blobs `publish` made, by id: a reference in state retains one.
+    published: UnorderedMap<String, BlobRef>,
 }
 
 #[app::logic]
@@ -164,6 +166,19 @@ impl Compute {
         };
         self.chained.insert(&outcome.run.to_string(), &started)?;
         Ok(())
+    }
+
+    /// Publishes the compute output `output` as a plain blob and keeps its reference.
+    pub fn publish(&mut self, output: BlobRef) -> app::Result<BlobRef> {
+        let blob = compute::publish(&output)?;
+        self.published.insert(&blob.id(), &blob)?;
+        Ok(blob)
+    }
+
+    /// A download grant for the blob `id`, valid for `ttl` seconds.
+    #[app::view]
+    pub fn share(&self, id: BlobRef, ttl: u32) -> app::Result<String> {
+        Ok(id.grant(ttl))
     }
 
     /// Logs an entry that changes nothing else.
