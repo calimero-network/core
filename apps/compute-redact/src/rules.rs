@@ -1,6 +1,5 @@
-//! The redaction rules engine: a policy of per-column rules applied to CSV streamed from a
-//! reader to a writer, so a file never sits in memory whole. No clock and no randomness: the
-//! same input and policy give the same bytes.
+//! The redaction rules engine: per-column rules applied to CSV streamed from a reader to a writer.
+//! No clock and no randomness: the same input and policy give the same bytes.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
