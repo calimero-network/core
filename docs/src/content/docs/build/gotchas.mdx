@@ -1,95 +1,54 @@
 ---
-title: Gotchas & Sharp Edges
-description: A curated list of concrete, non-obvious facts that bite builders on Calimero — each grounded in the code.
+title: Gotchas
+description: The mistakes calimero-sdk apps make most often, each with the rule that avoids it.
 sidebar:
-  order: 10
+  order: 30
 ---
 
-import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+The short list. Each item links to the page that explains it.
 
-These are the sharp edges that bite — each one a concrete, non-obvious fact grounded
-in the code, not folklore. They are the things you only learn after a write
-silently vanishes, a read gets slow as state grows, or a test passes locally and
-fails on a cluster. Skim the whole page once before you build; the values here
-(limits, defaults, write rules) are the kind you reach for at 2am. Deeper
-treatments live in [Advanced SDK](/build/advanced-sdk/),
-[Storage Complexity](/build/storage-complexity/),
-[Permissioned Storage](/build/permissioned-storage/), and
-[Application execution](/protocol/execution/).
+## Numbers and arguments
 
-## Execution
+- `u64`, `i64` and `Vec<u8>` travel as decimal strings and base64url, in
+  arguments, results, record fields, errors and events. A client sends
+  `{"size": "7"}`, not `{"size": 7}`.
+- The same types nested in another type (`Vec<u64>`, `Option<Vec<i64>>`) do not
+  compile: wrap them in a `Record` or send strings
+  ([SDK macros](/core/build/sdk-macros/#applogic)).
+- A `u64` inside your own plain serde struct is invisible to the macro and
+  reaches JSON as a number, which JavaScript may round. Use a `Record`, whose
+  derive converts it.
+- Arguments are camelCase (`room_id` → `roomId`), and unknown keys are refused
+  (`BadArgs`).
 
-- A call runs **once**, on the app's leader; the other replicas apply the keys it wrote and run nothing. So `time_now`, `random_bytes`, outbound responses and search answers are read once and cannot make replicas disagree ([Determinism is not what converges](/protocol/execution/#determinism-is-not-what-converges)).
-- A run that traps or returns an error leaves an **empty diff**: nothing it wrote is kept. An app error comes back as `422 APP_ERROR` with the app's error in `details.error`; a trap as `422 TRAP`.
-- Every run is bounded by `VMLimits`, gas included (one point per executed WASM operator). Exceeding any limit traps the whole call — there is no partial commit ([Execution limits](/protocol/limits/#execution-limits)).
-- `http_request` makes one outbound request per run, and only when the operator, the release's manifest and the approved prefixes all allow it, and only from a run that writes — never a view, `init` or a migration ([Outbound HTTPS](/protocol/execution/#outbound-https)).
-- A run that is repeated after a leader change runs its outbound request again. Make the remote side idempotent.
-- A run's whole log entry — arguments, diff, events — must stay under **1 MiB**, whatever `VMLimits` allows for a single value.
+## State
 
-## Identity
+- Renaming a state field or changing its type orphans its data: an upgrade keeps
+  the state and has no migration step ([Upgrades & state](/core/build/migrations/)).
+- A record must not also derive `Serialize`/`Deserialize`: `#[derive(Record)]`
+  writes them.
+- Uniqueness belongs in the key or a `unique(..)` constraint, not in a check
+  before an insert.
+- Prefer `env::unique_id()` to a `Counter` for ids.
+- Multi-row reads are pages of at most 1,000; follow `next`
+  ([Tables & Collections](/core/build/collections/)).
 
-- `env::account_id()`, `env::executor_id()` and `env::device_id()` all return the **caller's account**. There are no per-device keys: two passkeys of one person are the same executor.
-- The caller is set by the node from the caller's credential; it is never read from guest memory or supplied by the caller, so app code cannot spoof who it is running as.
-- A handler or an xcall target runs as the app itself (or, for an xcall, with `env::xcall_origin()` naming the calling app); a public call has no caller account, and so no private space.
-- `PrivateKey` zeroizes its bytes on drop via a custom `Drop` impl — do not copy the raw bytes out into a `Vec` that outlives it.
+## Access
 
-## Storage
+- A method with no attribute admits any signed-in account the node lets reach
+  the app; org membership is the app's to check with `guards`
+  ([Access control](/core/build/guides/access-control/)).
+- Take the caller from `env::caller()` or a guard, never from an argument.
+- `#[app::error]` and `#[app::event]` must be in the `#[app::logic]` module, or
+  the ABI lists none of them.
 
-:::caution[A bare get() is a read-only copy — mutating it is a silent no-op]
-`get()` returns a `ValueRef<V>`: an owned, freshly deserialized, read-only copy.
-Mutating it changes nothing in storage and the write silently vanishes. To
-persist a change use `get_mut()` or `entry().or_default()` (both write back when
-the guard drops). Mutating a plain `get` result does not compile for the safe
-collections — but the mental model is what bites.
-:::
+## Runs
 
-- A cluster node keeps no ordered or secondary index. Every ordered read of a `SortedMap` / `SortedSet` loads and sorts all entries, and every `IndexedMap` query scans them ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)). Keep such collections small or sharded.
-- `len` on a guarded collection (`Authored*`, `WriteOnce`, `Moderated`, `UserStorage`) loads every entry it admits, on every call.
-- An `IndexedMap` index cannot enforce uniqueness. Put anything that must be unique in the map **key**, or use a [`Registry`](/build/choosing-state/#unique-names-registry).
-- `SortedMap` keys must be encoded big-endian (and offset-binary for signed values) so that their byte order matches their `Ord` order — little-endian keys will iterate in the wrong order.
-- Map keys are bounded `K: AsRef<[u8]>` on every write path — your key type must produce stable bytes.
-- Entity ids are domain-separated SHA-256 hashes, so entity-id (storage) order is unrelated to logical key order — never assume iteration follows key order in an unordered map.
-- `#[app::private]` state is the **caller's own space**: replicated and sealed with the app, read only by that account's runs. A run sees only its own caller's space, and a public call has none.
-
-## Collections
-
-- A map entry holding a plain struct is one entity: a write replaces the whole struct, as the run built it from what it read. Keep data that grows in a collection field ([Writing: the entry is the unit](/build/choosing-state/#writing-the-entry-is-the-unit)).
-- `Counter::increment` PANICS inside a state migration; leave the counter unchanged there or use `increment_for` with an explicit id.
-- `GCounter` (`Counter<false>`) and `PNCounter` (`Counter<true>`) are distinct types with different serialization — they are not interchangeable across a schema change.
-- `Vector::get(i)` reads `i + 1` entries; iterate instead of indexing in a loop.
-- The wasm ABI forces all map keys to be `String` (validation rejects any other map-key type as `InvalidMapKeyType`) — non-string keys won't cross the ABI boundary.
-
-## Who may call
-
-- Who reaches an app is its access rule and the caller's organization and team rows ([Organizations](/protocol/organizations/)). A caller who does not reach it gets `404`, so its existence is not disclosed.
-- A **read-only** member's calls run, but a call that would write anything is refused with `403`.
-- A storage wrapper's rule is checked against the caller's account when the run writes; a check written only in one method guards that method only ([Securing state](/build/guides/securing-state/)).
-
-## Events, handlers, xcall
-
-- Events are kept in the app's ring (the last 10 000) and streamed from `GET /apps/{app}/events?from=N`. A client that falls further behind than the ring misses events; re-read state instead.
-- Everyone who reaches the app receives all of its events. Do not put in an event what some members must not see.
-- A handler runs **once**, on the leader, after the entry commits, as a call of the app itself. A failed handler is recorded and **not retried**.
-- An xcall only QUEUES the call: it runs after the entry commits, on the target app's leader, within the same organization (or the same owner), and only a method marked `#[app::xcall]`. There is no synchronous return value.
-- Handlers and xcalls chain at most 3 deep (`MAX_FOLLOWUP_DEPTH`).
-
-## Blobs
-
-- A blob's id is `hex(SHA-256(bytes))` of the whole content.
-- A blob is an app's only once the app's state marks it (`env::blob_announce_to_context`); the bytes in the store belong to no one ([Blobs](/protocol/blobs/)).
-- One blob is at most 47 MiB: it reaches the other nodes in one sealed request.
-
-## Testing (TestHost)
-
-- In `TestHost`, xcall, `ed25519_verify`, and networked blob announce/fetch ops PANIC if invoked — they have no in-process implementation, so structure tests to avoid them.
-- Event handlers are not auto-dispatched by `TestHost`; emitting an event does not run its handler, so handler logic must be exercised directly.
-- The default `TestHost` identity satisfies owner checks — a test can pass on permissions that would fail in production under a real, non-owner executor.
-- Only one `TestHost` may be live per thread at a time — run host-using tests serially within a thread, not nested.
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="The deeper mechanics behind the storage, handler and xcall edges above." />
-  <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="Why writes rehash siblings and how to keep collections fast." />
-  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Who may write a value, and where that rule is checked." />
-</CardGrid>
+- A call that fails writes nothing and emits nothing; a panic is a trap, not an
+  app error ([Error handling](/core/build/error-handling/)).
+- `env::xcall` only queues a message: it is delivered after the entry commits,
+  and only if the run succeeds ([Cross-app calls](/core/build/guides/cross-context/)).
+- Only views may search; a call that searches traps
+  ([Search](/core/build/guides/search/)).
+- `env::fetch`, actions and cross-app calls answer an error on the host target;
+  test them with `TestApp` ([Testing](/core/build/testing/)).

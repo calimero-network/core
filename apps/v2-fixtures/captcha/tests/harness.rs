@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{Failure, Org, TestApp};
+use calimero_sdk::testing::{Failure, Org, TestApp};
 use serde_json::json;
 
 fn component() -> &'static [u8] {
@@ -84,7 +84,7 @@ fn a_challenge_is_verified_once_by_an_app() {
 
 #[test]
 fn a_turnstile_token_is_checked_with_cloudflare_from_the_call() {
-    use calimero_app_sdk::testing::{HttpRequest, HttpResponse};
+    use calimero_sdk::testing::{HttpRequest, HttpResponse};
     let mut t = app();
     t.mock_http("challenges.cloudflare.com", |r: &HttpRequest| {
         let body = String::from_utf8_lossy(&r.body).into_owned();

@@ -6,8 +6,8 @@
 //! `rotateWriters` replaces the writer set of the value only, so the map stays guarded by
 //! the set `init` gave it; v1's end-to-end test leaned on that, and so does the scenario.
 
-use calimero_app_sdk::env::Caller;
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::env::Caller;
+use calimero_sdk::prelude::*;
 
 /// The guarded field a writer set belongs to.
 const VALUE: &str = "value";

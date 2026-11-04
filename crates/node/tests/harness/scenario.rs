@@ -4,7 +4,7 @@
 //! Two formats (both documented in `docs/src/content/docs/contribute/testing.mdx`):
 //!
 //! - **App-level scenarios**, `apps/<app>/scenarios/<name>.json`: the JSON array of
-//!   `calimero_app_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/`removeMember`,
+//!   `calimero_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/`removeMember`,
 //!   `as`, `expect`, `save`, `$var`, `@account`, `events`), the same file the app's own
 //!   harness test runs. Here it runs on a real cluster: the app is built (a component, with
 //!   `calimero-app-build`), the organization of
@@ -118,9 +118,11 @@ fn app_dir_of_crate(krate: &str) -> Option<PathBuf> {
         .find(|d| crate_name(d).is_some_and(|n| n.replace('-', "_") == want))
 }
 
-/// Whether the crate at `dir` is a `calimero:app` component (the v2 SDK).
+/// Whether the crate at `dir` is a `calimero:app` component: it depends on `calimero-sdk`
+/// (or on `calimero-app-sdk`, the SDK's old name, kept while apps move over).
 fn is_component(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|t| t.contains("calimero-app-sdk"))
+    std::fs::read_to_string(dir.join("Cargo.toml"))
+        .is_ok_and(|t| t.contains("calimero-sdk") || t.contains("calimero-app-sdk"))
 }
 
 /// The app at `dir` (relative to the repository root or absolute) as WASM: a component built
@@ -139,18 +141,19 @@ pub fn build_app(dir: &Path) -> Result<Vec<u8>, String> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !is_component(&dir) {
         return Err(format!(
-            "{}: not a calimero:app component (calimero-app-sdk); SDK 0.12 apps are gone",
+            "{}: not a calimero:app component (calimero-sdk); SDK 0.12 apps are gone",
             dir.display()
         ));
     }
-    let sdk = root.join("crates/app-sdk");
-    let macros = root.join("crates/app-sdk-macros");
+    let sdk = root.join("crates/sdk");
+    let macros = root.join("crates/sdk-macros");
+    let alias = root.join("crates/app-sdk");
     let wit = root.join("crates/app-wit");
     let target =
         std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
     calimero_app_build::build_component_cached(
         &dir,
-        &[&sdk, &macros, &wit],
+        &[&sdk, &macros, &alias, &wit],
         &target.join("app-components"),
     )
     .map_err(|e| format!("build {}: {e}", dir.display()))
@@ -2744,7 +2747,7 @@ impl OrgSpec {
     }
 }
 
-/// How an app-level step ended, in the harness's terms (`calimero_app_sdk::testing::Failure`).
+/// How an app-level step ended, in the harness's terms (`calimero_sdk::testing::Failure`).
 enum AppFailure {
     App {
         code: String,

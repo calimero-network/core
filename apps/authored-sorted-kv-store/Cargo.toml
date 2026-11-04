@@ -9,10 +9,10 @@ description = "A shared noticeboard on the component SDK: per-note authors and t
 crate-type = ["cdylib"]
 
 [dependencies]
-calimero-app-sdk = { path = "../../crates/app-sdk" }
+calimero-sdk = { path = "../../crates/sdk" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
 calimero-app-build = { path = "../../crates/app-build" }
 serde_json = "1"
 

@@ -8,7 +8,7 @@ sidebar:
 import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 This walks from an app's crate to a method call on a local cluster. An app is
-a `calimero:app` component, written with the Rust SDK (`calimero-app-sdk`) and
+a `calimero:app` component, written with the Rust SDK (`calimero-sdk`) and
 built with `calimero-app-build`; the [tutorial](/build/tutorial/) is the long
 form, checking output at every step.
 
@@ -29,7 +29,7 @@ form, checking output at every step.
    ```
 
 2. **Test the app** on the real engine, with no node (`TestApp`, in
-   `calimero-app-sdk`'s `testing` module):
+   `calimero-sdk`'s `testing` module):
 
    ```sh
    cargo test --manifest-path apps/kv-store/Cargo.toml

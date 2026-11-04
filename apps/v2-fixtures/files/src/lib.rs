@@ -4,8 +4,8 @@
 
 use std::io::{Read, Write};
 
-use calimero_app_sdk::blob::BlobRef;
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::blob::BlobRef;
+use calimero_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// One write call's size: the file reaches the host in pieces, as a real app's would.
@@ -73,10 +73,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn read_all(id: &BlobRef) -> app::Result<ReadOut> {
-    read_reader(calimero_app_sdk::files::open(id)?)
+    read_reader(calimero_sdk::files::open(id)?)
 }
 
-fn read_reader(mut reader: calimero_app_sdk::files::Reader) -> app::Result<ReadOut> {
+fn read_reader(mut reader: calimero_sdk::files::Reader) -> app::Result<ReadOut> {
     let mut hash = Sha256::new();
     let mut size = 0u64;
     let mut buf = vec![0u8; WRITE_PIECE];
@@ -96,7 +96,7 @@ fn read_reader(mut reader: calimero_app_sdk::files::Reader) -> app::Result<ReadO
 
 fn write_file(len: u64, seed: u64) -> app::Result<(PutOut, BlobRef)> {
     let mut hash = Sha256::new();
-    let mut writer = calimero_app_sdk::files::create()?;
+    let mut writer = calimero_sdk::files::create()?;
     for piece in stream(len, seed) {
         hash.update(&piece);
         writer.write_all(&piece)?;
@@ -155,8 +155,8 @@ impl Files {
 
     /// Holds the file open twice at once, reads one of them.
     pub fn touch_twice(&mut self, id: BlobRef) -> app::Result<ReadOut> {
-        let first = calimero_app_sdk::files::open(&id)?;
-        let _second = calimero_app_sdk::files::open(&id)?;
+        let first = calimero_sdk::files::open(&id)?;
+        let _second = calimero_sdk::files::open(&id)?;
         read_reader(first)
     }
 

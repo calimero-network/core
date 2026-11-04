@@ -135,7 +135,7 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
             (410, "UNSUPPORTED_ENGINE"),
             "{e:?}"
         );
-        assert!(e.message.contains("calimero-app-sdk"), "{e:?}");
+        assert!(e.message.contains("calimero-sdk"), "{e:?}");
     };
     for k in fixture["values"].as_object().unwrap().keys() {
         gone(

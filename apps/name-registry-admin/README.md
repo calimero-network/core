@@ -1,7 +1,7 @@
 # Name Registry (Admin)
 
 Usernames no member can take from another, decided by the registry's admins, on
-the component SDK (`calimero-app-sdk`). The v1 version was a
+the component SDK (`calimero-sdk`). The v1 version was a
 `Registry<String, String, Admin>`; here it is three tables (`claims`,
 `verdicts`, `admins`) and explicit checks against the caller.
 

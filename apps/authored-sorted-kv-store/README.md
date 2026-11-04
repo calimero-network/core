@@ -1,6 +1,6 @@
 # authored-sorted-kv-store
 
-A shared noticeboard on the component SDK (`calimero-app-sdk`): every note
+A shared noticeboard on the component SDK (`calimero-sdk`): every note
 belongs to whoever wrote it, and a reader takes a *slice* of the board (one
 topic) instead of walking all of it. The v1 version was the example for
 `AuthoredSortedMap`; here it is a `Table<Note>` and two explicit checks.

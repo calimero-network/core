@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{run_scenario, Org, TestApp};
+use calimero_sdk::testing::{run_scenario, Org, TestApp};
 use serde_json::Value;
 
 const T0: u64 = 1_700_000_000_000;

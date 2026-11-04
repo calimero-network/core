@@ -2632,7 +2632,7 @@ async fn a_snapshot_install_carries_a_components_host_records() {
 /// No new SDK 0.12 app: a core module (no `calimero:app` component) is refused as a
 /// bundle (`400 UNSUPPORTED_BUNDLE`), whether uploaded raw or as a signed package's
 /// service, so no app is created from one and no app is upgraded to one; the
-/// refusal says to rebuild with calimero-app-sdk.
+/// refusal says to rebuild with calimero-sdk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_core_module_bundle_is_refused_as_an_sdk_0_12_app() {
     let c = Cluster::start(3).await;
@@ -2645,7 +2645,7 @@ async fn a_core_module_bundle_is_refused_as_an_sdk_0_12_app() {
             other => panic!("{other:?}"),
         };
         assert_eq!((status, e.code()), (400, Some("UNSUPPORTED_BUNDLE")), "{e}");
-        assert!(e.to_string().contains("calimero-app-sdk"), "{e}");
+        assert!(e.to_string().contains("calimero-sdk"), "{e}");
     };
     refused(alice.upload_bundle(core.clone()).await.unwrap_err());
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);

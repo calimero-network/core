@@ -2,8 +2,8 @@
 //! on `env::org_role` / `env::in_team`): members read, admins write, and a team's members
 //! write that team's note. Method names and arguments are the ABI's camelCase ones.
 
-use calimero_app_sdk::env::{Caller, OrgRole};
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::env::{Caller, OrgRole};
+use calimero_sdk::prelude::*;
 
 #[derive(Record)]
 #[table(key = "team")]

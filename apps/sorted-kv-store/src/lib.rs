@@ -7,8 +7,8 @@
 
 use std::collections::BTreeMap;
 
-use calimero_app_sdk::prelude::*;
-use calimero_app_sdk::StorageError;
+use calimero_sdk::prelude::*;
+use calimero_sdk::StorageError;
 
 /// One key/value pair: what `first` and `last` return.
 #[derive(serde::Serialize)]

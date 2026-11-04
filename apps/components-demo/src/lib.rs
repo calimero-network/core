@@ -18,7 +18,7 @@
 //! The owner, writers and admins are accounts, never devices: a person on a second device is
 //! the same caller. Every method needs an org member (or above); guests get `Forbidden`.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// The id of the one config cell.
 const CONFIG: &str = "config";

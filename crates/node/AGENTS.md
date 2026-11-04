@@ -13,7 +13,7 @@ is its command line.
   and appends `{ call, outcome { result, diff, events } }`. Followers apply the diff;
   nothing is re-executed. `base_index` guards against applying a stale diff.
 - **One engine** (`types::Executor`): an app is a `calimero:app` component (built
-  with `calimero-app-sdk`) and runs on wasmtime through the host core
+  with `calimero-sdk`) and runs on wasmtime through the host core
   (`node/component.rs`, `component.rs`). The executor is decided once, from the WASM
   the app's bundle names (a package's service or a raw upload,
   `wasmparser::Parser::is_component`), when the app is created (`AppRecord::executor`),

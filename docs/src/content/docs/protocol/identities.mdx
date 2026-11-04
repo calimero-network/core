@@ -115,9 +115,8 @@ another node.
 
 There are no device keys. A device is a passkey; `/auth/me` reports which one
 the current session was opened with (`passkeyId`), and removing a passkey ends
-that device's sessions. Inside an app, `env::account_id()` and
-`env::executor_id()` are both the caller's account ([Who a run acts
-as](/protocol/authorship/)). Presence keeps one entry per device: the session's
+that device's sessions. Inside an app, `env::caller()` is the account, whichever
+of its devices made the call ([Who a run acts as](/protocol/authorship/)). Presence keeps one entry per device: the session's
 passkey, or the API key.
 
 ## API keys

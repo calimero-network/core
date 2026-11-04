@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{Failure, Org, TestApp};
+use calimero_sdk::testing::{Failure, Org, TestApp};
 use serde_json::json;
 
 fn component() -> &'static [u8] {
@@ -201,7 +201,7 @@ fn blobs_are_referenced_from_state_and_granted() {
         .unwrap_err();
     assert_eq!(
         e,
-        Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied)
+        Failure::Trap(calimero_sdk::testing::TrapKind::HostDenied)
     );
     t.as_("owner")
         .call("detach", json!({ "name": "greeting" }))
@@ -232,7 +232,7 @@ fn notes_are_found_by_their_declared_fields() {
         t.as_("owner")
             .call("findNotes", json!({ "text": "eggs" }))
             .unwrap_err(),
-        Failure::Trap(calimero_app_sdk::testing::TrapKind::HostDenied)
+        Failure::Trap(calimero_sdk::testing::TrapKind::HostDenied)
     );
     t.as_("owner")
         .call("dropNote", json!({ "id": "1" }))
@@ -275,7 +275,7 @@ fn xcalls_leave_only_with_an_ok_run_and_reach_only_methods_that_allow_the_source
 
 #[test]
 fn an_action_reads_through_views_fetches_and_writes_through_its_calls() {
-    use calimero_app_sdk::testing::HttpResponse;
+    use calimero_sdk::testing::HttpResponse;
     let mut t = app();
     t.as_("owner")
         .call("set", json!({ "key": "acme", "value": "acme.com" }))

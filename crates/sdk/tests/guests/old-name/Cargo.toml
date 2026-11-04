@@ -1,0 +1,15 @@
+[package]
+name = "old-name-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Only the SDK's old name, as an app that has not moved yet depends on it: the `app`
+# attributes must expand to `::calimero_app_sdk` paths, which resolve through its re-export.
+[dependencies]
+calimero-app-sdk = { path = "../../../../app-sdk" }
+
+[workspace]

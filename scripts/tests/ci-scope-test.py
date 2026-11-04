@@ -23,7 +23,7 @@ CASES = [
     # (name, changed paths, ci-checks jobs that must run; every other job must skip)
     ("a node-only change runs the workspace jobs", ["crates/node/src/lib.rs"], R),
     ("merod runs the workspace jobs", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], R),
-    ("the component SDK runs the workspace jobs", ["crates/app-sdk/src/lib.rs"], R),
+    ("the component SDK runs the workspace jobs", ["crates/sdk/src/lib.rs"], R),
     ("a component app runs the workspace jobs", ["apps/kv-store/src/lib.rs"], R),
     ("a lint script runs the workspace jobs", ["scripts/check-naming.sh"], R),
     ("a file no job reads runs nothing", ["scripts/profiling/collect.sh", ".github/workflows/fuzz.yml"], set()),

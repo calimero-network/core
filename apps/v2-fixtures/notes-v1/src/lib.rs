@@ -2,7 +2,7 @@
 //! `apps/v2-fixtures/notes-v2` is 2.0.0; the page names what changes between their ABIs.
 //! Method names and arguments are the ABI's camelCase ones.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 #[derive(Record)]
 #[table(key = "id")]

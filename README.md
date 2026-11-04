@@ -20,7 +20,7 @@ operating the nodes can read the apps' data.
 | **calimero-identity** | Passkeys, sessions, API keys, confirmation challenges |
 | **calimero-client** | Rust client: attestation check, sealed requests, sign-in |
 | **calimero-app-engine-wasmtime** | Wasmtime engine for `calimero:app` components |
-| **calimero-app-sdk** | The Rust SDK apps are written with, built into `calimero:app` components |
+| **calimero-sdk** | The Rust SDK apps are written with, built into `calimero:app` components |
 
 The full list is in [`crates/AGENTS.md`](crates/AGENTS.md).
 

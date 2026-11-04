@@ -20,8 +20,9 @@ fn kv_wasm() -> Vec<u8> {
     calimero_app_build::build_component_cached(
         &root.join("apps/v2-fixtures/kv"),
         &[
+            &root.join("crates/sdk"),
+            &root.join("crates/sdk-macros"),
             &root.join("crates/app-sdk"),
-            &root.join("crates/app-sdk-macros"),
             &root.join("crates/app-wit"),
         ],
         &target.join("app-components"),

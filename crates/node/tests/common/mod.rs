@@ -35,11 +35,12 @@ fn build(dir: &Path) -> Vec<u8> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sdk = root.join("crates/app-sdk");
-    let macros = root.join("crates/app-sdk-macros");
+    let sdk = root.join("crates/sdk");
+    let macros = root.join("crates/sdk-macros");
+    let alias = root.join("crates/app-sdk");
     let wit = root.join("crates/app-wit");
     let cache: PathBuf = root.join("target/app-components");
-    build_component_cached(&root.join(dir), &[&sdk, &macros, &wit], &cache)
+    build_component_cached(&root.join(dir), &[&sdk, &macros, &alias, &wit], &cache)
         .unwrap_or_else(|e| panic!("build {}: {e}", dir.display()))
 }
 

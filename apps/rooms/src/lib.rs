@@ -4,8 +4,8 @@
 //! releases bookings nobody checked in to, a step-up for admin releases, views that hide
 //! titles, org roles and per-audience events. See `README.md` for the ABI.
 
-use calimero_app_sdk::env::OrgRole;
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::env::OrgRole;
+use calimero_sdk::prelude::*;
 
 /// One slot, in milliseconds.
 pub const SLOT_MS: u64 = 900_000;

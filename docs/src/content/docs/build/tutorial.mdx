@@ -9,7 +9,7 @@ import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/compon
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This tutorial walks one path from nothing to a running key-value app on the
-component SDK (`calimero-app-sdk`): you write a small Rust crate, test it on the
+component SDK (`calimero-sdk`): you write a small Rust crate, test it on the
 real engine, build it into a `calimero:app` component, create a context from it,
 and call its methods, checking the output at each step.
 
@@ -64,11 +64,11 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-calimero-app-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
 
 # The test harness (TestApp) and the builder, for `cargo test` on the host.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-app-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>", features = ["testing"] }
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>", features = ["testing"] }
 calimero-app-build = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
 serde_json = "1"
 
@@ -79,7 +79,7 @@ serde_json = "1"
 Every module starts from one import:
 
 ```rust
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 ```
 
 ## 3. Define the state
@@ -179,12 +179,12 @@ so a later `set` of a key replaces an earlier one; there is nothing to merge.
 
 ## 5. Test it
 
-`calimero_app_sdk::testing::TestApp` runs the built component on the real engine
+`calimero_sdk::testing::TestApp` runs the built component on the real engine
 in an org you describe, as named accounts, with the node's own checks:
 
 ```rust
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{Org, TestApp};
+use calimero_sdk::testing::{Org, TestApp};
 use serde_json::json;
 
 #[test]
@@ -201,7 +201,7 @@ fn set_then_get() {
 ```
 
 The same steps can live in a scenario file, `scenarios/<name>.json`, which
-`calimero_app_sdk::testing::run_scenario` runs in the harness and the cluster
+`calimero_sdk::testing::run_scenario` runs in the harness and the cluster
 runner runs on real nodes (see [Testing](/build/testing/)):
 
 ```json
@@ -318,7 +318,7 @@ Create one, create the context in it, and invite a second person:
 Both people wrote and read the same state, each with their own passkey, through
 any node of the cluster. The organization decides who reaches the context;
 what each member may change inside it is the app's own code and its
-[access-controlled storage](/build/permissioned-storage/). See
+[access control](/build/guides/access-control/). See
 [Organizations, teams & access](/protocol/organizations/).
 
 ## 8. Next steps
@@ -326,14 +326,14 @@ what each member may change inside it is the app's own code and its
 You have the full loop: write, build, install, create, call. From here:
 
 <LinkCard
-  title="Collections"
+  title="Tables & Collections"
   href="/build/collections/"
-  description="The wasmer SDK's CRDT collections, for apps that stay on wasmer."
+  description="Tables with indexes and counts, and the collections an app's state is built from."
 />
 <LinkCard
   title="SDK macros"
   href="/build/sdk-macros/"
-  description="The wasmer SDK's #[app::*] attributes; the component SDK's are in crates/app-sdk-macros/AGENTS.md."
+  description="The app attributes: state, logic, methods, errors, events and records."
 />
 <LinkCard
   title="Example apps"

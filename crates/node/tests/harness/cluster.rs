@@ -29,14 +29,15 @@ pub fn fixture(dir: &str) -> Vec<u8> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sdk = root.join("crates/app-sdk");
-    let macros = root.join("crates/app-sdk-macros");
+    let sdk = root.join("crates/sdk");
+    let macros = root.join("crates/sdk-macros");
+    let alias = root.join("crates/app-sdk");
     let wit = root.join("crates/app-wit");
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| root.join("target"), std::path::PathBuf::from);
     calimero_app_build::build_component_cached(
         &root.join(dir),
-        &[&sdk, &macros, &wit],
+        &[&sdk, &macros, &alias, &wit],
         &target.join("app-components"),
     )
     .unwrap_or_else(|e| panic!("build {dir}: {e}"))

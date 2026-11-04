@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 #[app::state(version = 1)]
 pub struct KvStoreInit {

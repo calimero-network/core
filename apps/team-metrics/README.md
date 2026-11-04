@@ -1,7 +1,7 @@
 # team-metrics
 
 Wins, losses, draws and a badge bitmask per team, on the v2 app SDK
-(`calimero-app-sdk`, `wasm32-wasip2`): `recordWin`, `recordLoss` and
+(`calimero-sdk`, `wasm32-wasip2`): `recordWin`, `recordLoss` and
 `recordDraw {teamId}` upsert the team and return its new total (emitting
 `WinRecorded`, `LossRecorded` or `DrawRecorded`); `getWins`, `getLosses` and
 `getDraws` read them (`TeamNotFound {teamId}` for an unknown team);

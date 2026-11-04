@@ -1,7 +1,7 @@
 # kv-store
 
 A string key-value store shared by everyone the app admits: the component SDK's basic
-example (`calimero-app-sdk`, built for `wasm32-wasip2` into a `calimero:app` component).
+example (`calimero-sdk`, built for `wasm32-wasip2` into a `calimero:app` component).
 State is one `UnorderedMap<String, String>`, which keeps its own count of keys; every change
 emits an event to the app's whole audience.
 
@@ -40,7 +40,7 @@ cargo run -p calimero-app-build -- apps/kv-store --out kv_store.wasm   # from th
 ```
 
 `cargo test` builds the component for `wasm32-wasip2` and runs it on the real engine
-(`calimero_app_sdk::testing::TestApp`): `tests/harness.rs` is v1's `TestHost` suite, and
+(`calimero_sdk::testing::TestApp`): `tests/harness.rs` is v1's `TestHost` suite, and
 `tests/scenarios.rs` runs every `scenarios/*.json` in the org its `.org.json` names. The
 scenarios replace the merobox workflows (`simple-store`, `bundle-invitation`,
 `workflow-example`); `kv-store.json` covers the rest of the ABI. The crate is standalone

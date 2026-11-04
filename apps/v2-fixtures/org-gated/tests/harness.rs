@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{Failure, Org, TestApp};
+use calimero_sdk::testing::{Failure, Org, TestApp};
 use serde_json::json;
 
 fn component() -> &'static [u8] {
@@ -123,5 +123,8 @@ fn announcements_reach_the_orgs_members_only() {
     assert_eq!(t.events_for("cy").len(), 1);
     assert_eq!(t.events_for("ada").len(), 1);
     assert!(t.events_for("gus").is_empty());
-    assert_eq!(code(t.as_("gus").call("announce", json!({ "text": "x" }))), "MembersOnly");
+    assert_eq!(
+        code(t.as_("gus").call("announce", json!({ "text": "x" }))),
+        "MembersOnly"
+    );
 }
