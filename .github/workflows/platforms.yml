@@ -1,7 +1,7 @@
 name: Platforms
 
 # macOS, off the pull-request critical path: developers on a Mac run the node in
-# Docker and use `meroctl` and the app tools natively, so release.yml ships
+# Docker and use `meroctl` and `mero-sign` natively, so release.yml ships
 # those for aarch64-apple-darwin (MACOS_BINARIES). This builds exactly that set
 # and runs each binary:
 #
@@ -40,10 +40,6 @@ on:
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
-      - "tools/calimero-abi/README.md"
-      - "tools/cargo-mero/README.md"
-      - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
-      - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
       - "tools/mero-sign/README.md"
 
 permissions:
@@ -143,9 +139,7 @@ jobs:
           bin=target/aarch64-apple-darwin/release
           "$bin/meroctl" --version
           "$bin/meroctl" --help >/dev/null
-          "$bin/mero-abi" --version
-          # A cargo subcommand: cargo runs it as `cargo-mero mero ...`.
-          "$bin/cargo-mero" mero --version
+          "$bin/mero-sign" --version
 
       # meroctl's attestation check, sealed channel and sessions, on the platform.
       - name: Test the client

@@ -20,7 +20,7 @@ jobs:
   # every crate, keeping a baseline per commit; a PR benches only while it
   # carries the `run-benchmarks` label, then every crate too. Wall-clock benches on shared
   # runners are too noisy to gate on, so a PR opts in rather than paying for
-  # them on every storage change. It checks out nothing.
+  # them on every change. It checks out nothing.
   plan:
     name: Plan benchmarks
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'run-benchmarks') }}
         run: |
           # A crate's first `[[bench]]` goes here, or it gets no baseline on a push.
-          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime","calimero-log","calimero-sealed"]'
+          all='["calimero-log","calimero-sealed"]'
           if [ "$EVENT" = push ]; then
             crates="$all"
           elif [ "$ACTION" = labeled ]; then
@@ -133,7 +133,7 @@ jobs:
 
   # Not criterion: calls per second and p50/p99 through a 3-node cluster in
   # one process (crates/node/benches/cluster_throughput.rs, the real
-  # node and kv-store wasm), one row per load shape, written as JSON. The
+  # node and the kv component), one row per load shape, written as JSON. The
   # compare job diffs it against the base commit's.
   cluster:
     name: Cluster throughput
@@ -153,10 +153,8 @@ jobs:
         with:
           shared-key: bench
           save-if: false
-          targets: wasm32-unknown-unknown
-
-      - name: Build the kv-store fixture
-        run: cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+          # The bench builds the kv component (apps/v2-fixtures/kv) itself.
+          targets: wasm32-wasip2
 
       - name: Run the cluster bench
         run: cargo bench -p calimero-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json

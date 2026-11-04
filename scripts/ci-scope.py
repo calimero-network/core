@@ -57,15 +57,6 @@ EVERY_JOB = (
     "scripts/path-dep-closure.py",
 )
 
-CARGO_MERO_SETUP = (".github/actions/setup-cargo-mero/*", "scripts/setup-cargo-mero.sh")
-
-# What the apps job's cache key holds beyond the app trees (.github/actions/wasm-apps):
-# the job must run whenever that key can change, or master never saves the new set.
-WASM_APPS = (
-    ".github/actions/wasm-apps/*",
-    ".github/actions/rust-toolchain/*",
-    "scripts/check-embedded-abi.sh",
-)
 
 
 # workflow -> (its whole-workflow job, the inputs that run it)
@@ -79,21 +70,15 @@ WORKFLOWS = {
             "tools/*",
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
-            "scripts/build-all-apps.sh",
-            "scripts/check-embedded-abi.sh",
             "scripts/check-like-ci.py",
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
             "scripts/check-rust-cache-groups.py",
             "scripts/check-scenario-discovery.py",
-            "scripts/check-storage-cost.sh",
-            "scripts/check-wasm-size.sh",
             "scripts/tests/check-like-ci.test.sh",
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
-            *CARGO_MERO_SETUP,
-            ".github/actions/wasm-apps/*",
         ),
     ),
     "release": (
@@ -116,40 +101,10 @@ WORKFLOWS = {
 }
 
 
-def app_packages():
-    """Every package under apps/, which scripts/build-all-apps.sh builds."""
-    return sorted(p.parent.relative_to(ROOT).as_posix() for p in ROOT.glob("apps/**/Cargo.toml"))
-
-
-def cargo_mero_fixtures():
-    """The apps cargo-mero's pipeline test builds; separate workspaces that path-depend on crates/."""
-    return sorted(
-        p.parent.relative_to(ROOT).as_posix()
-        for p in (ROOT / "tools/cargo-mero/tests/fixtures").glob("**/Cargo.toml")
-    )
-
-
-# ci-checks.yml job -> (package dirs it builds, whether their dev-dependencies count, extra globs)
-JOBS = {
-    "storage_cost": (lambda: ["tools/storage-cost"], True, ("scripts/check-storage-cost.sh",)),
-    "wasm_size": (
-        lambda: ["apps/wasmer-fixtures/kv-store", "apps/kv-store-with-handlers", "apps/scaffolding-e2e", "tools/cargo-mero"],
-        False,
-        ("scripts/check-wasm-size.sh", *CARGO_MERO_SETUP),
-    ),
-    "cargo_mero_e2e": (
-        lambda: ["tools/cargo-mero", *cargo_mero_fixtures()],
-        True,
-        ("tools/cargo-mero/*",),
-    ),
-    # tools/calimero-abi: build-all-apps.sh runs mero-abi over every wasm it built,
-    # whether or not cargo-mero keeps linking it.
-    "apps": (
-        lambda: [*app_packages(), "tools/cargo-mero", "tools/calimero-abi"],
-        False,
-        ("apps/*", "scripts/build-all-apps.sh", *CARGO_MERO_SETUP, *WASM_APPS),
-    ),
-}
+# ci-checks.yml job -> (package dirs it builds, whether their dev-dependencies count, extra
+# globs). Every job ci-checks.yml runs today is the whole workflow's (`rust`); a job that
+# builds only part of the workspace goes here, scoped by what it compiles.
+JOBS: dict = {}
 
 
 def tracked(pattern):
@@ -189,7 +144,7 @@ def is_inert(path, read_docs):
 
 
 def package_dirs():
-    """Every directory holding a Cargo.toml, nested ones included (cargo-mero's fixtures)."""
+    """Every directory holding a Cargo.toml, nested ones included (an app's own crates)."""
     return {Path(m).parent.as_posix() for m in tracked("*Cargo.toml")}
 
 
