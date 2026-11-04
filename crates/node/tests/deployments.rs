@@ -3,7 +3,9 @@
 //! managers change it, each with their own passkey, judged where the command
 //! applies; customers create instances from its offers, which then record it;
 //! the managers list the organizations with instances from it; and an app's
-//! frontend opens at the release a deployment offers or an instance runs.
+//! frontend opens at the release a deployment offers or an instance runs;
+//! and an instance's usage is billed to the developer whose deployment it
+//! came from.
 //!
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
@@ -1110,4 +1112,132 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
         .call(&app, "set", json!({ "key": "k", "value": "w" }), None)
         .await
         .unwrap();
+}
+
+/// The value of `metric{labels}` in Prometheus text, if the series is there.
+fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
+    let head = format!("{metric}{{{labels}}} ");
+    text.lines()
+        .find_map(|l| l.strip_prefix(&head))
+        .map(|v| v.parse().unwrap())
+}
+
+/// Two developers, an account and an organization, each offer an app on one
+/// shared cluster; one customer organization makes an instance of each. Every
+/// `calimero_app_*` series of an instance names its customer's org as `org`
+/// (quotas stay the customer's) and the deployment's owner as `developer`, so
+/// a call on developer A's instance is counted against A and never against B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instances_usage_is_billed_to_its_deployments_developer() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (dave, mut dave_pk) = signed_up(&c, 1, "dave").await;
+    let (carol, _carol_pk) = signed_up(&c, 2, "carol").await;
+
+    // Developer A is alice's account; developer B is dave's organization.
+    let _ok = alice
+        .upload_package(release("com.test.notes", "1.0.0"))
+        .await
+        .unwrap();
+    let _ok = dave
+        .upload_package(release("com.test.board", "1.0.0"))
+        .await
+        .unwrap();
+    let dev_b = org(&dave, "Bee Labs").await;
+    let da = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let db = deploy(&dave, &mut dave_pk, "beta", json!({ "org": dev_b })).await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+    let _ok = offer(&dave, &mut dave_pk, &db, "board", "com.test.board", "1.0.0")
+        .await
+        .unwrap();
+
+    // The customer: one organization with an instance from each.
+    let globex = org(&carol, "Globex").await;
+    let of_a = instance(&carol, &da, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+    let of_b = instance(&carol, &db, "com.test.board", None, Some(&globex))
+        .await
+        .unwrap();
+    for i in 0..3 {
+        let _ = carol
+            .call(
+                &of_a,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let _ = carol
+        .call(&of_b, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+
+    for r in c.nodes.iter().flatten() {
+        r.node.sample_usage();
+    }
+    let http = reqwest::Client::new();
+    let mut texts = Vec::new();
+    for r in c.nodes.iter().flatten() {
+        let addr = r.metrics_addr.unwrap();
+        let text = http
+            .get(format!("http://{addr}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        texts.push(text);
+    }
+    let summed = |metric: &str, labels: &str| -> f64 {
+        texts.iter().filter_map(|t| sample(t, metric, labels)).sum()
+    };
+    let a = format!("app=\"{of_a}\",org=\"{globex}\",developer=\"account:{alice_id}\"");
+    let b = format!("app=\"{of_b}\",org=\"{globex}\",developer=\"{dev_b}\"");
+    let mutations = |labels: &str| {
+        summed(
+            "calimero_app_calls_total",
+            &format!("{labels},kind=\"mutation\""),
+        )
+    };
+    // `init` and the calls: 4 on A's instance, 2 on B's, each counted once.
+    assert_eq!(mutations(&a), 4.0, "{texts:#?}");
+    assert_eq!(mutations(&b), 2.0, "{texts:#?}");
+    assert!(summed("calimero_app_wasm_cpu_seconds_total", &a) > 0.0);
+    assert!(summed("calimero_app_wasm_cpu_seconds_total", &b) > 0.0);
+    for t in &texts {
+        assert!(sample(t, "calimero_app_state_bytes", &a).is_some(), "{t}");
+        for line in t.lines().filter(|l| l.starts_with("calimero_app_")) {
+            if line.contains(&format!("app=\"{of_a}\"")) {
+                assert!(line.contains(&a), "A's app billed elsewhere: {line}");
+            }
+            if line.contains(&format!("app=\"{of_b}\"")) {
+                assert!(line.contains(&b), "B's app billed elsewhere: {line}");
+            }
+        }
+        // The customer is never the developer of either.
+        assert!(!t.contains(&format!("developer=\"{globex}\"")), "{t}");
+    }
 }

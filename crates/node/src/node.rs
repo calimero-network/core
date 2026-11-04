@@ -2313,8 +2313,8 @@ impl Node {
     pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
         Meter {
             app: app_id.to_owned(),
-            payer: self
-                .sys(|s| s.apps.get(app_id).map(crate::usage::payer))
+            billed: self
+                .sys(|s| s.apps.get(app_id).map(|a| crate::usage::Billed::of(s, a)))
                 .unwrap_or_default(),
             bundle: bundle.to_owned(),
         }
@@ -2333,19 +2333,19 @@ impl Node {
     /// (`calimero_app_state_bytes`, `calimero_app_blob_bytes`). Each app's scan
     /// holds its group's read lock, as `GET /apps/{app}/storage` does.
     pub fn sample_usage(&self) {
-        let hosted: Vec<(String, String)> = self.sys(|s| {
+        let hosted: Vec<(String, crate::usage::Billed)> = self.sys(|s| {
             s.apps
                 .values()
-                .map(|a| (a.app_id.clone(), crate::usage::payer(a)))
+                .map(|a| (a.app_id.clone(), crate::usage::Billed::of(s, a)))
                 .collect()
         });
-        for (app, payer) in hosted {
+        for (app, billed) in hosted {
             let Some(g) = self.hosted(&app) else {
                 continue;
             };
             let stats = g.read_local(|m, _| m.storage_stats());
             self.usage
-                .stored(&app, &payer, stats.bytes, stats.blob_bytes);
+                .stored(&app, &billed, stats.bytes, stats.blob_bytes);
         }
     }
 

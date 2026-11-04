@@ -524,7 +524,7 @@ impl Node {
                 inner: Arc::new(NodeHttp(self.outbound_for(
                     app_id,
                     &prepared.hash,
-                    self.usage.outbound(&meter.app, &meter.payer),
+                    self.usage.outbound(&meter.app, &meter.billed),
                 ))),
                 timeout: CALL_FETCH_TIMEOUT,
             })
@@ -1600,7 +1600,7 @@ impl Node {
         let http = Arc::new(NodeHttp(self.outbound_for(
             app_id,
             &prepared.hash,
-            self.usage.outbound(&meter.app, &meter.payer),
+            self.usage.outbound(&meter.app, &meter.billed),
         )));
         let invocation = Invocation {
             kind: InvocationKind::Action,

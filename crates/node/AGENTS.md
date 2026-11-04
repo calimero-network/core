@@ -426,8 +426,13 @@ is its command line.
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
   `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
-  labelled `app` and `org` (the payer: org id, or `account:{owner}` for a
-  personal app; `usage::payer`). Every WASM run goes through `Node::metered`
+  labelled `app`, `org` (the payer, whose quotas it counts against: org id,
+  or `account:{owner}` for a personal app; `usage::payer`) and `developer`
+  (who Calimero Cloud bills: for an instance of a deployment the deployment's
+  owner, in the same form, else the payer; `usage::developer`,
+  `usage::Billed::of`). Both are functions of the app, so they add no series
+  (at most 8 per hosted app). Regression for developers:
+  `an_instances_usage_is_billed_to_its_deployments_developer`. Every WASM run goes through `Node::metered`
   (`off_workers` plus `usage::measure`: thread CPU time, `CLOCK_THREAD_CPUTIME_ID`,
   around the run on its one thread; wall time off Unix), so CPU is counted on
   the node that ran the WASM: the leader for calls, `init`, migrations,
