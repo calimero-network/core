@@ -93,7 +93,7 @@ impl Compute {
     /// Opens the file `id`, which a test names outside the run's inputs.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
     pub fn peek(id: BlobRef) -> app::Result<u64> {
-        let _reader = calimero_app_sdk::files::open(&id)?;
+        let _reader = calimero_sdk::files::open(&id)?;
         Ok(0)
     }
 
