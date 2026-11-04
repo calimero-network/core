@@ -552,23 +552,40 @@ is its command line.
   `tests/org_recovery.rs`, `recovery_needs_the_owners_passkey_the_seed_and_the_delay`,
   `rotating_the_recovery_key_retires_the_old_seed`,
   `state_from_before_recovery_reads_with_none_and_writes_as_before`.
+- **Account recovery** (`docs/specs/account-recovery.md`; shaped like
+  organization recovery above, same `RECOVERY_DELAY_SECS`): an account may
+  hold one recovery code (`calimero_identity::new_recovery_code`, Crockford
+  base32, `normalize_recovery_code`, `MAX_RECOVERY_CODE_CHARS`); the log keeps
+  only its Ed25519 public key (`proof::recovery_key`, as invites;
+  `SystemState::recovery_keys`, key -> account). `SetAccountRecoveryKey`
+  (`POST /auth/recovery`, unbound passkey session, `consent_minted`
+  `account:<a> / __set_recovery { recoveryKey }`, the code answered once),
+  `RemoveAccountRecoveryKey` (`DELETE /auth/recovery`, `__remove_recovery
+  {}`). Signed out, `POST /auth/recovery/begin { code }` then `/start
+  { challengeId, code, registration }` (UV, the cluster's own origins):
+  `StartAccountRecovery` carries the code key's signature
+  (`proof::sign_recover` over account, credential id, SHA-256 of its public
+  key and `at`, checked in `authorize` and spent), spends the code, and
+  records `SystemState::account_recoveries[a] = types::PendingAccountRecovery
+  { credential, startedAt, readyAt }`; no passkey, no session. One per
+  account (`409 RECOVERY_PENDING`). `CancelAccountRecovery` (`POST
+  /auth/recovery/cancel`, a passkey the account has, `__cancel_recovery
+  { credentialId }`). `FinishAccountRecovery` (`POST /auth/recovery/finish
+  { accountId? }`, `412`, `Pending::RecoverFinish`): the pending passkey's
+  assertion over `session / __sign_in / sign_in_args` of the new refresh
+  token (`api::NewSession`, as `CreateRefresh`), verified at apply under that
+  credential; at `at >= readyAt` (the node's `app_clock`, `409
+  RECOVERY_NOT_READY` before) it adds the passkey (counter from the
+  assertion), revokes every session of the account
+  (`SystemState::revoke_account_sessions`) and records the refresh token.
+  `/auth/me`: `recoveryCode`, `recoveryPending`. Regressions:
+  `tests/recovery.rs`, `a_recovery_code_is_set_and_removed_with_the_accounts_passkey`,
+  `an_account_recovery_starts_only_with_the_codes_signature_and_the_account_cancels`,
+  `an_account_recovery_finishes_after_the_delay_with_the_new_passkey`,
+  `state_from_before_account_recovery_reads_and_writes_as_before`.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
-- **Recovery** (draft): a person who lost every passkey gets back in with a
-  recovery code. `POST /auth/recovery` (unbound passkey session, 412 first,
-  `__set_recovery { recoveryKey }`) makes one, shown once, replacing any
-  before; `DELETE /auth/recovery` (`__remove_recovery {}`) removes it;
-  `/auth/me` says `recoveryCode: bool`. The log keeps only the code's Ed25519
-  public key (`proof::recovery_key`, as invites; `SystemState::recovery_keys`,
-  key -> account). Signed out, `/auth/recovery/{begin,finish}` takes the
-  code and a new passkey registered on the cluster's own origins (UV
-  required); the node signs `Recover` with the code's key over the account
-  and that credential (`proof::sign_recover`), and apply adds the passkey,
-  spends the code and revokes every session of the account. A wrong code at
-  finish spends the ceremony. Regressions:
-  `a_recovery_code_is_set_with_a_passkey_and_spent_by_its_key`,
-  `tests/recovery.rs`.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API

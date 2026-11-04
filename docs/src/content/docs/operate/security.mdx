@@ -64,6 +64,30 @@ cancelled and the old seed is refused from then on. An owner who has lost both
 every passkey and the seed cannot recover the organization; neither can anyone
 else. Design: [`docs/specs/org-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/org-recovery.md).
 
+## Recovering an account
+
+A person who loses every passkey gets their account back only with its
+**recovery code**, made with a passkey while signed in (`POST /auth/recovery`)
+and shown once: 32 characters to write down. The cluster stores only the
+public key the code stands for. The recovery works as an organization's does,
+with the same 72-hour delay (`RECOVERY_DELAY_SECS`):
+
+| Step | Who | Proof |
+| --- | --- | --- |
+| Make or remove the code | The account | Its passkey |
+| Start (`/auth/recovery/begin`, `/start`) | Anyone with the code, signed out, with a new passkey | The code's key signs the account and that passkey; the code is spent |
+| Wait 72 hours | Every signed-in device sees `recoveryPending` on `/auth/me` | |
+| Cancel (`/auth/recovery/cancel`) | The account | A passkey it already has |
+| Finish (`/auth/recovery/finish`) | The new passkey | Its sign-in assertion over the session the finish opens |
+
+Finishing adds the new passkey, ends every session the account had, and signs
+the new passkey in. Nobody else can recover an account: the operator and the
+nodes never hold the code, the start names the one passkey it may add, and the
+finish needs that passkey. One recovery runs at a time, and a code starts only
+one. Someone who steals the code is stopped by any of the account's passkeys
+within the 72 hours. Design:
+[`docs/specs/account-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/account-recovery.md).
+
 ## TDX mode and development mode
 
 | | TDX mode (default) | `--dev` |

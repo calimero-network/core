@@ -107,10 +107,14 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/passkeys/add/begin`, `/finish` | account holder | Add a passkey (a device): `/finish { challengeId, registration, confirm? }` answers `412` and is sent again with `confirm` signed by a passkey the account already has | `account device add` |
 | `POST /auth/passkeys/{cred}` | account holder | `{ label }`: name a device | `account device label` |
 | `DELETE /auth/passkeys/{cred}` | account holder | Remove a device; its sessions end. `412` first; the retry's JSON body is `{ confirm }` | `account device revoke` |
+| `POST /auth/recovery`, `DELETE /auth/recovery` | account holder | Make (shown once, replacing any) or remove the account's recovery code; `412` first | - |
+| `POST /auth/recovery/begin`, `/start` | signed out | `begin { code }` → a passkey registration; `start { challengeId, code, registration }` spends the code and logs the new passkey as pending → `{ accountId, credentialId, startedAt, readyAt }`. `401` wrong or spent code, `409 RECOVERY_PENDING` | - |
+| `POST /auth/recovery/cancel` | account holder | Cancel the recovery under way with a passkey the account has; `412` first | - |
+| `POST /auth/recovery/finish` | signed out | `{ accountId? }`, `412` first, approved by the new passkey once `readyAt` passed (72 h): adds it, ends every session of the account → a session. `409 RECOVERY_NOT_READY` before | - |
 | `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and refresh token | (automatic) |
 | `POST /auth/logout` | session | End this session | |
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
-| `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals | `whoami`, `account show` |
+| `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The account's own apps (outside any organization; a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, each app's release, newer releases it may upgrade to, last upgrade and replicas' releases ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
 | `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
