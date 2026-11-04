@@ -45,7 +45,7 @@ pub struct BundleFrontend {
     pub files: Vec<BundleArtifact>,
 }
 
-/// Why a bundled frontend is refused. `code()` is stable: `cargo mero` and the
+/// Why a bundled frontend is refused. `code()` is stable: a bundling tool and the
 /// node report the same one, so tooling matches on it rather than the message.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FrontendError {

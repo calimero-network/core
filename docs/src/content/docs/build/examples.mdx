@@ -10,7 +10,7 @@ import { Aside } from '@astrojs/starlight/components';
 The [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
 directory is the best ground truth for writing a Calimero app: every example is
 a real crate. A wasmer app builds to WASM with
-[`cargo mero build`](/build/cargo-mero/) and has a native
+[`cargo mero build`](/build/packaging-signing/) and has a native
 [`TestHost`](/build/quickstart/) test suite under `tests/` or in a
 `#[cfg(test)]` module; a component app (marked "on the component SDK") builds
 to a `wasm32-wasip2` component with `calimero-app-build` and tests on

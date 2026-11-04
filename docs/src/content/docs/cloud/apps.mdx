@@ -1,14 +1,16 @@
 ---
 title: Writing apps for a cluster
-description: What an app sees on a cluster — packages, init arguments, identity, organizations and teams, blobs, search, handlers, xcalls, timers, upgrades, outbound HTTPS, confirmations, ordering and limits.
+description: What an app sees on a cluster — packages, init arguments, identity, organizations and teams, blobs, search, xcalls, timers, actions, upgrades, outbound HTTPS, confirmations, ordering and limits.
 sidebar:
   order: 3
 ---
 
-An app is a WASM module built with the Rust SDK (`calimero-sdk`, a core
-module that runs on wasmer) or a `calimero:app` component (`calimero-app-sdk`,
-run on wasmtime). [Build](/build/) covers writing one; this page covers what
-it sees once it runs on a cluster.
+An app is a `calimero:app` component, built with the Rust SDK
+(`calimero-app-sdk`) and run on wasmtime. [Build](/build/) covers writing one;
+this page covers what it sees once it runs on a cluster. A WASM core module (an
+SDK 0.12 app, which ran on wasmer) is refused: `400 UNSUPPORTED_BUNDLE` at upload,
+create and install, and `410 UNSUPPORTED_ENGINE` for every call, view and upgrade
+of one a node's data still holds; such an app can still be listed and deleted.
 
 ## On a cluster
 
@@ -22,32 +24,18 @@ it sees once it runs on a cluster.
   `{ version }`, and delete with `DELETE /apps/{app}`. Raw WASM uploads
   (`POST /bundles`) are for development clusters only too.
 - **Instances.** An app instance (what `meroctl` calls a *context*) is created with
-  `POST /apps { name, bundle, initArgs, org?, access?, confirmMethods? }`.
+  `POST /apps { name, bundle, initArgs, org?, access? }`.
   `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
   `422 INIT_FAILED` instead of leaving a dead instance.
-- **Identity.** There are no devices: `env::account_id()` and `env::executor_id()`
-  are both the caller's account, so apps that key people by either tell them
-  apart. The context id is `SHA-256(app_id)`.
-- **Organizations.** `env::caller_org()` returns the caller's standing in the
-  app's organization — `org`, `role` (`Guest < Member < Admin < Owner`) and the
-  team ids they are in — or `None`. The node already keeps non-members out of an
-  organization's apps; this is for rules inside the app:
-
-  ```rust
-  use calimero_sdk::env::{self, OrgRole};
-
-  pub fn set_pinned(&mut self, text: String) -> app::Result<()> {
-      if !env::caller_org().is_some_and(|o| o.role >= OrgRole::Admin) {
-          app::bail!("admins only");
-      }
-      self.pinned.set(text);
-      Ok(())
-  }
-  ```
-
-  `apps/wasmer-fixtures/org-gated` in core is a complete example on this SDK
-  (`TestHost::set_caller_org` drives it in unit tests); `apps/org-gated` is the
-  same app on the component SDK, gated with `env::org_role` and `env::in_team`.
+- **Identity.** `env::caller()` is the caller: an account, an API key (with its
+  account), another app, or the system. There are no devices: each passkey on an
+  account is one of the person's devices (`POST /auth/passkeys/add/*`, and
+  `/auth/me` names the session's `passkeyId`).
+- **Organizations.** `env::org_role(account)` is that account's role in the app's
+  organization (`Guest < Member < Admin < Owner`) and `env::in_team(account, team)`
+  whether they are in a team. The node already keeps non-members out of an
+  organization's apps; these are for rules inside the app. `apps/org-gated` in
+  core is a complete example.
 - **Teams.** A team is open (whoever reaches its parent, or
   the organization at the top, is a member) or restricted (its members only),
   nests and moves, keeps the app's metadata (a folder's name and colour), and
@@ -57,56 +45,42 @@ it sees once it runs on a cluster.
   member's calls run but one that would write is refused (`403`). A team they
   neither reach nor manage is invisible to them. Deleting a team deletes the
   teams and apps below it.
-- **Devices are passkeys.** `env::account_id()` is the person; each passkey on
-  the account is one of their devices (`POST /auth/passkeys/add/*`, and
-  `/auth/me` names the session's `passkeyId`).
-- **Blobs.** `env::blob_*` store and open content-addressed bytes. A blob belongs to the app that wrote
-  or received it (`POST /apps/{app}/blobs`, `GET /apps/{app}/blobs/{id}`, ids
-  base58 or hex); every node holds it, so announcing one is a no-op.
-- **Search.** `#[derive(app::Searchable)]` and `app::search_indexes!` declare
-  full-text indexes: views query the app's own index, kept up to date from the log before the
-  view runs. A declared `#[app::view]` called as a call runs as a view.
-- **Event handlers and xcalls** run once, after the entry that asked for them,
-  on the app's leader — not once per replica. Only
-  `#[app::handler]` methods run for an event; an xcall reaches only
-  `#[app::xcall]` entry points (`from_same_app`: the same bundle) of apps in the
-  caller's organization, as the calling app, with `env::xcall_origin()`.
-- **Timers and TEE runs.** The cluster is every app's TEE: `#[app::tee(every =
-  "..")]` methods fire once per period, `tee:` handlers run as the TEE, and
-  `TeeOnly` / `TeeSecret` state works; a member's share opens only in their own
-  calls.
+- **Blobs and files.** A blob belongs to the app that holds it (`POST
+  /apps/{app}/blobs`, `GET /apps/{app}/blobs/{id}`); the app holds it through a
+  `BlobRef` in its state and can hand out a time-limited grant. Files are
+  sealed and replicated on the app's replicas.
+- **Search.** A table names its text fields (`#[table(search = [..])]`); views
+  query the app's own index, kept up to date from the log before the view runs.
+- **Xcalls.** A call can send a call into another app of the same organization
+  (or the same owner's personal apps), delivered in order after its entry
+  commits, or call or view one synchronously; the target's ABI says which apps
+  may reach which method ([Xcalls](/protocol/xcall/)).
+- **Timers and actions.** `#[app::every]` methods fire once per slot on the
+  leader; an `#[app::action]` runs outside the log and may write through calls
+  of its own app and send HTTPS.
 - **Upgrades.** `POST /apps/{app}/upgrade { version }` (or `{ bundle }` on a
-  development cluster) plans the migration from
-  the two bundles' embedded ABIs (`#[app::state(version)]` and
-  `#[app::migrate]`), runs your migration check, and refuses a downgrade or a
-  missing edge. Build bundles with `cargo mero build` so they carry their ABI:
-  handlers, xcall entry points, timers and migrations are read from it.
-- **Outbound HTTPS** (`env::http_request`). A call (never a view, init or migration, nor a
-  read-only member's call) may send one request under a prefix its signed
-  manifest declares (`outbound` in `[package.metadata.calimero]`), to a host
-  the operator allows, once that prefix was approved for the publisher by
-  whoever the cluster's deployment gave outbound approvals (its governance,
-  which `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
+  development cluster) swaps the bundle; the state carries over as it is, and a
+  named migration is refused (`MigrationsNotSupported`).
+- **Outbound HTTPS** (from an action, or `env::fetch` as one recorded request
+  of a call; never a view, init or a read-only member's call) goes only under a
+  prefix its signed manifest declares (`outbound`), to a host the operator
+  allows, once that prefix was approved for the publisher by whoever the
+  cluster's deployment gave outbound approvals (its governance, which
+  `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
   (or `/auth/outbound` for your own apps) `{ package, prefixes: "manifest" |
   [...], replace }`, with a passkey assertion (`approve_outbound` in the Rust
   client). By the operator: `POST /ops/outbound`. Until then
   the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix
   a later release added), which the app can show. Secrets the operator holds
   (`{{secret:NAME}}`) are filled in by the node and redacted from the answer.
-- **Confirmations.** Methods listed in `confirmMethods` need a fresh passkey
+- **Confirmations.** `#[app::confirm]` methods need a fresh passkey
   assertion over the exact call (`callConfirmed` in the clients).
 - **Ordering.** Calls on one instance are applied in one order, so a write never
-  merges with a concurrent one: CRDT collections still work, and plain values do
-  too. There are no offline replicas: a client that cannot reach the cluster
-  cannot write, so there are never concurrent edits to reconcile later.
+  merges with a concurrent one. There are no offline replicas: a client that
+  cannot reach the cluster cannot write, so there are never concurrent edits to
+  reconcile later.
 
-## Components
-
-A `calimero:app` component gets calls, views, events, timers, upgrades
-(code-only) and its organization's standing. The node refuses it blobs,
-search, xcalls, event handlers, TEE runs and outbound HTTPS for now, and an
-app cannot move between the two runtimes with an upgrade. See
-[Application execution](/protocol/execution/).
+See [Application execution](/protocol/execution/) for how a call runs.
 
 ## Limits
 

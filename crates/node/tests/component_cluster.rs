@@ -393,7 +393,7 @@ async fn backups_are_encrypted_and_restorable() {
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key (the log's sealed
-    // snapshot file, as for an app on wasmer).
+    // snapshot file).
     assert!(data
         .iter()
         .any(|(_k, v)| String::from_utf8_lossy(v).contains("plaintext-value")));
@@ -540,11 +540,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
 async fn a_failed_init_is_reported_not_hidden() {
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    // `(module (memory (export "memory") 1))`: it compiles, but has no `init`.
-    let empty = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
-    let bundle = alice.upload_bundle(empty).await.unwrap();
+    // The kv fixture's `init` takes no arguments: a string for them fails it.
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let err = alice
-        .create_app("broken", &bundle, json!({}))
+        .create_app("broken", &bundle, json!({ "initArgs": "not arguments" }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");
@@ -2382,18 +2381,6 @@ async fn the_leader_checks_upgrade_authority_again() {
     );
 }
 
-/// The core-module fixture (`apps/wasmer-fixtures/kv-store`, SDK 0.12), which runs on wasmer.
-fn wasmer_kv() -> Vec<u8> {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm");
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}; cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release",
-            path.display()
-        )
-    })
-}
-
 /// Node `i`'s group of `app`, once the node (re)started it, up to ~10 s.
 async fn hosted_on(
     c: &Cluster,
@@ -2642,166 +2629,51 @@ async fn a_snapshot_install_carries_a_components_host_records() {
     assert_eq!(seen.len(), rows.len(), "a slot ran twice: {rows:?}");
 }
 
-/// Writes round `round` (`k{round}` = `v{round}`) to both apps through `cl`, retrying
-/// while the apps elect; answers the two entries' indexes.
-async fn write_both(cl: &Client, apps: [&str; 2], round: usize) -> [u64; 2] {
-    let (key, value) = (format!("k{round}"), format!("v{round}"));
-    let mut out = [0; 2];
-    for (slot, app) in apps.into_iter().enumerate() {
-        let mut done = None;
-        for _ in 0..60 {
-            if let Ok(r) = cl
-                .call(app, "set", json!({ "key": key, "value": value }), None)
-                .await
-            {
-                done = Some(r.index);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        out[slot] = done.unwrap_or_else(|| panic!("{app} took no write in round {round}"));
-    }
-    out
-}
-
-/// Every running node's own replica answers every round of both apps, once it has
-/// applied the given index of each.
-async fn read_everywhere(
-    c: &Cluster,
-    pk: &mut SoftAuthenticator,
-    apps: [&str; 2],
-    rounds: std::ops::Range<usize>,
-    indexes: [u64; 2],
-) {
-    for (i, r) in c.nodes.iter().enumerate() {
-        if r.is_none() {
-            continue;
-        }
-        let cl = c.client(i);
-        let _s = cl.sign_in(pk).await.unwrap();
-        for round in rounds.clone() {
-            let key = format!("k{round}");
-            for (app, min_index) in apps.into_iter().zip(indexes) {
-                let v = cl
-                    .view(
-                        app,
-                        "get",
-                        json!({ "key": key }),
-                        Consistency::Stale { min_index },
-                    )
-                    .await
-                    .unwrap_or_else(|e| panic!("node {i} {app}: {e:?}"));
-                assert_eq!(v.result, json!(format!("v{round}")), "node {i} {app} {key}");
-            }
-        }
-    }
-}
-
-/// One cluster runs a core module on wasmer and a component on wasmtime side by
-/// side: writes to them in turns, each reads back on every node, including after
-/// a leader change.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn wasmer_and_component_apps_share_a_cluster() {
-    use calimero_node::types::Executor;
-
-    let mut c = Cluster::start(3).await;
-    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let old = alice.create_app("old", &v1, json!({})).await.unwrap();
-    let new = alice.create_app("new", &v2, json!({})).await.unwrap();
-    let apps = [old.as_str(), new.as_str()];
-    for (app, executor) in [(&old, Executor::Wasmer), (&new, Executor::Component)] {
-        let record = c.nodes[0].as_ref().unwrap().node.app(app).await.unwrap();
-        assert_eq!(record.executor, executor, "{app}");
-    }
-    let mut last = [0; 2];
-    for round in 0..6 {
-        last = write_both(&alice, apps, round).await;
-    }
-    read_everywhere(&c, &mut pk, apps, 0..6, last).await;
-
-    // A leader change: the node leading the wasmer app stops (it may lead both).
-    let down = c.app_leader(&old).unwrap();
-    c.stop(down).await;
-    let survivor = (0..3).find(|i| *i != down).unwrap();
-    let cl = c.client(survivor);
-    let _s = cl.sign_in(&mut pk).await.unwrap();
-    for round in 6..10 {
-        last = write_both(&cl, apps, round).await;
-    }
-    read_everywhere(&c, &mut pk, apps, 0..10, last).await;
-    // The stopped node comes back and catches up on both, each in its own format.
-    c.restart(down, |_| {}).await;
-    read_everywhere(&c, &mut pk, apps, 0..10, last).await;
-    for i in 0..3 {
-        let node = &c.nodes[i].as_ref().unwrap().node;
-        let executors = (
-            node.hosted(&old)
-                .unwrap()
-                .read_local(|m, _| m.state.executor()),
-            node.hosted(&new)
-                .unwrap()
-                .read_local(|m, _| m.state.executor()),
-        );
-        assert_eq!(
-            executors,
-            (Some(Executor::Wasmer), Some(Executor::Component)),
-            "node {i}"
-        );
-    }
-}
-
-/// Decision 2: an upgrade never moves an app between executors, either way,
-/// whatever its state; the app stays on its bundle and keeps working.
+/// No new SDK 0.12 app: a core module (no `calimero:app` component) is refused as a
+/// bundle (`400 UNSUPPORTED_BUNDLE`), whether uploaded raw or as a signed package's
+/// service, so no app is created from one and no app is upgraded to one; the
+/// refusal says to rebuild with calimero-app-sdk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn upgrades_across_executors_are_refused_both_ways() {
+async fn a_core_module_bundle_is_refused_as_an_sdk_0_12_app() {
     let c = Cluster::start(3).await;
-    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
-    // One app with state on each executor, and one fresh one (no state of its own).
-    let old = alice.create_app("old", &v1, json!({})).await.unwrap();
-    let new = alice.create_app("new", &v2, json!({})).await.unwrap();
-    let fresh = alice.create_app("fresh", &v2, json!({})).await.unwrap();
-    for app in [&old, &new] {
-        let _r = alice
-            .call(app, "set", json!({ "key": "a", "value": "kept" }), None)
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    // `(module (memory (export "memory") 1))`: a valid core module, as SDK 0.12 built.
+    let core = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
+    let refused = |e: calimero_client::Error| {
+        let status = match &e {
+            calimero_client::Error::Api { status, .. } => *status,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((status, e.code()), (400, Some("UNSUPPORTED_BUNDLE")), "{e}");
+        assert!(e.to_string().contains("calimero-app-sdk"), "{e}");
+    };
+    refused(alice.upload_bundle(core.clone()).await.unwrap_err());
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    refused(
+        alice
+            .upload_package(mpk_declaring(
+                "com.test.core",
+                "0.1.0",
+                &core,
+                &publisher,
+                &[],
+            ))
             .await
-            .unwrap();
-    }
-    for (app, from, to) in [(&old, &v1, &v2), (&new, &v2, &v1), (&fresh, &v2, &v1)] {
-        let e = alice
-            .upgrade_app(app, json!({ "bundle": to }), &mut pk)
+            .unwrap_err(),
+    );
+    assert!(
+        alice
+            .get("packages")
             .await
-            .unwrap_err();
-        assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{app}: {e}");
-        assert!(
-            e.details().unwrap()["error"]
-                .as_str()
-                .is_some_and(|m| m.contains("across executors")),
-            "{app}: {e}"
-        );
-        assert_eq!(
-            alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
-            json!(from),
-            "{app}"
-        );
-        for i in 0..3 {
-            assert_eq!(
-                running_bundle(&c, i, app).as_deref(),
-                Some(from.as_str()),
-                "node {i}"
-            );
-        }
-    }
-    for app in [&old, &new] {
-        let v = alice
-            .view(app, "get", json!({ "key": "a" }), Consistency::Strong)
-            .await
-            .unwrap();
-        assert_eq!(v.result, json!("kept"), "{app}");
-    }
+            .unwrap()
+            .to_string()
+            .find("com.test.core")
+            .is_none(),
+        "no package was recorded"
+    );
+    // The same node takes the component.
+    let ok = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let _app = alice.create_app("kv", &ok, json!({})).await.unwrap();
 }
 
 /// Decision 14: the endpoints that read an app's code or storage answer for a
@@ -3614,7 +3486,7 @@ fn spin_component() -> Vec<u8> {
 /// Review item 2: a component app whose `init` has not applied (every run of its
 /// bundle times out, D23, so `reconcile` keeps retrying) is still a component at
 /// upgrade: the app record's executor decides until the group's state names one. A
-/// wasmer bundle is refused; a component bundle is taken, and `init` then runs on it.
+/// component bundle is taken, and `init` then runs on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor() {
     // Unlimited fuel, so the spinning init hits its wall clock (a timeout, never
@@ -3629,7 +3501,6 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let stuck = alice.upload_bundle(spin_component()).await.unwrap();
     let fixed = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let wasmer = alice.upload_bundle(wasmer_kv()).await.unwrap();
     // Created; its init never applies (the create call itself waits 30 s for it,
     // so it runs beside the test).
     let creating = {
@@ -3671,26 +3542,6 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
     for i in 0..3 {
         let g = hosted_on(&c, i, &app).await;
         assert_eq!(g.read_local(|m, _| m.state.executor()), None, "node {i}");
-    }
-    // A wasmer bundle: refused, nothing switched.
-    let e = alice
-        .upgrade_app(&app, json!({ "bundle": wasmer }), &mut pk)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
-    assert!(
-        e.details().unwrap()["error"]
-            .as_str()
-            .is_some_and(|m| m.contains("across executors")),
-        "{e}"
-    );
-    for i in 0..3 {
-        let g = hosted_on(&c, i, &app).await;
-        assert_eq!(
-            g.read_local(|m, _| m.state.bundle.clone()),
-            None,
-            "node {i}"
-        );
     }
     // A component bundle: taken, and init then runs on it.
     let up = alice
@@ -3913,7 +3764,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
 /// Review nit, codes: a confirm method a stale front node did not know is confirm
 /// (here: a node that hosts no replica reads the directory's bundle, org-gated,
 /// while the group runs kv, whose `wipe` is a confirm method) still answers the
-/// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge, as the wasmer path does,
+/// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge,
 /// not the leader's `422 ConfirmRequired`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
@@ -3960,9 +3811,10 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
 }
 
 /// Review nit, codes: a component the engine refuses at `POST /bundles` is a
-/// `400 BAD_BUNDLE`, as a core module wasmer can't compile is.
+/// `400 BAD_BUNDLE` (a core module is `400 UNSUPPORTED_BUNDLE`,
+/// [`a_core_module_bundle_is_refused_as_an_sdk_0_12_app`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_refused_component_upload_is_a_400_like_wasmers() {
+async fn a_refused_component_upload_is_a_400() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     // A component's header (layer 1) and nothing a component needs after it.

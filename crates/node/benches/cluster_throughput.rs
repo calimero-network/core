@@ -1,5 +1,5 @@
 //! Call throughput through a 3-node cluster in one process: the real node,
-//! sealed channels, mock attestation, the kv-store fixture's `set`, each call
+//! sealed channels, mock attestation, the kv fixture's `set`, each call
 //! sent to the app's leader. Calls per second and p50 / p99 latency for:
 //!
 //! - one app, 1 call in flight;
@@ -22,8 +22,8 @@
 //! so the rows approximate nodes on separate machines. Clients still reach
 //! the nodes directly. The nodes share this machine's cores and disk either way.
 //!
-//! Needs `kv_store.wasm` (see `tests/harness/cluster.rs`). Not a criterion
-//! bench: one run is a few seconds of load per row, reported once.
+//! Builds the kv component `apps/v2-fixtures/kv` (see `tests/harness/cluster.rs`).
+//! Not a criterion bench: one run is a few seconds of load per row, reported once.
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};

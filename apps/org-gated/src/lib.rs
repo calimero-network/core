@@ -2,9 +2,7 @@
 //! `env::in_team`): members read the pinned note, admins write it, and a team's members
 //! write that team's note. Method names and arguments are the ABI's camelCase ones.
 //!
-//! The v1 SDK version this was ported from is kept as a wasmer-runtime fixture,
-//! `apps/wasmer-fixtures/org-gated`; `apps/v2-fixtures/org-gated` is the node's component
-//! fixture of the same shape. `scenarios/` holds the app-level scenarios (run by
+//! `apps/v2-fixtures/org-gated` is the node's component fixture of the same shape. `scenarios/` holds the app-level scenarios (run by
 //! `tests/scenarios.rs`) and `scenarios/cluster/` the one that changes a team mid-run.
 
 use calimero_app_sdk::env::{Caller, OrgRole};

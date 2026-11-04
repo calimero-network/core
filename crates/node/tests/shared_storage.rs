@@ -1,13 +1,9 @@
-//! A write into a `SharedStorage` cell by an account outside the cell's writer
-//! set is refused inside the SDK, so it is never committed: the node runs a
-//! call once, on the leader, with no peer to re-check it at merge.
+//! A write into a guarded field by an account outside the field's writer set
+//! is refused inside the app, so it is never committed: the node runs a call
+//! once, on the leader, with no peer to re-check it at merge.
 //!
-//! Needs `apps/wasmer-fixtures/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm`
-//! built from THIS checkout's SDK (a fixture built from a published SDK proves
-//! nothing): `cargo mero build --manifest-path apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml`.
-//! Set `KV_SHARED_WASM` to use another path.
-
-use std::path::PathBuf;
+//! Builds the component `apps/kv-store-with-shared-storage` from this checkout
+//! (cached under `$CARGO_TARGET_DIR/app-components`).
 
 use calimero_client::{Client, Consistency};
 use serde_json::{json, Value};
@@ -22,24 +18,11 @@ mod harness;
 use harness::{signed_up, Cluster};
 
 fn shared_kv_wasm() -> Vec<u8> {
-    let path = std::env::var("KV_SHARED_WASM")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-                "../../apps/wasmer-fixtures/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm",
-            )
-        });
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}; build it with cargo mero build --manifest-path \
-             apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml",
-            path.display()
-        )
-    })
+    harness::fixture("apps/kv-store-with-shared-storage")
 }
 
 async fn map_get(cl: &Client, app: &str, key: &str) -> Value {
-    cl.view(app, "map_get", json!({ "key": key }), Consistency::Strong)
+    cl.view(app, "mapGet", json!({ "key": key }), Consistency::Strong)
         .await
         .unwrap()
         .result
@@ -73,22 +56,20 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
     let forged = bob
         .call(
             &app,
-            "map_set",
+            "mapSet",
             json!({ "key": "evil", "value": "forged" }),
             None,
         )
         .await;
     let err = forged.expect_err("a non-writer's map write is refused");
-    // An app error, not a trap: the method returned the SDK's refusal.
+    // An app error, not a trap: the method returned the app's refusal.
     assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
-    let why = err
-        .details()
-        .map(|d| d["error"].to_string())
-        .unwrap_or_default();
-    assert!(
-        why.contains("may not write this cell"),
-        "the refusal is the SDK's: {why}"
+    let details = err.details().cloned().unwrap_or_default();
+    assert_eq!(
+        details["code"], "NotWriter",
+        "the refusal is the app's: {err}"
     );
+    assert_eq!(details["fields"]["field"], "map", "{err}");
 
     // Read from another node than the one Bob called through: nothing landed.
     assert_eq!(map_get(&alice, &app, "evil").await, Value::Null);
@@ -98,7 +79,7 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
     let _ok = alice
         .call(
             &app,
-            "map_set",
+            "mapSet",
             json!({ "key": "theme", "value": "dark" }),
             None,
         )

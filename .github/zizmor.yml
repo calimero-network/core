@@ -29,11 +29,9 @@ rules:
   # master. Listed by line, so a cache step added later is still audited.
   cache-poisoning:
     ignore:
-      - abi-contract.yml:85
-      - ci-checks.yml:375
       - docs-ci.yml:29
-      - e2e.yml:311
-      - e2e.yml:665
+      - e2e.yml:263
+      - e2e.yml:645
   # The consumer checkout keeps its token to push the bump branch.
   artipacked:
     ignore:

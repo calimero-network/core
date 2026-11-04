@@ -97,15 +97,12 @@ and deliveries, at most 100 per run. It is an outbox, not a follow-up:
 - **Retries and dead letters** (D29). A timeout or an unreachable target is
   retried with backoff (200 ms doubling, at most 30 s) for up to an hour from
   the send. Then, or at once for a missing target, one outside the organization,
-  or a wasmer app, the message goes to the source's dead letters (the newest
+  or an SDK 0.12 app the node no longer runs, the message goes to the source's dead letters (the newest
   1,000), and the source's `onXcallFailed { app, method, reason }` runs if its
   ABI has one with `allow(system)`. Anything the target answered (an app error,
   a trap, a refusal) is final.
 - `GET /apps/{app}/xcalls` (the owner or an org admin): `{ pending,
   deadLetters: [{ seq, app, method, reason, atMs }] }`.
-
-A wasmer app's xcall into a component, and a component's into a wasmer app,
-are refused.
 
 ### Synchronous xcalls
 

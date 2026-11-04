@@ -4,7 +4,7 @@ Ed25519 signing for Calimero application bundle manifests.
 
 ## About
 
-`mero-sign` is the signing library and CLI behind `cargo mero key` and `cargo mero sign`.
+`mero-sign` is the signing library and CLI for bundle manifests.
 It does three things:
 
 - **Sign** a bundle `manifest.json` in place - adds `signerId` and a `signature` over the canonical (RFC 8785 JCS) manifest bytes.
@@ -12,13 +12,11 @@ It does three things:
 - **Derive** the `did:key` signerId from a key file.
 
 `mero-sign` does **not** build wasm or package bundles.
-Packaging the signed manifest and its artifacts into a `.mpk` archive is done by `cargo mero bundle`, which calls this crate to sign the manifest as one step of the pipeline.
-See [SIGNING.md](../cargo-mero/SIGNING.md) for the full signing model (dev vs production keys, `MERO_SIGN_KEY`, and how package + signer derive the `ApplicationId`).
+Packaging the signed manifest and its component into a `.mpk` archive is done by `scripts/pack-component.py`, which calls this binary to sign the manifest as one step.
 
 ## Installation
 
-Most users get this through the `cargo mero` CLI and never install it directly.
-To build the standalone binary:
+Prebuilt binaries ship with core's releases (Linux and macOS). To build it:
 
 ```bash
 # Run from the workspace without installing
@@ -33,7 +31,7 @@ mero-sign --version
 
 ### `sign` - sign a manifest in place
 
-Adds `signerId` and `signature` fields to an existing `manifest.json` (as produced by `cargo mero bundle`'s staging step).
+Adds `signerId` and `signature` fields to an existing `manifest.json` (the one `scripts/pack-component.py` writes).
 
 ```bash
 # With a production key file:
@@ -85,22 +83,20 @@ Use this to check which signer a key belongs to before signing.
 
 ## Where signing fits
 
-The normal path is not to call `mero-sign` by hand.
-`cargo mero bundle` builds the app, stages the wasm/abi, writes `manifest.json`, signs it (via this crate), and packages the `.mpk`:
+Build the component, then pack and sign it:
 
 ```bash
-cargo mero bundle --key my-key.json --no-icon     # production
-cargo mero bundle --dev --no-icon                  # local, not publishable
+cargo run -p calimero-app-build --bin mero-app-build -- apps/my-app --out my-app.wasm
+python3 -I scripts/pack-component.py --wasm my-app.wasm --package com.example.my-app \
+  --app-version 1.0.0 --out dist/com.example.my-app-1.0.0.mpk --key my-key.json   # or omit --key for --dev
 ```
-
-Reach for the `mero-sign` binary directly only to re-sign an existing `manifest.json`, or to generate and inspect keys outside a build.
 
 ## Security notes
 
 1. **Never commit signing keys** to version control.
 2. **Use `--dev` only for local development and CI** - it relies on a public, well-known key, so bundles signed with it are refused by the registry.
 3. **Generate a unique production key** for anything you publish, and store it outside the repository.
-4. **The signer is part of the app identity.** The `ApplicationId` is derived from `(package, signerId)`, so changing the signing key forks the app for every node. See [SIGNING.md](../cargo-mero/SIGNING.md).
+4. **The signer is part of the app identity.** The `ApplicationId` is derived from `(package, signerId)`, so changing the signing key forks the app for every node.
 
 ## Key file format
 

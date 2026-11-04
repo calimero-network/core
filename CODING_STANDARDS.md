@@ -91,14 +91,14 @@ Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero
 
 ## Commands in docs and CI
 
-Put a tool on PATH once, then call it by its plain name at every call site; `cargo mero` is the example:
+Put a tool on PATH once, then call it by its plain name at every call site; `mero-sign` is the example:
 
 ```bash
-PATH="$(scripts/setup-cargo-mero.sh):$PATH"   # in CI: ./.github/actions/setup-cargo-mero
-cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
+cargo build --release -p mero-sign && PATH="$PWD/target/release:$PATH"
+mero-sign sign manifest.json --dev
 ```
 
-Write `cargo mero build` bare where the working directory is already the app: a per-app README documents the command, not the path to itself.
+Write a command bare where the working directory is already the app: a per-app README documents the command, not the path to itself.
 
 ## Commits
 

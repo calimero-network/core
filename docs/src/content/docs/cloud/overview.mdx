@@ -60,9 +60,8 @@ to hold it. See [Concepts](/protocol/concepts/) and
   call with its resulting state diff; followers apply the diff. Calls are
   linearized, strong reads go through the leader, stale reads any replica, and
   the app keeps serving while a majority of its replicas run.
-- **Two runtimes.** A core module built with the Rust SDK (`calimero-sdk`)
-  runs on wasmer; a `calimero:app` component runs on wasmtime. Which one is
-  decided from the WASM when the instance is created.
+- **One runtime.** An app is a `calimero:app` component, built with the Rust
+  SDK (`calimero-app-sdk`), and runs on wasmtime.
 - **Packages** are signed `.mpk` releases, installed from a registry or
   uploaded, and verified on every node that runs them. A package's frontend is
   served from its own origin.

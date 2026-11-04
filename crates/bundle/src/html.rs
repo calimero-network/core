@@ -49,7 +49,7 @@ const RAW_TEXT: &[(&str, RawKind)] = &[
 /// `<select>` change how the tree builder treats the elements in RAW_TEXT.
 const MARKUP_ONLY_AFTER: &[&str] = &["svg", "math", "select"];
 
-/// Build-time lint for cargo mero on trusted build output; the node never calls it.
+/// Build-time lint for a bundling tool on trusted build output; the node never calls it.
 /// Not a security boundary (the origin and CSP are), and quadratic in one tag's attributes.
 pub fn check_frontend_html(path: &str, bytes: &[u8]) -> Result<(), FrontendError> {
     let html =

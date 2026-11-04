@@ -43,26 +43,13 @@ beside it) has its commands and detail. The same index, for agents, is
 
 | Crate | Package | What it is |
 | --- | --- | --- |
-| `crates/bundle` | `calimero-bundle` | The `.mpk` manifest, JCS canonicalization and Ed25519 signatures; shared with `cargo-mero` and `mero-sign`. |
+| `crates/bundle` | `calimero-bundle` | The `.mpk` manifest, JCS canonicalization and Ed25519 signatures; shared with `mero-sign`. |
 | `crates/app-downloader` | `calimero-app-downloader` | Fetching signed releases from a package registry (`HttpRegistry`). |
 
-## SDK and runtime
+## The app runtime
 
-Two app runtimes, picked per app from the WASM its bundle names. Check with
-their owner before changing these. The first runs core modules built with the
-Rust SDK (SDK 0.12):
-
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/sdk` (+ `sdk/macros`) | `calimero-sdk`, `calimero-sdk-macros` | The app SDK: `#[app::state]`, `#[app::logic]`, events, migrations, `TestHost`. |
-| `crates/storage` | `calimero-storage` | CRDT collections and the storage interface apps write through; the `converge` harness. |
-| `crates/storage-macros` | `calimero-storage-macros` | Derive macros for storage entities. |
-| `crates/sys` | `calimero-sys` | The WASM host ABI types and imports. |
-| `crates/wasm-abi` | `calimero-wasm-abi` | The `wasm-abi/1` schema, validation and the embedded custom section the node reads. |
-| `crates/prelude` | `calimero-prelude` | The root storage key derivation shared by SDK and storage. |
-| `crates/runtime` | `calimero-runtime` | The wasmer runtime with gas metering and the host functions; the node's executor runs it. |
-
-The second runs `calimero:app` components on wasmtime:
+Apps are `calimero:app` components on wasmtime. Check with their owner before
+changing these.
 
 | Crate | Package | What it is |
 | --- | --- | --- |
@@ -70,30 +57,14 @@ The second runs `calimero:app` components on wasmtime:
 | `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. |
 | `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. |
 | `crates/app-sdk` (+ `app-sdk-macros`) | `calimero-app-sdk`, `calimero-app-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
-| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components. |
+| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components (`mero-app-build`). |
+| `crates/wasm-abi` | `calimero-wasm-abi` | SDK 0.12's `wasm-abi/1` schema; read only by the consent page's upgrade plan, which a component bundle does not feed. |
 
 ## Shared types
 
 | Crate | Package | What it is |
 | --- | --- | --- |
 | `crates/primitives` | `calimero-primitives` | Ids, keys, hashes and wire types used everywhere. |
-| `crates/account` | `calimero-account` | `AccountId`, plus device ids and credentials only the runtime-linked crates use; the node uses `AccountId`. |
-
-## Runtime-only crates
-
-These are older node crates kept only because `calimero-runtime` still links them.
-Nothing in the node uses them directly. Do not build on them.
-
-| Crate | Package | Kept for |
-| --- | --- | --- |
-| `crates/node/primitives` | `calimero-node-primitives` | The runtime's `NodeClient` (blob host functions); pulls in the crates below. |
-| `crates/context/config` | `calimero-context-config` | Types the runtime names (`GovernanceParentEdge`), and `governance-types`. |
-| `crates/network/primitives` | `calimero-network-primitives` | Through `node-primitives`. |
-| `crates/governance-types` | `calimero-governance-types` | Through `node-primitives`. |
-| `crates/store` (+ `store/impl/rocksdb`) | `calimero-store`, `calimero-store-rocksdb` | Through `node-primitives`, and the runtime's tests. |
-| `crates/store/blobs` | `calimero-blobstore` | Through `node-primitives`. |
-| `crates/utils/actix` | `calimero-utils-actix` | Through `node-primitives`. |
-| `crates/crypto` | `calimero-crypto` | The runtime's sealing of values to keys (`seal_to_root`, `open_sealed`). |
 
 ## Build and development
 
@@ -107,9 +78,4 @@ Nothing in the node uses them directly. Do not build on them.
 
 | Tool | Binary | What it is |
 | --- | --- | --- |
-| `tools/cargo-mero` | `cargo-mero` | The app toolchain: scaffold, build (with the embedded ABI), test, bundle and sign a `.mpk`. |
-| `tools/calimero-abi` | `mero-abi` | Extract, embed, inspect and diff app ABIs. |
 | `tools/mero-sign` | `mero-sign` | Sign bundle manifests. |
-| `tools/storage-cost` | `storage-cost` | Deterministic storage-cost counts and the cost gate snapshot. |
-| `tools/storage-compare` | `storage-compare` | Storage workloads measured against a chosen `calimero-storage`. |
-| `tools/state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry under column-family options. |

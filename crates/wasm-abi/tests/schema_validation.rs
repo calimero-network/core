@@ -114,7 +114,7 @@ fn test_schema_validation_conformance() {
     let schema = validator_for(&schema_value).unwrap();
 
     // Load the conformance manifest
-    let conformance_json = include_str!("../../../apps/abi_conformance/abi.expected.json");
+    let conformance_json = include_str!("fixtures/abi_conformance.expected.json");
     let conformance_value: Value = serde_json::from_str(conformance_json).unwrap();
 
     // Validate against schema

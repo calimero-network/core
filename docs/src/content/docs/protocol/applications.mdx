@@ -9,8 +9,9 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 An app instance runs one **bundle**: a WASM module named by
 `hex(SHA-256(wasm))`. In production a bundle always comes out of a **package
-release**: a signed `.mpk` (`calimero-bundle`) built with `cargo mero build`
-and signed by its publisher with `mero-sign`. See
+release**: a signed `.mpk` (`calimero-bundle`) holding a `calimero:app`
+component built with `calimero-app-build`, its manifest signed by its publisher
+with `mero-sign`. See
 [Packaging & signing](/build/packaging-signing/) for building one.
 
 ## What a release carries
@@ -35,7 +36,7 @@ the archive is listed with its digest.
     { label: 'Replica', color: '#58a6ff' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'cargo mero build; mero-sign the manifest' },
+    { from: 0, to: 0, label: 'mero-app-build; mero-sign the manifest' },
     { from: 0, to: 1, label: 'publish package@version (.mpk)' },
     { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
     { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
@@ -182,12 +183,10 @@ prefixes, and have no pinned signer.
 
 ## ABI facts
 
-The node reads a bundle's embedded ABI (`services::BundleFacts`) for what it
-acts on: which methods are `#[app::view]`, `#[app::handler]` and
-`#[app::xcall]` entry points (and whom an entry point admits), which
-`#[app::tee(every)]` timers to fire, and the state version and migrations an
-upgrade plans from. Bundles built without `cargo mero build` embed no ABI and
-get none of these.
+The node reads the ABI a component embeds (its `calimero:abi` section) for what
+it acts on: which methods are views and confirm methods, whom each method admits
+(accounts, API keys, other apps, the system), its timers, and the tables search
+indexes. A method the ABI does not name is refused (default-deny).
 
 ## Frontends
 

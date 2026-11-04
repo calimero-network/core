@@ -37,5 +37,6 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 
+calimero-app-build.workspace = true
 calimero-bundle.workspace = true
 calimero-node.workspace = true

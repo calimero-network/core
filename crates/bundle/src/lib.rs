@@ -23,7 +23,7 @@ pub use signature::{
 use serde::{Deserialize, Serialize};
 
 /// The node refuses a bundle's `manifest.json` above this size, before any
-/// signature check. `cargo mero` derives its icon budget from this.
+/// signature check.
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 /// Represents an artifact within a bundle (WASM, ABI, migration)
@@ -141,7 +141,7 @@ pub struct BundleHandlers {
 ///
 /// Distinct from `min_runtime_version`, which is a hand-declared floor ("refuse
 /// to run below this") and defaults to `0.1.0` for anyone who never sets it.
-/// This block is derived, not declared: `cargo mero bundle` reads it off the
+/// This block is derived, not declared: a bundling tool reads it off the
 /// resolve graph, so it cannot drift from the bytecode it ships beside.
 ///
 /// A sibling of `metadata`, like `handlers`, and for the same reason: stamping

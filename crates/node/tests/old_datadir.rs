@@ -1,5 +1,6 @@
-//! A data directory written before components existed opens on this node, and its
-//! apps keep running on wasmer.
+//! A data directory written before components existed opens on this node, which has
+//! no wasmer: its SDK 0.12 app is still listed and can be deleted, and every call,
+//! view and upgrade of it is `410 UNSUPPORTED_ENGINE`.
 //!
 //! `fixtures/datadir-a09547b2b.tar.gz` is one node's data directory as
 //! the node at `a09547b2b` wrote it (its own `calimero-node`, run in
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 use calimero_node::attest::Mode;
 use calimero_node::node::{CallRequest, ViewRequest};
+use calimero_node::system::SystemCmd;
 use calimero_node::types::{Caller, Executor};
 use calimero_node::{run, Config};
 use serde_json::{json, Value};
@@ -71,7 +73,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_data_directory_from_before_components_opens_and_its_apps_run_on_wasmer() {
+async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let archive = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -93,6 +95,7 @@ async fn a_data_directory_from_before_components_opens_and_its_apps_run_on_wasme
 
     let r = run(config(&dir, port)).await.unwrap();
     let node = &r.node;
+    // Listed, as it was.
     let record = node.app(&app).await.unwrap();
     assert_eq!(record.bundle, fixture["bundle"].as_str().unwrap());
     assert_eq!(
@@ -100,6 +103,8 @@ async fn a_data_directory_from_before_components_opens_and_its_apps_run_on_wasme
         Executor::Wasmer,
         "no recorded executor: wasmer"
     );
+    assert!(node.sys(|s| s.apps.contains_key(&app)));
+    // Its group opens on the state the old node left.
     let mut group = None;
     for _ in 0..200 {
         group = node.hosted(&app);
@@ -115,39 +120,71 @@ async fn a_data_directory_from_before_components_opens_and_its_apps_run_on_wasme
     assert_eq!(
         group.read_local(|m, _| (m.state.executor, m.state.executor())),
         (None, Some(Executor::Wasmer)),
-        "the old state names no executor and is applied as wasmer"
+        "the old state names no executor and is an SDK 0.12 app's"
     );
 
+    // It runs nothing: a view, a call and an upgrade are each `410 UNSUPPORTED_ENGINE`.
     let caller = Caller::Account {
         account: owner.clone(),
     };
-    let view = |key: &str| ViewRequest {
-        app_id: app.clone(),
-        method: "get".into(),
-        args: json!({ "key": key }),
-        caller: caller.clone(),
-        strong: true,
-        min_index: 0,
+    let gone = |e: calimero_node::error::ApiError| {
+        assert_eq!(
+            (e.status, e.code.as_str()),
+            (410, "UNSUPPORTED_ENGINE"),
+            "{e:?}"
+        );
+        assert!(e.message.contains("calimero-app-sdk"), "{e:?}");
     };
-    for (k, v) in fixture["values"].as_object().unwrap() {
-        let a = node.view(&view(k)).await.unwrap();
-        assert_eq!(a.result, *v, "{k}");
+    for k in fixture["values"].as_object().unwrap().keys() {
+        gone(
+            node.view(&ViewRequest {
+                app_id: app.clone(),
+                method: "get".into(),
+                args: json!({ "key": k }),
+                caller: caller.clone(),
+                strong: true,
+                min_index: 0,
+            })
+            .await
+            .unwrap_err(),
+        );
     }
-    // It keeps running: a call writes, on wasmer, and reads back.
-    let a = node
-        .call(&CallRequest::new(
+    gone(
+        node.call(&CallRequest::new(
             app.clone(),
             "set".into(),
             json!({ "key": "c", "value": "3" }),
             caller.clone(),
         ))
         .await
-        .unwrap();
-    assert!(!a.conflict, "{a:?}");
-    assert_eq!(node.view(&view("c")).await.unwrap().result, json!("3"));
-    assert_eq!(
-        group.read_local(|m, _| m.state.executor()),
-        Some(Executor::Wasmer)
+        .unwrap_err(),
     );
+    gone(
+        node.call(&CallRequest::host(
+            app.clone(),
+            "__upgrade",
+            json!({ "bundle": record.bundle }),
+            caller.clone(),
+        ))
+        .await
+        .unwrap_err(),
+    );
+    // Its owner deletes it, as any app.
+    let _ok = node
+        .sys_write(&SystemCmd::DeleteApp {
+            app_id: app.clone(),
+            actor: owner,
+        })
+        .await
+        .unwrap();
+    let mut deleted = false;
+    for _ in 0..100 {
+        if node.app(&app).await.is_err() {
+            deleted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(deleted, "the app was not deleted");
     r.stop().await;
 }

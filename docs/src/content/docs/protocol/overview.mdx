@@ -134,7 +134,6 @@ across zones, restoring a snapshot into a running cluster, event audiences,
 and search indexes that survive a restart.
 :::
 
-Apps are built with one of two SDKs: `calimero-sdk` and `calimero-storage`,
-whose core modules run on `calimero-runtime` (wasmer), or `calimero-app-sdk`, whose `calimero:app` components run on
+Apps are built with `calimero-app-sdk` into `calimero:app` components, which run on
 `calimero-app-engine-wasmtime`. What they do inside a run is described only as
 far as the node depends on it.

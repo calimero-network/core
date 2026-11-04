@@ -13,7 +13,7 @@ inputs:
   shared-key:
     description: >
       The cache group: jobs that build the same thing (native dev, release-fast
-      merod, wasm apps, ...) share one, so the repo's 10 GB stays a few warm
+      merod, app components, ...) share one, so the repo's 10 GB stays a few warm
       caches instead of many evicted ones. Exactly one job per group saves it.
     required: true
   cache-on-failure:

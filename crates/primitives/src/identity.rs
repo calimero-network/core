@@ -185,11 +185,7 @@ impl FromStr for PublicKey {
 // Content-addressed ids (accounts and devices)
 // ---------------------------------------------------------------------------
 //
-// These live here rather than in `calimero-account`, which is where the account
-// MODEL lives, because `calimero-account` depends on this crate and the ids are
-// named in the client-facing event payloads this crate defines. Declaring them
-// here and re-exporting from `calimero-account` keeps every existing import
-// working while breaking the cycle.
+// The ids are named in the client-facing event payloads this crate defines.
 
 /// Domain-separated, length-prefixed SHA-256 over `parts`.
 ///

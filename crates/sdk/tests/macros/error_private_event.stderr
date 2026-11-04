@@ -1,5 +1,0 @@
-error: (calimero)> this event must be public
- --> tests/macros/error_private_event.rs:6:6
-  |
-6 | enum PrivateEvent {
-  |      ^^^^^^^^^^^^

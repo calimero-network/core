@@ -40,10 +40,6 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.decide.outputs.rust }}
-      storage_cost: ${{ steps.decide.outputs.storage_cost }}
-      wasm_size: ${{ steps.decide.outputs.wasm_size }}
-      cargo_mero_e2e: ${{ steps.decide.outputs.cargo_mero_e2e }}
-      apps: ${{ steps.decide.outputs.apps }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,14 +102,14 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-lint, rust-test, rust-features, rust-apps, rust-supply-chain]
+    needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain]
     runs-on: ubuntu-latest
     steps:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","rust-apps":"apps"}'
+          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust"}'
         run: |
           jq -e --argjson gates "$GATES" '
             .scope.outputs as $scope
@@ -155,26 +151,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/tests/check-like-ci.test.sh
 
-      # The cargo-mero and app caches key on this closure; one it misses is a
-      # source change that silently reuses a stale binary.
+      # ci-scope.py scopes jobs by this closure; one it misses is a source change
+      # whose gate never runs.
       - name: Test path-dep-closure against cargo's resolve
         if: ${{ !cancelled() }}
         run: python3 scripts/tests/path-dep-closure-test.py
 
-      # `calimero-storage/testing` lints that crate's feature-gated harness in the same pass.
       - name: Cargo clippy
         if: ${{ !cancelled() }}
-        run: cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # mock-attestation and calimero-node's outbound-testing are default-off so they
       # never reach a release binary; the workspace clippy never compiles them.
       - name: Cargo clippy (mock-attestation, outbound-testing)
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
-
-      - name: Cargo check (calimero-context-config)
-        if: ${{ !cancelled() }}
-        run: cargo check -p calimero-context-config
 
   # The only job that saves `ci-checks`; the others restore it read-only.
   rust-test:
@@ -192,8 +183,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          # Tests that self-build app wasm must not race to install the target.
-          targets: wasm32-unknown-unknown
           shared-key: ci-checks
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
 
@@ -202,24 +191,6 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
-      - name: Setup cargo mero
-        uses: ./.github/actions/setup-cargo-mero
-
-      # The node's cluster tests and meroctl's run real app wasm: plain builds
-      # (read from target/wasm32-unknown-unknown/app-release) and cargo-mero builds,
-      # whose embedded ABI the node reads (read from apps/<app>/res).
-      # crates/node/AGENTS.md "Commands" lists the same set. The org-gated built here
-      # is the wasmer fixture (apps/wasmer-fixtures/org-gated).
-      - name: Build the node test fixtures
-        run: |
-          cargo build -p kv-store -p org-gated -p outbound-probe --target wasm32-unknown-unknown --profile app-release
-          for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
-            migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
-            migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
-            migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
-            cargo mero build --manifest-path "apps/$a/Cargo.toml"
-          done
-
       - name: Cargo test
         run: |
           FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
@@ -227,8 +198,7 @@ jobs:
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo "$TEST_HOSTS"
 
-          # bundle_produces_signed_mpk runs in cargo-mero-e2e, with its own fixture cache and target dir.
-          cargo nextest run --workspace --no-fail-fast -E 'not test(=bundle_produces_signed_mpk)'
+          cargo nextest run --workspace --no-fail-fast
 
       - name: Cargo doctests
         if: ${{ !cancelled() }}
@@ -283,47 +253,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p calimero-tee-attestation --features mock-attestation -- --nocapture
 
-      # The stored-format tests sit behind calimero-store's default-off features.
-      - name: Cargo test (calimero-store, all features)
-        if: ${{ !cancelled() }}
-        run: cargo test -p calimero-store --all-features
-
-  rust-apps:
-    name: Rust apps
-    needs: scope
-    if: needs.scope.outputs.apps == 'true'
-    runs-on: big-machine
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      # A hit is the output of this exact build (same app trees, cargo-mero,
-      # lockfile, toolchain, script and workflows), which already passed on master
-      # or the release branch: only they save, and only after the build below succeeds.
-      - name: Restore the apps, or set up to build them
-        id: apps
-        uses: ./.github/actions/wasm-apps
-        with:
-          root: apps
-          script: scripts/build-all-apps.sh
-          workflows: .github/workflows/ci-checks.yml
-          # The wasm-apps rust-cache group's one saver.
-          rust-cache-save: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
-
-      - name: Build every app
-        if: steps.apps.outputs.hit != 'true'
-        run: ./scripts/build-all-apps.sh
-
-      - name: Share the built apps
-        if: steps.apps.outputs.save == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.apps.outputs.paths }}
-          key: ${{ steps.apps.outputs.key }}
-
   rust-supply-chain:
     name: Rust supply chain
     needs: scope
@@ -351,105 +280,3 @@ jobs:
         run: |
           # A feature-only dep reads as unused; list it in `[package.metadata.cargo-machete] ignored`.
           cargo machete
-
-  cargo-mero-e2e:
-    name: cargo-mero e2e
-    needs: scope
-    if: needs.scope.outputs.cargo_mero_e2e == 'true'
-    runs-on: big-machine
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          targets: wasm32-unknown-unknown
-          shared-key: ci-checks
-          save-if: false
-
-      - name: Cache fixture build output
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            tools/cargo-mero/tests/fixtures/demo-app/target
-            tools/cargo-mero/tests/fixtures/multi-app/target
-          key: cargo-mero-fixtures-${{ runner.os }}-${{ hashFiles('tools/cargo-mero/tests/fixtures/**/Cargo.toml') }}
-          restore-keys: |
-            cargo-mero-fixtures-${{ runner.os }}-
-
-      # Each fixture builds into its own cached target dir; bundle_produces_signed_mpk runs by default, and --include-ignored adds the frontend pack test.
-      - name: Run pipeline e2e
-        run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline --test frontend -- --include-ignored --test-threads 1
-
-  # PR-time guard against a wasm too large for the runtime merod runs apps in to load.
-  wasm-size:
-    name: WASM size gate
-    needs: scope
-    if: needs.scope.outputs.wasm_size == 'true'
-    runs-on: ubuntu-24.04-8cpu
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          targets: wasm32-unknown-unknown
-          shared-key: wasm-apps
-          save-if: false
-
-      - name: Setup cargo mero
-        uses: ./.github/actions/setup-cargo-mero
-
-      # Profiling builds skip wasm-opt, so they are the largest wasm a node is handed.
-      - name: Build the size-gated apps with profiling
-        env:
-          WASM_PROFILING: "true"
-        run: |
-          cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
-          cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
-          cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
-
-      - name: Check wasm sizes against the runtime module-size limit
-        run: ./scripts/check-wasm-size.sh
-
-  # Storage costs are deterministic, so this gates; wall-clock benchmarks live in benchmarks.yml.
-  storage-cost:
-    name: Storage cost gate
-    needs: scope
-    if: needs.scope.outputs.storage_cost == 'true'
-    runs-on: ubuntu-24.04-8cpu
-    # Row and byte counts depend on what the code does, not how it is optimised,
-    # and debug assertions stay off either way: both profiles reproduce the
-    # committed snapshot byte for byte. Fat LTO with one codegen unit is for
-    # shipped binaries; measured on one 4-cpu host it made this job 27.5 min
-    # against 20.4 without it, runtime included (`reproducible`: 935s vs 704s).
-    env:
-      CARGO_PROFILE_RELEASE_LTO: "false"
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          shared-key: storage-cost
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
-
-      # Shape first: it catches a regression even when the snapshot was regenerated to absorb it.
-      - name: Assert cost curves keep their declared shape
-        run: cargo test -p storage-cost --release -- --include-ignored
-
-      - name: Check storage costs against the committed snapshot
-        run: ./scripts/check-storage-cost.sh

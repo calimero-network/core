@@ -5,8 +5,8 @@ edition = "2021"
 publish = false
 description = "Org-gated notes on the component SDK: members read, admins write, a team writes its own note"
 
-# Not `org-gated`: that is the wasmer fixture's package (apps/wasmer-fixtures/org-gated,
-# org_gated.wasm), and the cluster scenarios find a fixture by its wasm's name.
+# Not `org-gated`: the SDK 0.12 fixture once had that package (org_gated.wasm), and the
+# cluster scenarios find a fixture by its wasm's name.
 [lib]
 crate-type = ["cdylib"]
 

@@ -13,7 +13,7 @@ use calimero_node::types::Executor;
 use common::{signed_up, Cluster};
 use serde_json::{json, Value};
 
-/// A signed single-service `.mpk`, the shape `cargo mero bundle` produces.
+/// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {

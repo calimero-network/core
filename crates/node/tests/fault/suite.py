@@ -13,10 +13,11 @@ through meroctl, and stops it.
     python3 -I crates/node/tests/fault/suite.py --list
 
 Needs release merod and meroctl (`cargo build --release -p merod -p meroctl`, or
-`--merod`/`--meroctl`), kv-store's WASM (`cargo build -p kv-store --target
-wasm32-unknown-unknown --profile app-release`) and, for `packages`, two signed
-releases of it (`(cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon
---app-version 1.0.0)` and `1.1.0`, into `dist/`). See README.md beside this file.
+`--merod`/`--meroctl`), the kv component (`cargo run -p calimero-app-build --bin
+mero-app-build -- apps/v2-fixtures/kv --out target/app-components/kv.wasm`) and, for
+`packages`, two signed releases of it (`scripts/pack-component.py --wasm
+target/app-components/kv.wasm --package com.calimero.kv-store --app-version 1.0.0
+--out dist/com.calimero.kv-store-1.0.0.mpk`, and `1.1.0`). See README.md beside this file.
 """
 
 from __future__ import annotations
@@ -150,12 +151,10 @@ class Account:
                 raise Failed(f"wait_for {method}{args} on node {node}: still {last!r} after {timeout}s")
             time.sleep(0.25)
 
-    def deploy(self, wasm, name="app", org=None, confirm=()):
+    def deploy(self, wasm, name="app", org=None):
         args = ["context", "create", "--name", name, "--path", str(wasm)]
         if org:
             args += ["--namespace", org]
-        for m in confirm:
-            args += ["--confirm", m]
         return self.cli(*args)["appId"]
 
 
@@ -258,10 +257,10 @@ def orgs_and_keys(ctx, cl):
     org = alice.cli("namespace", "create", "Acme")["orgId"]
     token = alice.raw("post", f"orgs/{org}/invites", {"role": "member", "teams": []})["token"]
     bob.raw("post", f"invites/{token}/redeem", {})
-    app = alice.deploy(ctx.kv_wasm, "team-kv", org=org, confirm=["clear"])
+    app = alice.deploy(ctx.kv_wasm, "team-kv", org=org)
     bob.call(app, "set", {"key": "from", "value": "bob"})  # a member writes
     expect_refused("NOT_FOUND", lambda: carol.call(app, "get", {"key": "from"}))  # not in the org
-    # clear needs a fresh passkey assertion: refused without, done with alice's passkey.
+    # clear is a confirm method (#[app::confirm]): it needs a fresh passkey assertion: refused without, done with alice's passkey.
     expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("call", "--context", app, "clear"))
     alice.cli("call", "--context", app, "clear", "--dev-passkey", str(alice.passkey))
     # Minting a key needs a passkey assertion too: refused without, made with alice's.
@@ -591,7 +590,7 @@ def main(argv=None):
     ap.add_argument("--meroctl", help="the meroctl to drive it with (default RV2_MEROCTL or target/release/meroctl)")
     ap.add_argument("--upgrade-merod", help="rolling-upgrade's target build (default: merod with a byte appended)")
     ap.add_argument("--kv-wasm", default=os.environ.get("KV_STORE_WASM")
-                    or str(TARGET / "wasm32-unknown-unknown" / "app-release" / "kv_store.wasm"))
+                    or str(TARGET / "app-components" / "kv.wasm"))
     ap.add_argument("--kv-mpk", default=os.environ.get("KV_STORE_MPK")
                     or str(ROOT / "dist" / "com.calimero.kv-store-1.0.0.mpk"))
     ap.add_argument("--kv-mpk-next", default=os.environ.get("KV_STORE_MPK_NEXT")
@@ -639,10 +638,12 @@ def main(argv=None):
     need(rv2.MEROD, "merod", "cargo build --release -p merod, or --merod PATH")
     need(rv2.CLI, "meroctl", "cargo build --release -p meroctl, or --meroctl PATH")
     if set(names) - {"rooms-fault"}:
-        need(args.kv_wasm, "kv_store.wasm",
-             "cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release, or --kv-wasm")
+        need(args.kv_wasm, "the kv component",
+             "cargo run -p calimero-app-build --bin mero-app-build -- apps/v2-fixtures/kv "
+             "--out target/app-components/kv.wasm, or --kv-wasm")
     if "packages" in names:
-        how = "(cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version 1.0.0 / 1.1.0)"
+        how = ("scripts/pack-component.py --wasm <kv.wasm> --package com.calimero.kv-store "
+               "--app-version 1.0.0 / 1.1.0 --out dist/com.calimero.kv-store-<version>.mpk")
         need(args.kv_mpk, "kv-store 1.0.0 .mpk", how + ", or --kv-mpk")
         need(args.kv_mpk_next, "kv-store 1.1.0 .mpk", how + ", or --kv-mpk-next")
     if "rooms-fault" in names:

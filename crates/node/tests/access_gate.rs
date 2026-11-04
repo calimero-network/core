@@ -13,8 +13,8 @@
 //! while the request is judged there. The follower's own requests (its read
 //! index, from the leader) are not held, and clients reach it directly.
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! (see `harness/cluster.rs`).
 
 use std::collections::BTreeMap;
 use std::time::Duration;

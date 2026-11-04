@@ -12,26 +12,25 @@ is its command line.
 - **One Raft log per app** (`calimero-log`). The leader runs the WASM call
   and appends `{ call, outcome { result, diff, events } }`. Followers apply the diff;
   nothing is re-executed. `base_index` guards against applying a stale diff.
-- **Two executors** (`types::Executor`; the transition the spec records as D53,
-  overriding D1/D15 until v1 apps move): a v1 core module (SDK 0.12) runs on
-  wasmer (`app::Executor`, today's `calimero-runtime` over a copy-on-write
-  `Overlay`; everything below that is not under "Component executor"); a
-  `calimero:app` component (the v2 SDK) runs on wasmtime through the host core
+- **One engine** (`types::Executor`): an app is a `calimero:app` component (built
+  with `calimero-app-sdk`) and runs on wasmtime through the host core
   (`node/component.rs`, `component.rs`). The executor is decided once, from the WASM
   the app's bundle names (a package's service or a raw upload,
-  `wasmparser::Parser::is_component`), when the app is created
-  (`AppRecord::executor`, absent = wasmer), and the app's `init` entry records it in
-  the group's state (`AppState::executor`, in `Head`, so a snapshot carries it; a
-  state from before has none: wasmer). Each executor's entries are a format of its
-  own (`app::AppCmd`, `component::ComponentCmd`, distinct `op` names) and write a
-  keyspace of its own (`rows::KV`/`IDEM` and `rows::CKV`/`CIDEM`/`CORDER`); a replica
-  applies an entry with the executor its state names, and one of the other format
-  changes nothing (tests `a_wasmer_entry_never_applies_to_a_component_app`,
-  `wasmer_and_component_apps_share_a_cluster`). An upgrade that would move an app
-  between executors is refused at the leader (`upgrade_local`), either way, until
-  rebuild migrations (D38) exist (`upgrades_across_executors_are_refused_both_ways`).
-  A data directory written before components opens and its apps run on wasmer
-  (`old_datadir.rs`, from a directory `a09547b2b` wrote).
+  `wasmparser::Parser::is_component`), when the app is created (`AppRecord::executor`),
+  and the app's `init` entry records it in the group's state (`AppState::executor`, in
+  `Head`, so a snapshot carries it).
+- **SDK 0.12 apps (wasmer) are gone**: the node no longer runs a WASM core module.
+  `Executor::Wasmer` stays only so records and states written before still read (no
+  recorded executor means wasmer). A core-module bundle is refused at upload, create and
+  package install with `400 UNSUPPORTED_BUNDLE` (`ApiError::unsupported_bundle`), and an
+  upgrade to one with `UNSUPPORTED_BUNDLE`; an existing wasmer app is still listed and
+  deletable, and every call, view, upgrade, intent, xcall list and ABI read on it answers
+  `410 UNSUPPORTED_ENGINE` (`ApiError::unsupported_engine`, `app::WASMER_GONE`). A wasmer
+  entry in an app's log applies as a deterministic no-op (`AppMachine::unsupported`:
+  `last_index` moves, nothing else). Tests: `old_datadir.rs` (a directory `a09547b2b`
+  wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
+  `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
+  `a_wasmer_entry_never_applies_to_a_component_app`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -344,10 +343,6 @@ is its command line.
   quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
   has any key. Not a route of a running node: `serve_release` is its own tiny server
   (that one route, `MAX_CONCURRENT_RELEASE_QUOTES`), run only by `merod attest --serve`.
-- **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
-  sets, blob marks. App code's overlay answers nothing there and a run that tries is
-  refused; the host writes with `Overlay::set_host` and reads with
-  `Storage::host_get`. Rotations are judged by `rotation_refusal`.
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request. Regression:
@@ -450,27 +445,20 @@ is its command line.
   the first call after every election conflicted once (regression:
   `the_first_call_after_a_leader_change_commits_without_a_rerun`;
   `calimero_build_conflicts_total` in `/ops/metrics` counts conflicts). Replies without an append (idempotent replays) are confirmed first.
-  The module is compiled from the bundle read before the lock, so the build
+  The component is prepared from the bundle read before the lock, so the call
   also answers a conflict when the state names another bundle by then (an
-  upgrade applied in between; `AppMachine::stale_module`, also checked by
-  `upgrade_local`). Regression:
-  `a_call_built_with_a_module_an_upgrade_replaced_never_commits`.
+  upgrade applied in between; `call_component` compares `AppState::bundle`).
 - **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
-  follow-up, timer, init, migration, strong view) happens inside the group's
+  timer tick, init, strong view) happens inside the group's
   proposal lock, on the machine's read lock, from borrowed state, so it cannot
   move to `spawn_blocking`; it goes through `block_in_place`, which hands the
   worker's other tasks (Raft heartbeats, the system group, HTTP) to another
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
-- **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`):
-  without a named `migrate`, an upgrade one state version up runs
-  the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
-  refused, and so is a target whose ABI strips authorship from a field
-  (`calimero_wasm_abi::downgrade::identity_downgrades`, the L1 gate; regression:
-  `an_upgrade_that_strips_authorship_is_refused`). Bundles without an ABI upgrade code-only. In a migration
-  (`Executor::migrate`) the export returns the new root state, the app's
-  `__calimero_migration_check` must pass, and the host writes the root entry
-  (`write_root_state`). The directory records the new bundle only once the
-  upgrade succeeded.
+- **Upgrades are code-only**: a component upgrade swaps the bundle
+  (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
+  consent page still shows the plan an ABI pair implies
+  (`consent_page::diff::plan_from_abis`). The directory records the new bundle only
+  once the upgrade succeeded.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
   passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
@@ -495,46 +483,23 @@ is its command line.
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
-- **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
-  caller's account (no device ids); the context id is `SHA-256(app_id)`.
-  `env::caller_org` is the caller's role and teams in the app's organization
-  (`app::caller_org`, passed through `Module::run_cloud`).
-- **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
-  unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
-  replicated and sealed, but a run is handed only its caller's space.
-- **Shared-storage writers**: a cell's rotated writer set is kept in the app's state
-  (`app::writers_key`), written with the run that rotated it.
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
   keys) are base64url that never starts with `-` (`api::typed_id`), which
   meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
 - **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
   sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
-- **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`; a component's: see
-  "Component executor"): bytes live in the
-  cluster's blob store (`hex(SHA-256)`, a majority before the answer, a missing one
-  fetched from a peer), and the app's state marks which are its own
-  (`app::blob_key`). A run's blob host is `services::AppBlobs`: a run writes blobs
-  onto its outcome (never through the host), the leader stores them before
-  proposing and spreads them after the entry commits; a run opens only blobs its
-  app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
-  print, `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
-  list them from a scan of the app's state (`AppMachine::storage_stats`, on a
-  replica). A download asks the app's leader whether the app still marks the
-  blob (`blob_held_strong`; 503 when no leader answers): a replica that has not
-  applied a delete still holds the mark and the bytes (regression:
-  `a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind`). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
-  `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
-  node (`internal/blob/delete`) unless another app still marks the same content
-  (asked of each app's leader, `blob_held_strong`: a lagging replica could miss
-  a mark just committed; an app whose leader does not answer counts as holding
-  it) or it is a bundle or a release `.mpk`. A peer asked to drop the bytes
-  judges its own apps' marks the same way, on their leaders: a replica that
-  has not applied the delete yet would otherwise keep them for good
-  (regression: `a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader`). Known window: the same content
-  uploaded to another app between that check and the deletion loses its bytes.
-  A blob past `MAX_BLOB_BYTES` (47 MiB) is refused `413 TOO_LARGE` by the node,
-  one past the sealed cap (64 MiB) by the envelope, in the clear; the client
-  reports both as `TOO_LARGE`. Regressions:
+- **Blobs** (`POST/GET /apps/{app}/blobs[/{id}]`; how an app holds one: see
+  "Component executor"): bytes live in the cluster's blob store (`hex(SHA-256)`, a
+  majority before the answer, a missing one fetched from a peer). A download asks the
+  app's leader whether the app still holds the blob (`blob_held_strong`; 503 when no
+  leader answers). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) forgets it, then
+  `Node::collect_blob` deletes the bytes on every node (`internal/blob/delete`) unless
+  another app still holds the same content (asked of each app's leader; an app whose
+  leader does not answer counts as holding it) or it is a bundle or a release `.mpk`.
+  Known window: the same content uploaded to another app between that check and the
+  deletion loses its bytes. A blob past `MAX_BLOB_BYTES` (47 MiB) is refused
+  `413 TOO_LARGE` by the node, one past the sealed cap (64 MiB) by the envelope, in the
+  clear; the client reports both as `TOO_LARGE`. Regressions:
   `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
   `an_upload_past_the_sealed_cap_is_answered_413`.
 - **App frontends** (`app_host.rs`): with `--apps-domain D`
@@ -597,31 +562,6 @@ is its command line.
   `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
   API keys, owned orgs, and the quotas).
-- **Search** (`services::Search`): tantivy indexes, in memory per
-  app and built from the app's `__calimero_search_*` exports. A view brings them
-  up to the very state it reads first: from the entities entries touched
-  (`Outcome::touched`, from the run's `StorageDelta`; kept for the last
-  `TOUCHED_RING` entries), else a full scan. Derived, never replicated.
-- **Follow-ups** (`AppState::pending`): an entry's event handlers
-  (`app::emit!((e, "handler"))`, `tee:` for a TEE handler) and its `xcall`s are
-  queued when it applies; the leader runs them (`Node::drive`, woken by `kick`)
-  as entries that consume them (`Trigger::FollowUp`), or, for an xcall, calls
-  the target with an idempotency key and then commits `AppCmd::Done`. A new
-  leader neither skips nor repeats one. Only `#[app::handler]`
-  methods run for an event; an xcall reaches only `#[app::xcall]` entry points
-  (`from_same_app`: the same bundle), only within the caller's organization
-  (outside one: its owner), as `Caller::App` with `env::xcall_origin`; cascades
-  stop at `MAX_FOLLOWUP_DEPTH`. Handlers and xcalls run once, not per replica.
-- **Timers and the TEE**: the cluster is every app's TEE. The leader fires each
-  `#[app::tee(every = "..")]` method once per period (`Trigger::Timer`, the
-  last tick per method in `AppState::timer_ticks`). Such a run and a `tee:`
-  handler author as `AccountId::TEE_AUTHORITY` with `tee_trigger`, open and
-  seal with the app's TEE key (`backup::tee_key`, from K_c), and seal a
-  member's share to the key the node keeps for them (`backup::member_key`):
-  their account is their one device (`SealingContext::stand_ins`), and only
-  their own runs open with it. ABI facts (timers, handlers, xcall entry
-  points) come from the bundle's embedded ABI (`services::BundleFacts`), so
-  apps are built with `cargo mero build`; a bundle without one gets none.
 - **Teams** (`types::Org`): nested (`parent`, moved with
   `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent, the
   organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`)
@@ -636,13 +576,12 @@ is its command line.
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
   app's (a folder's name and colour).
-- **App state on disk** (`app.rs`): `AppMachine` holds no state in memory but its
-  small `Head` (bundle, pending follow-ups, timers, ring bounds). The app's keys are
-  hidden rows of its group (`rows::KV`), idempotency records too (`rows::IDEM`, expired
-  oldest first from a ring per TTL class), events a ring of `EVENT_RING` (`rows::EVENT`).
-  Runs read through `StateRead` (`KvView` for the app, a `BTreeMap` in tests); the
-  system group stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the
-  group's sealed snapshot file; `backup::latest` opens one with K_c.
+- **App state on disk** (`app.rs`, `component.rs`): `AppMachine` holds no state in
+  memory but its small `Head` (bundle, executor, the component's host records). The
+  app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
+  (`rows::CIDEM`), events a ring of `EVENT_RING` (`rows::EVENT`). The system group
+  stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the group's
+  sealed snapshot file; `backup::latest` opens one with K_c.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -721,25 +660,24 @@ is its command line.
 ## Component executor (`calimero:app` components, the v2 SDK)
 
 Spec `app-runtime-v0.14`, on the node's log,
-API and system group. What differs from the wasmer path:
+API and system group:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
   (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
   with a MAC under a key derived from K_c (S8). `Node::prepared_for` prepares a bundle
   once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
   `POST /bundles` and package installs run the engine's `prepare` on a component
-  where they compile a core module on wasmer.
+  (a core module is refused, see "SDK 0.12 apps").
 - **State** (`component::ComponentState`, D46): the component's stored keys
   (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
-  and HMAC-keyed like a wasmer app's), and each replica keeps them in memory too as an
+  and HMAC-keyed), and each replica keeps them in memory too as an
   ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
   `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
   still holds the previous one; `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
-  Idempotency (D74 in spec v0.26, `idempotency.rs`, the one rule of both executors):
-  records in `rows::CIDEM` (wasmer: `rows::IDEM`), a ring per class in `rows::corder`
-  (wasmer: `rows::expiry`). A key's class is its prefix (`class_of`): a `node:` key (the
+  Idempotency (D74 in spec v0.26, `idempotency.rs`):
+  records in `rows::CIDEM`, a ring per class in `rows::corder`. A key's class is its prefix (`class_of`): a `node:` key (the
   node's own, or a D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24
   hours. A record expires once the earlier of the newest applied entry's timestamp and
   the applying entry's own (`expiry_now`) passes its own by that time, never by a node's
@@ -753,8 +691,8 @@ API and system group. What differs from the wasmer path:
   `a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor`,
   `a_burst_of_node_keys_does_not_evict_callers_records_above_their_floor`,
   `one_skewed_entry_does_not_expire_the_records_written_after_it`,
-  `a_callers_key_containing_node_is_kept_24_hours`, and on wasmer the same with
-  `_on_wasmer`, plus `records_over_the_new_cap_drain_a_bounded_number_per_entry`.
+  `a_callers_key_containing_node_is_kept_24_hours`,
+  `records_over_the_new_cap_drain_a_bounded_number_per_entry`.
   **Upgrade note (rolling upgrade, no version gate):** while a cluster runs both the
   previous release and this one, an app's replicas keep different idempotency records:
   the previous release expires only when a keyed call applies, against that call's own
@@ -768,15 +706,15 @@ API and system group. What differs from the wasmer path:
   replicas before relying on the new cap.
 - **Calls** (`Node::call_component`, routed by the API from the app's executor):
   inside `Group::propose_led`, off the async workers (`node::off_workers`, the one
-  copy both executors use); `base_index` is the app's last entry
-  (`AppState::last_index`), as on the wasmer path. Statuses (spec section 5, D23,
+  copy every run uses); `base_index` is the app's last entry
+  (`AppState::last_index`). Statuses (spec section 5, D23,
   D36): `422 APP_ERROR` with `details.{code, fields}`, `422 TRAP` with
   `details.{kind, detail}`, `503 TIMEOUT` (not logged, key not spent); arguments
   over `MAX_ARGS_BYTES` (512 KiB) are `413 ARGS_TOO_LARGE`, an entry over the log's
   cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
 - **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
   bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
-  (`AppRecord::confirm_methods` is the wasmer path's).
+  (`AppRecord::confirm_methods` is always empty now: a request names none).
 - **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
   (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
   continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed
@@ -795,8 +733,7 @@ API and system group. What differs from the wasmer path:
 - **Events** (R9): a component's `EventRecord` carries its `audience` and caller;
   the event stream (`api::local_events`, the subscriber passed to a peer's
   `internal/events`) and a call's answer check `SystemState::receives` when they
-  send it, so a removed member stops receiving at once. A wasmer app's events have
-  no audience and go out as before.
+  send it, so a removed member stops receiving at once.
 - **Upgrades**: the node's route and authority (`POST /apps/{app}/upgrade`,
   passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.
@@ -807,9 +744,7 @@ API and system group. What differs from the wasmer path:
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
   `/apps/{app}/storage` counts its keys, bytes and blobs (see "Files" for the file routes). The host refuses event
-  handlers and TEE runs to a component; a wasmer app's xcall into a
-  component, and a component's into a wasmer app, are refused (`node::COMPONENT_REFUSES`,
-  a dead letter).
+  handlers and TEE runs to a component, and an xcall into a wasmer app is a dead letter.
 - **Xcalls** (D13, D25, D29, `component/xcall.rs`): an `Ok` entry's `Outcome::xcalls`
   go to the source's outbox (`XcallHead` in `ComponentHead`, rows `rows::COUT ‖ seq`,
   at most `MAX_OUTBOX`). The source leader's timer poll (`Node::deliver_xcalls`, at most
@@ -825,7 +760,7 @@ API and system group. What differs from the wasmer path:
   (`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its
   ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin, a hosting node).
   Test: `component_xcalls_are_delivered_in_order_or_dead_lettered`.
-- **Blobs** (R8, `component/blobs.rs`): the same store and routes as a wasmer app's
+- **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
   hidden rows `rows::CBLOB`, in memory as `BlobTable`), not a mark in its keyspace.
@@ -849,7 +784,7 @@ API and system group. What differs from the wasmer path:
   (id = SHA-256 of the stored key). A view brings the app's indexes up to the state it
   reads before it runs (`ComponentSearch::for_view`, inside `read_local`): from the record
   keys the entries since touched (`AppMachine::note_touched` at apply, the same
-  `TOUCHED_RING` as the wasmer path), else a full scan; a new bundle rebuilds. The run
+  `TOUCHED_RING`), else a full scan; a new bundle rebuilds. The run
   gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
   Derived, in memory, dropped with the app group. Test:
   `views_search_a_components_tables_as_they_change`.
@@ -937,7 +872,7 @@ API and system group. What differs from the wasmer path:
   A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `open`, `create`, `write` and `finish`); a view gets the soft error `"file bytes are not available"`.
   The provider is built for every run but touches keys, budgets and bytes only when a run touches a file.
   Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
-  Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app holds (`holds_blob`); bundles and wasmer blobs still use every node.
+  Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app holds (`holds_blob`); bundles and other blobs still use every node.
   Replica moves hand over the app's files with the bundle (`hand_over_bytes`), and again after the voters change, only what the joining nodes do not hold, for files made while the move ran; the second hand-over is retried for 10 s and never abandons the move.
   **Upgrade note (quota):** an older system leader rejects `ChargeFileBytes`, so uploads and calls that create files fail until the system group runs this release.
   A snapshot from before carries no file-byte counts, so files stored earlier start from zero, and their release floors at zero.
@@ -957,16 +892,10 @@ running cluster, event audiences, search indexes that survive a restart (rebuilt
 ## Commands
 
 ```bash
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
-# fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
-for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
-  migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
-  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
-  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
-  cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
-# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
-# tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
+# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/kv-store-with-shared-storage,
+# apps/rooms, any app a scenario installs) are built on first use (harness/cluster.rs::fixture,
+# tests/common/mod.rs) into $CARGO_TARGET_DIR/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
 # every scenario file on an in-process cluster (runner: tests/harness/scenario.rs): apps/*/scenarios/*.json
 # (+ <name>.org.json), apps/*/scenarios/cluster/**/*.json, workflows/**/scenarios/**/*.json;
@@ -977,8 +906,9 @@ cargo test -p calimero-node --test scenarios [-- FILTER]   # SCENARIO_FILTER, SC
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 # the process suite (tests/fault/README.md): crash/freeze/restart, frozen leader, orgs and
-# keys, signed packages, rolling upgrade under load, the kv-store soak; kv_store.wasm (the
-# wasmer apps/wasmer-fixtures/kv-store) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+# keys, signed packages, rolling upgrade under load, the kv-store soak; the kv component
+# (target/app-components/kv.wasm, mero-app-build) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+# (scripts/pack-component.py)
 python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [--nightly]
 python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
 python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it

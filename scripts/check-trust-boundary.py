@@ -15,7 +15,6 @@ from pathlib import Path
 TEMPLATE = Path(__file__).resolve().parent.parent / ".github" / "pull_request_template.md"
 TRUST_BOUNDARY_PATHS = (  # a directory, or the `<path>.rs` module file beside it
     ".github/workflows",
-    "crates/account",
     "crates/app-downloader",
     "crates/bundle",
     "crates/client",

@@ -3,7 +3,7 @@
 //!
 //! Everything an app does besides running its code (routing, the API, the system
 //! group, sessions, packages, presence, receipts, upgrades' authority) is the
-//! node's, shared with the wasmer executor. What is here: preparing components
+//! node's. What is here: preparing components
 //! (single-flight per bundle), the ABI gate, unique ids (D52), app time (D16,
 //! D19), timers (D34), and the calls, views, `init` and code-only upgrades of a
 //! component app.
@@ -800,7 +800,7 @@ impl Node {
         if a.conflict {
             self.discard(&app.app_id, persisted);
         }
-        let a = to_wasmer_applied(a);
+        let a = to_host_applied(a);
         self.count_conflict(&a);
         if prepared.is_ok() && !a.conflict {
             self.usage.called(&meter, RunKind::Mutation);
@@ -1128,8 +1128,7 @@ impl Node {
                                 serde_json::to_string(&req.caller).unwrap_or_default(),
                                 req.idempotency_key.as_deref().unwrap_or_default()
                             )),
-                            // A read-only member's run reaches no outbound host, as on the
-                            // wasmer path.
+                            // A read-only member's run reaches no outbound host.
                             outbound: !read_only,
                         },
                     )
@@ -1459,7 +1458,7 @@ impl Node {
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        Ok(to_wasmer_applied(a))
+        Ok(to_host_applied(a))
     }
 
     /// Start the app's pending actions this node is not running yet, as its leader, in the
@@ -1904,7 +1903,7 @@ impl Node {
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        let a = to_wasmer_applied(a);
+        let a = to_host_applied(a);
         self.count_conflict(&a);
         Ok(a)
     }
@@ -2163,7 +2162,7 @@ fn parse_args(args: &[u8]) -> Result<Value, String> {
 
 /// An action's outbound HTTP through the node's gate (S9, R14): the signed release's
 /// declared prefixes, the owner's approval, the operator's hosts, secrets filled in.
-struct NodeHttp(Option<Arc<dyn calimero_runtime::logic::OutboundHost>>);
+struct NodeHttp(Option<Arc<dyn calimero_outbound::OutboundHost>>);
 
 impl calimero_app_host::HttpHost for NodeHttp {
     fn send(
@@ -2200,7 +2199,7 @@ impl calimero_app_host::HttpHost for NodeHttp {
 }
 
 /// Whether an xcall from `source` may reach `target`: both in one organization, or both
-/// personal apps of one owner (wasmer's xcall rule, `Node::xcall_refusal`).
+/// personal apps of one owner.
 fn same_boundary(s: &crate::system::SystemState, source: &str, target: &str) -> bool {
     let (Some(a), Some(b)) = (s.apps.get(source), s.apps.get(target)) else {
         return false;
@@ -2214,7 +2213,7 @@ fn same_boundary(s: &crate::system::SystemState, source: &str, target: &str) -> 
 
 /// A component's answer in the shape the node's own commands (`init`, upgrades)
 /// answer with: their callers read the status, the error and the conflict flag.
-fn to_wasmer_applied(a: Applied) -> crate::app::Applied {
+fn to_host_applied(a: Applied) -> crate::app::Applied {
     crate::app::Applied {
         index: a.index,
         status: a.status,

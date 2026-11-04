@@ -17,9 +17,9 @@ freezes, restarts, upgrades) is covered by the process suite, which runs one
 | --- | --- | --- | --- |
 | Unit tests | `#[cfg(test)]` in each crate | One module's logic: config merging, key sources, quotas, presence rules, outbound gates | Milliseconds |
 | Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext on disk, the `log.redb` migration | Seconds |
-| Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades and migrations, blobs, follow-ups, governance, replica moves | Seconds to minutes |
+| Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
-| App logic | `TestHost` in `crates/sdk/src/testing.rs`, `converge` in `crates/storage/src/testing.rs` | An app's methods, events and migrations; that a state type converges | Milliseconds |
+| App logic | `TestApp` in `crates/app-sdk/src/testing.rs` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |
 | Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
 | Process suite | `crates/node/tests/fault/suite.py` | Separate `merod run --dev` processes: a crash, a freeze and a restart, a frozen leader, orgs and keys, signed packages, a rolling upgrade under load, the kv-store soak | Minutes |
 
@@ -28,25 +28,13 @@ frozen leader behaves, and a green scenario does not localize a logic bug.
 
 ## Fixtures
 
-The cluster and CLI tests load compiled apps from
-`target/wasm32-unknown-unknown/app-release/` (`org-gated` there is the wasmer
-fixture, `apps/wasmer-fixtures/org-gated`). Build them first:
-
-```bash
-cargo build -p kv-store -p org-gated -p outbound-probe \
-  --target wasm32-unknown-unknown --profile app-release
-PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
-  migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
-  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
-  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
-  cargo mero build --manifest-path "apps/$a/Cargo.toml"
-done
-```
-
-The `cargo mero` builds carry the embedded ABI the node reads for handlers,
-timers, xcalls, search and migrations. `KV_STORE_WASM` points the tests at
-another `kv_store.wasm`.
+The cluster and CLI tests build the components they load on first use
+(`calimero_app_build::build_component_cached`, cached under
+`$CARGO_TARGET_DIR/app-components`; the `wasm32-wasip2` target, which
+`rust-toolchain.toml` lists): the kv fixture `apps/v2-fixtures/kv`, the other
+`apps/v2-fixtures/*`, `apps/kv-store-with-shared-storage` and `apps/rooms`. No
+build step comes first. `KV_STORE_WASM` points `meroctl`'s tests at another
+component.
 
 ## Running the tests
 
@@ -138,17 +126,14 @@ without saying why; a stale or reasonless entry fails too.
 | `CORE_WASM_DIR` | `$CARGO_TARGET_DIR/workflow-wasm` | Where `{{env.CORE_WASM_DIR}}` fixtures live |
 
 After each `call` the runner waits, up to 10 s, until every replica has applied
-it and run its follow-ups (event handlers, xcalls). A call that does not settle
+it. A call that does not settle
 fails its step, naming each replica behind, the index it waited for and the
 index that replica had reached. The runner never makes up a refusal: every
 refusal a step expects is the node's or the app's.
 
 Fixtures are built on first use when missing: `<crate>.wasm` by
-`cargo mero build` of that app (the repository's own cargo-mero first:
-`CARGO_MERO_BIN_DIR`, then the target's `debug/`), a signed
-`dist/<package>-<version>.mpk` by `scripts/build-workflow-fixtures.py`, and the
-blobs size sweep's `static/generated/blob-<N>mib.bin` as random bytes in memory.
-`python3 scripts/build-workflow-fixtures.py` builds them all ahead of time.
+building that app's component, and the blobs size sweep's
+`static/generated/blob-<N>mib.bin` as random bytes in memory.
 
 ### App-level scenarios
 
@@ -168,9 +153,8 @@ org: they sign up and join nothing, so the node refuses them. On the cluster an
 `as` that is neither in the org nor a declared outsider fails the scenario
 before it runs, so a mistyped name cannot become an outsider whose refusal
 passes. (The SDK's `TestApp` harness still treats an unknown name as an
-outsider.) On the cluster the runner builds the app (a component with
-`calimero_app_build::build_component_cached`, a wasmer app with
-`cargo mero build`), signs every account up, creates the organization, invites
+outsider.) On the cluster the runner builds the app (a component, with
+`calimero_app_build::build_component_cached`), signs every account up, creates the organization, invites
 each account with its role, creates the teams and adds their members, deploys
 the app in the organization and runs the steps: step `i` on node `i % 3`, as
 its `as` account's own client. `@name` is that account's id; a string that is
@@ -196,7 +180,7 @@ hold node-level steps a harness cannot run. A file is an object:
   "steps": [
     { "type": "create_org", "account": "alice", "org_name": "Blobs", "outputs": { "org": "orgId" } },
     { "type": "deploy", "account": "alice", "org": "{{org}}",
-      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm", "outputs": { "app": "contextId" } },
+      "wasm": "{{env.CORE_WASM_DIR}}/kv_store.wasm", "outputs": { "app": "contextId" } },
     { "type": "upload_blob", "account": "bob", "app": "{{app}}", "file_path": "static/test.txt",
       "outputs": { "blob": "blob_id" } },
     { "type": "download_blob", "account": "alice", "app": "{{app}}", "blob_id": "{{blob}}",
@@ -251,7 +235,7 @@ Step types (fields as in merobox; each acting step names an `account`, or an
 
 | Area | Steps |
 | --- | --- |
-| Apps | `deploy` (`wasm` or `package` + `version`/`service`; `org`, `access`, `init_args`, `confirm_methods`, `app_name`) answers `appId`, `contextId`, `bundle`, `memberPublicKey`; `upload_bundle` (`hash`); `create_app`; `upgrade_app` (`version`/`package`/`bundle`/`migrate`, approved with the account's passkey when the node asks); `delete_app`; `migration_status` (`apps`) |
+| Apps | `deploy` (`wasm` or `package` + `version`/`service`; `org`, `access`, `init_args`, `confirm_methods` (ignored: a component declares its own), `app_name`) answers `appId`, `contextId`, `bundle`, `memberPublicKey`; `upload_bundle` (`hash`); `create_app`; `upgrade_app` (`version`/`package`/`bundle`/`migrate`, approved with the account's passkey when the node asks); `delete_app`; `migration_status` (`apps`) |
 | Packages | `install_package` (`mpk`: published to the cluster's registry, then `POST /packages/install`; answers `package`, `version`), `packages`, `uninstall_package` |
 | Calls | `call` (`args`, `confirm`, `idempotency_key`), `view` (`stale`, `min_index`), `wait_for` (`equals`/`contains`, `timeout`, `interval`), `events` (`from`, `count`, `timeout`) |
 | Accounts | `whoami` (adds `publicKey`), `add_device` (another passkey on the account; `device` then acts as it), `create_api_key` |
@@ -367,17 +351,20 @@ confirmations (`orgs-and-keys`); signed packages from a registry on loopback
 
 ```bash
 cargo build --release -p merod -p meroctl
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
-for v in 1.0.0 1.1.0; do (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v"); done
+cargo run -p calimero-app-build --bin mero-app-build -- apps/v2-fixtures/kv --out target/app-components/kv.wasm
+for v in 1.0.0 1.1.0; do
+  python3 -I scripts/pack-component.py --wasm target/app-components/kv.wasm \
+    --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
+done
 python3 -I crates/node/tests/fault/suite.py --list
 python3 -I crates/node/tests/fault/suite.py                        # the PR set
 python3 -I crates/node/tests/fault/suite.py --only kv-failover,frozen-leader
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
-The kv-store fixture is the wasmer build in `apps/wasmer-fixtures/kv-store`
-(package `kv-store`); the two signed releases are for `packages` and land in
-`dist/`. A node behaviour that only shows across processes (the bounded forward
+The kv fixture is the component `apps/v2-fixtures/kv`; the two signed
+releases (package `com.calimero.kv-store`, dev key) are for `packages` and land
+in `dist/`. A node behaviour that only shows across processes (the bounded forward
 to a frozen leader is the example) gets its regression test here.
 
 ### Soak latency and throughput
@@ -421,15 +408,12 @@ gates; latency gates nothing.
 
 `.github/workflows/e2e.yml` runs on every PR that touches code:
 
-- job `scenario fixtures` (`fixtures`): builds the wasmer apps the cluster
-  scenarios install (`scripts/build-workflow-fixtures.py`, into
-  `target/workflow-wasm`) once, for the shards;
 - job `scenarios (K/4)` (`scenarios`): `cargo test -p calimero-node --test
   scenarios` with `SCENARIO_SHARD=K/4`, every app-level and cluster scenario,
-  each on its own in-process cluster; the runner builds the component apps
+  each on its own in-process cluster; the runner builds each app's component
   itself. A `fuzzy_test` runs 10 s, nightly 900 s;
 - job `process suite (merod processes)` (`process-suite`): a release build of
-  `merod` and `meroctl`, kv-store's fixture and two signed releases of it, then
+  `merod` and `meroctl`, the kv component and two signed releases of it, then
   `suite.py` (nightly `--nightly`, which also builds the Rooms component). The
   soak's latency and throughput ([below](#soak-latency-and-throughput)) go in
   the job summary; the artifact `process-suite` holds the results, the soak
@@ -525,7 +509,7 @@ with its own image tags:
 | When | What runs | What publishes |
 | --- | --- | --- |
 | PR into the branch | Every check a PR into master runs (no check's `pull_request` trigger leaves the branch out; `abi-guard.yml` and `platforms.yml` name it) | Nothing; `Release Merod container` builds the PR's image and `E2E on the merod image` tests it |
-| Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `abi-contract.yml`, `abi-guard.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the ci-checks, wasm-apps and storage-cost caches save, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
+| Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the ci-checks, wasm-apps and storage-cost caches save, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
 | Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the process suite on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
 
 The branch never publishes a version: no `edge`, `latest`, `prerelease` or
@@ -590,11 +574,10 @@ the cluster throughput bench, whose JSON the comparison also diffs.
 
 `crates/node/benches/cluster_throughput.rs` drives a 3-node cluster in
 one process (the harness of `tests/cluster.rs`, in `tests/harness/cluster.rs`,
-with merod's Raft timing) through the sealed client, calling the kv-store
+with merod's Raft timing) through the sealed client, calling the kv
 fixture's `set` on the app's leader:
 
 ```bash
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 ```
 
@@ -650,8 +633,8 @@ seconds-long p99 with two leader nodes (c') is gone.
 
 <Aside type="note" title="Fuzzing">
   `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,
-  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`,
-  `crdt_sync`). `fuzz.yml` runs a changed target for a minute on a PR and
+  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`).
+  `fuzz.yml` runs a changed target for a minute on a PR and
   every target for 30 minutes nightly; `scripts/fuzz.sh <target> [seconds]`
   runs one locally.
 </Aside>

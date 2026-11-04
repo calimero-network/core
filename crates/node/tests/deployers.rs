@@ -5,8 +5,8 @@
 //! cluster's owner does (`deployers: owner`), the owner once the operator
 //! names it.
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! (see `harness/cluster.rs`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,7 @@ mod harness;
 
 use harness::{kv_wasm, ops_signed, signed_up, Cluster, OPERATOR_SEED};
 
-/// A signed single-service `.mpk`, the shape `cargo mero bundle` produces.
+/// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8]) -> Vec<u8> {
     use sha2::Digest;
     let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);

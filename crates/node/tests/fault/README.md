@@ -35,8 +35,11 @@ one build) and no `rooms-fault`.
 
 ```bash
 cargo build --release -p merod -p meroctl
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
-for v in 1.0.0 1.1.0; do (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v"); done
+cargo run -p calimero-app-build --bin mero-app-build -- apps/v2-fixtures/kv --out target/app-components/kv.wasm
+for v in 1.0.0 1.1.0; do
+  python3 -I scripts/pack-component.py --wasm target/app-components/kv.wasm \
+    --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
+done
 cargo test --release -p calimero-node --test rooms    # the Rooms component, for rooms-fault only
 
 python3 -I crates/node/tests/fault/suite.py --list
@@ -49,7 +52,7 @@ python3 -I crates/node/tests/fault/soak.py report soak.json --title "kv-store so
 ```
 
 Inputs: `--merod`/`--meroctl` (else `RV2_MEROD`/`RV2_MEROCTL`, else
-`RV2_BIN_DIR`, default `target/release`), `--kv-wasm` (`KV_STORE_WASM`),
+`RV2_BIN_DIR`, default `target/release`), `--kv-wasm` (`KV_STORE_WASM`, default `target/app-components/kv.wasm`),
 `--kv-mpk`/`--kv-mpk-next` (`KV_STORE_MPK`/`KV_STORE_MPK_NEXT`, default
 `dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk`), `--upgrade-merod` (default: a
 copy of merod with one byte appended, CI's `merod-next`), `--rooms-wasm`,

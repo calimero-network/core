@@ -6,8 +6,8 @@
 //! - **App-level scenarios**, `apps/<app>/scenarios/<name>.json`: the JSON array of
 //!   `calimero_app_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/`removeMember`,
 //!   `as`, `expect`, `save`, `$var`, `@account`, `events`), the same file the app's own
-//!   harness test runs. Here it runs on a real cluster: the app is built (a component with
-//!   `calimero-app-build`, a wasmer app with `cargo mero build`), the organization of
+//!   harness test runs. Here it runs on a real cluster: the app is built (a component, with
+//!   `calimero-app-build`), the organization of
 //!   `<name>.org.json` is created with invites and teams, the app is deployed in it, and each
 //!   step goes to node `step % nodes` as its `as` account. [`run_app_scenario`].
 //! - **Cluster scenarios**, `apps/<app>/scenarios/cluster/**/*.json` and
@@ -77,49 +77,6 @@ pub fn wasm_dir() -> PathBuf {
 /// Builds are serialized: two builds of one crate into one target directory race.
 static BUILDING: Mutex<()> = Mutex::new(());
 
-/// `PATH` with the repository's own `cargo-mero` first: `CARGO_MERO_BIN_DIR` (CI's), else
-/// the target directory's `debug/` (`scripts/setup-cargo-mero.sh` builds it there).
-fn mero_path() -> std::ffi::OsString {
-    let target =
-        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root().join("target"), PathBuf::from);
-    let mut dirs: Vec<PathBuf> = std::env::var_os("CARGO_MERO_BIN_DIR")
-        .map(PathBuf::from)
-        .into_iter()
-        .chain(std::iter::once(target.join("debug")))
-        .filter(|d| d.join("cargo-mero").exists())
-        .collect();
-    dirs.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
-    std::env::join_paths(dirs).unwrap_or_default()
-}
-
-fn run_cmd(cmd: &mut std::process::Command) -> Result<(), String> {
-    let out = cmd
-        .env("CARGO_INCREMENTAL", "0")
-        .env("PATH", mero_path())
-        .output()
-        .map_err(|e| format!("{cmd:?}: {e}"))?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let tail = |b: &[u8]| {
-        let s = String::from_utf8_lossy(b);
-        s.chars()
-            .rev()
-            .take(3000)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>()
-    };
-    Err(format!(
-        "{cmd:?} failed:\n{}\n{}",
-        tail(&out.stdout),
-        tail(&out.stderr)
-    ))
-}
-
 /// The crate name of the app at `dir` (its `Cargo.toml` `[package] name`).
 fn crate_name(dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
@@ -127,7 +84,7 @@ fn crate_name(dir: &Path) -> Option<String> {
     doc.get("package")?.get("name")?.as_str().map(str::to_owned)
 }
 
-/// The app directory under `apps/` (up to three levels down, e.g. `apps/migrations/*`)
+/// The app directory under `apps/` (up to three levels down, e.g. `apps/v2-fixtures/*`)
 /// whose crate is `krate` (`-` and `_` alike).
 fn app_dir_of_crate(krate: &str) -> Option<PathBuf> {
     fn crates(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
@@ -168,7 +125,8 @@ fn is_component(dir: &Path) -> bool {
 
 /// The app at `dir` (relative to the repository root or absolute) as WASM: a component built
 /// with `calimero-app-build` (cached by source hash under `target/app-components`, as
-/// `tests/common/mod.rs` does), a wasmer app with `cargo mero build` (its ABI embedded).
+/// `tests/common/mod.rs` does). Anything else is refused: nothing here builds or runs an SDK
+/// 0.12 (wasmer) app.
 pub fn build_app(dir: &Path) -> Result<Vec<u8>, String> {
     let root = root();
     let dir = if dir.is_absolute() {
@@ -179,36 +137,27 @@ pub fn build_app(dir: &Path) -> Result<Vec<u8>, String> {
     let _one = BUILDING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if is_component(&dir) {
-        let sdk = root.join("crates/app-sdk");
-        let macros = root.join("crates/app-sdk-macros");
-        let wit = root.join("crates/app-wit");
-        let target =
-            std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
-        return calimero_app_build::build_component_cached(
-            &dir,
-            &[&sdk, &macros, &wit],
-            &target.join("app-components"),
-        )
-        .map_err(|e| format!("build {}: {e}", dir.display()));
+    if !is_component(&dir) {
+        return Err(format!(
+            "{}: not a calimero:app component (calimero-app-sdk); SDK 0.12 apps are gone",
+            dir.display()
+        ));
     }
-    let krate = crate_name(&dir).ok_or_else(|| format!("{}: no crate", dir.display()))?;
-    run_cmd(
-        std::process::Command::new("cargo")
-            .args(["mero", "build", "--manifest-path"])
-            .arg(dir.join("Cargo.toml"))
-            .current_dir(&root),
-    )?;
-    let out = dir
-        .join("res")
-        .join(format!("{}.wasm", krate.replace('-', "_")));
-    std::fs::read(&out).map_err(|e| format!("{}: {e}", out.display()))
+    let sdk = root.join("crates/app-sdk");
+    let macros = root.join("crates/app-sdk-macros");
+    let wit = root.join("crates/app-wit");
+    let target =
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+    calimero_app_build::build_component_cached(
+        &dir,
+        &[&sdk, &macros, &wit],
+        &target.join("app-components"),
+    )
+    .map_err(|e| format!("build {}: {e}", dir.display()))
 }
 
 /// The bytes of a file a scenario names, made first when it is a fixture that is missing:
-/// `<CORE_WASM_DIR>/<crate>.wasm` (`cargo mero build` of that app),
-/// `<CORE_WASM_DIR>/dist/<package>-<version>.mpk` (`scripts/build-workflow-fixtures.py`, which
-/// bundles the signed releases), or a random `static/generated/blob-<N>mib.bin` (what
+/// `<CORE_WASM_DIR>/<crate>.wasm` (that app's component), or a random `static/generated/blob-<N>mib.bin` (what
 /// `apps/blobs/scripts/gen-blob-fixtures.sh` makes; random, so no node holds it already).
 pub fn fixture(path: &Path) -> Result<Vec<u8>, String> {
     if let Ok(b) = std::fs::read(path) {
@@ -241,55 +190,15 @@ pub fn fixture(path: &Path) -> Result<Vec<u8>, String> {
     if !path.starts_with(&dir) {
         return Err(format!("file not found: {}", path.display()));
     }
-    if name.ends_with(".mpk") {
-        build_mpk(&dir, &name)?;
-    } else if let Some(krate) = name.strip_suffix(".wasm") {
-        let built = match app_dir_of_crate(krate) {
-            Some(app) => build_app(&app)?,
-            // A migration fixture's WASM comes out of its bundle.
-            None => {
-                build_mpk_for_crate(&dir, krate)?;
-                return std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-            }
-        };
+    if let Some(krate) = name.strip_suffix(".wasm") {
+        let app = app_dir_of_crate(krate)
+            .ok_or_else(|| format!("{}: no app under apps/ builds {krate}", path.display()))?;
+        let built = build_app(&app)?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         std::fs::write(path, &built).map_err(|e| e.to_string())?;
         return Ok(built);
     }
     std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-fn fixtures_script(dir: &Path, filters: &[String]) -> Result<(), String> {
-    let _one = BUILDING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    run_cmd(
-        std::process::Command::new("python3")
-            .arg(root().join("scripts/build-workflow-fixtures.py"))
-            .args(filters)
-            .env("CORE_WASM_DIR", dir)
-            .current_dir(root()),
-    )
-}
-
-/// `dist/<package>-<version>.mpk`, by `scripts/build-workflow-fixtures.py`'s filter
-/// `<package>@<version>` (a release fixture), else the package's app name (a multi-service app).
-fn build_mpk(dir: &Path, name: &str) -> Result<(), String> {
-    let stem = name.trim_end_matches(".mpk");
-    let (package, version) = stem
-        .rsplit_once('-')
-        .ok_or_else(|| format!("{name}: not <package>-<version>.mpk"))?;
-    fixtures_script(dir, &[format!("{package}@{version}")])?;
-    if dir.join("dist").join(name).exists() {
-        return Ok(());
-    }
-    let app = package.strip_prefix("com.calimero.").unwrap_or(package);
-    fixtures_script(dir, &[app.to_owned()])
-}
-
-/// A migration fixture's `<crate>.wasm`: the script writes it beside the bundle it makes.
-fn build_mpk_for_crate(dir: &Path, krate: &str) -> Result<(), String> {
-    fixtures_script(dir, &[krate.replace('_', "-")])
 }
 
 // ------------------------------------------------------------------ registry
@@ -1941,10 +1850,9 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// Waits (up to [`SETTLE_TIMEOUT`]) until every replica of `app` applied the same index
-    /// and the app has no follow-up left to run (event handlers, xcalls): merobox's steps
-    /// were slow enough for the leader to run them before the next step read their effects,
-    /// and the converted scenarios read them right after the call.
+    /// Waits (up to [`SETTLE_TIMEOUT`]) until every replica of `app` applied the same index:
+    /// merobox's steps were slow enough for the replicas to catch up before the next step
+    /// read, and the converted scenarios read right after the call.
     async fn settle(&self, app: &str) -> Result<(), Fail> {
         let Some(first) = self.c.nodes.iter().flatten().next() else {
             return Ok(());
@@ -1960,7 +1868,6 @@ impl<'a> Runner<'a> {
                     Some(Progress {
                         node: format!("node {} ({})", i + 1, self.c.urls[i]),
                         applied: g.applied(),
-                        pending: g.read_local(|m, _| m.state.pending.len()),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -3492,8 +3399,7 @@ impl<'a> AppRunner<'a> {
     }
 }
 
-/// How long a call's replicas get to apply it, and to run its follow-ups, before the step
-/// fails.
+/// How long a call's replicas get to apply it before the step fails.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One replica's progress on an app, as `settle` sees it.
@@ -3503,25 +3409,16 @@ struct Progress {
     node: String,
     /// The last index it applied.
     applied: u64,
-    /// The follow-ups it still has to run.
-    pending: usize,
 }
 
-/// `None` when every replica applied the same index and has nothing pending; otherwise what
-/// is missing: the index waited for (the highest any replica applied) and each replica short
-/// of it or with follow-ups left.
+/// `None` when every replica applied the same index; otherwise what is missing: the index
+/// waited for (the highest any replica applied) and each replica short of it.
 fn unsettled(progress: &[Progress]) -> Option<String> {
     let target = progress.iter().map(|p| p.applied).max()?;
     let behind: Vec<String> = progress
         .iter()
-        .filter(|p| p.applied < target || p.pending > 0)
-        .map(|p| {
-            let mut s = format!("{} had reached index {}", p.node, p.applied);
-            if p.pending > 0 {
-                s.push_str(&format!(" with {} follow-ups pending", p.pending));
-            }
-            s
-        })
+        .filter(|p| p.applied < target)
+        .map(|p| format!("{} had reached index {}", p.node, p.applied))
         .collect();
     (!behind.is_empty()).then(|| format!("waited for index {target}; {}", behind.join(", ")))
 }
@@ -3571,16 +3468,11 @@ mod checks {
             .enable_time()
             .build()
             .expect("a runtime for the settle check");
-        let at = |node: &str, applied: u64, pending: usize| Progress {
+        let at = |node: &str, applied: u64| Progress {
             node: node.to_owned(),
             applied,
-            pending,
         };
-        let stuck = vec![
-            at("node 1", 42, 0),
-            at("node 2", 42, 0),
-            at("node 3", 41, 0),
-        ];
+        let stuck = vec![at("node 1", 42), at("node 2", 42), at("node 3", 41)];
         let err = rt
             .block_on(settle_until("app", Duration::from_millis(100), || {
                 stuck.clone()
@@ -3592,22 +3484,11 @@ mod checks {
         );
         assert!(!err.contains("node 1") && !err.contains("node 2"), "{err}");
 
-        let busy = vec![at("node 1", 7, 1), at("node 2", 7, 0)];
-        let err = rt
-            .block_on(settle_until("app", Duration::from_millis(100), || {
-                busy.clone()
-            }))
-            .expect_err("a follow-up never run must fail the step");
-        assert!(
-            err.contains("node 1 had reached index 7 with 1 follow-ups pending"),
-            "{err}"
-        );
-
         let mut polls = 0;
         rt.block_on(settle_until("app", Duration::from_secs(5), || {
             polls += 1;
             let lag = u64::from(polls < 3);
-            vec![at("node 1", 9, 0), at("node 2", 9 - lag, 0)]
+            vec![at("node 1", 9), at("node 2", 9 - lag)]
         }))
         .expect("replicas that catch up settle");
     }

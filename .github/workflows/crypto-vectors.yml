@@ -14,7 +14,6 @@ on:
     paths:
       - "Cargo.lock"
       - "Cargo.toml"
-      - "crates/crypto/**"
       - "crates/primitives/**"
       - "crates/log/**"
       - "crates/node/src/kms.rs"
@@ -52,6 +51,6 @@ jobs:
 
       - name: Known-answer vectors
         run: |
-          cargo test -p calimero-crypto -p calimero-primitives --all-features
+          cargo test -p calimero-primitives --all-features
           cargo test -p calimero-log --lib known_answers
           cargo test -p calimero-node --lib kms::tests::the_storage_key_derivation_is_unchanged

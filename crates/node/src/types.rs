@@ -22,10 +22,8 @@ pub enum Caller {
     ApiKey { key: String, account: AccountId },
     /// Nobody in particular (public apps).
     Public,
-    /// The app itself: the node running an event handler, a timer, or an
-    /// `xcall` from app `app` (then the caller is the calling app), on the
-    /// wasmer executor. Never from a client: the API builds callers from
-    /// credentials.
+    /// The app itself: an `xcall` from app `app` (then the caller is the calling
+    /// app). Never from a client: the API builds callers from credentials.
     App { app: AppId },
     /// The platform itself: a component's timer ticks (D34), which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
@@ -41,7 +39,7 @@ impl Caller {
         }
     }
 
-    /// The 32 bytes the wasmer runtime exposes as `env::account_id()`.
+    /// The caller as 32 bytes: an account's id, an app's context id.
     #[must_use]
     pub fn account_bytes(&self) -> [u8; 32] {
         // An app calls as its context id, what it sees as `env::context_id()`.
@@ -114,13 +112,14 @@ pub struct AppRecord {
     pub org: Option<OrgId>,
     #[serde(default)]
     pub access: Access,
-    /// Methods that need a fresh passkey assertion (`#[app::confirm]`), for an
-    /// app on the wasmer executor; a component's come from its ABI.
+    /// Methods that needed a fresh passkey assertion (`#[app::confirm]`), as an
+    /// SDK 0.12 app's record names them; read by nothing now (a component's come
+    /// from its ABI), kept so a record writes as it read.
     #[serde(default)]
     pub confirm_methods: Vec<String>,
     /// The executor its bundle runs on, decided once from the bundle's WASM when
-    /// the app is created. Absent (a record written before components existed):
-    /// wasmer.
+    /// the app is created: a component. Absent (a record written before components
+    /// existed): wasmer, an SDK 0.12 app this node no longer runs.
     #[serde(default, skip_serializing_if = "Executor::is_wasmer")]
     pub executor: Executor,
     pub replicas: Vec<u64>,
@@ -147,7 +146,10 @@ pub struct AppRecord {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Executor {
-    /// A v1 core module (SDK 0.12), on the wasmer runtime (`app::Executor`).
+    /// An SDK 0.12 core module, which ran on wasmer. This node has no wasmer: such
+    /// an app is listed and can be deleted, and every call, view and upgrade of it
+    /// is `410 UNSUPPORTED_ENGINE` ([`crate::error::ApiError::unsupported_engine`]).
+    /// The default, as a record from before components names it by omission.
     #[default]
     Wasmer,
     /// A `calimero:app` component (the v2 SDK), on wasmtime through the host
@@ -158,7 +160,7 @@ pub enum Executor {
 impl Executor {
     /// The executor for `wasm`: a component (its header's layer field says so,
     /// `wasmparser::Parser::is_component`) runs on wasmtime; anything else is a
-    /// core module for wasmer, which judges it as it does today.
+    /// core module, which nothing here runs (`400 UNSUPPORTED_BUNDLE`).
     #[must_use]
     pub fn of(wasm: &[u8]) -> Self {
         if wasmparser::Parser::is_component(wasm) {
@@ -609,8 +611,8 @@ pub struct EventRecord {
     pub kind: String,
     pub data: serde_json::Value,
     /// A component's event: who receives it (R9), checked when it is sent.
-    /// `None` for an event of an app on wasmer, which goes to everyone who
-    /// reaches the app, as before.
+    /// `None` for an event that goes to everyone who reaches the app (one an SDK
+    /// 0.12 app recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Audience>,
     /// The calling account, for [`Audience::Caller`].
