@@ -79,6 +79,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
             size: wasm.len() as u64,
         }),
         abi: None,
+        compute: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),

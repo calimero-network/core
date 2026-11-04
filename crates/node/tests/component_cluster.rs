@@ -3105,6 +3105,7 @@ fn mpk_declaring(
             size: wasm.len() as u64,
         }),
         abi: None,
+        compute: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),

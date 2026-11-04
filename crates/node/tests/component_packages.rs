@@ -35,6 +35,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm)),
         abi: None,
+        compute: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),

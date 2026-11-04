@@ -167,8 +167,8 @@ fn the_cli_writes_the_compute_component_beside_the_app_component() {
 fn the_cache_keeps_both_components_and_whether_there_is_a_compute_one() {
     let cache = tempfile::tempdir().expect("tempdir");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sdk = root.join("crates/app-sdk");
-    let macros = root.join("crates/app-sdk-macros");
+    let sdk = root.join("crates/sdk");
+    let macros = root.join("crates/sdk-macros");
     let wit = root.join("crates/app-wit");
     let also = [sdk.as_path(), macros.as_path(), wit.as_path()];
 
