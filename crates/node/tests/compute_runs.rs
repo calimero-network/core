@@ -1669,6 +1669,29 @@ async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publish_apply_refuses_keeps_no_charge_and_no_bytes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+    let blob = sha256_hex(&expected);
+
+    rig.leader().forge_next_publish();
+    let e = rig
+        .alice
+        .call(&rig.app, "publish", json!({ "output": output }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e:?}");
+    assert!(rig.blob(&blob).is_none());
+    rig.until("the bytes are discarded and the charge refunded", || {
+        let now = tokio::runtime::Handle::current();
+        !rig.holds_bytes(&blob)
+            && tokio::task::block_in_place(|| now.block_on(rig.charged())) == charged
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_an_output_of_this_apps_done_runs_publishes() {
     let rig = Rig::start(&[JOB_A]).await;
     let (output, _expected) = rig.finished_output().await;

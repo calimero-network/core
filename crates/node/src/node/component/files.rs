@@ -138,6 +138,8 @@ pub(crate) struct Probes {
     pub conflict_next_call: std::sync::atomic::AtomicBool,
     /// While set, every run final this node logs conflicts.
     pub conflict_finals: std::sync::atomic::AtomicBool,
+    /// Names a bogus source in the next call's publish marks, as a faulty leader would.
+    pub forge_next_publish: std::sync::atomic::AtomicBool,
     pub run_open_cap: std::sync::atomic::AtomicUsize,
     /// Fails the next mark commit: 1 before it is proposed, 2 after it applied, 3 after
     /// another upload committed under the same key.
@@ -158,6 +160,7 @@ impl Default for Probes {
             blob_puts_seen: std::sync::atomic::AtomicU64::new(0),
             conflict_next_call: std::sync::atomic::AtomicBool::new(false),
             conflict_finals: std::sync::atomic::AtomicBool::new(false),
+            forge_next_publish: std::sync::atomic::AtomicBool::new(false),
             run_open_cap: std::sync::atomic::AtomicUsize::new(MAX_RUN_OPEN_BYTES),
             commit_fault: std::sync::atomic::AtomicU8::new(0),
             limits: std::sync::Mutex::new(crate::node::ComputeLimits::default()),

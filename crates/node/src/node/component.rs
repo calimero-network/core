@@ -259,6 +259,12 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
     (serde_json::to_vec(&*cmd).unwrap_or_default(), true)
 }
 
+/// Whether an applied entry recorded none of the blobs it stored: it conflicted, or apply
+/// refused it (an entry's outcome that carries blobs is `Ok`).
+fn recorded_nothing(a: &Applied) -> bool {
+    a.conflict || a.status != Status::Ok
+}
+
 /// The outcome of `cmd` whose files its entry stores and charges: a final's outputs were stored
 /// and charged by the leader before it took the proposal lock, so only its result method's count.
 fn stored_outcome(cmd: &ComponentCmd) -> Option<&Outcome> {
@@ -415,6 +421,14 @@ impl Node {
     pub fn conflict_next_call(&self) {
         self.probes
             .conflict_next_call
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Makes the next call this node logs name a source that is no run's output in its publish marks. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn forge_next_publish(&self) {
+        self.probes
+            .forge_next_publish
             .store(true, Ordering::Relaxed);
     }
 
@@ -796,6 +810,18 @@ impl Node {
             }
         }
         #[cfg(feature = "testing")]
+        if let ComponentCmd::Call(call) = &mut cmd {
+            if self
+                .probes
+                .forge_next_publish
+                .swap(false, Ordering::Relaxed)
+            {
+                for mark in &mut call.outcome.published {
+                    mark.source = "00".repeat(32);
+                }
+            }
+        }
+        #[cfg(feature = "testing")]
         if let ComponentCmd::ComputeFinal(entry) = &mut cmd {
             if self.probes.conflict_finals.load(Ordering::Relaxed) {
                 entry.base_index += 1;
@@ -1003,7 +1029,7 @@ impl Node {
         }
         let a: Applied =
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
-        if a.conflict {
+        if recorded_nothing(&a) {
             self.discard(&app.app_id, persisted);
         }
         let a = to_host_applied(a);
@@ -1181,7 +1207,7 @@ impl Node {
             self.usage.called(&meter, RunKind::FollowUp);
             let applied: Applied = serde_json::from_slice(&p.output)
                 .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-            if applied.conflict {
+            if recorded_nothing(&applied) {
                 self.discard(app_id, persisted);
             }
         }
@@ -1441,7 +1467,7 @@ impl Node {
                 .conflicts
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        if p.appended && a.conflict {
+        if p.appended && recorded_nothing(&a) {
             self.discard(&req.app_id, persisted);
         }
         if answered && !a.conflict {
