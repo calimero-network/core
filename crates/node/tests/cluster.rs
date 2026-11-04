@@ -1776,22 +1776,50 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
         json!({ "access": { "kind": "public" } }),
     )
     .await;
-    let big = "x".repeat(calimero_log::MAX_ENTRY_BYTES + 1024);
+    // One past the arguments cap (a trapped entry if proposed), one past the log's.
+    let sizes = [
+        calimero_node::node::MAX_ARGS_BYTES + 1024,
+        calimero_log::MAX_ENTRY_BYTES + 1024,
+    ];
+    let logs = |c: &Cluster| -> Vec<Option<u64>> {
+        c.nodes
+            .iter()
+            .map(|r| {
+                let g = r.as_ref().unwrap().node.hosted(&app)?;
+                Some(g.status().last_log.unwrap_or(0))
+            })
+            .collect()
+    };
+    let before = logs(&c);
+    assert!(
+        before.iter().any(Option::is_some),
+        "some node hosts the app"
+    );
     for i in 0..3 {
         let (cl, _) = signed_up(&c, i, &format!("user{i}")).await;
-        let started = std::time::Instant::now();
-        let r = cl
-            .call(&app, "set", json!({ "key": "big", "value": big }), None)
-            .await;
-        let e = r.expect_err("an entry over the cap is refused");
-        // A component's arguments are capped below the log's entry cap.
-        assert_eq!(e.code(), Some("ARGS_TOO_LARGE"), "node {i}: {e}");
-        assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "node {i} answered after {:?}",
-            started.elapsed()
-        );
+        for size in sizes {
+            let started = std::time::Instant::now();
+            let big = "x".repeat(size);
+            let r = cl
+                .call(&app, "set", json!({ "key": "big", "value": big }), None)
+                .await;
+            let e = r.expect_err("an entry over the cap is refused");
+            // A component's arguments are capped below the log's entry cap.
+            assert_eq!(
+                e.code(),
+                Some("ARGS_TOO_LARGE"),
+                "node {i}, {size} bytes: {e}"
+            );
+            // A node's first call prepares the bundle, which is slow on a loaded
+            // machine; a forward that was retried would outlast this.
+            assert!(
+                started.elapsed() < calimero_node::node::SYSTEM_WRITE_TIMEOUT,
+                "node {i} answered after {:?} ({size} bytes)",
+                started.elapsed()
+            );
+        }
     }
+    assert_eq!(logs(&c), before, "a refused write is never proposed");
 }
 
 /// Where the operator upgrades apps, the operator installs the releases it
