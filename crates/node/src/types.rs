@@ -412,7 +412,44 @@ pub struct Org {
     /// Organization-wide upgrade runs, the newest [`UPGRADE_RUNS_KEPT`].
     #[serde(default)]
     pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
+    /// The organization's recovery key and any recovery under way
+    /// (`docs/specs/org-recovery.md`); absent for an organization that never
+    /// set one, as every organization written before this field was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<OrgRecovery>,
 }
+
+/// An organization's recovery key: whoever holds its seed can hand the
+/// organization to an account, [`RECOVERY_DELAY_SECS`] after starting, unless
+/// the owner cancels first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgRecovery {
+    /// The key's Ed25519 public half, base64url
+    /// ([`calimero_identity::recovery`]).
+    pub public_key: String,
+    /// When the owner set it (the setting command's time, Unix seconds).
+    pub set_at: u64,
+    /// A recovery under way.
+    #[serde(default)]
+    pub pending: Option<PendingRecovery>,
+}
+
+/// A recovery started with the seed, not finished or cancelled yet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRecovery {
+    /// The account the organization goes to.
+    pub account: AccountId,
+    /// When it started (Unix seconds).
+    pub started_at: u64,
+    /// The earliest time it may finish.
+    pub ready_at: u64,
+}
+
+/// How long a started recovery waits before it may finish: the owner's time
+/// to notice and cancel (72 hours).
+pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).
 pub const MAX_METADATA_BYTES: usize = 16 * 1024;

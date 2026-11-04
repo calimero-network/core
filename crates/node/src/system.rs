@@ -2107,6 +2107,71 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             }
             Ok(Some(used))
         }
+        // Recovery: setting the key and cancelling are the owner's passkey
+        // consent, finishing the recovering account's; starting is the
+        // recovery key's signature, checked against the key the organization
+        // holds now, so a rotated key's signatures are refused.
+        SystemCmd::SetRecoveryKey {
+            org,
+            public_key,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "publicKey": public_key });
+            states(&st, &format!("org:{org}"), "__set_recovery_key", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::StartRecovery {
+            org,
+            account,
+            nonce,
+            signature,
+            ..
+        } => {
+            let key = s
+                .orgs
+                .get(org)
+                .ok_or("no such organization")?
+                .recovery
+                .as_ref()
+                .ok_or(NO_RECOVERY_KEY)?;
+            let used =
+                crate::proof::verify_recovery(&key.public_key, org, account, nonce, signature)?;
+            if s.used_proofs.contains(&used) {
+                return Err("that recovery signature was used already");
+            }
+            Ok(Some(used))
+        }
+        SystemCmd::CancelRecovery {
+            org,
+            account,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "account": account });
+            states(&st, &format!("org:{org}"), "__cancel_recovery", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::FinishRecovery {
+            org,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "org": org });
+            states(&st, &format!("org:{org}"), "__finish_recovery", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
         SystemCmd::SetSignUp {
             policy,
             actor,
@@ -2480,6 +2545,13 @@ pub enum SystemCmd {
         /// the start, so its apps run where the org began.
         #[serde(default)]
         release: Option<String>,
+        /// The organization's recovery key (base64url Ed25519 public key),
+        /// if the creator set one ([`crate::types::OrgRecovery`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_key: Option<String>,
+        /// When it was created (Unix seconds; the recovery key's `setAt`).
+        #[serde(default)]
+        at: u64,
     },
     /// The cluster's rules, from the first leader's configuration. Accepted
     /// once, before anyone has an account: after that they are fixed, so an
@@ -2874,6 +2946,45 @@ pub enum SystemCmd {
         now: u64,
         #[serde(default)]
         signature: String,
+    },
+    /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
+    /// key: the owner's, with their passkey consent (`org:<org> /
+    /// __set_recovery_key / { publicKey }`). Cancels a pending recovery.
+    SetRecoveryKey {
+        org: OrgId,
+        public_key: Option<String>,
+        at: u64,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Start handing `org` to `account`: `signature` is the recovery key's
+    /// ([`calimero_identity::recovery::sign_recovery`]) over `org`, `account`
+    /// and `nonce`, made by whoever holds the seed. It may finish
+    /// [`crate::types::RECOVERY_DELAY_SECS`] after `at`.
+    StartRecovery {
+        org: OrgId,
+        account: AccountId,
+        nonce: String,
+        signature: String,
+        at: u64,
+    },
+    /// Cancel the recovery handing `org` to `account`: the owner's, with
+    /// their passkey consent (`__cancel_recovery / { account }`).
+    CancelRecovery {
+        org: OrgId,
+        account: AccountId,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Finish a recovery once its delay passed: the account it names, with
+    /// its passkey consent (`__finish_recovery / { org }`). The account
+    /// becomes the owner; the previous owner leaves the organization and its
+    /// apps there become the new owner's.
+    FinishRecovery {
+        org: OrgId,
+        at: u64,
+        actor: AccountId,
+        consent: Value,
     },
 }
 
@@ -3709,10 +3820,13 @@ impl SystemMachine {
                 name,
                 actor,
                 release,
+                recovery_key,
+                at,
             } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
                 }
+                let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
                 if s.orgs.contains_key(&org_id) {
                     return Err("organization exists");
                 }
@@ -3740,6 +3854,7 @@ impl SystemMachine {
                         metadata: Value::Null,
                         member_metadata: BTreeMap::new(),
                         upgrade_runs: BTreeMap::new(),
+                        recovery,
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -4656,8 +4771,127 @@ impl SystemMachine {
                 let org = s.redeem_org_invite(&invite_key, &account, now)?;
                 Ok(json!({ "org": org }))
             }
+            SystemCmd::SetRecoveryKey {
+                org,
+                public_key,
+                at,
+                actor,
+                ..
+            } => {
+                let recovery = public_key.map(|k| recovery_key_of(k, at)).transpose()?;
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.role(&actor) != Some(OrgRole::Owner) {
+                    return Err(OWNER_ONLY_RECOVERY);
+                }
+                // A new key, or none: a recovery under way ends with the old one.
+                o.recovery = recovery;
+                Ok(Value::Null)
+            }
+            SystemCmd::StartRecovery {
+                org, account, at, ..
+            } => {
+                if !s.accounts.contains_key(&account) {
+                    return Err("unknown account");
+                }
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.role(&account) == Some(OrgRole::Owner) {
+                    return Err("that account owns the organization already");
+                }
+                let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
+                if r.pending.is_some() {
+                    return Err(RECOVERY_PENDING);
+                }
+                let pending = crate::types::PendingRecovery {
+                    account,
+                    started_at: at,
+                    ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
+                };
+                let out = json!({ "startedAt": pending.started_at, "readyAt": pending.ready_at });
+                r.pending = Some(pending);
+                Ok(out)
+            }
+            SystemCmd::CancelRecovery {
+                org,
+                account,
+                actor,
+                ..
+            } => {
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.role(&actor) != Some(OrgRole::Owner) {
+                    return Err(OWNER_ONLY_RECOVERY);
+                }
+                let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
+                if r.pending.as_ref().map(|p| &p.account) != Some(&account) {
+                    return Err(NO_RECOVERY_PENDING);
+                }
+                r.pending = None;
+                Ok(Value::Null)
+            }
+            SystemCmd::FinishRecovery { org, at, actor, .. } => {
+                if !s.accounts.contains_key(&actor) {
+                    return Err("unknown account");
+                }
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                let r = o.recovery.as_mut().ok_or(NO_RECOVERY_KEY)?;
+                let Some(p) = r.pending.as_ref().filter(|p| p.account == actor) else {
+                    return Err(NO_RECOVERY_PENDING);
+                };
+                if at < p.ready_at {
+                    return Err(RECOVERY_NOT_READY);
+                }
+                r.pending = None;
+                let previous: Vec<AccountId> = o
+                    .members
+                    .iter()
+                    .filter(|(_, r)| **r == OrgRole::Owner)
+                    .map(|(a, _)| a.clone())
+                    .collect();
+                for a in &previous {
+                    let _prev = o.members.remove(a);
+                    let _caps = o.capabilities.remove(a);
+                    let _meta = o.member_metadata.remove(a);
+                    for t in o.teams.values_mut() {
+                        let _prev = t.members.remove(a);
+                        let _was = t.read_only.remove(a);
+                        let _caps = t.capabilities.remove(a);
+                    }
+                }
+                let _prev = o.members.insert(actor.clone(), OrgRole::Owner);
+                // The previous owner's apps in the organization reach their
+                // owner whatever the membership: they move with it.
+                for app in s.apps.values_mut() {
+                    if app.org.as_deref() == Some(org.as_str()) && previous.contains(&app.owner) {
+                        app.owner.clone_from(&actor);
+                    }
+                }
+                Ok(json!({ "org": org, "previousOwners": previous }))
+            }
         }
     }
+}
+
+/// A refusal: the organization holds no recovery key.
+pub const NO_RECOVERY_KEY: &str = "this organization has no recovery key";
+/// A refusal: a recovery is under way already.
+pub const RECOVERY_PENDING: &str = "a recovery of this organization is under way";
+/// A refusal: no recovery under way for that account.
+pub const NO_RECOVERY_PENDING: &str =
+    "no recovery of this organization is under way for that account";
+/// A refusal: the recovery's delay has not passed.
+pub const RECOVERY_NOT_READY: &str = "the recovery may finish only once its delay has passed";
+/// A refusal: someone but the owner manages the recovery key.
+pub const OWNER_ONLY_RECOVERY: &str = "only the organization's owner manages its recovery";
+
+/// A recovery key as the organization keeps it, refused unless it is an
+/// Ed25519 public key.
+fn recovery_key_of(public_key: String, at: u64) -> Result<crate::types::OrgRecovery, &'static str> {
+    let _key = calimero_identity::recovery::parse_public(&public_key)
+        .map_err(|_| "a recovery key is a base64url Ed25519 public key")?;
+    Ok(crate::types::OrgRecovery {
+        public_key,
+        set_at: at,
+        pending: None,
+    })
 }
 
 impl Machine for SystemMachine {
@@ -7811,6 +8045,274 @@ mod tests {
         let _ok = m.run_unproven(charge("b", -50)).unwrap();
         let _ok = m.run_unproven(transfer).unwrap();
         assert_eq!(m.state.file_bytes("account:bob"), 80);
+    }
+
+    // ------------------------------------------------------------ recovery
+
+    use super::{
+        NO_RECOVERY_KEY, NO_RECOVERY_PENDING, OWNER_ONLY_RECOVERY, RECOVERY_NOT_READY,
+        RECOVERY_PENDING,
+    };
+
+    const SEED: [u8; 32] = [9; 32];
+
+    fn set_key(key: Option<String>, actor: &str, consent: serde_json::Value) -> SystemCmd {
+        SystemCmd::SetRecoveryKey {
+            org: "org".into(),
+            public_key: key,
+            at: 10,
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    fn start(seed: &[u8; 32], account: &str, nonce: &str, at: u64) -> SystemCmd {
+        start_signed_for(seed, account, account, nonce, at)
+    }
+
+    /// A start for `account` carrying a signature the seed made for `signed_for`.
+    fn start_signed_for(
+        seed: &[u8; 32],
+        account: &str,
+        signed_for: &str,
+        nonce: &str,
+        at: u64,
+    ) -> SystemCmd {
+        SystemCmd::StartRecovery {
+            org: "org".into(),
+            account: account.into(),
+            nonce: nonce.into(),
+            signature: calimero_identity::recovery::sign_recovery(seed, "org", signed_for, nonce),
+            at,
+        }
+    }
+
+    fn public(seed: &[u8; 32]) -> String {
+        calimero_identity::recovery::recovery_public(seed)
+    }
+
+    /// The owner (and only the owner) sets the key with a passkey; then the
+    /// seed, and nothing else, starts a recovery for the account it signed
+    /// for; the owner cancels with a passkey; the recovering account finishes
+    /// with its own passkey once the delay passed, and takes the
+    /// organization and the previous owner's apps in it.
+    #[test]
+    fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
+        let (mut m, mut alice, mut bob, mut carol) = proven_cluster();
+        let _ = m
+            .state
+            .apps
+            .get_mut("app")
+            .map(|a| a.org = Some("org".into()));
+        let key = Some(public(&SEED));
+        let args = json!({ "publicKey": key });
+
+        // No key yet: the seed starts nothing.
+        assert_eq!(
+            m.run(start(&SEED, "carol", "n0", 100)).unwrap_err(),
+            NO_RECOVERY_KEY
+        );
+        // A member's own passkey does not set it.
+        let by_bob = consent(&mut bob, "org:org", "__set_recovery_key", &args);
+        assert_eq!(
+            m.run(set_key(key.clone(), "bob", by_bob)).unwrap_err(),
+            OWNER_ONLY_RECOVERY
+        );
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_recovery_key"),
+            &args,
+            &json!({ "publicKey": public(&[1; 32]) }),
+            |c| set_key(key.clone(), "alice", c),
+        );
+        assert_eq!(m.state.orgs["org"].recovery.as_ref().unwrap().set_at, 10);
+
+        // A wrong seed, a signature for another account, and another org's
+        // signature are refused where the command applies.
+        assert!(m.run(start(&[1; 32], "carol", "n1", 100)).is_err());
+        assert!(m
+            .run(start_signed_for(&SEED, "carol", "bob", "n1", 100))
+            .is_err());
+        let mut other_org = start(&SEED, "carol", "n1", 100);
+        if let SystemCmd::StartRecovery { org, .. } = &mut other_org {
+            *org = "elsewhere".into();
+        }
+        assert!(m.run(other_org).is_err());
+
+        // The seed's signature for carol: pending, and only one at a time.
+        let out = m.run(start(&SEED, "carol", "n1", 100)).unwrap();
+        assert_eq!(
+            out["readyAt"],
+            json!(100 + crate::types::RECOVERY_DELAY_SECS)
+        );
+        assert_eq!(
+            m.run(start(&SEED, "bob", "n2", 101)).unwrap_err(),
+            RECOVERY_PENDING
+        );
+
+        // The owner cancels; the same signature cannot start it again.
+        let cancel = |actor: &str, c| SystemCmd::CancelRecovery {
+            org: "org".into(),
+            account: "carol".into(),
+            actor: actor.into(),
+            consent: c,
+        };
+        let by_bob = consent(
+            &mut bob,
+            "org:org",
+            "__cancel_recovery",
+            &json!({ "account": "carol" }),
+        );
+        assert_eq!(
+            m.run(cancel("bob", by_bob)).unwrap_err(),
+            OWNER_ONLY_RECOVERY
+        );
+        let by_alice = consent(
+            &mut alice,
+            "org:org",
+            "__cancel_recovery",
+            &json!({ "account": "carol" }),
+        );
+        let _ok = m.run(cancel("alice", by_alice)).unwrap();
+        assert_eq!(
+            m.run(start(&SEED, "carol", "n1", 100)).unwrap_err(),
+            "that recovery signature was used already"
+        );
+
+        // Started again; finished only by carol, with her passkey, after the delay.
+        let _ok = m.run(start(&SEED, "carol", "n3", 200)).unwrap();
+        let ready = 200 + crate::types::RECOVERY_DELAY_SECS;
+        let finish = |actor: &str, at: u64, c| SystemCmd::FinishRecovery {
+            org: "org".into(),
+            at,
+            actor: actor.into(),
+            consent: c,
+        };
+        let args = json!({ "org": "org" });
+        let early = consent(&mut carol, "org:org", "__finish_recovery", &args);
+        assert_eq!(
+            m.run(finish("carol", ready - 1, early)).unwrap_err(),
+            RECOVERY_NOT_READY
+        );
+        let by_bob = consent(&mut bob, "org:org", "__finish_recovery", &args);
+        assert_eq!(
+            m.run(finish("bob", ready, by_bob)).unwrap_err(),
+            NO_RECOVERY_PENDING
+        );
+        let by_alice_for_carol = consent(&mut alice, "org:org", "__finish_recovery", &args);
+        assert!(m.run(finish("carol", ready, by_alice_for_carol)).is_err());
+        let done = m
+            .run(finish(
+                "carol",
+                ready,
+                consent(&mut carol, "org:org", "__finish_recovery", &args),
+            ))
+            .unwrap();
+        assert_eq!(done["previousOwners"], json!(["alice"]));
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.role("carol"), Some(OrgRole::Owner));
+        assert_eq!(o.role("alice"), None, "the previous owner left");
+        assert_eq!(o.role("bob"), Some(OrgRole::Member));
+        assert!(o.recovery.as_ref().unwrap().pending.is_none());
+        assert_eq!(
+            m.state.apps["app"].owner, "carol",
+            "the org's apps moved with it"
+        );
+        // Alice's passkeys and account are her own still.
+        assert!(m.state.accounts.contains_key("alice"));
+    }
+
+    /// Rotating the key cancels a pending recovery and retires the old seed;
+    /// removing it leaves nothing to recover with.
+    #[test]
+    fn rotating_the_recovery_key_retires_the_old_seed() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let set = |m: &mut SystemMachine, alice: &mut Soft, key: Option<String>| {
+            let c = consent(
+                alice,
+                "org:org",
+                "__set_recovery_key",
+                &json!({ "publicKey": key }),
+            );
+            m.run(set_key(key, "alice", c)).unwrap();
+        };
+        set(&mut m, &mut alice, Some(public(&SEED)));
+        let _ok = m.run(start(&SEED, "carol", "n1", 100)).unwrap();
+        set(&mut m, &mut alice, Some(public(&[2; 32])));
+        assert!(m.state.orgs["org"]
+            .recovery
+            .as_ref()
+            .unwrap()
+            .pending
+            .is_none());
+        assert!(
+            m.run(start(&SEED, "carol", "n2", 100)).is_err(),
+            "the old seed"
+        );
+        let _ok = m.run(start(&[2; 32], "carol", "n2", 100)).unwrap();
+        set(&mut m, &mut alice, None);
+        assert!(m.state.orgs["org"].recovery.is_none());
+        assert_eq!(
+            m.run(start(&[2; 32], "carol", "n3", 100)).unwrap_err(),
+            NO_RECOVERY_KEY
+        );
+        // A key that is not an Ed25519 public key is refused.
+        let bad = Some("not-a-key".to_owned());
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__set_recovery_key",
+            &json!({ "publicKey": bad }),
+        );
+        assert!(m.run(set_key(bad, "alice", c)).is_err());
+    }
+
+    /// An organization written before recovery keys reads with none and
+    /// writes back the same bytes, so a snapshot from before restores
+    /// unchanged; its owner can set a key afterwards.
+    #[test]
+    fn state_from_before_recovery_reads_with_none_and_writes_as_before() {
+        let written = json!({
+            "orgId": "org", "name": "Docs", "members": { "alice": "owner" }, "teams": {},
+            "defaultCapabilities": crate::types::caps::DEFAULT, "capabilities": {},
+            "approvedReleases": ["2.0.0"], "outboundApprovals": {}, "metadata": null,
+            "memberMetadata": {}, "upgradeRuns": {},
+        });
+        let org: crate::types::Org = serde_json::from_value(written.clone()).unwrap();
+        assert!(org.recovery.is_none());
+        assert_eq!(serde_json::to_value(&org).unwrap(), written);
+        // `CreateOrg` as the previous release logged it.
+        let cmd: SystemCmd = serde_json::from_value(json!({
+            "op": "createOrg", "org_id": "o2", "name": "N", "actor": "alice", "release": null,
+        }))
+        .unwrap();
+        assert!(matches!(
+            cmd,
+            SystemCmd::CreateOrg {
+                recovery_key: None,
+                at: 0,
+                ..
+            }
+        ));
+
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let _prev = m.state.orgs.insert("org".into(), org);
+        let before = serde_json::to_value(&m.state).unwrap();
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+        let key = Some(public(&SEED));
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__set_recovery_key",
+            &json!({ "publicKey": key }),
+        );
+        let _ok = m.run(set_key(key.clone(), "alice", c)).unwrap();
+        assert_eq!(
+            m.state.orgs["org"].recovery.as_ref().map(|r| &r.public_key),
+            key.as_ref()
+        );
     }
 
     mod sign_up {

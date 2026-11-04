@@ -10,6 +10,7 @@ use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 
+pub mod recovery;
 pub mod webauthn;
 
 #[cfg(any(test, feature = "testing"))]
