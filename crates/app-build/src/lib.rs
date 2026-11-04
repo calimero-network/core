@@ -19,6 +19,8 @@ use wasmparser::Payload;
 pub const ABI_SECTION: &str = "calimero:abi";
 
 const TARGET: &str = "wasm32-wasip2";
+const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
+const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
 const HEADER_LEN: usize = 8;
 const SECTION_CUSTOM: u8 = 0;
@@ -46,19 +48,71 @@ pub struct Built {
     pub imports: Vec<String>,
 }
 
+/// An app's components: the one replicas run and, when it declares compute methods, the one
+/// job nodes run.
+#[derive(Debug)]
+pub struct BuiltApp {
+    pub app: Built,
+    pub compute: Option<Built>,
+}
+
 /// Builds the crate at `crate_dir` into `target_dir` and returns the component.
 pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
+    build(crate_dir, target_dir, false)
+}
+
+/// Builds the compute component of the crate at `crate_dir`: the same crate with
+/// `--cfg calimero_compute`, into `target_dir/compute`.
+pub fn build_compute_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
+    build(crate_dir, &target_dir.join(COMPUTE_TARGET_SUBDIR), true)
+}
+
+/// Builds the crate's app component and, when its ABI declares compute methods, its compute
+/// component.
+pub fn build_components(crate_dir: &Path, target_dir: &Path) -> EyreResult<BuiltApp> {
+    let app = build_component(crate_dir, target_dir)?;
+    let has_compute = app
+        .abi
+        .as_ref()
+        .and_then(|abi| abi["methods"].as_object())
+        .is_some_and(|methods| methods.values().any(|m| m["kind"] == "compute"));
+    let compute = has_compute
+        .then(|| build_compute_component(crate_dir, target_dir))
+        .transpose()?;
+    Ok(BuiltApp { app, compute })
+}
+
+/// `CARGO_ENCODED_RUSTFLAGS` as cargo would read it (`RUSTFLAGS` when unset), plus the compute cfg.
+fn compute_rustflags() -> String {
+    let mut flags: Vec<String> = match (
+        std::env::var("CARGO_ENCODED_RUSTFLAGS"),
+        std::env::var("RUSTFLAGS"),
+    ) {
+        (Ok(encoded), _) => encoded.split('\x1f').map(str::to_owned).collect(),
+        (Err(_), Ok(plain)) => plain.split_whitespace().map(str::to_owned).collect(),
+        _ => Vec::new(),
+    };
+    flags.retain(|flag| !flag.is_empty());
+    flags.extend(["--cfg".to_owned(), COMPUTE_CFG.to_owned()]);
+    flags.join("\x1f")
+}
+
+fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
     // Builds into one target dir race on its artifacts across threads and processes.
     std::fs::create_dir_all(target_dir)?;
     let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
-    let output = Command::new("cargo")
+    let mut cargo = Command::new("cargo");
+    let _ = cargo
         .args(["build", "--release", "--target", TARGET])
         .args(["--message-format", "json-render-diagnostics"])
         .arg("--target-dir")
         .arg(target_dir)
         .current_dir(crate_dir)
-        .stdin(Stdio::null())
-        .output()?;
+        .stdin(Stdio::null());
+    if compute {
+        let _ = cargo.env("CARGO_ENCODED_RUSTFLAGS", compute_rustflags());
+    }
+    let output = cargo.output()?;
     if !output.status.success() {
         eyre::bail!(
             "cargo build failed ({}):\n{}",
