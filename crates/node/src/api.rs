@@ -326,6 +326,11 @@ impl Principal {
             .ok_or_else(|| ApiError::unauthenticated("sign in first"))
     }
 
+    /// Whether the caller is an upgrade key ([`ApiKeyRecord::upgrades`]).
+    pub(crate) fn upgrade_key(&self) -> bool {
+        self.api_key.as_ref().is_some_and(|k| k.upgrades.is_some())
+    }
+
     /// The package a session opened on that package's frontend origin is
     /// bound to: it reaches that package's apps only.
     pub(crate) fn bound_app(&self) -> Option<&str> {
@@ -381,11 +386,37 @@ async fn holder(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError>
     Ok(p)
 }
 
+/// Who is calling, refusing an upgrade key: such a key upgrades one app
+/// (`POST /apps/{app}/upgrade`, [`credential`]) and is refused everywhere
+/// else, reads included.
 async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
-    let Some(value) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+    let p = credential(node, headers).await?;
+    if p.as_ref().is_some_and(Principal::upgrade_key) {
+        return Err(upgrade_key_only());
+    }
+    Ok(p)
+}
+
+/// What an upgrade key gets on any route but its app's upgrade.
+fn upgrade_key_only() -> ApiError {
+    ApiError::new(
+        403,
+        "UPGRADE_KEY_ONLY",
+        "this API key upgrades one app and does nothing else",
+    )
+}
+
+/// The bearer token of the `Authorization` header.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get("authorization").and_then(|v| v.to_str().ok())?;
+    Some(value.strip_prefix("Bearer ").unwrap_or(value).trim())
+}
+
+/// Who is calling, from the `Authorization` header, upgrade keys included.
+async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
+    let Some(token) = bearer(headers) else {
         return Ok(None);
     };
-    let token = value.strip_prefix("Bearer ").unwrap_or(value).trim();
     // A credential is judged on the cluster's latest system state (a read
     // index): a session or key revoked through another node is refused here
     // at once, not once this replica catches up.
@@ -1823,8 +1854,56 @@ struct ApiKeyBody {
     allow_confirm: bool,
     #[serde(default)]
     ttl_secs: Option<u64>,
+    /// An upgrade key: upgrades this app, and nothing else.
+    #[serde(default)]
+    upgrades: Option<UpgradesBody>,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+}
+
+/// An upgrade key's scope as asked: the app, and the package whose signed
+/// releases it may move the app to (default: the package the app runs).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpgradesBody {
+    app: String,
+    #[serde(default)]
+    package: Option<String>,
+}
+
+/// The scope an upgrade key asked for `body` gets, its proof key left for
+/// the key it is made with: the app (by id or context id), its package by
+/// default, and that package's pinned signer as the log holds it now.
+async fn upgrade_scope(
+    node: &Node,
+    account: &str,
+    body: &UpgradesBody,
+) -> Result<crate::types::UpgradeScope, ApiError> {
+    let app = node.app(&node.canonical_app_id(&body.app)).await?;
+    let package = body
+        .package
+        .clone()
+        .or_else(|| node.release_of(&app.bundle).map(|r| r.at.package))
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "NOT_A_PACKAGE",
+                "an upgrade key needs an app that runs a signed package",
+            )
+        })?;
+    let signer = node
+        .sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone()))
+        .ok_or_else(|| ApiError::not_found("no such package"))?;
+    if !node.sys(|s| s.may_upgrade(&app, account)) {
+        return Err(ApiError::forbidden(
+            "an upgrade key is made by someone who may upgrade the app",
+        ));
+    }
+    Ok(crate::types::UpgradeScope {
+        app: app.app_id,
+        package,
+        signer,
+        proof_key: String::new(),
+    })
 }
 
 /// The longest an API key lives.
@@ -1842,6 +1921,16 @@ async fn apikey_create(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let (key, hash) = calimero_identity::new_api_key();
+    let upgrades = match &body.upgrades {
+        Some(u) => Some(upgrade_scope(&node, &account, u).await?),
+        None => None,
+    };
+    let with_key = |key: &str| {
+        upgrades.clone().map(|u| crate::types::UpgradeScope {
+            proof_key: crate::proof::api_key_public(key),
+            ..u
+        })
+    };
     let record = ApiKeyRecord {
         key_id: typed_id::<8>(),
         account: account.clone(),
@@ -1855,7 +1944,12 @@ async fn apikey_create(
                 .ttl_secs
                 .unwrap_or(MAX_API_KEY_TTL)
                 .min(MAX_API_KEY_TTL),
+        upgrades: with_key(&key),
     };
+    if let Some(scope) = &record.upgrades {
+        node.sys(|s| s.upgrade_key_fits(&record, scope))
+            .map_err(|e| ApiError::bad_request("BAD_UPGRADE_KEY", e))?;
+    }
     let args = crate::system::api_key_args(&hash, &record);
     let c = consent_minted(
         &node,
@@ -1880,6 +1974,7 @@ async fn apikey_create(
     let record = ApiKeyRecord {
         key_id: signed("keyId").as_str().unwrap_or_default().to_owned(),
         expires_at: signed("expiresAt").as_u64().unwrap_or_default(),
+        upgrades: with_key(&key),
         ..record
     };
     if crate::system::api_key_args(&hash, &record) != c.args
@@ -3389,19 +3484,70 @@ async fn app_upgrade(
     Json(body): Json<UpgradeBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
+    // An upgrade key upgrades here and nowhere else; any other credential
+    // is a passkey session's, as before.
+    let p = credential(&node, &headers)
+        .await?
+        .ok_or_else(|| ApiError::unauthenticated("sign in first"))?;
+    if p.upgrade_key() {
+        let key = bearer(&headers).unwrap_or_default();
+        return upgrade_app(&node, &p, app_id, body, Some(key)).await;
+    }
     let p = holder(&node, &headers).await?;
-    upgrade_app(&node, &p, app_id, body).await
+    upgrade_app(&node, &p, app_id, body, None).await
 }
 
 /// Upgrade `app_id` as `p`: the route's, and the consent page's for an
 /// upgrade request.
+///
+/// `key` is the upgrade key `p` came with (`ApiKeyRecord::upgrades`): it
+/// signs the upgrade in place of a passkey, only to a signed release of the
+/// key's package; every other rule is the same.
 pub(crate) async fn upgrade_app(
     node: &Node,
     p: &Principal,
     app_id: String,
     mut body: UpgradeBody,
+    key: Option<&str>,
 ) -> ApiResult {
     let account = p.account()?;
+    let scope = match key {
+        Some(key) => {
+            let k = p
+                .api_key
+                .as_ref()
+                .filter(|k| k.upgrades.is_some())
+                .ok_or_else(upgrade_key_only)?;
+            Some((key, k))
+        }
+        None if p.upgrade_key() => return Err(upgrade_key_only()),
+        None => None,
+    };
+    if let Some((_, k)) = scope {
+        let package = k.upgrades.as_ref().map(|u| u.package.clone());
+        if k.upgrades.as_ref().is_some_and(|u| u.app != app_id) {
+            return Err(ApiError::forbidden("this API key upgrades another app"));
+        }
+        // A key moves its app to a signed release of its package only: a
+        // raw bundle hash or another package is refused.
+        if body.bundle.is_some()
+            || body
+                .package
+                .as_ref()
+                .is_some_and(|p| Some(p) != package.as_ref())
+        {
+            return Err(ApiError::forbidden(
+                "an upgrade key upgrades only to a version of its own package",
+            ));
+        }
+        if body.version.is_none() {
+            return Err(ApiError::bad_request(
+                "VERSION_REQUIRED",
+                "an upgrade key names the version to upgrade to",
+            ));
+        }
+        body.package = package;
+    }
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
     // a refused or failed upgrade records nothing. An upgrade is the app's
     // owner's decision, or, for an org app, of whoever holds
@@ -3464,16 +3610,27 @@ pub(crate) async fn upgrade_app(
         &bundle,
     )
     .await?;
-    // A fresh passkey assertion over this exact upgrade, logged as consent.
-    let consent = consent(
-        node,
-        p,
-        &app_id,
-        "__upgrade",
-        &json!({ "bundle": bundle, "migrate": body.migrate, "manifest": manifest }),
-        body.confirm.take(),
-    )
-    .await?;
+    let args = json!({ "bundle": bundle, "migrate": body.migrate, "manifest": manifest });
+    let consent = match scope {
+        // The upgrade key's own signature over this exact upgrade, judged
+        // here as `authorize` judges it where it applies.
+        Some((key, k)) => {
+            let refused = node.sys(|s| s.key_may_upgrade(k, &app_id, &bundle, now_secs()).err());
+            if let Some(e) = refused {
+                return Err(ApiError::forbidden(e));
+            }
+            tracing::info!(
+                app = %app_id,
+                key_id = %k.key_id,
+                %bundle,
+                "an upgrade key upgrades its app"
+            );
+            let statement = crate::proof::Statement::new(&app_id, "__upgrade", &args);
+            json!(crate::proof::sign_key_upgrade(key, &k.key_id, statement))
+        }
+        // A fresh passkey assertion over this exact upgrade, logged as consent.
+        None => consent(node, p, &app_id, "__upgrade", &args, body.confirm.take()).await?,
+    };
     run_upgrade(
         node,
         app_id,

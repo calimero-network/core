@@ -1139,6 +1139,83 @@ impl SystemState {
     /// its owner, or, for an org app, whoever
     /// [manages the organization's apps](Self::manages_apps) on the app's
     /// team.
+    /// Whether upgrade key `key` may move `app_id` to `bundle` at `at`: the
+    /// key upgrades that app, has not expired, and `bundle` is a service of
+    /// an installed release of the key's package, whose pinned signer is
+    /// still the one the key names. Who may upgrade the app, deadlines and
+    /// authority are the upgrade's own rules, judged as for a passkey.
+    ///
+    /// # Errors
+    /// The key is not an upgrade key, or not for this app or this release.
+    pub fn key_may_upgrade<'k>(
+        &self,
+        key: &'k ApiKeyRecord,
+        app_id: &str,
+        bundle: &str,
+        at: u64,
+    ) -> Result<&'k crate::types::UpgradeScope, &'static str> {
+        let scope = key
+            .upgrades
+            .as_ref()
+            .ok_or("this API key does not upgrade apps")?;
+        if scope.app != app_id {
+            return Err("this API key upgrades another app");
+        }
+        if key.expires_at <= at {
+            return Err("this API key had expired");
+        }
+        let package = self
+            .packages
+            .get(&scope.package)
+            .filter(|p| p.signer_id == scope.signer)
+            .ok_or("this API key's package is not installed under the signer it names")?;
+        if !package
+            .versions
+            .values()
+            .any(|v| v.services.values().any(|h| h == bundle))
+        {
+            return Err("this API key upgrades only to signed releases of its package");
+        }
+        Ok(scope)
+    }
+
+    /// Whether `record` may be made with upgrade scope `scope`: nothing
+    /// else scoped, an app its account may upgrade now, running a release
+    /// of the package, whose pinned signer the scope names.
+    ///
+    /// # Errors
+    /// The scope names another app, package or signer, or the account may
+    /// not upgrade the app.
+    pub fn upgrade_key_fits(
+        &self,
+        record: &ApiKeyRecord,
+        scope: &crate::types::UpgradeScope,
+    ) -> Result<(), &'static str> {
+        if record.apps.is_some()
+            || record.methods.is_some()
+            || record.read_only
+            || record.allow_confirm
+        {
+            return Err("an upgrade key has no other scope");
+        }
+        let app = self.apps.get(&scope.app).ok_or("no such app")?;
+        if !self.may_upgrade(app, &record.account) {
+            return Err("an upgrade key needs an account that may upgrade the app");
+        }
+        let package = self.packages.get(&scope.package).ok_or("no such package")?;
+        if package.signer_id != scope.signer {
+            return Err("the package is signed by another key");
+        }
+        let runs = package
+            .versions
+            .values()
+            .any(|v| v.services.values().any(|h| *h == app.bundle));
+        if !runs {
+            return Err("the app does not run a release of that package");
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
         if !self.upgrades_of(&app.bundle).is_owner() {
@@ -1510,10 +1587,24 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             bundle,
             by_operator,
             actor,
+            at,
             run: None,
             consent,
-            ..
         } => {
+            // An upgrade key's signature, judged against the key as the log
+            // holds it now: revoked or expired, it proves nothing.
+            if let (false, Some(key_id)) = (*by_operator, crate::proof::key_proof_id(consent)) {
+                let key = s
+                    .api_keys
+                    .values()
+                    .find(|k| k.key_id == key_id && k.account == *actor)
+                    .ok_or("no such API key: it was revoked")?;
+                let scope = s.key_may_upgrade(key, app_id, bundle, *at)?;
+                let (_, st, used) = crate::proof::verify_key_upgrade(consent, &scope.proof_key)?;
+                let (st, used) = fresh((st, used))?;
+                states(&st, app_id, "__upgrade", &|a| a["bundle"] == json!(bundle))?;
+                return Ok(Some(used));
+            }
             let (st, used) = if *by_operator {
                 fresh(operator(consent)?)?
             } else {
@@ -2305,7 +2396,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
 /// key, so the log cannot record another key under the same consent.
 #[must_use]
 pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
-    json!({
+    let mut args = json!({
         "hash": hash,
         "keyId": record.key_id,
         "label": record.label,
@@ -2314,7 +2405,13 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
         "readOnly": record.read_only,
         "allowConfirm": record.allow_confirm,
         "expiresAt": record.expires_at,
-    })
+    });
+    // Only an upgrade key states its scope: every other key's consent reads
+    // the bytes it did before upgrade keys.
+    if let (Some(scope), Some(obj)) = (&record.upgrades, args.as_object_mut()) {
+        let _prev = obj.insert("upgrades".to_owned(), json!(scope));
+    }
+    args
 }
 
 impl SystemCmd {
@@ -3427,7 +3524,7 @@ impl SystemMachine {
                 actor,
                 at,
                 run,
-                consent: _,
+                consent,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
@@ -3472,6 +3569,9 @@ impl SystemMachine {
                         ok: true,
                         error: Value::Null,
                         run: run.clone(),
+                        api_key: crate::proof::key_proof_id(&consent)
+                            .filter(|_| !by_operator)
+                            .map(str::to_owned),
                     });
                     a.bundle = bundle;
                 }
@@ -3495,6 +3595,7 @@ impl SystemMachine {
                     ok: false,
                     error: error.clone(),
                     run: run.clone(),
+                    api_key: None,
                 });
                 s.note_run(run.as_deref(), &app_id, Some(error));
                 Ok(Value::Null)
@@ -3802,6 +3903,9 @@ impl SystemMachine {
             SystemCmd::CreateApiKey { hash, record, .. } => {
                 if !s.accounts.contains_key(&record.account) {
                     return Err("unknown account");
+                }
+                if let Some(scope) = &record.upgrades {
+                    s.upgrade_key_fits(&record, scope)?;
                 }
                 let keys = s
                     .api_keys
@@ -7147,6 +7251,121 @@ mod tests {
             .unwrap();
         assert_eq!(m.state.publisher_of("b1"), Some(&"cust".to_owned()));
         assert_eq!(m.state.binding_generation(&signer), 2);
+    }
+
+    /// An upgrade key's upgrade is judged where it applies, on fresh state:
+    /// the key's own signature, spent once; refused once its account may no
+    /// longer upgrade the app (a member who lost `MANAGE_APPLICATION`, or
+    /// left), once the key is revoked or expired, and for a bundle of another
+    /// package or of its package reinstalled under another signer.
+    #[test]
+    fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
+        use crate::types::caps::MANAGE_APPLICATION;
+        let (_key, signer) = publisher_key(9);
+        let mut m = publishing(&signer, "owner");
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
+        }
+        let secret = "cal_ci-secret";
+        let record = |expires_at: u64| super::ApiKeyRecord {
+            key_id: "k1".into(),
+            account: "dan".into(),
+            label: "ci".into(),
+            apps: None,
+            methods: None,
+            read_only: false,
+            allow_confirm: false,
+            expires_at,
+            upgrades: Some(crate::types::UpgradeScope {
+                app: "inst".into(),
+                package: "p".into(),
+                signer: signer.clone(),
+                proof_key: crate::proof::api_key_public(secret),
+            }),
+        };
+        let r = record(100);
+        assert_eq!(
+            m.state.upgrade_key_fits(&r, r.upgrades.as_ref().unwrap()),
+            Ok(())
+        );
+        assert!(
+            m.state
+                .upgrade_key_fits(
+                    &record(100),
+                    &crate::types::UpgradeScope {
+                        app: "rawapp".into(),
+                        ..r.upgrades.clone().unwrap()
+                    }
+                )
+                .is_err(),
+            "an app that runs no release of the package"
+        );
+        let _prev = m.state.api_keys.insert("h1".into(), r);
+        let upgrade = |bundle: &str, at: u64, secret: &str| {
+            let statement = crate::proof::Statement::new(
+                "inst",
+                "__upgrade",
+                &json!({ "bundle": bundle, "migrate": null, "manifest": null }),
+            );
+            SystemCmd::UpgradeApp {
+                app_id: "inst".into(),
+                bundle: bundle.into(),
+                by_operator: false,
+                actor: "dan".into(),
+                at,
+                run: None,
+                consent: json!(crate::proof::sign_key_upgrade(secret, "k1", statement)),
+            }
+        };
+        let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
+        assert!(e.contains("not signed with the API key"), "{e}");
+        let e = m.run(upgrade("raw", 10, secret)).unwrap_err();
+        assert!(e.contains("only to signed releases"), "{e}");
+        let e = m.run(upgrade("b2", 100, secret)).unwrap_err();
+        assert!(e.contains("expired"), "{e}");
+        let once = upgrade("b2", 10, secret);
+        let _ok = m.run(once.clone()).unwrap();
+        assert_eq!(m.state.apps["inst"].bundle, "b2");
+        assert_eq!(
+            m.state.apps["inst"]
+                .last_upgrade
+                .as_ref()
+                .and_then(|u| u.api_key.as_deref()),
+            Some("k1")
+        );
+        let e = m.run(once).unwrap_err();
+        assert!(e.contains("used already"), "{e}");
+
+        // Its maker loses the right to upgrade: so does the key.
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), 0);
+        }
+        assert!(!m.state.may_upgrade(&m.state.apps["inst"], "dan"));
+        assert!(m.run(upgrade("b1", 10, secret)).is_err(), "descoped");
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
+        }
+        let _ok = m.run(upgrade("b1", 11, secret)).unwrap();
+
+        // The package under another signer, then the key revoked.
+        let (_other, other_signer) = publisher_key(10);
+        if let Some(p) = m.state.packages.get_mut("p") {
+            p.signer_id = other_signer;
+        }
+        let e = m.run(upgrade("b2", 12, secret)).unwrap_err();
+        assert!(e.contains("signer it names"), "{e}");
+        if let Some(p) = m.state.packages.get_mut("p") {
+            p.signer_id = signer.clone();
+        }
+        let _ok = m
+            .run_unproven(SystemCmd::RevokeApiKey {
+                key_id: "k1".into(),
+                actor: "dan".into(),
+                consent: serde_json::Value::Null,
+            })
+            .unwrap();
+        let e = m.run(upgrade("b2", 13, secret)).unwrap_err();
+        assert!(e.contains("revoked"), "{e}");
     }
 
     /// A package's manifest says who upgrades its instances. `publisher`:
