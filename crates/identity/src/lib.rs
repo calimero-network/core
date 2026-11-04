@@ -195,12 +195,21 @@ pub fn new_recovery_code() -> String {
         .join("-")
 }
 
+/// The longest recovery code text read, separators included, checked
+/// before anything else: 32 characters, dashes or spaces between them, and
+/// room for a few more.
+pub const MAX_RECOVERY_CODE_CHARS: usize = 80;
+
 /// A recovery code as typed back, in its canonical form: dashes and spaces
 /// dropped, upper case, and the letters Crockford reads as digits (`O` as
 /// `0`, `I` and `L` as `1`) read so. `None` for anything that cannot be a
-/// code ([`new_recovery_code`]'s length and alphabet).
+/// code ([`new_recovery_code`]'s length and alphabet, at most
+/// [`MAX_RECOVERY_CODE_CHARS`] as typed).
 #[must_use]
 pub fn normalize_recovery_code(code: &str) -> Option<String> {
+    if code.len() > MAX_RECOVERY_CODE_CHARS {
+        return None;
+    }
     let mut out = String::with_capacity(32);
     for c in code.chars() {
         let c = match c.to_ascii_uppercase() {
@@ -258,6 +267,8 @@ mod tests {
         );
         assert_ne!(new_recovery_code(), code, "codes are random");
         assert_eq!(normalize_recovery_code("ABCD-EFGH"), None, "too short");
+        let padded = format!("{code}{}", " ".repeat(MAX_RECOVERY_CODE_CHARS));
+        assert_eq!(normalize_recovery_code(&padded), None, "too long as typed");
         assert_eq!(
             normalize_recovery_code(&format!("{code}U")),
             None,

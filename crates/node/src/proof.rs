@@ -340,33 +340,36 @@ pub fn verify_refresh_use(key: &str, message: &[u8], signature: &str) -> Result<
         .map_err(|_| "the exchange is not signed with the refresh token's key")
 }
 
-/// What a recovery code's key is derived from, before the code.
-pub const RECOVERY_DOMAIN: &[u8] = b"calimero.recovery.v1\0";
+/// What an account recovery code's key is derived from, before the code.
+pub const RECOVERY_CODE_DOMAIN: &[u8] = b"calimero.account-recovery-code.v1\0";
 
-/// What a recovery's signature covers, before the key, the account and the
-/// passkey it adds.
-pub const RECOVER_DOMAIN: &[u8] = b"calimero.recover.v1\0";
+/// What an account recovery's start signature covers, before the key, the
+/// account and the passkey it would add (organization recovery signs under
+/// its own domain, [`calimero_identity::recovery::RECOVERY_DOMAIN`]).
+pub const RECOVER_DOMAIN: &[u8] = b"calimero.account-recovery-start.v1\0";
 
 /// The Ed25519 key a recovery code stands for, as invites do
-/// ([`invite_signing_key`]): its seed is `SHA-256("calimero.recovery.v1\0" ||
-/// canonical code)` ([`calimero_identity::normalize_recovery_code`]). The log
+/// ([`invite_signing_key`]): its seed is
+/// `SHA-256("calimero.account-recovery-code.v1\0" || canonical code)` ([`calimero_identity::normalize_recovery_code`]). The log
 /// keeps only the public half ([`recovery_key`]), so neither the code nor
 /// anything that redeems it is ever logged.
 #[must_use]
 pub fn recovery_signing_key(code: &str) -> ed25519_dalek::SigningKey {
-    ed25519_dalek::SigningKey::from_bytes(&sha256(&[RECOVERY_DOMAIN, code.as_bytes()].concat()))
+    ed25519_dalek::SigningKey::from_bytes(&sha256(
+        &[RECOVERY_CODE_DOMAIN, code.as_bytes()].concat(),
+    ))
 }
 
-/// A recovery code's public key, hex: what `SetRecoveryKey` records.
+/// A recovery code's public key, hex: what `SetAccountRecoveryKey` records.
 #[must_use]
 pub fn recovery_key(code: &str) -> String {
     hex::encode(recovery_signing_key(code).verifying_key().to_bytes())
 }
 
-/// The bytes a recovery signs: `"calimero.recover.v1\0" || key || 0 ||
-/// account || 0 || credential id || 0 || SHA-256(credential public key JSON)
-/// || 0 || now`. It names the passkey it adds, so a signature cannot add
-/// another.
+/// The bytes an account recovery's start signs:
+/// `"calimero.account-recovery-start.v1\0" || key || 0 || account || 0 ||
+/// credential id || 0 || SHA-256(credential public key JSON) || 0 || at`. It
+/// names the passkey the recovery adds, so a signature cannot add another.
 #[must_use]
 pub fn recover_message(key: &str, account: &str, credential: &Credential, now: u64) -> Vec<u8> {
     let public = serde_json::to_vec(&credential.public_key).unwrap_or_default();
@@ -381,8 +384,8 @@ pub fn recover_message(key: &str, account: &str, credential: &Credential, now: u
     m
 }
 
-/// The recovery signature (hex) the node the person gave `code` to makes,
-/// adding `credential` to `account` at `now`.
+/// The start signature (hex) the node the person gave `code` to makes,
+/// for adding `credential` to `account`, started at `now`.
 #[must_use]
 pub fn sign_recover(code: &str, account: &str, credential: &Credential, now: u64) -> String {
     use ed25519_dalek::Signer;
@@ -390,8 +393,8 @@ pub fn sign_recover(code: &str, account: &str, credential: &Credential, now: u64
     hex::encode(recovery_signing_key(code).sign(&message).to_bytes())
 }
 
-/// Check that `signature` recovers `account` with `credential` at `now`
-/// under the recovery key `key`, and answer what marks it used.
+/// Check that `signature` starts recovering `account` with `credential` at
+/// `now` under the recovery key `key`, and answer what marks it used.
 ///
 /// # Errors
 /// A signature that is missing, malformed or not made with the code's key.

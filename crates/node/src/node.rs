@@ -682,12 +682,15 @@ pub fn rejected(reason: &str) -> ApiError {
 }
 
 /// The code of a recovery refusal that is a conflict with the organization's
-/// state, not a malformed request.
+/// or the account's state, not a malformed request.
 fn recovery_code(reason: &str) -> Option<&'static str> {
-    use crate::system::{NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING};
+    use crate::system::{
+        ACCOUNT_RECOVERY_PENDING, NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING,
+    };
     [
         (NO_RECOVERY_KEY, "NO_RECOVERY_KEY"),
         (RECOVERY_PENDING, "RECOVERY_PENDING"),
+        (ACCOUNT_RECOVERY_PENDING, "RECOVERY_PENDING"),
         (RECOVERY_NOT_READY, "RECOVERY_NOT_READY"),
     ]
     .into_iter()
