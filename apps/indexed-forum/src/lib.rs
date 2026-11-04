@@ -21,8 +21,8 @@
 //! A post id names its author: `createPost` mints `"<caller>-<id>"`, so two accounts'
 //! `p1` are two posts. The author is also a field of the post, and the checks read it.
 
-use calimero_app_sdk::env::Caller;
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::env::Caller;
+use calimero_sdk::prelude::*;
 
 /// One post.
 #[derive(Record)]
@@ -92,12 +92,12 @@ pub struct PostView {
     pub title: String,
     pub body: String,
     pub tags: Vec<String>,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub created_at: u64,
     pub pinned: bool,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub votes: u64,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub comments: u64,
     pub voted_by_me: bool,
 }
@@ -109,16 +109,16 @@ pub struct CommentView {
     pub key: String,
     pub author: String,
     pub body: String,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub created_at: u64,
 }
 
 /// A board's size, read from maintained counts; no post is loaded.
 #[derive(serde::Serialize)]
 pub struct BoardStats {
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub posts: u64,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub pinned: u64,
 }
 

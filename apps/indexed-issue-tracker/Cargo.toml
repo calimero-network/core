@@ -9,11 +9,11 @@ description = "An issue tracker on the component SDK: list views that are index 
 crate-type = ["cdylib"]
 
 [dependencies]
-calimero-app-sdk = { path = "../../crates/app-sdk" }
+calimero-sdk = { path = "../../crates/sdk" }
 serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
 calimero-app-build = { path = "../../crates/app-build" }
 serde_json = "1"
 

@@ -114,7 +114,13 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_JOB_NODE", num_args = 0..=1, default_missing_value = "true")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_node: Option<bool>,
-    /// The passkey relying party id [default: localhost].
+    /// The passkey (WebAuthn) relying party id [default: localhost]. It must
+    /// be a registrable suffix of every host that runs a passkey ceremony:
+    /// each `--origins` host and `--apps-domain` must equal it or be a
+    /// subdomain of it (`calimero.network` covers `console.calimero.network`
+    /// and `{label}.apps.calimero.network`), or the browser refuses every
+    /// sign-in there. merod refuses to start otherwise. Origins on an IP
+    /// address are exempt (they can only be CORS origins).
     #[arg(long, env = "MEROD_RP_ID")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rp_id: Option<String>,
@@ -339,9 +345,170 @@ impl NodeArgs {
     }
 }
 
+/// Refuse a relying party id the browser would reject on one of the hosts
+/// that runs a passkey ceremony: WebAuthn needs the rp id to equal the page's
+/// host or be a dot-bounded suffix of it, or every ceremony there fails with
+/// an opaque `SecurityError`. Checks `--apps-domain` (its frontends are at
+/// `{label}.{domain}`) and each `--origins` host; an origin on an IP address
+/// is skipped, since no domain rp id can cover it and it can only be a CORS
+/// origin.
+pub fn check_rp_id(
+    rp_id: &str,
+    origins: &[String],
+    apps_domain: Option<&str>,
+) -> Result<(), String> {
+    let rp = normalize(rp_id);
+    if rp.is_empty() {
+        return Err("--rp-id is empty".to_owned());
+    }
+    if let Some(domain) = apps_domain {
+        if !covers(&rp, &normalize(domain)) {
+            return Err(format!(
+                "--apps-domain {domain:?} is not {rp:?} or a subdomain of it, so --rp-id {rp:?} \
+                 cannot be used by app frontends at {{label}}.{domain}: every passkey sign-in \
+                 there would fail. Set --rp-id to a suffix of both (e.g. the apps domain's parent)"
+            ));
+        }
+    }
+    for origin in origins {
+        let host = origin_host(origin).ok_or_else(|| format!("--origins {origin:?}: no host"))?;
+        if is_ip(&host) {
+            continue;
+        }
+        if !covers(&rp, &host) {
+            return Err(format!(
+                "--origins {origin:?}: host {host:?} is not {rp:?} or a subdomain of it, so \
+                 every passkey sign-in from it would fail. Set --rp-id to a suffix of every \
+                 origin's host, or drop the origin"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize(host: &str) -> String {
+    host.trim().trim_matches('.').to_ascii_lowercase()
+}
+
+/// `host` equals `rp` or ends in `.{rp}`.
+fn covers(rp: &str, host: &str) -> bool {
+    host == rp
+        || host
+            .strip_suffix(rp)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// The host of `scheme://[user@]host[:port][/path]`, lowercased, port dropped.
+fn origin_host(origin: &str) -> Option<String> {
+    let rest = origin.trim();
+    let rest = rest.split_once("://").map_or(rest, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        format!("[{}]", v6.split(']').next()?)
+    } else {
+        authority.split(':').next()?.to_owned()
+    };
+    let host = normalize(&host);
+    (!host.is_empty()).then_some(host)
+}
+
+fn is_ip(host: &str) -> bool {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn rp_id_matches_on_a_dot_boundary_ignoring_case_and_port() {
+        assert!(covers("calimero.network", "calimero.network"));
+        assert!(covers("calimero.network", "console.calimero.network"));
+        assert!(covers("calimero.network", "chat.apps.calimero.network"));
+        assert!(!covers("calimero.network", "evil-calimero.network"));
+        assert!(!covers("calimero.network", "calimero.network.evil.com"));
+        assert!(!covers("apps.calimero.network", "calimero.network"));
+        assert_eq!(
+            origin_host("HTTPS://Console.Calimero.Network:8443/x").as_deref(),
+            Some("console.calimero.network")
+        );
+        assert_eq!(origin_host("http://[::1]:3000").as_deref(), Some("[::1]"));
+        assert_eq!(origin_host("http://"), None);
+    }
+
+    #[test]
+    fn a_cluster_whose_rp_id_covers_its_hosts_starts() {
+        check_rp_id(
+            "calimero.network",
+            &strings(&[
+                "https://console.calimero.network",
+                "https://Calimero.Network:443",
+            ]),
+            Some("apps.calimero.network"),
+        )
+        .unwrap();
+        check_rp_id("Calimero.Network.", &[], Some("calimero.network")).unwrap();
+    }
+
+    #[test]
+    fn the_dev_defaults_start() {
+        // `merod run` with no flags, and `merod local`.
+        check_rp_id("localhost", &strings(&["http://localhost:3000"]), None).unwrap();
+        check_rp_id(
+            "localhost",
+            &strings(&[
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://[::1]:3000",
+            ]),
+            Some("localhost"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_apps_domain_outside_the_rp_id_is_refused() {
+        let e = check_rp_id("calimero.network", &[], Some("apps.example.com")).unwrap_err();
+        assert!(
+            e.contains("--apps-domain") && e.contains("apps.example.com"),
+            "{e}"
+        );
+        let e = check_rp_id("localhost", &[], Some("apps.calimero.network")).unwrap_err();
+        assert!(e.contains("--apps-domain"), "{e}");
+    }
+
+    #[test]
+    fn an_origin_outside_the_rp_id_is_refused() {
+        let e = check_rp_id(
+            "calimero.network",
+            &strings(&[
+                "https://console.calimero.network",
+                "https://evil-calimero.network",
+            ]),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("--origins") && e.contains("evil-calimero.network"),
+            "{e}"
+        );
+        let e = check_rp_id(
+            "localhost",
+            &strings(&["https://console.calimero.network"]),
+            None,
+        )
+        .unwrap_err();
+        assert!(e.contains("console.calimero.network"), "{e}");
+    }
 
     #[test]
     fn a_given_flag_overrides_the_file_and_the_rest_is_kept() {

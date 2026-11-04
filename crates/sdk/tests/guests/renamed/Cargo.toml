@@ -1,0 +1,14 @@
+[package]
+name = "renamed-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# The SDK under a name of the app's choosing: the `app` attributes must expand to `::sdk`.
+[dependencies]
+sdk = { package = "calimero-sdk", path = "../../.." }
+
+[workspace]

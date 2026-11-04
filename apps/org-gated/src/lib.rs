@@ -5,8 +5,8 @@
 //! `apps/v2-fixtures/org-gated` is the node's component fixture of the same shape. `scenarios/` holds the app-level scenarios (run by
 //! `tests/scenarios.rs`) and `scenarios/cluster/` the one that changes a team mid-run.
 
-use calimero_app_sdk::env::{Caller, OrgRole};
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::env::{Caller, OrgRole};
+use calimero_sdk::prelude::*;
 
 #[app::state(version = 1)]
 pub struct OrgNotes {

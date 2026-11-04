@@ -12,7 +12,7 @@
 //! already end up holding both badges. There are no replicas to merge and no merge rule to
 //! declare.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// One team's statistics.
 #[derive(Default, serde::Serialize, serde::Deserialize)]

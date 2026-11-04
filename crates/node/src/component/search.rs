@@ -4,7 +4,7 @@
 //!
 //! What to index comes from the bundle's ABI (`state.search`: table to fields, from
 //! `#[table(search = [..])]`). A table's records are the stored keys
-//! `generation ‖ (table, "r", key..)` in the SDK's key encoding (`crates/app-sdk`, encoding
+//! `generation ‖ (table, "r", key..)` in the SDK's key encoding (`crates/sdk`, encoding
 //! contract); each becomes one document, its id the SHA-256 of the stored key, its fields
 //! the declared ones that hold text (a list of strings is joined). The indexes are
 //! `calimero-search`'s `ContextIndex` in memory, as for a wasmer app (`services::Search`):

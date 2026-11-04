@@ -7,7 +7,7 @@ on wasmer, were removed with that engine).
 ## Package Identity
 
 - **Target**: `wasm32-wasip2`, built into a `calimero:app` component
-- **SDK**: `calimero-app-sdk` (by path); storage is `Table<Record>`,
+- **SDK**: `calimero-sdk` (by path); storage is `Table<Record>`,
   `UnorderedMap`, `Cell` and `Counter`
 
 ## Commands
@@ -46,14 +46,14 @@ python3 -I scripts/pack-component.py --wasm <app>.wasm --package <id> --app-vers
 ## Component apps
 
 Component apps are standalone crates (`[workspace]` in their `Cargo.toml`,
-`calimero-app-sdk` by path), not members of the core workspace, so
+`calimero-sdk` by path), not members of the core workspace, so
 `cargo test --manifest-path apps/<app>/Cargo.toml` runs them (CI's "Cargo test
 (standalone v2 apps)" loop lists each). Ownership and permission rules are
 explicit checks against `env::caller()` / `env::org_role()`, stated in each app's
 doc comment. Their end-to-end tests are scenario files:
 
 - `scenarios/<name>.json`: app-level steps in the format of
-  `crates/app-sdk/src/testing/scenario.rs`, run by the app's `tests/scenarios.rs`
+  `crates/sdk/src/testing/scenario.rs`, run by the app's `tests/scenarios.rs`
   in the harness; `scenarios/<name>.org.json` is the org it needs
   (`{ "admins": [..], "members": [..], "guests": [..], "teams": {..} }`, the owner
   is always `owner`).
@@ -83,7 +83,7 @@ app-name/
 | `kv-store/src/lib.rs`               | Basic component app |
 | `components-demo/src/lib.rs`        | Auth patterns   |
 | `v2-fixtures/kv/src/lib.rs`         | Every host feature the node tests |
-| `crates/app-sdk/AGENTS.md`          | The SDK itself |
+| `crates/sdk/AGENTS.md`          | The SDK itself |
 
 ## Scenarios
 
@@ -94,7 +94,7 @@ its own. Two formats
 ([Testing strategy](../docs/src/content/docs/contribute/testing.mdx#scenarios)):
 
 - **App-level**, `scenarios/<name>.json`: the step array of
-  `calimero_app_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/
+  `calimero_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/
   `removeMember`, `as`, `expect`, `save`, `$var`, `@account`, `events`). The
   app's own `tests/scenarios.rs` runs it in the harness; the cluster runner
   builds the app, creates the organization of `<name>.org.json`

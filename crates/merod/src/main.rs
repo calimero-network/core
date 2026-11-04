@@ -259,6 +259,9 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     if args.fresh && args.dir.exists() {
         std::fs::remove_dir_all(&args.dir)?;
     }
+    // The local cluster's rp id is `localhost`, its apps domain `localhost`.
+    node_config::check_rp_id("localhost", &args.origins, Some("localhost"))
+        .map_err(|e| eyre::eyre!("--rp-id \"localhost\" does not cover a passkey host: {e}"))?;
     let token = args
         .ops_token
         .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
@@ -474,6 +477,18 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         (Some(path), _) => Some(read_settings(path)?),
         (None, o) => o.clone(),
     };
+    let rp_id = args.rp_id.clone().unwrap_or_else(|| "localhost".to_owned());
+    let origins = if args.origins.is_empty() {
+        vec!["http://localhost:3000".to_owned()]
+    } else {
+        args.origins.clone()
+    };
+    let apps_domain = args
+        .apps_domain
+        .as_ref()
+        .map(|d| d.trim_matches('.').to_ascii_lowercase());
+    node_config::check_rp_id(&rp_id, &origins, apps_domain.as_deref())
+        .map_err(|e| eyre::eyre!("--rp-id {rp_id:?} does not cover a passkey host: {e}"))?;
     let config = Config {
         node_id,
         public_url,
@@ -486,12 +501,8 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         attestation: if dev { Mode::Mock } else { Mode::Tdx },
         allow_mock_peers: dev,
         sealed_required: !dev,
-        rp_id: args.rp_id.clone().unwrap_or_else(|| "localhost".to_owned()),
-        origins: if args.origins.is_empty() {
-            vec!["http://localhost:3000".to_owned()]
-        } else {
-            args.origins.clone()
-        },
+        rp_id,
+        origins,
         release: calimero_node::RELEASE_VERSION.to_owned(),
         ops_token: args.ops_token.clone(),
         ops_token_sha256: args.ops_token_sha256.clone(),
@@ -513,10 +524,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
             .map(|o| calimero_outbound::OutboundService::from_settings(&o))
             .transpose()?
             .flatten(),
-        apps_domain: args
-            .apps_domain
-            .as_ref()
-            .map(|d| d.trim_matches('.').to_ascii_lowercase()),
+        apps_domain,
         governance: Governance {
             releases: authority(args.release_approvals),
             app_upgrades: authority(args.app_upgrades),

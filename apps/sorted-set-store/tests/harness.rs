@@ -5,7 +5,7 @@
 
 mod common;
 
-use calimero_app_sdk::testing::Org;
+use calimero_sdk::testing::Org;
 use serde_json::json;
 
 #[test]
@@ -31,7 +31,7 @@ fn distinct_elements_union() {
 #[test]
 fn add_and_remove_emit_only_on_change() {
     let mut t = common::app(Org::new());
-    let o = |t: &mut calimero_app_sdk::testing::TestApp, m: &str, v: &str| {
+    let o = |t: &mut calimero_sdk::testing::TestApp, m: &str, v: &str| {
         t.as_("owner").call(m, json!({ "value": v })).unwrap()
     };
     assert_eq!(o(&mut t, "add", "x"), json!(true));

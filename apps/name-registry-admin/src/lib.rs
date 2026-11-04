@@ -21,7 +21,7 @@
 //! the vacancy's epoch after a release), and claims for an earlier epoch are never
 //! considered again, except that `rebid` renews a lost claim once the name is open.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// The most claims one name is read with.
 pub const MAX_CLAIMS: u32 = 1000;
@@ -329,7 +329,7 @@ impl AdminNameRegistry {
         Ok(me)
     }
 
-    fn admin_list(&self) -> Result<Vec<String>, calimero_app_sdk::StorageError> {
+    fn admin_list(&self) -> Result<Vec<String>, calimero_sdk::StorageError> {
         Ok(self
             .admins
             .scan(FindOpts::default().limit(MAX_CLAIMS))?
@@ -340,7 +340,7 @@ impl AdminNameRegistry {
     }
 
     /// The claims on `name`, in the order the log applied them.
-    fn claims_of(&self, name: &str) -> Result<Vec<Claim>, calimero_app_sdk::StorageError> {
+    fn claims_of(&self, name: &str) -> Result<Vec<Claim>, calimero_sdk::StorageError> {
         Ok(self
             .claims
             .find(

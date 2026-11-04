@@ -621,7 +621,7 @@ Full API for both languages, the client SDK and the test harness: SDK reference
 
 `UnorderedMap`, `SortedMap`, `Vector`, `UnorderedSet`, `SortedSet`, `Counter`, and `FugueText` / `RichText` for collaborative text. All are plain data structures over the ordered key-value store.
 
-In the Rust SDK an `UnorderedMap` reads in key order too (`page`, `range`, `prefix`, `first`, `last`), so it is also the `SortedMap`; `Set<T>` is both sets; `Cell<T>` holds one value, `Frozen<T>` content-addressed write-once values and `PerUser<T>` one value per caller account; `Text` / `RichText` are the Fugue texts. Their key layouts are listed in `crates/app-sdk/AGENTS.md` (encoding contract), which the TypeScript SDK must match.
+In the Rust SDK an `UnorderedMap` reads in key order too (`page`, `range`, `prefix`, `first`, `last`), so it is also the `SortedMap`; `Set<T>` is both sets; `Cell<T>` holds one value, `Frozen<T>` content-addressed write-once values and `PerUser<T>` one value per caller account; `Text` / `RichText` are the Fugue texts. Their key layouts are listed in `crates/sdk/AGENTS.md` (encoding contract), which the TypeScript SDK must match.
 
 ### Tables with declared indexes (new, R2)
 
@@ -911,8 +911,8 @@ The v2 SDKs ship under new names, so the published v1 `calimero-sdk` crate stays
 
 | Package | Registry | For |
 | --- | --- | --- |
-| `calimero-app-sdk` | crates.io | Rust apps: macros, `env`, collections, tables |
-| `calimero-app-sdk` with feature `testing` | crates.io (dev-dependency) | Rust test harness |
+| `calimero-sdk` | crates.io | Rust apps: macros, `env`, collections, tables |
+| `calimero-sdk` with feature `testing` | crates.io (dev-dependency) | Rust test harness |
 | `@calimero/sdk` | npm | TypeScript apps |
 | `@calimero/sdk/testing` | npm (subpath) | TypeScript test harness |
 | `cargo-mero`, `@calimero/cli` (`mero`) | crates.io, npm | build (Rust for `wasm32-wasip2`, TypeScript with componentize-js 0.23 called directly; D45), codegen, deploy, local cluster |
@@ -952,7 +952,7 @@ Both languages declare the same things with the same names; the build turns them
 Rooms' `book`, input validation left out:
 
 ```rust
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 #[app::state(version = 1)]
 pub struct Rooms {

@@ -16,8 +16,8 @@
 //! As in v1, two accounts using one message, announcement or page id hold two
 //! independent rows, and listings show one row per author.
 
-use calimero_app_sdk::env::Caller;
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::env::Caller;
+use calimero_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// A written-once message of one channel.
@@ -91,7 +91,7 @@ pub struct MessageView {
     pub key: String,
     pub author: String,
     pub text: String,
-    #[serde(with = "calimero_app_sdk::json::u64_str")]
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub sent_at: u64,
 }
 

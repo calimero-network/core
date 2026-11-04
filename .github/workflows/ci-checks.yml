@@ -207,12 +207,13 @@ jobs:
       - name: Cargo test (standalone v2 apps)
         if: ${{ !cancelled() }}
         # Apps on the component SDK are workspaces of their own, so the workspace run above
-        # never reaches their harness tests. Each is found by its calimero-app-sdk dependency;
+        # never reaches their harness tests. Each is found by its calimero-sdk dependency (or
+        # calimero-app-sdk, the SDK's old name, while apps move over);
         # one target dir serves them all.
         env:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
-          for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
+          for manifest in $(grep -lE '^calimero-(app-)?sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
             cargo test --manifest-path "$manifest"
           done
 
@@ -224,7 +225,7 @@ jobs:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
           set -euo pipefail
-          for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
+          for manifest in $(grep -lE '^calimero-(app-)?sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
             cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
             cargo clippy --manifest-path "$manifest" --target wasm32-wasip2 -- -D warnings
             cargo build --manifest-path "$manifest" --release --target wasm32-wasip2

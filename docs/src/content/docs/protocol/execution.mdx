@@ -8,7 +8,7 @@ sidebar:
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 An **application** is a `calimero:app` component: a WASM component, built with
-`calimero-app-sdk`, that defines a state machine: its data types and the methods
+`calimero-sdk`, that defines a state machine: its data types and the methods
 that change them. An **execution** (a *run*) is one call of one method. On a
 cluster, only the app group's **leader** runs calls; the other replicas apply
 what the run produced ([Replication](/protocol/replication/)).

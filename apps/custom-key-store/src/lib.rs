@@ -15,7 +15,7 @@
 //! page) while staying a string part, so slugs sort and compare as their strings do. The
 //! same shape works for an id newtype over `[u8; 32]` (a bytes part) or a `u64` (an int part).
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 /// A normalized, lowercase slug used as a map key: one string key part.
 #[derive(Clone, PartialEq, Eq)]

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{Failure, Org, TestApp};
+use calimero_sdk::testing::{Failure, Org, TestApp};
 use serde_json::json;
 
 fn component() -> &'static [u8] {

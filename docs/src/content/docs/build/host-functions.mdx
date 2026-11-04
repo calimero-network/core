@@ -1,296 +1,106 @@
 ---
-title: Environment & host functions
-description: The env::* host functions the Calimero SDK exposes to your app — identity, output, logging, events, crypto, time, xcall, blobs, and private storage.
+title: The env API
+description: Reference for calimero_sdk::env and guards — the caller, the org, time, randomness, ids, events, cross-app calls, actions, timers and logging.
 sidebar:
-  label: Host functions
+  order: 4
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-Everything your app can ask the node to do at runtime goes through a host
-function. The SDK wraps each one as a plain Rust function under
-`calimero_sdk::env`, defined in `crates/sdk/src/env.rs`. On `wasm32` these call
-into the host across the WASM boundary; off-`wasm32` (the in-process test
-harness) they route to a native mock.
+`calimero_sdk::env` is an app's view of the host: everything outside its own
+state. In a component every function reaches the host through the
+`calimero:app` imports; in host-target tests they read a thread-local stand-in
+(`env::mock`). Source: `crates/sdk/src/env.rs`.
 
-This page is the app-author reference: *what can my app call, and what does it
-do*. For the wire-level ABI (registers, buffer descriptors, return-code
-conventions) see [`execution`](/protocol/execution/) and the runtime's
-`crates/runtime/HOST_FUNCTIONS.md`.
+## The caller and the org
 
-<Aside type="note">
-  Bring the functions into scope with `use calimero_sdk::env;` and call them as
-  `env::device_id()`, `env::log(..)`, and so on. Most apps reach for only a
-  handful — identity, logging, events, and time. State lives in CRDT
-  collections, not in raw `env::storage_*` calls; see
-  [`collections`](/build/collections/).
-</Aside>
+| Function | Returns |
+| --- | --- |
+| `env::caller()` | `Caller`: `Account(id)`, `ApiKey { key_id, account }`, `Public` (not signed in), `System` (the node: timers) or `App(id)` (a delivered cross-app call). |
+| `env::app_id()` | This app instance's id. |
+| `env::app_owner()` | The account that owns the app. |
+| `env::org()` | The app's organization, if it has one. |
+| `env::org_role(account)` | `Option<OrgRole>`: `Guest`, `Member`, `Admin` or `Owner`, ordered. |
+| `env::in_team(account, team)` | Whether `account` is in `team`. |
 
-## Context & identity
+`guards` turns those into checks that return an `AppError`
+(`crates/sdk/src/guards.rs`):
 
-Who is running, in which context, and on whose behalf.
+| Guard | Passes when |
+| --- | --- |
+| `guards::require_member()` | The caller acts for an account that is a member of the app's org, or more; returns the account. |
+| `guards::require_admin()` | The caller acts for an account that is an admin or the owner; returns the account. |
 
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::context_id() -> [u8; 32]` | The 32-byte ID of the context this execution runs in. | Same for every member of the context. Not an identity — don't use it to authorize a caller. |
-| `env::account_id() -> [u8; 32]` | The 32-byte account this call is authorized as — a **person**, not a machine. | The actor for per-user logic: `Map<account_id, Vote>` is one vote per person, whichever passkey (device) they signed in with. For a run the node fires itself (a handler, a timer, an xcall) it is the app's own id; see [Who a run acts as](/protocol/authorship/). |
-| `env::device_id() -> [u8; 32]` | The executor's 32 bytes: on a cluster, the caller's account, as `account_id()` and `executor_id()` are. | There are no per-device keys: two passkeys of one person are the same executor. A CRDT's own mechanics (an LWW tiebreak, a counter slot, an HLC seed) key off it. |
-| `env::xcall_origin() -> Option<[u8; 32]>` | The context that dispatched the current cross-context call, or `None` for a client's call. | Set by the node from the calling context — it cannot be forged. Return-`None` lets a method reject direct calls and require xcall-only invocation. |
-| `env::input() -> Option<Vec<u8>>` | The raw, undecoded input bytes for this call (typically JSON-encoded arguments). | `#[app::logic]` already decodes method arguments for you. You only need `input()` for custom entry points or raw payloads. |
-
-## Output
-
-How a method's return value (or error) leaves the WASM module.
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::value_return(result: &Result<T, E>)` | Sets the final return value — the `Ok` or `Err` variant the caller receives. | **Macro-driven.** You don't call this; the `#[app::logic]` codegen serializes your method's return value to JSON and calls it. |
-| `env::commit(root_hash: &[u8; 32], artifact: &[u8])` | Commits the execution's state root and the commit artifact the node turns into the run's diff. | **Macro-driven.** Emitted by the generated method wrapper. Called exactly once per mutating call; never call it yourself. |
-
-<Aside type="note">
-  `value_return` and `commit` are listed here so the model is complete, but
-  they're part of the generated method boundary. Returning a value (or an
-  `Err`) from your method is how you drive them — see
-  [`error-handling`](/build/error-handling/).
-</Aside>
-
-## Logging
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::log(message: &str)` | Appends a UTF-8 line to the execution log, surfaced in the node logs and the execution outcome. | Logs are bounded (`max_logs`, `max_log_size`). Prefer the `app::log!("..", x)` macro for formatting. Logging is a side effect, not state — it is not replicated. |
-
-### `tracing` integration
-
-With the optional `tracing` cargo feature enabled, the SDK installs a
-host-backed `tracing` subscriber at method entry (`env::init_logging()`, wired
-into every generated export). From then on, `tracing::info!`/`debug!`/… calls —
-**from your app and from any crate it depends on** — are formatted and forwarded
-to the same host log as `env::log`, with no per-app setup.
-
-<Aside type="caution" title="Default level is WARN, and DEBUG leaks storage internals">
-  The default forwarded level is **`WARN`**, not `INFO` — so `info!`/`debug!`
-  lines are silently dropped out of the box. (The default is deliberately
-  conservative: dependencies like `calimero_storage` log routine operations at
-  `INFO`, which would otherwise flood every execution's log buffer.) Retune it at
-  runtime with `env::set_log_level(LevelFilter::..)`; the change takes effect
-  immediately, even for the already-installed subscriber.
-
-  At `DEBUG` (and below), `tracing` from *every* crate compiled into the guest is
-  forwarded — including `calimero_storage` internals (keys, values, merge
-  detail). Those lines land in the persisted execution `Outcome`, so treat
-  `DEBUG` as a transient debugging aid, not something to leave on where the
-  `Outcome` is stored or exposed.
-</Aside>
-
-## Events
-
-Structured notifications for clients, delivered on the app's event stream
-(`GET /apps/{app}/events`, [Reads](/protocol/reads/#events)). An event type implements `AppEvent`; in practice you derive it with
-`#[app::event]`.
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::emit(event: &T)` | Emits an event with a `kind` and serialized `data`. | Bounded by `max_events` / `max_event_data_size`. Events are observational: they don't mutate state. They are part of the run's outcome, committed with its entry and streamed to clients. |
-| `env::emit_with_handler(event: &T, handler: &str)` | Emits an event and names a handler method to run after it is processed. | Handlers may run **in parallel** and out of order — they must be commutative, idempotent, and side-effect-free (CRDT-only). See the SDK `event` module notes. |
-
-<Aside type="tip">
-  Use `app::emit!(MyEvent { .. })` rather than calling `env::emit` directly —
-  the macro wires up `kind`/`data` for you. See
-  [`sdk-macros`](/build/sdk-macros/).
-</Aside>
-
-## Crypto
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool` | Verifies an Ed25519 signature over `message` for `public_key`. | Returns `true`/`false`; it does not bail on an invalid signature — check the bool. Has no native mock: it panics under `TestHost`. |
-
-### Example: accepting an off-chain-signed voucher
-
-A voucher is signed by a trusted issuer *off* the network; the app accepts it
-only if the signature checks out, then records the redemption and emits an event
-so off-chain consumers can react. This pairs `env::ed25519_verify` (trust the
-payload) with `app::emit!`/`env::emit` (announce the outcome).
+Both refuse system, public and app callers with `LoginRequired`, and an account
+below the role with `Forbidden`. With no org, the owner holds every role and any
+other account only `Member`. For other checks, match on `env::caller()` and
+`env::org_role(..)` directly.
 
 ```rust
-use calimero_sdk::{app, env};
-use calimero_storage::collections::UnorderedSet;
-
-#[app::state(emits = for<'a> Event<'a>)]
-pub struct Shop {
-    issuer_pk: [u8; 32],           // the trusted issuer's public key
-    redeemed: UnorderedSet<String>, // codes already used (anti-replay)
-}
-
-#[app::event]
-pub enum Event<'a> {
-    VoucherRedeemed { code: &'a str, amount: u64 },
-}
-
-#[app::logic]
-impl Shop {
-    pub fn redeem(
-        &mut self,
-        code: String,
-        amount: u64,
-        signature: [u8; 64],
-    ) -> app::Result<()> {
-        // The issuer signs the exact bytes `"<code>:<amount>"` off-chain.
-        // Reconstruct them identically and verify before trusting anything.
-        let message = format!("{code}:{amount}");
-        if !env::ed25519_verify(&signature, &self.issuer_pk, message.as_bytes()) {
-            app::bail!("invalid voucher signature");
-        }
-        // `ed25519_verify` returns a bool — a bad signature does not bail on
-        // its own, so the guard above is load-bearing.
-        if !self.redeemed.insert(code.clone())? {
-            app::bail!("voucher already redeemed");
-        }
-        app::emit!(Event::VoucherRedeemed { code: &code, amount });
-        Ok(())
-    }
+#[app::confirm]
+pub fn remove_member_item(&mut self, id: String) -> app::Result<()> {
+    guards::require_admin()?;
+    self.items.remove(&id)?;
+    Ok(())
 }
 ```
 
-`UnorderedSet::insert` returns `false` when the value was already present, which
-doubles as the anti-replay check. The signed `message` must be byte-identical to
-what the issuer signed — a different separator or number format fails
-verification.
+See [Access control](/core/build/guides/access-control/) for the full pattern.
 
-## Time & randomness
+## Time, randomness and ids
+
+| Function | Returns |
+| --- | --- |
+| `env::time_now()` | Milliseconds since the epoch. A logged run sees its entry's timestamp, so every replica agrees. |
+| `env::random_bytes(len)` | `len` bytes, seeded per logged run: deterministic when replayed. |
+| `env::unique_id()` | `<leader term>.<call seq>.<n>`, unique across the app. Prefer it to counting with a `Counter`. |
+| `env::applied_index()` | The log index this run applies on top of. |
+| `env::timer()` | In an `#[app::every]` method, the tick (`scheduled`, `previous`); otherwise `None`. |
+
+## Events
+
+```rust
+env::emit(Event::Booked { id, room_id, start }, Audience::All)?;
+```
+
+`env::emit(event, audience)` takes an `#[app::event]` value;
+`env::emit_raw(name, &data, audience)` takes any serde value. `Audience` is
+`All`, `Caller`, `Accounts(Vec<String>)`, `Team(id)`, `Org` or `OrgAdmins`.
+Events are delivered once the entry commits. See [Events](/core/build/guides/events/).
+
+## Cross-app calls
+
+| Function | Does |
+| --- | --- |
+| `env::xcall(app, method, &args)` | Sends a message delivered after this run commits, only if it succeeds, at least once and in order per sending app. The target must be in the same org (or have the same owner) and allow this app. |
+| `env::xcall_call::<T>(app, method, &args)` | Calls the target now and decodes its result as `T`. |
+| `env::xcall_view::<T>(app, method, &args)` | Reads the target now. |
+
+A failed `xcall_call`/`xcall_view` is `AppError` `XcallFailed` carrying the
+target's error. See [Cross-app calls](/core/build/guides/cross-context/).
+
+## Outbound HTTP and actions
+
+`env::fetch(&Request)` makes an HTTP request from a call, timer or delivery,
+to an origin the app's owner approved; `env::start_action(method, &args)`
+starts an `#[app::action]` method and returns its key. See
+[Outbound](/core/build/guides/outbound/).
+
+## Files, blobs and search
+
+`calimero_sdk::files` writes and reads sealed files (`files::create()`,
+`files::open(&BlobRef)`); `BlobRef::info` and `BlobRef::grant` wrap
+`env::blob_info` and `env::blob_grant`. `Table::search` wraps
+`env::search_query`. See [Blobs](/core/build/guides/blobs/) and
+[Search](/core/build/guides/search/).
+
+## Logging
+
+`env::log(message)` writes a line to the run's log. The host keeps 64 KiB per
+run.
 
 <Aside type="note">
-  Only the app's leader runs a call, and the other replicas apply the diff it
-  wrote, so a value read from `time_now` or `random_bytes` is read once and
-  every replica holds the same result ([Execution](/protocol/execution/)).
-  A run that a leader change makes run again reads them again.
+  Every function is deterministic within a logged run: the leader runs the call
+  once, and followers apply its diff without running it again
+  ([Execution](/core/protocol/execution/)).
 </Aside>
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::time_now() -> u64` | The current Unix timestamp in **nanoseconds**. | The leader's wall clock. |
-| `env::random_bytes(buf: &mut [u8])` | Fills `buf` with random bytes from the host. | The leader's randomness. Under the test harness it is a deterministic, **non-cryptographic** PRNG: don't rely on it for security in tests. |
-| `env::tee_random_bytes(buf: &mut [u8])` | Fills `buf` with randomness drawn inside an attested TEE. | Traps outside a TEE-triggered run (an `#[app::tee]` method the TEE scheduler fired). See [TEE authorship](/protocol/tee-authorship/). |
-| `env::tee_origin() -> bool` | Whether this run was fired by the TEE scheduler as the TEE authority. | Set by the node, never by a caller. `#[app::tee]` checks it for you. |
-| `env::seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>>` | Seals `plaintext` so that only a run whose executor is `key` can open it, and only in the context it was sealed in. | Proves confidentiality, never authorship: anyone who knows a key can seal to it. Keep what the TEE seals in `TeeOnly` state. `None` if `key` is not a usable Ed25519 point. |
-| `env::open_sealed(sealed: &[u8]) -> Option<Vec<u8>>` | Opens an envelope sealed to this run's executor key, or, in a TEE-triggered run, to the app's TEE key. | `None` for an envelope sealed to another key or in another context. Prefer `Sealed<T>` / `TeeSecret<T>` from `calimero-storage`. |
-| `env::tee_sealing_key() -> Option<[u8; 32]>` | The app's TEE key, which a value only the TEE may read is sealed to. The node derives it per app: the cluster is every app's TEE. | Every run: the key is public. |
-| `env::tee_authority_keys() -> Vec<[u8; 32]>` | The keys a value only the TEE may read is sealed to: the app's TEE key. | TEE-triggered runs only. `TeeSecret<T>` seals to these on every write. |
-| `env::account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]>` | The key standing for `account` in this app, which the node derives per app and account: what a value only that member may read is sealed to, so their own runs open it. Empty for an account that does not reach the app. | TEE-triggered runs only. `Sealed::to_account` seals to these. |
-
-## Shared writer sets
-
-A `SharedStorage` cell keeps its writer set beside the cell, in the host's key space, not in the cell. Rotating it is a request your run records; the node checks it after the run and writes the new set in the same entry ([Execution](/protocol/execution/#what-the-node-checks-after-the-run)). You rarely call these directly: `SharedStorage` and the collections built on it do.
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::shared_writers(cell: &[u8; 32]) -> Option<Option<Vec<u8>>>` | The borsh-encoded writers of `cell` in the state this run reads. `None` if they cannot be resolved, `Some(None)` if no rotation took effect (the set stored with the cell stands), `Some(Some(bytes))` for a rotated set. | Fail closed on `None`. Under `TestHost` every cell is at genesis. |
-| `env::shared_writers_rotate(rotation: &[u8])` | Records a borsh-encoded rotation request on the run's outcome. | Nothing is stored by the run: the node writes the new set if the rotation holds. The run itself reads the new set back at once. At most 64 requests per run, 256 writers per set. |
-
-## Cross-context calls
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::xcall(context_id: &[u8; 32], function: &str, params: &[u8])` | Queues a call to `function` in another context of the same organization, run by that context's leader **after** this entry commits. | Fire-and-queue: it returns no value to the caller and is not executed inline. The target method must be `#[app::xcall]`. Has no native mock (panics under `TestHost`). Prefer the typed `#[app::xcall]` surface. |
-
-See [`xcall`](/protocol/xcall/) for the dispatch and authorization model, and
-[`advanced-sdk`](/build/advanced-sdk/) for the typed wrapper.
-
-## Blobs
-
-Streaming large binary objects. You write through a handle, finalize to get a
-content-addressed 32-byte ID, then the context's app can open that ID for reading.
-A blob is the app's when its state marks it (the app wrote it, or a client
-uploaded it to the app); a node that misses the bytes fetches them from
-another node of the cluster.
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::blob_create() -> u64` | Opens a new write handle; returns a file descriptor. | The descriptor is only valid for this execution. |
-| `env::blob_write(fd: u64, data: &[u8]) -> u64` | Appends `data` to the write handle; returns bytes written. | Stream in chunks for large payloads rather than one huge buffer. |
-| `env::blob_close(fd: u64) -> [u8; 32]` | Finalizes a write handle and returns the blob's 32-byte ID (or, for a read handle, returns its ID and cleans up). | Panics if finalization fails. The ID is content-addressed — identical bytes yield the same ID. |
-| `env::blob_open(blob_id: &[u8; 32]) -> u64` | Opens an existing blob for reading; returns a file descriptor. | The blob must be the app's (its state marks it). Any other blob traps with `BlobNotHeldForContext`. |
-| `env::blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64` | Opens one of the app's blobs, as `blob_open` does. | `context_id` must be `env::context_id()`; any other traps with `BlobContextMismatch`. Returns `0` if the blob is not the app's. |
-| `env::blob_read(fd: u64, buffer: &mut [u8]) -> u64` | Reads into `buffer`; returns bytes read. | Returns `0` at end of blob — loop until it does. |
-| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Whether the blob is the app's. A cluster has nothing to announce: every node holds or fetches the app's blobs. | A context may only name **itself**: the SDK returns `false` for any other `target_context_id`, and the host traps with `BlobContextMismatch`. |
-
-See [Blobs](/protocol/blobs/) for how the cluster stores them.
-
-## Search
-
-Full-text search over the app's indexes on the node that runs the view; most apps use the
-typed `calimero_sdk::search` API on top of it. See
-[Search your app's data](/build/guides/search/).
-
-| Function | What it does | Notes |
-| --- | --- | --- |
-| `env::search(request: &SearchRequest) -> Result<SearchResponse, String>` | Queries this context's index `request.index`; hits are entity ids, best first. | Views only: a mutating method that calls it traps. Charged `8,000 + 25·matched + 18,500·hits + 125·response bytes` gas; at most 32 calls per execution. `Err` is the node's refusal (unknown field, substring under 3 characters). |
-
-## Private storage
-
-The caller's own key/value space in the app's state: replicated with it and
-sealed on disk like the rest, but handed only to runs whose caller is that
-account. App code cannot address another account's space
-([Execution](/protocol/execution/#three-storage-spaces-in-one-state)).
-
-| Function | What it does | Gotcha |
-|----------|--------------|--------|
-| `env::private_storage_read(key: &[u8]) -> Option<Vec<u8>>` | Reads a value from the caller's space. | `None` means "no such key", or a run with no caller account (a public call). |
-| `env::private_storage_write(key: &[u8], value: &[u8]) -> bool` | Writes a value to the caller's space. | Returns `true` on success, `false` if the run has no private space. This bool is success/failure, unlike `storage_write`, whose bool means "a previous value was evicted". |
-| `env::private_storage_remove(key: &[u8]) -> bool` | Removes a value from the caller's space. | `true` if the key existed and was removed, `false` if absent or unavailable. |
-
-See [Access-controlled storage](/build/permissioned-storage/#the-callers-private-state)
-for `#[app::private]`, the typed layer on top.
-
-## JS runtime collection bridge
-
-The Rust SDK calls the storage layer directly, so its CRDT writes flow into the
-Merkle DAG and the outcome artifact automatically. The QuickJS runtime cannot —
-JavaScript has no access to the Rust storage interface. Instead it funnels its
-state back through a dedicated set of host functions that reproduce, host-side,
-what the Rust SDK does in-process. These are defined in
-`crates/runtime/src/logic/host_functions/system.rs` and `js_collections.rs`.
-
-The root-state bridge keeps the storage tree and the outcome artifact in step:
-
-| Host function | Role |
-|---------------|------|
-| `persist_root_state(doc_ptr, created_at, updated_at)` | Saves the serialized root document through the storage interface (recomputing parent hashes and emitting a CRDT action) rather than writing raw bytes. Its writes are held to the `storage_write` caps and per-execution write budget. |
-| `read_root_state(register_id) -> i32` | Loads the persisted root document into a register; returns `1` if it exists, `0` if not. |
-| `apply_storage_delta(delta_ptr)` | Applies a Borsh-encoded `StorageDelta`, updating CRDT entities and the root atomically, then refreshes the root hash. Its writes are held to the `storage_write` caps and per-execution write budget. |
-| `flush_delta() -> i32` | Emits the CRDT actions recorded since the last flush into the run's artifact; returns `1` if there were any, `0` if there was nothing to commit. |
-
-<Aside type="caution" title="The collection bridge uses a different error ABI">
-  The `js_crdt_*` and `js_user_storage_*` collection host functions (e.g.
-  `js_crdt_map_insert`, `js_user_storage_insert`) do **not** trap on error. They
-  return `i32` where:
-
-  - `1` — success *with* a result (e.g. a previous value was written into the
-    destination register),
-  - `0` — success with *no* result (not found / no previous value),
-  - `-1` — **error**, with the error message written as UTF-8 into the
-    destination register (see `write_error_message` in `js_collections.rs`).
-
-  So a caller that checks `result == 1` to mean "ok" silently swallows both the
-  legitimate `0` case **and** the `-1` error case — the error string sits unread
-  in the register and execution continues as if nothing failed. The correct
-  pattern is to treat `-1` as the error branch (read the message out of the
-  register) and `0`/`1` as the two success shapes.
-  A write over the storage caps or past the execution's write budget is the
-  exception: it traps, like `storage_write`.
-</Aside>
-
-<Aside type="caution">
-  The cross-context, blob and signature helpers have no in-process mock and
-  panic under `TestHost`, and `http_request` answers `Err` there: test the
-  logic around them by passing their results in.
-</Aside>
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Execution & ABI" href="/protocol/execution/" description="The wire-level contract behind every env::* call — registers, buffers, return codes." />
-  <LinkCard title="Error handling" href="/build/error-handling/" description="How returning Ok/Err drives value_return and reaches the caller." />
-  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Typed wrappers over xcall, events, and the lower-level surface." />
-</CardGrid>

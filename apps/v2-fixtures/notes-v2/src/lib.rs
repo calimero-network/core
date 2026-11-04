@@ -4,7 +4,7 @@
 //! `Wiped` event, and the state is at version 2 with an `archive` table.
 //! Method names and arguments are the ABI's camelCase ones.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
 
 #[derive(Record)]
 #[table(key = "id")]

@@ -1,6 +1,6 @@
 # indexed-issue-tracker
 
-An issue tracker on the component SDK (`calimero-app-sdk`) whose list views are
+An issue tracker on the component SDK (`calimero-sdk`) whose list views are
 index seeks instead of scans over every issue. The v1 version was the example
 for `IndexedMap` + `#[derive(app::Indexed)]`; here a `Table` declares the
 lookups:

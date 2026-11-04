@@ -19,7 +19,7 @@ freezes, restarts, upgrades) is covered by the process suite, which runs one
 | Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext on disk, the `log.redb` migration | Seconds |
 | Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
-| App logic | `TestApp` in `crates/app-sdk/src/testing.rs` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |
+| App logic | `TestApp` in `crates/sdk/src/testing` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |
 | Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
 | Process suite | `crates/node/tests/fault/suite.py` | Separate `merod run --dev` processes: a crash, a freeze and a restart, a frozen leader, orgs and keys, signed packages, a rolling upgrade under load, the kv-store soak | Minutes |
 
@@ -70,21 +70,15 @@ what the client sees. Name it for the behaviour
 (`teams_work_like_v1_subgroups`,
 `a_node_added_to_a_running_cluster_hosts_replicas`).
 
-## App logic: `TestHost` and `converge`
+## App logic: `TestApp`
 
-[`TestHost`](https://github.com/calimero-network/core/blob/master/crates/sdk/src/testing.rs)
-runs an `#[app::state]` type as plain Rust: `call`, `view`, `events()`,
-`logs()`, `migrate`, `set_caller_org`. It does not run xcalls, networked blobs
-or event-handler dispatch. `converge` / `converge_app` in
-[`crates/storage/src/testing.rs`](https://github.com/calimero-network/core/blob/master/crates/storage/src/testing.rs)
-asserts that a state type reaches the same root on N in-memory replicas under
-reordered operations. The app-author guide is [Testing your app](/build/testing/).
-
-<Aside type="note">
-  An app instance's calls are applied in one order by its Raft log, so the
-  node never merges concurrent writes; `converge` checks the storage format's
-  own merge rules.
-</Aside>
+`calimero-sdk`'s `testing` feature (`crates/sdk/src/testing`) runs an app as
+the real `calimero:app` component on the real wasmtime engine with an
+in-memory host: `TestApp::new`, `as_(account).call(..)` / `.view(..)`,
+`events_for`, `tick`, `advance`, `mock_http`, `take_xcalls` / `deliver`, and
+`run_scenario` for the shared JSON scenarios below. A component app's own
+`tests/` use it (`cargo test --manifest-path apps/<app>/Cargo.toml`); the app
+author's view is [Testing apps](/build/testing/).
 
 ## Scenarios
 
@@ -138,7 +132,7 @@ building that app's component, and the blobs size sweep's
 ### App-level scenarios
 
 `apps/<app>/scenarios/<name>.json` is the step array of
-`calimero_app_sdk::testing::scenario` (`call`, `view`, `tick`, `advance`,
+`calimero_sdk::testing::scenario` (`call`, `view`, `tick`, `advance`,
 `removeMember`; `as`, `expect`, `save`, `$var`, `@account`, `events`), the same
 file the app's own `tests/scenarios.rs` runs in the harness. Beside it,
 `<name>.org.json` is the organization it needs:
@@ -426,7 +420,7 @@ gates; latency gates nothing.
 `ci-checks.yml`'s `Rust tests` job runs each component app's own `cargo test`
 (its `tests/harness.rs` and its app-level scenarios on `TestApp`), then clippy
 with `-D warnings` on the host and on `wasm32-wasip2` and the app's release
-`wasm32-wasip2` build. The apps are found by their `calimero-app-sdk`
+`wasm32-wasip2` build. The apps are found by their `calimero-sdk`
 dependency.
 
 Nothing has to list a scenario for it to run: the runner discovers every file
@@ -643,5 +637,5 @@ seconds-long p99 with two leader nodes (c') is gone.
 
 <CardGrid>
   <LinkCard title="Development workflow" href="/contribute/development/" description="Build, run local nodes, and the checks before a PR." />
-  <LinkCard title="Testing your app" href="/build/testing/" description="TestHost from the app author's side." />
+  <LinkCard title="Testing apps" href="/build/testing/" description="TestApp and scenarios from the app author's side." />
 </CardGrid>

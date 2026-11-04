@@ -1,6 +1,6 @@
 ---
 title: Who a run acts as
-description: How a run is attributed — the caller kinds, what the app reads as its account, the app's own runs, the TEE authority, private spaces and sealed shares.
+description: How a run is attributed — the caller kinds an app sees, the node's own runs, and why the log, not a signature, records who asked.
 sidebar:
   order: 13
 ---
@@ -13,76 +13,31 @@ says who asked, and the leader that ran it is the cluster.
 ## Caller kinds
 
 The API builds the caller from the request's credential; a client cannot name
-one (`types::Caller`).
+one. An app reads it with `env::caller()` (`crates/sdk/src/env.rs`):
 
-| Caller | When | `env::account_id()` and `env::executor_id()` |
-| --- | --- | --- |
-| `Account { account }` | A passkey session | The account's 32 bytes |
-| `ApiKey { key, account }` | An API key | The key's account |
-| `Public` | No credential, on an app with `access: public` | 32 zero bytes |
-| `App { app }` | The node runs the app itself: an event handler, a timer, or an xcall from app `app` | That app's context id, `SHA-256(app_id)` |
+| `Caller` | When |
+| --- | --- |
+| `Account(id)` | A passkey session. |
+| `ApiKey { key_id, account }` | An API key acting for `account`. |
+| `Public` | No credential, on a public app, for a `#[app::public]` method. |
+| `System` | The node itself: a timer tick (`#[app::every]`). |
+| `App(id)` | A message or synchronous call from app `id` ([Cross-app calls](/protocol/xcall/)). |
 
-`env::context_id()` is the running app's own context id, and `env::caller_org()`
-is the caller's standing in the app's organization (its id, role and teams), or
-nothing. A person has one identity everywhere: there are no device keys,
-so apps that tell people apart by `executor_id` still do, and two of one
-person's devices are the same author.
+A person has one identity everywhere: an account is the same on every device,
+so two of one person's devices are the same caller.
 
-## The app's own runs
+## The org the app sees
 
-Some runs are the node's, not a person's:
+`env::org()` is the app's organization, `env::org_role(account)` an account's
+role in it (`Guest`, `Member`, `Admin`, `Owner`), and `env::in_team(account,
+team)` its teams. The node answers from the system group's state at the entry
+the run applies on, so every replica agrees. With no organization, the owner
+holds every role ([Access control](/build/guides/access-control/)).
 
-- **Event handlers** run after the entry that emitted the event, as
-  `App { app: itself }`. Only methods the ABI marks `#[app::handler]` may run
-  this way.
-- **Cross-app calls** run in the target app as `App { app: origin }`, with
-  `env::xcall_origin()` set to the calling app's context id. Only
-  `#[app::xcall]` entry points may run this way, under the rules in
-  [Event handlers & cross-app calls](/protocol/xcall/).
-- **Timers** (`#[app::tee(every = "…")]`) and **`tee:` handlers** run as the
-  app's **TEE authority** (below).
+## The node's own runs
 
-Such a run cannot rotate a shared cell's writers, and is never a read-only
-member, so it gets the outbound client the app's approvals allow.
-
-## The TEE authority
-
-Some state must be written only by code no member controls. The cluster *is*
-every app's TEE: every node is attested, and a run the leader fires on its own
-is the TEE's.
-
-A timer run and a `tee:` handler author as `AccountId::TEE_AUTHORITY` with
-`tee_trigger` set, which is the one writer `TeeOnly` state admits. The runtime
-refuses a member's run that tries to write it, so no person can forge it. The
-leader fires each timer method once per period (the last tick per method is in
-the app's state), and a new leader neither skips nor repeats a tick.
-
-## Sealed values
-
-The sealing host functions (`TeeSecret`, sealing to a member) work with keys
-the node derives from the storage key for each app
-([Encryption](/protocol/encryption/#keys-derived-from-k_r)):
-
-- **The app's TEE key** opens and seals what only the app's TEE may read. Its
-  public half is what `env::tee_sealing_key()` answers. TEE runs open with it;
-  no member's run does.
-- **A member key per account** stands in for that member's devices. A TEE run
-  that seals a share for a member seals it to their member key; only a run whose
-  caller is that member opens it with that key; a member reads through the
-  node.
-
-## Private spaces
-
-`env::private_storage_*` is the caller's own space in the app's state
-(`\0calimero.private\0 ‖ account ‖ 0`). It is replicated and sealed like the
-rest of the state, but the host hands each run only its caller's space, and app
-code cannot reach the host's key space by raw key. A run with no account
-(`Public`, `App`) has no private space.
-
-## Writers of shared cells
-
-`SharedStorage` cells keep a writer set with per-writer masks. A rotation a run
-asks for takes effect with the run's other writes, only if the run's account
-holds `ADMIN` in the set in effect, and never from a TEE run, an app's own run
-or a public call. The node writes the new set beside the cell in the app's state
-(`app::writers_key`). See [Application execution](/protocol/execution/#what-the-node-checks-after-the-run).
+Timers run as `System` and cross-app deliveries as `App(source)`; neither has
+an account, so `guards::require_member()` refuses them with `LoginRequired`. A
+method that should run this way says so in its ABI: `allow(system)` (implied by
+`every`) or `allow(app = ..)`, and the node refuses every other caller kind for
+it.

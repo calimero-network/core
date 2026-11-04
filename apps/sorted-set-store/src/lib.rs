@@ -5,8 +5,8 @@
 //! `prefix` / `page` / `first` / `last` read a slice of the set without loading all of it.
 //! Think of it as a `BTreeSet`.
 
-use calimero_app_sdk::prelude::*;
-use calimero_app_sdk::StorageError;
+use calimero_sdk::prelude::*;
+use calimero_sdk::StorageError;
 
 #[app::state(version = 1)]
 pub struct SortedSetStore {

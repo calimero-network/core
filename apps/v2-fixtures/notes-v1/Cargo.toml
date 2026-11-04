@@ -9,7 +9,7 @@ description = "Cluster-test fixture on the v2 app SDK: release 1.0.0 of the cons
 crate-type = ["cdylib"]
 
 [dependencies]
-calimero-app-sdk = { path = "../../../crates/app-sdk" }
+calimero-sdk = { path = "../../../crates/sdk" }
 
 # Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
 [workspace]

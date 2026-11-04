@@ -15,6 +15,20 @@
   every session of the account and signs in, with the sign-in proof #4849
   requires. `/auth/me` shows `recoveryCode` and `recoveryPending`.
 
+### Changed
+
+- **The component SDK is `calimero-sdk`** (was `calimero-app-sdk`), with its
+  attributes in `calimero-sdk-macros` (was `calimero-app-sdk-macros`):
+  `crates/sdk`, `crates/sdk-macros`, `use calimero_sdk::prelude::*;`. The name
+  was freed when SDK 0.12 was deleted. `calimero-app-sdk` stays for now as a
+  crate that only re-exports `calimero-sdk`, so an app that has not moved
+  still builds: the `app` attributes expand to paths through whichever name the
+  app's `Cargo.toml` lists (`proc-macro-crate`), or the name a renamed
+  dependency gives it. To move an app, depend on `calimero-sdk` instead and
+  replace `calimero_app_sdk` with `calimero_sdk`; `calimero-app-sdk` is deleted
+  once no app depends on it. The node's refusals of SDK 0.12 apps now say to
+  rebuild with `calimero-sdk`.
+
 ### Security
 
 - **Sessions, counters, key revocations and sign-ups carry their proofs at

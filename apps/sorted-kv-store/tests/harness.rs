@@ -4,7 +4,7 @@
 
 mod common;
 
-use calimero_app_sdk::testing::{Org, TestApp};
+use calimero_sdk::testing::{Org, TestApp};
 use serde_json::{json, Value};
 
 fn app() -> TestApp {

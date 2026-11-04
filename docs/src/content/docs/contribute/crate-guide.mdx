@@ -56,7 +56,8 @@ changing these.
 | `crates/app-wit` | `calimero-app-wit` | The `calimero:app` WIT world and its import allow-list. |
 | `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. |
 | `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. |
-| `crates/app-sdk` (+ `app-sdk-macros`) | `calimero-app-sdk`, `calimero-app-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
+| `crates/sdk` (+ `sdk-macros`) | `calimero-sdk`, `calimero-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
+| `crates/app-sdk` | `calimero-app-sdk` | The SDK's old name: re-exports `calimero-sdk`, kept until no app depends on it. |
 | `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components (`mero-app-build`). |
 
 ## Shared types

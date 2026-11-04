@@ -4,7 +4,7 @@
 
 mod common;
 
-use calimero_app_sdk::testing::run_scenario;
+use calimero_sdk::testing::run_scenario;
 
 #[test]
 fn every_scenario_passes() {

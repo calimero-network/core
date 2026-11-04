@@ -23,7 +23,8 @@ members = [
     "./crates/app-engine-wasmtime",
     "./crates/app-host",
     "./crates/app-sdk",
-    "./crates/app-sdk-macros",
+    "./crates/sdk",
+    "./crates/sdk-macros",
     "./crates/app-wit",
     "./crates/build-utils",
     "./crates/bundle",
@@ -75,6 +76,7 @@ indexmap = "2.6.0"
 libc = "0.2"
 libp2p-identity = "0.2.12"
 multiaddr = "0.18.1"
+proc-macro-crate = "3.4"
 proc-macro2 = "1.0"
 proptest = "1.12.0"
 quote = "1.0.37"
@@ -129,7 +131,8 @@ calimero-app-build = { path = "./crates/app-build" }
 calimero-app-engine-wasmtime = { path = "./crates/app-engine-wasmtime" }
 calimero-app-host = { path = "./crates/app-host" }
 calimero-app-sdk = { path = "./crates/app-sdk" }
-calimero-app-sdk-macros = { path = "./crates/app-sdk-macros" }
+calimero-sdk = { path = "./crates/sdk" }
+calimero-sdk-macros = { path = "./crates/sdk-macros" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-outbound = { path = "./crates/outbound" }
