@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use calimero_log::{
-    BoxFuture, Engine, Group, GroupId, NodeId, Proposal, RpcRequest, RpcResponse, Transport,
-    WriteError,
+    BoxFuture, Engine, Group, GroupId, NodeId, RpcRequest, RpcResponse, Transport, WriteError,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -16,16 +15,13 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::app::{
-    AppCmd, AppMachine, Applied, CallEntry, Executor, FollowUp, Outcome, RunEnv, Status, Trigger,
-};
+use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
-use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
-use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
-use crate::usage::{Kind as RunKind, Meter, Usage};
+use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord};
+use crate::usage::{Meter, Usage};
 
 mod component;
 
@@ -205,13 +201,6 @@ pub struct CallRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub consent: Option<Value>,
-    /// Raw input instead of `args` (an event handler's event, an xcall's params).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<calimero_log::Bytes>,
-    /// Why the node runs it itself; `None` for a request. Peers pass it along
-    /// on `internal/call`, which only peers reach.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<Trigger>,
     /// One of the node's own commands ([`HOST_METHODS`]), which the node
     /// issues itself once the API has judged who may. Never set from a
     /// client's request; peers pass it along on `internal/call`.
@@ -257,8 +246,6 @@ impl CallRequest {
             caller,
             idempotency_key: None,
             consent: None,
-            input: None,
-            trigger: None,
             host: false,
             xcall: None,
             action: None,
@@ -273,14 +260,6 @@ impl CallRequest {
         Self {
             host: true,
             ..Self::new(app_id, method.to_owned(), args, caller)
-        }
-    }
-
-    fn input_bytes(&self) -> Vec<u8> {
-        match &self.input {
-            Some(b) => b.0.clone(),
-            None if self.args.is_null() => Vec::new(),
-            None => serde_json::to_vec(&self.args).unwrap_or_default(),
         }
     }
 }
@@ -376,8 +355,6 @@ pub struct Node {
     pub engine: Arc<Engine>,
     pub system: Arc<Group<SystemMachine>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
-    /// Runs the apps whose bundle is a v1 core module (wasmer).
-    pub executor: Executor,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them, spec section 5); compiled artifacts cached under
     /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
@@ -467,14 +444,8 @@ pub struct Node {
     promoting: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
-    /// Full-text search over the apps hosted here.
-    pub search: Search,
-    /// The same for component apps (spec section 7).
+    /// Full-text search over the apps hosted here (spec section 7).
     pub component_search: crate::component::search::ComponentSearch,
-    /// ABI facts per bundle hash.
-    facts: Mutex<HashMap<String, Arc<BundleFacts>>>,
-    /// Wakes the follow-up driver: an entry may have queued work.
-    pub kick: tokio::sync::Notify,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
@@ -570,11 +541,11 @@ impl Transport for PeerTransport {
     }
 }
 
-/// What the wasmer path answers a component app that reaches it: its
-/// commands (follow-ups, xcalls) are the wasmer executor's; a component's blobs
-/// are its own host records (R8) and it has no xcalls until D25.
+/// What the node answers a component app's call that reaches its own commands
+/// path: a component's calls are `call_component`'s, its blobs its own host
+/// records (R8).
 pub const COMPONENT_REFUSES: &str =
-    "this app is a component: the wasmer executor's commands (xcalls, follow-ups) do not reach it";
+    "this app is a component: its calls are not the node's own commands";
 
 /// The error of a call a read-only member made that would have written.
 pub const READ_ONLY: &str = "read-only in this team: the call would write";
@@ -703,7 +674,6 @@ impl Node {
             engine: Arc::clone(&engine),
             system,
             apps: RwLock::new(HashMap::new()),
-            executor: Executor::default(),
             wasm,
             prepared: Mutex::new(HashMap::new()),
             preparing: Mutex::new(HashMap::new()),
@@ -750,10 +720,7 @@ impl Node {
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
-            search: Search::default(),
             component_search: crate::component::search::ComponentSearch::default(),
-            facts: Mutex::new(HashMap::new()),
-            kick: tokio::sync::Notify::new(),
             this: Mutex::new(Weak::new()),
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
@@ -1668,22 +1635,20 @@ impl Node {
                     continue;
                 }
             };
-            // A wasmer app is initialized once it has a bundle; a component app may
-            // be given one by an upgrade before its init applied (its init timed
-            // out), and still needs its init then, on that bundle.
-            let needs_init = g.read_local(|m, _| {
-                !m.state.initialized
-                    && (m.state.bundle.is_none()
-                        || (m.state.executor() == Some(Kind::Component)
-                            && m.state.init_error.is_none()))
-            });
+            // An SDK 0.12 app runs nothing here, its init included. A component app
+            // may be given a bundle by an upgrade before its init applied (its init
+            // timed out), and still needs its init then, on that bundle.
+            let needs_init = app.executor == Kind::Component
+                && g.read_local(|m, _| {
+                    !m.state.initialized
+                        && (m.state.bundle.is_none()
+                            || (m.state.executor() == Some(Kind::Component)
+                                && m.state.init_error.is_none()))
+                });
             if needs_init && g.status().is_leader {
-                if let Err(e) = self.init_app(&g, &app).await {
+                if let Err(e) = self.init_component(&g, &app).await {
                     debug!(app = %app.app_id, error = %e.message, "init not yet possible");
                 }
-            }
-            if g.status().is_leader {
-                self.drive(&g, &app).await;
             }
         }
         // Stop groups this node no longer replicates.
@@ -1705,7 +1670,6 @@ impl Node {
                         .find(|a| a.group == group)
                         .map(|a| a.app_id.clone())
                 }) {
-                    self.search.drop_app(&app);
                     self.component_search.drop_app(&app);
                 }
                 let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
@@ -1808,7 +1772,7 @@ impl Node {
         app_id: &str,
         bundle: &str,
         sent: Arc<std::sync::atomic::AtomicU64>,
-    ) -> Option<Arc<dyn calimero_runtime::logic::OutboundHost>> {
+    ) -> Option<Arc<dyn calimero_outbound::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
         let release = self.release_of(bundle)?;
         let (identity, approval) = self.sys(|s| {
@@ -1837,104 +1801,6 @@ impl Node {
         )
     }
 
-    /// What a run of `app_id` by `caller` is handed besides its call.
-    fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
-        let opener = caller.account().map(|a| {
-            Arc::new(calimero_primitives::identity::PrivateKey::from(
-                crate::backup::member_key(&self.cluster_key, app_id, a),
-            ))
-        });
-        RunEnv {
-            org: self.sys(|s| crate::app::caller_org(s, app_id, caller)),
-            blobs: Some(Arc::new(AppBlobs {
-                node: self.this.lock().map(|w| w.clone()).unwrap_or_default(),
-            })),
-            sealing: calimero_runtime::logic::SealingContext {
-                opener,
-                namespace_sealing_key: Some(self.tee_sealing_key(app_id)),
-                ..Default::default()
-            },
-            ..RunEnv::default()
-        }
-    }
-
-    /// The sealing keys of a run the node fires as the app's TEE: it opens
-    /// with the app's TEE key, seals to it, and seals a member's share to the
-    /// key standing for that member (every account that may reach the app).
-    fn tee_sealing(&self, app_id: &str) -> calimero_runtime::logic::SealingContext {
-        use calimero_primitives::identity::PrivateKey;
-        let tee = PrivateKey::from(crate::backup::tee_key(&self.cluster_key, app_id));
-        let accounts: Vec<String> = self.sys(|s| {
-            let Some(app) = s.apps.get(app_id) else {
-                return Vec::new();
-            };
-            let mut out: Vec<String> = vec![app.owner.clone()];
-            match &app.access {
-                crate::types::Access::Accounts { accounts } => out.extend(accounts.iter().cloned()),
-                crate::types::Access::Org => {
-                    if let Some(org) = app.org.as_ref().and_then(|o| s.orgs.get(o)) {
-                        out.extend(org.members.keys().cloned());
-                    }
-                }
-                _ => {}
-            }
-            out.sort();
-            out.dedup();
-            out
-        });
-        // A member's one "device" is their account, which is what their runs
-        // see as `env::device_id()`; sealing to it seals to their member key.
-        let mut account_devices = BTreeMap::new();
-        let mut stand_ins = BTreeMap::new();
-        for a in &accounts {
-            let key = PrivateKey::from(crate::backup::member_key(&self.cluster_key, app_id, a));
-            let id = Caller::Account { account: a.clone() }.account_bytes();
-            let _prev = account_devices.insert(id, vec![id]);
-            let _prev = stand_ins.insert(id, *AsRef::<[u8; 32]>::as_ref(&key.public_key()));
-        }
-        calimero_runtime::logic::SealingContext {
-            tee_authority_keys: vec![*AsRef::<[u8; 32]>::as_ref(&tee.public_key())],
-            opener: Some(Arc::new(tee)),
-            vault_keys: Vec::new(),
-            account_devices,
-            stand_ins,
-            namespace_sealing_key: Some(self.tee_sealing_key(app_id)),
-        }
-    }
-
-    /// The app's TEE key, public half, as `env::tee_sealing_key` reads it:
-    /// what a value only the app's TEE may read is sealed to (the
-    /// cluster is every app's TEE).
-    fn tee_sealing_key(&self, app_id: &str) -> calimero_runtime::logic::SealingKeyResolver {
-        let tee = calimero_primitives::identity::PrivateKey::from(crate::backup::tee_key(
-            &self.cluster_key,
-            app_id,
-        ));
-        let public = *AsRef::<[u8; 32]>::as_ref(&tee.public_key());
-        calimero_runtime::logic::SealingKeyResolver(Arc::new(move || Some(public)))
-    }
-
-    /// What a bundle's ABI declares that the node acts on.
-    pub async fn facts(&self, bundle: &str) -> Arc<BundleFacts> {
-        if let Some(f) = self.facts.lock().ok().and_then(|f| f.get(bundle).cloned()) {
-            return f;
-        }
-        let facts = Arc::new(
-            self.bundle_wasm(bundle)
-                .await
-                .map(|w| BundleFacts::of(&w))
-                .unwrap_or_default(),
-        );
-        if let Ok(mut f) = self.facts.lock() {
-            let _prev = f.insert(bundle.to_owned(), Arc::clone(&facts));
-        }
-        facts
-    }
-
-    /// Store a blob here and on the other nodes; `Ok` once a majority holds it.
-    /// Its id is `hex(SHA-256(bytes))`, the key the store files it under.
-    /// `app` names the app it is a blob of (`None`: code, a package release):
-    /// an app's blob goes only to nodes whose release may hold its data.
     pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
             return Err(blob_too_large());
@@ -2255,66 +2121,6 @@ impl Node {
         Ok(false)
     }
 
-    async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
-        let wasm = self.bundle_wasm(bundle).await?;
-        self.usage.learn(bundle, &wasm);
-        self.executor
-            .module(bundle, &wasm)
-            .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))
-    }
-
-    async fn init_app(&self, g: &Group<AppMachine>, app: &AppRecord) -> Result<Applied, ApiError> {
-        if app.executor == Kind::Component {
-            return self.init_component(g, app).await;
-        }
-        let module = self.module_for(&app.bundle).await?;
-        let owner = Caller::Account {
-            account: app.owner.clone(),
-        };
-        let bundle = app.bundle.clone();
-        let app_id = app.app_id.clone();
-        let init_args = app.init_args.clone();
-        let env = self.env(&app.app_id, &owner);
-        let meter = self.meter(&app.app_id, &app.bundle);
-        let p = g
-            .propose(|m, _| {
-                if m.state.initialized || m.state.bundle.is_some() {
-                    return Proposal::Reply(Vec::new());
-                }
-                let outcome = self.metered(&meter, || {
-                    Executor::run(
-                        &module,
-                        &app_id,
-                        &owner,
-                        "init",
-                        &init_args,
-                        &m.state.kv,
-                        &env,
-                    )
-                });
-                self.keep_blobs(&outcome);
-                let cmd = AppCmd::Init {
-                    bundle: bundle.clone(),
-                    base_index: m.state.last_index,
-                    outcome,
-                };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
-            })
-            .await
-            .map_err(|e| status_of(&e))?;
-        if !p.appended {
-            return Err(ApiError::conflict("already initialized"));
-        }
-        self.kick.notify_one();
-        let applied: Applied =
-            serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
-        self.count_conflict(&applied);
-        if !applied.conflict {
-            self.usage.called(&meter, RunKind::Mutation);
-        }
-        Ok(applied)
-    }
-
     /// Where a run of `app_id` on `bundle` is billed ([`crate::usage`]). Read
     /// before the run's proposal, outside the app group's locks.
     pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
@@ -2365,16 +2171,6 @@ impl Node {
         }
     }
 
-    /// Keep the blobs a run wrote here, before its entry is proposed; the
-    /// leader hands them to the other nodes once the entry commits.
-    fn keep_blobs(&self, outcome: &Outcome) {
-        for (id, bytes) in &outcome.new_blobs {
-            if let Err(e) = self.engine.put_blob(id, bytes) {
-                warn!(blob = %id, error = %e, "blob not stored");
-            }
-        }
-    }
-
     /// Apply a presence update here and pass it to every other node; it
     /// does not wait for them (presence is best effort, and refreshed).
     pub fn publish_presence(self: &Arc<Self>, u: crate::presence::Update) {
@@ -2410,15 +2206,6 @@ impl Node {
         }));
     }
 
-    /// After a run's entry committed: its blobs to the other nodes.
-    async fn spread_blobs(&self, app: &str, blobs: Vec<(String, Vec<u8>)>) {
-        for (id, bytes) in blobs {
-            if let Err(e) = self.spread_blob(&id, &bytes, Some(app)).await {
-                warn!(blob = %id, error = %e.message, "blob held by too few nodes");
-            }
-        }
-    }
-
     /// Run a call on this node, which must be the app group's leader.
     async fn call_local(
         &self,
@@ -2428,212 +2215,31 @@ impl Node {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
         // change committed before the call, wherever it was committed.
-        if req.trigger.is_none() {
-            self.sys_fresh().await;
-        }
+        self.sys_fresh().await;
         if req.host && req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }
-        // Everything below runs a wasmer app's code or writes its keyspace; a
-        // component's calls are `call_component`'s, and its blobs its own host records.
-        let component = g.read_local(|m, _| m.state.executor()) == Some(Kind::Component);
-        if component && req.host && matches!(req.method.as_str(), "__blob" | "__blob_forget") {
+        // What reaches here is one of the node's own commands: a component's calls
+        // are `call_component`'s, and an SDK 0.12 app runs nothing.
+        let executor = g.read_local(|m, _| m.state.executor());
+        if executor == Some(Kind::Component)
+            && req.host
+            && matches!(req.method.as_str(), "__blob" | "__blob_forget")
+        {
             return self.component_blob_cmd(g, req).await;
         }
-        if component {
-            return Ok(Applied {
-                index: g.applied(),
-                status: Status::AppError,
-                result: Value::Null,
-                error: Value::String(COMPONENT_REFUSES.into()),
-                events: Vec::new(),
-                conflict: false,
-            });
-        }
-        let bundle = g.read_local(|m, _| m.state.bundle.clone());
-        let module = match bundle.as_deref() {
-            Some(b) => self.module_for(b).await.ok(),
-            None => None,
+        let why = match executor {
+            Some(Kind::Component) => COMPONENT_REFUSES,
+            _ => crate::app::WASMER_GONE,
         };
-        let now = now_ms();
-        if req.host && req.method == "__blob_forget" {
-            let cmd = AppCmd::BlobForget {
-                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
-            };
-            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
-            let (_index, out) = g.write(bytes).await?;
-            return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
-        }
-        if req.host && req.method == "__blob" {
-            let cmd = AppCmd::Blob {
-                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
-                size: req.args["size"].as_u64().unwrap_or_default(),
-            };
-            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
-            let (_index, out) = g.write(bytes).await?;
-            return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
-        }
-        let mut env = self.env(&req.app_id, &req.caller);
-        // Who may reach this method, when the node runs it itself.
-        let facts = match bundle.as_deref() {
-            Some(b) => self.facts(b).await,
-            None => Arc::new(BundleFacts::default()),
-        };
-        let refused: Option<String> = match &req.trigger {
-            // The API refuses these first; an xcall or follow-up naming one ends here.
-            _ if reserved_method(&req.method) => Some(format!("{} is not a method", req.method)),
-            None => None,
-            Some(Trigger::Timer { .. }) => {
-                env.tee_trigger = true;
-                env.sealing = self.tee_sealing(&req.app_id);
-                None
-            }
-            Some(Trigger::FollowUp { seq }) => {
-                let tee = g.read_local(|m, _| {
-                    matches!(
-                        m.state.pending.get(seq).map(|p| &p.followup),
-                        Some(FollowUp::Handler { tee: true, .. })
-                    )
-                });
-                env.tee_trigger = tee;
-                if tee {
-                    env.sealing = self.tee_sealing(&req.app_id);
-                }
-                (!tee && !facts.handlers.iter().any(|h| h == &req.method))
-                    .then(|| format!("{} is not an #[app::handler]", req.method))
-            }
-            Some(Trigger::XCall { origin, .. }) => {
-                env.xcall_origin = Some(calimero_identity::sha256(origin.as_bytes()));
-                self.xcall_refusal(&facts, origin, &req.app_id, &req.method)
-            }
-        };
-        let input = req.input_bytes();
-        // A read-only member's call runs, but one that would write is refused
-        // (v1 discarded such writes; a client is told).
-        let read_only = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
-            Some(app) => crate::api::read_only_in(self, &app, req.caller.account()).await,
-            None => false,
-        };
-        // A call writes: it may call out, under what its app declares and its
-        // owner approved. Views, inits, migrations and a read-only member's
-        // calls get no client.
-        let meter = self.meter(&req.app_id, bundle.as_deref().unwrap_or_default());
-        if !read_only {
-            env.outbound = bundle.as_deref().and_then(|b| {
-                self.outbound_for(
-                    &req.app_id,
-                    b,
-                    self.usage.outbound(&meter.app, &meter.payer),
-                )
-            });
-        }
-        let mut fresh_blobs = Vec::new();
-        let mut ran = false;
-        let p = g
-            .propose(|m, applied| {
-                if let Some(key) = &req.idempotency_key {
-                    if let Some(prev) = m.replay(&req.caller, key) {
-                        return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
-                    }
-                }
-                // A follow-up already run (a replayed driver pass) is not run twice.
-                if let Some(Trigger::FollowUp { seq }) = &req.trigger {
-                    if !m.state.pending.contains_key(seq) {
-                        return Proposal::Reply(Vec::new());
-                    }
-                }
-                // The module (and the facts and outbound client) came from the
-                // bundle read before the lock; an upgrade may have applied since.
-                if let Some(stale) = m.stale_module(bundle.as_deref()) {
-                    return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
-                }
-                let outcome = match (&module, &refused) {
-                    (_, Some(why)) => Outcome {
-                        status: Status::AppError,
-                        error: Value::String(why.clone()),
-                        ..Outcome::default()
-                    },
-                    (Some(module), None) => {
-                        ran = true;
-                        let (outcome, _ret) = self.metered(&meter, || {
-                            Executor::run_bytes(
-                                module,
-                                &req.app_id,
-                                &req.caller,
-                                &req.method,
-                                &input,
-                                &m.state.kv,
-                                &env,
-                            )
-                        });
-                        if read_only && (!outcome.diff.is_empty() || !outcome.new_blobs.is_empty())
-                        {
-                            let refused = Applied {
-                                index: applied,
-                                status: Status::AppError,
-                                result: Value::Null,
-                                error: Value::String(READ_ONLY.into()),
-                                events: Vec::new(),
-                                conflict: false,
-                            };
-                            return Proposal::Reply(
-                                serde_json::to_vec(&refused).unwrap_or_default(),
-                            );
-                        }
-                        self.keep_blobs(&outcome);
-                        fresh_blobs.clone_from(&outcome.new_blobs);
-                        outcome
-                    }
-                    (None, None) => Outcome::trap("the app is not initialized yet"),
-                };
-                let cmd = AppCmd::Call(Box::new(CallEntry {
-                    method: req.method.clone(),
-                    args: req.args.clone(),
-                    caller: req.caller.clone(),
-                    idempotency_key: req.idempotency_key.clone(),
-                    consent: req.consent.clone(),
-                    ts_ms: now,
-                    // The app's last entry, not the log's applied index: blank and
-                    // membership entries change no app state, and `apply` compares
-                    // with the last entry the app applied (`AppState::last_index`).
-                    base_index: m.state.last_index,
-                    outcome,
-                    trigger: req.trigger.clone(),
-                }));
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
-            })
-            .await?;
-        if p.output.is_empty() {
-            // A follow-up someone already ran: nothing to answer.
-            return Ok(Applied {
-                index: 0,
-                status: Status::Ok,
-                result: Value::Null,
-                error: Value::Null,
-                events: Vec::new(),
-                conflict: false,
-            });
-        }
-        let applied: Applied = serde_json::from_slice(&p.output)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        if p.appended {
-            self.count_conflict(&applied);
-        }
-        // Counted once, by the run whose answer stood: a conflict runs again.
-        if ran && !applied.conflict {
-            let kind = match req.trigger {
-                None => RunKind::Mutation,
-                Some(_) => RunKind::FollowUp,
-            };
-            self.usage.called(&meter, kind);
-        }
-        if p.appended && !applied.conflict {
-            self.kick.notify_one();
-            self.spread_blobs(&req.app_id, fresh_blobs).await;
-        }
-        Ok(applied)
+        Ok(Applied {
+            index: g.applied(),
+            status: Status::AppError,
+            result: Value::Null,
+            error: Value::String(why.into()),
+            events: Vec::new(),
+            conflict: false,
+        })
     }
 
     /// Switch an app to a new bundle, running its migration export if named.
@@ -2648,16 +2254,14 @@ impl Node {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let mut migrate = req
+        let migrate = req
             .args
             .get("migrate")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        // An upgrade never moves an app between executors (either way, state or
-        // none) until rebuild migrations (D38) exist: the two keep different
-        // state formats. Judged from the target's WASM against the executor
-        // the app's state names, or, before its `init` applied (none named yet),
-        // the one the replicated app record names (decided once, at creation).
+        // Judged from the executor the app's state names, or, before its `init`
+        // applied (none named yet), the one the replicated app record names
+        // (decided once, at creation); and from the target's WASM.
         let recorded = self
             .sys(|s| s.apps.get(&req.app_id).map(|a| a.executor))
             .unwrap_or(Kind::Wasmer);
@@ -2666,254 +2270,25 @@ impl Node {
             .executor_of(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
-        if from != to {
+        let refused = match (from, to) {
+            (Kind::Component, Kind::Component) => None,
+            (Kind::Wasmer, _) => Some(crate::app::WASMER_GONE.to_owned()),
+            (_, Kind::Wasmer) => Some(format!(
+                "upgrade refused: {bundle}: {}",
+                crate::error::UNSUPPORTED_BUNDLE
+            )),
+        };
+        if let Some(why) = refused {
             return Ok(Applied {
                 index: g.applied(),
                 status: Status::AppError,
                 result: Value::Null,
-                error: Value::String(format!(
-                    "upgrade refused: {} runs on {}, the app on {}; an upgrade across executors waits for rebuild migrations (D38)",
-                    bundle,
-                    executor_name(to),
-                    executor_name(from),
-                )),
+                error: Value::String(why),
                 events: Vec::new(),
                 conflict: false,
             });
         }
-        if from == Kind::Component {
-            return self.upgrade_component(g, &bundle, migrate.as_deref()).await;
-        }
-        let module = self
-            .module_for(&bundle)
-            .await
-            .map_err(|e| WriteError::Unavailable(e.message))?;
-        // The bundle the migration is planned from; the build checks it is
-        // still the state's, as a call's does.
-        let current = g.read_local(|m, _| m.state.bundle.clone());
-        // Without a named migration, plan it from the two ABIs.
-        if migrate.is_none() {
-            if let Some(current) = current.clone().filter(|c| *c != bundle) {
-                let (from, to) = (
-                    self.bundle_wasm(&current).await,
-                    self.bundle_wasm(&bundle).await,
-                );
-                if let (Ok(from), Ok(to)) = (from, to) {
-                    match crate::services::plan_upgrade(&from, &to) {
-                        Ok(planned) => migrate = planned,
-                        Err(why) => {
-                            return Ok(Applied {
-                                index: g.applied(),
-                                status: Status::AppError,
-                                result: Value::Null,
-                                error: Value::String(format!("upgrade refused: {why}")),
-                                events: Vec::new(),
-                                conflict: false,
-                            })
-                        }
-                    }
-                }
-            }
-        }
-        let env = self.env(&req.app_id, &req.caller);
-        let meter = self.meter(&req.app_id, &bundle);
-        let mut ran = false;
-        let p = g
-            .propose(|m, _| {
-                if let Some(stale) = m.stale_module(current.as_deref()) {
-                    return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
-                }
-                let outcome = match &migrate {
-                    Some(method) => {
-                        ran = true;
-                        let outcome = self.metered(&meter, || {
-                            Executor::migrate(
-                                &module,
-                                &req.app_id,
-                                &req.caller,
-                                method,
-                                &m.state.kv,
-                                &env,
-                            )
-                        });
-                        self.keep_blobs(&outcome);
-                        outcome
-                    }
-                    None => Outcome::default(),
-                };
-                let cmd = AppCmd::Upgrade {
-                    bundle: bundle.clone(),
-                    base_index: m.state.last_index,
-                    outcome,
-                };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
-            })
-            .await?;
-        let applied: Applied = serde_json::from_slice(&p.output)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        if p.appended {
-            self.count_conflict(&applied);
-        }
-        if ran && !applied.conflict {
-            self.usage.called(&meter, RunKind::Mutation);
-        }
-        Ok(applied)
-    }
-
-    /// Why an `xcall` from app `origin` may not run `method` of app `target`,
-    /// if it may not: the method must be an `#[app::xcall]` entry
-    /// point, `from_same_app` admits only the same bundle, and the two apps
-    /// must share their organization (or, outside one, their owner).
-    fn xcall_refusal(
-        &self,
-        target_facts: &BundleFacts,
-        origin: &str,
-        target: &str,
-        method: &str,
-    ) -> Option<String> {
-        let Some(callers) = target_facts.xcalls.get(method) else {
-            return Some(format!(
-                "xcall denied: {method} is not an #[app::xcall] entry point"
-            ));
-        };
-        let (source, dest) =
-            self.sys(|s| (s.apps.get(origin).cloned(), s.apps.get(target).cloned()));
-        let (Some(source), Some(dest)) = (source, dest) else {
-            return Some("xcall denied: unknown app".into());
-        };
-        let same_boundary = match (&source.org, &dest.org) {
-            (Some(a), Some(b)) => a == b,
-            (None, None) => source.owner == dest.owner,
-            _ => false,
-        };
-        if !same_boundary {
-            return Some("xcall denied: the apps are not in the same organization".into());
-        }
-        if *callers == calimero_wasm_abi::schema::XCallCallers::SameApp
-            && source.bundle != dest.bundle
-        {
-            return Some(format!("xcall denied: {method} admits only the same app"));
-        }
-        None
-    }
-
-    /// The leader's work for an app beyond requests: timer methods whose period
-    /// came, and follow-ups (event handlers, xcalls) the log queued. Each runs
-    /// as an entry that also records it done, so a new leader neither skips
-    /// nor repeats one.
-    pub async fn drive(&self, g: &Group<AppMachine>, app: &AppRecord) {
-        let (bundle, initialized, executor) = g.read_local(|m, _| {
-            (
-                m.state.bundle.clone(),
-                m.state.initialized,
-                m.state.executor(),
-            )
-        });
-        // A component's timers are `tick_timers`'s; it has no follow-ups.
-        let (Some(bundle), true, Some(Kind::Wasmer)) = (bundle, initialized, executor) else {
-            return;
-        };
-        let facts = self.facts(&bundle).await;
-        let app_caller = Caller::App {
-            app: app.app_id.clone(),
-        };
-        let now = crate::types::now_secs();
-        for (method, every) in &facts.timers {
-            let tick = now / every;
-            let last = g.read_local(|m, _| m.state.timer_ticks.get(method).copied());
-            if last.is_some_and(|l| l >= tick) {
-                continue;
-            }
-            let mut req = CallRequest::new(
-                app.app_id.clone(),
-                method.clone(),
-                Value::Null,
-                app_caller.clone(),
-            );
-            req.trigger = Some(Trigger::Timer {
-                method: method.clone(),
-                tick,
-            });
-            match self.call_local(g, &req).await {
-                Ok(a) if a.status != Status::Ok => {
-                    warn!(app = %app.app_id, %method, error = %a.error, "timer method failed");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    debug!(app = %app.app_id, %method, error = %e, "timer not fired");
-                    return;
-                }
-            }
-        }
-        let pending: Vec<(u64, crate::app::Pending)> = g.read_local(|m, _| {
-            m.state
-                .pending
-                .iter()
-                .take(64)
-                .map(|(k, v)| (*k, v.clone()))
-                .collect()
-        });
-        for (seq, p) in pending {
-            match p.followup {
-                FollowUp::Handler { method, input, .. } => {
-                    let mut req = CallRequest::new(
-                        app.app_id.clone(),
-                        method,
-                        Value::Null,
-                        app_caller.clone(),
-                    );
-                    req.input = Some(input);
-                    req.trigger = Some(Trigger::FollowUp { seq });
-                    match self.call_local(g, &req).await {
-                        Ok(a) if a.status != Status::Ok => {
-                            warn!(app = %app.app_id, method = %req.method, error = %a.error, "event handler failed");
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            debug!(app = %app.app_id, seq, error = %e, "handler not run");
-                            return;
-                        }
-                    }
-                }
-                FollowUp::XCall {
-                    context,
-                    method,
-                    input,
-                } => {
-                    let target = self.canonical_app_id(&context);
-                    let mut req =
-                        CallRequest::new(target.clone(), method, Value::Null, app_caller.clone());
-                    req.input = Some(input);
-                    req.idempotency_key = Some(format!("xcall:{}:{seq}", app.app_id));
-                    req.trigger = Some(Trigger::XCall {
-                        origin: app.app_id.clone(),
-                        depth: p.depth + 1,
-                    });
-                    let known = self.sys(|s| s.apps.contains_key(&target));
-                    if known {
-                        match self.call(&req).await {
-                            Ok(a) if a.status != Status::Ok => {
-                                warn!(from = %app.app_id, to = %target, error = %a.error, "xcall refused");
-                            }
-                            Ok(_) => {}
-                            Err(e) if e.code == "UNAVAILABLE" => {
-                                debug!(to = %target, error = %e.message, "xcall waits for its target");
-                                return;
-                            }
-                            Err(e) => warn!(to = %target, error = %e.message, "xcall failed"),
-                        }
-                    } else {
-                        warn!(from = %app.app_id, to = %context, "xcall to an unknown app dropped");
-                    }
-                    let done =
-                        serde_json::to_vec(&AppCmd::Done { seqs: vec![seq] }).unwrap_or_default();
-                    if let Err(e) = g.write(done).await {
-                        debug!(error = %e, "xcall not yet marked done");
-                        return;
-                    }
-                }
-            }
-        }
+        self.upgrade_component(g, &bundle, migrate.as_deref()).await
     }
 
     /// Run a call wherever the app's leader is.
@@ -2934,16 +2309,17 @@ impl Node {
             &keyed
         };
         let app = self.app(&req.app_id).await?;
+        if app.executor == Kind::Wasmer {
+            return Err(ApiError::unsupported_engine());
+        }
         // A component's calls are `call_component`'s (the API routes them there);
-        // what reaches here for one is a wasmer app's xcall or follow-up, which
-        // a component does not take (D25).
-        if app.executor == Kind::Component && !req.host {
+        // only the node's own commands reach here.
+        if !req.host {
             return Err(ApiError::new(409, "NOT_SUPPORTED", COMPONENT_REFUSES));
         }
         // The entry carries the arguments, so arguments past the cap never
         // fit: refuse here rather than forward a megabyte to the leader first.
-        let args_len = serde_json::to_vec(&req.args).map_or(0, |a| a.len())
-            + req.input.as_ref().map_or(0, |i| i.0.len());
+        let args_len = serde_json::to_vec(&req.args).map_or(0, |a| a.len());
         if args_len > calimero_log::MAX_ENTRY_BYTES {
             return Err(status_of(&WriteError::TooLarge {
                 size: args_len,
@@ -2991,12 +2367,14 @@ impl Node {
         Err(ApiError::unavailable("the app has no leader"))
     }
 
-    /// Answer an internal call (from a peer), for either executor: run it here,
-    /// without forwarding further. The node's own commands (`req.host`) are the
-    /// node's whatever the executor.
+    /// Answer an internal call (from a peer): run it here, without forwarding
+    /// further. The node's own commands (`req.host`) are the node's.
     pub async fn call_here_any(&self, req: &CallRequest) -> Result<Value, ApiError> {
         let app = self.app(&req.app_id).await?;
-        if app.executor == Kind::Component && !req.host {
+        if app.executor == Kind::Wasmer {
+            return Err(ApiError::unsupported_engine());
+        }
+        if !req.host {
             let a = self.call_here_component(&app, req).await?;
             return serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()));
         }
@@ -3035,45 +2413,17 @@ impl Node {
         if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
             return self.view_local_component(g, req).await;
         }
-        let bundle = g
-            .read_local(|m, _| m.state.bundle.clone())
-            .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let module = self.module_for(&bundle).await?;
-        let mut env = self.env(&req.app_id, &req.caller);
-        let meter = self.meter(&req.app_id, &bundle);
-        let answer = g.read_local(|m, applied| {
-            // Search answers from indexes brought up to this very state.
-            env.search = self.search.for_view(&module, &bundle, m, applied);
-            let out = self.metered(&meter, || {
-                Executor::run(
-                    &module,
-                    &req.app_id,
-                    &req.caller,
-                    &req.method,
-                    &req.args,
-                    &m.state.kv,
-                    &env,
-                )
-            });
-            ViewAnswer {
-                index: applied,
-                status: out.status,
-                result: out.result,
-                error: out.error,
-                timeout: false,
-            }
-        });
-        self.usage.called(&meter, RunKind::View);
-        Ok(answer)
+        Err(ApiError::unsupported_engine())
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
-        if app.executor == Kind::Component {
-            self.abi_gate(&app, &req.method, &req.caller, true, false)
-                .await?;
+        if app.executor == Kind::Wasmer {
+            return Err(ApiError::unsupported_engine());
         }
+        self.abi_gate(&app, &req.method, &req.caller, true, false)
+            .await?;
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {
@@ -3213,14 +2563,6 @@ impl Node {
             }
         }
         Ok(written)
-    }
-}
-
-/// The executor's name, as an error names it.
-const fn executor_name(e: Kind) -> &'static str {
-    match e {
-        Kind::Wasmer => "wasmer (a core module)",
-        Kind::Component => "wasmtime (a component)",
     }
 }
 

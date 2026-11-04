@@ -4,7 +4,8 @@
 //! node-side facts only, and the person's passkey assertion there is the
 //! consent, bound to exactly what the page showed.
 //!
-//! Needs `kv_store.wasm` (see `cluster.rs`).
+//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! (see `harness/cluster.rs`).
 
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::api::Pending;

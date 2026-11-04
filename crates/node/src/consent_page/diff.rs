@@ -12,7 +12,7 @@
 //! - **interfaces** the bundle uses and exports;
 //! - **public methods** (with whether each is a view, an xcall entry point,
 //!   an event handler, destructive), **events** and **timers**;
-//! - the **migration** the leader would run (`services::plan_from_abis`);
+//! - the **migration** the leader would run ([`plan_from_abis`]);
 //! - SDK and build information, and the hashes that identify each side.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -248,8 +248,92 @@ fn migration(from: Option<&Abi>, to: Option<&Abi>, plan: &Result<Option<String>,
     })
 }
 
+/// The migration an upgrade from a release with ABI `current` to one with ABI
+/// `target` runs, as the consent page shows it before anything runs: `None` when
+/// the state shape is unchanged, the target's `#[app::migrate]` edge from the
+/// current state version for one step up. Releases that embed no such ABI (every
+/// `calimero:app` component: its ABI is its `calimero:abi` section) have none.
+///
+/// # Errors
+/// A downgrade, a jump of more than one version, a missing edge, or one side
+/// with an ABI and the other without.
+pub(crate) fn plan_from_abis(
+    current: Option<calimero_wasm_abi::schema::Manifest>,
+    target: Option<calimero_wasm_abi::schema::Manifest>,
+) -> Result<Option<String>, String> {
+    let (cur, tgt) = match (current, target) {
+        (None, None) => return Ok(None),
+        (Some(c), Some(t)) => (c, t),
+        (None, Some(_)) => return Err("the current bundle embeds no ABI to plan from".into()),
+        (Some(_), None) => return Err("the target bundle embeds no ABI to plan from".into()),
+    };
+    // The identity-downgrade gate (#2587): a field that loses identity-gated
+    // semantics (an `AuthoredMap` that becomes an `UnorderedMap`) would strip
+    // every entry's authorship or writer set for everyone.
+    if let Some(d) = calimero_wasm_abi::downgrade::identity_downgrades(&cur, &tgt)
+        .into_iter()
+        .next()
+    {
+        return Err(format!(
+            "identity downgrade forbidden: field '{}' {} -> {} strips authorship (rewrite it \
+             under the owner instead)",
+            d.field, d.from, d.to
+        ));
+    }
+    let (from, to) = (
+        cur.state_version_or_default(),
+        tgt.state_version_or_default(),
+    );
+    if from == to {
+        return Ok(None);
+    }
+    if to < from {
+        return Err(format!(
+            "a downgrade of the state from version {from} to {to}"
+        ));
+    }
+    if to != from + 1 {
+        return Err(format!(
+            "state version {from} to {to}: upgrade one version at a time"
+        ));
+    }
+    tgt.edge_from(from)
+        .map(|e| Some(e.method))
+        .ok_or_else(|| format!("the target declares no migration from state version {from}"))
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A manifest at `version`, with migrations from each of `edges` (named
+    /// `migrate_from_<v>`).
+    fn versioned(version: u32, edges: &[u32]) -> Abi {
+        let mut m = Abi::new();
+        m.state_version = Some(version);
+        m.migrations = edges
+            .iter()
+            .map(|v| calimero_wasm_abi::schema::MigrationEdgeAbi {
+                method: format!("migrate_from_{v}"),
+                from_version: *v,
+            })
+            .collect();
+        m
+    }
+
+    #[test]
+    fn the_plan_is_the_targets_migration_edge_one_version_up() {
+        let plan = |a: u32, ae: &[u32], b: u32, be: &[u32]| {
+            super::plan_from_abis(Some(versioned(a, ae)), Some(versioned(b, be)))
+        };
+        assert_eq!(plan(1, &[], 1, &[]), Ok(None));
+        assert_eq!(plan(1, &[], 2, &[1]), Ok(Some("migrate_from_1".to_owned())));
+        assert!(plan(2, &[], 1, &[]).is_err());
+        assert!(plan(1, &[], 3, &[1, 2]).is_err());
+        assert!(plan(1, &[], 2, &[]).is_err());
+        // No ABI on either side: code only.
+        assert_eq!(super::plan_from_abis(None, None), Ok(None));
+        assert!(super::plan_from_abis(None, Some(versioned(2, &[1]))).is_err());
+    }
     use calimero_wasm_abi::schema::{Event, Method};
 
     use super::*;

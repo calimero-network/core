@@ -5,8 +5,8 @@
 //! the managers list the organizations with instances from it; and an app's
 //! frontend opens at the release a deployment offers or an instance runs.
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! (see `harness/cluster.rs`).
 
 use std::time::Duration;
 

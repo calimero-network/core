@@ -1,12 +1,9 @@
 //! The in-process cluster the node's tests and the cluster throughput bench
 //! share: `n` nodes on loopback ports, mock attestation, sealed channels, the
-//! real kv-store fixture.
-//!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! kv fixture (`apps/v2-fixtures/kv`, a `calimero:app` component).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use calimero_client::{Client, Policy};
@@ -16,15 +13,33 @@ use calimero_node::{run, Config, Running};
 
 pub const ORIGIN: &str = "http://localhost:3000";
 
+/// The kv fixture (`apps/v2-fixtures/kv`: `set`, `get`, `entries`, `remove`, ...) as a
+/// component, built on first use and cached by source hash under
+/// `target/app-components`, as `tests/common/mod.rs` builds its fixtures.
 pub fn kv_wasm() -> Vec<u8> {
-    let path = std::env::var("KV_STORE_WASM")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm")
-        });
-    std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}; build kv-store for wasm32 first", path.display()))
+    fixture("apps/v2-fixtures/kv")
+}
+
+/// The component at `dir` (relative to the repository root), built and cached.
+pub fn fixture(dir: &str) -> Vec<u8> {
+    // Tests run in parallel threads of one process; two builds of the same crate into
+    // one target directory race, so builds are serialized.
+    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = BUILDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sdk = root.join("crates/app-sdk");
+    let macros = root.join("crates/app-sdk-macros");
+    let wit = root.join("crates/app-wit");
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), std::path::PathBuf::from);
+    calimero_app_build::build_component_cached(
+        &root.join(dir),
+        &[&sdk, &macros, &wit],
+        &target.join("app-components"),
+    )
+    .unwrap_or_else(|e| panic!("build {dir}: {e}"))
 }
 
 /// The operator key test clusters start with (`Config::operator_key`).

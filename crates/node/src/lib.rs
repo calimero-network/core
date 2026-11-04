@@ -34,7 +34,6 @@ pub mod placement;
 pub mod presence;
 pub mod proof;
 pub mod report;
-pub mod services;
 pub mod signing_key;
 pub mod system;
 #[cfg(feature = "testing")]
@@ -192,7 +191,6 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             tokio::select! {
                 () = stop.cancelled() => return,
                 _ = applied.changed() => {}
-                () = node_kick(&weak) => {}
                 () = tokio::time::sleep(Duration::from_millis(500)) => {}
             }
             let Some(node) = weak.upgrade() else { return };
@@ -293,12 +291,4 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         shutdown,
         server,
     })
-}
-
-/// Wait for an app entry that may have queued follow-up work.
-async fn node_kick(node: &std::sync::Weak<Node>) {
-    match node.upgrade() {
-        Some(n) => n.kick.notified().await,
-        None => std::future::pending().await,
-    }
 }

@@ -21,7 +21,6 @@ zeroize.workspace = true
 
 calimero-bundle.workspace = true
 calimero-primitives.workspace = true
-calimero-runtime.workspace = true
 
 [dev-dependencies]
 # A local TLS server with its own CA, for the transport's tests.

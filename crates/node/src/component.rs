@@ -8,10 +8,11 @@
 //! error, diff, events, logs } }` and every replica applies the diff, never
 //! re-executing. The entries here ([`ComponentCmd`]) are a format of their own,
 //! applied to a keyspace of their own (`app::rows::CKV`), so a replica never
-//! applies a component's diff to a wasmer app's state or the other way round.
+//! applies a component's diff to an SDK 0.12 app's state (which no longer runs,
+//! [`crate::app::WASMER_GONE`]) or the other way round.
 //!
 //! Storage (D46): the component's keys are hidden rows of the group's state (sealed,
-//! keyed by an HMAC, as a wasmer app's are), and a replica keeps them in memory too,
+//! keyed by an HMAC), and a replica keeps them in memory too,
 //! ordered, as an `Arc<BTreeMap>`: a run gets the current version as its
 //! `StateView` (ordered `range` scans), and `apply` copies it only while a run still
 //! holds the previous one. The map is rebuilt from the rows on a restart and after a
@@ -23,7 +24,7 @@ pub mod blobs;
 pub mod search;
 pub mod xcall;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Weak};
 
 use calimero_app_host as host;
@@ -946,7 +947,7 @@ impl AppMachine {
     }
 
     /// Apply one entry of a component app. An entry that is not a component's
-    /// (a wasmer app's format) changes nothing.
+    /// (an SDK 0.12 app's format) changes nothing.
     pub(crate) fn apply_component(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -1175,7 +1176,7 @@ fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
 
 /// The ticks a replica applied, newest last (feature `testing`).
 #[cfg(feature = "testing")]
-pub type Ticks = VecDeque<TickApplied>;
+pub type Ticks = std::collections::VecDeque<TickApplied>;
 
 /// What the host core asks the node about identity, answered from this node's
 /// replica of the system state at the moment it asks (the run is the leader's,
@@ -1945,6 +1946,54 @@ mod tests {
         assert_eq!(kept, vec!["k3", "k5", "k6"]);
     }
 
+    /// A rolling upgrade lowered the cap while an app held more records than the new
+    /// one: the first entries under the new cap drop the excess a bounded number per
+    /// entry (scaled down: 60 records kept under the old limits, then a cap of 10 and a
+    /// step of 7), never more per entry, and the rest carries over until the app is
+    /// under the cap. The newest stay.
+    #[test]
+    fn records_over_the_new_cap_drain_a_bounded_number_per_entry() {
+        let mut r = Rig::new();
+        r.machine.idem_limits = crate::idempotency::Limits {
+            keep: [0, 0],
+            cap: 1_000_000,
+            step: u64::MAX,
+        };
+        let _i = r.apply(1, &init(0));
+        for n in 0..60u64 {
+            let index = n + 2;
+            let _a = r.apply(index, &call_at(index - 1, &format!("k{n}"), 1_000 + n));
+        }
+        let held = |r: &Rig| {
+            let rings = r.machine.state.component.head.idempotency;
+            rings.iter().map(|g| g.next - g.first).sum::<u64>()
+        };
+        assert_eq!(held(&r), 60);
+        // The new release: a cap of 10, at most 7 dropped per entry.
+        r.machine.idem_limits = crate::idempotency::Limits {
+            keep: [0, 0],
+            cap: 10,
+            step: 7,
+        };
+        let mut index = 62;
+        let mut entries = 0;
+        while held(&r) > 10 && entries < 50 {
+            let before = held(&r);
+            let _a = r.apply(index, &with_ts(&call(index - 1, None, Vec::new()), 2_000));
+            assert!(
+                before - held(&r) <= 7,
+                "one entry dropped {} records",
+                before - held(&r)
+            );
+            index += 1;
+            entries += 1;
+        }
+        assert_eq!(held(&r), 10, "the excess never drained");
+        assert!(entries >= 7, "drained in {entries} entries");
+        assert!(honoured(&r, "k59"));
+        assert!(!honoured(&r, "k0"));
+    }
+
     /// D74 (v0.27): a burst of keyless calls (`node:` keys) past the cap never
     /// evicts a caller's own record, even when the caller class is above its floor:
     /// `node:` records go first (scaled: cap 6, floors 2 caller / 1 node, 4 caller
@@ -2108,7 +2157,8 @@ mod tests {
     fn a_wasmer_entry_never_applies_to_a_component_app() {
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
-        let v1 = serde_json::to_vec(&crate::app::AppCmd::BlobForget { id: "00".into() }).unwrap();
+        // As merod before this release logged an SDK 0.12 app's blob removal.
+        let v1 = serde_json::to_vec(&json!({ "op": "blobForget", "id": "00" })).unwrap();
         let out = r.apply(2, &v1);
         assert!(out.conflict, "a wasmer entry applied to a component app");
     }
@@ -2117,11 +2167,10 @@ mod tests {
     fn only_a_component_init_decides_the_executor() {
         assert!(ComponentCmd::is_init(&init(0)));
         assert!(!ComponentCmd::is_init(&call(0, None, Vec::new())));
-        let v1 = serde_json::to_vec(&crate::app::AppCmd::Init {
-            bundle: "b".into(),
-            base_index: 0,
-            outcome: crate::app::Outcome::default(),
-        })
+        // As merod before this release logged an SDK 0.12 app's `init`.
+        let v1 = serde_json::to_vec(&json!({
+            "op": "init", "bundle": "b", "baseIndex": 0, "outcome": { "status": "ok" },
+        }))
         .unwrap();
         assert!(!ComponentCmd::is_init(&v1));
     }

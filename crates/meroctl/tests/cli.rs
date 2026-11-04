@@ -1,7 +1,8 @@
 //! `meroctl` against a local cluster (`merod local`'s launcher, in process):
 //! every command group, through the binary, as a user and as the operator.
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`.
+//! Builds the kv component `apps/v2-fixtures/kv` from this checkout (cached under
+//! `$CARGO_TARGET_DIR/app-components`), or reads `KV_STORE_WASM`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,14 +10,23 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-fn kv_wasm() -> PathBuf {
-    std::env::var("KV_STORE_WASM").map_or_else(
-        |_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm")
-        },
-        PathBuf::from,
+fn kv_wasm() -> Vec<u8> {
+    if let Some(path) = std::env::var_os("KV_STORE_WASM") {
+        return std::fs::read(&path).unwrap();
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target =
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+    calimero_app_build::build_component_cached(
+        &root.join("apps/v2-fixtures/kv"),
+        &[
+            &root.join("crates/app-sdk"),
+            &root.join("crates/app-sdk-macros"),
+            &root.join("crates/app-wit"),
+        ],
+        &target.join("app-components"),
     )
+    .unwrap_or_else(|e| panic!("build apps/v2-fixtures/kv: {e}"))
 }
 
 /// How many nodes the test cluster runs, on `base + 1 ..= base + NODES`.
@@ -184,7 +194,7 @@ fn scenario(root: &Path, url: &str) {
     };
     let pk = root.join("alice-passkey.json");
     let pk = path(&pk);
-    let kv = std::fs::read(kv_wasm()).unwrap();
+    let kv = kv_wasm();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let write = |name: &str, bytes: &[u8]| {
         let p = root.join(name);

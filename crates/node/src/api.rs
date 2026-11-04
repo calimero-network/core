@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use crate::app::{AppMachine, Applied, Status};
+use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
@@ -1486,30 +1486,22 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
         ));
     }
     let hash = hex::encode(sha256(&body));
-    // Refuse what its executor does not take before replicating it: a core
-    // module must compile on wasmer, a component must pass the engine's prepare.
-    match crate::types::Executor::of(&body) {
-        crate::types::Executor::Wasmer => {
-            let _module = node
-                .executor
-                .module(&hash, &body)
-                .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
-        }
-        crate::types::Executor::Component => {
-            // A refused component is a bad request, as a core module wasmer can't
-            // compile is (`400 BAD_BUNDLE`).
-            let _prepared = node
-                .prepare_bytes(&hash, body.to_vec())
-                .await
-                .map_err(|e| {
-                    if e.code == crate::node::BAD_BUNDLE {
-                        ApiError::bad_request(crate::node::BAD_BUNDLE, &e.message)
-                    } else {
-                        e
-                    }
-                })?;
-        }
+    // Refuse what no app could run before replicating it: a core module (an SDK
+    // 0.12 app) is `400 UNSUPPORTED_BUNDLE`; a component must pass the engine's
+    // prepare, else `400 BAD_BUNDLE`.
+    if crate::types::Executor::of(&body) != crate::types::Executor::Component {
+        return Err(ApiError::unsupported_bundle());
     }
+    let _prepared = node
+        .prepare_bytes(&hash, body.to_vec())
+        .await
+        .map_err(|e| {
+            if e.code == crate::node::BAD_BUNDLE {
+                ApiError::bad_request(crate::node::BAD_BUNDLE, &e.message)
+            } else {
+                e
+            }
+        })?;
     node.replicate_bundle(&hash, &body).await?;
     let _ok = node
         .sys_write(&SystemCmd::PutBundle {
@@ -1856,8 +1848,6 @@ struct CreateAppBody {
     org: Option<String>,
     #[serde(default)]
     access: Option<Access>,
-    #[serde(default)]
-    confirm_methods: Vec<String>,
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
@@ -1933,20 +1923,17 @@ async fn app_create(
         }
     };
     // The executor is decided once, here, from the WASM the bundle names (a
-    // package's service, or the raw upload), and recorded with the app.
+    // package's service, or the raw upload), and recorded with the app. A core
+    // module (an SDK 0.12 app) makes no app.
     let executor = node.executor_of(&bundle).await?;
-    let confirm_methods = match executor {
-        crate::types::Executor::Wasmer => body.confirm_methods,
-        // A component's confirm methods are its ABI's (S5), never the request's.
-        crate::types::Executor::Component => {
-            if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len())
-                > crate::node::MAX_ARGS_BYTES
-            {
-                return Err(crate::node::args_too_large());
-            }
-            Vec::new()
-        }
-    };
+    if executor != crate::types::Executor::Component {
+        return Err(ApiError::unsupported_bundle());
+    }
+    // A component's confirm methods are its ABI's (S5), never the request's.
+    if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len()) > crate::node::MAX_ARGS_BYTES {
+        return Err(crate::node::args_too_large());
+    }
+    let confirm_methods: Vec<String> = Vec::new();
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
     if let Some(stall) =
@@ -2426,38 +2413,6 @@ async fn step_up(
     })
 }
 
-fn answer(node: &Node, app_id: &str, a: Applied) -> Response {
-    if a.conflict {
-        return ApiError::unavailable(
-            "the call raced a leader change; retry with the same idempotency key",
-        )
-        .into_response();
-    }
-    if a.error.as_str() == Some(crate::node::READ_ONLY) {
-        return ApiError::forbidden(crate::node::READ_ONLY).into_response();
-    }
-    match a.status {
-        Status::Ok => {
-            let receipt = node.receipt(app_id, a.index, &a.result);
-            Json(json!({
-                "index": a.index,
-                "result": a.result,
-                "events": a.events.iter().map(|(k, d)| json!({ "kind": k, "data": d })).collect::<Vec<_>>(),
-                // Signed by this node's attested receipt key (requirement: show
-                // the end user the answer came from a genuine TEE cluster).
-                "receipt": receipt,
-            }))
-            .into_response()
-        }
-        Status::AppError => ApiError::new(422, "APP_ERROR", "the app refused the call")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
-        Status::Trap => ApiError::new(422, "TRAP", "the call failed")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
-    }
-}
-
 /// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
 fn component_failure(
     index: u64,
@@ -2614,48 +2569,10 @@ async fn intents(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
-    if app.executor == crate::types::Executor::Component {
-        return component_intents(&node, &app, p, body).await;
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::unsupported_engine());
     }
-    // A declared view runs as one, whichever way it is invoked: it
-    // reads the latest state, writes nothing, and may search.
-    if node.facts(&app.bundle).await.views.contains(&body.method) {
-        let a = node
-            .view(&ViewRequest {
-                app_id: app_id.clone(),
-                method: body.method,
-                args: body.args,
-                caller: p.caller,
-                strong: true,
-                min_index: 0,
-            })
-            .await?;
-        return Ok(answer(
-            &node,
-            &app_id,
-            Applied {
-                index: a.index,
-                status: a.status,
-                result: a.result,
-                error: a.error,
-                events: Vec::new(),
-                conflict: false,
-            },
-        ));
-    }
-    let consent_value = if app.confirm_methods.iter().any(|m| m == &body.method) {
-        Some(consent(&node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
-    } else {
-        None
-    };
-    let applied = node
-        .call(&CallRequest {
-            idempotency_key: body.idempotency_key,
-            consent: consent_value,
-            ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller)
-        })
-        .await?;
-    Ok(answer(&node, &app_id, applied))
+    component_intents(&node, &app, p, body).await
 }
 
 /// The node's commands and the runtime's exports are not an app's methods
@@ -2693,15 +2610,6 @@ async fn views(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, false).await?;
-    // A confirm method runs only as a confirmed call: as a view its writes are
-    // dropped, but its answer was handed back unconfirmed (Xil's review, issue 6).
-    if app.confirm_methods.iter().any(|m| m == &body.method) {
-        return Err(ApiError::new(
-            412,
-            "CONFIRM_REQUIRED",
-            "this method needs a passkey confirmation; call it through /intents",
-        ));
-    }
     let a = node
         .view(&ViewRequest {
             app_id: app_id.clone(),
@@ -2712,31 +2620,16 @@ async fn views(
             min_index: body.min_index,
         })
         .await?;
-    if app.executor == crate::types::Executor::Component {
-        return Ok(
-            match component_failure(a.index, &a.status, &a.error, a.timeout) {
-                Some(e) => e.into_response(),
-                None => {
-                    let receipt = node.receipt(&app_id, a.index, &a.result);
-                    Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
-                        .into_response()
-                }
-            },
-        );
-    }
-    Ok(match a.status {
-        Status::Ok => {
-            let receipt = node.receipt(&app_id, a.index, &a.result);
-            Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
-                .into_response()
-        }
-        Status::AppError => ApiError::new(422, "APP_ERROR", "the app refused the read")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
-        Status::Trap => ApiError::new(422, "TRAP", "the read failed")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
-    })
+    Ok(
+        match component_failure(a.index, &a.status, &a.error, a.timeout) {
+            Some(e) => e.into_response(),
+            None => {
+                let receipt = node.receipt(&app_id, a.index, &a.result);
+                Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
+                    .into_response()
+            }
+        },
+    )
 }
 
 #[derive(Deserialize)]
@@ -5124,11 +5017,7 @@ async fn app_xcalls(
         ));
     }
     if app.executor != crate::types::Executor::Component {
-        return Err(ApiError::new(
-            409,
-            "NOT_SUPPORTED",
-            "this app runs on wasmer: its xcalls are follow-ups",
-        ));
+        return Err(ApiError::unsupported_engine());
     }
     let g = node
         .hosted(&app.app_id)
@@ -5165,17 +5054,15 @@ async fn app_abi(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
-    if app.executor == crate::types::Executor::Component {
-        // The ABI the component embeds (its `calimero:abi` section), of the
-        // bundle the app group runs.
-        let bundle = node.running_bundle(&app);
-        let wasm = node.bundle_wasm(&bundle).await?;
-        let abi = crate::component::embedded_abi(&wasm);
-        return Ok(Json(json!({ "bundle": bundle, "abi": abi })));
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::unsupported_engine());
     }
-    let wasm = node.bundle_wasm(&app.bundle).await?;
-    let abi = calimero_wasm_abi::embed::read_embedded_state_schema(&wasm);
-    Ok(Json(json!({ "bundle": app.bundle, "abi": abi })))
+    // The ABI the component embeds (its `calimero:abi` section), of the
+    // bundle the app group runs.
+    let bundle = node.running_bundle(&app);
+    let wasm = node.bundle_wasm(&bundle).await?;
+    let abi = crate::component::embedded_abi(&wasm);
+    Ok(Json(json!({ "bundle": bundle, "abi": abi })))
 }
 
 /// What the caller's account uses, against the cluster's quotas.

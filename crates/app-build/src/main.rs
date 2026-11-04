@@ -15,6 +15,9 @@ fn main() -> EyreResult<()> {
         Some(_) => eyre::bail!(usage),
     };
     let built = build_component(&crate_dir, &crate_dir.join("target"))?;
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(&out, &built.component)?;
     println!("wrote {} ({} bytes)", out.display(), built.component.len());
     Ok(())

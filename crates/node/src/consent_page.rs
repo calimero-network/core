@@ -1283,7 +1283,7 @@ async fn upgrade_request(
         from.abi.get(&key).cloned().flatten(),
         to.abi.get(&key).cloned().flatten(),
     );
-    let plan = crate::services::plan_from_abis(from_abi.clone(), to_abi.clone());
+    let plan = diff::plan_from_abis(from_abi.clone(), to_abi.clone());
     let sheet = capability_sheet(
         &Side {
             package: &package,
