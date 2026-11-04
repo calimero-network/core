@@ -10,6 +10,7 @@ use calimero_app_build::{build_component, build_compute_component};
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::Engine;
 use calimero_sdk::testing::{Failure, Org, TestApp};
+use calimero_sdk::BlobRef;
 use serde_json::{json, Value};
 
 fn component() -> &'static [u8] {
@@ -57,11 +58,9 @@ fn policy() -> Value {
     json!({ "salt": "pepper", "columns": { "email": "mask", "name": "pseudonym" } })
 }
 
-/// `who` registers `file` as theirs and submits it; the job's id.
-fn submit_own(t: &mut TestApp, who: &str, file: &str) -> Value {
-    t.as_(who)
-        .call("register", json!({ "file": file }))
-        .unwrap();
+/// A sealed file `who` uploaded, and the job `who` submits it as; the job's id.
+fn submit_own(t: &mut TestApp, who: &str, bytes: &[u8]) -> Value {
+    let file = t.add_file_by(bytes, who);
     t.as_(who).call("submit", json!({ "file": file })).unwrap()
 }
 
@@ -105,7 +104,7 @@ fn a_policy_needs_a_salt() {
 #[test]
 fn submit_needs_a_policy_a_member_and_a_file() {
     let mut t = app();
-    let file = t.upload_blob(b"name,email\nJane,jane@acme.com\n", "text/csv");
+    let file = t.add_file_by(b"name,email\nJane,jane@acme.com\n", "bob");
     let r = t.as_("bob").call("submit", json!({ "file": file }));
     assert_eq!(code(r), "NoPolicy");
 
@@ -118,7 +117,9 @@ fn submit_needs_a_policy_a_member_and_a_file() {
         .as_("bob")
         .call("submit", json!({ "file": "ab".repeat(32) }));
     assert_eq!(code(r), "NoSuchFile");
-    submit_own(&mut t, "bob", &file);
+    t.as_("bob")
+        .call("submit", json!({ "file": file }))
+        .unwrap();
 }
 
 #[test]
@@ -127,41 +128,33 @@ fn only_the_uploader_or_an_admin_submits_a_file() {
     t.as_("ada")
         .call("setPolicy", json!({ "policy": policy() }))
         .unwrap();
-    let file = t.upload_blob(b"name\nJane\n", "text/csv");
-    let submit = |t: &mut TestApp, who: &str| t.as_(who).call("submit", json!({ "file": file }));
+    let file = t.add_file_by(b"name\nJane\n", "bob");
+    let made = t.add_file(b"name\nMade\n");
+    let submit =
+        |t: &mut TestApp, who: &str, f: &BlobRef| t.as_(who).call("submit", json!({ "file": f }));
 
-    assert_eq!(code(submit(&mut t, "bob")), "NotYourFile", "not registered");
-    t.as_("bob")
-        .call("register", json!({ "file": file }))
-        .unwrap();
     assert_eq!(
-        code(submit(&mut t, "cy")),
+        code(submit(&mut t, "cy", &file)),
         "NotYourFile",
         "another member's file"
     );
-    let r = t.as_("cy").call("register", json!({ "file": file }));
-    assert_eq!(code(r), "FileTaken", "the first claim stands");
-    let r = t.as_("gus").call("register", json!({ "file": file }));
-    assert_eq!(code(r), "MembersOnly");
-    let r = t
-        .as_("bob")
-        .call("register", json!({ "file": "ab".repeat(32) }));
-    assert_eq!(code(r), "NoSuchFile");
-    t.as_("bob")
-        .call("register", json!({ "file": file }))
-        .unwrap();
-    submit(&mut t, "bob").unwrap();
-    submit(&mut t, "ada").unwrap();
+    assert_eq!(
+        code(submit(&mut t, "bob", &made)),
+        "NotYourFile",
+        "a file no one uploaded"
+    );
+    submit(&mut t, "bob", &file).unwrap();
+    submit(&mut t, "ada", &file).unwrap();
+    submit(&mut t, "ada", &made).unwrap();
 }
 
 #[test]
 fn a_job_is_seen_by_its_submitter_and_admins_only() {
     let mut t = app();
-    let file = t.upload_blob(b"name\nJane\n", "text/csv");
     t.as_("ada")
         .call("setPolicy", json!({ "policy": policy() }))
         .unwrap();
-    let id = submit_own(&mut t, "bob", &file);
+    let id = submit_own(&mut t, "bob", b"name\nJane\n");
     let id = id.as_str().unwrap().to_owned();
 
     let job = t.as_("bob").view("job", json!({ "id": id })).unwrap();
@@ -180,11 +173,10 @@ fn a_job_is_seen_by_its_submitter_and_admins_only() {
 #[test]
 fn a_job_is_shared_by_its_submitter_or_an_admin_only() {
     let mut t = app();
-    let file = t.upload_blob(b"name\nJane\n", "text/csv");
     t.as_("ada")
         .call("setPolicy", json!({ "policy": policy() }))
         .unwrap();
-    let id = submit_own(&mut t, "bob", &file);
+    let id = submit_own(&mut t, "bob", b"name\nJane\n");
     let id = id.as_str().unwrap().to_owned();
 
     for who in ["cy", "gus"] {
@@ -202,11 +194,10 @@ fn a_job_is_shared_by_its_submitter_or_an_admin_only() {
 #[test]
 fn a_link_is_for_the_submitter_or_an_admin_and_a_published_part() {
     let mut t = app();
-    let file = t.upload_blob(b"name\nJane\n", "text/csv");
     t.as_("ada")
         .call("setPolicy", json!({ "policy": policy() }))
         .unwrap();
-    let id = submit_own(&mut t, "bob", &file);
+    let id = submit_own(&mut t, "bob", b"name\nJane\n");
     let args = json!({ "job": id, "part": 0, "ttlSecs": 600 });
 
     let r = t.as_("cy").call("link", args.clone());
@@ -235,11 +226,12 @@ fn jobs_past_one_page_are_all_reachable_through_the_cursor() {
     t.as_("ada")
         .call("setPolicy", json!({ "policy": policy() }))
         .unwrap();
-    let files: Vec<String> = (0..120)
-        .map(|n| t.upload_blob(format!("name\n{n}\n").as_bytes(), "text/csv"))
-        .collect();
-    for (n, file) in files.iter().enumerate() {
-        submit_own(&mut t, ["bob", "cy"][n % 2], file);
+    for n in 0..120 {
+        submit_own(
+            &mut t,
+            ["bob", "cy"][n % 2],
+            format!("name\n{n}\n").as_bytes(),
+        );
     }
     let first = t.as_("ada").view("jobs", json!({})).unwrap();
     assert!(!first["next"].is_null(), "more than one page");

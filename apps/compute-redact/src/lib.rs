@@ -1,4 +1,4 @@
-//! CSV redaction on compute runs: an admin sets the policy, a member registers and submits a sealed CSV, a preview run plans the parts and one run redacts each.
+//! CSV redaction on compute runs: an admin sets the policy, a member submits a sealed CSV they uploaded, a preview run plans the parts and one run redacts each.
 //! `share` publishes a done job's outputs and `link` grants a download of one; at most `MAX_ACTIVE` runs are active at once.
 
 mod jobs;
@@ -55,8 +55,6 @@ pub struct Redact {
     runs: UnorderedMap<String, Task>,
     /// The tasks waiting for a free slot, by `Task::key`.
     waiting: UnorderedMap<String, Task>,
-    /// Who registered each file, by file id: the first claim stands.
-    uploaders: UnorderedMap<String, String>,
 }
 
 #[app::error]
@@ -67,7 +65,6 @@ pub enum Error {
     BadPolicy { reason: String },
     NoSuchFile,
     NotYourFile,
-    FileTaken,
     NotFound { id: String },
     NotDone { id: String },
     NotPublished { id: String },
@@ -157,23 +154,8 @@ impl Redact {
         Ok(())
     }
 
-    /// Claims the sealed file `file` as the caller's: only its first claimant and admins submit
-    /// it. Call it right after uploading. Members and above.
-    pub fn register(&mut self, file: BlobRef) -> app::Result<()> {
-        let who = member()?;
-        if file.info().is_none() {
-            return Err(Error::NoSuchFile.into());
-        }
-        match self.uploaders.get(&file.id())? {
-            Some(owner) if owner != who => return Err(Error::FileTaken.into()),
-            Some(_) => {}
-            None => self.uploaders.insert(&file.id(), &who).map(drop)?,
-        }
-        Ok(())
-    }
-
     /// Redacts the CSV `file` (a sealed file of the app) under the current policy and answers
-    /// the job's id. `rows_per_part` sizes the parts. Its registrant and admins only.
+    /// the job's id. `rows_per_part` sizes the parts. Its uploader and admins only.
     pub fn submit(&mut self, file: BlobRef, rows_per_part: Option<u32>) -> app::Result<String> {
         let who = member()?;
         let Some(policy) = self.policy.get()? else {
@@ -183,7 +165,7 @@ impl Redact {
             return Err(Error::NoSuchFile.into());
         }
         let admin = role().is_some_and(|r| r >= OrgRole::Admin);
-        if !admin && self.uploaders.get(&file.id())?.as_deref() != Some(&who) {
+        if !admin && files::uploader(&file).as_deref() != Some(&who) {
             return Err(Error::NotYourFile.into());
         }
         let rows_per_part = rows_per_part.unwrap_or(DEFAULT_ROWS_PER_PART);
