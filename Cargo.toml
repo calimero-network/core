@@ -67,8 +67,6 @@ dirs = "7.0.0"
 ed25519-dalek = "3"
 eyre = "0.6.12"
 flate2 = "1.0"
-# Cross-process build lock in calimero-app-build (already in the tree through tantivy).
-fs4 = "0.13.1"
 futures-util = "0.3.30"
 hex = "0.4.3"
 html5ever = "0.40"
