@@ -3,24 +3,6 @@
 
 use crate::blob::BlobRef;
 
-#[cfg(target_arch = "wasm32")]
-mod backend {
-    use crate::bindings::calimero::app::compute;
-
-    pub fn run_id() -> Option<String> {
-        compute::run_id()
-    }
-
-    pub fn inputs() -> Vec<String> {
-        compute::inputs()
-    }
-
-    pub fn progress(percent: u8, step: &str) {
-        compute::progress(percent, step);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 mod backend {
     pub fn run_id() -> Option<String> {
         None

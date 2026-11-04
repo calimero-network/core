@@ -95,12 +95,12 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
-// Available only while handling a compute run (kind = action with a run); a call or view sees no run.
-interface compute {
+// What a compute component sees of its run; the app world does not import it.
+interface job {
   use types.{blob-id, action-id};
   run-id: func() -> option<action-id>;
   inputs: func() -> list<blob-id>;
-  progress: func(percent: u8, step: string);   // compute runs only; step is cut at 128 bytes; the last value wins, never logged
+  progress: func(percent: u8, step: string);   // the last value wins, never logged; step is cut at 128 bytes
 }
 
 interface xcall {
@@ -127,7 +127,6 @@ world app {
   import blobs;
   import search;
   import files;
-  import compute;
   import xcall;
   import action;
 
@@ -147,4 +146,25 @@ world app {
 
   use types.{invocation-kind, app-error};
   export handle: func(kind: invocation-kind, method: string, args: list<u8>) -> result<list<u8>, app-error>;
+}
+
+// The compute methods of an app, built as their own component for job nodes: no state, no
+// xcall, no network, so the install-time import check is the whole sandbox.
+world compute {
+  import types;
+  import files;
+  import job;
+
+  import wasi:io/error@0.2.12;
+  import wasi:io/poll@0.2.12;
+  import wasi:io/streams@0.2.12;
+  import wasi:clocks/wall-clock@0.2.12;
+  import wasi:clocks/monotonic-clock@0.2.12;
+  import wasi:random/random@0.2.12;
+  import wasi:cli/stdout@0.2.12;
+  import wasi:cli/stderr@0.2.12;
+  import wasi:cli/environment@0.2.12;
+
+  use types.{app-error};
+  export run: func(method: string, args: list<u8>) -> result<list<u8>, app-error>;
 }

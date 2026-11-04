@@ -36,10 +36,10 @@ wasmtime::component::bindgen!({
 });
 
 use self::calimero::app::{
-    action, blobs, compute, context, events, files, rebuild, search, storage, types, xcall,
+    action, blobs, context, events, files, rebuild, search, storage, types, xcall,
 };
 
-/// Links the ten `calimero:app` interfaces and `wasi:http` onto `StoreData`.
+/// Links the `calimero:app` interfaces of the app world and `wasi:http` onto `StoreData`.
 pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     let l = linker;
     types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -50,7 +50,6 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     blobs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     search::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     files::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
-    compute::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     let options = wasi::http::types::LinkOptions::default();
@@ -377,20 +376,6 @@ impl files::HostReader for StoreData {
     fn drop(&mut self, this: Resource<files::Reader>) -> Result<()> {
         self.host.reader_close(ReaderId(this.rep()));
         Ok(())
-    }
-}
-
-impl compute::Host for StoreData {
-    fn run_id(&mut self) -> Result<Option<String>> {
-        Ok(self.host.compute_run_id())
-    }
-
-    fn inputs(&mut self) -> Result<Vec<String>> {
-        Ok(self.host.compute_inputs())
-    }
-
-    fn progress(&mut self, percent: u8, step: String) -> Result<()> {
-        self.host.compute_progress(percent, &step).map_err(denied)
     }
 }
 
