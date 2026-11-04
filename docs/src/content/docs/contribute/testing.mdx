@@ -421,9 +421,11 @@ gates; latency gates nothing.
   report and failed tests' node logs;
 - job `compute actions, real processes` (`compute-e2e`):
   `crates/node/tests/fault/compute_e2e.py` starts three replicas and two
-  `merod run --job-node` processes of a release build and drives compute runs
+  `merod run --job-node` processes of a release build, installs a signed `.mpk`
+  that carries the fixture's app and compute components, and drives compute runs
   through a job node's loss, a cancel, the caps and the collection of files no
-  state references (logs are the artifact `compute-e2e-logs` on failure);
+  state references; it also checks that the job nodes were given only the compute
+  component (logs are the artifact `compute-e2e-logs` on failure);
 - job `clients against merod` (`clients`): mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,

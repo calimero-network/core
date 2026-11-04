@@ -1,13 +1,16 @@
 """Real-process end-to-end test of compute actions: 3 replicas and 2 job nodes, all `merod run`.
 
-Scenarios: happy path, a job node killed mid-run, restart determinism, cancel, the three caps,
-an output the result method does not store, the quota. Forged finals, per-run key isolation and
+The app is built as two components (`app.wasm` and `compute.wasm`) and installed from a signed
+package that carries both. Scenarios: happy path, a job node killed mid-run, restart determinism,
+cancel, the three caps, an output the result method does not store, the quota, and the job
+nodes' logs showing only the compute component. Forged finals, per-run key isolation and
 the collection of unreferenced files after `BLOB_IDLE_MS` (an hour of entry time, which only an
 in-process clock can pass) are proved by in-process tests that are run and quoted. Binaries from
 `RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` from
-there, or taken from `COMPUTE_E2E_WASM`. Work dir and logs: `COMPUTE_E2E_DIR` (default
-target/compute-e2e). The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the
-key the nodes start with (`--operator-key`), as the node tests' harness signs them.
+there, or taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
+Work dir and logs: `COMPUTE_E2E_DIR` (default target/compute-e2e).
+The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the key the nodes start with
+(`--operator-key`), as the node tests' harness signs them.
 
     python3 -I crates/node/tests/fault/compute_e2e.py [--skip-cargo-tests]
 """
@@ -27,9 +30,11 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, http  # noqa: E402
+from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, PackageRegistry, http  # noqa: E402
 
 BASE_PORT = 7650
+PACKAGE = "com.calimero.compute-fixture"
+VERSION = "1.0.0"
 JOBS = (4, 5)
 SMALL_MIB = 5
 VIEW_BYTES = 100_000  # a view's fuel hashes little: what readKept can read back
@@ -100,12 +105,26 @@ class E2E(Cluster):
         return http("GET", self.url(i) + "job/load", timeout=5)
 
 
-def compute_wasm(wd):
-    if os.environ.get("COMPUTE_E2E_WASM"):
-        return os.environ["COMPUTE_E2E_WASM"]
-    built = wd / "compute.wasm"
-    subprocess.run([str(BIN / "mero-app-build"), "apps/v2-fixtures/compute", "--out", str(built)], cwd=ROOT, check=True)
-    return str(built)
+def build_components(wd):
+    """The fixture's app and compute components, from one build (or the two env overrides)."""
+    app, compute = os.environ.get("COMPUTE_E2E_WASM"), os.environ.get("COMPUTE_E2E_COMPUTE_WASM")
+    if bool(app) != bool(compute):
+        raise SystemExit("set both COMPUTE_E2E_WASM and COMPUTE_E2E_COMPUTE_WASM, or neither")
+    if app:
+        return Path(app), Path(compute)
+    app, compute = wd / "app.wasm", wd / "compute.wasm"
+    subprocess.run([str(BIN / "mero-app-build"), "apps/v2-fixtures/compute", "--out", str(app),
+                    "--compute-out", str(compute), "--target-dir", str(wd / "build")], cwd=ROOT, check=True)
+    return app, compute
+
+
+def pack(wd, app, compute):
+    """A signed package carrying both components, as a release ships them."""
+    mpk = wd / f"{PACKAGE}-{VERSION}.mpk"
+    subprocess.run([sys.executable, "-I", "scripts/pack-component.py", "--wasm", str(app), "--compute", str(compute),
+                    "--package", PACKAGE, "--app-version", VERSION, "--out", str(mpk),
+                    "--mero-sign", str(BIN / "mero-sign")], cwd=ROOT, check=True)
+    return mpk
 
 
 def cargo_tests():
@@ -188,6 +207,26 @@ class Rig:
                 and (self.app in line) and ("compute" in line)]
 
 
+def sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def only_compute_reaches_job_nodes(cl, rig):
+    say("\n== 10 a job node is only ever given the compute component")
+    app, compute = rig.components["app"], rig.components["compute"]
+    logs = {j: (cl.workdir / f"node{j}.log").read_text(errors="replace") for j in JOBS}
+    prepared = {j: [line for line in text.splitlines() if "job node prepared a component" in line]
+                for j, text in logs.items()}
+    held = {j: sorted({h for h in (app, compute) if any(h in line for line in lines)}) for j, lines in prepared.items()}
+    anywhere = [j for j, text in logs.items() if app in text]
+    check("10 job nodes hold only the compute component",
+          compute != app and any(compute in h for h in held.values()) and not anywhere
+          and all(set(h) <= {compute} for h in held.values()),
+          f"app component {app[:12]}, compute component {compute[:12]}",
+          "; ".join(f"job node {j} prepared {[h[:12] for h in held[j]]} ({len(prepared[j])} log lines)" for j in JOBS)
+          + f"; the app's hash appears in job logs of {anywhere or 'none'}")
+
+
 def stuck_cancel(cl, rig):
     say("\n== 7 stuck cancel: the job node is frozen, the leader still ends the run")
     run = rig.start("startRun", {"method": "spin"})
@@ -265,15 +304,20 @@ def main():
     shutil.rmtree(wd, ignore_errors=True)
     wd.mkdir(parents=True)
     in_process = {} if args.skip_cargo_tests else cargo_tests()
-    wasm = compute_wasm(wd)
-    cl = E2E(wd, base_port=BASE_PORT + offset, cluster="computee2e")
+    app_wasm, compute_wasm = build_components(wd)
+    mpk = pack(wd, app_wasm, compute_wasm)
+    registry = PackageRegistry(wd / "registry")
+    cl = E2E(wd, base_port=BASE_PORT + offset, cluster="computee2e", registry=registry)
     try:
         cl.start()
         (wd / "cfg").mkdir(parents=True, exist_ok=True)
         (wd / "operator.key").write_text(OPERATOR_SEED)
         cl.cli(1, "login", "--dev-passkey", str(wd / "dev-passkey.json"), "--name", "owner", "--origin", ORIGIN)
         org = cl.cli(1, "namespace", "create", "Acme")["orgId"]
-        app = cl.cli(1, "context", "create", "--name", "compute", "--path", wasm, "--namespace", org)["appId"]
+        package, version = registry.publish(mpk)
+        cl.cli(1, "app", "install", f"{package}@{version}")
+        app = cl.cli(1, "context", "create", "--name", "compute", "--package", package, "--version", version,
+                     "--namespace", org)["appId"]
         key = cl.cli(1, "account", "api-key", "create", "--label", "compute-e2e",
                       "--dev-passkey", str(wd / "dev-passkey.json"))["key"]
         identity = cl.ops(1, "ops/cluster")["identity"]
@@ -282,9 +326,11 @@ def main():
             cl.operate("add-node", str(j), cl.url(j), "--role", "job")
         time.sleep(3)
         rig = Rig(cl, app, key)
+        rig.components = {"app": sha256_file(app_wasm), "compute": sha256_file(compute_wasm)}
         scenarios(cl, rig, in_process)
     finally:
         cl.stop()
+        registry.stop()
         say("\nSUMMARY")
         for name, ok in RESULTS:
             say(f"  {'PASS' if ok else 'FAIL'} {name}")
@@ -375,6 +421,7 @@ def scenarios(cl, rig, in_process):
     stuck_cancel(cl, rig)
     unkept_output(cl, rig, in_process)
     quota(cl, rig)
+    only_compute_reaches_job_nodes(cl, rig)
 
 
 if __name__ == "__main__":
