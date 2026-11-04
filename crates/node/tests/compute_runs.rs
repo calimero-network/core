@@ -1573,3 +1573,29 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
     let rec = until_ended(&rig, &run, 90).await;
     assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_files() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let run = rig.begin("startRun", json!({ "method": "big" })).await;
+    let _ = rig.outcome(&run).await;
+    let single = format!("apps/{}/runs/{run}", rig.app);
+    let list = format!("apps/{}/runs", rig.app);
+
+    let owner = rig.alice.get(&single).await.unwrap();
+    let message = owner["final"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("too large"), "{owner}");
+    let listed = rig.alice.get(&list).await.unwrap();
+    assert_eq!(
+        listed["runs"][0]["final"]["message"],
+        owner["final"]["message"]
+    );
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&single).await.unwrap();
+    assert!(shown["final"]["message"].is_null(), "{shown}");
+    assert!(shown["progress"].is_null(), "{shown}");
+    let listed = bob.get(&list).await.unwrap();
+    assert!(listed["runs"][0]["final"]["message"].is_null(), "{listed}");
+    assert!(listed["runs"][0]["progress"].is_null(), "{listed}");
+}
