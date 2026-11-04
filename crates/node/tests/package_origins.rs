@@ -4,6 +4,9 @@
 //! as a served frontend's is, under the origin's own rp-id; anyone else's
 //! registration is refused; removing the origin ends those sessions.
 //!
+//! A sign-up on a registered origin is held to the cluster's sign-up policy
+//! like any other.
+//!
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
@@ -18,7 +21,7 @@ use serde_json::json;
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster, ORIGIN};
+use harness::{kv_wasm, ops_signed, signed_up, Cluster, ORIGIN};
 
 const NOTES: &str = "com.test.notes";
 const OTHER: &str = "com.test.other";
@@ -350,4 +353,63 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+/// A sign-up on a registered origin is judged by the cluster's sign-up
+/// policy like any other: on an invite-only cluster it is refused without an
+/// invite, and taken with one, bound to the origin's package.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance.sign_up = calimero_node::system::SignUp::Invite;
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let expires = chrono::Utc::now() + chrono::Duration::hours(1);
+    for token in ["sup_alice_000000000", "sup_carol_000000000"] {
+        let _i = ops_signed(
+            &ops,
+            "ops/sign-up/invites",
+            json!({ "token": token, "uses": 1, "expiresAt": expires.to_rfc3339() }),
+        )
+        .await
+        .unwrap();
+    }
+    let alice = c.client(0);
+    let mut alice_pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let _s = alice
+        .sign_up_invited(&mut alice_pk, "alice", Some("sup_alice_000000000"))
+        .await
+        .unwrap();
+    let _ok = alice.upload_package(release(NOTES, "1.0.0")).await.unwrap();
+    let _ok = alice
+        .add_package_origin(NOTES, SITE, None, &mut alice_pk)
+        .await
+        .unwrap();
+
+    // No invite: refused at begin on the site, before any passkey is made.
+    let carol = c.client(1);
+    let mut carol_pk = SoftAuthenticator::new(SITE_RP, SITE);
+    let e = carol
+        .sign_up_with(&mut carol_pk, "carol", Some(SITE), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("SIGN_UP_REFUSED"), "{e}");
+    // With one: an account whose session is bound to the site's package.
+    let _s = carol
+        .sign_up_with(
+            &mut carol_pk,
+            "carol",
+            Some(SITE),
+            Some("sup_carol_000000000"),
+        )
+        .await
+        .unwrap();
+    let me = carol.me().await.unwrap();
+    assert_eq!(
+        (me["app"].as_str(), me["origin"].as_str()),
+        (Some(NOTES), Some(SITE)),
+        "{me}"
+    );
 }
