@@ -1,16 +1,22 @@
 //! An in-memory file store for tests: ids are the hex SHA-256 of the plaintext and the
 //! ciphertext is the plaintext.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sha2::{Digest, Sha256};
 
-use super::{FileError, FileInfo, FileRead, FileWrite, Files, NewFile, ReadError, NO_SUCH_FILE};
+use super::{
+    FileError, FileInfo, FileRead, FileWrite, Files, NewFile, PublishedFile, ReadError,
+    NOT_A_RUN_OUTPUT, NO_SUCH_FILE,
+};
 
 /// Shared by every clone, so a test keeps a handle while the host core holds another.
 #[derive(Clone, Default)]
-pub struct MemoryFiles(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+pub struct MemoryFiles(
+    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    Arc<Mutex<BTreeSet<String>>>,
+);
 
 impl MemoryFiles {
     /// Stores `bytes` and returns the id.
@@ -18,6 +24,15 @@ impl MemoryFiles {
         let id = hex::encode(Sha256::digest(bytes));
         let _ = self.lock().insert(id.clone(), bytes.to_vec());
         id
+    }
+
+    /// Makes `id` an output of a done run: the only kind of file `publish` accepts.
+    pub fn mark_output(&self, id: &str) {
+        let _ = self
+            .1
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned());
     }
 
     #[must_use]
@@ -90,5 +105,23 @@ impl Files for MemoryFiles {
 
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         Ok(Box::new(Writer(Vec::new())))
+    }
+
+    fn publish(&self, id: &str) -> Result<PublishedFile, FileError> {
+        let is_output = self
+            .1
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id);
+        let bytes = self
+            .get(id)
+            .filter(|_| is_output)
+            .ok_or_else(|| FileError::Failed(NOT_A_RUN_OUTPUT.to_owned()))?;
+        Ok(PublishedFile {
+            source: id.to_owned(),
+            id: hex::encode(Sha256::digest(&bytes)),
+            size: bytes.len() as u64,
+            bytes,
+        })
     }
 }

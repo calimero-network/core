@@ -12,6 +12,7 @@ use calimero_app_engine_wasmtime::{
 use calimero_app_host::{
     Budget, Caller, ComputeCtx, Directory, Engine, HostCore, Invocation, InvocationKind,
     MemoryFiles, OrgRole, Outcome, PrepareError, Prepared, Status, TrapKind, FILES_DISABLED,
+    NOT_A_RUN_OUTPUT,
 };
 use sha2::{Digest, Sha256};
 
@@ -330,6 +331,46 @@ fn creating_a_file_in_a_view_traps_host_denied() {
         "{:?}",
         out.status
     );
+}
+
+#[test]
+fn a_guest_publishes_a_run_output_in_a_call_and_is_denied_in_a_view() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+    let output = files.insert(b"sealed output");
+    files.mark_output(&output);
+
+    let call = host(InvocationKind::Call, "publish", output.as_bytes())
+        .with_files(Arc::new(files.clone()));
+    let out = fx.engine.invoke(&app, call, Budget::call());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let blob = hex::encode(Sha256::digest(b"sealed output"));
+    assert_eq!(out.result, blob.as_bytes());
+    assert_eq!(out.published.len(), 1);
+    assert_eq!(out.published[0].bytes, b"sealed output");
+
+    let view =
+        host(InvocationKind::View, "peek", output.as_bytes()).with_files(Arc::new(files.clone()));
+    let out = fx.engine.invoke(&app, view, Budget::view());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+
+    let other = files.insert(b"uploaded");
+    let call = host(InvocationKind::Call, "publish", other.as_bytes()).with_files(Arc::new(files));
+    match fx.engine.invoke(&app, call, Budget::call()).status {
+        Status::AppError { code, message } => {
+            assert_eq!(
+                (code.as_str(), message.as_str()),
+                ("Files", NOT_A_RUN_OUTPUT)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -911,6 +952,18 @@ fn prepare_compute(engine: &WasmtimeEngine, name: &str) -> Prepared {
     engine
         .prepare(&format!("{name}-hash"), &guest(name))
         .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+#[test]
+fn a_compute_component_that_imports_the_publish_call_is_refused_at_prepare() {
+    let err = compute_engine()
+        .prepare("publisher-hash", &guest("compute_publish"))
+        .err()
+        .expect("a compute component importing runs");
+    assert!(
+        matches!(&err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/runs")),
+        "{err:?}"
+    );
 }
 
 #[test]

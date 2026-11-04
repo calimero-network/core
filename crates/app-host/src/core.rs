@@ -1058,10 +1058,10 @@ impl HostCore {
             status
         };
         let ok = status == Status::Ok;
-        let new_files = if ok {
-            self.files.into_created()
+        let (new_files, published) = if ok {
+            self.files.into_outputs()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let (compute_starts, compute_cancels) = if ok {
             (self.starts, self.cancels)
@@ -1082,6 +1082,7 @@ impl HostCore {
             logs: self.logs,
             http: self.http_log,
             new_files,
+            published,
             compute_starts,
             compute_cancels,
             usage: Usage {
@@ -1137,10 +1138,11 @@ impl HostCore {
     /// A value may refer only to the app's own blobs (R8): retention follows the
     /// references, so one to a blob the app does not hold would keep nothing alive.
     fn check_blob_refs(&self, value: &[u8]) -> Result<(), HostDenied> {
-        if blob_refs(value)
-            .iter()
-            .any(|id| self.blobs.info(id).is_none() && self.file_info(&blob_id_hex(id)).is_none())
-        {
+        if blob_refs(value).iter().any(|id| {
+            self.blobs.info(id).is_none()
+                && self.file_info(&blob_id_hex(id)).is_none()
+                && !self.files.published(&blob_id_hex(id))
+        }) {
             return Err(HostDenied::new("unknown blob"));
         }
         Ok(())
