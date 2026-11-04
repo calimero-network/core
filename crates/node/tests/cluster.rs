@@ -3581,8 +3581,10 @@ fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
 /// that ran its WASM (calls and strong views on the app's leader, a stale view
 /// on the replica that answered it), never on the replicas that applied the
 /// entry, so the cluster's sum is the number of runs. Series are labelled
-/// with the app's id and its payer: the organization, or `account:{owner}`
-/// for a personal app. State bytes are a gauge every replica reports alike.
+/// with the app's id, its payer (the organization, or `account:{owner}` for a
+/// personal app) and its developer, the payer for an app made from a release
+/// directly (`tests/deployments.rs` has an instance of a deployment). State
+/// bytes are a gauge every replica reports alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
     let c = Cluster::start_with(3, |cfg| {
@@ -3680,8 +3682,9 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             .unwrap();
         texts.push(text);
     }
-    let in_org = format!("app=\"{app}\",org=\"{org}\"");
-    let mine = format!("app=\"{personal}\",org=\"account:{alice_id}\"");
+    let in_org = format!("app=\"{app}\",org=\"{org}\",developer=\"{org}\"");
+    let mine =
+        format!("app=\"{personal}\",org=\"account:{alice_id}\",developer=\"account:{alice_id}\"");
     let calls = |labels: &str, kind: &str| -> Vec<f64> {
         texts
             .iter()
