@@ -394,6 +394,13 @@ pub struct SystemState {
     /// The `seq` the next queued run gets.
     #[serde(default)]
     pub next_run_seq: u64,
+    /// When each payer last got a place, as a count of grants: free places go to the payer
+    /// served longest ago. Only payers that still have runs are kept.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub run_served: BTreeMap<String, u64>,
+    /// Places granted so far, the clock of `run_served`.
+    #[serde(default)]
+    pub run_grants: u64,
     /// The last run ids released per app, oldest first.
     #[serde(default)]
     pub released_runs: BTreeMap<AppId, VecDeque<String>>,
@@ -800,8 +807,9 @@ impl SystemState {
         self.compute.get(app)?.get(run)
     }
 
-    /// Grants waiting runs up to the job nodes' places, serving the payer whose oldest waiting
-    /// run arrived first; a payer at a quota is passed over for the pass. Granted runs stay.
+    /// Grants waiting runs up to the job nodes' places, to the payers in turn (the one served
+    /// longest ago first, then the one whose oldest run arrived first); a payer at a quota is
+    /// passed over for the pass. Granted runs stay.
     fn grant_runs(&mut self) {
         let quota = self.quotas.compute_fuel_per_org;
         for slot in self.compute.values_mut().flat_map(BTreeMap::values_mut) {
@@ -844,9 +852,12 @@ impl SystemState {
             let next = waiting
                 .iter()
                 .filter(|(payer, _)| !passed.contains(*payer))
-                .filter_map(|(payer, queue)| Some((queue.front()?.0, payer.clone())))
+                .filter_map(|(payer, queue)| {
+                    let served = self.run_served.get(payer).copied().unwrap_or(0);
+                    Some((served, queue.front()?.0, payer.clone()))
+                })
                 .min();
-            let Some((_, payer)) = next else { break };
+            let Some((_, _, payer)) = next else { break };
             let Some((_, app, run, fuel)) = waiting.get_mut(&payer).and_then(VecDeque::pop_front)
             else {
                 break;
@@ -858,6 +869,8 @@ impl SystemState {
                 held.0 += 1;
                 held.1 += fuel;
                 granted_total += 1;
+                self.run_grants += 1;
+                let _prev = self.run_served.insert(payer, self.run_grants);
                 grants.push((app, run));
             } else {
                 let _new = passed.insert(payer);
@@ -868,6 +881,13 @@ impl SystemState {
                 slot.granted = true;
             }
         }
+        let payers: BTreeSet<&String> = self
+            .compute
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(|slot| &slot.payer)
+            .collect();
+        self.run_served.retain(|payer, _| payers.contains(payer));
     }
 
     /// The file bytes held by the apps `payer` ([`crate::usage::payer`]) is billed for.

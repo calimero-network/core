@@ -182,6 +182,26 @@ fn the_longest_waiting_org_is_served_first() {
 }
 
 #[test]
+fn free_places_go_to_the_orgs_in_turn_not_to_the_one_with_the_oldest_backlog() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    for run in ["r1", "r2", "r3", "r4", "r5"] {
+        m.run(acquire("a1", run, 1)).unwrap();
+    }
+    m.run(acquire("b1", "w1", 1)).unwrap();
+    m.run(acquire("b1", "w2", 1)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+    // Org x's backlog is older than every run of org y, yet y is served first.
+    m.run(release("a1", "r1")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r2"), ("b1", "w1")]));
+    // Then the org served longest ago: x, then y.
+    m.run(release("a1", "r2")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r3"), ("b1", "w1")]));
+    m.run(release("b1", "w1")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r3"), ("b1", "w2")]));
+}
+
+#[test]
 fn an_org_over_its_concurrency_cap_is_passed_over_not_waited_for() {
     let mut m = machine();
     m.state.quotas.max_concurrent_runs_per_org = 1;

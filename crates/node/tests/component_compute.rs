@@ -221,3 +221,54 @@ async fn a_run_keeps_the_compute_component_it_started_on_through_an_upgrade() {
     assert_eq!(compute_of(&before.result), Some(first));
     assert_eq!(compute_of(&after.result), Some(second));
 }
+
+/// `component` with its result method `onDone` renamed `onDone2` in its ABI.
+fn renamed_result(component: &[u8]) -> Vec<u8> {
+    let mut abi = calimero_app_build::abi_of(component)
+        .unwrap()
+        .expect("an ABI");
+    let methods = abi["methods"].as_object_mut().unwrap();
+    // The compute component's ABI lists only the compute methods.
+    if let Some(on_done) = methods.remove("onDone") {
+        let _prev = methods.insert("onDone2".into(), on_done);
+    }
+    for method in abi["methods"].as_object_mut().unwrap().values_mut() {
+        if method["compute"]["result"] == "onDone" {
+            method["compute"]["result"] = json!("onDone2");
+        }
+    }
+    calimero_app_build::with_abi(component, &abi).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upgrade_that_drops_the_result_method_of_an_active_run_is_refused() {
+    let r = releases();
+    let (_c, owner, mut pk) = cluster_with_releases(&r).await;
+    install(
+        &owner,
+        "1.0.1",
+        &renamed_result(&r.app),
+        &renamed_result(&r.compute[0]),
+    )
+    .await;
+    let idle = create(&owner, "1.0.0").await;
+    let up = owner
+        .upgrade_app(&idle, json!({ "version": "1.0.1" }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "no run needs it: {up}");
+
+    let app = create(&owner, "1.0.0").await;
+    let _run = owner
+        .call(&app, "startDigest", json!({ "inputs": [] }), None)
+        .await
+        .unwrap();
+    let e = owner
+        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut pk)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{:?}", e.details()).contains("RunNeedsResultMethod"),
+        "{e}"
+    );
+}
