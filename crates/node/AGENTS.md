@@ -481,6 +481,20 @@ is its command line.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+- **Recovery** (draft): a person who lost every passkey gets back in with a
+  recovery code. `POST /auth/recovery` (unbound passkey session, 412 first,
+  `__set_recovery { recoveryKey }`) makes one, shown once, replacing any
+  before; `DELETE /auth/recovery` (`__remove_recovery {}`) removes it;
+  `/auth/me` says `recoveryCode: bool`. The log keeps only the code's Ed25519
+  public key (`proof::recovery_key`, as invites; `SystemState::recovery_keys`,
+  key -> account). Signed out, `/auth/recovery/{begin,finish}` takes the
+  code and a new passkey registered on the cluster's own origins (UV
+  required); the node signs `Recover` with the code's key over the account
+  and that credential (`proof::sign_recover`), and apply adds the passkey,
+  spends the code and revokes every session of the account. A wrong code at
+  finish spends the ceremony. Regressions:
+  `a_recovery_code_is_set_with_a_passkey_and_spent_by_its_key`,
+  `tests/recovery.rs`.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API

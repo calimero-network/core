@@ -56,6 +56,16 @@ approved with a passkey the account already has; `DELETE
 sessions it opened. Both answer `412 CONFIRM_REQUIRED` first, and every node
 checks the approval where the change applies.
 
+Recovery: `POST /auth/recovery` (approved with a passkey, `412` first) makes a
+recovery code, shown once, replacing any earlier one; `DELETE /auth/recovery`
+removes it; `/auth/me` answers `recoveryCode: true|false`. Only the code's
+public key is stored. A person who lost every passkey calls
+`POST /auth/recovery/begin { code }`, registers a new passkey on the cluster's
+own origin, and sends `POST /auth/recovery/finish { challengeId, code,
+registration }`: the passkey is added, the code is spent, every earlier session
+of the account ends, and the answer is a new session. A wrong code answers
+`401` and spends the ceremony.
+
 ## Sessions
 
 A successful ceremony answers `{ accountId, sessionToken, expiresAt,

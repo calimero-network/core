@@ -71,6 +71,14 @@ pub enum Pending {
         account: String,
         expires: u64,
     },
+    /// A recovery: the account the code named at begin, and the code's
+    /// public key (never the code), which finish's code must match.
+    Recover {
+        challenge: [u8; 32],
+        account: String,
+        recovery_key: String,
+        expires: u64,
+    },
     Confirm {
         challenge: [u8; 32],
         app: String,
@@ -95,6 +103,7 @@ impl Pending {
             Self::Register { expires, .. }
             | Self::Login { expires, .. }
             | Self::AddPasskey { expires, .. }
+            | Self::Recover { expires, .. }
             | Self::Confirm { expires, .. } => *expires,
         }
     }
@@ -1316,8 +1325,9 @@ async fn logout_all(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
-    let (acc, orgs) = node.sys(|s| {
+    let (acc, orgs, recovery) = node.sys(|s| {
         let acc = s.accounts.get(&account).cloned();
+        let recovery = s.recovery_keys.values().any(|a| *a == account);
         let orgs: Vec<Value> = s
             .orgs
             .values()
@@ -1326,7 +1336,7 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
                     .map(|r| json!({ "orgId": o.org_id, "name": o.name, "role": r }))
             })
             .collect();
-        (acc, orgs)
+        (acc, orgs, recovery)
     });
     let acc = acc.ok_or_else(|| ApiError::not_found("account"))?;
     Ok(Json(json!({
@@ -1345,7 +1355,217 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         "approvedReleases": acc.approved_releases,
         // Outbound prefixes approved for this account's own apps, by signer.
         "outboundApprovals": acc.outbound_approvals,
+        // Whether a recovery code is set (`/auth/recovery`); never the code.
+        "recoveryCode": recovery,
     })))
+}
+
+// ---------------------------------------------------------------- recovery
+
+/// Create (or replace) the account's recovery code: approved with a passkey
+/// over the code's public key (412 first), as an API key is over its hash.
+/// The first request makes the code and keeps it with the challenge; the
+/// retry logs only its public key and answers the code, once. The
+/// account holder's, on the cluster's own origin: never a package-bound
+/// session or an API key.
+async fn recovery_create(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let code = calimero_identity::new_recovery_code();
+    let key =
+        recovery_key_of(&code).ok_or_else(|| ApiError::internal("a malformed recovery code"))?;
+    let c = consent_minted(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__set_recovery",
+        &json!({ "recoveryKey": key }),
+        Some(json!(code)),
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
+    // The retry logs the code the approval names, made by the first request.
+    let code = c
+        .carry
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::bad_request("WRONG_CHALLENGE", "not a recovery approval"))?;
+    let recovery_key = recovery_key_of(&code)
+        .filter(|k| c.args == json!({ "recoveryKey": k }))
+        .ok_or_else(|| {
+            ApiError::bad_request("WRONG_CHALLENGE", "the approval was for a different call")
+        })?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetRecoveryKey {
+            account,
+            recovery_key,
+            consent: c.consent,
+        })
+        .await?;
+    Ok(Json(json!({ "code": code })))
+}
+
+/// Remove the account's recovery code, approved with a passkey (412 first).
+async fn recovery_remove(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("account:{account}"),
+        "__remove_recovery",
+        &json!({}),
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
+    let _ok = node
+        .sys_write(&SystemCmd::RemoveRecoveryKey { account, consent })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// A recovery code's public key, from the code as typed; `None` for what
+/// cannot be a code.
+fn recovery_key_of(code: &str) -> Option<String> {
+    calimero_identity::normalize_recovery_code(code).map(|c| crate::proof::recovery_key(&c))
+}
+
+fn wrong_recovery_code() -> ApiError {
+    ApiError::unauthenticated("unknown or used recovery code")
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryBegin {
+    code: String,
+}
+
+/// Begin a recovery: the code names the account (no account id needed), and
+/// the answer is a passkey registration for it. Signed out; a wrong code is
+/// `401` and opens nothing.
+async fn recovery_begin(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<RecoveryBegin>,
+) -> ApiResult {
+    let key = recovery_key_of(&body.code).ok_or_else(wrong_recovery_code)?;
+    node.sys_fresh().await;
+    let account = node
+        .sys(|s| s.recovery_keys.get(&key).cloned())
+        .ok_or_else(wrong_recovery_code)?;
+    if !serves(&node, &account) {
+        return Err(wrong_node());
+    }
+    let challenge = random::<32>();
+    let id = put_pending(
+        &node,
+        Pending::Recover {
+            challenge,
+            account: account.clone(),
+            recovery_key: key,
+            expires: now_secs() + CHALLENGE_TTL,
+        },
+    )?;
+    let (name, exclude): (String, Vec<Value>) = node.sys(|s| {
+        s.accounts.get(&account).map_or_else(Default::default, |a| {
+            (
+                a.name.clone(),
+                a.passkeys
+                    .iter()
+                    .map(|c| json!({ "type": "public-key", "id": c.id }))
+                    .collect(),
+            )
+        })
+    });
+    Ok(Json(json!({
+        "challengeId": id,
+        "options": {
+            "challenge": b64url(&challenge),
+            "rp": { "id": node.config.rp_id, "name": "Calimero" },
+            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": name, "displayName": name },
+            "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
+            "excludeCredentials": exclude,
+            "timeout": 60000,
+            "attestation": "none",
+            "authenticatorSelection": { "residentKey": "required", "userVerification": "required" },
+        }
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryFinish {
+    challenge_id: String,
+    code: String,
+    registration: Registration,
+}
+
+/// Finish a recovery: the challenge is spent first, so a wrong code ends the
+/// ceremony (begin again), as a failed passkey assertion does. The code must
+/// be the one begin named (its public key, compared in constant time); the
+/// new passkey must be registered on the cluster's own origins, never an
+/// app's frontend, with the user verified. This node signs the recovery with
+/// the code's key; the log adds the passkey, spends the code and ends every
+/// session the account had, and the answer is a new (unbound) session.
+async fn recovery_finish(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<RecoveryFinish>,
+) -> ApiResult {
+    let Pending::Recover {
+        challenge,
+        account,
+        recovery_key,
+        ..
+    } = take_pending(&node, &body.challenge_id).await?
+    else {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "not a recovery challenge",
+        ));
+    };
+    let code = calimero_identity::normalize_recovery_code(&body.code)
+        .filter(|c| {
+            ct_eq(
+                crate::proof::recovery_key(c).as_bytes(),
+                recovery_key.as_bytes(),
+            )
+        })
+        .ok_or_else(wrong_recovery_code)?;
+    let cred = verify_registration(
+        &RelyingParty {
+            require_uv: true,
+            ..rp(&node)
+        },
+        &challenge,
+        &body.registration,
+    )
+    .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
+    let now = now_secs();
+    let _ok = node
+        .sys_write(&SystemCmd::Recover {
+            signature: crate::proof::sign_recover(&code, &account, &cred, now),
+            recovery_key,
+            account: account.clone(),
+            credential: cred.clone(),
+            now,
+        })
+        .await
+        .map_err(|e| {
+            if e.code == "REJECTED" && e.message.contains("recover") {
+                wrong_recovery_code()
+            } else {
+                e
+            }
+        })?;
+    new_session(&node, &account, &cred.id, None).await
 }
 
 #[derive(Deserialize)]
@@ -7228,6 +7448,9 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/passkeys/add/begin", post(passkey_add_begin))
         .route("/auth/passkeys/add/finish", post(passkey_add_finish))
         .route("/auth/passkeys/{cred}", post(passkey_label).delete(passkey_remove))
+        .route("/auth/recovery", post(recovery_create).delete(recovery_remove))
+        .route("/auth/recovery/begin", post(recovery_begin))
+        .route("/auth/recovery/finish", post(recovery_finish))
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/auth/logout-all", post(logout_all))

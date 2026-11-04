@@ -19,6 +19,9 @@ machines, short session tokens any node verifies, and step-up consent challenges
   and the counter stay with `verify_assertion` on the node that took it. Test:
   `a_consent_verifies_from_public_data_only`.
 - `confirm_challenge`: what a passkey signs to approve one `#[app::confirm]` call.
+- `new_recovery_code` / `normalize_recovery_code`: an account recovery code,
+  160 random bits as Crockford base32 in groups of four, read back however it
+  is typed. Test: `a_recovery_code_reads_back_however_it_is_typed`.
 - Feature `testing`: `SoftAuthenticator`, an in-memory ES256 passkey.
 
 Tests: `cargo test -p calimero-identity`.

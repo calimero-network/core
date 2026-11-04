@@ -197,6 +197,12 @@ pub struct SystemState {
     pub credentials: BTreeMap<String, AccountId>,
     /// API key hash -> record
     pub api_keys: BTreeMap<String, ApiKeyRecord>,
+    /// Recovery codes: the code's public key ([`crate::proof::recovery_key`],
+    /// hex) -> the account it recovers. At most one per account; the code
+    /// itself is never logged. Left out when empty, so state from before
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recovery_keys: BTreeMap<String, AccountId>,
     /// refresh token hash -> record
     pub refresh: BTreeMap<String, RefreshRecord>,
     pub revoked_sessions: BTreeSet<String>,
@@ -1585,6 +1591,47 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             )?;
             Ok(Some(used))
         }
+        SystemCmd::SetRecoveryKey {
+            account,
+            recovery_key,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(account, consent)?)?;
+            let args = json!({ "recoveryKey": recovery_key });
+            states(&st, &format!("account:{account}"), "__set_recovery", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveRecoveryKey { account, consent } => {
+            let (st, used) = fresh(consent_of(account, consent)?)?;
+            states(
+                &st,
+                &format!("account:{account}"),
+                "__remove_recovery",
+                &|a| *a == json!({}),
+            )?;
+            Ok(Some(used))
+        }
+        // The code's key signs the recovery: only a node the person typed the
+        // code into can make it, never one that only saw the log.
+        SystemCmd::Recover {
+            recovery_key,
+            account,
+            credential,
+            now,
+            signature,
+        } => {
+            if s.recovery_keys.get(recovery_key) != Some(account) {
+                return Err("unknown recovery code");
+            }
+            let used =
+                crate::proof::verify_recover(recovery_key, account, credential, *now, signature)?;
+            if s.used_proofs.contains(&used) {
+                return Err("that recovery was used already");
+            }
+            Ok(Some(used))
+        }
         SystemCmd::CreateApiKey {
             hash,
             record,
@@ -1956,6 +2003,36 @@ pub enum SystemCmd {
     RevokeApiKey {
         key_id: String,
         actor: AccountId,
+    },
+    /// Set the account's recovery code, replacing any it had: recorded
+    /// under the code's public key ([`crate::proof::recovery_key`]).
+    SetRecoveryKey {
+        account: AccountId,
+        recovery_key: String,
+        /// The account's passkey consent over `{ recoveryKey }`
+        /// (`__set_recovery`).
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove the account's recovery code.
+    RemoveRecoveryKey {
+        account: AccountId,
+        /// The account's passkey consent (`__remove_recovery`).
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Recover an account that lost its passkeys: add `credential` to the
+    /// account `recovery_key` recovers, spend the code, and end every
+    /// session the account had. `signature` is the code's key's
+    /// ([`crate::proof::sign_recover`]), made by the node the person typed
+    /// the code into.
+    Recover {
+        recovery_key: String,
+        account: AccountId,
+        credential: Credential,
+        now: u64,
+        #[serde(default)]
+        signature: String,
     },
     CreateRefresh {
         hash: String,
@@ -3049,6 +3126,66 @@ impl SystemMachine {
                 let id = record.key_id.clone();
                 let _prev = s.api_keys.insert(hash, record);
                 Ok(json!({ "keyId": id }))
+            }
+            SystemCmd::SetRecoveryKey {
+                account,
+                recovery_key,
+                ..
+            } => {
+                if !s.accounts.contains_key(&account) {
+                    return Err("unknown account");
+                }
+                if s.recovery_keys.contains_key(&recovery_key) {
+                    return Err("that recovery code is in use");
+                }
+                // One code per account: a new one replaces the old.
+                s.recovery_keys.retain(|_, a| *a != account);
+                let _prev = s.recovery_keys.insert(recovery_key, account);
+                Ok(Value::Null)
+            }
+            SystemCmd::RemoveRecoveryKey { account, .. } => {
+                let before = s.recovery_keys.len();
+                s.recovery_keys.retain(|_, a| *a != account);
+                if s.recovery_keys.len() == before {
+                    return Err("no recovery code is set");
+                }
+                Ok(Value::Null)
+            }
+            SystemCmd::Recover {
+                recovery_key,
+                account,
+                credential,
+                now,
+                ..
+            } => {
+                if s.recovery_keys.get(&recovery_key) != Some(&account) {
+                    return Err("unknown recovery code");
+                }
+                if s.credentials.contains_key(&credential.id) {
+                    return Err("credential already registered");
+                }
+                let acc = s.accounts.get_mut(&account).ok_or("unknown account")?;
+                // Not held to the 10-passkey cap: a person who lost every
+                // passkey of a full account must still get back in. Each
+                // recovery spends a code a passkey approved, so this grows
+                // by one per code at most.
+                acc.passkeys.push(credential.clone());
+                let _prev = s.credentials.insert(credential.id, account.clone());
+                // Single use.
+                let _prev = s.recovery_keys.remove(&recovery_key);
+                // Whoever holds the lost devices keeps no session.
+                let sessions: BTreeSet<String> = s
+                    .refresh
+                    .values()
+                    .filter(|r| r.account == account)
+                    .map(|r| r.session.clone())
+                    .collect();
+                let n = sessions.len();
+                for session in sessions {
+                    s.revoke_session(&session, now);
+                }
+                s.prune_sessions(now);
+                Ok(json!({ "accountId": account, "revoked": n }))
             }
             SystemCmd::RevokeApiKey { key_id, actor } => {
                 let before = s.api_keys.len();
@@ -5062,6 +5199,117 @@ mod tests {
         assert!(m.state.orgs["org"].members.contains_key("carol"));
         assert!(m.run(redeem(real)).is_err(), "replay");
         assert_eq!(m.state.invites[&key].uses_left, 1);
+    }
+
+    /// A recovery code is set with the account's passkey, and recovers the
+    /// account with its key's signature over the new passkey, once: a node
+    /// that saw only the log cannot, nor can the code add another passkey.
+    #[test]
+    fn a_recovery_code_is_set_with_a_passkey_and_spent_by_its_key() {
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let code = calimero_identity::new_recovery_code();
+        let code = calimero_identity::normalize_recovery_code(&code).unwrap();
+        let key = crate::proof::recovery_key(&code);
+        // Another account's passkey does not set alice's code.
+        let c = consent(
+            &mut bob,
+            "account:alice",
+            "__set_recovery",
+            &json!({ "recoveryKey": key }),
+        );
+        assert!(m
+            .run(SystemCmd::SetRecoveryKey {
+                account: "alice".into(),
+                recovery_key: key.clone(),
+                consent: c,
+            })
+            .is_err());
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__set_recovery"),
+            &json!({ "recoveryKey": key }),
+            &json!({ "recoveryKey": "00" }),
+            |consent| SystemCmd::SetRecoveryKey {
+                account: "alice".into(),
+                recovery_key: key.clone(),
+                consent,
+            },
+        );
+        assert_eq!(
+            m.state.recovery_keys.get(&key).map(String::as_str),
+            Some("alice")
+        );
+
+        let mut laptop = Soft::new("localhost", "http://localhost:3000");
+        let rp = calimero_identity::RelyingParty {
+            id: "localhost".into(),
+            origins: vec!["http://localhost:3000".into()],
+            require_uv: false,
+        };
+        let challenge = calimero_identity::random::<32>();
+        let cred =
+            calimero_identity::verify_registration(&rp, &challenge, &laptop.register(&challenge))
+                .unwrap();
+        let recover = |account: &str, signature: String| SystemCmd::Recover {
+            recovery_key: key.clone(),
+            account: account.into(),
+            credential: cred.clone(),
+            now: 10,
+            signature,
+        };
+        assert!(
+            m.run(recover("alice", String::new())).is_err(),
+            "no signature"
+        );
+        let guess = crate::proof::sign_recover("GUESS", "alice", &cred, 10);
+        assert!(
+            m.run(recover("alice", guess)).is_err(),
+            "another code's key"
+        );
+        let for_bob = crate::proof::sign_recover(&code, "bob", &cred, 10);
+        assert!(m.run(recover("bob", for_bob)).is_err(), "another account");
+        let mut other = cred.clone();
+        other.id = "another".into();
+        let wrong_passkey = crate::proof::sign_recover(&code, "alice", &other, 10);
+        assert!(
+            m.run(recover("alice", wrong_passkey)).is_err(),
+            "another passkey"
+        );
+        let real = crate::proof::sign_recover(&code, "alice", &cred, 10);
+        let _ok = m.run(recover("alice", real.clone())).unwrap();
+        assert_eq!(m.state.accounts["alice"].passkeys.len(), 2);
+        assert_eq!(m.state.credentials[&cred.id], "alice");
+        assert!(m.state.recovery_keys.is_empty(), "spent");
+        assert!(m.run(recover("alice", real)).is_err(), "replay");
+
+        // Removing one needs the passkey too, and a code to remove.
+        let key2 = crate::proof::recovery_key("SECOND");
+        let set = consent(
+            &mut alice,
+            "account:alice",
+            "__set_recovery",
+            &json!({ "recoveryKey": key2 }),
+        );
+        let _ok = m
+            .run(SystemCmd::SetRecoveryKey {
+                account: "alice".into(),
+                recovery_key: key2,
+                consent: set,
+            })
+            .unwrap();
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("account:alice", "__remove_recovery"),
+            &json!({}),
+            &json!({ "all": true }),
+            |consent| SystemCmd::RemoveRecoveryKey {
+                account: "alice".into(),
+                consent,
+            },
+        );
+        assert!(m.state.recovery_keys.is_empty());
     }
 
     /// Nodes and quotas apply only with the operator's signature over
