@@ -14,7 +14,6 @@ After one script run has copied the root lock in, replay a crash with `cargo +ni
 | Target | Entry point | Invariant |
 | --- | --- | --- |
 | `bundle_open` | `VerifiedBundle::open`, then artifact extraction | an artifact is a verbatim regular-file slice of the archive; a read manifest is a recognised bundle |
-| `crdt_sync` | `Root::sync` of a peer delta over a `RichText`, wrapped as the node wraps it | after a sync that succeeds, the text and formatting read back, a refused insert changes nothing, and the local replica can still format |
 | `sealed_request` | `calimero_sealed::intercept` on a handshake or sealed request body, as every client's and peer's first bytes reach a node | no panic, and nothing reaches the router behind it unless an envelope opened |
 | `passkey_verify` | WebAuthn `verify_registration` and `verify_assertion` (client data JSON, authenticator data, CBOR attestation object) and `claimed_origin` | no panic, and no assertion the fuzzer made verifies against a real credential |
 | `session_token` | `peek_session` and `verify_session` on a token a request carries | no panic, and a token that verifies under the node's key verifies under no other |

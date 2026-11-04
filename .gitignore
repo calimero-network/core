@@ -28,12 +28,6 @@ lib/
 node_modules/
 output/*
 
-# cargo-mero fixture build artifacts
-tools/cargo-mero/tests/fixtures/*/target/
-tools/cargo-mero/tests/fixtures/*/res/
-tools/cargo-mero/tests/fixtures/*/dist/
-tools/cargo-mero/tests/fixtures/*/Cargo.lock
-tools/cargo-mero/tests/fixtures/*/crates/*/res/
 
 # Generated blob fixtures for the cross-node size sweep (apps/blobs/scripts/gen-blob-fixtures.sh).
 # Random bytes, 141 MiB at the default tier — regenerated per run, never committed.

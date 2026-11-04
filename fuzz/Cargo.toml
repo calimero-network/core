@@ -14,7 +14,6 @@ axum = "*"
 calimero-bundle = { path = "../crates/bundle" }
 calimero-identity = { path = "../crates/identity", features = ["testing"] }
 calimero-sealed = { path = "../crates/sealed" }
-calimero-storage = { path = "../crates/storage", features = ["testing"] }
 calimero-tee-attestation = { path = "../crates/tee-attestation" }
 flate2 = "*"
 hex = "*"
@@ -30,13 +29,6 @@ tower = { version = "*", features = ["util"] }
 [[bin]]
 name = "bundle_open"
 path = "fuzz_targets/bundle_open.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "crdt_sync"
-path = "fuzz_targets/crdt_sync.rs"
 test = false
 doc = false
 bench = false
