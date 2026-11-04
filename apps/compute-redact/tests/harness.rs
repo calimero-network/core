@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use calimero_app_build::build_component;
+use calimero_app_build::{build_component, build_compute_component};
+use calimero_app_engine_wasmtime::WasmtimeEngine;
+use calimero_app_host::Engine;
 use calimero_sdk::testing::{Failure, Org, TestApp};
 use serde_json::{json, Value};
 
@@ -19,6 +21,17 @@ fn component() -> &'static [u8] {
         let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("..");
         build_component(dir, &target)
             .unwrap_or_else(|e| panic!("build compute-redact: {e}"))
+            .component
+    })
+}
+
+fn compute_component() -> &'static [u8] {
+    static BUILT: OnceLock<Vec<u8>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("..");
+        build_compute_component(dir, &target)
+            .unwrap_or_else(|e| panic!("build compute-redact's compute component: {e}"))
             .component
     })
 }
@@ -135,4 +148,12 @@ fn a_job_is_seen_by_its_submitter_and_admins_only() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn the_compute_component_imports_only_what_a_job_node_allows() {
+    let engine = WasmtimeEngine::for_compute().expect("compute engine");
+    engine
+        .prepare("compute-redact", compute_component())
+        .unwrap_or_else(|e| panic!("a job node refuses the compute component: {e}"));
 }

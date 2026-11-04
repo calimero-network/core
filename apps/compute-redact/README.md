@@ -24,7 +24,7 @@ One crate builds two components: `app.wasm` (state and calls) and `compute.wasm`
 | `scan` | the text with emails, phone numbers and card-like numbers replaced by `[EMAIL]`, `[PHONE]`, `[CARD]` |
 
 Columns the policy does not name pass through.
-`scan` uses the `regex` crate.
+`scan` uses `regex-lite`, which keeps the compute component at about 450 KB.
 
 ## How a job runs
 
