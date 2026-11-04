@@ -27,8 +27,8 @@ turned them on, for its hosts or for any host an app declares.
 | Request body ≤ 64 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 1 MiB (a longer one is refused, not cut), 10 s for the whole request | The node (`calimero_primitives::outbound`) |
 | `Host`, `Cookie`, `Connection`, `Content-Length`, `Transfer-Encoding`, `Proxy-*` and `X-Forwarded-*` headers are refused | The node |
 
-A refusal is a reason the method can handle (`Err(String)`). A refusal for a
-missing approval starts with a stable word an app can match on:
+A refusal is an `AppError` with code `Fetch` and a `message` field. A refusal
+for a missing approval starts with a stable word an app can match on:
 
 - `NotApproved:` nobody approved the prefix the URL is under. Nothing was ever
   approved for this publisher, or the owner saw the prefix and left it out or
@@ -36,21 +36,6 @@ missing approval starts with a stable word an app can match on:
 - `AwaitingApproval:` a later release of the app declares the prefix and the
   owner has not been asked about it yet. The prefixes approved before keep
   working. Show the owner what to approve.
-
-`OutboundRefusal::of` reads the word for you:
-
-```rust
-use calimero_sdk::outbound::OutboundRefusal;
-
-match env::http_request(&request) {
-    Ok(response) => { /* decide, and store the decision */ }
-    Err(reason) => match OutboundRefusal::of(&reason) {
-        Some(OutboundRefusal::NotApproved) => { /* ask the organization's owner */ }
-        Some(OutboundRefusal::AwaitingApproval) => { /* the owner approves the release's new prefix */ }
-        _ => { /* anything else is a bug in the app or its deployment */ }
-    },
-}
-```
 
 A run with no outbound client at all (outbound is off, the app is not a signed
 release declaring a prefix, or the run is not a writing call) and a second
@@ -83,26 +68,21 @@ secret into state, where it would replicate to every member.
 2. Make the request from a method that writes, and store the decision:
 
    ```rust
-   use calimero_sdk::env;
-   use calimero_sdk::outbound::{OutboundMethod, OutboundRequest};
+   use calimero_sdk::action::Request;
 
-   pub fn submit(&mut self, answer: String, captcha_token: String) -> app::Result<()> {
-       let response = env::http_request(&OutboundRequest {
-           method: OutboundMethod::Post,
-           url: "https://challenges.cloudflare.com/turnstile/v0/siteverify".to_owned(),
-           headers: vec![(
-               "Content-Type".to_owned(),
-               "application/x-www-form-urlencoded".to_owned(),
-           )],
-           body: format!("secret={{{{secret:TURNSTILE_SECRET}}}}&response={captcha_token}")
-               .into_bytes(),
-       })
-       .map_err(|reason| app::err!("captcha check failed: {reason}"))?;
-       if response.status != 200 || !String::from_utf8_lossy(&response.body).contains(r#""success":true"#) {
-           app::bail!("captcha not solved");
-       }
-       self.answers.push(answer.into())?;
-       Ok(())
+   /// Whether Cloudflare Turnstile accepts `token` (`apps/v2-fixtures/captcha`).
+   pub fn verify_turnstile(&mut self, token: String) -> app::Result<bool> {
+       let body = format!(
+           "secret={{{{secret:TURNSTILE_SECRET}}}}&response={}",
+           form_escape(&token)
+       );
+       let request = Request::post(TURNSTILE_VERIFY_URL, body)
+           .header("Content-Type", "application/x-www-form-urlencoded");
+       let Ok(response) = env::fetch(&request) else {
+           return Ok(false); // an unreachable verifier is never a pass
+       };
+       Ok(response.status == 200
+           && response.json::<Siteverify>().is_ok_and(|answer| answer.success))
    }
    ```
 
@@ -200,9 +180,9 @@ name a package, only its publisher can sign it.
 
 ## Test it
 
-`env::http_request` needs a node: under `TestHost` it returns
-`Err("outbound requests need a node")`, so unit-test the logic around the
-answer by passing the answer in.
+`env::fetch` needs a component: on the host target it answers an error. In
+`TestApp`, `mock_http(..)` answers it in every run, so a test sets the response
+it wants and checks what the app decided ([Testing](/core/build/testing/)).
 
 End to end, use a node built with `--features calimero-node/outbound-testing`:
 the scenario runner's in-process nodes are, and so is

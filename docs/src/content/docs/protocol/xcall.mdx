@@ -1,150 +1,58 @@
 ---
-title: Event handlers & cross-app calls
-description: Runs that one run asks for — event handlers and xcalls — how they are queued in the log, run once by the leader, authorized, and bounded.
+title: Cross-app calls
+description: How the cluster delivers one app's message to another — the outbox, ordering, deduplication, authorization, retries and dead letters.
 sidebar:
-  label: Handlers & cross-app calls
   order: 20
 ---
 
-A run can ask for more runs after it commits: an **event handler**
-(`app::emit!((event, "handler"))`, or `"tee:handler"` for one that runs as the
-app's TEE authority) and a **cross-app call** (`env::xcall(context, method, params)`). Both are **follow-ups**. The guest API is in
-[Events](/build/guides/events/) and [Cross-context calls](/build/guides/cross-context/);
-this page is how the cluster runs them.
+A run may send messages to other apps (`env::xcall(app, method, &args)`). The
+message is a **follow-up**: it runs after the sending entry commits. The guest
+API is in [Cross-app calls](/build/guides/cross-context/); this page is how the
+cluster runs them (`crates/node/src/component/xcall.rs`).
 
-## Queued in the log, run by the leader
+## Outbox
 
-A follow-up is part of the run's outcome, so it is committed with the entry
-that asked for it. When the entry applies — on every replica — each follow-up
-is queued in the app's state (`AppState::pending`) with a sequence number, the
-index of the entry that asked for it, and its **depth**.
+A run's messages go to its outcome. When the entry ends `Ok`, they are appended,
+in order, to the source app's outbox, kept as host rows in the source app's
+state. A failed run sends nothing.
 
-The leader drives the queue (`Node::drive`, woken whenever an entry may have
-queued work, and on every reconcile pass):
+## Delivery
 
-- An **event handler** runs as a call of the same app, caller
-  `App { app: itself }`, with the event's data as input and
-  `Trigger::FollowUp { seq }`. Its entry consumes the follow-up when it applies.
-- A **cross-app call** is a call to the target app, wherever its leader is,
-  caller `App { app: origin }`, with the idempotency key `xcall:{origin}:{seq}`
-  and `Trigger::XCall`. After the target answers, the origin's leader commits
-  `AppCmd::Done { seqs }`.
-
-Because "run it" and "it was run" are the same entry (handlers) or an
-idempotent call followed by a `Done` entry (xcalls), a new leader picks up
-exactly what is still pending: it neither skips a follow-up nor runs one twice.
-A replayed driver pass that finds the follow-up already consumed does nothing.
-
-Handlers and xcalls run **once**, on the leader — not once per replica.
+The source's leader delivers the head of its outbox one message at a time, so
+messages leave each source in order. The target runs the method as an xcall
+delivery, with `Caller::App(<source>)`.
 
 ## Authorization
 
-Three checks hold, enforced by the node that runs the target:
+The node that runs the target checks:
 
-1. **Entry point.** An event may run only a method the bundle's ABI marks
-   `#[app::handler]` (a `tee:` handler is the app's own TEE run). An xcall may
-   reach only a method the target's ABI marks `#[app::xcall]`; anything else is
-   refused (`xcall denied: … is not an #[app::xcall] entry point`).
-2. **Boundary.** The two apps must belong to the same organization, or, outside
-   any organization, have the same owner.
-3. **Provenance.** The target sees the caller as the calling app and reads
-   `env::xcall_origin()`, the origin's context id, set by the node — a client
-   cannot forge it. An entry point declared `from_same_app` admits only an
-   origin running the same bundle.
+1. **Entry point.** The target method's ABI must allow the source:
+   `#[app::allow(app = "<source>")]` or `allow(app = "*")` (`allowApps`).
+2. **Boundary.** The two apps belong to the same organization, or, outside any
+   organization, have the same owner.
+3. **Provenance.** The target sees the caller as `Caller::App(<source>)`, set by
+   the node; no argument can claim it.
 
-A refused follow-up is still a run: it is recorded with its error, and the
-follow-up is consumed. An xcall to an app the cluster does not know is dropped
-and marked done; one whose target cannot be reached right now waits for the
-next driver pass.
+Synchronous calls and views (`env::xcall_call`, `env::xcall_view`) pass the same
+checks and answer at once.
 
-## Bounds
+## Deduplication
 
-- **Depth.** A person's call is depth 0; each handler or xcall it causes is one
-  deeper. A run at `MAX_FOLLOWUP_DEPTH` (3) still runs but queues nothing more,
-  so a cascade cannot run forever.
-- **Per run.** The runtime caps a run's xcalls (8), their function name (100
-  bytes) and parameters (16 KiB), and its events (100) ([Limits](/protocol/limits/#execution-limits)).
-- **Per pass.** The leader takes at most 64 pending follow-ups per pass.
+The target keeps, per source app, the highest sequence number it applied; a
+message at or below it is answered as delivered without running. A leader
+change on either side never runs a message twice.
 
-## Outcomes are runs, not return values
+## Retries and dead letters
 
-An xcall is fire-and-forget. The origin's run has already committed when the
-target runs, and the target's answer is not handed back to it. If the origin
-needs to learn the outcome, the target can emit an event or call back with an
-xcall of its own.
+A timeout or an unreachable target is retried with backoff for up to an hour
+from the send. Then, or at once for a deleted target, one outside the
+organization, or one that is not a component (an SDK 0.12 app the node no
+longer runs), the message goes to the source's dead letters (the newest 1,000),
+and the source's `onXcallFailed` runs if its ABI has one that allows the system.
+Anything the target answered, an app error or a trap included, is a final
+answer.
 
-## Component apps (`calimero:app`)
+## Limits
 
-A component app (spec `app-runtime-v0.14` D13, D25, D29) sends with
-`env::xcall(app, method, &args)` (WIT `xcall.send`), in calls, timers, `init`
-and deliveries, at most 100 per run. It is an outbox, not a follow-up:
-
-- **Outbox.** An `Ok` entry's xcalls are appended to the source app's outbox,
-  host rows outside its keyspace (D39), each with a sequence number. A failed
-  run sends nothing. At most 10,000 wait; one past that is dead-lettered.
-- **In order, at least once.** The source's leader delivers the outbox head,
-  one message at a time: the target runs the method as `kind = xcall-deliver`
-  with `Caller::App(source)`, and the source's leader then logs
-  `componentXcallDone`. A new leader resumes from the head.
-- **Exactly once at the target** (D25). The target keeps, per source app, the
-  highest sequence number it applied (a watermark in its host records). A
-  message at or below it answers as delivered without running.
-- **Who may be reached.** Only an app in the source's organization, or another
-  personal app of the same owner, and only a method whose ABI allows the source:
-  `#[app::allow(app = "<app id>")]`, or `allow(app = "*")` for any app the node
-  delivers from. Anything else is refused (`Forbidden`) by the node before the
-  app runs.
-- **Retries and dead letters** (D29). A timeout or an unreachable target is
-  retried with backoff (200 ms doubling, at most 30 s) for up to an hour from
-  the send. Then, or at once for a missing target, one outside the organization,
-  or an SDK 0.12 app the node no longer runs, the message goes to the source's dead letters (the newest
-  1,000), and the source's `onXcallFailed { app, method, reason }` runs if its
-  ABI has one with `allow(system)`. Anything the target answered (an app error,
-  a trap, a refusal) is final.
-- `GET /apps/{app}/xcalls` (the owner or an org admin): `{ pending,
-  deadLetters: [{ seq, app, method, reason, atMs }] }`.
-
-### Synchronous xcalls
-
-A component's call can also wait for another app's answer in the same request
-(WIT `xcall.call` and `xcall.view`; `env::xcall_call(app, method, &args)` and
-`env::xcall_view(..)` in the SDK). A captcha check is the typical use: the forms
-app's call asks the captcha app whether the answer is right, and writes only if
-it is. Example: `apps/v2-fixtures/captcha` and the kv fixture's `setHuman`.
-
-- **A call is the target's own entry.** The node running the caller's call
-  (on its leader, while that call waits) runs the target's method through the
-  target's leader as `Caller::App(source)`, `kind = xcall-deliver`, logged in
-  the target's log. The caller's run gets the JSON result, or the failure as
-  `XcallFailed { code, fields }` (the target's app error) or
-  `XcallFailed { message }` (a refusal, a timeout).
-- **Not atomic.** The target's entry commits first, whatever the caller does
-  next. A failed caller does not undo it, so a target method should be one that
-  is right to have run (spending a captcha challenge is, whether the answer was
-  right or not).
-- **Replays, not repeats.** The target's idempotency key is derived from the
-  caller's run (its caller and idempotency key, a tick's slot, an action's id),
-  the target, the method, the arguments and how many identical calls came
-  before in the run. A re-run of the caller (a client's retry, a leader race)
-  gets the target's recorded answer.
-- **A view** reads the target's latest committed state (a strong view) and
-  writes nothing; a view may make one too.
-- **Who may be reached.** As above: a component app in the same organization,
-  or of the same owner, other than the caller, whose method allows the source
-  (`allow(app = ..)`). Anything else is one answer, `no such app in this
-  organization`, so nothing is revealed.
-- **Bounds.** Calls, timers and actions call; views only read; a delivered
-  xcall, `init` and a migration make none, so a chain is one hop. At most 16
-  per run, 512 KiB of arguments, 1 MiB of answer; the node waits 3 s for each
-  (`SYNC_XCALL_WAIT`). The caller's own wall-clock budget still applies: a call
-  past it times out (not logged), and its retry replays what the target
-  committed.
-- **Two apps calling each other at once** each hold their own call while they
-  wait for the other's. Both wait out the 3 s and are told the xcall timed out.
-
-## Timers
-
-`#[app::tee(every = "…")]` methods are driven by the same loop. The leader
-fires each one once per period (tick = now ÷ period), as the app's TEE
-authority, and the entry records the tick it fired for, so a new leader does
-not fire the same tick again ([Who a run acts as](/protocol/authorship/#the-tee-authority)).
+A run may send at most 100 messages; an empty or overlong app id or method, or a
+reserved (`__`) method, is refused at the send.

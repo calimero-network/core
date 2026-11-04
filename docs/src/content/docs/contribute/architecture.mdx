@@ -82,7 +82,7 @@ Everything a node does is in `calimero-node` (`crates/node`).
 ## The app runtime
 
 Apps are `calimero:app` components (the WIT world in `calimero-app-wit`, built with
-`calimero-app-sdk` and `calimero-app-build`); they run on wasmtime
+`calimero-sdk` and `calimero-app-build`); they run on wasmtime
 (`calimero-app-engine-wasmtime`) through the host core `calimero-app-host`. SDK 0.12
 apps (core modules on wasmer) are no longer run: the node refuses their bundles, and
 an app a data directory still holds answers `410 UNSUPPORTED_ENGINE` until its owner

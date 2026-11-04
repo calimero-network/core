@@ -61,7 +61,7 @@ exports:
 
 ## Events
 
-A run may emit events (`app::emit!`). They are part of the outcome, so they are
+A run may emit events (`env::emit`). They are part of the outcome, so they are
 committed with the entry and applied on every replica: each replica appends
 them to the app's event ring (`EVENT_RING`, the last 10 000 events) as
 `{ index, seq, kind, data }`.

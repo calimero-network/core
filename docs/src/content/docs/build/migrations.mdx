@@ -1,239 +1,42 @@
 ---
-title: Migrating app state (ship v2)
-description: The app-developer how-to for evolving your #[app::state] schema with a migration the upgrade runs once on the app's leader.
+title: Upgrades & state
+description: What happens to an app's stored state when a new version of a calimero-sdk app is installed, and how to keep a new version readable against the old state.
 sidebar:
-  label: Migrating app state
-  order: 8.5
+  order: 20
 ---
 
-import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
-import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
 
-When you ship a new version of your app whose **state shape changes**, the bytes
-already stored in every app instance can no longer be read as the new layout. The
-upgrade carries a **migration**: a transform that reshapes the app's existing
-state into the new schema. The upgrade is an entry in the app's own log: the
-leader runs the migration once, and the other replicas apply the state it wrote
-([Upgrades & migrations](/protocol/upgrades/)).
+An upgrade replaces an app's code and keeps its state. The upgrade is an entry
+in the app's own log; from that index on, every replica runs the new component
+against the state the old one wrote
+([Upgrades & migrations](/core/protocol/upgrades/) covers who may upgrade and
+organization-wide upgrade runs).
 
-This is the build-side how-to. For who may upgrade, how the migration is planned
-from the two ABIs, and organization-wide upgrade runs, see
-[Application upgrades &amp; migration](/protocol/upgrades/).
-
-<Aside type="note" title="When you need a migration">
-  Only when the **serialized shape** changes — adding/removing/renaming a field,
-  changing a field's type, or struct↔enum reshapes. Adding a new method, a new event
-  variant, or a pure bugfix that does not touch the layout needs only a version bump,
-  not a migration body.
+<Aside type="caution">
+  `calimero-sdk` has no state migrations in this version: there is no
+  `#[app::migrate]` that rewrites stored data during an upgrade. The new code
+  must read what the old code stored.
 </Aside>
 
-## Write the migration
+## Keep the state readable
 
-<Steps>
+State lives under keys derived from the `#[app::state]` field names and the
+table and record layouts ([Tables & Collections](/core/build/collections/)):
 
-1. **Bump the schema version.** Set the new version on your state struct:
+- **Safe:** new methods; new events and errors; new fields on the state struct
+  (a new field is a new key range, empty until written); new tables; new
+  indexes on a new table.
+- **Not safe:** renaming a state field (its old data is left under the old
+  name), changing a field's collection type or value type, or changing a
+  record's key, fields or field types. Old rows would no longer decode as the
+  new type.
 
-   ```rust
-   #[app::state(version = 2, emits = for<'a> Event<'a>)]
-   pub struct AppStateV2 { /* ... */ }
-   ```
+When a shape has to change, add a new field or table beside the old one, write
+new data there, and read the old one until it is empty.
 
-2. **Author the transform.** Two ways — pick the derive for routine field changes,
-   or hand-write for anything that needs logic.
+## The state version
 
-   **Derive (`#[derive(app::Migrate)]`).** Declare the old type with `from =`, and
-   annotate only the fields that change. Unannotated fields **carry** 1:1.
-
-   ```rust
-   #[app::state(version = 2, emits = for<'a> Event<'a>)]
-   #[derive(app::Migrate)]
-   #[migrate(
-       from = AppStateV1,
-       emit = Event::Migrated { from_version: SCHEMA_VERSION_V1, to_version: SCHEMA_VERSION_V2 }
-   )]
-   pub struct AppStateV2 {
-       items: UnorderedMap<String, LwwRegister<String>>,   // carried (no attribute)
-       #[migrate(new = LwwRegister::new("added in v2".to_owned()))]
-       notes: LwwRegister<String>,                          // seed a new field
-   }
-   ```
-
-   The field strategies:
-
-   | Strategy | Field attribute | Result |
-   |----------|-----------------|--------|
-   | Carry (default) | *(none)* | `field: old.field` |
-   | New field | `#[migrate(new = expr)]` | `field: expr` |
-   | Rename | `#[migrate(from = old_name)]` | `field: old.old_name` |
-   | Convert | `#[migrate(with = expr)]` | `field: (expr)(old.field)` |
-   | Rename + convert | `#[migrate(from = old, with = expr)]` | `field: (expr)(old.old)` |
-
-   A rename, from `apps/migrations/migration-suite-v4-rename-field`:
-
-   ```rust
-   #[migrate(from = description)]
-   details: LwwRegister<String>,
-   ```
-
-   **Hand-written (`#[app::migrate]`).** For anything with logic — denormalizing,
-   splitting a field, populating a new collection — read the old bytes with
-   `read_raw()`, deserialize into a `...V1` struct, and build the new state.
-   `read_raw()` returns the raw root-state bytes (`None` if no state exists) with the
-   storage layer's 32-byte element-id suffix already stripped, so it deserializes
-   straight into your old struct. From `apps/migrations/scenario-crdt-native-v2`:
-
-   ```rust
-   #[app::migrate]
-   pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
-       let old_bytes = read_raw().unwrap_or_else(|| {
-           panic!("Migration failed: no existing state. Create a V1 context first.");
-       });
-       let old_state: ScenarioCrdtNativeV1 =
-           BorshDeserialize::deserialize(&mut &old_bytes[..])
-               .unwrap_or_else(|e| panic!("Migration failed: V1 deserialization error {e:?}"));
-
-       app::emit!(Event::Migrated {
-           from_version: SCHEMA_VERSION_V1,
-           to_version: SCHEMA_VERSION_V2,
-       });
-
-       // Denormalize v1 keys into a new tags vector — sorted for cross-node determinism.
-       let mut keys: Vec<String> =
-           old_state.items.entries().unwrap().map(|(k, _v)| k).collect();
-       keys.sort();
-       let mut tags: Vector<LwwRegister<String>> = Vector::new();
-       for k in keys {
-           tags.push(k.into()).unwrap();
-       }
-
-       ScenarioCrdtNativeV2 { items: old_state.items, title: old_state.title, tags }
-   }
-   ```
-
-3. **Guard it with a `#[app::migration_check]`.** This pre-commit predicate gets the
-   deserialized `old` and `new` state and returns `bool`; `false` aborts the
-   migration before it commits. Three built-in predicates cover the common
-   invariants:
-
-   | Predicate | Checks |
-   |-----------|--------|
-   | `entity_count_parity(old, new, delta)` | `\|old.count() - new.count()\| <= delta` — catches silent drops/dupes |
-   | `no_orphaned_refs(refs, keys)` | every id in `refs` exists in `keys` — catches dangling references |
-   | `conservation(old_total, new_total)` | `old_total == new_total` — catches off-by-one / drift |
-
-   From `apps/migrations/scenario-migration-check-pass-v2`:
-
-   ```rust
-   #[app::migration_check]
-   pub fn check(old: ScenarioMigrationCheckPassV1, new: ScenarioMigrationCheckPassV2) -> bool {
-       let old_keys: Vec<String> = old.items.entries().unwrap().map(|(k, _v)| k).collect();
-       let new_keys: Vec<String> = new.items.entries().unwrap().map(|(k, _v)| k).collect();
-       entity_count_parity(&old_keys, &new_keys, 0)
-   }
-   ```
-
-   A check can take an optional third `witness` parameter if your `#[app::migrate]`
-   returns `(NewState, Witness)` and you want to assert against data the transform
-   captured.
-
-</Steps>
-
-## The determinism rules
-
-Write a migration as a **pure function of the old state**. It runs once, but
-the SDK runs it in storage **merge mode** and refuses what would make its
-result depend on the run rather than on the old state:
-
-- **No clock, no randomness, no caller.** Derive every new value from the old
-  state alone; `env::time_now()`, random sources and the executor's id have no
-  place in a schema change.
-- **Sort before you iterate into ordered structures.** Map iteration follows
-  entity ids, not keys; if you fold map entries into a `Vector` or any
-  positional structure, `sort()` the keys first (as the example above does) so
-  the order follows the data.
-- **Use the explicit mutators.** `Counter::increment` and `Rga::insert` read
-  the executor id / HLC and **panic** inside a migration. Use their explicit
-  siblings instead:
-
-  ```rust
-  counter.increment_for(&id)?;                      // not increment()
-  rga.insert_str_at_timestamp(pos, ts, text)?;      // not insert(); ts non-zero
-  ```
-
-<Aside type="caution" title="Migrations run in merge mode">
-  The runtime executes your migrate in merge mode and reassigns deterministic
-  collection ids afterward, so newly created collections get ids derived from
-  where they are stored. Treat a panic from a mutator as the SDK catching a
-  migration that depends on who or when it ran.
-</Aside>
-
-## Authored / identity-gated data migrates per-owner
-
-A whole-root `#[app::migrate]` reshapes the shared parts of your state, but it
-**does not** convert `AuthoredMap` / `AuthoredVector` entries. Those are stamped
-**per owner**, and only a call by the owner may rewrite them, so the root
-migration — which runs as no owner — cannot touch them. They keep their old
-schema until each owner upgrades their own entries.
-
-To make that one tap, `#[app::state(version = N)]` auto-generates two extra exports
-whenever your state declares at least one identity-gated collection:
-
-| Export | Kind | What it does |
-|--------|------|--------------|
-| `migrate_my_entries` | call | Re-writes every entry the **caller owns** that is still below the target schema, routing through the owner-driven convert (re-stamps as the owner). Returns a `MigrateMyEntriesSummary { converted, remaining }`. |
-| `count_my_pending` | read-only | Tallies the caller's still-stale owned entries without writing — drives the prompt below. |
-
-`SharedStorage` is deliberately **excluded** from this sweep: it is an admin-rotated
-writer-set with a different conversion model, not per-owner data.
-
-<Aside type="caution" title="The root migrate does not finish the job">
-  After deploying v2, do not assume every entry is on the new schema. Each owner's
-  `AuthoredMap` / `AuthoredVector` entries stay at the old schema until **they**
-  call `migrate_my_entries`. Surface `count_my_pending` in your app and prompt
-  users with a non-zero count to run the one-tap migrate; re-offer "finish" until
-  the summary's `remaining` reaches `0`.
-</Aside>
-
-<LinkCard title="Permissioned storage" href="/build/permissioned-storage/"
-  description="AuthoredMap / AuthoredVector ownership, SharedStorage, and the identity-gated write model." />
-
-## Roll it out
-
-A migration ships inside a new release of your application. Moving an app to
-that release (`meroctl context update`, or an organization-wide upgrade run) is
-an entry in the app's own log, so every call before it ran on the old code and
-every call after it runs on the new. The leader runs the migration and its
-check; if either fails, the app stays on the old release and its state is
-untouched.
-
-- [Operate](/operate/) — publishing and installing a release.
-- [Upgrades & migrations](/protocol/upgrades/) — who may upgrade, how the plan is
-  chosen from the ABIs, and organization-wide runs.
-
-<SeqDiagram id="d-build-migrations-rollout" title="Upgrade an app to v2"
-  lanes={[
-    { label: 'Owner', color: '#f0883e' },
-    { label: 'Leader', color: '#58a6ff' },
-    { label: 'Replicas', color: '#a371f7' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'upgrade the app to v2 (carries the migration)' },
-    { from: 1, to: 1, label: 'plan from the two ABIs' },
-    { from: 1, to: 1, label: 'run migrate v1 → v2 over the current state' },
-    { from: 1, to: 1, label: 'migration_check passes' },
-    { from: 1, to: 2, label: 'commit the upgrade entry: new bundle + new state' },
-    { from: 1, to: 0, label: 'upgraded', dashed: true },
-    { type: 'divider', label: 'every later call runs on v2' },
-  ]} />
-
-The scenarios under `apps/migrations/` are runnable end-to-end fixtures (add field,
-remove field, rename, change type, struct→enum, CRDT-native, migration-check
-pass/fail, and more) — the closest thing to a test suite for your own migration.
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::*] attribute macros, including state, migrate, and migration_check." />
-  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Custom Mergeable and the deterministic ids behind migrations." />
-  <LinkCard title="Application upgrades" href="/protocol/upgrades/" description="Who may upgrade, how the migration is planned, and organization-wide runs." />
-</CardGrid>
+`#[app::state(version = N)]` records `N` in the app's ABI, so clients and the
+node's upgrade gate can tell which state layout a bundle expects. Bump it when
+the state's shape changes.

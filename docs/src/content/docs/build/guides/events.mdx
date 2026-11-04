@@ -1,178 +1,75 @@
 ---
-title: Emit and handle events
-description: Declare an event, emit it from a method, and run an in-app handler when it fires.
+title: Emit events
+description: Declare an app's events, emit them to an audience from a method, and read them from a client.
 sidebar:
   order: 3
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-**Task:** announce that something changed so clients (and optionally other
-methods of your app) can react.
+**Task:** announce that something changed so clients can react.
 
-## Declare an event
+## Declare the events
 
-An event type is an enum marked `#[app::event]`. Wire it into your state with the
-`emits` argument so the macro knows which events the app produces:
+An `#[app::event]` enum in the `#[app::logic]` module. The variant name is the
+event name; the fields are its data (camelCase keys; `u64`, `i64` and bytes as
+strings). From `apps/kv-store`:
 
 ```rust
-#[app::state(emits = for<'a> Event<'a>)]
-pub struct KvStore {
-    items: UnorderedMap<String, LwwRegister<String>>,
-    handler_counter: Counter,
-}
-
 #[app::event]
-pub enum Event<'a> {
-    Inserted { key: &'a str, value: &'a str },
-    Updated { key: &'a str, value: &'a str },
-    Removed { key: &'a str },
+pub enum Event {
+    /// A new key was stored.
+    Inserted { key: String, value: String },
+    /// An existing key's value was replaced.
+    Updated { key: String, value: String },
+    /// A key and its value were removed.
+    Removed { key: String },
+    /// Every key was removed from a non-empty store.
     Cleared,
 }
 ```
 
-## Emit it
+The events and their fields are listed in the app's [ABI](/core/build/app-abi/).
 
-Call `app::emit!` with a variant. The event is part of the call's outcome: the call's answer carries it, and clients following the app's event stream receive it once the entry commits:
-
-```rust
-app::emit!(Event::Updated { key: &key, value: &value });
-```
-
-## Run a handler when it fires
-
-To also invoke one of your own methods when the event is emitted, use the tuple
-form `(event, "handler_name")`. The handler is a method named by that string and
-marked `#[app::handler]`; its parameters match the event variant's fields. After
-the entry commits, the app's leader runs it **once**, as a call of the app
-itself (caller `App`, not the member who emitted), with the event's data as its
-arguments ([Event handlers](/protocol/xcall/)). This pattern is
-`apps/kv-store-with-handlers`:
+## Emit them
 
 ```rust
-#[app::logic]
-impl KvStore {
-    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-        if self.items.contains(&key)? {
-            app::emit!((
-                Event::Updated { key: &key, value: &value },
-                "update_handler"
-            ));
-        } else {
-            app::emit!((
-                Event::Inserted { key: &key, value: &value },
-                "insert_handler"
-            ));
-        }
-        self.items.insert(key, value.into())?;
-        Ok(())
+pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bool> {
+    if !self.entries.contains(&key)? {
+        return Ok(false);
     }
-
-    // handler: name matches the string above; params match the variant fields
-    #[app::handler]
-    pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
-        app::log!("Handler 'update_handler' called: key={key}, value={value}");
-        self.handler_counter.increment()?;
-        Ok(())
-    }
-
-    #[app::handler]
-    pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
-        app::log!("Handler 'insert_handler' called: key={key}, value={value}");
-        self.handler_counter.increment()?;
-        Ok(())
-    }
+    self.entries.insert(&key, &value)?;
+    env::emit(Event::Updated { key, value }, Audience::All)?;
+    Ok(true)
 }
 ```
 
-<Aside type="caution" title="Only declared handlers run">
-  The node runs a handler only if the app's ABI declares that method
-  `#[app::handler]`. An event naming any other method, or an app built without
-  an embedded ABI, runs nothing. So mark every method an `emit!` names (an
-  unmarked method of the same impl, or a private one, is a compile error).
+`env::emit(event, audience)` adds the event to the run's outcome. It reaches
+clients only if the call succeeds and its entry commits; a failed call emits
+nothing. `env::emit_raw(name, &data, audience)` emits any serde value by name.
+
+## Choose the audience
+
+| `Audience` | Receives it |
+| --- | --- |
+| `All` | Everyone subscribed to the app. |
+| `Caller` | The caller of the run. |
+| `Accounts(vec![..])` | These accounts. |
+| `Team(id)` | The members of a team. |
+| `Org` | The members of the app's org. |
+| `OrgAdmins` | The admins of the app's org. |
+
+The node resolves the audience when it delivers, against the org at that
+moment.
+
+## Read them
+
+Clients follow `GET /apps/{app}/events?from=N`: server-sent events, the
+committed events from log index `N`, then live ones
+([Node API](/core/operate/admin-api/)). mero-js and calimero-client-py wrap the
+stream; `meroctl context watch` prints it.
+
+<Aside type="note">
+  To make another app react, send it a [cross-app call](/core/build/guides/cross-context/)
+  instead: an event is for clients.
 </Aside>
-
-<Aside type="note" title="Handlers change only this app's state">
-  A handler is just another method, so it can write state: here it bumps a
-  `Counter`. It runs as the app, so `env::account_id()` there is the app's own
-  id, not the emitter's: pass what it needs in the event's fields. A handler
-  that fails is recorded with its error and not retried. Use the plain
-  one-argument `emit!` when you only want to notify clients, and the tuple form
-  when you also want in-app logic to run.
-</Aside>
-
-<Aside type="caution" title="An event says what the method put in it">
-  An event's fields are whatever the emitting method wrote into them. If the
-  method copies a field such as `sender` or `author` from its arguments, the
-  caller chose it. Fill identity fields from `env::account_id()` in the method,
-  or read who did something from authored state, such as the owner an
-  [`Authored`](/build/choosing-state/) collection records for each entry.
-</Aside>
-
-## Exercise it
-
-```sh
-meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
-meroctl context watch my-kv
-```
-
-The call's answer lists the events it emitted, and `context watch` prints the
-app's committed events from the start of its event ring, then live ones, as
-JSON lines. A handler the event names runs after the entry commits, as its own
-entry.
-
-## Worked example: a chat notification flow
-
-A messaging app emits `MessageSent` whenever a member posts, and a web client
-follows the app's event stream to render new messages the moment they land. The
-event and the method that emits it:
-
-```rust
-#[app::event]
-pub enum Event<'a> {
-    MessageSent { from: &'a str, text: &'a str },
-}
-
-#[app::logic]
-impl Chat {
-    pub fn send_message(&mut self, text: String) -> app::Result<()> {
-        let from = hex::encode(env::account_id());    // the caller, never an argument
-        self.messages.push(text.clone())?;
-        app::emit!(Event::MessageSent { from: &from, text: &text });
-        Ok(())
-    }
-}
-```
-
-A client follows the stream with mero-js. `events(app, from)` is the node's
-`GET /apps/{app}/events?from=N`, a server-sent event stream sealed like every
-other answer: first the events the app's ring still holds from entry `from` on,
-then live ones as entries commit ([Reads](/protocol/reads/#events)):
-
-```js
-for await (const ev of client.events(appId, 0)) {   // { id: "index:seq", kind, data }
-  if (ev.kind === 'MessageSent') {
-    const { from, text } = ev.data;                  // the variant's fields, as JSON
-    renderMessage(from, text);
-  }
-}
-```
-
-Each event has:
-
-- `id`, `index:seq`: the entry that emitted it and its position in that entry.
-  A client that reconnects passes the last index it saw as `from` and misses
-  nothing the ring still holds.
-- `kind`, the variant name: here `"MessageSent"`.
-- `data`, the variant's fields.
-
-Everyone who reaches the app receives all of its events, so do not put in an
-event what some members may not see.
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::event] and emit! surface in full." />
-  <LinkCard title="Event handlers" href="/protocol/xcall/" description="How the cluster queues and runs handlers, once, on the leader." />
-  <LinkCard title="Node API" href="/operate/admin-api/" description="The event stream route, and every other route." />
-</CardGrid>
