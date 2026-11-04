@@ -1423,6 +1423,100 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
     );
 }
 
+/// Waits until node `i` hosts the app, then answers its group.
+async fn hosted_after_restart(f: &Fixture, i: usize) {
+    while f.node(i).hosted(&f.app).is_none() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+fn slow_raft(cfg: &mut calimero_node::Config) {
+    more_fuel(cfg);
+    cfg.raft.heartbeat_ms = 2_000;
+    cfg.raft.election_min_ms = 8_000;
+    cfg.raft.election_max_ms = 12_000;
+}
+
+fn listed(stats: &Value, id: &[u8; 32]) -> bool {
+    let id = hex::encode(id);
+    stats["blobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b[0] == json!(id))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn internal_storage_answers_strongly_only_as_the_leader() {
+    let mut f = start_with(Cluster::start_with(3, slow_raft).await).await;
+    let leader = f.leader();
+    let follower = (leader + 1) % 3;
+    f.c.stop(follower).await;
+    let up = f.clients[leader]
+        .upload_blob(&f.app, stream(2_000, 7))
+        .await
+        .unwrap();
+    let id = hex_id(up["id"].as_str().unwrap());
+    f.c.restart(follower, |_| {}).await;
+    hosted_after_restart(&f, follower).await;
+
+    let addr = |i: usize| f.node(0).sys(|s| s.nodes[&(i as u64 + 1)].addr.clone());
+    let ask = |strong: Option<bool>| {
+        let mut body = json!({ "app": f.app });
+        if let Some(s) = strong {
+            body["strong"] = json!(s);
+        }
+        body
+    };
+    let from = f.node(leader);
+    let local = from
+        .peer_post(&addr(follower), "internal/storage", &ask(None))
+        .await
+        .unwrap();
+    assert!(!listed(&local, &id), "the replica already applied the blob");
+    let refused = from
+        .peer_post(&addr(follower), "internal/storage", &ask(Some(true)))
+        .await;
+    assert!(refused.is_err(), "a follower answered a strong read");
+    let strong = f
+        .node(follower)
+        .peer_post(&addr(leader), "internal/storage", &ask(Some(true)))
+        .await
+        .unwrap();
+    assert!(listed(&strong, &id), "{strong}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_that_hosts_no_replica_reads_the_upload_from_the_leader() {
+    let mut f = start_with(Cluster::start_with(4, slow_raft).await).await;
+    let app = f.node(0).sys(|s| s.apps[&f.app].clone());
+    let outsider = (1..=4).find(|n| !app.replicas.contains(n)).unwrap() as usize - 1;
+    // The outsider asks the replicas in order: make the first a lagging follower.
+    let first = app.replicas[0] as usize - 1;
+    let second = app.replicas[1] as usize - 1;
+    for _ in 0..30 {
+        if f.c.app_leader(&f.app).is_some_and(|l| l != first) {
+            break;
+        }
+        let g = f.node(second).hosted(&f.app).unwrap();
+        let _r = g.raft().trigger().elect().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let leader = f.leader();
+    assert_ne!(leader, first, "the first replica still leads");
+    f.c.stop(first).await;
+    let up = f.clients[leader]
+        .upload_blob(&f.app, stream(2_000, 7))
+        .await
+        .unwrap();
+    let id = hex_id(up["id"].as_str().unwrap());
+    f.c.restart(first, |_| {}).await;
+    hosted_after_restart(&f, first).await;
+
+    let stats = f.node(outsider).storage_stats_strong(&app).await.unwrap();
+    assert!(stats.blobs.iter().any(|(b, _)| *b == id), "blob unseen");
+}
+
 fn hex_id(id: &str) -> [u8; 32] {
     <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap()
 }

@@ -2136,9 +2136,6 @@ impl Node {
         }
         let body = json!({ "app": app.app_id, "strong": strong });
         for id in &app.replicas {
-            if *id == self.config.node_id && strong {
-                continue;
-            }
             let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
                 continue;
             };
