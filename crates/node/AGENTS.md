@@ -419,15 +419,26 @@ is its command line.
   is Prometheus text (directory counts, this node's groups, streams, system
   membership, build release; per-group Raft term, lags and quorum age; store
   sizes; and, from `metrics::track` on the router, requests by route template
-  and status, error codes, latency per route group and body bytes), never
-  names or state: labels are templates, groups, codes and numbers, and ids only
-  on the usage series below
-  (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
+  and status, error codes, latency per route group and body bytes; WASM run
+  time by kind, `calimero_wasm_run_duration_seconds{kind}` from
+  `metrics::wasm_run` in `Node::metered` and the view and action runs; a
+  logged call's `run` and `commit` time,
+  `calimero_call_phase_duration_seconds{phase}`, observed in
+  `call_local_component` once the entry is appended), never
+  names or state: labels are templates, groups, codes, kinds, phases and
+  numbers, and ids only on the usage series below
+  (regressions: `metrics_count_requests_errors_and_raft_without_naming_anyone`,
+  `wasm_runs_and_a_calls_run_and_commit_are_timed`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
   `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
-  labelled `app` and `org` (the payer: org id, or `account:{owner}` for a
-  personal app; `usage::payer`). Every WASM run goes through `Node::metered`
+  labelled `app`, `org` (the payer, whose quotas it counts against: org id,
+  or `account:{owner}` for a personal app; `usage::payer`) and `developer`
+  (who Calimero Cloud bills: for an instance of a deployment the deployment's
+  owner, in the same form, else the payer; `usage::developer`,
+  `usage::Billed::of`). Both are functions of the app, so they add no series
+  (at most 8 per hosted app). Regression for developers:
+  `an_instances_usage_is_billed_to_its_deployments_developer`. Every WASM run goes through `Node::metered`
   (`off_workers` plus `usage::measure`: thread CPU time, `CLOCK_THREAD_CPUTIME_ID`,
   around the run on its one thread; wall time off Unix), so CPU is counted on
   the node that ran the WASM: the leader for calls, `init`, migrations,
@@ -501,8 +512,8 @@ is its command line.
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
-  consent page still shows the plan an ABI pair implies
-  (`consent_page::diff::plan_from_abis`). The directory records the new bundle only
+  consent page shows the state version each side's `calimero:abi` declares and flags a
+  change (`stateVersion`), as no migration runs. The directory records the new bundle only
   once the upgrade succeeded.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
@@ -523,6 +534,24 @@ is its command line.
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
   and takes the org's teams, invites and apps. Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
+- **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
+  `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
+  the owner keeps the seed). `SetRecoveryKey` (owner, consent `__set_recovery_key
+  { publicKey }`; a new key or `null` ends a pending recovery), `StartRecovery`
+  (any account, with the seed's signature over org, account and nonce,
+  `calimero_identity::recovery`, checked against the org's current key in
+  `authorize` and spent), `CancelRecovery` (owner, `__cancel_recovery
+  { account }`), `FinishRecovery` (the named account, `__finish_recovery
+  { org }`, at least `RECOVERY_DELAY_SECS` (72 h) after the start, judged at
+  the commands' `at`: the node's clock, `Node::app_clock`, so tests move it).
+  Finishing removes every previous owner from the org and its teams and moves
+  their org apps to the new owner; account credentials are never touched. One
+  pending recovery per org (`409 RECOVERY_PENDING`); `403 WRONG_RECOVERY_KEY`
+  for no org, no key or a wrong signature alike. Routes: `POST
+  /orgs/{org}/recovery`, `.../recovery/{start,cancel,finish}`. Regressions:
+  `tests/org_recovery.rs`, `recovery_needs_the_owners_passkey_the_seed_and_the_delay`,
+  `rotating_the_recovery_key_retires_the_old_seed`,
+  `state_from_before_recovery_reads_with_none_and_writes_as_before`.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
@@ -558,7 +587,17 @@ is its command line.
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins in `connect-src`, `/.well-known/calimero.json` (with the deployments
   offering the package); an unknown label under
-  D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
+  D is a 404, never a node route. Each package is also at
+  `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
+  and origin (for mdma's hostname resolver; another cluster's label 404s;
+  regression in `app_frontends_are_served_and_their_sessions_are_bound`,
+  vector in `cluster_labels_match_the_resolvers_vector`). Each deployment has its own host too,
+  `{deployment_label(id)}.D` (`app_host::Site`): the one package it offers
+  (404 while it offers none or several), `/` → what `/d/{deployment}/` gives,
+  `/d/` only for itself, well-known `deployment` set and listed first; the
+  deployment API answers its `host`. Regression:
+  `each_deployment_serves_its_frontend_on_its_own_host`. App origins (both
+  kinds) pass CORS, and a passkey ceremony
   from one opens a session bound to its package (`SessionClaims::app`, carried
   by refresh): `Principal::within` keeps it to that package's apps (gate, app
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
@@ -600,7 +639,10 @@ is its command line.
   request (this node's memory,
   `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
   a model from node state and verified manifests (an upgrade's capability
-  sheet is `consent_page::diff`; the plain-language `title`, `points` and
+  sheet is `consent_page::diff`, its methods, events, timers and state version from the
+  `calimero:abi` each component embeds, `component::embedded_abi`; regression:
+  `an_upgrades_page_names_what_the_components_abis_change` with
+  `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
   a collapsed *Technical details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
@@ -657,6 +699,15 @@ is its command line.
   and team reads use it, and so does an access check before it refuses.
   Concurrent callers share a round (`ReadRounds`): one that arrives while a
   round runs waits for the next one, never takes the one already under way.
+  One round per request: `principal` (or `gate`, anonymous) keeps the index its
+  round named (`Principal::sys_index`, `Node::sys_fresh_index`); the request's
+  later checks and the app leader's (`CallRequest::sys_index`, carried on
+  `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
+  argument that this is as fresh as a round of their own) instead of running
+  another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  Regressions: `a_call_costs_one_system_read_round`,
+  `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
+  (`tests/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
@@ -667,6 +718,19 @@ is its command line.
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
   the disk identity, so the nodes of one release share K_r; every release has its
   own mero-kms root, so K_r changes at each release upgrade.
+- **Rollback counter** (`rollback.rs`, `docs/specs/rollback-protection.md`): with a
+  key from mero-kms that keeps counters (`kms::KmsCounter`, `Config::rollback`), the
+  node keeps an entry `(generation, mark)` in its store (`Engine::put_node_meta`, row
+  `rollback`, bound to its node id) and raises it with mero-kms's every
+  `CHECKPOINT_EVERY` (1 s), store first (`Checkpoints::run`, from `lib.rs`).
+  `Node::start` judges the store before any group starts (`rollback::judge`): behind
+  mero-kms, empty under a used id, mero-kms without the node's entry, another node's
+  store, or a protected store answered without counters are refused; a KMS without
+  counters and a store without one start unprotected. `Config::accept_rollback`
+  (`merod run --accept-rollback`) resets the node's entry to the store's and raises
+  the cluster epoch. Reported in `/ops/status` (`rollback`) and `/health`
+  (`rollbackEpoch`). Tests: `tests/rollback.rs`, `rollback::tests` (`MemoryCounter`
+  stands in for mero-kms).
 - **Cluster key** (`cluster_key.rs`): K_c seals the store, snapshots, backups and
   feeds the cluster secret, TEE, member and component-cache keys, so data
   outlives a release. Kept in `<data_dir>/cluster-key`, wrapped under K_r. The
@@ -955,8 +1019,8 @@ API and system group:
 
 ## Not done yet
 
-rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, snapshot restore into a
+keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
+rollback epoch in the attested KMS evidence, snapshot restore into a
 running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands

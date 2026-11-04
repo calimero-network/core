@@ -352,8 +352,8 @@ runs it). Records from before deployments are not moved into one.
 
 **Reads**:
 - `GET /deployments`: the deployments the caller manages.
-- `GET /deployments/{id}`: public by id: its name, its owner's kind and name,
-  and the apps it offers with their releases. Never its managers or customers.
+- `GET /deployments/{id}`: public by id: its name, its frontend `host`, its
+  owner's kind and name, and the apps it offers with their releases. Never its managers or customers.
 - `GET /deployments/{id}/orgs`: for its managers, on fresh state: each
   organization with instances created from it, with its id and name, how many,
   which of the deployment's apps and the releases they run, and when the
@@ -361,8 +361,10 @@ runs it). Records from before deployments are not moved into one.
   instances outside an organization are only counted. Another deployment's
   customers never appear, even on the same release.
 
-Frontends open at a deployment's release with `/d/{deployment}/`
-([Packages & frontends](/protocol/applications/#frontends)).
+Frontends open at a deployment's release with `/d/{deployment}/`, or on the
+deployment's own host, `{dlabel}.{apps-domain}`, which `POST /deployments` and
+the reads above return as `host`
+([Deployment hosts](/protocol/applications/#deployment-hosts)).
 
 ## Reading the approvals
 

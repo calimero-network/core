@@ -250,6 +250,28 @@ pub fn verify_invite_redeem(
     Ok(invite_redeem_used(invite_key, account, now))
 }
 
+/// Check that `signature` is the recovery key `public`'s, handing `org` to
+/// `account` under `nonce`, and answer what marks it used.
+///
+/// # Errors
+/// A malformed signature or nonce, or one the organization's key did not make.
+pub fn verify_recovery(
+    public: &str,
+    org: &str,
+    account: &str,
+    nonce: &str,
+    signature: &str,
+) -> Result<String, &'static str> {
+    use calimero_identity::recovery;
+    recovery::verify_recovery(public, org, account, nonce, signature)
+        .map_err(|_| "the recovery is not signed with the organization's recovery key")?;
+    let message = recovery::recovery_message(org, account, nonce);
+    Ok(used(
+        b"recovery",
+        &[public.as_bytes(), b"\0", &message].concat(),
+    ))
+}
+
 /// What a refresh token's key is derived from, before the token.
 pub const REFRESH_DOMAIN: &[u8] = b"calimero.refresh.v1\0";
 

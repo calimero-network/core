@@ -10,16 +10,21 @@
 //! - **frontend origin and aliases**: an added origin is a new place a
 //!   sign-in callback is trusted to land (highlighted as `newLoginOrigins`);
 //! - **interfaces** the bundle uses and exports;
-//! - **public methods** (with whether each is a view, an xcall entry point,
-//!   an event handler, destructive), **events** and **timers**;
-//! - the **migration** the leader would run ([`plan_from_abis`]);
+//! - **methods** (their kind, whether each needs a passkey confirmation, is
+//!   public, accepts the system, other apps or only the app's actions, and its
+//!   signature), **events** and **timers**, from the `calimero:abi` section each
+//!   component embeds ([`crate::component::embedded_abi`]);
+//! - the **state version** each side declares (an upgrade is code only: no
+//!   migration runs);
 //! - SDK and build information, and the hashes that identify each side.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_bundle::BundleManifest;
-use calimero_wasm_abi::schema::{Manifest as Abi, MethodIntent};
 use serde_json::{json, Value};
+
+/// A component's `calimero:abi` JSON, as the build wrote it.
+pub type Abi = Value;
 
 /// One side of an upgrade, as the node holds it.
 pub struct Side<'a> {
@@ -36,18 +41,13 @@ pub struct Side<'a> {
     /// The publisher's key that signed the manifest (`did:key`).
     pub signer: &'a str,
     pub manifest: &'a BundleManifest,
-    /// The ABI the service's WASM embeds; `None` when it embeds none.
+    /// The ABI the service's component embeds; `None` when it embeds none.
     pub abi: Option<&'a Abi>,
 }
 
-/// The sheet for an upgrade `from` -> `to`, with the migration `plan` the
-/// leader would run (`Ok(None)`: code only; `Err`: refused, and why).
+/// The sheet for an upgrade `from` -> `to`.
 #[must_use]
-pub fn capability_sheet(
-    from: &Side<'_>,
-    to: &Side<'_>,
-    plan: &Result<Option<String>, String>,
-) -> Value {
+pub fn capability_sheet(from: &Side<'_>, to: &Side<'_>) -> Value {
     json!({
         "from": side(from),
         "to": side(to),
@@ -69,7 +69,7 @@ pub fn capability_sheet(
         "methods": methods(from.abi, to.abi),
         "events": set_diff(events(from.abi), events(to.abi)),
         "timers": timers(from.abi, to.abi),
-        "migration": migration(from.abi, to.abi, plan),
+        "migration": migration(from.abi, to.abi),
         "buildInfo": {
             "from": from.manifest.build_info,
             "to": to.manifest.build_info,
@@ -158,28 +158,38 @@ fn interfaces(m: &BundleManifest, exports: bool) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// What a method is, as far as an approver cares.
-fn method_facts(m: &calimero_wasm_abi::schema::Method) -> Value {
+/// The methods a component's ABI declares, by (camelCase) name.
+fn declared(abi: Option<&Abi>) -> impl Iterator<Item = (&String, &Value)> {
+    abi.and_then(|a| a["methods"].as_object())
+        .into_iter()
+        .flatten()
+}
+
+/// What a method is, as far as an approver cares: every attribute the node
+/// enforces from the ABI (`calimero_app_host::Abi`), and its signature.
+fn method_facts(m: &Value) -> Value {
+    let flag = |key: &str| m[key].as_bool().unwrap_or(false);
     json!({
-        "kind": if m.intent == MethodIntent::ReadOnly { "view" } else { "call" },
-        "xcall": m.xcall_callable,
-        "handler": m.handler,
-        "destructive": m.destructive,
+        "kind": m["kind"],
+        "confirm": flag("confirm"),
+        "public": flag("public"),
+        "rate": m["rate"],
+        "allowSystem": flag("allowSystem"),
+        "allowApps": m.get("allowApps").cloned().unwrap_or_else(|| json!([])),
+        "allowAction": flag("allowAction"),
+        "params": m.get("params").cloned().unwrap_or_else(|| json!([])),
+        "returns": m["returns"],
     })
 }
 
 fn method_map(abi: Option<&Abi>) -> BTreeMap<String, Value> {
-    abi.map(|a| {
-        a.methods
-            .iter()
-            .map(|m| (m.name.clone(), method_facts(m)))
-            .collect()
-    })
-    .unwrap_or_default()
+    declared(abi)
+        .map(|(name, m)| (name.clone(), method_facts(m)))
+        .collect()
 }
 
-/// Methods added (with what they are), removed, and those whose kind or
-/// flags changed. Unknown (`null`) unless both sides embed an ABI.
+/// Methods added (with what they are), removed, and those whose attributes or
+/// signature changed. Unknown (`null`) unless both sides embed an ABI.
 fn methods(from: Option<&Abi>, to: Option<&Abi>) -> Value {
     if from.is_none() || to.is_none() {
         return Value::Null;
@@ -210,21 +220,33 @@ fn with_name(name: &str, facts: &Value) -> Value {
 }
 
 fn events(abi: Option<&Abi>) -> BTreeSet<String> {
-    abi.map(|a| a.events.iter().map(|e| e.name.clone()).collect())
+    abi.and_then(|a| a["events"].as_object())
+        .map(|e| e.keys().cloned().collect())
         .unwrap_or_default()
 }
 
-fn timer_map(abi: Option<&Abi>) -> BTreeMap<String, u64> {
-    abi.map(|a| {
-        a.methods
-            .iter()
-            .filter_map(|m| Some((m.name.clone(), m.tee_every_secs.filter(|s| *s > 0)?)))
-            .collect()
-    })
-    .unwrap_or_default()
+/// A timer's `every` (`"<n>s"`, `"<n>m"` or `"<n>h"`) in seconds.
+fn every_secs(every: &str) -> Option<u64> {
+    let unit = match every.chars().last()? {
+        's' => 1,
+        'm' => 60,
+        'h' => 3_600,
+        _ => return None,
+    };
+    every[..every.len() - 1]
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(unit)
 }
 
-/// Timers (`#[app::tee(every)]`) added, removed, or with a new period.
+fn timer_map(abi: Option<&Abi>) -> BTreeMap<String, u64> {
+    declared(abi)
+        .filter(|(_, m)| m["kind"] == "timer")
+        .filter_map(|(name, m)| Some((name.clone(), every_secs(m["every"].as_str()?)?)))
+        .collect()
+}
+
+/// Timers (`#[app::every]`) added, removed, or with a new period.
 fn timers(from: Option<&Abi>, to: Option<&Abi>) -> Value {
     let (before, after) = (timer_map(from), timer_map(to));
     let entry = |n: &String, s: &u64| json!({ "name": n, "everySecs": s });
@@ -238,133 +260,47 @@ fn timers(from: Option<&Abi>, to: Option<&Abi>) -> Value {
     })
 }
 
-fn migration(from: Option<&Abi>, to: Option<&Abi>, plan: &Result<Option<String>, String>) -> Value {
+/// The state version each side declares (`#[app::state(version = N)]`). An
+/// upgrade is code only: no migration runs, whatever the versions.
+fn migration(from: Option<&Abi>, to: Option<&Abi>) -> Value {
+    let version = |abi: Option<&Abi>| abi.and_then(|a| a["state"]["version"].as_u64());
     json!({
-        "runs": matches!(plan, Ok(Some(_))),
-        "export": plan.as_ref().ok().cloned().flatten(),
-        "refused": plan.as_ref().err(),
-        "fromStateVersion": from.map(Abi::state_version_or_default),
-        "toStateVersion": to.map(Abi::state_version_or_default),
+        "fromStateVersion": version(from),
+        "toStateVersion": version(to),
     })
-}
-
-/// The migration an upgrade from a release with ABI `current` to one with ABI
-/// `target` runs, as the consent page shows it before anything runs: `None` when
-/// the state shape is unchanged, the target's `#[app::migrate]` edge from the
-/// current state version for one step up. Releases that embed no such ABI (every
-/// `calimero:app` component: its ABI is its `calimero:abi` section) have none.
-///
-/// # Errors
-/// A downgrade, a jump of more than one version, a missing edge, or one side
-/// with an ABI and the other without.
-pub(crate) fn plan_from_abis(
-    current: Option<calimero_wasm_abi::schema::Manifest>,
-    target: Option<calimero_wasm_abi::schema::Manifest>,
-) -> Result<Option<String>, String> {
-    let (cur, tgt) = match (current, target) {
-        (None, None) => return Ok(None),
-        (Some(c), Some(t)) => (c, t),
-        (None, Some(_)) => return Err("the current bundle embeds no ABI to plan from".into()),
-        (Some(_), None) => return Err("the target bundle embeds no ABI to plan from".into()),
-    };
-    // The identity-downgrade gate (#2587): a field that loses identity-gated
-    // semantics (an `AuthoredMap` that becomes an `UnorderedMap`) would strip
-    // every entry's authorship or writer set for everyone.
-    if let Some(d) = calimero_wasm_abi::downgrade::identity_downgrades(&cur, &tgt)
-        .into_iter()
-        .next()
-    {
-        return Err(format!(
-            "identity downgrade forbidden: field '{}' {} -> {} strips authorship (rewrite it \
-             under the owner instead)",
-            d.field, d.from, d.to
-        ));
-    }
-    let (from, to) = (
-        cur.state_version_or_default(),
-        tgt.state_version_or_default(),
-    );
-    if from == to {
-        return Ok(None);
-    }
-    if to < from {
-        return Err(format!(
-            "a downgrade of the state from version {from} to {to}"
-        ));
-    }
-    if to != from + 1 {
-        return Err(format!(
-            "state version {from} to {to}: upgrade one version at a time"
-        ));
-    }
-    tgt.edge_from(from)
-        .map(|e| Some(e.method))
-        .ok_or_else(|| format!("the target declares no migration from state version {from}"))
 }
 
 #[cfg(test)]
 mod tests {
-
-    /// A manifest at `version`, with migrations from each of `edges` (named
-    /// `migrate_from_<v>`).
-    fn versioned(version: u32, edges: &[u32]) -> Abi {
-        let mut m = Abi::new();
-        m.state_version = Some(version);
-        m.migrations = edges
-            .iter()
-            .map(|v| calimero_wasm_abi::schema::MigrationEdgeAbi {
-                method: format!("migrate_from_{v}"),
-                from_version: *v,
-            })
-            .collect();
-        m
-    }
-
-    #[test]
-    fn the_plan_is_the_targets_migration_edge_one_version_up() {
-        let plan = |a: u32, ae: &[u32], b: u32, be: &[u32]| {
-            super::plan_from_abis(Some(versioned(a, ae)), Some(versioned(b, be)))
-        };
-        assert_eq!(plan(1, &[], 1, &[]), Ok(None));
-        assert_eq!(plan(1, &[], 2, &[1]), Ok(Some("migrate_from_1".to_owned())));
-        assert!(plan(2, &[], 1, &[]).is_err());
-        assert!(plan(1, &[], 3, &[1, 2]).is_err());
-        assert!(plan(1, &[], 2, &[]).is_err());
-        // No ABI on either side: code only.
-        assert_eq!(super::plan_from_abis(None, None), Ok(None));
-        assert!(super::plan_from_abis(None, Some(versioned(2, &[1]))).is_err());
-    }
-    use calimero_wasm_abi::schema::{Event, Method};
-
     use super::*;
 
     fn manifest(v: Value) -> BundleManifest {
         serde_json::from_value(v).unwrap()
     }
 
-    fn method(name: &str, view: bool) -> Method {
-        Method {
-            name: name.to_owned(),
-            intent: if view {
-                MethodIntent::ReadOnly
-            } else {
-                MethodIntent::Mutating
-            },
-            ..Method::default()
-        }
+    fn method(kind: &str) -> Value {
+        json!({ "kind": kind, "confirm": false, "public": false, "allowSystem": false,
+                "params": [], "returns": null })
     }
 
-    fn event(name: &str) -> Event {
-        Event {
-            name: name.to_owned(),
-            payload: None,
-            doc: None,
+    fn side<'a>(version: &'a str, manifest: &'a BundleManifest, abi: Option<&'a Abi>) -> Side<'a> {
+        Side {
+            package: "com.example.notes",
+            version,
+            service: None,
+            bundle: "wasm",
+            mpk: "mpk",
+            manifest_hash: "hash",
+            signer: "did:key:z1",
+            manifest,
+            abi,
         }
     }
 
     /// The fixture pair: 1.0.0 calls one host and has one alias; 2.0.0 calls
-    /// a second host, moves its frontend, adds an alias, a destructive method,
-    /// an event and a timer, and migrates its state from version 1.
+    /// a second host, moves its frontend, adds an alias, a confirmed method, a
+    /// public view, an event and a timer, changes a timer's period, drops a
+    /// method, and declares its state at version 2.
     #[test]
     fn the_sheet_lists_what_the_target_adds_and_drops() {
         let from = manifest(json!({
@@ -387,52 +323,36 @@ mod tests {
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
             "buildInfo": { "sdkVersion": "0.13.0" },
         }));
-        let mut a = Abi::new();
-        a.methods = vec![
-            method("get", true),
-            method("set", false),
-            method("old", false),
-        ];
-        a.events = vec![event("Changed")];
-        let mut b = Abi::new();
-        b.state_version = Some(2);
-        b.methods = vec![
-            method("get", true),
-            Method {
-                destructive: true,
-                ..method("set", false)
+        let a = json!({
+            "abiVersion": 1,
+            "state": { "fields": {}, "search": {}, "version": 1 },
+            "methods": {
+                "init": method("init"),
+                "get": method("view"),
+                "set": method("call"),
+                "old": method("call"),
+                "sweep": { "kind": "timer", "every": "30s", "allowSystem": true },
             },
-            Method {
-                destructive: true,
-                ..method("wipe", false)
+            "events": { "Changed": { "id": "string" } },
+        });
+        let b = json!({
+            "abiVersion": 1,
+            "state": { "fields": {}, "search": {}, "version": 2 },
+            "methods": {
+                "init": method("init"),
+                "get": method("view"),
+                "set": { "kind": "call", "confirm": true, "allowApps": ["*"], "params": [["id", "string"]] },
+                "wipe": { "kind": "call", "confirm": true },
+                "count": { "kind": "view", "public": true, "rate": "10/s", "returns": "u32" },
+                "tick": { "kind": "timer", "every": "1m", "allowSystem": true },
+                "sweep": { "kind": "timer", "every": "1h", "allowSystem": true },
             },
-            Method {
-                tee_every_secs: Some(60),
-                ..method("tick", false)
-            },
-        ];
-        b.events = vec![event("Changed"), event("Wiped")];
-        fn side<'a>(
-            version: &'a str,
-            manifest: &'a BundleManifest,
-            abi: Option<&'a Abi>,
-        ) -> Side<'a> {
-            Side {
-                package: "com.example.notes",
-                version,
-                service: None,
-                bundle: "wasm",
-                mpk: "mpk",
-                manifest_hash: "hash",
-                signer: "did:key:z1",
-                manifest,
-                abi,
-            }
-        }
+            "events": { "Changed": { "id": "string" }, "Wiped": null },
+            "world": "calimero:app@0.5.1",
+        });
         let sheet = capability_sheet(
             &side("1.0.0", &from, Some(&a)),
             &side("2.0.0", &to, Some(&b)),
-            &Ok(Some("migrate_from_1".to_owned())),
         );
         assert_eq!(
             sheet["outbound"]["added"],
@@ -459,24 +379,68 @@ mod tests {
             sheet["interfaces"]["exports"]["added"],
             json!(["notes:share"])
         );
+        assert_eq!(sheet["abi"], json!({ "from": true, "to": true }));
+        let facts = |name: &str,
+                     kind: &str,
+                     confirm: bool,
+                     public: bool,
+                     rate: Value,
+                     system: bool,
+                     returns: Value| {
+            json!({
+                "name": name, "kind": kind, "confirm": confirm, "public": public, "rate": rate,
+                "allowSystem": system, "allowApps": [], "allowAction": false,
+                "params": [], "returns": returns,
+            })
+        };
         assert_eq!(
             sheet["methods"]["added"],
             json!([
-                { "name": "tick", "kind": "call", "xcall": false, "handler": false, "destructive": false },
-                { "name": "wipe", "kind": "call", "xcall": false, "handler": false, "destructive": true },
+                facts(
+                    "count",
+                    "view",
+                    false,
+                    true,
+                    json!("10/s"),
+                    false,
+                    json!("u32")
+                ),
+                facts(
+                    "tick",
+                    "timer",
+                    false,
+                    false,
+                    Value::Null,
+                    true,
+                    Value::Null
+                ),
+                facts("wipe", "call", true, false, Value::Null, false, Value::Null),
             ])
         );
         assert_eq!(sheet["methods"]["removed"], json!(["old"]));
-        assert_eq!(sheet["methods"]["changed"][0]["name"], "set");
-        assert_eq!(sheet["methods"]["changed"][0]["to"]["destructive"], true);
-        assert_eq!(sheet["events"]["added"], json!(["Wiped"]));
+        let changed = &sheet["methods"]["changed"];
+        assert_eq!(changed.as_array().unwrap().len(), 1, "{changed}");
+        assert_eq!(changed[0]["name"], "set");
+        assert_eq!(changed[0]["from"]["confirm"], false);
+        assert_eq!(changed[0]["to"]["confirm"], true);
+        assert_eq!(changed[0]["to"]["allowApps"], json!(["*"]));
+        assert_eq!(changed[0]["to"]["params"], json!([["id", "string"]]));
         assert_eq!(
-            sheet["timers"]["added"],
-            json!([{ "name": "tick", "everySecs": 60 }])
+            sheet["events"],
+            json!({ "added": ["Wiped"], "removed": [], "kept": ["Changed"] })
         );
-        assert_eq!(sheet["migration"]["runs"], true);
-        assert_eq!(sheet["migration"]["export"], "migrate_from_1");
-        assert_eq!(sheet["migration"]["toStateVersion"], 2);
+        assert_eq!(
+            sheet["timers"],
+            json!({
+                "added": [{ "name": "tick", "everySecs": 60 }],
+                "removed": [],
+                "changed": [{ "name": "sweep", "fromSecs": 30, "toSecs": 3600 }],
+            })
+        );
+        assert_eq!(
+            sheet["migration"],
+            json!({ "fromStateVersion": 1, "toStateVersion": 2 })
+        );
         assert_eq!(sheet["buildInfo"]["changed"], true);
         assert_eq!(sheet["publisher"]["changed"], false);
     }
@@ -486,20 +450,29 @@ mod tests {
         let m = manifest(json!({
             "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
         }));
-        let s = Side {
-            package: "p",
-            version: "1.0.0",
-            service: None,
-            bundle: "w",
-            mpk: "m",
-            manifest_hash: "h",
-            signer: "s",
-            manifest: &m,
-            abi: None,
-        };
-        let sheet = capability_sheet(&s, &s, &Ok(None));
-        assert_eq!(sheet["methods"], Value::Null);
-        assert_eq!(sheet["abi"], json!({ "from": false, "to": false }));
-        assert_eq!(sheet["migration"]["runs"], false);
+        let abi = json!({ "abiVersion": 1, "methods": { "get": method("view") } });
+        for (from, to) in [(None, None), (Some(&abi), None), (None, Some(&abi))] {
+            let sheet = capability_sheet(&side("1.0.0", &m, from), &side("2.0.0", &m, to));
+            assert_eq!(sheet["methods"], Value::Null);
+            assert_eq!(
+                sheet["abi"],
+                json!({ "from": from.is_some(), "to": to.is_some() })
+            );
+        }
+        let sheet = capability_sheet(&side("1.0.0", &m, None), &side("2.0.0", &m, None));
+        assert_eq!(
+            sheet["migration"],
+            json!({ "fromStateVersion": null, "toStateVersion": null })
+        );
+    }
+
+    #[test]
+    fn timer_periods_read_as_seconds() {
+        assert_eq!(every_secs("30s"), Some(30));
+        assert_eq!(every_secs("2m"), Some(120));
+        assert_eq!(every_secs("1h"), Some(3_600));
+        for bad in ["", "h", "1d", "-1s", "1.5m", "99999999999999999999h"] {
+            assert_eq!(every_secs(bad), None, "{bad}");
+        }
     }
 }

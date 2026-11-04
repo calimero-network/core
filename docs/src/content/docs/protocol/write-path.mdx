@@ -47,8 +47,8 @@ one of three ways, and all three end up in the same handlers:
     { from: 2, to: 1, label: 'applied index n', dashed: true },
     { from: 1, to: 1, label: 'apply to n; credential → principal' },
     { from: 1, to: 1, label: 'gate: access rule, API-key scope, confirm' },
-    { from: 1, to: 3, label: 'internal/call (5 s bound, retried)' },
-    { from: 3, to: 3, label: 'fresh org standing; idempotency; run WASM' },
+    { from: 1, to: 3, label: 'internal/call { sysIndex: n } (5 s bound, retried)' },
+    { from: 3, to: 3, label: 'apply to n: org standing; idempotency; run WASM' },
     { from: 3, to: 4, label: 'append { call, outcome }', color: '#a5ff11' },
     { from: 4, to: 3, label: 'majority acknowledges', dashed: true },
     { from: 3, to: 1, label: 'Applied { index, result, events }', dashed: true },
@@ -94,7 +94,11 @@ can later prove which node answered what at which log index.
 8. **Run and append** on the leader ([Application execution](/protocol/execution/),
    [Replication](/protocol/replication/#proposing-the-leader-runs-everyone-applies)).
    For a client's call the leader reads the caller's organization standing on
-   fresh system state first.
+   fresh system state first: it waits until its own system replica has applied
+   the index the entry node's round named (`CallRequest::sys_index`), which
+   covers every system write committed before the request arrived, so the call
+   costs one read-index round, not two ([One round per
+   request](/protocol/system-group/#one-round-per-request)).
 9. **Answer.** The node that took the request returns the result with a
    [receipt](/protocol/tee-attestation/#receipts) signed by its attested receipt key.
 

@@ -154,6 +154,13 @@ pub struct Config {
     /// storage key, and the data disk's when the boot script recorded it).
     /// Reported, bound into the quote, by `GET /attestation?purpose=kms`.
     pub kms_keys: calimero_client::attest::KmsKeys,
+    /// The rollback counter this node checks its store against and raises
+    /// (`rollback`): mero-kms's, from the key release. `None`: no counter
+    /// (`--dev`, a key given by flag or file), and the store is not judged.
+    pub rollback: Option<Arc<dyn crate::rollback::Counter>>,
+    /// Start on a store the counter says was rolled back (`--accept-rollback`):
+    /// mero-kms lowers this node's entry and raises the cluster epoch.
+    pub accept_rollback: bool,
 }
 
 impl Config {
@@ -245,6 +252,14 @@ pub struct CallRequest {
     /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_from: Option<String>,
+    /// The system index the request's read-index round named on the node that
+    /// judged it (`Principal::sys_index`): every system write committed before
+    /// the request arrived is at or below it. The replica that runs the call
+    /// waits to apply it ([`Node::sys_fresh_from`]) instead of running a round
+    /// of its own. Set only by the API and the node's own runners; peers pass
+    /// it along on `internal/call`. `None`: the leader runs a round itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sys_index: Option<u64>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -276,6 +291,7 @@ impl CallRequest {
             xcall: None,
             action: None,
             sync_from: None,
+            sys_index: None,
         }
     }
 
@@ -478,8 +494,13 @@ pub struct Node {
     pub component_search: crate::component::search::ComponentSearch,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
+    /// The rollback counter's checkpoints (`rollback`), when this node has one.
+    pub checkpoints: Option<Arc<crate::rollback::Checkpoints>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
     sys_reads: ReadRounds,
+    /// Read-index rounds this node began on the system group
+    /// (`calimero_system_read_rounds_total`).
+    pub sys_rounds: std::sync::atomic::AtomicU64,
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
@@ -653,9 +674,24 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if let Some(code) = recovery_code(reason) {
+        ApiError::new(409, code, reason)
     } else {
         ApiError::bad_request("REJECTED", reason)
     }
+}
+
+/// The code of a recovery refusal that is a conflict with the organization's
+/// state, not a malformed request.
+fn recovery_code(reason: &str) -> Option<&'static str> {
+    use crate::system::{NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING};
+    [
+        (NO_RECOVERY_KEY, "NO_RECOVERY_KEY"),
+        (RECOVERY_PENDING, "RECOVERY_PENDING"),
+        (RECOVERY_NOT_READY, "RECOVERY_NOT_READY"),
+    ]
+    .into_iter()
+    .find_map(|(r, code)| (r == reason).then_some(code))
 }
 
 fn status_of(e: &WriteError) -> ApiError {
@@ -685,6 +721,20 @@ impl Node {
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
         )?;
+        // Before any group starts: a store older than mero-kms has seen
+        // never serves (`rollback`).
+        let checkpoints = match &config.rollback {
+            Some(counter) => {
+                crate::rollback::start(
+                    &engine,
+                    config.node_id,
+                    Arc::clone(counter),
+                    config.accept_rollback,
+                )
+                .await?
+            }
+            None => None,
+        };
         let system = engine
             .start_group(SYSTEM_GROUP, SystemMachine::default())
             .await?;
@@ -755,11 +805,13 @@ impl Node {
             issuer_tries: Mutex::new(HashMap::new()),
             job_peers: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
+            sys_rounds: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
             component_search: crate::component::search::ComponentSearch::default(),
             this: Mutex::new(Weak::new()),
+            checkpoints,
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
         *node.this.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
@@ -1071,37 +1123,76 @@ impl Node {
     /// catch up, for a caller that must not answer from a stale one.
     /// Callers that wait at the same moment share one round (`ReadRounds`).
     pub async fn sys_fresh(&self) -> bool {
+        self.sys_fresh_index().await.1
+    }
+
+    /// [`Node::sys_fresh`], answering also the index the round named (`None`
+    /// when no leader answered), for a request to carry to the other checks it
+    /// makes ([`Node::sys_fresh_from`]), here or on the app's leader.
+    pub async fn sys_fresh_index(&self) -> (Option<u64>, bool) {
+        let index = self.sys_round().await;
+        let caught_up = match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => false,
+        };
+        (index, caught_up)
+    }
+
+    /// Fresh system state for a request whose read-index round already named
+    /// `index` (`Principal::sys_index`, `CallRequest::sys_index`): wait to
+    /// apply it here, with no round of its own. `None`: run a round
+    /// ([`Node::sys_fresh`]).
+    ///
+    /// Why that is as fresh as a round of its own: a round answers the system
+    /// leader's applied index after it confirmed it still leads, and a caller
+    /// takes only a round begun after it arrived (`ReadRounds`), so every
+    /// system write committed before the request arrived is at or below
+    /// `index`. Raft's log matching makes the entries up to `index` the same on
+    /// every replica, and a replica's applied index only grows, so a state at
+    /// or past `index`, on this node or any other, holds each of those writes:
+    /// the removal, revocation or demotion committed before the request is
+    /// seen by every check made for it. A write committed after the request
+    /// arrived is concurrent with it, and either order is linearizable. When
+    /// this replica cannot apply `index` in `Config::read_wait`, a round of its
+    /// own would name an index at least as high, which it could not apply
+    /// either; the read goes ahead best effort, as `sys_fresh` does.
+    pub async fn sys_fresh_from(&self, index: Option<u64>) -> bool {
+        match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => self.sys_fresh().await,
+        }
+    }
+
+    /// The index of a read-index round begun after this caller arrived,
+    /// shared with the callers waiting at the same moment (`ReadRounds`).
+    async fn sys_round(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
 
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
-        let index = {
-            let _turn = rounds.turn.lock().await;
-            let (round, index) = *rounds
-                .finished
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if round > arrived {
-                index
-            } else {
-                let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
-                let index = self.sys_read_index().await;
-                *rounds
-                    .finished
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
-                index
-            }
-        };
-        match index {
-            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
-            None => false,
+        let _turn = rounds.turn.lock().await;
+        let (round, index) = *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if round > arrived {
+            return index;
         }
+        let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
+        let index = self.sys_read_index().await;
+        *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+        index
     }
 
     /// One read-index round: the system leader's applied index, once it has
     /// confirmed it leads. `None` when no leader answers.
     async fn sys_read_index(&self) -> Option<u64> {
+        let _prev = self
+            .sys_rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.system.read_strong(|_, applied| applied).await {
             Ok(i) => Some(i),
             Err(WriteError::NotLeader {
@@ -2246,19 +2337,26 @@ impl Node {
     pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
         Meter {
             app: app_id.to_owned(),
-            payer: self
-                .sys(|s| s.apps.get(app_id).map(crate::usage::payer))
+            billed: self
+                .sys(|s| s.apps.get(app_id).map(|a| crate::usage::Billed::of(s, a)))
                 .unwrap_or_default(),
             bundle: bundle.to_owned(),
         }
     }
 
-    /// Run `f`, one WASM run, off the async workers ([`off_workers`]), and add
-    /// the CPU and memory it took to `meter`'s app: on the thread that runs
-    /// it, on this node, whatever becomes of its result.
-    pub(crate) fn metered<R>(&self, meter: &Meter, f: impl FnOnce() -> R) -> R {
+    /// Run `f`, one WASM run of `kind`, off the async workers ([`off_workers`]),
+    /// add the CPU and memory it took to `meter`'s app and its wall time to
+    /// `calimero_wasm_run_duration_seconds`: on the thread that runs it, on this
+    /// node, whatever becomes of its result.
+    pub(crate) fn metered<R>(
+        &self,
+        meter: &Meter,
+        kind: calimero_app_host::InvocationKind,
+        f: impl FnOnce() -> R,
+    ) -> R {
         let (out, run) = off_workers(|| crate::usage::measure(f));
         self.usage.ran(meter, run);
+        crate::metrics::wasm_run(kind, run.wall);
         out
     }
 
@@ -2266,19 +2364,19 @@ impl Node {
     /// (`calimero_app_state_bytes`, `calimero_app_blob_bytes`). Each app's scan
     /// holds its group's read lock, as `GET /apps/{app}/storage` does.
     pub fn sample_usage(&self) {
-        let hosted: Vec<(String, String)> = self.sys(|s| {
+        let hosted: Vec<(String, crate::usage::Billed)> = self.sys(|s| {
             s.apps
                 .values()
-                .map(|a| (a.app_id.clone(), crate::usage::payer(a)))
+                .map(|a| (a.app_id.clone(), crate::usage::Billed::of(s, a)))
                 .collect()
         });
-        for (app, payer) in hosted {
+        for (app, billed) in hosted {
             let Some(g) = self.hosted(&app) else {
                 continue;
             };
             let stats = g.read_local(|m, _| m.storage_stats());
             self.usage
-                .stored(&app, &payer, stats.bytes, stats.blob_bytes);
+                .stored(&app, &billed, stats.bytes, stats.blob_bytes);
         }
     }
 
@@ -2333,8 +2431,9 @@ impl Node {
     ) -> Result<Applied, WriteError> {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
-        // change committed before the call, wherever it was committed.
-        self.sys_fresh().await;
+        // change committed before the call, wherever it was committed: the
+        // round the API made for the request covers it (`sys_fresh_from`).
+        self.sys_fresh_from(req.sys_index).await;
         if req.host && req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }

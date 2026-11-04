@@ -307,8 +307,9 @@ struct ReleaseFacts {
     manifest: calimero_bundle::BundleManifest,
     manifest_hash: String,
     signer: String,
-    /// Each service's embedded ABI (`""` for a single-service bundle).
-    abi: BTreeMap<String, Option<calimero_wasm_abi::schema::Manifest>>,
+    /// The `calimero:abi` each service's component embeds (`""` for a
+    /// single-service bundle).
+    abi: BTreeMap<String, Option<diff::Abi>>,
 }
 
 /// The consent requests this node issued, and the release facts their pages
@@ -444,12 +445,7 @@ async fn release_facts(
         signer: bundle.signer_id().to_owned(),
         abi: wasm
             .iter()
-            .map(|(name, bytes)| {
-                (
-                    name.clone(),
-                    calimero_wasm_abi::embed::read_embedded_state_schema(bytes),
-                )
-            })
+            .map(|(name, bytes)| (name.clone(), crate::component::embedded_abi(bytes)))
             .collect(),
     });
     node.consent.cache(&v.mpk, Arc::clone(&facts));
@@ -655,7 +651,8 @@ pub async fn create(
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
     let account = p.account()?;
     let package = p.bound_app().map(str::to_owned);
-    node.sys_fresh().await;
+    // `person` made this request's round (`Node::sys_fresh_from`).
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let (action, model, return_to) = match body {
         CreateBody::Release {
             scope,
@@ -887,13 +884,6 @@ fn strings(v: &Value) -> Vec<String> {
 /// refused plan, another publisher key. Empty: no new permissions.
 fn upgrade_attention(sheet: &Value) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Some(why) = sheet["migration"]["refused"].as_str() {
-        out.push(attention(
-            "refused",
-            format!("Your cluster would refuse this update: {why}."),
-            vec![],
-        ));
-    }
     let added = strings(&sheet["outbound"]["added"]);
     if !added.is_empty() {
         out.push(attention(
@@ -911,36 +901,47 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
         ));
     }
     let methods = &sheet["methods"];
-    let mut deletes: Vec<String> = methods["added"]
+    let mut public: Vec<String> = methods["added"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|m| m["destructive"] == json!(true))
+        .filter(|m| m["public"] == json!(true))
         .filter_map(|m| m["name"].as_str().map(str::to_owned))
         .collect();
-    deletes.extend(
+    public.extend(
         methods["changed"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|m| {
-                m["to"]["destructive"] == json!(true) && m["from"]["destructive"] != json!(true)
-            })
+            .filter(|m| m["to"]["public"] == json!(true) && m["from"]["public"] != json!(true))
             .filter_map(|m| m["name"].as_str().map(str::to_owned)),
     );
-    if !deletes.is_empty() {
+    if !public.is_empty() {
+        public.sort();
         out.push(attention(
-            "deletesData",
-            "Can now delete data, through:".to_owned(),
-            deletes,
+            "newPublic",
+            "Anyone can now use these without signing in:".to_owned(),
+            public,
         ));
     }
-    if sheet["migration"]["runs"] == json!(true) {
-        out.push(attention(
-            "migration",
-            "Rewrites the app's stored data once, when the new version starts.".to_owned(),
-            vec![],
-        ));
+    let state = &sheet["migration"];
+    if let (Some(was), Some(will)) = (
+        state["fromStateVersion"].as_u64(),
+        state["toStateVersion"].as_u64(),
+    ) {
+        if was != will {
+            let (old, new) = (&sheet["from"]["version"], &sheet["to"]["version"]);
+            out.push(attention(
+                "stateVersion",
+                format!(
+                    "Declares its stored data at version {will} (now {was}), but an update runs no \
+                     migration: {} reads the data {} left as it is.",
+                    new.as_str().unwrap_or("the new version"),
+                    old.as_str().unwrap_or("the current version"),
+                ),
+                vec![],
+            ));
+        }
     }
     let removed = strings(&methods["removed"]);
     if !removed.is_empty() {
@@ -1283,7 +1284,6 @@ async fn upgrade_request(
         from.abi.get(&key).cloned().flatten(),
         to.abi.get(&key).cloned().flatten(),
     );
-    let plan = diff::plan_from_abis(from_abi.clone(), to_abi.clone());
     let sheet = capability_sheet(
         &Side {
             package: &package,
@@ -1307,7 +1307,6 @@ async fn upgrade_request(
             manifest: &to.manifest,
             abi: to_abi.as_ref(),
         },
-        &plan,
     );
     let name = to
         .manifest
@@ -1316,14 +1315,6 @@ async fn upgrade_request(
         .map_or_else(|| package.clone(), |m| m.name.clone());
     let (old, new) = (&current.version.version, &target.version);
     let mut notes = Vec::new();
-    if let Err(why) = &plan {
-        notes.push(format!("This upgrade would be refused: {why}."));
-    }
-    if let Some(export) = plan.as_ref().ok().cloned().flatten() {
-        notes.push(format!(
-            "Before {new} runs, its migration `{export}` rewrites the app's stored data once."
-        ));
-    }
     let origins = sheet["frontend"]["newLoginOrigins"]
         .as_array()
         .cloned()
@@ -1828,7 +1819,7 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
             &format!("this request is {} already", req.decision.label()),
         ));
     }
-    node.sys_fresh().await;
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     still_current(node, &req.action)?;
     let confirmed = body.confirm.is_some();
     // One approval at a time: the passkey's answer is taken once.
@@ -1837,7 +1828,7 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
             .consent
             .transition(id, &Decision::Pending, Decision::Deciding, now)?;
     }
-    let out = act(node, &req, body.confirm).await;
+    let out = act(node, &req, body.confirm, sys_index).await;
     match out {
         Ok(result) => {
             let r = node.consent.transition(
@@ -1864,10 +1855,13 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
 }
 
 /// Run the request's route as its account, through the consent page.
+/// `sys_index` is the index the approval's round named: the route's own
+/// checks wait for it rather than run another round (`Node::sys_fresh_from`).
 async fn act(
     node: &Node,
     req: &ConsentRequest,
     confirm: Option<ConfirmBody>,
+    sys_index: Option<u64>,
 ) -> Result<Value, ApiError> {
     let p = Principal {
         caller: Caller::Account {
@@ -1878,6 +1872,7 @@ async fn act(
         // This node vouches for the account, as for a session it signed.
         issuer_release: Some(node.own_release()),
         consent_page: true,
+        sys_index,
     };
     let Json(v) = match &req.action {
         Action::Release {
@@ -2128,23 +2123,27 @@ mod tests {
     #[test]
     fn an_upgrade_flags_only_what_it_lets_in() {
         let quiet = json!({
-            "migration": { "runs": false, "refused": null },
+            "from": { "version": "1.0.0" },
+            "to": { "version": "1.1.0" },
+            "migration": { "fromStateVersion": 1, "toStateVersion": 1 },
             "outbound": { "added": [] },
             "frontend": { "newLoginOrigins": [] },
-            "methods": { "added": [{ "name": "get", "destructive": false }], "removed": [], "changed": [] },
+            "methods": { "added": [{ "name": "get", "public": false }], "removed": [], "changed": [] },
             "publisher": { "changed": false },
         });
         assert!(upgrade_attention(&quiet).is_empty(), "no new permissions");
         let loud = json!({
-            "migration": { "runs": true, "refused": null },
+            "from": { "version": "1.0.0" },
+            "to": { "version": "2.0.0" },
+            "migration": { "fromStateVersion": 1, "toStateVersion": 2 },
             "outbound": { "added": ["https://api.openai.com/v1/", "https://api.openai.com/v2/"] },
             "frontend": { "newLoginOrigins": ["https://beta.example"] },
             "methods": {
-                "added": [{ "name": "wipe", "destructive": true }],
+                "added": [{ "name": "stats", "public": true }],
                 "removed": ["export_all"],
                 "changed": [
-                    { "name": "delete_note", "from": { "destructive": false }, "to": { "destructive": true } },
-                    { "name": "purge", "from": { "destructive": true }, "to": { "destructive": true, "xcall": true } },
+                    { "name": "count", "from": { "public": false }, "to": { "public": true } },
+                    { "name": "list", "from": { "public": true }, "to": { "public": true, "confirm": true } },
                 ],
             },
             "publisher": { "changed": true },
@@ -2156,8 +2155,8 @@ mod tests {
             [
                 "sendsData",
                 "newSignIn",
-                "deletesData",
-                "migration",
+                "newPublic",
+                "stateVersion",
                 "removesFeatures",
                 "newPublisherKey"
             ]
@@ -2165,8 +2164,13 @@ mod tests {
         assert_eq!(flags[0]["items"], json!(["api.openai.com"]), "hosts only");
         assert_eq!(
             flags[2]["items"],
-            json!(["wipe", "delete_note"]),
-            "newly destructive only"
+            json!(["count", "stats"]),
+            "newly public only"
+        );
+        assert_eq!(
+            flags[3]["text"],
+            "Declares its stored data at version 2 (now 1), but an update runs no migration: \
+             2.0.0 reads the data 1.0.0 left as it is."
         );
     }
 
