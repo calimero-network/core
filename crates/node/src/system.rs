@@ -3708,7 +3708,8 @@ impl SystemMachine {
                     return Err("a sign-up invite names who issued it");
                 }
                 hex32(&invite_key).ok_or("an invite key is 32 bytes, hex")?;
-                if s.invites.contains_key(&invite_key) || s.sign_up_invites.contains_key(&invite_key)
+                if s.invites.contains_key(&invite_key)
+                    || s.sign_up_invites.contains_key(&invite_key)
                 {
                     return Err("invite exists");
                 }
@@ -7093,15 +7094,24 @@ mod tests {
             };
             assert!(m.run(forged).is_err(), "not the token's key");
             let _ok = m.run(signing_up("a", Some("inv_org"), 10)).unwrap();
-            assert_eq!(m.state.orgs["org"].members["a"], crate::types::OrgRole::Member);
+            assert_eq!(
+                m.state.orgs["org"].members["a"],
+                crate::types::OrgRole::Member
+            );
             let _e = refused(m.run(signing_up("b", Some("inv_org"), 10)));
 
             let _ok = m.run(sign_up_invite("sup_two", 2, 50)).unwrap();
             let _ok = m.run(signing_up("b", Some("sup_two"), 10)).unwrap();
-            assert_eq!(m.state.sign_up_invites[&crate::proof::invite_key("sup_two")].uses_left, 1);
+            assert_eq!(
+                m.state.sign_up_invites[&crate::proof::invite_key("sup_two")].uses_left,
+                1
+            );
             let _e = refused(m.run(signing_up("c", Some("sup_two"), 50)));
             let _ok = m.run(signing_up("c", Some("sup_two"), 11)).unwrap();
-            assert!(m.state.sign_up_invites.is_empty(), "the last use removes it");
+            assert!(
+                m.state.sign_up_invites.is_empty(),
+                "the last use removes it"
+            );
             let _e = refused(m.run(signing_up("d", Some("sup_two"), 12)));
             assert_eq!(m.state.accounts.len(), 4);
         }
@@ -7136,7 +7146,10 @@ mod tests {
             let closed = json!({ "policy": "closed" });
             assert!(m.run(set(SignUp::Closed, None)).is_err(), "no signature");
             let wrong = operator_signed("cluster", "__sign_up", &json!({ "policy": "invite" }));
-            assert!(m.run(set(SignUp::Closed, Some(wrong))).is_err(), "another change");
+            assert!(
+                m.run(set(SignUp::Closed, Some(wrong))).is_err(),
+                "another change"
+            );
             let mut forged = operator_signed("cluster", "__sign_up", &closed);
             forged["signature"] = json!("00".repeat(64));
             assert!(m.run(set(SignUp::Closed, Some(forged))).is_err(), "forged");
@@ -7179,7 +7192,11 @@ mod tests {
             assert!(m.run(revoke(None)).is_err());
             let args = json!({ "inviteKey": key });
             let _ok = m
-                .run(revoke(Some(operator_signed("cluster", "__revoke_sign_up_invite", &args))))
+                .run(revoke(Some(operator_signed(
+                    "cluster",
+                    "__revoke_sign_up_invite",
+                    &args,
+                ))))
                 .unwrap();
             let _e = refused(m.run(signing_up("a", Some("sup_x"), 10)));
 
@@ -7189,13 +7206,18 @@ mod tests {
             let _closed = m.run(account("owner")).unwrap_err();
             let _prev = m.state.accounts.insert(
                 "owner".into(),
-                serde_json::from_value(json!({ "accountId": "owner", "name": "o", "createdAt": 0, "passkeys": [] }))
-                    .unwrap(),
+                serde_json::from_value(
+                    json!({ "accountId": "owner", "name": "o", "createdAt": 0, "passkeys": [] }),
+                )
+                .unwrap(),
             );
             m.state.cluster_owner = Some(super::super::Deployer::Account("owner".into()));
             let open = json!({ "policy": "open" });
             let e = m
-                .run(set(SignUp::Open, Some(operator_signed("cluster", "__sign_up", &open))))
+                .run(set(
+                    SignUp::Open,
+                    Some(operator_signed("cluster", "__sign_up", &open)),
+                ))
                 .unwrap_err();
             assert!(e.contains("owner"), "{e}");
             assert!(m.state.runs_sign_up("owner").is_ok());
@@ -7224,7 +7246,9 @@ mod tests {
                 "account": { "accountId": "a", "name": "a", "createdAt": 0, "passkeys": [] },
             }))
             .unwrap();
-            let mut m = SystemMachine { state: restored.clone() };
+            let mut m = SystemMachine {
+                state: restored.clone(),
+            };
             let _ok = m.run(cmd).unwrap();
             restored = m.state;
             assert!(restored.accounts.contains_key("a"));

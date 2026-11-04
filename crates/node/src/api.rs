@@ -655,9 +655,7 @@ struct RegisterBegin {
 async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiError> {
     let key = invite.map(crate::proof::invite_key);
     let now = now_secs();
-    let judge = |s: &SystemState| {
-        s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ())
-    };
+    let judge = |s: &SystemState| s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ());
     if node.sys(judge).is_ok() {
         return Ok(());
     }
@@ -6772,7 +6770,9 @@ async fn ops_sign_up_set(
             consent: None,
         })
         .await?;
-    Ok(Json(json!({ "governance": v["governance"], "signUp": sign_up_json(body.policy) })))
+    Ok(Json(
+        json!({ "governance": v["governance"], "signUp": sign_up_json(body.policy) }),
+    ))
 }
 
 /// The cluster's owner sets the sign-up policy, with a passkey assertion
@@ -6800,7 +6800,9 @@ async fn sign_up_set(
             consent: Some(consent),
         })
         .await?;
-    Ok(Json(json!({ "governance": v["governance"], "signUp": sign_up_json(body.policy) })))
+    Ok(Json(
+        json!({ "governance": v["governance"], "signUp": sign_up_json(body.policy) }),
+    ))
 }
 
 /// A sign-up invite's uses, checked before anything is signed.
@@ -6907,7 +6909,10 @@ async fn sign_up_invite_create(
     // request; its uses must be the ones this request asks for.
     let carry = c.carry.unwrap_or_default();
     let (Some(token), Some(created_at)) = (
-        carry.get("token").and_then(Value::as_str).map(str::to_owned),
+        carry
+            .get("token")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         carry.get("createdAt").and_then(Value::as_u64),
     ) else {
         return Err(ApiError::bad_request(
