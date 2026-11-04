@@ -2255,6 +2255,9 @@ async fn bundle_named(
     }
 }
 
+/// A release's service name to bundle hash map.
+type Services = BTreeMap<String, String>;
+
 /// The bundle an instance of `package` from deployment `id` runs: the
 /// release the deployment offers for it (`version`, when given, must be that
 /// release), service `service`. `404` for an unknown deployment; `400
@@ -2270,7 +2273,7 @@ async fn offered_bundle(
     let find = || {
         node.sys(|s| {
             let d = s.deployments.get(id)?;
-            let mut releases: Vec<(String, BTreeMap<String, String>, BTreeMap<String, String>)> = d
+            let mut releases: Vec<(String, Services, Services)> = d
                 .apps
                 .values()
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
