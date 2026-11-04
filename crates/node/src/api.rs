@@ -6937,7 +6937,6 @@ async fn deployment_orgs(
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
     p.unbound()?;
-    let account = p.account()?;
     let d = managed_deployment(&node, &p, &id).await?;
     Ok(Json(node.sys(|s| {
         let mut orgs: BTreeMap<&str, Customer<'_>> = BTreeMap::new();

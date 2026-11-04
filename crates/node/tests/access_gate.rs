@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::node::{CallRequest, NOT_REACHED};
+use calimero_node::types::Caller;
 use calimero_node::{run, Running};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -85,6 +87,10 @@ struct ProxiedCluster {
 
 impl ProxiedCluster {
     async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    async fn start_with(configure: impl Fn(&mut calimero_node::Config)) -> Self {
         // `free_port` hands the port back before the node binds it, so another
         // test can take it meanwhile: a start that loses that race tries again
         // on other ports, as `Cluster::start_with` does.
@@ -127,6 +133,7 @@ impl ProxiedCluster {
                 // A held follower must not start an election while it waits.
                 config.raft.election_min_ms = 5_000;
                 config.raft.election_max_ms = 6_000;
+                configure(&mut config);
                 match run(config).await {
                     Ok(r) => nodes.push(r),
                     Err(e) => {
@@ -664,69 +671,32 @@ async fn a_call_costs_one_system_read_round() {
     }
 }
 
-/// A demotion to read-only committed before a call's round holds on the app's
-/// leader, though the leader has not applied it when the call reaches it and
-/// runs no round of its own: it waits for the index the gate's round named.
-/// The call enters another node (whose gate lets a read-only member call:
-/// only the leader knows whether the call writes) and is forwarded to the
-/// leader, whose peers' traffic, the system appends included, is held.
+/// A revocation committed before a call's round holds on the app's leader,
+/// though the leader has not applied it when the call reaches it, and no node
+/// runs a round for the call there: the call carries the index its gate's
+/// round named (`CallRequest::sys_index`) and the leader waits to apply it
+/// (`Node::sys_fresh_from`). Without that wait the leader would run the call
+/// on its stale grant and commit it.
+///
+/// Apps get two replicas, so a later app is led by a node other than the
+/// system leader (placement takes the least loaded, then the lowest id); its
+/// leader's peer traffic, the system appends included, is held. The call is
+/// handed to the leader as `internal/call` hands it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_demotion_committed_before_the_round_holds_on_a_leader_behind() {
-    let c = ProxiedCluster::start().await;
+async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
+    let c = ProxiedCluster::start_with(|cfg| cfg.replicas = 2).await;
     let sys_leader = c.system_leader();
-    let (alice, mut a) = signed_up(&c, sys_leader, "alice").await;
+    let (alice, _a) = signed_up(&c, sys_leader, "alice").await;
     let (bob, _b) = signed_up(&c, sys_leader, "bob").await;
-    let s = |v: serde_json::Value, k: &str| v[k].as_str().unwrap().to_owned();
-    let bob_id = s(bob.me().await.unwrap(), "accountId");
-    let org = s(
-        alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
-        "orgId",
-    );
-    let token = s(
-        alice
-            .post_confirmed(
-                &format!("orgs/{org}/invites"),
-                json!({ "role": "member" }),
-                &mut a,
-            )
-            .await
-            .unwrap(),
-        "token",
-    );
-    let _r = bob
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
-    let team = s(
-        alice
-            .post(
-                &format!("orgs/{org}/teams"),
-                json!({ "name": "Team", "join": "invite" }),
-            )
-            .await
-            .unwrap(),
-        "teamId",
-    );
-    let members = format!("orgs/{org}/teams/{team}/members");
-    let _ok = alice
-        .post_confirmed(
-            &members,
-            json!({ "account": bob_id, "role": "member" }),
-            &mut a,
-        )
-        .await
-        .unwrap();
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    // The demotion must lag on the app's leader, so it must not be the system
-    // leader, which commits it.
     let mut placed = None;
-    for n in 0..8 {
+    for n in 0..4 {
         let app = alice
-            .create_app(
-                &format!("notes{n}"),
-                &bundle,
-                json!({ "org": org, "access": { "kind": "team", "team": team } }),
-            )
+            .create_app(&format!("kv{n}"), &bundle, json!({}))
             .await
             .unwrap();
         let mut leader = None;
@@ -749,50 +719,75 @@ async fn a_demotion_committed_before_the_round_holds_on_a_leader_behind() {
         }
     }
     let (app, app_leader) = placed.expect("an app led by a node other than the system leader");
-    let entry = (0..3).find(|i| *i != app_leader).unwrap();
-    let bob_here = c.client(entry);
-    let mut bob_pk = _b;
-    let _s = bob_here.sign_in(&mut bob_pk).await.unwrap();
-    let _r = bob_here
-        .call(&app, "set", json!({ "key": "k", "value": "1" }), None)
-        .await
-        .expect("a member writes");
-
-    // Hold the app's leader, demote Bob through the system leader, then call
-    // through another node.
-    c.hold[app_leader].send_replace(true);
     let _ok = alice
-        .post_confirmed(
-            &members,
-            json!({ "account": bob_id, "role": "readOnly" }),
-            &mut a,
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
         )
         .await
         .unwrap();
-    let writes = |i: usize| {
-        c.nodes[i].node.sys(|s| {
-            s.orgs
-                .get(&org)
-                .is_some_and(|o| o.writes_team(&bob_id, &team))
+    let leader_node = std::sync::Arc::clone(&c.nodes[app_leader].node);
+    let reaches = || {
+        leader_node.sys(|s| {
+            s.apps
+                .get(&app)
+                .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
         })
     };
-    assert!(
-        writes(app_leader),
-        "the app's leader must not have applied the demotion"
-    );
-    let call = tokio::spawn({
-        let app = app.clone();
-        async move {
-            bob_here
-                .call(&app, "set", json!({ "key": "k", "value": "2" }), None)
-                .await
+    for _ in 0..100 {
+        if reaches() {
+            break;
         }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reaches(), "the app's leader must hold the grant");
+    let bob_call = |value: &str| {
+        CallRequest::new(
+            app.clone(),
+            "set".into(),
+            json!({ "key": "k", "value": value }),
+            Caller::Account {
+                account: bob_id.clone(),
+            },
+        )
+    };
+    let granted = leader_node.call_component(&bob_call("0")).await.unwrap();
+    assert!(granted.error.is_null(), "granted: {:?}", granted.error);
+
+    // Hold the app's leader, revoke Bob through the system leader, then make
+    // the round a request would make now.
+    c.hold[app_leader].send_replace(true);
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    let (index, _caught_up) = c.nodes[sys_leader].node.sys_fresh_index().await;
+    let index = index.expect("the system leader names its index");
+    assert!(
+        reaches(),
+        "the app's leader must not have applied the revocation"
+    );
+
+    let before = rounds(&c);
+    let call = tokio::spawn({
+        let node = std::sync::Arc::clone(&leader_node);
+        let req = CallRequest {
+            sys_index: Some(index),
+            ..bob_call("1")
+        };
+        async move { node.call_component(&req).await }
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     c.hold[app_leader].send_replace(false);
-    let err = call
-        .await
-        .unwrap()
-        .expect_err("a demotion committed before the call must hold");
-    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    let answer = call.await.unwrap().expect("an answer");
+    assert_eq!(
+        answer.error.as_str(),
+        Some(NOT_REACHED),
+        "a revocation committed before the round must hold: {:?}",
+        answer.result
+    );
+    assert_eq!(rounds(&c), before, "the call must run no round of its own");
 }

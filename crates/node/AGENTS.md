@@ -594,7 +594,7 @@ is its command line.
   argument that this is as fresh as a round of their own) instead of running
   another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
   Regressions: `a_call_costs_one_system_read_round`,
-  `a_demotion_committed_before_the_round_holds_on_a_leader_behind`
+  `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
   (`tests/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search.
