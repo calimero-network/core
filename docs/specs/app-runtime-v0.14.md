@@ -396,11 +396,12 @@ interface files {
 }
 
 // Starting and cancelling compute runs, and publishing a done run's output: logged writes only (call, timer, init, xcall delivery).
-// The compute world does not import it: a run cannot start runs.
+// The compute world does not import it: a run cannot start runs. `uploader` is a read, for every kind but a migration.
 interface runs {
   use types.{blob-id, action-id};
   start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
   cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+  uploader: func(id: blob-id) -> option<string>;       // the account that uploaded the sealed file; none for a file a call or a run made, and for an unknown id
   publish: func(id: blob-id) -> result<blob-id, string>; // a done run's output as a plain blob: its id is the SHA-256 of the plaintext; an id that is no output of this app's done runs answers NOT_A_RUN_OUTPUT
 }
 
@@ -498,6 +499,7 @@ A file is a sealed blob: it shares the blob id namespace and the `blob-id` and `
 Retention is R8: the host counts the `BlobRef`s in state, a file no state refers to is collected, and a call that finishes a file without storing its id leaves nothing behind.
 There is no `delete`: dropping the reference is the delete, as for blobs.
 `blobs.info` answers for a file id with the plaintext size and SHA-256 and an empty `mime`, and so does `files.info`.
+`runs.uploader(id)` answers the account that uploaded the sealed file, recorded by the node from the authenticated upload, or none for a file a call or a run made and for an unknown id; the compute world does not import it.
 `blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one.
 So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 A `BlobRef` to a file the app holds, or finished earlier in the same run, may be stored.

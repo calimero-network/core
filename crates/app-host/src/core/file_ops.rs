@@ -314,6 +314,16 @@ impl HostCore {
         Ok(self.file_info(id))
     }
 
+    /// Who uploaded the sealed file `id`: none for a file a run made or one the app does not
+    /// hold. App world only: a compute run does not see it.
+    pub fn files_uploader(&self, id: &str) -> Result<Option<String>, HostDenied> {
+        if self.is_compute() {
+            return Err(self.denied("runs.uploader"));
+        }
+        self.may_read_files("runs.uploader", None)?;
+        Ok(self.provider.uploader(id))
+    }
+
     /// A sealed file's metadata: one the provider holds or this run finished.
     pub(super) fn file_info(&self, id: &str) -> Option<FileInfo> {
         match self.files.created.iter().find(|f| f.id == id) {

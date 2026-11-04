@@ -111,6 +111,10 @@ pub trait Files: Send + Sync {
     fn open(&self, id: &str) -> Result<Box<dyn FileRead>, FileError>;
     fn info(&self, id: &str) -> Option<FileInfo>;
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError>;
+    /// The account that uploaded the sealed file `id`; none for a file a run made or an unknown id.
+    fn uploader(&self, _id: &str) -> Option<String> {
+        None
+    }
     /// The plaintext of `id` if it is an output of one of this app's done compute runs,
     /// else `NOT_A_RUN_OUTPUT`.
     fn publish(&self, _id: &str) -> Result<PublishedFile, FileError> {

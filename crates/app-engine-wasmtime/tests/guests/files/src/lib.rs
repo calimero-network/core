@@ -10,7 +10,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"write":{"kind":"call"},"read":{"kind":"view"},"make":{"kind":"view"},"publish":{"kind":"call"},"peek":{"kind":"view"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"write":{"kind":"call"},"read":{"kind":"view"},"make":{"kind":"view"},"publish":{"kind":"call"},"peek":{"kind":"view"},"uploader":{"kind":"view"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -61,6 +61,10 @@ impl Guest for App {
             "make" => {
                 let _ = files::create().map_err(fail)?;
                 Ok(Vec::new())
+            }
+            "uploader" => {
+                let id = String::from_utf8(args).map_err(|e| fail(e.to_string()))?;
+                Ok(runs::uploader(&id).unwrap_or_default().into_bytes())
             }
             "publish" | "peek" => {
                 let id = String::from_utf8(args).map_err(|e| fail(e.to_string()))?;

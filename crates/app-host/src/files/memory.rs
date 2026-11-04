@@ -16,6 +16,7 @@ use super::{
 pub struct MemoryFiles(
     Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     Arc<Mutex<BTreeSet<String>>>,
+    Arc<Mutex<BTreeMap<String, String>>>,
 );
 
 impl MemoryFiles {
@@ -23,6 +24,17 @@ impl MemoryFiles {
     pub fn insert(&self, bytes: &[u8]) -> String {
         let id = hex::encode(Sha256::digest(bytes));
         let _ = self.lock().insert(id.clone(), bytes.to_vec());
+        id
+    }
+
+    /// [`Self::insert`] as a file `uploader` uploaded.
+    pub fn insert_by(&self, bytes: &[u8], uploader: &str) -> String {
+        let id = self.insert(bytes);
+        let _prev = self
+            .2
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.clone(), uploader.to_owned());
         id
     }
 
@@ -105,6 +117,14 @@ impl Files for MemoryFiles {
 
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         Ok(Box::new(Writer(Vec::new())))
+    }
+
+    fn uploader(&self, id: &str) -> Option<String> {
+        self.2
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
     }
 
     fn publish(&self, id: &str) -> Result<PublishedFile, FileError> {

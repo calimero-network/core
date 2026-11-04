@@ -6181,7 +6181,8 @@ async fn blob_upload(
         }
     }
     if q.sealed {
-        let up = node.upload_file(&app, &body).await?;
+        let uploader = p.caller.account().unwrap_or_default();
+        let up = node.upload_file(&app, &body, uploader).await?;
         let sha256 = <[u8; 32]>::try_from(up.mark.sha256.0.as_slice())
             .map_err(|_| ApiError::internal("bad file mark"))?;
         let mut out = file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256);
@@ -6667,6 +6668,8 @@ struct LastWriteBody {
 struct FileUploadBody {
     app: String,
     key: String,
+    /// The account the sending node authenticated for the upload.
+    uploader: String,
     bytes: calimero_log::Bytes,
 }
 
@@ -6680,7 +6683,7 @@ async fn internal_file_upload(
     let caller = peer(&node, &headers, key).await?;
     caller_may_hold_app(&node, &caller, &body.app).await?;
     let up = node
-        .upload_here(&body.app, &body.key, &body.bytes.0)
+        .upload_here(&body.app, &body.key, &body.bytes.0, &body.uploader)
         .await?;
     Ok(Json(serde_json::to_value(up).unwrap_or_default()))
 }

@@ -89,6 +89,7 @@ impl BlobRecord {
                 sha256: mark.sha256.clone(),
                 wrapped_key: mark.wrapped_key.clone(),
                 output: false,
+                uploader: None,
             }),
             charged: false,
             epoch: 0,
@@ -109,6 +110,10 @@ pub struct FileSeal {
     /// can be published.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub output: bool,
+    /// The account that uploaded the file, as the authenticated upload route saw it; none for a
+    /// file a call or a run made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploader: Option<String>,
 }
 
 /// A component app's blobs, by SHA-256.
@@ -191,6 +196,24 @@ impl BlobTable {
         let Some((id, record)) = BlobRecord::sealed(mark, ts_ms) else {
             return;
         };
+        let _new = self.idle.insert((ts_ms, id));
+        self.put(tx, id, record);
+    }
+
+    /// [`Self::add_file`] for a file `uploader` uploaded.
+    pub fn add_uploaded(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        mark: &FileMark,
+        ts_ms: u64,
+        uploader: Option<String>,
+    ) {
+        let Some((id, mut record)) = BlobRecord::sealed(mark, ts_ms) else {
+            return;
+        };
+        if let Some(seal) = record.file.as_mut() {
+            seal.uploader = uploader;
+        }
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);
     }
@@ -506,6 +529,7 @@ mod tests {
                 sha256: Bytes(vec![9; 32]),
                 wrapped_key: Bytes(vec![8; 60]),
                 output: false,
+                uploader: None,
             }),
             charged: false,
             epoch: 0,

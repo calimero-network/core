@@ -84,6 +84,23 @@ fn files_made_in_calls_are_kept_after_they_commit_and_a_view_cannot_read_them() 
 }
 
 #[test]
+fn a_file_answers_who_uploaded_it_and_a_call_made_file_answers_none() {
+    let mut t = app();
+    let theirs = t.add_file_by(b"theirs", "bob");
+    let made: BlobRef = serde_json::from_value(
+        t.as_("bob")
+            .call("saveFile", json!({ "data": "aGVsbG8" }))
+            .unwrap(),
+    )
+    .unwrap();
+    let ask = |t: &mut TestApp, id: &BlobRef| t.as_("bob").view("uploaderOf", json!({ "id": id }));
+    assert_eq!(ask(&mut t, &theirs), Ok(json!("bob")));
+    assert_eq!(ask(&mut t, &made), Ok(Value::Null));
+    let unknown = BlobRef::from_sha256([7; 32]);
+    assert_eq!(ask(&mut t, &unknown), Ok(Value::Null));
+}
+
+#[test]
 fn publishing_a_run_output_makes_a_plain_blob_and_nothing_else_publishes() {
     let mut t = app();
     let output = t.add_run_output(b"the report");
