@@ -13,6 +13,7 @@ publish = false
 testing = ["dep:hex"]
 
 [dependencies]
+calimero-app-wit.workspace = true
 ciborium.workspace = true
 hex = { workspace = true, optional = true }
 rand.workspace = true

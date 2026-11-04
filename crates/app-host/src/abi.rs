@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use calimero_app_wit::COMPUTE_WORLD;
 use serde_json::{Map, Value};
 
 use crate::engine::PrepareError;
@@ -103,7 +104,11 @@ impl Abi {
             .iter()
             .map(|(name, method)| Ok((name.clone(), method_abi(name, method)?)))
             .collect::<Result<BTreeMap<_, _>, PrepareError>>()?;
-        check_compute(&methods)?;
+        if top.get("world").and_then(Value::as_str) == Some(COMPUTE_WORLD) {
+            check_compute_world(&methods)?;
+        } else {
+            check_compute(&methods)?;
+        }
         let search = match top.get("state").and_then(|s| s.get("search")) {
             None | Some(Value::Null) => BTreeMap::new(),
             Some(search) => search_fields(search)?,
@@ -242,6 +247,20 @@ fn check_compute(methods: &BTreeMap<String, MethodAbi>) -> Result<(), PrepareErr
         }
     }
     Ok(())
+}
+
+/// A compute component's ABI lists compute methods only; their result methods live in the
+/// app's own ABI.
+fn check_compute_world(methods: &BTreeMap<String, MethodAbi>) -> Result<(), PrepareError> {
+    match methods
+        .iter()
+        .find(|(_, m)| !matches!(m.kind, MethodKind::Compute(_)))
+    {
+        Some((name, _)) => Err(bad(format!(
+            "{name}: a compute component runs compute methods only"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// `"<n>s"`, `"<n>m"` or `"<n>h"` with `n > 0`.

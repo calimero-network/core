@@ -680,6 +680,7 @@ name = "calimero-app-host"
 version = "0.0.0"
 dependencies = [
  "calimero-app-host",
+ "calimero-app-wit",
  "ciborium",
  "hex",
  "rand 0.10.2",

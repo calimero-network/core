@@ -357,6 +357,29 @@ fn bad_compute_caps_are_refused() {
     ));
 }
 
+#[test]
+fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
+    let only_digest = json!({
+        "abiVersion": 1,
+        "world": "calimero:app/compute@0.5.1",
+        "methods": { "digest": { "kind": "compute", "compute": { "fuel": 5, "result": "onDone" } } },
+    });
+    let abi = Abi::from_json(&only_digest).unwrap();
+    assert!(matches!(abi.methods["digest"].kind, MethodKind::Compute(_)));
+    let mut other = only_digest.clone();
+    other["methods"]["bump"] = json!({ "kind": "call" });
+    assert!(matches!(
+        Abi::from_json(&other),
+        Err(PrepareError::BadAbi(_))
+    ));
+    let mut app_world = only_digest;
+    app_world["world"] = json!("calimero:app@0.5.1");
+    assert!(matches!(
+        Abi::from_json(&app_world),
+        Err(PrepareError::BadAbi(_))
+    ));
+}
+
 /// A provider whose every operation fails the way the test chose.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Break {
