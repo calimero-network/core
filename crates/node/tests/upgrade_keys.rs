@@ -262,7 +262,8 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
     only(ci.get("apps").await, "list apps");
     only(
         ci.call(&app, "set", json!({ "key": "k", "value": "v" }), None)
-            .await,
+            .await
+            .map(|_| Value::Null),
         "call the app",
     );
     only(
