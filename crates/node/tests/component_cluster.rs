@@ -2377,6 +2377,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                 .unwrap()
                 .node
                 .sys_write(&SystemCmd::UpgradeApp {
+                    compute_bundle: None,
                     app_id: app.clone(),
                     bundle: v2.clone(),
                     by_operator: false,

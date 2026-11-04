@@ -189,8 +189,8 @@ is its command line.
   `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
   `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
-  `AppRecord::compute_bundle` carries the running release's compute hash, set at apply next
-  to `bundle` on create and upgrade (`SystemState::compute_of`).
+  `AppRecord::compute_bundle` carries the running release's compute hash next to `bundle`.
+  Releases may share an app component and differ in compute, so create and upgrade carry the compute hash of the release they name (`resolve_release_parts`), and apply only checks that a release ships that pair (`SystemState::ships_compute`).
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM

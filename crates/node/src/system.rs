@@ -52,6 +52,9 @@ pub const QUOTA_PREFIX: &str = "quota exceeded";
 /// The refusal when an app would run a compute component.
 const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never as an app";
 
+/// The refusal when an app names a compute component its bundle's release does not ship.
+const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
+
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
@@ -839,15 +842,22 @@ impl SystemState {
             .is_some_and(|at| at.compute)
     }
 
-    /// The compute component of the release the app bundle `hash` came from.
+    /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
+    /// whose app component is `bundle`. Releases may share an app component and differ in
+    /// compute, so the caller names the compute hash and this checks the pair.
     #[must_use]
-    pub fn compute_of(&self, hash: &str) -> Option<String> {
-        let at = self.bundles.get(hash)?.package.as_ref()?;
-        let release = self.packages.get(&at.package)?.versions.get(&at.version)?;
-        release
-            .compute
-            .get(at.service.as_deref().unwrap_or_default())
-            .cloned()
+    pub fn ships_compute(&self, bundle: &str, compute: Option<&str>) -> bool {
+        let Some(compute) = compute else {
+            return true;
+        };
+        self.packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .any(|v| {
+                v.services.iter().any(|(service, main)| {
+                    main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
+                })
+            })
     }
 
     /// Whether `who` may name the bundle `hash` for an app: it must be
@@ -2477,6 +2487,10 @@ pub enum SystemCmd {
     UpgradeApp {
         app_id: AppId,
         bundle: String,
+        /// The compute component of the release `bundle` is taken from, which only the
+        /// caller knows when releases share an app component; `None` for a raw upload.
+        #[serde(default)]
+        compute_bundle: Option<String>,
         /// The operator upgraded it (`actor` empty): allowed only where the
         /// deployment gave it app upgrades, and then nobody else may.
         #[serde(default)]
@@ -3425,7 +3439,9 @@ impl SystemMachine {
                 if s.is_compute_bundle(&app.bundle) {
                     return Err(COMPUTE_NOT_AN_APP);
                 }
-                app.compute_bundle = s.compute_of(&app.bundle);
+                if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
+                }
                 let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
                 if owned >= s.quotas.max_apps_per_account as usize {
                     return Err("quota exceeded: apps");
@@ -3472,6 +3488,7 @@ impl SystemMachine {
             SystemCmd::UpgradeApp {
                 app_id,
                 bundle,
+                compute_bundle,
                 by_operator,
                 actor,
                 at,
@@ -3484,7 +3501,9 @@ impl SystemMachine {
                 if s.is_compute_bundle(&bundle) {
                     return Err(COMPUTE_NOT_AN_APP);
                 }
-                let compute_bundle = s.compute_of(&bundle);
+                if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
+                }
                 let operator = s.governance().app_upgrades == Authority::Operator;
                 let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
                 if !by_operator && from.is_some_and(|f| !s.upgrade_keeps_authority(&f, &bundle)) {
@@ -5406,6 +5425,7 @@ mod tests {
             let _prev = m.state.apps.insert(id.into(), a);
         }
         let upgrade = |app: &str, actor: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: app.into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -5509,6 +5529,7 @@ mod tests {
 
         // App upgrades.
         let upgrade = |by_operator: bool, actor: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "app".into(),
             bundle: "b2".into(),
             by_operator,
@@ -5737,19 +5758,29 @@ mod tests {
         assert!(!s.bundles["m1"].package.as_ref().unwrap().compute);
         assert!(s.is_compute_bundle("j1") && !s.is_compute_bundle("m1"));
         assert!(!s.sees_bundle("j1", "alice") && s.sees_bundle("m1", "alice"));
-        assert_eq!(s.compute_of("m1").as_deref(), Some("j1"));
-        assert_eq!(s.compute_of("m2"), None);
+        assert!(s.ships_compute("m1", Some("j1")) && s.ships_compute("m1", None));
+        assert!(!s.ships_compute("m2", Some("j1")) && !s.ships_compute("m1", Some("m1")));
 
         let e = m
             .run_unproven(instance("bad", "alice", "j1", None))
             .unwrap_err();
         assert!(e.contains("compute component"), "{e}");
-        let _ok = m
-            .run_unproven(instance("app", "alice", "m1", None))
-            .unwrap();
+        let with_compute = |id: &str, compute: &str| SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 0, "bundle": "m1", "owner": "alice",
+                    "replicas": [1], "createdAt": 10, "computeBundle": compute,
+                }))
+                .unwrap(),
+            ),
+        };
+        let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
+        assert!(e.contains("not shipped"), "{e}");
+        let _ok = m.run_unproven(with_compute("app", "j1")).unwrap();
         assert_eq!(m.state.apps["app"].compute_bundle.as_deref(), Some("j1"));
 
-        let upgrade = |bundle: &str| SystemCmd::UpgradeApp {
+        let upgrade = |bundle: &str, compute: Option<&str>| SystemCmd::UpgradeApp {
+            compute_bundle: compute.map(str::to_owned),
             app_id: "app".into(),
             bundle: bundle.into(),
             by_operator: false,
@@ -5758,10 +5789,12 @@ mod tests {
             run: None,
             consent: Value::Null,
         };
-        let e = m.run_unproven(upgrade("j1")).unwrap_err();
+        let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
         assert!(e.contains("compute component"), "{e}");
+        let e = m.run_unproven(upgrade("m2", Some("j1"))).unwrap_err();
+        assert!(e.contains("not shipped"), "{e}");
         assert_eq!(m.state.apps["app"].bundle, "m1");
-        let _ok = m.run_unproven(upgrade("m2")).unwrap();
+        let _ok = m.run_unproven(upgrade("m2", None)).unwrap();
         assert_eq!(m.state.apps["app"].compute_bundle, None);
 
         let uninstall = |version: &str| SystemCmd::UninstallPackage {
@@ -5913,6 +5946,7 @@ mod tests {
     fn an_upgrade_names_its_consent_or_its_run() {
         let (mut m, mut alice, _bob) = two_accounts();
         let upgrade = |consent: serde_json::Value, run: Option<&str>| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "app".into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -6966,6 +7000,7 @@ mod tests {
             ),
         };
         let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: id.into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -7316,6 +7351,7 @@ mod tests {
             assert_eq!(may(&m, who), expected, "{who}");
         }
         let upgrade = |actor: &str, bundle: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "inst".into(),
             bundle: bundle.into(),
             by_operator: false,

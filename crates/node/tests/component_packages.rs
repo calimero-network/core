@@ -395,3 +395,38 @@ async fn the_running_releases_compute_hash_follows_an_upgrade() {
         assert_eq!(running().await, expect, "{version}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_that_changes_only_compute_code_gives_its_app_its_own_compute_hash() {
+    let (c, owner, mut pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    // The app component is byte-identical: only the compute component differs.
+    install(&owner, "1.0.1", &both.app, Some(&job2)).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+
+    let created = create(&owner, "1.0.1").await;
+    assert_eq!(
+        node.app(&created).await.unwrap().compute_bundle,
+        Some(sha256_hex(&job2)),
+        "created from the second release"
+    );
+
+    let app = create(&owner, "1.0.0").await;
+    assert_eq!(
+        node.app(&app).await.unwrap().compute_bundle,
+        Some(sha256_hex(&job))
+    );
+    let up = owner
+        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(
+        node.app(&app).await.unwrap().compute_bundle,
+        Some(sha256_hex(&job2)),
+        "upgraded to the second release"
+    );
+}

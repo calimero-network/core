@@ -458,6 +458,22 @@ impl Node {
         actor: &str,
         frontend: bool,
     ) -> Result<String, ApiError> {
+        let (bundle, _compute) = self
+            .resolve_release_parts(package, version, service, actor, frontend)
+            .await?;
+        Ok(bundle)
+    }
+
+    /// [`Self::resolve_release`], with the compute component the same release ships for
+    /// the service (`None` when it ships none).
+    pub async fn resolve_release_parts(
+        &self,
+        package: &str,
+        version: Option<&str>,
+        service: Option<&str>,
+        actor: &str,
+        frontend: bool,
+    ) -> Result<(String, Option<String>), ApiError> {
         // No version: the latest installed release `actor` sees. A registry
         // install always names its version.
         let version = match version {
@@ -483,9 +499,9 @@ impl Node {
                 .get(package)
                 .and_then(|p| p.versions.get(&version))
                 .filter(|v| frontend || s.sees_release(v, actor))
-                .map(|v| v.services.clone())
+                .map(|v| (v.services.clone(), v.compute.clone()))
         };
-        let services = match self.sys(seen) {
+        let (services, compute) = match self.sys(seen) {
             Some(s) => s,
             None => {
                 let _ = self.install_from_registry(package, &version, actor).await?;
@@ -495,7 +511,11 @@ impl Node {
             }
         };
         let key = service.unwrap_or_default();
-        services.get(key).cloned().ok_or_else(|| {
+        let found = services
+            .get(key)
+            .cloned()
+            .map(|b| (b, compute.get(key).cloned()));
+        found.ok_or_else(|| {
             let names: Vec<&String> = services.keys().collect();
             ApiError::bad_request(
                 "NO_SUCH_SERVICE",
