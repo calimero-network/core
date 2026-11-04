@@ -37,12 +37,14 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [app-wit](app-wit/AGENTS.md) (`calimero-app-wit`) - the `calimero:app` WIT world.
 - [app-host](app-host/AGENTS.md) (`calimero-app-host`) - the host core of `calimero:app`.
 - [app-engine-wasmtime](app-engine-wasmtime/AGENTS.md) (`calimero-app-engine-wasmtime`) - the wasmtime engine for `calimero:app`.
-- [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the Rust app SDK runtime for components.
-- [app-sdk-macros](app-sdk-macros/AGENTS.md) (`calimero-app-sdk-macros`) - the `app` attributes.
+- [sdk](sdk/AGENTS.md) (`calimero-sdk`) - the Rust app SDK runtime for components.
+- [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the SDK's old name: a re-export of `calimero-sdk`, kept while apps move over.
+- [sdk-macros](sdk-macros/AGENTS.md) (`calimero-sdk-macros`) - the `app` attributes.
 - [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; `mero-app-build <crate-dir> --out <file>`.
 - [wasm-abi](wasm-abi/AGENTS.md) (`calimero-wasm-abi`) - the `wasm-abi/1` schema; the consent page plans an upgrade from two of them.
 
-SDK 0.12 (`calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer) is gone; the
+SDK 0.12 (the 0.x `calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer) is gone,
+and its crate name now belongs to the component SDK above; the
 node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left behind
 ([node](node/AGENTS.md), "SDK 0.12 apps").
 
