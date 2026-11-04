@@ -5,6 +5,7 @@ use crate::error::StorageError;
 mod mem;
 
 #[cfg(target_arch = "wasm32")]
+#[cfg_attr(calimero_compute, path = "store/host_denied.rs")]
 mod host;
 
 pub use mem::MemStore;

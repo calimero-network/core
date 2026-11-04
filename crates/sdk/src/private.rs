@@ -245,10 +245,10 @@ pub const fn abi_concat<const N: usize>(parts: &[&str]) -> [u8; N] {
 }
 
 /// The `handle` export of a state type `D`, for `__calimero_export_handle!`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
 pub struct Export<D>(core::marker::PhantomData<D>);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
 impl<D: Dispatch> bindings::Guest for Export<D> {
     fn handle(
         kind: bindings::InvocationKind,
@@ -265,6 +265,21 @@ impl<D: Dispatch> bindings::Guest for Export<D> {
             bindings::InvocationKind::Migrate => Kind::Migrate,
         };
         handle::<D>(kind, &method, &args).map_err(|e| bindings::AppError {
+            message: error_message(&e),
+            code: e.code,
+        })
+    }
+}
+
+/// The `run` export of a state type `D`, for `__calimero_export_run!`: a compute method runs
+/// as an action.
+#[cfg(all(target_arch = "wasm32", calimero_compute))]
+pub struct Export<D>(core::marker::PhantomData<D>);
+
+#[cfg(all(target_arch = "wasm32", calimero_compute))]
+impl<D: Dispatch> bindings::Guest for Export<D> {
+    fn run(method: String, args: Vec<u8>) -> core::result::Result<Vec<u8>, bindings::AppError> {
+        handle::<D>(Kind::Action, &method, &args).map_err(|e| bindings::AppError {
             message: error_message(&e),
             code: e.code,
         })

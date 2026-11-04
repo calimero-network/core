@@ -17,8 +17,10 @@ use crate::types::{
     abi_type, camel, canonical, check_wire, generic_arg, is_unit, valid_rate, wire, Wire,
 };
 
-/// The world this SDK builds for.
+/// The world the app component's ABI names.
 const WORLD: &str = "calimero:app@0.5.1";
+/// The world the compute component's ABI names.
+const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.1";
 /// The ABI version this SDK writes (D51).
 const ABI_VERSION: u64 = 1;
 
@@ -513,14 +515,87 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             ));
         }
     }
-    // Top-level keys in sorted order, like every object below them (`canonical`).
+    let (compute, app): (Vec<&Method>, Vec<&Method>) =
+        methods.iter().partition(|m| m.kind == Kind::Compute);
+    let app_abi = abi_parts(&state, &methods.iter().collect::<Vec<_>>(), WORLD);
+    let compute_abi = abi_parts(&state, &compute, COMPUTE_WORLD);
+    let app_dispatch = dispatch(&state, &app);
+    let compute_dispatch = dispatch(&state, &compute);
+    let export = syn::Ident::new("__CalimeroExport", Span::call_site());
+    item.attrs.push(syn::parse_quote!(#[allow(dead_code)]));
+
+    // `calimero_compute` selects the compute component's build: its dispatch holds the compute
+    // methods only and it exports `run`; the app component dispatches everything else.
+    Ok(quote! {
+        #item
+
+        #[allow(unexpected_cfgs)]
+        #[cfg(not(calimero_compute))]
+        #app_dispatch
+
+        #[allow(unexpected_cfgs)]
+        #[cfg(calimero_compute)]
+        #compute_dispatch
+
+        #[allow(unused_imports)]
+        use #sdk::__private::abi_defaults::*;
+
+        #[allow(unexpected_cfgs)]
+        const _: () = {
+            #[cfg(not(calimero_compute))]
+            const __PARTS: &[&str] = &[#(#app_abi),*];
+            #[cfg(calimero_compute)]
+            const __PARTS: &[&str] = &[#(#compute_abi),*];
+            const __LEN: usize = #sdk::__private::abi_len(__PARTS);
+
+            /// The app's ABI, lifted to the component's top level by the build.
+            #[cfg_attr(target_arch = "wasm32", link_section = "calimero:abi")]
+            #[used]
+            static __CALIMERO_ABI: [u8; __LEN] = #sdk::__private::abi_concat::<__LEN>(__PARTS);
+
+            #[cfg(target_arch = "wasm32")]
+            type #export = #sdk::__private::Export<#state>;
+            #[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
+            #sdk::__private::bindings::__calimero_export_handle!(
+                #export with_types_in #sdk::__private::bindings
+            );
+            #[cfg(all(target_arch = "wasm32", calimero_compute))]
+            #sdk::__private::bindings::__calimero_export_run!(
+                #export with_types_in #sdk::__private::bindings
+            );
+        };
+    }
+    .into_token_stream())
+}
+
+/// The ABI of a component holding `methods`, as the parts `abi_concat` joins; top-level keys
+/// are in sorted order, like every object below them (`canonical`).
+fn abi_parts(state: &Type, methods: &[&Method], world: &str) -> Vec<TokenStream> {
+    let sdk = crate::sdk::path();
+    let mut abi_methods = Map::new();
+    for m in methods {
+        let _ = abi_methods.insert(m.abi.clone(), abi_entry(m));
+    }
     let head = format!("{{\"abiVersion\":{ABI_VERSION},\"errors\":");
     let methods_json = format!(
         ",\"methods\":{},\"state\":",
         canonical(&Value::Object(abi_methods))
     );
-    let tail = format!(",\"world\":\"{WORLD}\"}}");
+    let tail = format!(",\"world\":\"{world}\"}}");
+    vec![
+        quote!(#head),
+        quote!(__CALIMERO_ABI_ERRORS),
+        quote!(",\"events\":"),
+        quote!(__CALIMERO_ABI_EVENTS),
+        quote!(#methods_json),
+        quote!(<#state as #sdk::app::AppState>::ABI),
+        quote!(#tail),
+    ]
+}
 
+/// `Dispatch` for the state type over `methods`, indexed in their order.
+fn dispatch(state: &Type, methods: &[&Method]) -> TokenStream {
+    let sdk = crate::sdk::path();
     let specs = methods.iter().map(|m| {
         let name = &m.abi;
         let kind = match m.kind {
@@ -547,12 +622,8 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
     let arms = methods
         .iter()
         .enumerate()
-        .map(|(i, m)| run_arm(i, m, &state));
-    let export = syn::Ident::new("__CalimeroExport", Span::call_site());
-
-    Ok(quote! {
-        #item
-
+        .map(|(i, m)| run_arm(i, m, state));
+    quote! {
         impl #sdk::__private::Dispatch for #state {
             const METHODS: &'static [#sdk::__private::Method] = &[#(#specs),*];
 
@@ -566,36 +637,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 }
             }
         }
-
-        #[allow(unused_imports)]
-        use #sdk::__private::abi_defaults::*;
-
-        const _: () = {
-            const __PARTS: &[&str] = &[
-                #head,
-                __CALIMERO_ABI_ERRORS,
-                ",\"events\":",
-                __CALIMERO_ABI_EVENTS,
-                #methods_json,
-                <#state as #sdk::app::AppState>::ABI,
-                #tail,
-            ];
-            const __LEN: usize = #sdk::__private::abi_len(__PARTS);
-
-            /// The app's ABI, lifted to the component's top level by the build.
-            #[cfg_attr(target_arch = "wasm32", link_section = "calimero:abi")]
-            #[used]
-            static __CALIMERO_ABI: [u8; __LEN] = #sdk::__private::abi_concat::<__LEN>(__PARTS);
-
-            #[cfg(target_arch = "wasm32")]
-            type #export = #sdk::__private::Export<#state>;
-            #[cfg(target_arch = "wasm32")]
-            #sdk::__private::bindings::__calimero_export_handle!(
-                #export with_types_in #sdk::__private::bindings
-            );
-        };
     }
-    .into_token_stream())
 }
 
 #[cfg(test)]
@@ -693,6 +735,32 @@ mod tests {
         let out = out.replace(r#"\""#, "\"");
         assert!(out.contains(digest), "{out}");
         assert!(out.contains(result), "{out}");
+    }
+
+    #[test]
+    fn the_compute_abi_lists_compute_methods_only_in_the_compute_world() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                #[app::compute(fuel = 100, result = "on_done")]
+                pub fn digest(x: u32) -> Result<()> { Ok(()) }
+                #[app::compute_result]
+                pub fn on_done(&mut self) -> Result<()> { Ok(()) }
+            }
+        };
+        let out = expand(item).unwrap().to_string().replace(r#"\""#, "\"");
+        let compute_methods = r#",\"methods\":{"digest":{"allowSystem":false,"compute":{"fuel":100,"result":"onDone"},"confirm":false,"kind":"compute","params":[["x","u32"]],"public":false,"returns":null}},\"state\":"#
+            .replace(r#"\""#, "\"");
+        assert!(out.contains(&compute_methods), "{out}");
+        assert!(
+            out.contains(
+                r#",\"world\":\"calimero:app/compute@0.5.1\"}"#.replace(r#"\""#, "\"").as_str()
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#",\"world\":\"calimero:app@0.5.1\"}"#.replace(r#"\""#, "\"").as_str()),
+            "{out}"
+        );
     }
 
     #[test]
