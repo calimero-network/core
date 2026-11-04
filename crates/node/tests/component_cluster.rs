@@ -540,11 +540,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
 async fn a_failed_init_is_reported_not_hidden() {
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    // `(module (memory (export "memory") 1))`: it compiles, but has no `init`.
-    let empty = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
-    let bundle = alice.upload_bundle(empty).await.unwrap();
+    // The kv fixture's `init` takes no arguments: a string for them fails it.
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let err = alice
-        .create_app("broken", &bundle, json!({}))
+        .create_app("broken", &bundle, json!({ "initArgs": "not arguments" }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");

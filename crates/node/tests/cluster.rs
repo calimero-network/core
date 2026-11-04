@@ -1404,14 +1404,15 @@ async fn sessions_confirmations_and_key_scopes_hold() {
     let e = laptop.me().await.unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
 
-    // 6. A confirm method does not answer through /views.
+    // 6. A confirm method (the kv fixture's `clear`) does not answer through /views.
     let (bob, mut pk) = signed_up(&c, 0, "bob").await;
-    let (app, _ctx) = deploy(&bob, "kv", kv_wasm(), json!({ "confirmMethods": ["get"] })).await;
+    let (app, _ctx) = deploy(&bob, "kv", kv_wasm(), json!({})).await;
     let e = bob
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .view(&app, "clear", json!({}), Consistency::Strong)
         .await
         .unwrap_err();
-    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "ConfirmNotAView", "{e}");
 
     // 7. A read-only key installs nothing; an app-scoped key starts no app.
     let (_id, read_only) = bob
@@ -1747,9 +1748,10 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
     );
 }
 
-/// A write too large for one log entry is refused at once as `413
-/// TOO_LARGE`, whichever node takes it: the leader's own refusal is not a
-/// "no leader yet" to retry.
+/// A write too large for one log entry is refused at once, whichever node
+/// takes it: a component's arguments past `MAX_ARGS_BYTES` are `413
+/// ARGS_TOO_LARGE`, and the leader's own refusal is not a "no leader yet" to
+/// retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
     let c = Cluster::start(3).await;
@@ -1769,7 +1771,8 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
             .call(&app, "set", json!({ "key": "big", "value": big }), None)
             .await;
         let e = r.expect_err("an entry over the cap is refused");
-        assert_eq!(e.code(), Some("TOO_LARGE"), "node {i}: {e}");
+        // A component's arguments are capped below the log's entry cap.
+        assert_eq!(e.code(), Some("ARGS_TOO_LARGE"), "node {i}: {e}");
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "node {i} answered after {:?}",
@@ -2306,7 +2309,13 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     // A failed upgrade is recorded with its reason, and a retry runs it again: a
     // component's upgrade that names a migration is refused (D38).
     let _ = alice
-        .upload_package(mpk("com.test.checked", "1.0.0", &kv, &publisher))
+        // A bundle of its own: an app's package is the first release naming its bundle.
+        .upload_package(mpk(
+            "com.test.checked",
+            "1.0.0",
+            &variant(&kv, "checked-v1"),
+            &publisher,
+        ))
         .await
         .unwrap();
     let checked = alice
@@ -2353,7 +2362,9 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .unwrap();
     assert_eq!(retry["apps"], json!([checked]), "{retry}");
     let again = finished_run(&alice, &org, retry["runId"].as_str().unwrap()).await;
-    assert!(again["failed"].get(&checked).is_some(), "{again}");
+    // A run keeps no migration name, so its retry is the code-only upgrade, which a
+    // component takes.
+    assert_eq!(again["done"], json!([checked]), "{again}");
 
     // Aliases: this account's names for apps.
     let _ = alice.set_alias("main", &apps["top"]).await.unwrap();
@@ -3080,12 +3091,14 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         alice2.download_blob(&app, &blob).await.unwrap(),
         b"held by one node".to_vec()
     );
-    let anyone = c.client(2);
-    let v = anyone
+    // Through a node that did not take the write (the kv fixture's `get` is not
+    // `#[app::public]`, so the reader signs in).
+    let (reader, _r) = signed_up(&c, 2, "reader").await;
+    let v = reader
         .view(&app, "get", json!({ "key": "b" }), Consistency::Strong)
         .await
         .unwrap();
-    assert_eq!(v.result, json!("2"), "a read without signing in");
+    assert_eq!(v.result, json!("2"), "a read through another node");
 
     // Node 4 joins: voters stay 3, and it shows in the placement with no apps.
     let four = c.join().await;
@@ -3154,7 +3167,9 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let (replicas, counts) = placement(&ops_at(&c, 1).await, &app).await;
     assert_eq!(replicas, vec![2, 3, 4]);
     assert_eq!(counts.get(&4), Some(&1), "{counts:?}");
+    // The kv fixture's `get` is not `#[app::public]`: read as the reader.
     let on_four = c.client(four);
+    on_four.use_session(reader.session().await.unwrap()).await;
     let mut served = Value::Null;
     for _ in 0..100 {
         if let Ok(v) = on_four
