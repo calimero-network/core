@@ -156,6 +156,29 @@ fn init_config_run_and_inspect_a_node() {
         .unwrap();
     assert!(String::from_utf8_lossy(&missing.stderr).contains("node's id"));
 
+    // An rp id the app frontends' or an origin's host cannot use is refused
+    // at start, naming the flag, rather than failing every passkey sign-in.
+    for (flag, value) in [
+        ("--apps-domain", "apps.example.com"),
+        ("--origins", "https://evil-calimero.network"),
+    ] {
+        let refused = merod(home.path())
+            .args([
+                "--node",
+                "n1",
+                "run",
+                "--rp-id",
+                "calimero.network",
+                flag,
+                value,
+            ])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(flag) && stderr.contains(value), "{stderr}");
+    }
+
     // `run` starts the node from the file.
     let child = merod(home.path())
         .args(["--node", "n1", "run"])
