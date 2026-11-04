@@ -597,6 +597,19 @@ is its command line.
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
   the disk identity, so the nodes of one release share K_r; every release has its
   own mero-kms root, so K_r changes at each release upgrade.
+- **Rollback counter** (`rollback.rs`, `docs/specs/rollback-protection.md`): with a
+  key from mero-kms that keeps counters (`kms::KmsCounter`, `Config::rollback`), the
+  node keeps an entry `(generation, mark)` in its store (`Engine::put_node_meta`, row
+  `rollback`, bound to its node id) and raises it with mero-kms's every
+  `CHECKPOINT_EVERY` (1 s), store first (`Checkpoints::run`, from `lib.rs`).
+  `Node::start` judges the store before any group starts (`rollback::judge`): behind
+  mero-kms, empty under a used id, mero-kms without the node's entry, another node's
+  store, or a protected store answered without counters are refused; a KMS without
+  counters and a store without one start unprotected. `Config::accept_rollback`
+  (`merod run --accept-rollback`) resets the node's entry to the store's and raises
+  the cluster epoch. Reported in `/ops/status` (`rollback`) and `/health`
+  (`rollbackEpoch`). Tests: `tests/rollback.rs`, `rollback::tests` (`MemoryCounter`
+  stands in for mero-kms).
 - **Cluster key** (`cluster_key.rs`): K_c seals the store, snapshots, backups and
   feeds the cluster secret, TEE, member and component-cache keys, so data
   outlives a release. Kept in `<data_dir>/cluster-key`, wrapped under K_r. The
@@ -885,8 +898,8 @@ API and system group:
 
 ## Not done yet
 
-rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, snapshot restore into a
+keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
+rollback epoch in the attested KMS evidence, snapshot restore into a
 running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands

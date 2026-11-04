@@ -1,7 +1,8 @@
 # Rollback protection and per-app keys: design
 
-Nov 4, 2026 · Status: **draft, being implemented** on `claude/kms-epoch-rollback`
-(core) and `claude/kms-epoch-rollback` (mero-tee). Proposed text for the protocol
+Nov 4, 2026 · Status: **rollback protection implemented** on `claude/kms-epoch-rollback`
+(core: node, client, merod) and `claude/kms-epoch-rollback` (mero-tee: mero-kms);
+**per-app keys designed, not implemented yet** (see "Per-app keys, phase 1"). Proposed text for the protocol
 chapters is at the end; the chapters themselves are Xabi's and are not changed here.
 
 It covers two items of `crates/node/AGENTS.md`, "Not done yet": the rollback counter
@@ -21,8 +22,9 @@ It covers two items of `crates/node/AGENTS.md`, "Not done yet": the rollback cou
 4. **Recovery is explicit.** One node rolled back: wipe it and register it under a new
    node id (`/ops/nodes`). Every node rolled back, or the newest disks lost: the
    operator starts each node with `--accept-rollback`; mero-kms then lowers that node's
-   counter to its store's, raises the cluster epoch, and every node reports the epoch in
-   its KMS attestation, so a forced rollback is visible to clients instead of silent.
+   counter to its store's, raises the cluster epoch, and every node reports the epoch
+   (`/health`, `/ops/status`; in its attested KMS evidence next), so a forced rollback
+   is visible instead of silent.
 5. **Per-app keys, phase 1:** every Raft group gets its own random data key, wrapped
    under K_c in the node's store, and seals that group's rows with it. Deleting a group
    drops its key. Groups written before keep K_c; nothing is rewritten.
@@ -75,6 +77,15 @@ only replicas of the same cluster count, and each answers with its own random re
 id, so one replica behind two URLs counts once. A replica that joins copies the merged
 counters from a majority before it answers counter requests. Limits:
 `MAX_COUNTER_CLUSTERS`, `MAX_COUNTER_NODES_PER_CLUSTER`.
+
+Bring-up: a joiner cannot sync from a majority while only the bootstrap replica is
+ready, so the bootstrap replica starts ready in a *genesis* state and a joiner that
+hears only empty genesis replicas joins it. Genesis ends for good once one round hears
+every replica ready (the first write requires it), and 10 minutes after the root was
+made in any case. Leftover risk: a host that runs extra replicas inside that window.
+Deployment: the image's `kms.env` must set `MERO_KMS_REPLICAS=5` (the default, 1,
+keeps counters per replica, wrong behind a load balancer) and the bootstrap replica
+needs `kms-peers`; that is image and Ansible work, not in these PRs.
 
 ### Key release, version 2
 
@@ -135,8 +146,9 @@ serving, logs it, and reports the age of its last checkpoint.
 - **Every node rolled back, or the newest disks lost** (T2, T3): the operator restarts
   each node with `--accept-rollback`. The node asks mero-kms (`/rollback/reset`) to set
   its entry to its store's mark; mero-kms raises the cluster epoch. Every node reports
-  `rollback: { epoch, generation, mark }` with its KMS evidence at
-  `GET /attestation?purpose=kms`, so a client that remembers the epoch it last saw can
+  its epoch (now: `rollbackEpoch` in `/health`, `rollback` in `/ops/status`; next:
+  in the attested KMS evidence at `GET /attestation?purpose=kms`, which changes the
+  attestation check mero-js mirrors), so a client that remembers the epoch it last saw can
   tell a forced rollback happened. The flag is a host decision, as the restore of an old
   disk is: this design makes it visible, not impossible. Requiring the owner's consent
   (mero-kms pinning the owner's key at the first release) is the next step; see Open
@@ -159,6 +171,12 @@ serving, logs it, and reports the age of its last checkpoint.
   refuses a KMS answer without one.
 
 ## Per-app keys, phase 1
+
+**Not in these PRs.** Rows move between nodes still sealed (a snapshot streams the
+state rows as stored and an install writes them as they arrive), so a key per group
+that differs per node means opening and re-sealing every row on both sides of every
+snapshot: a change to `calimero-log`'s snapshot path (Xabi's area), with a migration
+test and a benchmark of its own. It follows as its own PR.
 
 PR #4742 recommended (option D) a random data key per app, held only by its replicas
 and wrapped at rest under a per-node key. Phase 1 does the local half, which needs no
@@ -198,14 +216,15 @@ mero-kms change and no hand-over protocol:
   raises the epoch; a v2 release returns the entry sealed; counters merge across
   replicas and survive a replica replaced by a joiner; an acknowledgement needs a
   majority.
-- core `calimero-kms-client`: a v2 release against a stand-in KMS; a stripped answer is
-  reported as unprotected.
-- core `calimero-node` (the user-facing layer: a node starting on a data directory):
-  `a_restored_older_data_dir_is_refused`, `a_normal_restart_starts`,
-  `an_empty_store_under_a_used_node_id_is_refused`,
+- core `calimero-kms-client`: `a_v2_release_carries_the_counters_and_a_session_that_raises_them`
+  (a stand-in KMS; a stripped answer gives no counters), the shared vectors.
+- core `calimero-node` (the user-facing layer: a node starting on a data directory,
+  `tests/rollback.rs`): `a_restored_older_data_dir_is_refused_and_a_normal_restart_starts`,
+  `an_empty_store_or_another_nodes_store_is_refused`,
   `accept_rollback_starts_and_raises_the_epoch`,
   `a_store_from_before_the_counter_starts_and_gains_one`.
-- core `calimero-log`: `each_group_seals_under_its_own_key`,
+- core `calimero-log`: `a_node_row_survives_a_reopen_and_opens_only_under_its_key`;
+  for per-app keys (next PR) `each_group_seals_under_its_own_key`,
   `a_groups_rows_do_not_open_under_another_groups_key`,
   `a_store_written_before_data_keys_opens`.
 

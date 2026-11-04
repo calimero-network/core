@@ -54,7 +54,7 @@ with mode `0600`: it may hold the ops token or a development storage key.
 ## run
 
 ```bash
-merod [--node NAME] run [NODE FLAGS]
+merod [--node NAME] run [NODE FLAGS] [--accept-rollback]
 ```
 
 Starts the node and serves until `Ctrl-C`. The configuration is the node's file
@@ -71,7 +71,20 @@ with flags or environment variables only, no `init` and no `--node`, as long as
 - the node is in TDX mode (no `--dev`) and `--storage-key` or
   `--storage-key-file` is given, or no storage-key source is given at all;
 - the node is in TDX mode and `MERO_TEE_VERSION`, or both `MERO_TEE_PROFILE` and
-  `--peer-profiles`, are unset (it cannot judge its peers' quotes without them).
+  `--peer-profiles`, are unset (it cannot judge its peers' quotes without them);
+- its key comes from a mero-kms that keeps rollback counters and the store is
+  older than the node's counter there (a restored older copy of the disk), is
+  empty or older than rollback protection while mero-kms has seen this node id,
+  belongs to another node id, or had a counter and mero-kms answered without
+  one.
+
+`--accept-rollback` (this run only; never stored in the configuration) starts a
+node on a store its counter refuses as older, when the newest disks are lost:
+mero-kms lowers the node's counter to the store's and raises the cluster's
+rollback epoch, which every node reports (`rollbackEpoch` in `/health`,
+`rollback` in `/ops/status`). If only one node is behind, wipe its data
+directory and register it under a new node id instead. A store under another
+node id is never started. See [Security](/operate/security/#rollback).
 
 Logging goes to stdout through `tracing`; `RUST_LOG` overrides the default
 filter `info,openraft=warn`.

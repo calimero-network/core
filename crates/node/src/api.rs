@@ -508,9 +508,15 @@ async fn new_session(node: &Node, account: &str, passkey: &str, app: Option<Stri
 
 async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
     let s = node.system.status();
-    Json(
-        json!({ "ok": true, "node": node.config.node_id, "systemLeader": s.leader, "release": node.config.release }),
-    )
+    Json(json!({
+        "ok": true,
+        "node": node.config.node_id,
+        "systemLeader": s.leader,
+        "release": node.config.release,
+        // The cluster's rollback epoch (rollbacks forced so far); absent
+        // on a node without a rollback counter.
+        "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -5510,6 +5516,8 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
         "nodes": nodes,
         "apps": apps,
         "accounts": accounts,
+        // This node's rollback counter (`rollback::Status`); null: unprotected.
+        "rollback": node.checkpoints.as_ref().and_then(|c| c.status()),
     })))
 }
 
