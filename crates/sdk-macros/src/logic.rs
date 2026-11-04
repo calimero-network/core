@@ -524,28 +524,25 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
     let export = syn::Ident::new("__CalimeroExport", Span::call_site());
     item.attrs.push(syn::parse_quote!(#[allow(dead_code)]));
 
-    // `calimero_compute` selects the compute component's build: its dispatch holds the compute
-    // methods only and it exports `run`; the app component dispatches everything else.
+    // The SDK picks the build: the compute component dispatches the compute methods only and
+    // exports `run`; the app component dispatches the rest. The cfg lives in the SDK, never in
+    // this output, so app crates need not declare it.
     Ok(quote! {
         #item
 
-        #[allow(unexpected_cfgs)]
-        #[cfg(not(calimero_compute))]
-        #app_dispatch
-
-        #[allow(unexpected_cfgs)]
-        #[cfg(calimero_compute)]
-        #compute_dispatch
+        #sdk::__calimero_app_only! { #app_dispatch }
+        #sdk::__calimero_compute_only! { #compute_dispatch }
 
         #[allow(unused_imports)]
         use #sdk::__private::abi_defaults::*;
 
-        #[allow(unexpected_cfgs)]
         const _: () = {
-            #[cfg(not(calimero_compute))]
-            const __PARTS: &[&str] = &[#(#app_abi),*];
-            #[cfg(calimero_compute)]
-            const __PARTS: &[&str] = &[#(#compute_abi),*];
+            #sdk::__calimero_app_only! {
+                const __PARTS: &[&str] = &[#(#app_abi),*];
+            }
+            #sdk::__calimero_compute_only! {
+                const __PARTS: &[&str] = &[#(#compute_abi),*];
+            }
             const __LEN: usize = #sdk::__private::abi_len(__PARTS);
 
             /// The app's ABI, lifted to the component's top level by the build.
@@ -555,14 +552,18 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
 
             #[cfg(target_arch = "wasm32")]
             type #export = #sdk::__private::Export<#state>;
-            #[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
-            #sdk::__private::bindings::__calimero_export_handle!(
-                #export with_types_in #sdk::__private::bindings
-            );
-            #[cfg(all(target_arch = "wasm32", calimero_compute))]
-            #sdk::__private::bindings::__calimero_export_run!(
-                #export with_types_in #sdk::__private::bindings
-            );
+            #sdk::__calimero_app_only! {
+                #[cfg(target_arch = "wasm32")]
+                #sdk::__private::bindings::__calimero_export_handle!(
+                    #export with_types_in #sdk::__private::bindings
+                );
+            }
+            #sdk::__calimero_compute_only! {
+                #[cfg(target_arch = "wasm32")]
+                #sdk::__private::bindings::__calimero_export_run!(
+                    #export with_types_in #sdk::__private::bindings
+                );
+            }
         };
     }
     .into_token_stream())
