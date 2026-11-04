@@ -171,7 +171,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /orgs` | session | `{ name }` | `namespace create` |
+| `POST /orgs` | session | `{ name, recoveryKey? }` (a recovery key's public half) | `namespace create` |
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
@@ -181,6 +181,10 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
 | `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, confirm? }` → a token. `412` first | `namespace invite` |
 | `POST /invites/{token}/redeem` | session | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |
+| `POST /orgs/{org}/recovery` | account holder | `{ publicKey, confirm? }`: set, rotate or (`null`) remove the recovery key (owner; `412` first); cancels a recovery under way | - |
+| `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
+| `POST /orgs/{org}/recovery/cancel` | account holder | Cancel the recovery under way (owner; `412` first) | - |
+| `POST /orgs/{org}/recovery/finish` | account holder | Become the owner once `readyAt` passed (the account that started it; `412` first; `409 RECOVERY_NOT_READY` before) | - |
 | `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }` | `namespace create-group` |
 | `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
 | `POST /orgs/{org}/teams/{team}` | session | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |

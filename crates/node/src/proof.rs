@@ -218,3 +218,25 @@ pub fn verify_invite_redeem(
         .map_err(|_| "the redemption is not signed with the invite's key")?;
     Ok(used(b"invite", &message))
 }
+
+/// Check that `signature` is the recovery key `public`'s, handing `org` to
+/// `account` under `nonce`, and answer what marks it used.
+///
+/// # Errors
+/// A malformed signature or nonce, or one the organization's key did not make.
+pub fn verify_recovery(
+    public: &str,
+    org: &str,
+    account: &str,
+    nonce: &str,
+    signature: &str,
+) -> Result<String, &'static str> {
+    use calimero_identity::recovery;
+    recovery::verify_recovery(public, org, account, nonce, signature)
+        .map_err(|_| "the recovery is not signed with the organization's recovery key")?;
+    let message = recovery::recovery_message(org, account, nonce);
+    Ok(used(
+        b"recovery",
+        &[public.as_bytes(), b"\0", &message].concat(),
+    ))
+}

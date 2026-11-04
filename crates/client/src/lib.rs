@@ -1017,6 +1017,58 @@ impl Client {
         .await
     }
 
+    /// Set or rotate (`Some`, a [`calimero_identity::recovery::recovery_public`])
+    /// or remove (`None`) an organization's recovery key: the owner's,
+    /// approved with their passkey. A recovery under way is cancelled.
+    pub async fn set_recovery_key(
+        &self,
+        org: &str,
+        public_key: Option<&str>,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery", path_segment(org)),
+            json!({ "publicKey": public_key }),
+            passkey,
+        )
+        .await
+    }
+
+    /// Start handing `org` to the signed-in account `account` with the
+    /// recovery `seed`, which signs here and is never sent. Answers
+    /// `{ startedAt, readyAt }`.
+    pub async fn start_recovery(&self, org: &str, account: &str, seed: &[u8; 32]) -> Result<Value> {
+        use calimero_identity::recovery::sign_recovery;
+        let nonce = calimero_identity::b64url(&calimero_identity::random::<16>());
+        let signature = sign_recovery(seed, org, account, &nonce);
+        self.post(
+            &format!("orgs/{}/recovery/start", path_segment(org)),
+            json!({ "nonce": nonce, "signature": signature }),
+        )
+        .await
+    }
+
+    /// Cancel the recovery under way: the owner's, approved with their passkey.
+    pub async fn cancel_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery/cancel", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Finish a recovery this account started, once its delay passed,
+    /// approved with this account's passkey: it becomes the owner.
+    pub async fn finish_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery/finish", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
     /// Hand an app to another account (an org app only to one of the org's
     /// members): the owner's, approved with their passkey.
     pub async fn transfer_app(

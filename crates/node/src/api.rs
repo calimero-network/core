@@ -3680,8 +3680,13 @@ async fn app_access(
 // ---------------------------------------------------------------- organizations
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OrgBody {
     name: String,
+    /// The organization's recovery key (base64url Ed25519 public key): the
+    /// creator keeps the seed (`docs/specs/org-recovery.md`).
+    #[serde(default)]
+    recovery_key: Option<String>,
 }
 
 async fn org_create(
@@ -3697,6 +3702,8 @@ async fn org_create(
             name: body.name,
             actor: account,
             release: Some(node.own_release()),
+            recovery_key: body.recovery_key,
+            at: recovery_now(&node),
         })
         .await?;
     Ok(Json(v))
@@ -4345,6 +4352,187 @@ async fn invite_redeem(
             signature: crate::proof::sign_invite_redeem(&token, &account, now),
             account,
             now,
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+// ---------------------------------------------------------------- recovery
+
+/// The time a recovery command carries: this node's clock (moved only by
+/// tests, `Node::advance_clock`), stamped once and replicated with it.
+fn recovery_now(node: &Node) -> u64 {
+    node.app_clock().now_ms() / 1000
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryKeyBody {
+    /// The new key (base64url Ed25519 public key); `null` removes it.
+    public_key: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Set, rotate or remove an organization's recovery key: the owner's, with a
+/// passkey assertion (412 first). A recovery under way is cancelled.
+async fn recovery_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<RecoveryKeyBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh().await;
+    if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor))) != Some(OrgRole::Owner) {
+        return Err(ApiError::forbidden(crate::system::OWNER_ONLY_RECOVERY));
+    }
+    if let Some(k) = &body.public_key {
+        let _key = calimero_identity::recovery::parse_public(k).map_err(|_| {
+            ApiError::bad_request(
+                "BAD_RECOVERY_KEY",
+                "a recovery key is a base64url Ed25519 public key",
+            )
+        })?;
+    }
+    let args = json!({ "publicKey": body.public_key });
+    let consent = org_consent(&node, &p, &org, "__set_recovery_key", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetRecoveryKey {
+            org,
+            public_key: body.public_key,
+            at: recovery_now(&node),
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryStartBody {
+    nonce: String,
+    signature: String,
+}
+
+/// Start handing an organization to the signed-in account, with the recovery
+/// key's signature over the organization, this account and `nonce`, made
+/// where the seed is (the seed never reaches a node). Any account may try;
+/// no organization, no key and a wrong signature answer the same `403`.
+async fn recovery_start(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<RecoveryStartBody>,
+) -> ApiResult {
+    let account = holder(&node, &headers).await?.account()?;
+    node.sys_fresh().await;
+    let key = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .and_then(|o| o.recovery.as_ref())
+            .map(|r| r.public_key.clone())
+    });
+    let signed = key.is_some_and(|k| {
+        crate::proof::verify_recovery(&k, &org, &account, &body.nonce, &body.signature).is_ok()
+    });
+    if !signed {
+        return Err(ApiError::new(
+            403,
+            "WRONG_RECOVERY_KEY",
+            "the recovery is not signed with this organization's recovery key",
+        ));
+    }
+    let v = node
+        .sys_write(&SystemCmd::StartRecovery {
+            org,
+            account,
+            nonce: body.nonce,
+            signature: body.signature,
+            at: recovery_now(&node),
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// Cancel the recovery under way: the owner's, with a passkey assertion.
+async fn recovery_cancel(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh().await;
+    let (role, pending) = node.sys(|s| {
+        let o = s.orgs.get(&org);
+        (
+            o.and_then(|o| o.role(&actor)),
+            o.and_then(|o| o.recovery.as_ref())
+                .and_then(|r| r.pending.as_ref())
+                .map(|p| p.account.clone()),
+        )
+    });
+    if role != Some(OrgRole::Owner) {
+        return Err(ApiError::forbidden(crate::system::OWNER_ONLY_RECOVERY));
+    }
+    let Some(account) = pending else {
+        return Err(ApiError::not_found(crate::system::NO_RECOVERY_PENDING));
+    };
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let args = json!({ "account": account });
+    let consent = org_consent(&node, &p, &org, "__cancel_recovery", &args, confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::CancelRecovery {
+            org,
+            account,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// Finish a recovery once its delay passed: the account it names, with that
+/// account's passkey. The account becomes the organization's owner.
+async fn recovery_finish(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh().await;
+    let pending = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .and_then(|o| o.recovery.as_ref())
+            .and_then(|r| r.pending.clone())
+            .filter(|p| p.account == actor)
+    });
+    let Some(pending) = pending else {
+        return Err(ApiError::not_found(crate::system::NO_RECOVERY_PENDING));
+    };
+    let at = recovery_now(&node);
+    if at < pending.ready_at {
+        return Err(
+            ApiError::new(409, "RECOVERY_NOT_READY", crate::system::RECOVERY_NOT_READY)
+                .with_details(json!({ "readyAt": pending.ready_at })),
+        );
+    }
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let args = json!({ "org": org });
+    let consent = org_consent(&node, &p, &org, "__finish_recovery", &args, confirm).await?;
+    let v = node
+        .sys_write(&SystemCmd::FinishRecovery {
+            org,
+            at,
+            actor,
+            consent,
         })
         .await?;
     Ok(Json(v))
@@ -7290,6 +7478,10 @@ pub fn router(node: Arc<Node>) -> Router {
             delete(team_remove_member),
         )
         .route("/orgs/{org}/invites", post(invite_create))
+        .route("/orgs/{org}/recovery", post(recovery_set))
+        .route("/orgs/{org}/recovery/start", post(recovery_start))
+        .route("/orgs/{org}/recovery/cancel", post(recovery_cancel))
+        .route("/orgs/{org}/recovery/finish", post(recovery_finish))
         .route("/invites/{token}/redeem", post(invite_redeem))
         .route("/consent/requests", post(crate::consent_page::create))
         .route("/consent/{request}/result", get(crate::consent_page::result))

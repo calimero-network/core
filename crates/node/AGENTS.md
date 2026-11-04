@@ -478,6 +478,24 @@ is its command line.
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
   and takes the org's teams, invites and apps. Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
+- **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
+  `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
+  the owner keeps the seed). `SetRecoveryKey` (owner, consent `__set_recovery_key
+  { publicKey }`; a new key or `null` ends a pending recovery), `StartRecovery`
+  (any account, with the seed's signature over org, account and nonce,
+  `calimero_identity::recovery`, checked against the org's current key in
+  `authorize` and spent), `CancelRecovery` (owner, `__cancel_recovery
+  { account }`), `FinishRecovery` (the named account, `__finish_recovery
+  { org }`, at least `RECOVERY_DELAY_SECS` (72 h) after the start, judged at
+  the commands' `at`: the node's clock, `Node::app_clock`, so tests move it).
+  Finishing removes every previous owner from the org and its teams and moves
+  their org apps to the new owner; account credentials are never touched. One
+  pending recovery per org (`409 RECOVERY_PENDING`); `403 WRONG_RECOVERY_KEY`
+  for no org, no key or a wrong signature alike. Routes: `POST
+  /orgs/{org}/recovery`, `.../recovery/{start,cancel,finish}`. Regressions:
+  `tests/org_recovery.rs`, `recovery_needs_the_owners_passkey_the_seed_and_the_delay`,
+  `rotating_the_recovery_key_retires_the_old_seed`,
+  `state_from_before_recovery_reads_with_none_and_writes_as_before`.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
