@@ -31,6 +31,8 @@ const PREVIEW_BYTES: usize = 48 * 1024;
 const DEFAULT_ROWS_PER_PART: u32 = 50_000;
 /// Jobs one `jobs` call lists at most.
 const PAGE: u32 = 1000;
+/// Longest download link, which is the host's longest grant.
+const MAX_LINK_SECS: u32 = 86_400;
 /// Outputs one `share` call publishes at most, which is the host's cap on a logged call.
 const SHARE_BATCH: usize = 16;
 
@@ -71,6 +73,8 @@ pub enum Error {
     NoSuchFile,
     NotFound { id: String },
     NotDone { id: String },
+    NotPublished { id: String },
+    BadTtl,
     NoInput,
     Csv { message: String },
 }
@@ -170,6 +174,20 @@ impl Redact {
         self.share_done(job, &mut compute::publish)
     }
 
+    /// A download link for the published part `part` of the job `job`, valid for `ttl_secs`
+    /// (1 to 86,400): `GET /apps/{app}/blobs/{blob}?grant=<link>` needs no session, so it can go
+    /// to an outside auditor. Its submitter and admins only.
+    #[app::view]
+    pub fn link(&self, job: String, part: u32, ttl_secs: u32) -> app::Result<String> {
+        if !(1..=MAX_LINK_SECS).contains(&ttl_secs) {
+            return Err(Error::BadTtl.into());
+        }
+        if !self.jobs.get(&job)?.is_some_and(|j| self.may_see(&j)) {
+            return Err(Error::NotFound { id: job }.into());
+        }
+        Ok(self.published_part(&job, part)?.grant(ttl_secs))
+    }
+
     /// Receives a run's outcome: the preview plans the parts, a part's output is kept, a failed
     /// run fails its job; then free slots go to waiting tasks.
     #[app::compute_result]
@@ -245,6 +263,16 @@ impl Redact {
 }
 
 impl Redact {
+    /// The plain blob `share` made of part `part` of the job `id`.
+    fn published_part(&self, id: &str, part: u32) -> app::Result<BlobRef> {
+        let id = id.to_owned();
+        let published = self
+            .jobs
+            .get(&id)?
+            .and_then(|job| job.parts.get(part as usize)?.published);
+        published.ok_or_else(|| Error::NotPublished { id }.into())
+    }
+
     /// Publishes a done job's next outputs through `publish`; the job must be there and visible.
     fn share_done(&mut self, id: String, publish: &mut Publisher) -> app::Result<JobView> {
         let Some(mut job) = self.jobs.get(&id)? else {
@@ -536,6 +564,20 @@ mod tests {
         assert!(view.parts.iter().all(|p| p.published.is_some()));
         let stored = app.jobs.get(&id).unwrap().unwrap();
         assert!(stored.parts.iter().all(|p| p.published.is_some()));
+    }
+
+    #[test]
+    fn a_link_needs_a_published_part() {
+        let mut app = Redact::load();
+        let id = app.enqueue(job(1, 10)).unwrap();
+        let code = |r: app::Result<BlobRef>| r.unwrap_err().code;
+        assert_eq!(code(app.published_part(&id, 0)), "NotPublished");
+
+        app.jobs.insert(&id, &done_job(1)).unwrap();
+        assert_eq!(code(app.published_part(&id, 0)), "NotPublished");
+        app.share_done(id.clone(), &mut publish_as_new).unwrap();
+        assert!(app.published_part(&id, 1).is_ok());
+        assert_eq!(code(app.published_part(&id, 2)), "NotPublished");
     }
 
     #[test]

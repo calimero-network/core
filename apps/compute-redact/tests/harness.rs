@@ -176,6 +176,31 @@ fn a_job_is_shared_by_its_submitter_or_an_admin_only() {
 }
 
 #[test]
+fn a_link_is_for_the_submitter_or_an_admin_and_a_published_part() {
+    let mut t = app();
+    let file = t.upload_blob(b"name\nJane\n", "text/csv");
+    t.as_("ada")
+        .call("setPolicy", json!({ "policy": policy() }))
+        .unwrap();
+    let id = t
+        .as_("bob")
+        .call("submit", json!({ "file": file }))
+        .unwrap();
+    let args = json!({ "job": id, "part": 0, "ttlSecs": 600 });
+
+    let r = t.as_("cy").view("link", args.clone());
+    assert_eq!(code(r), "NotFound");
+    for who in ["bob", "ada"] {
+        let r = t.as_(who).view("link", args.clone());
+        assert_eq!(code(r), "NotPublished", "{who}");
+    }
+    let r = t
+        .as_("bob")
+        .view("link", json!({ "job": id, "part": 0, "ttlSecs": 0 }));
+    assert_eq!(code(r), "BadTtl");
+}
+
+#[test]
 fn the_compute_component_imports_only_what_a_job_node_allows() {
     let engine = WasmtimeEngine::for_compute().expect("compute engine");
     engine

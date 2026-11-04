@@ -8,7 +8,7 @@ One crate builds two components: `app.wasm` (state and calls) and `compute.wasm`
 - The organization's admin or owner sets the policy once with `setPolicy {policy}`.
 - A member uploads a CSV as a sealed file and calls `submit {file, rowsPerPart?}`; the job copies the policy, so a later `setPolicy` does not change it.
 - `job {id}` and `jobs` show a job to its submitter and to admins; the view holds the policy's SHA-256, never the salt.
-- `share {job}` publishes a done job's outputs as plain blobs, for the submitter or an admin; the parts of `job {id}` then name them in `published`, and `blobs.grant` hands each one out, for example to an outside auditor.
+- `share {job}` publishes a done job's outputs as plain blobs, for the submitter or an admin; the parts of `job {id}` then name them in `published`, and `link {job, part, ttlSecs}` answers a grant (1 to 86,400 seconds) for `GET /apps/{app}/blobs/{blob}?grant=<grant>`, which needs no session, for example for an outside auditor.
 
 ## Policy
 
