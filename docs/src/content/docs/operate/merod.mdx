@@ -110,7 +110,7 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--kms-url URL` | `MEROD_KMS_URL` | none | Fetch the storage key from mero-kms after it verifies this node. Needs `--kms-identity`; the only source in TDX mode. Conflicts with `--storage-key`. |
 | `--kms-identity FILE` | `MEROD_KMS_IDENTITY` | none | The cluster's disk identity (a protobuf libp2p keypair), shared by its nodes so they derive one key. Created at the path if missing. |
 | `--kms-disk-evidence FILE` | `MEROD_KMS_DISK_EVIDENCE` | none | The record `kms disk-key --evidence-out` wrote of the KMS that released the data disk's key. Read from tmpfs or ramfs only, and reported (bound into the quote) beside the storage key's at `GET /attestation?purpose=kms`. A file that cannot be read is logged and not reported; the node still starts. |
-| `--rp-id ID` | `MEROD_RP_ID` | `localhost` | The WebAuthn relying-party id passkeys are bound to. |
+| `--rp-id ID` | `MEROD_RP_ID` | `localhost` | The WebAuthn relying-party id passkeys are bound to. It must be a registrable suffix of every host that runs a passkey ceremony: each `--origins` host and `--apps-domain` must equal it or be a subdomain of it (`calimero.network` covers `console.calimero.network` and `{label}.apps.calimero.network`, not `evil-calimero.network`), or the browser fails every sign-in there with a `SecurityError`. The node refuses to start otherwise, naming the flag and host; origins on an IP address are exempt (CORS only). |
 | `--origins URL,...` | `MEROD_ORIGINS` | `http://localhost:3000` | Origins allowed to run passkey ceremonies and to call the API from a browser (CORS). |
 | `--ops-token TOKEN` | `MEROD_OPS_TOKEN` | none | The Ops API bearer token. Without it or `--ops-token-sha256` the Ops API answers `403`. |
 | `--ops-token-sha256 HEX` | `MEROD_OPS_TOKEN_SHA256` | none | The ops token's hex SHA-256 instead of the token, so the machine's configuration holds nothing usable. Conflicts with `--ops-token`. |
@@ -129,7 +129,7 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--outbound-approvals owner\|operator` | `MEROD_OUTBOUND_APPROVALS` | `owner` | Who approves the URL prefixes apps may call out to. |
 | `--deployments open\|granted` | `MEROD_DEPLOYMENTS` | `open` | Who may install apps (packages, raw bundles): any account, or only accounts holding a deployer grant. Anyone may still create instances of the releases they see ([Deployers](/protocol/governance/#deployers)). |
 | `--deployers operator\|owner` | `MEROD_DEPLOYERS` | `operator` | Who grants deployers where deployments are `granted`: the operator's key, or the cluster's owner once the operator names it. |
-| `--apps-domain DOMAIN` | `MEROD_APPS_DOMAIN` | none | Serve each package's frontend at `{label}.{DOMAIN}` (a wildcard DNS name pointing at the cluster). |
+| `--apps-domain DOMAIN` | `MEROD_APPS_DOMAIN` | none | Serve each package's frontend at `{label}.{DOMAIN}` (a wildcard DNS name pointing at the cluster). Must be `--rp-id` or a subdomain of it. |
 | `--settings FILE` | `MEROD_SETTINGS` | none | A TOML file whose `[outbound]` table replaces the configuration's. |
 
 A boolean flag takes an optional value: `--dev` is `--dev true`, and
