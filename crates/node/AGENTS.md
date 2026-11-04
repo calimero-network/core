@@ -582,7 +582,8 @@ is its command line.
   nowhere in the sign-in challenge, like `app`); `principal` and `refresh`
   refuse them once it is removed, and `UseRefresh` refuses an exchange that
   changes it. A sign-up there answers its `412` with the origin's rp-id and
-  takes the confirmation from that origin only. `UninstallPackage` of the last release forgets them. Limits
+  takes the confirmation from that origin only; the sign-up policy judges it
+  like any other (`a_registered_origin_signs_up_only_whom_the_cluster_takes`). `UninstallPackage` of the last release forgets them. Limits
   `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`; `http` only for
   `localhost` names on a `--dev` node (`allow_package_uploads`). Regressions:
   `tests/package_origins.rs`, `package_origins_carry_their_managers_consent`,

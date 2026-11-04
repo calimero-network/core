@@ -193,12 +193,20 @@ and not every browser supports it.
 
 **Ceremonies.** `POST /auth/passkey/{register,login}/begin` take the page's
 `origin` and answer its rpId (`403 ORIGIN_NOT_REGISTERED` for an origin that
-is neither the cluster's, a served frontend's nor registered). The finish
-routes verify a ceremony from a registered origin against `{ rpId, [origin] }`
-alone, and open a session bound to the package exactly as a served
-frontend's (`SessionClaims::app`), which also names the origin
-(`SessionClaims::origin`, carried through refresh). A step-up of that session
-answers `412` with the origin's rpId.
+is neither the cluster's, a node's own, a served frontend's nor registered).
+The finish routes verify a ceremony from a registered origin against
+`{ rpId, [origin] }` alone, and open a session bound to the package exactly as
+a served frontend's (`SessionClaims::app`), which also names the origin
+(`SessionClaims::origin`, carried through refresh; an exchange that changes
+it is refused). A step-up of that session answers `412` with the origin's
+rpId.
+
+A sign-up there is a sign-up like any other: the cluster's sign-up policy
+judges it (`invite` on `register/begin` and `register/finish`, `403
+SIGN_UP_REFUSED`, checked again at apply), and the new passkey signs the
+account it creates (`register/finish` answers `412`). That `412` names the
+origin's rpId, as the new passkey belongs to it, and the confirmation is taken
+from that origin only.
 
 **Removal** ends it: from the next request every session opened on the
 origin, and its refresh token, is refused `401`, judged on fresh system
