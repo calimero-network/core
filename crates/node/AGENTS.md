@@ -443,6 +443,10 @@ is its command line.
   At most `MAX_ACTIVE_RUNS` runs are active; a start past it or of a known id is dropped.
   `finished_runs` keeps the last `FINISHED_RUNS_KEPT` (256) finished ids, oldest first, and a record leaves with its id.
   The record pins the bundle that ran at start, so an upgrade does not move it.
+  It pins the compute component the same way: `RunRecord::compute_bundle` is copied from the start in the logged entry (`ComputeStart::compute_bundle`), which the leader fills from the app's `AppRecord::compute_bundle` (`Outcome::name_app`) in the same read that decides the start.
+  Apply never reads system state, because the system group and the app's log are different logs and a replica could see them in a different order; what the leader read is in the entry, so every replica records the same hash.
+  An app whose running release has no compute component (a raw upload, or a release without one) cannot start a run: `runs.start` answers the soft error `NO_COMPUTE_COMPONENT` and nothing is recorded.
+  A run recorded before this has no `compute_bundle`; the leader that drives runs must treat none as no compute component.
   An input of a run is one of the app's own sealed files (a blob record with a `file` seal), named once; the host refuses a plain blob, an unknown id and a file the same run just made.
   A start whose input is no longer a sealed file the app holds when it applies is dropped.
   An active run's inputs count as references of the app (`pin_inputs`: one more at the start, one less at the final), so R8 keeps them even when no state refers to them.

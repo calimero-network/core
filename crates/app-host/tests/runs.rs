@@ -7,8 +7,9 @@ use calimero_app_host::{
     Abi, ActiveRun, BlobHost, BlobInfo, Caller, ComputeCtx, Directory, FileInfo, HostCore,
     Invocation, InvocationKind, MemoryFiles, OrgRole, Runs, Status, TimerCtx, Usage,
     MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES, MAX_RUN_INPUTS, MAX_STARTS_PER_RUN,
-    NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN, RUN_ARGS_TOO_LARGE, RUN_DUPLICATE_INPUT,
-    RUN_INPUT_MISSING, RUN_TOO_MANY_ACTIVE, RUN_TOO_MANY_INPUTS, RUN_TOO_MANY_STARTS,
+    NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN, NO_COMPUTE_COMPONENT, RUN_ARGS_TOO_LARGE,
+    RUN_DUPLICATE_INPUT, RUN_INPUT_MISSING, RUN_TOO_MANY_ACTIVE, RUN_TOO_MANY_INPUTS,
+    RUN_TOO_MANY_STARTS,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -132,6 +133,21 @@ fn start_and_cancel_are_for_logged_writes_only() {
         h.compute_start("digest", b"x", &[]).unwrap_err();
         h.compute_cancel("r0").unwrap_err();
     }
+}
+
+#[test]
+fn a_start_without_a_compute_component_is_refused_before_anything_else() {
+    let files = MemoryFiles::default();
+    let mut h = call(&files, Vec::new()).with_compute_component(false);
+    for method in ["digest", "plain", "nothing"] {
+        assert_eq!(
+            h.compute_start(method, b"", &[]).unwrap().unwrap_err(),
+            NO_COMPUTE_COMPONENT
+        );
+    }
+    assert!(finish(h).compute_starts.is_empty());
+    let mut with = call(&files, Vec::new()).with_compute_component(true);
+    with.compute_start("digest", b"", &[]).unwrap().unwrap();
 }
 
 #[test]

@@ -18,6 +18,7 @@ pub const MAX_ACTIVE_RUNS: usize = 64;
 
 /// The soft errors of `runs.start` and `runs.cancel` (the WIT `result<_, string>`),
 /// fixed so every engine and SDK returns and matches the same strings.
+pub const NO_COMPUTE_COMPONENT: &str = "no compute component";
 pub const NOT_A_COMPUTE_METHOD: &str = "not a compute method";
 pub const RUN_ARGS_TOO_LARGE: &str = "arguments too large";
 pub const RUN_TOO_MANY_INPUTS: &str = "too many inputs";

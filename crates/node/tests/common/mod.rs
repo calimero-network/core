@@ -373,3 +373,64 @@ impl Cluster {
         panic!("node 1 never applied job node {id}");
     }
 }
+
+/// The key the test packages are signed with.
+pub const PUBLISHER: [u8; 32] = [9; 32];
+
+/// A signed single-service `.mpk` shipping `compute` as the service's compute component, when given.
+pub fn mpk_with(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    compute: Option<&[u8]>,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
+    use sha2::Digest;
+    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
+        path: path.to_owned(),
+        hash: hex::encode(sha2::Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
+    let manifest = calimero_bundle::BundleManifest {
+        version: "1.0".to_owned(),
+        package: package.to_owned(),
+        app_version: version.to_owned(),
+        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
+            key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
+        metadata: None,
+        handlers: None,
+        build_info: None,
+        interfaces: None,
+        wasm: Some(artifact("app.wasm", wasm)),
+        abi: None,
+        compute: compute.map(|c| artifact("compute.wasm", c)),
+        links: None,
+        frontend: None,
+        frontend_aliases: Vec::new(),
+        upgrades: None,
+        outbound: Vec::new(),
+        services: None,
+        signature: None,
+    };
+    let mut manifest = serde_json::to_value(&manifest).unwrap();
+    calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    let mut entries = vec![
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("app.wasm", wasm.to_vec()),
+    ];
+    entries.extend(compute.map(|c| ("compute.wasm", c.to_vec())));
+    for (name, bytes) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}

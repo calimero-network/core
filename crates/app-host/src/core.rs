@@ -21,8 +21,9 @@ use crate::overlay::{Cursor, Overlay};
 use crate::runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN, NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN,
-    RUN_ARGS_TOO_LARGE, RUN_DUPLICATE_INPUT, RUN_INPUTS_TOO_LARGE, RUN_INPUT_MISSING,
-    RUN_RECORDS_UNREADABLE, RUN_TOO_MANY_ACTIVE, RUN_TOO_MANY_INPUTS, RUN_TOO_MANY_STARTS,
+    NO_COMPUTE_COMPONENT, RUN_ARGS_TOO_LARGE, RUN_DUPLICATE_INPUT, RUN_INPUTS_TOO_LARGE,
+    RUN_INPUT_MISSING, RUN_RECORDS_UNREADABLE, RUN_TOO_MANY_ACTIVE, RUN_TOO_MANY_INPUTS,
+    RUN_TOO_MANY_STARTS,
 };
 use crate::search::{
     NoSearch, SearchHost, SearchPage, SearchQuery, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_BYTES,
@@ -151,6 +152,8 @@ pub struct HostCore {
     progress: Option<Progress>,
     abi: Abi,
     runs: Arc<dyn Runs>,
+    /// Whether the app's running release ships a compute component; `start` needs one.
+    compute_component: bool,
     /// The app's active runs, read on the first `start` or `cancel`.
     active: Option<Vec<ActiveRun>>,
     starts: Vec<StartedRun>,
@@ -212,6 +215,7 @@ impl HostCore {
             progress: None,
             abi: Abi::default(),
             runs: Arc::new(NoRuns),
+            compute_component: true,
             active: None,
             starts: Vec::new(),
             cancels: Vec::new(),
@@ -275,6 +279,14 @@ impl HostCore {
     pub fn with_compute(mut self, abi: Abi, runs: Arc<dyn Runs>) -> Self {
         self.abi = abi;
         self.runs = runs;
+        self
+    }
+
+    /// Whether the running release ships a compute component (the default is that it does): without
+    /// one `start` answers `NO_COMPUTE_COMPONENT`.
+    #[must_use]
+    pub fn with_compute_component(mut self, present: bool) -> Self {
+        self.compute_component = present;
         self
     }
 
@@ -564,6 +576,9 @@ impl HostCore {
     ) -> Result<Result<String, String>, HostDenied> {
         if !self.is_logged_write() {
             return Err(self.denied("runs.start"));
+        }
+        if !self.compute_component {
+            return Ok(Err(NO_COMPUTE_COMPONENT.to_owned()));
         }
         let Some(MethodKind::Compute(caps)) = self.abi.methods.get(method).map(|m| m.kind.clone())
         else {

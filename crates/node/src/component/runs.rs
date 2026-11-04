@@ -93,8 +93,8 @@ pub struct RunInputRef {
     pub sha256: String,
 }
 
-/// A run a call started, as its outcome carries it: the node fills `owner` from the system
-/// state when the leader builds the entry.
+/// A run a call started, as its outcome carries it: the node fills `owner` and `compute_bundle`
+/// from the system state when the leader builds the entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeStart {
@@ -106,6 +106,9 @@ pub struct ComputeStart {
     pub result_method: String,
     #[serde(default)]
     pub owner: String,
+    /// The compute component of the release the app runs, as the leader read it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_bundle: Option<String>,
 }
 
 impl From<host::StartedRun> for ComputeStart {
@@ -130,6 +133,7 @@ impl From<host::StartedRun> for ComputeStart {
             },
             result_method: run.caps.result,
             owner: String::new(),
+            compute_bundle: None,
         }
     }
 }
@@ -172,6 +176,9 @@ pub struct RunRecord {
     pub result_method: String,
     /// The bundle that ran when the run started: the one it executes whatever is installed later.
     pub bundle: String,
+    /// The compute component the run executes, fixed at start like `bundle`; none for a run
+    /// recorded before compute components existed.
+    pub compute_bundle: Option<String>,
     pub caller: Caller,
     pub owner: String,
     pub start_ts_ms: u64,
@@ -326,10 +333,12 @@ impl host::Runs for NodeRuns {
 }
 
 impl Outcome {
-    /// Names the owner of the app for the runs this outcome starts.
-    pub fn name_owner(&mut self, owner: &str) {
+    /// Names the owner and the running compute component of the app for the runs this outcome
+    /// starts.
+    pub fn name_app(&mut self, owner: &str, compute_bundle: Option<&str>) {
         for start in &mut self.compute_starts {
             owner.clone_into(&mut start.owner);
+            start.compute_bundle = compute_bundle.map(str::to_owned);
         }
     }
 }
@@ -418,6 +427,7 @@ impl AppMachine {
                 caps: start.caps,
                 result_method: start.result_method.clone(),
                 bundle,
+                compute_bundle: start.compute_bundle.clone(),
                 caller: caller.clone(),
                 owner: start.owner.clone(),
                 start_ts_ms: ts_ms,
