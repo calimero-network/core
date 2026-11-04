@@ -714,6 +714,15 @@ impl TestApp {
         BlobRef::parse(&self.files.insert(bytes)).expect("a file id is a blob id")
     }
 
+    /// Puts a file in the store as the output of a done compute run: the only kind of file
+    /// `compute::publish` accepts.
+    #[must_use]
+    pub fn add_run_output(&self, bytes: &[u8]) -> BlobRef {
+        let id = self.add_file(bytes);
+        self.files.mark_output(&id.id());
+        id
+    }
+
     /// The content of a file the app holds.
     #[must_use]
     pub fn file(&self, id: &BlobRef) -> Option<Vec<u8>> {
@@ -883,6 +892,9 @@ impl TestApp {
                 if !is_view {
                     self.outbox.extend(sent);
                     self.files.apply(&out.new_files);
+                    for p in &out.published {
+                        let _id = self.upload_blob(&p.bytes, "");
+                    }
                     for w in out.diff {
                         match w.value {
                             Some(v) => self.state.insert(w.key, v),
