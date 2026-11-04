@@ -804,8 +804,10 @@ async fn register_begin(
 struct RegisterFinish {
     challenge_id: String,
     registration: Registration,
-    /// The invite the account is created with ([`RegisterBegin::invite`]):
-    /// this node signs its redemption with the token's key.
+    /// The invite the account is created with ([`RegisterBegin::invite`]),
+    /// sent on the first finish and again on its `412` retry: the policy is
+    /// judged before either spends its challenge, and the retry's node signs
+    /// the redemption with the token's key.
     #[serde(default)]
     invite: Option<String>,
     /// The retry after `412 CONFIRM_REQUIRED`: the new passkey's assertion
