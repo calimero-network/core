@@ -1011,6 +1011,34 @@ fn compute_runs_with_the_same_seed_draw_the_same_bytes_and_other_seeds_differ() 
 }
 
 #[test]
+fn a_component_using_a_hash_map_prepares_and_runs_on_both_engines() {
+    let compute = compute_engine();
+    let cache = tempfile::tempdir().unwrap();
+    let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
+    for (engine, guest) in [(&compute, "compute_probe"), (&pooled, "probe")] {
+        let app = prepare_compute(engine, guest);
+        let out = engine.invoke(&app, compute_host("hashmap", 1), compute_budget());
+        assert_eq!(out.status, Status::Ok, "{guest}: {:?}", out.status);
+        assert_eq!(out.result.len(), 64 * 4, "{guest}");
+    }
+}
+
+#[test]
+fn hash_map_iteration_follows_the_seed_in_every_engine() {
+    let compute = compute_engine();
+    let cache = tempfile::tempdir().unwrap();
+    let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
+    for (engine, guest) in [(&compute, "compute_probe"), (&pooled, "probe")] {
+        let app = prepare_compute(engine, guest);
+        let run = |seed| engine.invoke(&app, compute_host("hashmap", seed), compute_budget());
+        let (a, b, c) = (run(3), run(3), run(4));
+        assert_eq!(a.status, Status::Ok, "{guest}: {:?}", a.status);
+        assert_eq!(a.result, b.result, "{guest}");
+        assert_ne!(a.result, c.result, "{guest}");
+    }
+}
+
+#[test]
 fn compute_runs_see_the_start_entry_clock() {
     let engine = compute_engine();
     let app = prepare_compute(&engine, "compute_probe");

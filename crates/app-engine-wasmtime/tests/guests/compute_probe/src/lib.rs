@@ -1,10 +1,11 @@
 //! Test guest for the compute world: `spin` never returns, `bomb` allocates 1 MiB chunks
 //! until memory runs out, `id` returns the run id through the job interface, `wall` returns the wall clock, `draw` 32 random bytes, `random` as
-//! many random bytes as `args` (decimal) says, `nan` the bits of NaNs made by arithmetic on NaN
+//! many random bytes as `args` (decimal) says, `hashmap` the keys of a std `HashMap` in iteration order, `nan` the bits of NaNs made by arithmetic on NaN
 //! inputs with payloads and sign bits set, `grow` grows linear memory to 65,536 pages.
 
 use core::arch::wasm32::{f32x4, f32x4_add, f32x4_extract_lane};
 use core::hint::black_box;
+use std::collections::HashMap;
 
 use calimero::app::job;
 use wasi::clocks::wall_clock;
@@ -16,7 +17,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app/compute@0.5.1","methods":{"spin":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"bomb":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"id":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"wall":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"draw":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"random":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"nan":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"grow":{"kind":"compute","compute":{"fuel":1,"result":"r"}}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app/compute@0.5.1","methods":{"spin":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"bomb":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"id":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"wall":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"draw":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"random":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"hashmap":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"nan":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"grow":{"kind":"compute","compute":{"fuel":1,"result":"r"}}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -75,6 +76,10 @@ impl Guest for App {
                     .parse()
                     .map_err(|_| fail("BadArgs"))?;
                 Ok((random::get_random_bytes(len).len() as u64).to_le_bytes().to_vec())
+            }
+            "hashmap" => {
+                let map: HashMap<u32, u32> = (0..64).map(|i| (i, i)).collect();
+                Ok(map.keys().flat_map(|k| k.to_le_bytes()).collect())
             }
             "nan" => {
                 let n32 = black_box(f32::from_bits(0xffa1_2345));

@@ -644,6 +644,10 @@ mod tests {
         assert!(!import_allowed(World::App, "wasi:cli/stdin@0.3.0"));
         assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.12"));
         assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.9"));
+        assert!(import_allowed(
+            World::App,
+            "wasi:random/insecure-seed@0.2.9"
+        ));
         assert!(!import_allowed(World::App, "wasi:random/insecure@0.2.12"));
         assert!(!import_allowed(World::App, "calimero:app/storage@0.4.0"));
         assert!(!import_allowed(World::App, "wasi:cli/stdin"));

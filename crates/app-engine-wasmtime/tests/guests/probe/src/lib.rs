@@ -1,9 +1,10 @@
-//! Test guest: `nan` returns the bits of NaNs made by arithmetic on NaN inputs with payloads
+//! Test guest: `hashmap` returns the keys of a std `HashMap` in iteration order, `nan` returns the bits of NaNs made by arithmetic on NaN inputs with payloads
 //! and sign bits set, `grow` grows linear memory to 65,536 pages, `random` asks for as many
 //! random bytes as `args` (decimal) says.
 
 use core::arch::wasm32::{f32x4, f32x4_add, f32x4_extract_lane};
 use core::hint::black_box;
+use std::collections::HashMap;
 
 use wasi::random::random;
 
@@ -13,7 +14,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"nan":{"kind":"call"},"grow":{"kind":"call"},"random":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"hashmap":{"kind":"call"},"nan":{"kind":"call"},"grow":{"kind":"call"},"random":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -44,6 +45,10 @@ struct App;
 impl Guest for App {
     fn handle(_kind: InvocationKind, method: String, args: Vec<u8>) -> Result<Vec<u8>, AppError> {
         match method.as_str() {
+            "hashmap" => {
+                let map: HashMap<u32, u32> = (0..64).map(|i| (i, i)).collect();
+                Ok(map.keys().flat_map(|k| k.to_le_bytes()).collect())
+            }
             "nan" => {
                 // Negative signalling NaNs with payloads: an uncanonicalized add or mul keeps
                 // or changes the payload and the sign depending on the CPU.

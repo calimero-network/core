@@ -437,6 +437,7 @@ world app {
   import wasi:clocks/wall-clock@0.2.12;
   import wasi:clocks/monotonic-clock@0.2.12;
   import wasi:random/random@0.2.12;
+  import wasi:random/insecure-seed@0.2.12; // std's HashMap seeds from it
   import wasi:cli/stdout@0.2.12;
   import wasi:cli/stderr@0.2.12;
   import wasi:cli/environment@0.2.12;
@@ -459,6 +460,7 @@ world compute {
   import wasi:clocks/wall-clock@0.2.12;
   import wasi:clocks/monotonic-clock@0.2.12;
   import wasi:random/random@0.2.12;
+  import wasi:random/insecure-seed@0.2.12; // std's HashMap seeds from it
   import wasi:cli/stdout@0.2.12;
   import wasi:cli/stderr@0.2.12;
   import wasi:cli/environment@0.2.12;
@@ -524,6 +526,7 @@ The engine runs it in a store with on-demand allocation, NaN canonicalization, m
 | `wasi:clocks/wall-clock` | Depends on the invocation kind: see Time and randomness in section 5 |
 | `wasi:clocks/monotonic-clock` | Fixed for the whole invocation (section 5); no elapsed time is visible to guest code (D19) |
 | `wasi:random/random` | Depends on the invocation kind: see Time and randomness in section 5 |
+| `wasi:random/insecure-seed` | The same randomness source as `wasi:random/random`, so the seed of a std `HashMap` is as deterministic as the run's other random bytes; Rust std on `wasm32-wasip2` imports it for every `HashMap` |
 | `wasi:cli/stdout`, `stderr` | The owner-only app log (spec §21); never operator-visible |
 | `wasi:cli/environment` | Empty: no variables, no arguments |
 | `wasi:http/outgoing-handler` | Actions: hosts declared in the signed manifest, 10 s budget, at-least-once. Calls, timers and deliveries: the same gate, one request, a 1.5 s response wait, the exchange recorded in the entry and never re-fetched (D76). A view, `init` or migration that tries it traps HostDenied |
