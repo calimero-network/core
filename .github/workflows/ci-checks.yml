@@ -157,6 +157,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/tests/path-dep-closure-test.py
 
+      - name: Test pack-component
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/pack-component-test.py
+
       - name: Cargo clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets -- -D warnings
