@@ -21,13 +21,13 @@ and, for billing, each app's usage under its opaque id.
 
 ## Metrics
 
-The `_total` metrics are counters, `http_request_duration_seconds` is a
-histogram, and the rest are gauges. "Here" means as this node sees it;
+The `_total` metrics are counters, the `_duration_seconds` ones
+histograms, and the rest are gauges. "Here" means as this node sees it;
 directory counts are the same on every node once it has caught up.
 
 No label carries a name or anything from a request: labels are route
 templates (`/apps/{app}/intents`), route groups, status classes, the node's
-error codes, group numbers and node ids. The one exception is the
+error codes, run kinds, call phases, group numbers and node ids. The one exception is the
 [usage metering](#usage-metering) family `calimero_app_*`, labelled with an
 app's id and its payer's id (an organization, or a personal app's owner
 account) so it can be billed; those are opaque random ids, never names. Whoever
@@ -74,6 +74,8 @@ A few series keep conventional names (`http_requests_total`,
 | `http_requests_total` | `method`, `path`, `status`, `group` | Counter: requests answered, by method, route template (`path`) and status class (`2xx`, `4xx`, ...; `cancelled` when the caller went away before the answer), including peers' (`internal`, `raft`). |
 | `calimero_http_errors_total` | `group`, `code` | Counter: error answers by the node's error code (`NOT_FOUND`, `QUOTA_EXCEEDED`, `TOO_LARGE`, ...; anything else, and a refusal without a code such as a malformed body's, is `OTHER`). |
 | `http_request_duration_seconds` | `method`, `path`, `status`, `group` | Histogram: time to a response's head (buckets 1 ms doubling to 16 s); `group` is the route group (`calls`, `views`, `sign_in`, `account`, `apps`, `blobs`, `streams`, `orgs`, `packages`, `ops`, `raft`, `internal`, `attestation`, `health`, `other`). |
+| `calimero_wasm_run_duration_seconds` | `kind` | Histogram: wall time of each WASM run this node made, whatever became of its result (buckets 250 µs doubling to 16 s). `kind` is `call` (a call through `/intents`), `xcall` (a delivered cross-app call), `view`, `init`, `timer`, `action` or `migrate`. Runs happen where usage is counted: calls, `init`, timers, xcalls and actions on the app's leader, a view on the replica that answered it. |
+| `calimero_call_phase_duration_seconds` | `phase` | Histogram: a logged call's time on the app's leader (same buckets), each call observed once in each phase. `run`: the WASM run that built its entry. `commit`: from proposing the entry until the log committed it and this node applied it (the Raft round trip to a majority, plus the apply). A call answered without an entry (a replay, a timeout, a refusal) is in neither. |
 | `calimero_http_requests_in_flight` | `group` | Requests being handled now. |
 | `calimero_http_request_bytes_total` | `group` | Counter: request body bytes, as each body's length says, at most the sealed cap (64 MiB) per request. |
 | `calimero_http_response_bytes_total` | `group` | Counter: response body bytes, where the length was known up front (streams count 0). |
@@ -81,9 +83,21 @@ A few series keep conventional names (`http_requests_total`,
 The request metrics count what the router matched: a request no route
 matches (404, 405), the sealed layer's own refusals and handshakes, and app
 frontends (`--apps-domain`) are not counted. A call (`/intents`) of a method
-declared as a view counts under `calls`. The request metrics are kept per
-process: a test that runs several nodes in one process sees their sum on each
-node.
+declared as a view counts under `calls`. The request and run metrics are kept
+per process: a test that runs several nodes in one process sees their sum on
+each node.
+
+Where a slow call's time goes: `calimero_call_phase_duration_seconds` splits it
+into the app's own work (`run`) and replication (`commit`); the rest of
+`http_request_duration_seconds{group="calls"}` is the sealed channel, routing
+to the leader and waiting for the app's proposal lock behind other calls.
+
+```text
+# p99 of a call's run and commit over 5 minutes
+histogram_quantile(0.99, sum by (phase, le) (rate(calimero_call_phase_duration_seconds_bucket[5m])))
+# p99 WASM run time by kind
+histogram_quantile(0.99, sum by (kind, le) (rate(calimero_wasm_run_duration_seconds_bucket[5m])))
+```
 
 ## Usage metering
 

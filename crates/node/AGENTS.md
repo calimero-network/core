@@ -419,10 +419,16 @@ is its command line.
   is Prometheus text (directory counts, this node's groups, streams, system
   membership, build release; per-group Raft term, lags and quorum age; store
   sizes; and, from `metrics::track` on the router, requests by route template
-  and status, error codes, latency per route group and body bytes), never
-  names or state: labels are templates, groups, codes and numbers, and ids only
-  on the usage series below
-  (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
+  and status, error codes, latency per route group and body bytes; WASM run
+  time by kind, `calimero_wasm_run_duration_seconds{kind}` from
+  `metrics::wasm_run` in `Node::metered` and the view and action runs; a
+  logged call's `run` and `commit` time,
+  `calimero_call_phase_duration_seconds{phase}`, observed in
+  `call_local_component` once the entry is appended), never
+  names or state: labels are templates, groups, codes, kinds, phases and
+  numbers, and ids only on the usage series below
+  (regressions: `metrics_count_requests_errors_and_raft_without_naming_anyone`,
+  `wasm_runs_and_a_calls_run_and_commit_are_timed`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
   `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
