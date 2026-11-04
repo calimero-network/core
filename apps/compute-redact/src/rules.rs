@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 use csv::StringRecord;
 use hmac::{Hmac, KeyInit, Mac};
-use regex::Regex;
+use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -281,9 +281,37 @@ mod tests {
             scan(text),
             "mail [EMAIL] or call [PHONE], [PHONE], [PHONE] card [CARD] done"
         );
+    }
+
+    #[test]
+    fn scan_leaves_other_text_and_digits_alone() {
+        for text in [
+            "nothing here, order 12345",
+            "a@b",
+            "a@b.c",
+            "x@y.z.w",
+            "12 345",
+            "",
+        ] {
+            assert_eq!(scan(text), text);
+        }
+    }
+
+    #[test]
+    fn long_runs_do_not_slow_the_scan() {
+        let digits = "7".repeat(200_000);
+        let letters = "a".repeat(200_000);
+        let start = std::time::Instant::now();
+        scan(&digits);
+        scan(&letters);
+        assert!(start.elapsed().as_secs() < 5);
+    }
+
+    #[test]
+    fn scan_keeps_non_ascii_text() {
         assert_eq!(
-            scan("nothing here, order 12345"),
-            "nothing here, order 12345"
+            scan("caf\u{e9} \u{4e2d}\u{6587} a@b.org \u{1f600}"),
+            "caf\u{e9} \u{4e2d}\u{6587} [EMAIL] \u{1f600}"
         );
     }
 
