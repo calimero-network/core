@@ -103,8 +103,11 @@ pub enum ApiKeyCmd {
     },
     #[command(alias = "ls")]
     List,
+    /// Revoke a key. Approved with a passkey.
     Revoke {
         key_id: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -175,8 +178,12 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
             json!({ "keyId": v["keyId"], "key": v["key"] })
         }
         AccountCmd::ApiKey(ApiKeyCmd::List) => client.get("auth/apikeys").await?,
-        AccountCmd::ApiKey(ApiKeyCmd::Revoke { key_id }) => {
-            client.delete(&format!("auth/apikeys/{key_id}")).await?
+        AccountCmd::ApiKey(ApiKeyCmd::Revoke {
+            key_id,
+            dev_passkey,
+        }) => {
+            env.delete_approved(&format!("auth/apikeys/{key_id}"), dev_passkey.as_deref())
+                .await?
         }
         AccountCmd::ApproveRelease {
             version,

@@ -50,12 +50,45 @@ const REQUEST_DOMAIN: &[u8] = b"mero-kms/sealed-get-key/v1";
 /// HKDF info domain for the key that seals the released key.
 const SEAL_DOMAIN: &[u8] = b"mero-kms/sealed-key/v1";
 
+// Version 2: a release that carries the node's rollback counters
+// (`docs/specs/rollback-protection.md`). Only the domains differ, and what is
+// committed to or sealed.
+const ATTEST_DOMAIN_V2: &[u8] = b"mero-kms/attest-transport-key/v2";
+const REQUEST_DOMAIN_V2: &[u8] = b"mero-kms/sealed-get-key/v2";
+const SEAL_DOMAIN_V2: &[u8] = b"mero-kms/sealed-key/v2";
+
+/// What a mero-kms with rollback counters reports from `/attest` when asked,
+/// committed to (joined by commas) by [`attest_binding_v2`].
+pub(super) const CAPABILITIES: &[&str] = &["rollback/v1"];
+
 /// The 32 bytes `/attest` puts after the nonce when it reports a transport key.
 pub(super) fn attest_binding(binding: &[u8; 32], kms_public: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(ATTEST_DOMAIN);
     hasher.update(binding);
     hasher.update(kms_public);
+    hasher.finalize().into()
+}
+
+/// [`attest_binding`] that also commits to [`CAPABILITIES`], so a relay cannot
+/// strip them from the answer without the quote failing.
+pub(super) fn attest_binding_v2(binding: &[u8; 32], kms_public: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(ATTEST_DOMAIN_V2);
+    hasher.update(binding);
+    hasher.update(kms_public);
+    hasher.update(CAPABILITIES.join(",").as_bytes());
+    hasher.finalize().into()
+}
+
+/// The 32 bytes a v2 get-key quote puts after the challenge nonce: the seal
+/// key, the peer id and the node whose counters it asks for.
+pub(super) fn request_binding_v2(seal_to: &[u8; 32], peer_id: &str, node_id: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(REQUEST_DOMAIN_V2);
+    hasher.update(seal_to);
+    hasher.update(peer_id.as_bytes());
+    hasher.update(node_id.to_be_bytes());
     hasher.finalize().into()
 }
 
@@ -96,11 +129,56 @@ impl EphemeralSealKey {
         seal_nonce: &[u8],
         ciphertext: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
+        self.open_domain(
+            SEAL_DOMAIN,
+            kms_public,
+            challenge_nonce,
+            peer_id,
+            seal_nonce,
+            ciphertext,
+        )
+    }
+
+    /// Open a v2 release's record (JSON), sealed like a v1 key under the v2 domain.
+    pub(super) fn open_v2(
+        &self,
+        kms_public: &[u8; 32],
+        challenge_nonce: &[u8; 32],
+        peer_id: &str,
+        seal_nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        self.open_domain(
+            SEAL_DOMAIN_V2,
+            kms_public,
+            challenge_nonce,
+            peer_id,
+            seal_nonce,
+            ciphertext,
+        )
+    }
+
+    fn open_domain(
+        &self,
+        domain: &[u8],
+        kms_public: &[u8; 32],
+        challenge_nonce: &[u8; 32],
+        peer_id: &str,
+        seal_nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>> {
         let Ok(seal_nonce) = <[u8; NONCE_LEN]>::try_from(seal_nonce) else {
             bail!("sealed key nonce must be {NONCE_LEN} bytes");
         };
         let shared = Zeroizing::new(MontgomeryPoint(*kms_public).mul_clamped(*self.secret).0);
-        let key = seal_key(&shared, challenge_nonce, kms_public, &self.public, peer_id)?;
+        let key = seal_key(
+            domain,
+            &shared,
+            challenge_nonce,
+            kms_public,
+            &self.public,
+            peer_id,
+        )?;
         let mut buffer = Zeroizing::new(ciphertext.to_vec());
         let plaintext = key
             .open_in_place(
@@ -119,6 +197,7 @@ impl EphemeralSealKey {
 }
 
 fn seal_key(
+    domain: &[u8],
     shared: &[u8; 32],
     challenge_nonce: &[u8; 32],
     kms_public: &[u8; 32],
@@ -129,7 +208,7 @@ fn seal_key(
     if shared.iter().all(|byte| *byte == 0) {
         bail!("the KMS transport key is a low-order point");
     }
-    let info: [&[u8]; 4] = [SEAL_DOMAIN, kms_public, seal_to, peer_id.as_bytes()];
+    let info: [&[u8]; 4] = [domain, kms_public, seal_to, peer_id.as_bytes()];
     let prk = Salt::new(HKDF_SHA256, challenge_nonce).extract(shared);
     let okm = prk
         .expand(&info, &AES_256_GCM)
@@ -147,10 +226,60 @@ pub(super) fn seal_for_test(
     seal_nonce: [u8; NONCE_LEN],
     key_hex: &str,
 ) -> Vec<u8> {
+    seal_domain_for_test(
+        SEAL_DOMAIN,
+        kms_secret,
+        seal_to,
+        challenge_nonce,
+        peer_id,
+        seal_nonce,
+        key_hex.as_bytes(),
+    )
+}
+
+/// The KMS's side of a v2 seal, for the tests' stand-in KMS.
+#[cfg(test)]
+pub(super) fn seal_v2_for_test(
+    kms_secret: &[u8; 32],
+    seal_to: &[u8; 32],
+    challenge_nonce: &[u8; 32],
+    peer_id: &str,
+    seal_nonce: [u8; NONCE_LEN],
+    record: &[u8],
+) -> Vec<u8> {
+    seal_domain_for_test(
+        SEAL_DOMAIN_V2,
+        kms_secret,
+        seal_to,
+        challenge_nonce,
+        peer_id,
+        seal_nonce,
+        record,
+    )
+}
+
+#[cfg(test)]
+fn seal_domain_for_test(
+    domain: &[u8],
+    kms_secret: &[u8; 32],
+    seal_to: &[u8; 32],
+    challenge_nonce: &[u8; 32],
+    peer_id: &str,
+    seal_nonce: [u8; NONCE_LEN],
+    plaintext: &[u8],
+) -> Vec<u8> {
     let kms_public = MontgomeryPoint::mul_base_clamped(*kms_secret).0;
     let shared = MontgomeryPoint(*seal_to).mul_clamped(*kms_secret).0;
-    let key = seal_key(&shared, challenge_nonce, &kms_public, seal_to, peer_id).unwrap();
-    let mut buffer = key_hex.as_bytes().to_vec();
+    let key = seal_key(
+        domain,
+        &shared,
+        challenge_nonce,
+        &kms_public,
+        seal_to,
+        peer_id,
+    )
+    .unwrap();
+    let mut buffer = plaintext.to_vec();
     key.seal_in_place_append_tag(
         Nonce::assume_unique_for_key(seal_nonce),
         Aad::from(peer_id.as_bytes()),
@@ -286,6 +415,52 @@ mod tests {
             ]
         );
     }
+
+    /// The v2 vectors, repeated verbatim in mero-kms's
+    /// `the_v2_wire_format_matches_the_published_vectors`.
+    #[test]
+    fn the_v2_wire_format_matches_the_published_vectors() {
+        let kms_public = public_for_test(&KMS_SECRET);
+        let node = EphemeralSealKey::from_secret_for_test(NODE_SECRET);
+        assert_eq!(
+            hex::encode(attest_binding_v2(&[0x77; 32], &kms_public)),
+            "e9f2764915d498666e849eda69ad2c777c72c96e159299a9c63af03f9e267927"
+        );
+        assert_eq!(
+            hex::encode(request_binding_v2(node.public(), PEER, 3)),
+            "9bd31a7facb1d0bbba66d7ae2666da4c2ab890fec25f2a72f898210a6d9e817b"
+        );
+        let sealed = seal_v2_for_test(
+            &KMS_SECRET,
+            node.public(),
+            &NONCE,
+            PEER,
+            SEAL_NONCE,
+            RECORD_V2.as_bytes(),
+        );
+        assert_eq!(hex::encode(&sealed), SEALED_RECORD_V2_VECTOR);
+        let opened = node
+            .open_v2(&kms_public, &NONCE, PEER, &SEAL_NONCE, &sealed)
+            .unwrap();
+        assert_eq!(opened.as_slice(), RECORD_V2.as_bytes());
+        assert!(
+            node.open(&kms_public, &NONCE, PEER, &SEAL_NONCE, &sealed)
+                .is_err(),
+            "a v2 record does not open as a v1 key"
+        );
+    }
+
+    const RECORD_V2: &str = concat!(
+        r#"{"keyHex":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","#,
+        r#""epoch":1,"generation":1,"mark":42,"sessionIdB64":"VVVVVVVVVVVVVVVVVVVVVQ==","#,
+        r#""sessionKeyHex":"6666666666666666666666666666666666666666666666666666666666666666"}"#
+    );
+    const SEALED_RECORD_V2_VECTOR: &str = "38acc754447ef35f7e3431a32e7ac8e7217ef54b502c439df6e30cae28b4dcf1\
+        c230cdd1c6f0dea421897ed196bf420a17209551fadabc39fb3eb89a94d279eff1e039003090b29538fbe6aa12465bf5\
+        3a0e72a3ae7e69b67bfd73b976e68959d71cfbe14c2809e393d5571bd2231b2ad3e34ab9f1c5797b4108ddf7669f501a\
+        a7bfe509131090684b55c3a7ce60577491957333cf4bf8e8811c501b4969137f88d50f88c98c13fd8d72911e94f8aa5f\
+        82852e42069b61baf5429d8b3b4fc009e207e8b45bc0be76919d5d5263800972249ef38779de66d5ab34ee413bcd04c8\
+        e7a9ea2c4b47a48013ee19f1090317bf1502de8d9bc0e33d84aae53696";
 
     // Also reproduced independently with Python's `cryptography` (X25519, HKDF,
     // AESGCM), so the format is standard and not merely self-consistent.

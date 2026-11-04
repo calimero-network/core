@@ -163,6 +163,7 @@ async fn a_system_write_waits_for_a_leader_until_its_deadline() {
     // A second genesis: refused when it applies, which proves it reached a leader.
     let genesis = |node: std::sync::Arc<calimero_node::Node>| async move {
         node.sys_write(&calimero_node::system::SystemCmd::Genesis {
+            session_proofs: true,
             governance: calimero_node::system::Governance::default(),
             release: None,
             operator_key: None,
@@ -2497,7 +2498,8 @@ async fn presence_reaches_every_node_and_expires() {
 
 // ---------------------------------------------------------------- app frontends
 
-/// App frontends: each package's frontend on its own origin, served from the
+/// App frontends: each package's frontend on its own origin (and on its
+/// cluster's host for it, `cluster_label`), served from the
 /// release's verified `.mpk` under a strict CSP, with client routes and deep
 /// links; and a passkey session opened from that origin is bound to the
 /// package, reaching its apps and nothing else of the account.
@@ -2661,9 +2663,71 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .await
         .is_err());
 
+    // The package's host on this cluster, `cluster_label`, is the same site
+    // and the same origin of the package; one made for another cluster is not.
+    let cluster_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::cluster_label(&c.name, "com.test.site")
+    );
+    let cluster_origin = format!("http://{cluster_host}:{port}");
+    let on_cluster = reqwest::Client::builder()
+        .resolve(&cluster_host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let root = on_cluster
+        .get(format!("{cluster_origin}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(root.headers()["location"], "/0.1.0/");
+    let page = on_cluster
+        .get(format!("{cluster_origin}/0.1.0/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.bytes().await.unwrap().as_ref(), html);
+    let known: Value = on_cluster
+        .get(format!("{cluster_origin}/.well-known/calimero.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(known["package"], json!("com.test.site"));
+    let elsewhere = format!(
+        "{}.localhost",
+        calimero_node::app_host::cluster_label("another", "com.test.site")
+    );
+    let r = reqwest::Client::builder()
+        .resolve(&elsewhere, ([127, 0, 0, 1], port).into())
+        .build()
+        .unwrap()
+        .get(format!("http://{elsewhere}:{port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "another cluster's host is not served here");
+    let carol_there = c.client(0);
+    let mut there_key = SoftAuthenticator::with_key(&carol_key, "localhost", &cluster_origin);
+    let _s = carol_there.sign_in(&mut there_key).await.unwrap();
+    let _ = carol_there
+        .call(&mine, "set", json!({ "key": "k", "value": "w" }), None)
+        .await
+        .unwrap();
+    assert!(carol_there
+        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .is_err());
+    assert!(carol_there
+        .create_api_key(json!({ "label": "k" }), &mut there_key)
+        .await
+        .is_err());
+
     // The same person on the cluster's own origin is not bound.
     let carol_home = c.client(2);
-    let mut home_key = SoftAuthenticator::with_key(&carol_key, "localhost", ORIGIN);
+    let mut home_key = SoftAuthenticator::with_key(&there_key, "localhost", ORIGIN);
     let _s = carol_home.sign_in(&mut home_key).await.unwrap();
     let _ = carol_home
         .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
@@ -3581,8 +3645,10 @@ fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
 /// that ran its WASM (calls and strong views on the app's leader, a stale view
 /// on the replica that answered it), never on the replicas that applied the
 /// entry, so the cluster's sum is the number of runs. Series are labelled
-/// with the app's id and its payer: the organization, or `account:{owner}`
-/// for a personal app. State bytes are a gauge every replica reports alike.
+/// with the app's id, its payer (the organization, or `account:{owner}` for a
+/// personal app) and its developer, the payer for an app made from a release
+/// directly (`tests/deployments.rs` has an instance of a deployment). State
+/// bytes are a gauge every replica reports alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
     let c = Cluster::start_with(3, |cfg| {
@@ -3680,8 +3746,9 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             .unwrap();
         texts.push(text);
     }
-    let in_org = format!("app=\"{app}\",org=\"{org}\"");
-    let mine = format!("app=\"{personal}\",org=\"account:{alice_id}\"");
+    let in_org = format!("app=\"{app}\",org=\"{org}\",developer=\"{org}\"");
+    let mine =
+        format!("app=\"{personal}\",org=\"account:{alice_id}\",developer=\"account:{alice_id}\"");
     let calls = |labels: &str, kind: &str| -> Vec<f64> {
         texts
             .iter()
@@ -3979,6 +4046,69 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
             !metrics.contains(secret),
             "{secret} leaked into the metrics"
         );
+    }
+}
+
+/// How long WASM runs take, by kind, and how a logged call's time splits
+/// between its run and its commit, on `/metrics`. Labels are kinds and phases,
+/// never the app or the method.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wasm_runs_and_a_calls_run_and_commit_are_timed() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice-the-timed").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    let v = alice
+        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("v"));
+
+    // The registry is the process's: any node's text holds every node's runs.
+    let addr = c.nodes[0].as_ref().unwrap().metrics_addr.unwrap();
+    let text = reqwest::Client::new()
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains("# TYPE calimero_wasm_run_duration_seconds histogram"));
+    assert!(text.contains("# TYPE calimero_call_phase_duration_seconds histogram"));
+    for kind in ["init", "call", "view"] {
+        let labels = format!("kind=\"{kind}\"");
+        let n = sample(&text, "calimero_wasm_run_duration_seconds_count", &labels);
+        assert!(n.is_some_and(|n| n >= 1.0), "{kind}: {n:?} in\n{text}");
+        let all = sample(
+            &text,
+            "calimero_wasm_run_duration_seconds_bucket",
+            &format!("{labels},le=\"+Inf\""),
+        );
+        assert_eq!(all, n, "{kind}");
+        let sum = sample(&text, "calimero_wasm_run_duration_seconds_sum", &labels);
+        assert!(sum.is_some_and(|s| s > 0.0), "{kind}: {sum:?}");
+    }
+    for phase in ["run", "commit"] {
+        let labels = format!("phase=\"{phase}\"");
+        let n = sample(&text, "calimero_call_phase_duration_seconds_count", &labels);
+        assert!(n.is_some_and(|n| n >= 1.0), "{phase}: {n:?} in\n{text}");
+        let sum = sample(&text, "calimero_call_phase_duration_seconds_sum", &labels);
+        assert!(sum.is_some_and(|s| s > 0.0), "{phase}: {sum:?}");
+    }
+    for line in text
+        .lines()
+        .filter(|l| l.starts_with("calimero_wasm_run_") || l.starts_with("calimero_call_phase_"))
+    {
+        for secret in [app.as_str(), "set", "get"] {
+            assert!(!line.contains(secret), "{secret} in {line}");
+        }
     }
 }
 

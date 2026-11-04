@@ -18,8 +18,12 @@ An account id is 32 random bytes in base64url, made when someone signs up. The
 account record holds a display name, its passkeys (at most 10) and their
 labels, the account's aliases for apps, and the approvals it makes for apps it
 owns outside any organization (mero-tee releases and outbound prefixes; see
-[Deployment governance](/protocol/governance/)). Sign-up is open; the
-operator's `maxAccounts` quota bounds how many accounts a cluster takes.
+[Deployment governance](/protocol/governance/)). Who may sign up is the
+cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
+default; the operator's `maxAccounts` quota bounds how many accounts a cluster
+takes), `invite` or `closed`. `CreateAccount` carries the invite a person signs
+up with, as the token key's signature over the new account and the time, and
+`apply` judges it against the policy.
 
 The release of the node an account signed up through is approved for that
 account's own apps from the start, so its apps can run where it began.
@@ -160,7 +164,7 @@ passkey consent covers all four.
   an owner release is never moved to a publisher one, [release
   deadlines](/protocol/governance/#release-deadlines), and [deployer
   grants](/protocol/governance/#deployers) for a registry install.
-- **Revoking** it (`DELETE /auth/apikeys/{key}`) stops it on every node at once,
+- **Revoking** it (`DELETE /auth/apikeys/{key}`, approved with a passkey) stops it on every node at once,
   for an upgrade logged later too. It also ends with its `ttlSecs`.
 - **What is logged**: the app's `lastUpgrade` names the account and the key
   (`apiKey`), in `GET /auth/apps` and `GET /orgs/{org}/apps`; the node logs

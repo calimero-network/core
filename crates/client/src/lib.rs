@@ -469,16 +469,40 @@ impl Client {
 
     // ------------------------------------------------------------ identity
 
-    /// Create an account with a new passkey and sign in.
+    /// Create an account with a new passkey and sign in. The node asks the
+    /// new passkey to sign the account it creates (`412 CONFIRM_REQUIRED`),
+    /// so a sign-up asks the passkey twice: to create it, then to sign.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
+        self.sign_up_invited(passkey, name, None).await
+    }
+
+    /// [`Self::sign_up`] with an invite: an organization invite token (the
+    /// new account joins the organization) or a cluster sign-up invite
+    /// token, which a cluster whose sign-up is `invite` or `closed` needs
+    /// (`GET /sign-up` says which). Refused `403 SIGN_UP_REFUSED` before the
+    /// passkey is asked when the cluster would not take it.
+    pub async fn sign_up_invited(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        invite: Option<&str>,
+    ) -> Result<Session> {
         let begin = self
-            .post("auth/passkey/register/begin", json!({ "name": name }))
+            .post(
+                "auth/passkey/register/begin",
+                json!({ "name": name, "invite": invite }),
+            )
             .await?;
         let registration = passkey.create(&begin["options"]);
         let s: Session = serde_json::from_value(
-            self.post(
+            self.post_confirmed(
                 "auth/passkey/register/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                json!({
+                    "challengeId": begin["challengeId"],
+                    "registration": registration,
+                    "invite": invite,
+                }),
+                passkey,
             )
             .await?,
         )
@@ -575,6 +599,13 @@ impl Client {
             v["keyId"].as_str().unwrap_or_default().to_owned(),
             v["key"].as_str().unwrap_or_default().to_owned(),
         ))
+    }
+
+    /// Revoke one of the account's API keys, approved with its passkey
+    /// (`412 CONFIRM_REQUIRED`).
+    pub async fn revoke_api_key(&self, key_id: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.delete_confirmed(&format!("auth/apikeys/{}", path_segment(key_id)), passkey)
+            .await
     }
 
     // ------------------------------------------------------------ apps
@@ -1011,6 +1042,58 @@ impl Client {
         self.confirmed(
             Method::DELETE,
             &format!("orgs/{}", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Set or rotate (`Some`, a [`calimero_identity::recovery::recovery_public`])
+    /// or remove (`None`) an organization's recovery key: the owner's,
+    /// approved with their passkey. A recovery under way is cancelled.
+    pub async fn set_recovery_key(
+        &self,
+        org: &str,
+        public_key: Option<&str>,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery", path_segment(org)),
+            json!({ "publicKey": public_key }),
+            passkey,
+        )
+        .await
+    }
+
+    /// Start handing `org` to the signed-in account `account` with the
+    /// recovery `seed`, which signs here and is never sent. Answers
+    /// `{ startedAt, readyAt }`.
+    pub async fn start_recovery(&self, org: &str, account: &str, seed: &[u8; 32]) -> Result<Value> {
+        use calimero_identity::recovery::sign_recovery;
+        let nonce = calimero_identity::b64url(&calimero_identity::random::<16>());
+        let signature = sign_recovery(seed, org, account, &nonce);
+        self.post(
+            &format!("orgs/{}/recovery/start", path_segment(org)),
+            json!({ "nonce": nonce, "signature": signature }),
+        )
+        .await
+    }
+
+    /// Cancel the recovery under way: the owner's, approved with their passkey.
+    pub async fn cancel_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery/cancel", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Finish a recovery this account started, once its delay passed,
+    /// approved with this account's passkey: it becomes the owner.
+    pub async fn finish_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery/finish", path_segment(org)),
             json!({}),
             passkey,
         )

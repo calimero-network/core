@@ -55,7 +55,8 @@ Only push signed releases of that package to that app:
 
 ## Revoking and auditing
 
-`meroctl account api-key revoke <key-id>` (or `revokeApiKey`) stops it on
+`meroctl account api-key revoke <key-id>` (or `revokeApiKey`), approved with
+a passkey, stops it on
 every node at once; it also ends at its TTL (at most one year: prefer a short
 one and rotate). Each upgrade it makes is recorded on the app's `lastUpgrade`
 with the account and the key's id (`apiKey`), in `GET /auth/apps`

@@ -332,7 +332,7 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
 
     // Revoked: refused at once, on every node.
     let _ = alice
-        .delete(&format!("auth/apikeys/{key_id}"))
+        .delete_confirmed(&format!("auth/apikeys/{key_id}"), &mut apk)
         .await
         .unwrap();
     for i in 0..3 {
@@ -435,7 +435,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
     let e = append(&c, &upgrade(&foreign, &key)).await.unwrap_err();
     assert!(e.contains("only to signed releases of its package"), "{e}");
     let _ = alice
-        .delete(&format!("auth/apikeys/{key_id}"))
+        .delete_confirmed(&format!("auth/apikeys/{key_id}"), &mut apk)
         .await
         .unwrap();
     let e = append(&c, &upgrade(&next, &key)).await.unwrap_err();

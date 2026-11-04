@@ -24,7 +24,7 @@ pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PU
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use calimero_app_host::{
     Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, TimerCtx,
@@ -41,6 +41,7 @@ use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
 use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
 use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
 use crate::error::ApiError;
+use crate::metrics::CallPhase;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
 
@@ -524,7 +525,7 @@ impl Node {
                 inner: Arc::new(NodeHttp(self.outbound_for(
                     app_id,
                     &prepared.hash,
-                    self.usage.outbound(&meter.app, &meter.payer),
+                    self.usage.outbound(&meter.app, &meter.billed),
                 ))),
                 timeout: CALL_FETCH_TIMEOUT,
             })
@@ -598,7 +599,7 @@ impl Node {
         invocation: Invocation,
         extras: RunExtras,
     ) -> Ran {
-        self.metered(meter, || {
+        self.metered(meter, invocation.kind, || {
             self.run_component(prepared, app_id, state, applied, invocation, extras)
         })
     }
@@ -990,8 +991,16 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.message))?;
         // The caller's standing (org role, teams, read-only rows) is read from the
         // system state below: it includes every change committed before the call,
-        // wherever it was committed.
-        self.sys_fresh().await;
+        // wherever it was committed. A client's call carries the index of the
+        // round its gate made (`CallRequest::sys_index`), which covers that
+        // (`Node::sys_fresh_from`); a timer, delivery or action runs a round.
+        let sys_index = match req.sys_index {
+            Some(i) => {
+                let _caught_up = self.sys_fresh_from(Some(i)).await;
+                Some(i)
+            }
+            None => self.sys_fresh_index().await.0,
+        };
         let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
         if let (Some(app), Some(account)) = (&app, req.caller.account()) {
             if !self.sys(|s| s.may_reach(app, Some(account))) {
@@ -1008,7 +1017,7 @@ impl Node {
         // A read-only member's call runs, but one that would write keys or emit
         // events is refused (v1 discarded such writes; a client is told).
         let read_only = match &app {
-            Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
+            Some(app) => crate::api::read_only_in(self, app, req.caller.account(), sys_index).await,
             None => false,
         };
         // A delivered xcall only within one organization (or one owner's personal apps),
@@ -1033,10 +1042,16 @@ impl Node {
         let meter = self.meter(&req.app_id, &bundle);
         let mut answered = false;
         let mut persisted = Stored::default();
+        // The run that built the entry, and when the entry was proposed: a logged
+        // call's two phases (`calimero_call_phase_duration_seconds`).
+        let mut ran_for = None;
+        let mut proposed_at = None;
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
                 answered = false;
+                ran_for = None;
+                proposed_at = None;
                 // A retry of a call that committed is its recorded answer, whatever
                 // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
@@ -1103,7 +1118,8 @@ impl Node {
                         _pending: None,
                     }
                 } else {
-                    self.run_logged(
+                    let started = Instant::now();
+                    let ran = self.run_logged(
                         &meter,
                         &prepared,
                         &req.app_id,
@@ -1131,7 +1147,9 @@ impl Node {
                             // A read-only member's run reaches no outbound host.
                             outbound: !read_only,
                         },
-                    )
+                    );
+                    ran_for = Some(started.elapsed());
+                    ran
                 };
                 let outcome = ran.outcome;
                 // A timeout is not logged and does not spend the key (D23).
@@ -1175,6 +1193,7 @@ impl Node {
                 match self.logged_entry(&req.app_id, cmd, &ran.blobs) {
                     Ok((entry, stored)) => {
                         persisted = stored;
+                        proposed_at = Some(Instant::now());
                         Proposal::Append(entry)
                     }
                     Err(e) => {
@@ -1188,6 +1207,14 @@ impl Node {
             .inspect_err(|e| self.discard_failed(&req.app_id, std::mem::take(&mut persisted), e))?;
         if let Some(e) = refused {
             return Err(LocalError::Refused(e));
+        }
+        if p.appended {
+            if let Some(took) = ran_for {
+                crate::metrics::call_phase(CallPhase::Run, took);
+            }
+            if let Some(at) = proposed_at {
+                crate::metrics::call_phase(CallPhase::Commit, at.elapsed());
+            }
         }
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))?;
@@ -1419,6 +1446,7 @@ impl Node {
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
         self.usage.ran(&meter, run);
+        crate::metrics::wasm_run(InvocationKind::View, run.wall);
         if !out.is_timeout() {
             self.usage.called(&meter, RunKind::View);
         }
@@ -1592,7 +1620,7 @@ impl Node {
         let http = Arc::new(NodeHttp(self.outbound_for(
             app_id,
             &prepared.hash,
-            self.usage.outbound(&meter.app, &meter.payer),
+            self.usage.outbound(&meter.app, &meter.billed),
         )));
         let invocation = Invocation {
             kind: InvocationKind::Action,
@@ -1636,6 +1664,7 @@ impl Node {
         match ran {
             Ok((out, run)) => {
                 self.usage.ran(&meter, run);
+                crate::metrics::wasm_run(InvocationKind::Action, run.wall);
                 out
             }
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
