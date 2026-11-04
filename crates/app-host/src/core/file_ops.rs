@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use super::HostCore;
 use crate::files::{
-    FileError, FileInfo, FileRead, FileWrite, NewFile, ReadError, FILE_CORRUPT, FILE_FAILED,
-    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE,
-    MAX_COMPUTE_FILE_BYTES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES, MAX_READ_CHUNK,
-    MAX_RUN_FILE_BYTES, RUN_WROTE_TOO_MUCH,
+    FileError, FileInfo, FileRead, FileWrite, NewFile, PublishedFile, ReadError, FILE_CORRUPT,
+    FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN,
+    FILE_UNAVAILABLE, MAX_COMPUTE_FILE_BYTES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
+    MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, RUN_WROTE_TOO_MUCH,
 };
 use crate::types::{HostDenied, InvocationKind};
 
@@ -49,6 +49,7 @@ pub(crate) struct FileTable {
     next: u32,
     written: u64,
     created: Vec<NewFile>,
+    published: Vec<PublishedFile>,
     /// A logged run lost a file to node load: it ends as a timeout, not logged.
     unavailable: bool,
 }
@@ -58,8 +59,13 @@ impl FileTable {
         self.unavailable
     }
 
-    pub(crate) fn into_created(self) -> Vec<NewFile> {
-        self.created
+    pub(crate) fn into_outputs(self) -> (Vec<NewFile>, Vec<PublishedFile>) {
+        (self.created, self.published)
+    }
+
+    /// Whether this run published the blob `id` (hex).
+    pub(super) fn published(&self, id: &str) -> bool {
+        self.published.iter().any(|p| p.id == id)
     }
 
     fn open_count(&self) -> usize {
@@ -180,6 +186,29 @@ impl HostCore {
                 }
                 Ok(Err(reason))
             }
+            Err(FileError::Unavailable) => Err(self.unavailable()),
+        }
+    }
+
+    /// Turns a done compute run's output into a plain blob; the file reaches the outcome only
+    /// if the run ends `Ok`. Logged writes only.
+    pub fn compute_publish(&mut self, id: &str) -> Result<Result<String, String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("runs.publish"));
+        }
+        if let Some(done) = self.files.published.iter().find(|p| p.source == id) {
+            return Ok(Ok(done.id.clone()));
+        }
+        if self.files.published.len() >= MAX_PUBLISHED_PER_RUN {
+            return Ok(Err(FILE_TOO_MANY_NEW.to_owned()));
+        }
+        match self.provider.publish(id) {
+            Ok(file) => {
+                let blob = file.id.clone();
+                self.files.published.push(file);
+                Ok(Ok(blob))
+            }
+            Err(FileError::Failed(reason)) => Ok(Err(reason)),
             Err(FileError::Unavailable) => Err(self.unavailable()),
         }
     }

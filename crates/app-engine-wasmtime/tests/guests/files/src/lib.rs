@@ -1,7 +1,7 @@
 //! Test guest: `write` stores a 1.25 MiB file and returns its id; `read` opens the file named
-//! in `args`, reads it to the end and returns its SHA-256; `make` tries to create a file.
+//! in `args`, reads it to the end and returns its SHA-256; `make` tries to create a file; `publish` (a call) and `peek` (a view) publish the file named in `args`.
 
-use calimero::app::files;
+use calimero::app::{files, runs};
 use sha2::{Digest, Sha256};
 
 wit_bindgen::generate!({
@@ -10,7 +10,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"write":{"kind":"call"},"read":{"kind":"view"},"make":{"kind":"view"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"write":{"kind":"call"},"read":{"kind":"view"},"make":{"kind":"view"},"publish":{"kind":"call"},"peek":{"kind":"view"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -61,6 +61,10 @@ impl Guest for App {
             "make" => {
                 let _ = files::create().map_err(fail)?;
                 Ok(Vec::new())
+            }
+            "publish" | "peek" => {
+                let id = String::from_utf8(args).map_err(|e| fail(e.to_string()))?;
+                Ok(runs::publish(&id).map_err(fail)?.into_bytes())
             }
             _ => Err(fail("no such method".into())),
         }
