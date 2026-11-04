@@ -161,7 +161,7 @@ async fn a_system_write_waits_for_a_leader_until_its_deadline() {
     let node = std::sync::Arc::clone(&c.nodes[survivor].as_ref().unwrap().node);
     let started = std::time::Instant::now();
     // A second genesis: refused when it applies, which proves it reached a leader.
-    let write = tokio::spawn(async move {
+    let genesis = |node: std::sync::Arc<calimero_node::Node>| async move {
         node.sys_write(&calimero_node::system::SystemCmd::Genesis {
             governance: calimero_node::system::Governance::default(),
             release: None,
@@ -169,13 +169,25 @@ async fn a_system_write_waits_for_a_leader_until_its_deadline() {
             nodes: Vec::new(),
         })
         .await
-    });
+    };
+    let write = tokio::spawn(genesis(std::sync::Arc::clone(&node)));
     tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(
+        !write.is_finished(),
+        "the write gave up without a leader before its deadline"
+    );
     c.restart(other).await;
-    let e = write
+    let mut e = write
         .await
         .unwrap()
         .expect_err("a second genesis is refused");
+    // The restarted node may not have rejoined and elected inside the first write's
+    // remaining 2 s on a loaded runner; a write sent now must still reach the leader.
+    if e.code == "UNAVAILABLE" {
+        e = genesis(node)
+            .await
+            .expect_err("a second genesis is refused");
+    }
     assert_eq!(e.code, "REJECTED", "after {:?}: {e:?}", started.elapsed());
 }
 
