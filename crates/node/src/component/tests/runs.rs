@@ -1955,3 +1955,155 @@ fn runs_page_newest_first_by_start_then_id_with_a_cursor_to_continue() {
         "a page that holds all has no cursor"
     );
 }
+
+/// The plain blob `out(n)` publishes as: its plaintext's hash.
+fn plain(n: u8) -> String {
+    hex::encode(vec![n + 1; 32])
+}
+
+fn published(source: &str, id: &str, size: u64) -> PublishedMark {
+    PublishedMark {
+        source: source.to_owned(),
+        id: id.to_owned(),
+        size,
+    }
+}
+
+/// A call that publishes `marks` and stores a reference to the first one's blob.
+fn publish_call(w: &World, marks: Vec<PublishedMark>, diff: Vec<Write>) -> ComponentCmd {
+    let mut call = call_entry(w.last);
+    call.outcome.published = marks;
+    call.outcome.diff = diff;
+    ComponentCmd::Call(Box::new(call))
+}
+
+/// `r1` done with `out(1)`, then a publish of it.
+fn done_world() -> World {
+    let mut w = World::new();
+    w.start("r1");
+    let k = job_key(1);
+    let _a = w.assign("r1", &k);
+    assert!(!w.finish(w.done("r1", &k)).conflict);
+    w
+}
+
+fn plain_record(w: &World, n: u8) -> Option<crate::component::blobs::BlobRecord> {
+    w.r.machine
+        .state
+        .component
+        .blobs
+        .records
+        .get(&[n + 1; 32])
+        .cloned()
+}
+
+#[test]
+fn a_done_runs_output_publishes_as_a_charged_plain_blob() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    let cmd = publish_call(&w, marks, vec![store_ref("report", 2)]);
+    let a = w.push(&cmd);
+    assert!(!a.conflict && a.status == Status::Ok, "{a:?}");
+    let record = plain_record(&w, 1).expect("the plain blob is recorded");
+    assert_eq!(
+        (
+            record.size,
+            record.refs,
+            record.file.is_none(),
+            record.charged
+        ),
+        (out(1).size, 1, true, true),
+        "counted in the entry that made it"
+    );
+    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
+        .file
+        .is_some());
+}
+
+#[test]
+fn a_collected_published_blob_releases_its_charge() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    assert!(!touch(&mut w, 10 + BLOB_IDLE_MS + 1, store_ref("later", 9)).conflict);
+    assert!(plain_record(&w, 1).is_none());
+    w.last += 1;
+    let freed = w.r.apply(w.last, &collected(&[plain(1)]));
+    assert_eq!(freed.result["freed"], json!(out(1).size));
+}
+
+#[test]
+fn publishing_what_is_no_done_runs_output_is_refused_and_changes_nothing() {
+    let mut w = done_world();
+    // An uploaded file, a file a call made, an unknown id, a plain blob.
+    let _f = w.push(
+        &serde_json::from_slice(&file_call(w.last, 1, Status::Ok, vec![mark(7)], vec![])).unwrap(),
+    );
+    for source in [fid(INPUT), fid(7), fid(99)] {
+        let marks = vec![published(&source, &plain(1), out(1).size)];
+        let a = w.push(&publish_call(&w, marks, vec![w2("leaked")]));
+        assert_eq!(why(&a), "NOT_A_RUN_OUTPUT", "{source}");
+    }
+    assert!(plain_record(&w, 1).is_none());
+    assert_eq!(w.wrote("leaked"), None, "a refused entry applied its diff");
+}
+
+#[test]
+fn a_run_that_did_not_finish_done_leaves_nothing_to_publish() {
+    let mut w = World::new();
+    w.start("r1");
+    let refused = FinalOutcome::Failed {
+        reason: FailedReason::Refused,
+    };
+    assert!(!w.finish(leader(&w, "r1", refused)).conflict);
+    assert_eq!(w.state("r1"), RunState::Failed);
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert_eq!(
+        why(&w.push(&publish_call(&w, marks, vec![]))),
+        "NOT_A_RUN_OUTPUT"
+    );
+}
+
+#[test]
+fn a_leader_cannot_name_another_plaintext_or_size_for_an_output() {
+    let mut w = done_world();
+    // The uploaded input's hash, a made-up one, a wrong size.
+    for (id, size) in [
+        (hex::encode([INPUT + 1; 32]), out(1).size),
+        (hex::encode([0x77; 32]), out(1).size),
+        (plain(1), out(1).size + 1),
+    ] {
+        let marks = vec![published(&out(1).id, &id, size)];
+        assert_eq!(
+            why(&w.push(&publish_call(&w, marks, vec![]))),
+            "NOT_A_RUN_OUTPUT"
+        );
+    }
+    assert!(plain_record(&w, 1).is_none());
+}
+
+#[test]
+fn a_published_blob_the_app_already_holds_is_not_charged_again() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks.clone(), vec![])).conflict);
+    let first = plain_record(&w, 1).unwrap();
+    assert!(
+        !w.push(&publish_call(&w, marks, vec![store_ref("k", 2)]))
+            .conflict
+    );
+    let second = plain_record(&w, 1).unwrap();
+    assert_eq!((second.charged, second.refs), (true, 1));
+    assert_eq!(second.idle_since_ms, first.idle_since_ms);
+}
+
+#[test]
+fn the_owner_cannot_delete_a_published_blob_around_its_charge() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    w.last += 1;
+    let forget = serde_json::to_vec(&ComponentCmd::BlobForget { id: plain(1) }).unwrap();
+    assert_eq!(why(&w.r.apply(w.last, &forget)), "no such blob in this app");
+    assert!(plain_record(&w, 1).is_some());
+}

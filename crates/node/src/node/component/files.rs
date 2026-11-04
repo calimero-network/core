@@ -1244,6 +1244,7 @@ mod tests {
         let seal = FileSeal {
             sha256: mark.sha256.clone(),
             wrapped_key: mark.wrapped_key.clone(),
+            output: false,
         };
         let mut reader = SealedReader::new(
             ciphertext,

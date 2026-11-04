@@ -58,6 +58,10 @@ pub struct BlobRecord {
     /// Set for a sealed file: what opening it needs beyond the ciphertext.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<FileSeal>,
+    /// Set for a plain blob made by publishing a compute output: its size is charged to the
+    /// file quota, which collecting it releases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub charged: bool,
 }
 
 impl BlobRecord {
@@ -74,7 +78,9 @@ impl BlobRecord {
             file: Some(FileSeal {
                 sha256: mark.sha256.clone(),
                 wrapped_key: mark.wrapped_key.clone(),
+                output: false,
             }),
+            charged: false,
         };
         Some((id, record))
     }
@@ -88,6 +94,10 @@ pub struct FileSeal {
     pub sha256: Bytes,
     /// The data key, wrapped under the app's file key.
     pub wrapped_key: Bytes,
+    /// Set when the file is an output of a done compute run: the only kind of file that
+    /// can be published.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output: bool,
 }
 
 /// A component app's blobs, by SHA-256.
@@ -153,6 +163,7 @@ impl BlobTable {
             refs,
             idle_since_ms: ts_ms,
             file: None,
+            charged: prev.as_ref().is_some_and(|p| p.charged),
         };
         if refs == 0 {
             let _new = self.idle.insert((ts_ms, id));
@@ -172,10 +183,56 @@ impl BlobTable {
         self.put(tx, id, record);
     }
 
-    /// The owner deletes a blob: [`Self::forget`], except a sealed file, which only the
-    /// retention rules forget.
+    /// [`Self::add_file`] for an output of a done compute run: the file may be published.
+    pub fn add_output(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
+        let Some((id, mut record)) = BlobRecord::sealed(mark, ts_ms) else {
+            return;
+        };
+        if let Some(seal) = record.file.as_mut() {
+            seal.output = true;
+        }
+        let _new = self.idle.insert((ts_ms, id));
+        self.put(tx, id, record);
+    }
+
+    /// The sealed file `id` is an output of a done compute run, and its plaintext is `sha256`
+    /// of `size` bytes.
+    #[must_use]
+    pub fn is_output_of(&self, id: &[u8; 32], sha256: &[u8; 32], size: u64) -> bool {
+        self.records.get(id).is_some_and(|r| {
+            r.size == size
+                && r.file
+                    .as_ref()
+                    .is_some_and(|f| f.output && f.sha256.0 == sha256)
+        })
+    }
+
+    /// Record the plain blob a published output made, charged, unreferenced and idle from
+    /// `ts_ms`; a blob the app already holds stays as it is. Not bounded by
+    /// [`MAX_COMPONENT_BLOBS`]: the guest was already told it exists.
+    pub fn add_published(&mut self, tx: &mut StateTx<'_>, id: [u8; 32], size: u64, ts_ms: u64) {
+        if self.records.contains_key(&id) {
+            return;
+        }
+        let record = BlobRecord {
+            size,
+            mime: String::new(),
+            refs: 0,
+            idle_since_ms: ts_ms,
+            file: None,
+            charged: true,
+        };
+        let _new = self.idle.insert((ts_ms, id));
+        self.put(tx, id, record);
+    }
+
+    /// The owner deletes a blob: [`Self::forget`], except a sealed file and a charged
+    /// published blob, which only the retention rules forget (they release the quota).
     pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
-        self.records.get(id).is_some_and(|r| r.file.is_none()) && self.forget(tx, id)
+        self.records
+            .get(id)
+            .is_some_and(|r| r.file.is_none() && !r.charged)
+            && self.forget(tx, id)
     }
 
     /// Forget a blob; whether the app held it.
@@ -216,7 +273,8 @@ impl BlobTable {
     }
 
     /// Forget the blobs idle for [`BLOB_IDLE_MS`] at `now_ms`, at most [`BLOB_EXPIRY_STEP`];
-    /// returns them, with the plaintext size of each that was a sealed file.
+    /// returns them, with the size of each that was charged to the quota (a sealed file or a
+    /// published blob).
     pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<([u8; 32], Option<u64>)> {
         let due: Vec<(u64, [u8; 32])> = self
             .idle
@@ -227,11 +285,11 @@ impl BlobTable {
             .collect();
         due.into_iter()
             .filter_map(|(_, id)| {
-                let file = self
+                let charged = self
                     .records
                     .get(&id)
-                    .and_then(|r| r.file.as_ref().map(|_| r.size));
-                self.forget(tx, &id).then_some((id, file))
+                    .and_then(|r| (r.file.is_some() || r.charged).then_some(r.size));
+                self.forget(tx, &id).then_some((id, charged))
             })
             .collect()
     }
@@ -369,7 +427,9 @@ mod tests {
             file: file.then(|| FileSeal {
                 sha256: Bytes(vec![9; 32]),
                 wrapped_key: Bytes(vec![8; 60]),
+                output: false,
             }),
+            charged: false,
         };
         let _ = records.insert([1; 32], record(true));
         let _ = records.insert([2; 32], record(false));

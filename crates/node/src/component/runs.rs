@@ -601,8 +601,12 @@ impl AppMachine {
         self.finish_run(tx, &entry.run);
         self.pin_inputs(tx, &record.inputs, -1, entry.ts_ms);
         // Registered before the result method's diff, so a `BlobRef` it stores is counted.
+        // Only a signed done report carries outputs (`check_final`), so these are a done run's.
         for output in &entry.outputs {
-            self.state.component.blobs.add_file(tx, output, entry.ts_ms);
+            self.state
+                .component
+                .blobs
+                .add_output(tx, output, entry.ts_ms);
         }
         self.apply_component_outcome(
             tx,
