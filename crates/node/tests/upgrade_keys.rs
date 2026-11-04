@@ -43,6 +43,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         build_info: None,
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm)),
+        compute: None,
         abi: None,
         links: None,
         frontend: None,
@@ -415,6 +416,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
         serde_json::to_value(SystemCmd::UpgradeApp {
             app_id: app.clone(),
             bundle: bundle.to_owned(),
+            compute_bundle: None,
             by_operator: false,
             actor: alice_id.clone(),
             at: std::time::SystemTime::now()
