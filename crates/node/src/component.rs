@@ -84,6 +84,10 @@ pub struct Outcome {
     /// The files the run finished: their marks only, the ciphertext never enters the log.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileMark>,
+    /// The compute outputs the run published as plain blobs: marks only, the plaintext never
+    /// enters the log; empty unless `Ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published: Vec<PublishedMark>,
     /// The compute runs the run started; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compute_starts: Vec<ComputeStart>,
@@ -155,6 +159,18 @@ pub struct FileMark {
     pub wrapped_key: Bytes,
 }
 
+/// A compute output a run published: applying it records the plain blob, after checking that
+/// `source` is a done run's output of this app and `id` and `size` are its plaintext's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedMark {
+    /// Hex id of the sealed output.
+    pub source: String,
+    /// Hex SHA-256 of the plaintext: the plain blob's id.
+    pub id: String,
+    pub size: u64,
+}
+
 /// The name a trap kind has on the wire (the spec's names).
 #[must_use]
 pub fn trap_name(kind: host::TrapKind) -> &'static str {
@@ -189,6 +205,7 @@ impl Outcome {
         let logs = out.logs;
         let http = out.http.into_iter().map(HttpRecord::from).collect();
         let files = out.new_files;
+        let published = out.published;
         let (starts, cancels) = (out.compute_starts, out.compute_cancels);
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls, out.actions),
@@ -206,6 +223,7 @@ impl Outcome {
         outcome.http = http;
         if outcome.status == Status::Ok {
             outcome.files = files.into_iter().map(FileMark::from).collect();
+            outcome.published = published.into_iter().map(PublishedMark::from).collect();
             outcome.compute_starts = starts.into_iter().map(ComputeStart::from).collect();
             outcome.compute_cancels = cancels;
         }
@@ -287,6 +305,7 @@ impl Outcome {
             actions: started,
             http: Vec::new(),
             files: Vec::new(),
+            published: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
         }
@@ -300,6 +319,16 @@ impl Outcome {
             && [host::TrapKind::Timeout, host::TrapKind::Unavailable]
                 .into_iter()
                 .any(|kind| self.error["kind"] == trap_name(kind))
+    }
+}
+
+impl From<host::PublishedFile> for PublishedMark {
+    fn from(file: host::PublishedFile) -> Self {
+        Self {
+            source: file.source,
+            id: file.id,
+            size: file.size,
+        }
     }
 }
 
@@ -812,6 +841,18 @@ impl AppMachine {
             .is_some_and(|last| *last >= slot)
     }
 
+    /// Whether every published mark names an output of a done run the app holds and that
+    /// output's own plaintext hash and size: judged on the records, so no leader can publish
+    /// anything else.
+    fn publishes_only_outputs(&self, marks: &[PublishedMark]) -> bool {
+        let blobs = &self.state.component.blobs;
+        marks.len() <= host::MAX_PUBLISHED_PER_RUN
+            && marks.iter().all(|m| {
+                let ids = (parse_hex32(&m.source), parse_hex32(&m.id));
+                matches!(ids, (Some(source), Some(id)) if blobs.is_output_of(&source, &id, m.size))
+            })
+    }
+
     fn apply_component_outcome(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -825,13 +866,22 @@ impl AppMachine {
         if base_index != self.state.last_index {
             return Applied::conflict(index, "conflict: retry");
         }
+        if outcome.status == Status::Ok && !self.publishes_only_outputs(&outcome.published) {
+            return host_answer(index, false, host::NOT_A_RUN_OUTPUT);
+        }
         let mut touched = Vec::new();
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         if outcome.status == Status::Ok {
-            // Files first, so the references this entry's diff stores to them are counted.
+            // Files and published blobs first, so the references this entry's diff stores to
+            // them are counted.
             for mark in &outcome.files {
                 c.blobs.add_file(tx, mark, ts_ms);
+            }
+            for mark in &outcome.published {
+                if let Some(id) = parse_hex32(&mark.id) {
+                    c.blobs.add_published(tx, id, mark.size, ts_ms);
+                }
             }
             if !outcome.diff.is_empty() {
                 // References to blobs move with the values that hold them (R8).
@@ -1427,6 +1477,7 @@ mod tests {
             logs: Vec::new(),
             http: vec![host::HttpExchange::record(&request, &response)],
             new_files: Vec::new(),
+            published: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             usage: host::Usage::default(),
@@ -1456,6 +1507,7 @@ mod tests {
             http: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
+            published: Vec::new(),
             new_files: vec![host::NewFile {
                 id: fid(1),
                 size: 5,
