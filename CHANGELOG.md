@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.9] - 2026-11-04
+
 ### Changed
 
 - **The component SDK is `calimero-sdk`** (was `calimero-app-sdk`), with its
