@@ -504,6 +504,10 @@ The compute component's ABI (world `calimero:app/compute@0.5.1`) lists the compu
 The host refuses at install (`BadAbi`) a compute method whose fuel is over 10^12, memory over 4,096 MiB or wall time over 900 s, or whose `result` is not a `computeResult` method; so does `compute` on any other kind.
 The SDK writes them from `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]` on a method without `self`, and `#[app::compute_result]` on a call method.
 The node never lets a client reach either: `/intents` and `/views` answer `WrongKind` for a compute method and for a `computeResult` method, whoever the caller is.
+A release ships the compute component as `compute` in the signed manifest (`services[].compute` in a multi-service bundle), so the signature and the artifact digest cover it like every artifact, and an older node ignores it.
+At install the node prepares it on the compute world only, never on the replica engine, and refuses the release unless its ABI is the compute world's and lists exactly the app ABI's compute methods with the same caps (`COMPUTE_ABI_MISMATCH`).
+A release without a compute component installs and its app runs calls, but cannot run compute.
+The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
 A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `compute.inputs`, which are blob ids.
 It may create files, 2 GiB in all and 47 MiB each; this cap replaces the 64 MiB per-run cap of a logged run.
 There is no delete: a file is a sealed blob, and dropping the reference is the delete.
