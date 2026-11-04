@@ -1,7 +1,7 @@
 //! Compute runs: what a `#[app::compute]` method sees of its run (its id, the files it may read
-//! and a way to report progress), and how a call, timer or init starts and cancels runs.
-//! Outside a compute run there is no run and no input; `start` and `cancel` work only in a
-//! logged write.
+//! and a way to report progress), and how a call, timer or init starts and cancels runs and
+//! publishes a done run's output. Outside a compute run there is no run and no input; `start`,
+//! `cancel` and `publish` work only in a logged write.
 
 use std::fmt;
 
@@ -10,6 +10,9 @@ use serde_json::json;
 
 use crate::blob::BlobRef;
 use crate::error::{AppError, Result};
+
+#[cfg(not(target_arch = "wasm32"))]
+const NOT_A_RUN_OUTPUT: &str = "NOT_A_RUN_OUTPUT"; // what the host answers for an id that is no done run's output
 
 /// The id of a compute run: opaque, safe to store and to send in JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -36,7 +39,7 @@ impl fmt::Display for RunId {
 }
 
 // The compute world has `job` and no `runs`; the app world the reverse. A call the build's
-// world lacks is a stub: a trap for `start` and `cancel`, never emitted as an import.
+// world lacks is a stub: a trap for `start`, `cancel` and `publish`, never emitted as an import.
 #[cfg(all(target_arch = "wasm32", calimero_compute))]
 mod backend {
     use crate::bindings::calimero::app::job;
@@ -58,6 +61,10 @@ mod backend {
     }
 
     pub fn cancel(_run: &str) -> Result<(), String> {
+        core::arch::wasm32::unreachable()
+    }
+
+    pub fn publish(_id: &str) -> Result<String, String> {
         core::arch::wasm32::unreachable()
     }
 }
@@ -83,6 +90,10 @@ mod backend {
     pub fn cancel(run: &str) -> Result<(), String> {
         runs::cancel(run)
     }
+
+    pub fn publish(id: &str) -> Result<String, String> {
+        runs::publish(id)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -103,6 +114,10 @@ mod backend {
 
     pub fn cancel(_run: &str) -> Result<(), String> {
         Err("compute runs need a node".to_owned())
+    }
+
+    pub fn publish(_id: &str) -> Result<String, String> {
+        Err(super::NOT_A_RUN_OUTPUT.to_owned())
     }
 }
 
@@ -141,6 +156,13 @@ pub fn start<A: Serialize + ?Sized>(method: &str, args: &A, inputs: &[BlobRef]) 
 /// Asks for an active run to end: its result method then receives a cancelled outcome.
 pub fn cancel(run: &RunId) -> Result<()> {
     backend::cancel(run.as_str()).map_err(fail)
+}
+
+/// Turns the output of one of this app's done compute runs into a plain blob the app can share
+/// with `blobs.grant`; logged writes only. Anything else answers `NOT_A_RUN_OUTPUT`.
+pub fn publish(output: &BlobRef) -> Result<BlobRef> {
+    let id = backend::publish(&output.id()).map_err(fail)?;
+    BlobRef::parse(&id).ok_or_else(|| fail(format!("the host returned a malformed blob id: {id}")))
 }
 
 /// How a compute run ended, as its result method is told.
