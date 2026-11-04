@@ -839,6 +839,60 @@ impl Client {
         self.confirmed(Method::POST, path, body, passkey).await
     }
 
+    /// The web origins registered for `package`'s frontend (its manager's).
+    ///
+    /// # Errors
+    /// As [`Self::get`].
+    pub async fn package_origins(&self, package: &str) -> Result<Value> {
+        self.get(&format!("package-origins/{}", path_segment(package)))
+            .await
+    }
+
+    /// Register `origin` for `package`'s frontend (its rp-id `rp_id`, else
+    /// the origin's host), approved with the manager's `passkey`: a passkey
+    /// ceremony there opens a session bound to the package.
+    ///
+    /// # Errors
+    /// As [`Self::post_confirmed`].
+    pub async fn add_package_origin(
+        &self,
+        package: &str,
+        origin: &str,
+        rp_id: Option<&str>,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let mut body = json!({ "origin": origin });
+        if let (Some(b), Some(rp)) = (body.as_object_mut(), rp_id) {
+            let _prev = b.insert("rpId".into(), json!(rp));
+        }
+        self.post_confirmed(
+            &format!("package-origins/{}", path_segment(package)),
+            body,
+            passkey,
+        )
+        .await
+    }
+
+    /// Remove a registered origin of `package`, approved with the manager's
+    /// `passkey`; the sessions opened there end.
+    ///
+    /// # Errors
+    /// As [`Self::post_confirmed`].
+    pub async fn remove_package_origin(
+        &self,
+        package: &str,
+        origin: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.confirmed(
+            Method::DELETE,
+            &format!("package-origins/{}", path_segment(package)),
+            json!({ "origin": origin }),
+            passkey,
+        )
+        .await
+    }
+
     /// End every session of this account, on every device.
     pub async fn sign_out_everywhere(&self) -> Result<Value> {
         self.post("auth/logout-all", json!({})).await

@@ -30,7 +30,9 @@ account's own apps from the start, so its apps can run where it began.
 (ES256 and EdDSA, via `ring`). Attestation statements are not checked
 (passkeys register with `attestation: none`); the relying party id is `--rp-id`
 and the accepted origins are `--origins`, plus a package's frontend origin for a
-ceremony that comes from it.
+ceremony that comes from it. A ceremony from an origin a package's manager
+registered (below) is checked against that origin alone and its own relying
+party id.
 
 | Ceremony | Routes | Result |
 | --- | --- | --- |
@@ -59,7 +61,7 @@ wrapped under its storage key K_r, so a restart on the same data directory (a
 crash, a rolling upgrade of the binary) keeps it.
 The claims are the account, a session id, the expiry (15 minutes), the passkey
 the session was opened with, for a session opened on a package's frontend that
-package, and the issuing node with its key. Signing in also returns a refresh
+package (and, on a registered origin, that origin), and the issuing node with its key. Signing in also returns a refresh
 token (`rt_…`, 30 days, single use): `POST /auth/refresh` on any node exchanges
 it for a new token, signed by that node, and a new refresh token; a refresh
 token presented a second time revokes its session.
@@ -148,6 +150,70 @@ A session opened on a package's frontend is bound to that package
 release of that package, and the node refuses it credential management, API
 keys, approvals, upgrades, uninstalls and uploads. An app's page is third-party
 code; this keeps it from acting as the whole account.
+
+## Registered origins
+
+A developer's own site (their domain, a hosting preview) is not an origin the
+node serves, so on its own it could not run a passkey ceremony against the
+cluster. A package's **manager** registers it (`/package-origins/{package}`):
+where the package's signing key is bound to a publisher organization, that
+organization's org-wide `MANAGE_APPLICATION` holders; otherwise the account
+that installed the package's first release. Never the operator, an API key or
+a package-bound session.
+
+| Change | Route | Consent (`412` first) |
+| --- | --- | --- |
+| List | `GET /package-origins/{package}` | none |
+| Register | `POST /package-origins/{package} { origin, rpId? }` | `package:{package} / __add_origin / { origin, rpId }` |
+| Remove | `DELETE /package-origins/{package} { origin }` | `package:{package} / __remove_origin / { origin }` |
+
+The consent is logged with the command (`AddPackageOrigin`,
+`RemovePackageOrigin`) and checked where it applies, on every node: a
+command without the manager's own consent over exactly that change is
+refused there, whichever node proposed it. The registrations live in the
+system state (`SystemState::package_origins`, `crate::origins`).
+
+**Relying party.** WebAuthn binds a passkey to a relying-party id, which must
+be the page's host or a parent domain of it. The cluster's `--rp-id` cannot be
+a developer's domain, so each registered origin carries its own `rpId`: the
+origin's host by default, or a parent domain of it that the manager names
+(`https://app.example.com` with `example.com`). The cluster's rp-id, or a
+parent of it, is refused, so the cluster's own passkeys never answer on a
+developer's site. A person signing in there makes a passkey for that site;
+the account it opens is an ordinary cluster account whose sessions from that
+origin are always bound to the package. WebAuthn's Related Origin Requests
+(one rp-id, a `/.well-known/webauthn` list of origins) was not chosen:
+browsers allow the list five registrable domains, for the whole cluster; the
+rp-id's host would have to serve the list, which the node does not control;
+and not every browser supports it.
+
+**Ceremonies.** `POST /auth/passkey/{register,login}/begin` take the page's
+`origin` and answer its rpId (`403 ORIGIN_NOT_REGISTERED` for an origin that
+is neither the cluster's, a served frontend's nor registered). The finish
+routes verify a ceremony from a registered origin against `{ rpId, [origin] }`
+alone, and open a session bound to the package exactly as a served
+frontend's (`SessionClaims::app`), which also names the origin
+(`SessionClaims::origin`, carried through refresh). A step-up of that session
+answers `412` with the origin's rpId.
+
+**Removal** ends it: from the next request every session opened on the
+origin, and its refresh token, is refused `401`, judged on fresh system
+state. An uninstalled package takes its origins with it.
+
+**Limits and rules.** `https://host[:port]` exactly as a browser writes it
+(lowercase, no path, no default port); `http://` only for a `localhost` name
+and only on a `--dev` node. One package per origin (first come; the cluster's
+own origins and served frontends are refused). 8 origins per package, 4096
+per cluster. CORS on the node's API admits registered origins. The node logs,
+at `info`, each registration and removal (package, origin, rp-id) and each
+session opened on a registered origin (package and origin); who made the
+change is in the system log's command and at `debug` only, never in the
+journal an operator reads.
+
+Not yet: proof that the manager controls the origin (a squatter on another
+developer's origin denies them its use on this cluster, but never sees a
+token: the sessions go to the pages on that origin), and origins scoped to a
+deployment.
 
 ## Development passkeys
 

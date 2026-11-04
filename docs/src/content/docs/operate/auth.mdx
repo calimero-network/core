@@ -124,6 +124,12 @@ apps that run a release of that package, can create instances of that package
 only, and is refused credentials, API keys, approvals, upgrades, uninstalls
 and uploads. Its step-up confirmations come from its own origin only.
 
+A package's manager can also register origins of their own (a developer's
+site): `GET|POST|DELETE /package-origins/{package}`, each change approved with
+their passkey. A ceremony there uses the origin's own rp-id and opens the same
+package-bound session; removing the origin ends those sessions. See
+[Registered origins](/protocol/identities/#registered-origins).
+
 ## The ops token
 
 The Ops API (`/ops/*`) takes the operator's token as a bearer token.

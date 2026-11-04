@@ -275,6 +275,9 @@ pub struct RefreshRecord {
     /// The package whose frontend opened the session, which binds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The registered origin that opened it (`SessionClaims::origin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
