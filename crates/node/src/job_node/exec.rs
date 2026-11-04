@@ -1,17 +1,16 @@
 //! One run on its own OS thread: the compute invocation over the run's files, and the signed
 //! report of how it ended.
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use calimero_app_engine_wasmtime::{ending_of, ComputeRun, Ending, Reason};
 use calimero_app_host::{
-    Budget, ComputeCaps, ComputeCtx, Directory, FileError, FileInfo, FileRead, FileWrite, Files,
-    HostCore, Invocation, InvocationKind, NewFile, OrgRole, Outcome, Progress, ReadError, Status,
-    TrapKind, NO_SUCH_FILE,
+    ComputeCaps, FileError, FileInfo, FileRead, FileWrite, Files, NewFile, Outcome, Progress,
+    ReadError, Status, NO_SUCH_FILE,
 };
 use ring::digest::{Context, SHA256};
 use tracing::warn;
@@ -24,7 +23,7 @@ use crate::job_wire::{
     sign_report, Assignment, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
     MAX_REPORT_MESSAGE_BYTES,
 };
-use crate::usage::{self, Run as Measured};
+use crate::usage::Run as Measured;
 
 const INPUT_PREFIX: &str = "in-"; // an input's ciphertext: in-{index}
 const OUTPUT_PREFIX: &str = "out-"; // a finished output: out-{index}
@@ -45,44 +44,16 @@ pub(super) enum Verdict {
 /// Maps an outcome to what is reported, by what happened and never by its text. An input that
 /// does not open during a run, and a wall clock that ran out, are the node's: the attempt is lost.
 pub(super) fn classify(status: &Status) -> Verdict {
-    match status {
-        Status::Ok => Verdict::Done,
-        Status::AppError { .. } => Verdict::Failed(FailReason::AppError),
-        Status::Trap { kind, .. } => match kind {
-            TrapKind::OutOfFuel => Verdict::Failed(FailReason::Fuel),
-            TrapKind::OutOfMemory => Verdict::Failed(FailReason::Memory),
-            TrapKind::Cancelled => Verdict::Failed(FailReason::Cancelled),
-            TrapKind::Timeout | TrapKind::Unavailable => Verdict::Lost,
-            TrapKind::StackOverflow | TrapKind::Fault | TrapKind::HostDenied => {
-                Verdict::Failed(FailReason::Trap)
-            }
-        },
-    }
-}
-
-/// What a compute run knows of its surroundings: nothing but its app's owner.
-struct ComputeDirectory {
-    owner: String,
-}
-
-impl Directory for ComputeDirectory {
-    fn org(&self) -> Option<String> {
-        None
-    }
-    fn app_owner(&self) -> String {
-        self.owner.clone()
-    }
-    fn org_role(&self, _account: &str) -> Option<OrgRole> {
-        None
-    }
-    fn in_team(&self, _account: &str, _team: &str) -> bool {
-        false
-    }
-    fn team_exists(&self, _team: &str) -> bool {
-        false
-    }
-    fn orgs_of(&self, _account: &str) -> Vec<(String, OrgRole)> {
-        Vec::new()
+    match ending_of(status) {
+        Ending::Done => Verdict::Done,
+        Ending::Lost => Verdict::Lost,
+        Ending::Failed(reason) => Verdict::Failed(match reason {
+            Reason::Fuel => FailReason::Fuel,
+            Reason::Memory => FailReason::Memory,
+            Reason::Trap => FailReason::Trap,
+            Reason::AppError => FailReason::AppError,
+            Reason::Cancelled => FailReason::Cancelled,
+        }),
     }
 }
 
@@ -331,48 +302,33 @@ fn execute(job: &JobNode, run: &Arc<Run>) -> eyre::Result<Phase> {
         produced: Arc::clone(&produced),
         writers: AtomicU64::new(0),
     };
-    let invocation = Invocation {
-        kind: InvocationKind::Action,
-        method: a.method.clone(),
-        args: a.args.clone(),
-        caller: a.caller.to_host(),
-        entry_ts_ms: a.start_ts_ms,
-        id_term: 0,
-        id_seq: 0,
-        seed: *seed,
-        timer: None,
-        compute: Some(ComputeCtx {
-            run_id: a.run.clone(),
-            owner: a.owner.clone(),
-            inputs: a.inputs.iter().map(|i| i.id.clone()).collect(),
-        }),
-    };
     let for_progress = Arc::clone(run);
     let progress: Progress = Arc::new(move |percent, step| {
         locked(&for_progress.state).progress = Some((percent, step.to_owned()));
     });
-    let host = HostCore::new(
-        &a.app,
-        Arc::new(BTreeMap::<Vec<u8>, Vec<u8>>::new()),
-        0,
-        invocation,
-        Arc::new(ComputeDirectory {
+    let (outcome, measured) = job.engine.run_compute(
+        &run.prepared,
+        ComputeRun {
+            app: a.app.clone(),
+            run: a.run.clone(),
             owner: a.owner.clone(),
-        }),
-    )
-    .map_err(|e| eyre::eyre!("{e}"))?
-    .with_files(Arc::new(files))
-    .with_progress(progress);
-    let budget = Budget::compute(&ComputeCaps {
-        fuel: a.budget.fuel,
-        memory_mib: a.budget.memory_mib,
-        wall_secs: a.budget.wall_secs,
-        result: String::new(),
-    });
-    let (outcome, measured) = usage::measure(|| {
-        job.engine
-            .invoke_cancellable(&run.prepared, host, budget, Arc::clone(&run.cancel))
-    });
+            method: a.method.clone(),
+            args: a.args.clone(),
+            caller: a.caller.to_host(),
+            start_ts_ms: a.start_ts_ms,
+            seed: *seed,
+            inputs: a.inputs.iter().map(|i| i.id.clone()).collect(),
+            caps: ComputeCaps {
+                fuel: a.budget.fuel,
+                memory_mib: a.budget.memory_mib,
+                wall_secs: a.budget.wall_secs,
+                result: String::new(),
+            },
+        },
+        Arc::new(files),
+        progress,
+        Arc::clone(&run.cancel),
+    )?;
     let produced = std::mem::take(&mut *locked(&produced));
     ending(job, &run.digest(), a, outcome, measured, produced)
 }
@@ -521,6 +477,7 @@ fn remove_files(dir: &Path, keep_outputs: bool) {
 mod tests {
     use calimero_app_host::Abi;
     use calimero_app_host::Prepared;
+    use calimero_app_host::TrapKind;
 
     use super::*;
     use crate::job_wire::sample_assignment;
