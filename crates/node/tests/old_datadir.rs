@@ -61,6 +61,8 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
         kms_keys: Default::default(),
+        rollback: None,
+        accept_rollback: false,
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,

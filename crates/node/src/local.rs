@@ -78,6 +78,8 @@ pub async fn start(
             peer_measurements: calimero_client::Measurements::None,
             clock_offset_ms: 0,
             kms_keys: Default::default(),
+            rollback: None,
+            accept_rollback: false,
             budget: None,
             registry: registry.clone(),
             allow_unsigned_bundles: true,

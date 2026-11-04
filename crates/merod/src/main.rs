@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use calimero_client::Measurements;
 use calimero_node::attest::Mode;
@@ -50,6 +51,12 @@ enum Cmd {
     Run {
         #[command(flatten)]
         node: NodeArgs,
+        /// Start on a store mero-kms's rollback counter says is older than
+        /// this node has run (its newest disk lost). mero-kms then raises the
+        /// cluster's epoch, which every node reports. For this run only: it is
+        /// never stored in the configuration.
+        #[arg(long)]
+        accept_rollback: bool,
     },
     /// Change the node's configuration (the flags given), then print it.
     Config {
@@ -317,18 +324,28 @@ fn authority(a: Option<Authority>) -> Authority {
     a.unwrap_or(Authority::Owner)
 }
 
+/// What the storage key's source gave besides the key: what the node verified
+/// of the KMS behind its keys, and node `node_id`'s rollback counter there.
+type KeyExtras = (
+    calimero_client::attest::KmsKeys,
+    Option<Arc<dyn calimero_node::rollback::Counter>>,
+);
+
 /// The storage key from the flags (mero-kms, a key file, a raw key, or the
-/// development key), and what the node verified of the KMS behind its keys.
+/// development key), what the node verified of the KMS behind its keys, and
+/// its rollback counter there (mero-kms only).
 async fn storage_key(
     args: &NodeArgs,
     dev: bool,
     cluster: &str,
-) -> eyre::Result<([u8; 32], calimero_client::attest::KmsKeys)> {
+    node_id: u64,
+) -> eyre::Result<([u8; 32], KeyExtras)> {
     if args.kms_url.is_some() != args.kms_identity.is_some() {
         eyre::bail!("mero-kms needs both --kms-url and --kms-identity");
     }
     let kms_args = args.kms_url.as_deref().zip(args.kms_identity.as_deref());
     let mut kms_keys = calimero_client::attest::KmsKeys::default();
+    let mut rollback = None;
     let storage_key: [u8; 32] = match kms::key_source(
         dev,
         args.storage_key.as_deref(),
@@ -340,8 +357,9 @@ async fn storage_key(
             .map_err(|_| eyre::eyre!("storage key must be 32 bytes"))?,
         kms::KeySource::File(path) => kms::derive_storage_key(&kms::read_key_file(path)?, cluster),
         kms::KeySource::Kms { url, identity } => {
-            let (material, evidence) = kms::fetch(url, identity).await?;
+            let (material, evidence, counter) = kms::fetch(url, identity, node_id).await?;
             kms_keys.storage = Some(evidence);
+            rollback = Some(Arc::new(counter) as Arc<dyn calimero_node::rollback::Counter>);
             kms::derive_storage_key(&material, cluster)
         }
         kms::KeySource::Dev => {
@@ -359,7 +377,7 @@ async fn storage_key(
             }
         }
     }
-    Ok((storage_key, kms_keys))
+    Ok((storage_key, (kms_keys, rollback)))
 }
 
 fn parse_peers(args: &NodeArgs) -> eyre::Result<BTreeMap<u64, String>> {
@@ -431,7 +449,7 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
+async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> eyre::Result<()> {
     if args.job_node.unwrap_or(false) {
         return start_job(home, args).await;
     }
@@ -450,7 +468,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
     let dev = args.dev.unwrap_or(false);
     let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
     let peers = parse_peers(&args)?;
-    let (storage_key, kms_keys) = storage_key(&args, dev, &cluster).await?;
+    let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
     let peer_measurements = peer_measurements(&args, dev)?;
     let outbound = match (&args.settings, &args.outbound) {
         (Some(path), _) => Some(read_settings(path)?),
@@ -508,6 +526,8 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
             sign_up: args.sign_up.unwrap_or_default(),
         },
         kms_keys,
+        rollback,
+        accept_rollback,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;
@@ -567,9 +587,12 @@ async fn main() -> eyre::Result<()> {
             print!("{}", std::fs::read_to_string(&file)?);
             Ok(())
         }
-        Cmd::Run { node } => {
+        Cmd::Run {
+            node,
+            accept_rollback,
+        } => {
             let args = effective(home.as_ref(), node)?;
-            start(home, args).await
+            start(home, args, accept_rollback).await
         }
         Cmd::Local(args) => local(args).await,
         Cmd::Inspect(args) => {

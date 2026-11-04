@@ -100,6 +100,22 @@ pub async fn fetch_disk_key(
     identity: &Utf8Path,
     create: bool,
 ) -> EyreResult<(zeroize::Zeroizing<Vec<u8>>, KmsEvidence)> {
+    let (key, evidence, _) = fetch_disk_key_and_counters(kms_url, identity, create, None).await?;
+    Ok((key, evidence))
+}
+
+/// [`fetch_disk_key`] that also asks for node `rollback_node`'s rollback
+/// counters (`None` from a KMS that keeps none).
+pub async fn fetch_disk_key_and_counters(
+    kms_url: Url,
+    identity: &Utf8Path,
+    create: bool,
+    rollback_node: Option<u64>,
+) -> EyreResult<(
+    zeroize::Zeroizing<Vec<u8>>,
+    KmsEvidence,
+    Option<crate::kms::Counters>,
+)> {
     let identity = load_or_create_identity(identity, create)?;
 
     // The same rule as merod's `init --kms-url`: without the signed release
@@ -116,15 +132,21 @@ pub async fn fetch_disk_key(
     let tee = TeeConfig::kms(kms_url);
     let peer_id = identity.public().to_peer_id().to_base58();
     info!(%peer_id, "Fetching the data-disk key from the KMS");
-    let released =
-        crate::kms::fetch_storage_key(tee.kms.as_ref(), &peer_id, &identity, Some(&policy))
-            .await
-            .wrap_err("could not fetch the data-disk key from the KMS")?;
-    let key = zeroize::Zeroizing::new(released.key);
+    let released = crate::kms::fetch_storage_key(
+        tee.kms.as_ref(),
+        &peer_id,
+        &identity,
+        Some(&policy),
+        rollback_node,
+    )
+    .await
+    .wrap_err("could not fetch the data-disk key from the KMS")?;
     let evidence = released
         .evidence
         .ok_or_else(|| eyre::eyre!("the release policy verified the KMS but left no record"))?;
-    Ok((key, evidence))
+    let counters = released.counters;
+    let key = zeroize::Zeroizing::new(released.key);
+    Ok((key, evidence, counters))
 }
 
 /// Read what `kms disk-key --evidence-out` recorded of the KMS. Refused unless

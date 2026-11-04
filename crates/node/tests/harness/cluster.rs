@@ -124,6 +124,8 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
         kms_keys: Default::default(),
+        rollback: None,
+        accept_rollback: false,
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,
