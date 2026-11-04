@@ -122,3 +122,41 @@ fn a_crate_without_compute_methods_builds_one_component() {
     assert!(built.compute.is_none());
     assert!(!built.app.component.is_empty());
 }
+
+#[test]
+fn the_cli_writes_the_compute_component_beside_the_app_component() {
+    let out = tempfile::tempdir().expect("tempdir");
+    let target = tempfile::tempdir().expect("tempdir");
+    let app = out.path().join("fixture.wasm");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_mero-app-build"))
+        .arg(&fixture)
+        .arg("--target-dir")
+        .arg(target.path())
+        .arg("--out")
+        .arg(&app)
+        .output()
+        .expect("run mero-app-build");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(app.exists());
+    let compute = std::fs::read(out.path().join("compute.component.wasm")).expect("compute out");
+    let abi = abi_of(&compute).unwrap().expect("a compute ABI");
+    assert_eq!(abi["world"], COMPUTE_WORLD);
+
+    let echo = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/echo");
+    let refused = std::process::Command::new(env!("CARGO_BIN_EXE_mero-app-build"))
+        .arg(&echo)
+        .arg("--target-dir")
+        .arg(target.path())
+        .arg("--out")
+        .arg(out.path().join("echo.wasm"))
+        .arg("--compute-out")
+        .arg(out.path().join("echo-compute.wasm"))
+        .output()
+        .expect("run mero-app-build");
+    assert!(!refused.status.success());
+}
