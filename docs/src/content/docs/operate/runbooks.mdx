@@ -165,8 +165,37 @@ meroctl ops set-quotas '{"maxFileBytesPerOrg":50000000000}'
 
 `set-quotas` changes the limits it names (a field left out keeps its value). They
 live in the system state, so every node enforces the same limits when commands
-apply; refusals are `429 QUOTA_EXCEEDED`. Sign-up is open, so `maxAccounts` is
-what bounds the cluster's growth.
+apply; refusals are `429 QUOTA_EXCEEDED`. On a cluster whose sign-up is
+`open`, `maxAccounts` is what bounds the cluster's growth; see below for one
+that is not.
+
+## Close sign-up
+
+A cluster's [sign-up policy](/operate/auth/#sign-up-policy) is `open`,
+`invite` or `closed`. Start a new cluster with it (`--sign-up invite`,
+`MEROD_SIGN_UP`, or `sign-up = "invite"` in `config.toml`; mero-tee and mdma
+stamp it with the other genesis flags), or change an existing one with the
+operator's signature:
+
+```bash
+# 428 OPERATOR_SIGNATURE_REQUIRED answers the bytes to sign; send them back signed
+curl ... -X POST /ops/sign-up -d '{"policy":"invite"}'
+```
+
+Let people in on an `invite` or `closed` cluster with a sign-up invite: pick a
+random token, issue it signed, and hand the token to the person (their
+frontend sends it as `invite` at sign-up):
+
+```bash
+curl ... -X POST /ops/sign-up/invites \
+  -d '{"token":"sup_<random>","uses":1,"expiresAt":"2026-12-01T00:00:00Z"}'
+```
+
+`GET /ops/sign-up/invites` lists the live ones (keys and terms, no tokens);
+`DELETE /ops/sign-up/invites/{inviteKey}` withdraws one. On an `invite`
+cluster an organization's admins also bring people in with their organization
+invites. Where the operator has named the cluster's owner (`--deployers
+owner`), the owner runs all of this instead (`/sign-up`, passkey).
 
 ## Upgrade the cluster's release
 

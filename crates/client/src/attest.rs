@@ -180,6 +180,36 @@ pub struct Governance {
     /// operator names it; the operator until then. Left out when `operator`.
     #[serde(default, skip_serializing_if = "Deployers::is_default")]
     pub deployers: Deployers,
+    /// Who may create an account. `open`: anyone who reaches the cluster
+    /// (bounded by the account quota). `invite`: only someone holding a
+    /// valid invite, an organization's or a cluster sign-up invite. `closed`:
+    /// only someone the cluster's operator (or owner) pre-authorized with a
+    /// sign-up invite. Changed after genesis only by the operator's
+    /// signature, or the cluster owner's passkey once one is named. Left out
+    /// of the JSON when `open`.
+    #[serde(default, skip_serializing_if = "SignUp::is_default")]
+    pub sign_up: SignUp,
+}
+
+/// Who may create an account on a cluster ([`Governance::sign_up`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignUp {
+    /// Anyone who reaches the cluster.
+    #[default]
+    Open,
+    /// Someone holding an organization invite or a cluster sign-up invite.
+    Invite,
+    /// Someone holding a cluster sign-up invite (a pre-authorization) only.
+    Closed,
+}
+
+impl SignUp {
+    /// Whether this is the default (`open`), which the JSON leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Open
+    }
 }
 
 /// Who may install apps on a cluster ([`Governance::deployments`]).
@@ -225,9 +255,9 @@ impl Deployers {
 impl Governance {
     /// The bytes a quote binds: the JSON, fields in declaration order
     /// (`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`, what
-    /// `JSON.stringify` writes for the same object too). `deployments` and
-    /// `deployers` follow only when not the default, so a client that
-    /// recomputes the binding keeps them, in this order, when present.
+    /// `JSON.stringify` writes for the same object too). `deployments`,
+    /// `deployers` and `signUp` follow only when not the default, so a client
+    /// that recomputes the binding keeps them, in this order, when present.
     #[must_use]
     pub fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
@@ -990,5 +1020,28 @@ mod tests {
         .unwrap();
         assert_eq!(old.deployments, Deployments::Open);
         assert_eq!(old.deployers, Deployers::Operator);
+        assert_eq!(old.sign_up, SignUp::Open);
+    }
+
+    /// A cluster whose sign-up is not open binds it, last; an open one binds
+    /// the bytes it did before `signUp` existed.
+    #[test]
+    fn a_sign_up_policy_is_bound_only_when_not_open() {
+        let invite = Governance {
+            sign_up: SignUp::Invite,
+            ..Governance::default()
+        };
+        assert_eq!(
+            String::from_utf8(invite.canonical()).unwrap(),
+            r#"{"releases":"owner","appUpgrades":"owner","outbound":"owner","signUp":"invite"}"#
+        );
+        let closed = Governance {
+            sign_up: SignUp::Closed,
+            ..invite.clone()
+        };
+        assert_ne!(
+            receipt_key_binding(&[1; 32], &closed),
+            receipt_key_binding(&[1; 32], &invite)
+        );
     }
 }

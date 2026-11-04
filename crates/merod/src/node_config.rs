@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use calimero_node::system::{Authority, Deployers, Deployments};
+use calimero_node::system::{Authority, Deployers, Deployments, SignUp};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,15 @@ fn deployers(s: &str) -> Result<Deployers, String> {
         "operator" => Ok(Deployers::Operator),
         "owner" => Ok(Deployers::Owner),
         other => Err(format!("{other:?}: expected operator or owner")),
+    }
+}
+
+fn sign_up(s: &str) -> Result<SignUp, String> {
+    match s {
+        "open" => Ok(SignUp::Open),
+        "invite" => Ok(SignUp::Invite),
+        "closed" => Ok(SignUp::Closed),
+        other => Err(format!("{other:?}: expected open, invite or closed")),
     }
 }
 
@@ -209,6 +218,15 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_DEPLOYERS", value_parser = deployers)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployers: Option<Deployers>,
+    /// Who may create an account: `open` (anyone who reaches the cluster),
+    /// `invite` (an organization invite or a cluster sign-up invite) or
+    /// `closed` (only a cluster sign-up invite the operator or owner issued)
+    /// [default: open]. Written at first start and attested; later changed
+    /// only by the operator's signature (`POST /ops/sign-up`) or, once named,
+    /// the cluster owner's passkey (`POST /sign-up`).
+    #[arg(long, env = "MEROD_SIGN_UP", value_parser = sign_up)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_up: Option<SignUp>,
     /// Serve app frontends from their releases at `{label}.{DOMAIN}`, one
     /// origin per package (a wildcard DNS name pointing at the cluster).
     #[arg(long, env = "MEROD_APPS_DOMAIN")]
@@ -269,6 +287,7 @@ impl NodeArgs {
             outbound_approvals: self.outbound_approvals.or(base.outbound_approvals),
             deployments: self.deployments.or(base.deployments),
             deployers: self.deployers.or(base.deployers),
+            sign_up: self.sign_up.or(base.sign_up),
             apps_domain: self.apps_domain.or(base.apps_domain),
             settings: self.settings.or(base.settings),
             outbound: self.outbound.or(base.outbound),

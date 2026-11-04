@@ -471,14 +471,35 @@ impl Client {
 
     /// Create an account with a new passkey and sign in.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
+        self.sign_up_invited(passkey, name, None).await
+    }
+
+    /// [`Self::sign_up`] with an invite: an organization invite token (the
+    /// new account joins the organization) or a cluster sign-up invite
+    /// token, which a cluster whose sign-up is `invite` or `closed` needs
+    /// (`GET /sign-up` says which). Refused `403 SIGN_UP_REFUSED` before the
+    /// passkey is asked when the cluster would not take it.
+    pub async fn sign_up_invited(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        invite: Option<&str>,
+    ) -> Result<Session> {
         let begin = self
-            .post("auth/passkey/register/begin", json!({ "name": name }))
+            .post(
+                "auth/passkey/register/begin",
+                json!({ "name": name, "invite": invite }),
+            )
             .await?;
         let registration = passkey.create(&begin["options"]);
         let s: Session = serde_json::from_value(
             self.post(
                 "auth/passkey/register/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                json!({
+                    "challengeId": begin["challengeId"],
+                    "registration": registration,
+                    "invite": invite,
+                }),
             )
             .await?,
         )
