@@ -35,6 +35,35 @@ apps."
 An app a person deploys outside any organization has no admin: only its
 owner reaches it.
 
+## Recovering an organization
+
+An owner who loses every passkey gets their organization back only with its
+**recovery seed**: a 32-byte Ed25519 seed the owner downloads when creating the
+organization (or sets later, with a passkey) and keeps offline. The cluster
+stores only its public key. Nobody else can recover an organization: not its
+admins, not the operator (no Ops API route touches it), not a node (the seed
+never reaches one, and every step is verified where it applies in the system
+log, on every node).
+
+| Step | Who | Proof |
+| --- | --- | --- |
+| Set, rotate or remove the key | The owner | Their passkey |
+| Start a recovery | Any signed-in account | The seed's signature naming that account |
+| Wait 72 hours | Every member sees the pending recovery on `GET /orgs/{org}` | |
+| Cancel | The owner | Their passkey |
+| Finish | The account the seed named | Its passkey |
+
+Finishing makes the recovering account the owner; the previous owner leaves
+the organization, and the apps they owned in it move to the new owner. Their
+account and its other organizations are not touched: one organization's seed
+reaches only that organization. One recovery runs at a time, and each
+signature is used once.
+
+**If the seed leaks**, the owner rotates the key: a recovery under way is
+cancelled and the old seed is refused from then on. An owner who has lost both
+every passkey and the seed cannot recover the organization; neither can anyone
+else. Design: [`docs/specs/org-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/org-recovery.md).
+
 ## TDX mode and development mode
 
 | | TDX mode (default) | `--dev` |
@@ -165,7 +194,8 @@ from mero-kms, no restore of a snapshot into a
 running cluster, no event audiences, no pruning of revoked session ids, and
 search indexes rebuilt from state at each start, and no recovery when every
 mero-kms replica is lost: backups are sealed only under the cluster's key
-(planned: each organization holds a recovery seed that opens its own backups). Sign-up is open by
+(planned: an organization's own key opens its backups; the recovery seed
+above restores access, not data). Sign-up is open by
 default; bound it with the `maxAccounts` quota, or deploy with `--sign-up invite|closed`
 ([Sign-up policy](/operate/auth/#sign-up-policy)).
 

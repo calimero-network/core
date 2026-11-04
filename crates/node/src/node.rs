@@ -653,9 +653,24 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if let Some(code) = recovery_code(reason) {
+        ApiError::new(409, code, reason)
     } else {
         ApiError::bad_request("REJECTED", reason)
     }
+}
+
+/// The code of a recovery refusal that is a conflict with the organization's
+/// state, not a malformed request.
+fn recovery_code(reason: &str) -> Option<&'static str> {
+    use crate::system::{NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING};
+    [
+        (NO_RECOVERY_KEY, "NO_RECOVERY_KEY"),
+        (RECOVERY_PENDING, "RECOVERY_PENDING"),
+        (RECOVERY_NOT_READY, "RECOVERY_NOT_READY"),
+    ]
+    .into_iter()
+    .find_map(|(r, code)| (r == reason).then_some(code))
 }
 
 fn status_of(e: &WriteError) -> ApiError {

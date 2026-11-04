@@ -24,5 +24,11 @@ machines, short session tokens any node verifies, and step-up consent challenges
   `a_sign_in_and_a_counter_verify_from_public_data_only`.
 - `confirm_challenge`: what a passkey signs to approve one `#[app::confirm]` call.
 - Feature `testing`: `SoftAuthenticator`, an in-memory ES256 passkey.
+- `recovery.rs`: an organization's recovery key (Ed25519; the owner keeps the
+  seed, the node stores the public half). `sign_recovery`/`verify_recovery`
+  over `"calimero.org-recovery.v1\0" || org || 0 || account || 0 || nonce`;
+  the seed is written as 64 hex digits in groups of eight (`seed_text`,
+  `parse_seed`). mero-js and calimero-client-py sign the same bytes; the
+  pinned vectors are in `the_wire_bytes_are_pinned_for_the_clients`.
 
 Tests: `cargo test -p calimero-identity`.
