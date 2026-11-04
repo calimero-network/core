@@ -149,6 +149,41 @@ three strengths:
   read the state this way, so a revocation or removal committed through any
   node holds before the next request anywhere.
 
+### One round per request
+
+A request makes one read-index round, where it is first judged
+(`principal`, or `gate` for an anonymous caller). Its other checks, on the
+same node or on the app's leader, reuse that round: the request carries the
+index the round named (`Principal::sys_index`, `CallRequest::sys_index` on
+`internal/call`), and each check waits until its own replica has applied that
+index (`Node::sys_fresh_from`) instead of asking the system leader again. A
+client's call or strong view costs one round, about one round trip to the
+system leader, wherever it enters and wherever the app's leader is.
+`calimero_system_read_rounds_total` in `/ops/metrics` counts the rounds each
+node begins.
+
+Why the carried index is as fresh as a round of the leader's own:
+
+1. The round answers the system leader's applied index after the leader
+   confirmed, with a quorum, that it still leads. Every system write committed
+   before the round began is at or below that index.
+2. A request takes only a round begun after it arrived (concurrent requests
+   share the next round, never one already under way), so every write
+   committed before the request arrived is at or below the index.
+3. Raft's log matching makes the entries up to that index the same on every
+   replica, and a replica's applied index only grows. So a replica that has
+   applied the index, on any node, holds each of those writes: a removal,
+   revocation or demotion committed before the request is seen by every check
+   made for it, the app leader's included.
+4. A write committed after the request arrived is concurrent with it; ordering
+   the request before it is linearizable, as a second round could have
+   ordered it either way too.
+
+If a replica cannot apply the index within 2 seconds, a round of its own would
+name an index at least as high, which it could not apply either; the check goes
+ahead best effort, as `sys_fresh` does. Calls nobody's request started (timers,
+deliveries, actions) carry no index and run a round of their own.
+
 ## Writes
 
 `Node::sys_write` appends through the system leader: locally if this node

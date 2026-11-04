@@ -607,3 +607,192 @@ async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() 
         .expect_err("a deployment deleted before the request must be gone");
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
+
+/// Read-index rounds every node began on the system group so far
+/// (`calimero_system_read_rounds_total`).
+fn rounds(c: &ProxiedCluster) -> u64 {
+    c.nodes
+        .iter()
+        .map(|r| r.node.sys_rounds.load(std::sync::atomic::Ordering::SeqCst))
+        .sum()
+}
+
+/// A client's call costs one read-index round on the system group, whichever
+/// node it enters and wherever the app's leader is: the round the gate makes
+/// for the request covers the checks the app's leader makes before it runs
+/// the call (`Node::sys_fresh_from`). Before, the leader ran a round of its
+/// own (two per call, three when the call entered a follower replica first);
+/// a strong view was one, and stays one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_costs_one_system_read_round() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let _warm = alice
+        .call(&app, "set", json!({ "key": "k", "value": "0" }), None)
+        .await
+        .unwrap();
+    for entry in 0..3 {
+        // Alice's session on the node the requests enter.
+        let client = c.client(entry);
+        let _s = client.sign_in(&mut pk).await.unwrap();
+        for n in 0..3 {
+            let before = rounds(&c);
+            let _r = client
+                .call(
+                    &app,
+                    "set",
+                    json!({ "key": "k", "value": n.to_string() }),
+                    None,
+                )
+                .await
+                .unwrap();
+            let call = rounds(&c) - before;
+            let before = rounds(&c);
+            let _v = client
+                .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+                .await
+                .unwrap();
+            let view = rounds(&c) - before;
+            assert_eq!(
+                (call, view),
+                (1, 1),
+                "system read rounds of one call and one strong view entering node {entry}"
+            );
+        }
+    }
+}
+
+/// A demotion to read-only committed before a call's round holds on the app's
+/// leader, though the leader has not applied it when the call reaches it and
+/// runs no round of its own: it waits for the index the gate's round named.
+/// The call enters another node (whose gate lets a read-only member call:
+/// only the leader knows whether the call writes) and is forwarded to the
+/// leader, whose peers' traffic, the system appends included, is held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_demotion_committed_before_the_round_holds_on_a_leader_behind() {
+    let c = ProxiedCluster::start().await;
+    let sys_leader = c.system_leader();
+    let (alice, mut a) = signed_up(&c, sys_leader, "alice").await;
+    let (bob, _b) = signed_up(&c, sys_leader, "bob").await;
+    let s = |v: serde_json::Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let bob_id = s(bob.me().await.unwrap(), "accountId");
+    let org = s(
+        alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
+        "orgId",
+    );
+    let token = s(
+        alice
+            .post_confirmed(
+                &format!("orgs/{org}/invites"),
+                json!({ "role": "member" }),
+                &mut a,
+            )
+            .await
+            .unwrap(),
+        "token",
+    );
+    let _r = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let team = s(
+        alice
+            .post(
+                &format!("orgs/{org}/teams"),
+                json!({ "name": "Team", "join": "invite" }),
+            )
+            .await
+            .unwrap(),
+        "teamId",
+    );
+    let members = format!("orgs/{org}/teams/{team}/members");
+    let _ok = alice
+        .post_confirmed(
+            &members,
+            json!({ "account": bob_id, "role": "member" }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    // The demotion must lag on the app's leader, so it must not be the system
+    // leader, which commits it.
+    let mut placed = None;
+    for n in 0..8 {
+        let app = alice
+            .create_app(
+                &format!("notes{n}"),
+                &bundle,
+                json!({ "org": org, "access": { "kind": "team", "team": team } }),
+            )
+            .await
+            .unwrap();
+        let mut leader = None;
+        for _ in 0..100 {
+            leader = (0..3).find(|i| {
+                c.nodes[*i]
+                    .node
+                    .hosted(&app)
+                    .is_some_and(|g| g.status().is_leader)
+            });
+            if leader.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let leader = leader.expect("the app has a leader");
+        if leader != sys_leader {
+            placed = Some((app, leader));
+            break;
+        }
+    }
+    let (app, app_leader) = placed.expect("an app led by a node other than the system leader");
+    let entry = (0..3).find(|i| *i != app_leader).unwrap();
+    let bob_here = c.client(entry);
+    let mut bob_pk = _b;
+    let _s = bob_here.sign_in(&mut bob_pk).await.unwrap();
+    let _r = bob_here
+        .call(&app, "set", json!({ "key": "k", "value": "1" }), None)
+        .await
+        .expect("a member writes");
+
+    // Hold the app's leader, demote Bob through the system leader, then call
+    // through another node.
+    c.hold[app_leader].send_replace(true);
+    let _ok = alice
+        .post_confirmed(
+            &members,
+            json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let writes = |i: usize| {
+        c.nodes[i].node.sys(|s| {
+            s.orgs
+                .get(&org)
+                .is_some_and(|o| o.writes_team(&bob_id, &team))
+        })
+    };
+    assert!(
+        writes(app_leader),
+        "the app's leader must not have applied the demotion"
+    );
+    let call = tokio::spawn({
+        let app = app.clone();
+        async move {
+            bob_here
+                .call(&app, "set", json!({ "key": "k", "value": "2" }), None)
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[app_leader].send_replace(false);
+    let err = call
+        .await
+        .unwrap()
+        .expect_err("a demotion committed before the call must hold");
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+}

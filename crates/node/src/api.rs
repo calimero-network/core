@@ -239,6 +239,13 @@ pub struct Principal {
     /// takes is a step-up, and the step-up may come from the node's own
     /// origins as well as the cluster's.
     pub consent_page: bool,
+    /// The system index the request's read-index round named (`None`: no
+    /// leader answered, or no round was made for it). Every system write
+    /// committed before the request arrived is at or below it, so the other
+    /// checks made for the request, here or on the app's leader
+    /// (`CallRequest::sys_index`), wait to apply it instead of running a
+    /// round of their own (`Node::sys_fresh_from`, which gives the argument).
+    pub sys_index: Option<u64>,
 }
 
 impl Principal {
@@ -312,7 +319,7 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
     // A credential is judged on the cluster's latest system state (a read
     // index): a session or key revoked through another node is refused here
     // at once, not once this replica catches up.
-    node.sys_fresh().await;
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     if let Some(_key) = token.strip_prefix("cal_") {
         let hash = calimero_identity::api_key_hash(token);
         let rec = node
@@ -331,6 +338,7 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
             api_key: Some(rec),
             issuer_release: None,
             consent_page: false,
+            sys_index,
         }));
     }
     let (claims, issuer_release) = verify_token(node, token).await?;
@@ -354,6 +362,7 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
         api_key: None,
         issuer_release,
         consent_page: false,
+        sys_index,
     }))
 }
 
@@ -1138,7 +1147,7 @@ pub(crate) async fn set_release_approval(
     // capability was revoked or who left is refused at once; `apply` asks
     // again.
     if let crate::system::ReleaseScope::Org { org } = &scope {
-        node.sys_fresh().await;
+        node.sys_fresh_from(p.sys_index).await;
         let (member, approves) = node.sys(|s| {
             (
                 s.orgs.get(org).is_some_and(|o| o.role(&account).is_some()),
@@ -1242,7 +1251,7 @@ pub(crate) async fn set_outbound_approval(
     let account = p.account()?;
     // A package none of whose releases the caller may see is not installed
     // for them: answered before the passkey ceremony, as a missing one.
-    node.sys_fresh().await;
+    node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| {
         s.packages
             .get(&body.package)
@@ -1605,7 +1614,7 @@ fn package_json(
 async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
-    node.sys_fresh().await;
+    node.sys_fresh_from(principal.sys_index).await;
     let packages: Vec<Value> = node.sys(|s| {
         s.packages
             .values()
@@ -1630,7 +1639,7 @@ async fn package_get(
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     let frontend = principal.bound_app() == Some(package.as_str());
-    node.sys_fresh().await;
+    node.sys_fresh_from(principal.sys_index).await;
     node.sys(|s| package_json(s, s.packages.get(&package)?, &account, frontend))
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no such package"))
@@ -2145,11 +2154,13 @@ async fn app_get(
 
 /// The caller, if they may reach `app` with this request kind.
 /// Whether `account` holds a read-only row in the team `app` belongs to
-/// (checked again against the latest system state before saying yes).
+/// (checked again against the latest system state before saying yes: at or
+/// past `sys_index`, the index the request's round named, else a round's).
 pub async fn read_only_in(
     node: &Node,
     app: &crate::types::AppRecord,
     account: Option<&str>,
+    sys_index: Option<u64>,
 ) -> bool {
     let (crate::types::Access::Team { team }, Some(a)) = (&app.access, account) else {
         return false;
@@ -2166,7 +2177,7 @@ pub async fn read_only_in(
         })
     };
     check() && {
-        node.sys_fresh().await;
+        node.sys_fresh_from(sys_index).await;
         check()
     }
 }
@@ -2200,9 +2211,10 @@ async fn gate(
     // next request, read or write, and a grant is seen at once (Xil's review:
     // access judged on lagging local state). `principal` already read fresh
     // for a request that carries a credential.
-    if p.is_none() {
-        node.sys_fresh().await;
-    }
+    let sys_index = match &p {
+        Some(p) => p.sys_index,
+        None => node.sys_fresh_index().await.0,
+    };
     if !reaches(node, app, account) {
         return Err(if p.is_none() {
             ApiError::unauthenticated("sign in to use this app")
@@ -2212,7 +2224,7 @@ async fn gate(
     }
     // A read-only row refuses what writes: a blob upload here, a call that
     // would write at commit (`Node::call_local`); v1 discarded such writes.
-    if write && method == "__blob" && read_only_in(node, app, account).await {
+    if write && method == "__blob" && read_only_in(node, app, account, sys_index).await {
         return Err(ApiError::forbidden("read-only in this team"));
     }
     if let Some(k) = p.as_ref().and_then(|p| p.api_key.as_ref()) {
@@ -2235,6 +2247,7 @@ async fn gate(
         api_key: None,
         issuer_release: None,
         consent_page: false,
+        sys_index,
     }))
 }
 
@@ -2541,6 +2554,7 @@ async fn component_intents(
         .call_component(&CallRequest {
             idempotency_key: body.idempotency_key,
             consent: consent_value,
+            sys_index: p.sys_index,
             ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller.clone())
         })
         .await
@@ -3386,7 +3400,7 @@ async fn publisher_upgrade(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    node.sys_fresh().await;
+    node.sys_fresh_from(p.sys_index).await;
     let publishes = node.sys(|s| {
         s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
             && s.packages
@@ -3707,8 +3721,9 @@ async fn org_get(
     headers: HeaderMap,
     Path(org): Path<String>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
-    node.sys_fresh().await;
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
     let o = node
         .sys(|s| s.orgs.get(&org).cloned())
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
@@ -4112,8 +4127,9 @@ async fn team_get(
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
-    node.sys_fresh().await;
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
     let v = node
         .sys(|s| {
             let o = s.orgs.get(&org)?;
@@ -4809,12 +4825,16 @@ async fn blob_upload(
     let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
     let a = node
-        .call(&CallRequest::host(
-            app_id,
-            "__blob",
-            json!({ "id": id, "size": size, "mime": mime }),
-            p.caller,
-        ))
+        .call(&CallRequest {
+            // The gate's round covers the leader's checks (`Node::sys_fresh_from`).
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app_id,
+                "__blob",
+                json!({ "id": id, "size": size, "mime": mime }),
+                p.caller,
+            )
+        })
         .await?;
     let raw = parse_blob_id(&id)?;
     let mut out = blob_json(&raw, size);
@@ -4990,12 +5010,16 @@ async fn blob_delete(
         return Err(ApiError::not_found("no such blob in this app"));
     }
     let a = node
-        .call(&CallRequest::host(
-            app_id,
-            "__blob_forget",
-            json!({ "id": hex::encode(raw) }),
-            p.caller,
-        ))
+        .call(&CallRequest {
+            // The gate's round covers the leader's checks (`Node::sys_fresh_from`).
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app_id,
+                "__blob_forget",
+                json!({ "id": hex::encode(raw) }),
+                p.caller,
+            )
+        })
         .await?;
     node.collect_blob(&raw).await;
     Ok(Json(json!({ "index": a.index })))
@@ -5430,6 +5454,11 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
         out,
         "# HELP calimero_build_conflicts_total Entries this node appended that applied as conflicts and ran again.\n# TYPE calimero_build_conflicts_total counter\ncalimero_build_conflicts_total {}",
         node.conflicts.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _r = writeln!(
+        out,
+        "# HELP calimero_system_read_rounds_total Read-index rounds this node began on the system group (one per request that needs fresh system state, shared by requests that wait together).\n# TYPE calimero_system_read_rounds_total counter\ncalimero_system_read_rounds_total {}",
+        node.sys_rounds.load(std::sync::atomic::Ordering::Relaxed)
     );
     let _r = writeln!(
         out,
@@ -6372,7 +6401,7 @@ async fn operator_grants_deployers(node: &Node) -> Result<(), ApiError> {
 async fn owner_granting(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = holder(node, headers).await?;
     let account = p.account()?;
-    let _caught_up = node.sys_fresh().await;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
     node.sys(|s| match s.deployers_owner() {
         None => Err(ApiError::forbidden(
             "this cluster's operator grants its deployers",
@@ -6580,8 +6609,9 @@ async fn deployer_revoke(
 /// (`GET /releases`, and every receipt key's attestation).
 async fn deployer_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     if operator(&node, &headers).is_err() {
-        let account = signed_in(&node, &headers).await?.account()?;
-        let _caught_up = node.sys_fresh().await;
+        let p = signed_in(&node, &headers).await?;
+        let account = p.account()?;
+        let _caught_up = node.sys_fresh_from(p.sys_index).await;
         let owner = node.sys(|s| {
             s.cluster_owner
                 .as_ref()
@@ -6647,9 +6677,12 @@ fn malformed(why: &'static str) -> ApiError {
 }
 
 /// Deployment `id` for `account` to manage, judged on fresh state: `404`
-/// when there is none, `403` unless the account acts for its owner.
-async fn managed_deployment(node: &Node, account: &str, id: &str) -> Result<Deployment, ApiError> {
-    let _caught_up = node.sys_fresh().await;
+/// when there is none, `403` unless the account acts for its owner. `p` made
+/// the request's round (`Node::sys_fresh_from`).
+async fn managed_deployment(node: &Node, p: &Principal, id: &str) -> Result<Deployment, ApiError> {
+    let account = p.account()?;
+    let account = account.as_str();
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
     node.sys(|s| {
         let d = s
             .deployments
@@ -6694,7 +6727,7 @@ async fn deployment_create(
     deployment_name_fits(&body.name).map_err(malformed)?;
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
-    let _caught_up = node.sys_fresh().await;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| s.acts_for(&body.owner, &account)) {
         return Err(ApiError::forbidden(
             "a deployment is created by its owner account, or by MANAGE_APPLICATION in its organization",
@@ -6736,7 +6769,7 @@ async fn deployment_offer(
     deployment_segment_fits(&body.app).map_err(malformed)?;
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
-    let _d = managed_deployment(&node, &account, &id).await?;
+    let _d = managed_deployment(&node, &p, &id).await?;
     node.refuse_undeployable(&account).await?;
     let seen = node.sys(|s| {
         s.packages
@@ -6783,7 +6816,7 @@ async fn deployment_withdraw(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
-    let d = managed_deployment(&node, &account, &id).await?;
+    let d = managed_deployment(&node, &p, &id).await?;
     if !d.apps.contains_key(&app) {
         return Err(ApiError::not_found("the deployment offers no such app"));
     }
@@ -6818,7 +6851,7 @@ async fn deployment_delete(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
-    let _d = managed_deployment(&node, &account, &id).await?;
+    let _d = managed_deployment(&node, &p, &id).await?;
     let confirm = body.and_then(|Json(b)| b.confirm);
     let consent = consent(
         &node,
@@ -6845,7 +6878,7 @@ async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> A
     let p = signed_in(&node, &headers).await?;
     p.unbound()?;
     let account = p.account()?;
-    let _caught_up = node.sys_fresh().await;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let deployments: Vec<Value> = node.sys(|s| {
         s.deployments
             .values()
@@ -6905,7 +6938,7 @@ async fn deployment_orgs(
     let p = signed_in(&node, &headers).await?;
     p.unbound()?;
     let account = p.account()?;
-    let d = managed_deployment(&node, &account, &id).await?;
+    let d = managed_deployment(&node, &p, &id).await?;
     Ok(Json(node.sys(|s| {
         let mut orgs: BTreeMap<&str, Customer<'_>> = BTreeMap::new();
         let mut outside = 0u64;
@@ -6980,7 +7013,7 @@ async fn org_publisher(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
-    node.sys_fresh().await;
+    node.sys_fresh_from(p.sys_index).await;
     let (member, holds, generation) = node.sys(|s| {
         (
             s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),

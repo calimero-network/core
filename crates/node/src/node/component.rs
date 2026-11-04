@@ -990,8 +990,16 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.message))?;
         // The caller's standing (org role, teams, read-only rows) is read from the
         // system state below: it includes every change committed before the call,
-        // wherever it was committed.
-        self.sys_fresh().await;
+        // wherever it was committed. A client's call carries the index of the
+        // round its gate made (`CallRequest::sys_index`), which covers that
+        // (`Node::sys_fresh_from`); a timer, delivery or action runs a round.
+        let sys_index = match req.sys_index {
+            Some(i) => {
+                let _caught_up = self.sys_fresh_from(Some(i)).await;
+                Some(i)
+            }
+            None => self.sys_fresh_index().await.0,
+        };
         let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
         if let (Some(app), Some(account)) = (&app, req.caller.account()) {
             if !self.sys(|s| s.may_reach(app, Some(account))) {
@@ -1008,7 +1016,7 @@ impl Node {
         // A read-only member's call runs, but one that would write keys or emit
         // events is refused (v1 discarded such writes; a client is told).
         let read_only = match &app {
-            Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
+            Some(app) => crate::api::read_only_in(self, app, req.caller.account(), sys_index).await,
             None => false,
         };
         // A delivered xcall only within one organization (or one owner's personal apps),

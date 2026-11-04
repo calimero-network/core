@@ -655,7 +655,8 @@ pub async fn create(
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
     let account = p.account()?;
     let package = p.bound_app().map(str::to_owned);
-    node.sys_fresh().await;
+    // `person` made this request's round (`Node::sys_fresh_from`).
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let (action, model, return_to) = match body {
         CreateBody::Release {
             scope,
@@ -1828,7 +1829,7 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
             &format!("this request is {} already", req.decision.label()),
         ));
     }
-    node.sys_fresh().await;
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     still_current(node, &req.action)?;
     let confirmed = body.confirm.is_some();
     // One approval at a time: the passkey's answer is taken once.
@@ -1837,7 +1838,7 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
             .consent
             .transition(id, &Decision::Pending, Decision::Deciding, now)?;
     }
-    let out = act(node, &req, body.confirm).await;
+    let out = act(node, &req, body.confirm, sys_index).await;
     match out {
         Ok(result) => {
             let r = node.consent.transition(
@@ -1864,10 +1865,13 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
 }
 
 /// Run the request's route as its account, through the consent page.
+/// `sys_index` is the index the approval's round named: the route's own
+/// checks wait for it rather than run another round (`Node::sys_fresh_from`).
 async fn act(
     node: &Node,
     req: &ConsentRequest,
     confirm: Option<ConfirmBody>,
+    sys_index: Option<u64>,
 ) -> Result<Value, ApiError> {
     let p = Principal {
         caller: Caller::Account {
@@ -1878,6 +1882,7 @@ async fn act(
         // This node vouches for the account, as for a session it signed.
         issuer_release: Some(node.own_release()),
         consent_page: true,
+        sys_index,
     };
     let Json(v) = match &req.action {
         Action::Release {
