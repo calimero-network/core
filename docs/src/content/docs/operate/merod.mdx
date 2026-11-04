@@ -130,6 +130,7 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--outbound-approvals owner\|operator` | `MEROD_OUTBOUND_APPROVALS` | `owner` | Who approves the URL prefixes apps may call out to. |
 | `--deployments open\|granted` | `MEROD_DEPLOYMENTS` | `open` | Who may install apps (packages, raw bundles): any account, or only accounts holding a deployer grant. Anyone may still create instances of the releases they see ([Deployers](/protocol/governance/#deployers)). |
 | `--deployers operator\|owner` | `MEROD_DEPLOYERS` | `operator` | Who grants deployers where deployments are `granted`: the operator's key, or the cluster's owner once the operator names it. |
+| `--sign-up open\|invite\|closed` | `MEROD_SIGN_UP` | `open` | Who may create an account: anyone; someone with an organization or cluster sign-up invite; or only someone the operator (or owner) pre-authorized with a sign-up invite ([Sign-up policy](/operate/auth/#sign-up-policy)). Config file key: `sign-up`. |
 | `--apps-domain DOMAIN` | `MEROD_APPS_DOMAIN` | none | Serve each package's frontend at `{label}.{DOMAIN}` (a wildcard DNS name pointing at the cluster). |
 | `--settings FILE` | `MEROD_SETTINGS` | none | A TOML file whose `[outbound]` table replaces the configuration's. |
 
@@ -138,12 +139,13 @@ A boolean flag takes an optional value: `--dev` is `--dev true`, and
 
 <Aside type="caution" title="Fixed at genesis">
   `--release-approvals`, `--app-upgrades`, `--outbound-approvals`,
-  `--deployments` and `--deployers` are
+  `--deployments`, `--deployers` and `--sign-up` are
   written to the system state by the cluster's first leader, before any
   account exists, and attested with every node's receipt key. Changing them on
-  a later start changes nothing; the one change is the operator's signed move
-  of deployments from `open` to `granted` (`POST /ops/deployments/granted`),
-  never back. Start every node of a new cluster with the
+  a later start changes nothing; the changes after genesis are the operator's
+  signed move of deployments from `open` to `granted` (`POST
+  /ops/deployments/granted`), never back, and a signed sign-up policy change
+  (`POST /ops/sign-up`, or the cluster owner's `POST /sign-up`). Start every node of a new cluster with the
   same values. See [Security](/operate/security/#governance).
 </Aside>
 

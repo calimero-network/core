@@ -98,8 +98,10 @@ with `details` when there is more to say (for example `leaderUrl` with
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /auth/passkey/register/begin` | anyone | Start a sign-up: `{ name }` → `{ challengeId, options }` | `login` (new file) |
-| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration }` → `412 CONFIRM_REQUIRED` (the new passkey signs the account it creates); the retry with `confirm` → a session | `login` |
+| `GET /sign-up` | anyone | The cluster's [sign-up policy](/operate/auth/#sign-up-policy): `{ policy, orgInvites, signUpInvites, inviteRequired }` | |
+| `POST /auth/passkey/register/begin` | anyone | Start a sign-up: `{ name, invite? }` → `{ challengeId, options }`; `403 SIGN_UP_REFUSED` when the policy would refuse it | `login` (new file) |
+| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration, invite? }` → `412 CONFIRM_REQUIRED` (the new passkey signs the account it creates); the retry with `confirm` (and the same `invite`) → a session. `invite` (an organization or cluster sign-up invite token) is redeemed for the new account | `login` |
+| `POST /sign-up`, `POST\|GET /sign-up/invites`, `DELETE /sign-up/invites/{key}` | the cluster's owner, once named | Set the policy and run sign-up invites with a passkey (`412` first) | |
 | `POST /auth/passkey/login/begin` | anyone | Start a sign-in | `login` |
 | `POST /auth/passkey/login/finish` | anyone | `{ challengeId, assertion }` → a session | `login` |
 | `POST /auth/passkeys/add/begin`, `/finish` | account holder | Add a passkey (a device): `/finish { challengeId, registration, confirm? }` answers `412` and is sent again with `confirm` signed by a passkey the account already has | `account device add` |
@@ -213,6 +215,7 @@ there.
 | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`), signed (`428` first, `__remove_node / { id }`; the retry's JSON body is `{ operatorProof }`) | `ops remove-node` |
 | `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …], operatorProof? }`: move an app, signed (`428` first, `<app> / __set_replicas / { replicas }`, the target sorted; asked before the leader redirect, so the signed body goes to the leader as it is) (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |
 | `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
+| `POST /ops/sign-up`, `POST\|GET /ops/sign-up/invites`, `DELETE /ops/sign-up/invites/{key}` | Set the [sign-up policy](/operate/auth/#sign-up-policy) (`{ policy }`) and issue, list and withdraw cluster sign-up invites (`{ token, uses?, expiresAt }`); each change signed (`428` first), refused once the cluster's owner runs sign-up | |
 | `GET /ops/quotas`, `POST /ops/quotas` | Read or change the per-account quotas; a change is signed (`428` first, `cluster / __set_quotas / { quotas }` with every limit after the change; `operatorProof` sits beside the limits) | `ops quotas`, `ops set-quotas` |
 | `POST /ops/releases` | `{ version, approved }`, where the operator holds release approvals | `ops release` |
 | `POST /ops/outbound` | `{ package, prefixes, replace }`, where the operator holds outbound approvals | `ops outbound` |

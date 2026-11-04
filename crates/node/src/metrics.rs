@@ -168,7 +168,12 @@ pub fn group(route: &str) -> &'static str {
         "/internal/raft" => "raft",
         "/apps/{app}/intents" => "calls",
         "/apps/{app}/views" => "views",
-        _ if route.starts_with("/auth/passkey/") || route == "/auth/refresh" => "sign_in",
+        _ if route.starts_with("/auth/passkey/")
+            || route == "/auth/refresh"
+            || route.starts_with("/sign-up") =>
+        {
+            "sign_in"
+        }
         _ if route.starts_with("/auth") => "account",
         _ if in_app("/events") || in_app("/presence") => "streams",
         _ if in_app("/blobs") => "blobs",
@@ -744,6 +749,8 @@ mod tests {
         assert_eq!(group("/deployments/{id}/orgs"), "packages");
         assert_eq!(group("/consent/{request}/result"), "consent");
         assert_eq!(group("/releases"), "attestation");
+        assert_eq!(group("/sign-up/invites/{key}"), "sign_in");
+        assert_eq!(group("/ops/sign-up"), "ops");
         assert_eq!(group("/publishers/{signer}"), "packages");
     }
 
