@@ -99,6 +99,10 @@ fn role() -> Option<OrgRole> {
     env::org_role(&account()?)
 }
 
+fn is_admin() -> bool {
+    role().is_some_and(|r| r >= OrgRole::Admin)
+}
+
 /// The caller's account if it is a member of the org or more.
 fn member() -> app::Result<String> {
     account()
@@ -141,7 +145,7 @@ impl Redact {
     /// Replaces the policy later submissions use. Admins and owners only; running jobs keep
     /// the policy they were submitted with.
     pub fn set_policy(&mut self, policy: Policy) -> app::Result<()> {
-        if !role().is_some_and(|r| r >= OrgRole::Admin) {
+        if !is_admin() {
             return Err(Error::AdminsOnly.into());
         }
         if policy.salt.is_empty() {
@@ -164,8 +168,7 @@ impl Redact {
         if file.info().is_none() {
             return Err(Error::NoSuchFile.into());
         }
-        let admin = role().is_some_and(|r| r >= OrgRole::Admin);
-        if !admin && files::uploader(&file).as_deref() != Some(&who) {
+        if !is_admin() && files::uploader(&file).as_deref() != Some(&who) {
             return Err(Error::NotYourFile.into());
         }
         let rows_per_part = rows_per_part.unwrap_or(DEFAULT_ROWS_PER_PART);
@@ -177,9 +180,7 @@ impl Redact {
     /// Publishes a done job's outputs as plain blobs, 16 a call, and answers the job; a part past
     /// 47 MiB cannot be published. Its submitter and admins only.
     pub fn share(&mut self, job: String) -> app::Result<JobView> {
-        if !self.jobs.get(&job)?.is_some_and(|j| self.may_see(&j)) {
-            return Err(Error::NotFound { id: job }.into());
-        }
+        self.visible_job(&job)?;
         self.share_done(job, &mut compute::publish)
     }
 
@@ -189,9 +190,7 @@ impl Redact {
         if !(1..=MAX_LINK_SECS).contains(&ttl_secs) {
             return Err(Error::BadTtl.into());
         }
-        if !self.jobs.get(&job)?.is_some_and(|j| self.may_see(&j)) {
-            return Err(Error::NotFound { id: job }.into());
-        }
+        self.visible_job(&job)?;
         Ok(self.published_part(&job, part)?.grant(ttl_secs))
     }
 
@@ -206,10 +205,7 @@ impl Redact {
     /// and admins only.
     #[app::view]
     pub fn job(&self, id: String) -> app::Result<JobView> {
-        match self.jobs.get(&id)? {
-            Some(job) if self.may_see(&job) => Ok(job.view(&id)),
-            _ => Err(Error::NotFound { id }.into()),
-        }
+        Ok(self.visible_job(&id)?.view(&id))
     }
 
     /// The caller's jobs among one page of `JOBS_PAGE`, oldest first, without their preview
@@ -303,8 +299,17 @@ impl Redact {
         Ok(job.view(&id))
     }
 
+    /// The job `id`, if there is one the caller may see.
+    fn visible_job(&self, id: &str) -> app::Result<Job> {
+        let id = id.to_owned();
+        match self.jobs.get(&id)? {
+            Some(job) if self.may_see(&job) => Ok(job),
+            _ => Err(Error::NotFound { id }.into()),
+        }
+    }
+
     fn may_see(&self, job: &Job) -> bool {
-        role().is_some_and(|r| r >= OrgRole::Admin) || account().as_deref() == Some(&job.submitter)
+        is_admin() || account().as_deref() == Some(&job.submitter)
     }
 
     /// Stores `job` under a new id and queues its preview.
