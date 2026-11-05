@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Account recovery codes** (#4844, `docs/specs/account-recovery.md`). A
+  person who lost every passkey gets their account back with a recovery code
+  made while signed in (`POST /auth/recovery`, a passkey step-up; shown once;
+  only its public key is logged). Signed out, `POST /auth/recovery/begin` and
+  `/start` take the code and a new passkey: the code is spent and the passkey
+  is pending. For 72 hours (`RECOVERY_DELAY_SECS`, as an organization's
+  recovery) any passkey of the account cancels it (`/auth/recovery/cancel`);
+  after, `/auth/recovery/finish`, approved by the new passkey, adds it, ends
+  every session of the account and signs in, with the sign-in proof #4849
+  requires. `/auth/me` shows `recoveryCode` and `recoveryPending`.
 - **`meroctl app origins`** (also `meroctl package origins`): `list PACKAGE`,
   `add PACKAGE ORIGIN [--rp-id ID]` and `remove PACKAGE ORIGIN` handle a
   package's registered web origins (`/package-origins/{package}`, #4846).

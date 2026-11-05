@@ -25,6 +25,10 @@ machines, short session tokens any node verifies, and step-up consent challenges
   whatever its challenge (what proves `SetSignCount`). Test:
   `a_sign_in_and_a_counter_verify_from_public_data_only`.
 - `confirm_challenge`: what a passkey signs to approve one `#[app::confirm]` call.
+- `new_recovery_code` / `normalize_recovery_code`: an account recovery code,
+  160 random bits as Crockford base32 in groups of four, read back however it
+  is typed (at most `MAX_RECOVERY_CODE_CHARS`). Test:
+  `a_recovery_code_reads_back_however_it_is_typed`.
 - Feature `testing`: `SoftAuthenticator`, an in-memory ES256 passkey.
 - `recovery.rs`: an organization's recovery key (Ed25519; the owner keeps the
   seed, the node stores the public half). `sign_recovery`/`verify_recovery`

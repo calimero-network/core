@@ -170,6 +170,68 @@ pub fn api_key_hash(key: &str) -> String {
     b64url(&sha256(key.as_bytes()))
 }
 
+/// Crockford's base32 alphabet: no `I`, `L`, `O` or `U`, so a code read
+/// aloud or copied from paper is not misread.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// The random bytes in a recovery code: 160 bits, far past guessing.
+pub const RECOVERY_CODE_BYTES: usize = 20;
+
+/// A new account recovery code, shown once: 160 random bits as 32 Crockford
+/// base32 characters in groups of four (`XXXX-XXXX-...`), made to be written
+/// down. Its canonical form ([`normalize_recovery_code`]) is what the node
+/// derives a key from; the code itself is never stored.
+#[must_use]
+pub fn new_recovery_code() -> String {
+    let bytes = random::<RECOVERY_CODE_BYTES>();
+    let mut chars = Vec::with_capacity(RECOVERY_CODE_BYTES * 8 / 5);
+    let (mut acc, mut bits) = (0_u32, 0_u32);
+    for b in bytes {
+        acc = (acc << 8) | u32::from(b);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            chars.push(CROCKFORD[((acc >> bits) & 31) as usize]);
+        }
+    }
+    chars
+        .chunks(4)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The longest recovery code text read, separators included, checked
+/// before anything else: 32 characters, dashes or spaces between them, and
+/// room for a few more.
+pub const MAX_RECOVERY_CODE_CHARS: usize = 80;
+
+/// A recovery code as typed back, in its canonical form: dashes and spaces
+/// dropped, upper case, and the letters Crockford reads as digits (`O` as
+/// `0`, `I` and `L` as `1`) read so. `None` for anything that cannot be a
+/// code ([`new_recovery_code`]'s length and alphabet, at most
+/// [`MAX_RECOVERY_CODE_CHARS`] as typed).
+#[must_use]
+pub fn normalize_recovery_code(code: &str) -> Option<String> {
+    if code.len() > MAX_RECOVERY_CODE_CHARS {
+        return None;
+    }
+    let mut out = String::with_capacity(32);
+    for c in code.chars() {
+        let c = match c.to_ascii_uppercase() {
+            '-' | ' ' => continue,
+            'O' => '0',
+            'I' | 'L' => '1',
+            c => c,
+        };
+        if !c.is_ascii() || !CROCKFORD.contains(&(c as u8)) {
+            return None;
+        }
+        out.push(c);
+    }
+    (out.len() == RECOVERY_CODE_BYTES * 8 / 5).then_some(out)
+}
+
 /// The challenge a passkey signs to consent to one call of a confirm method:
 /// `SHA-256("calimero.confirm.v1" | app | 0 | method | 0 | SHA-256(args) | nonce)`.
 #[must_use]
@@ -195,6 +257,29 @@ mod tests {
             origins: vec!["http://localhost:3000".into()],
             require_uv: false,
         }
+    }
+
+    #[test]
+    fn a_recovery_code_reads_back_however_it_is_typed() {
+        let code = new_recovery_code();
+        assert_eq!(code.len(), 32 + 7, "{code}");
+        assert_eq!(code.split('-').count(), 8, "{code}");
+        let canonical = normalize_recovery_code(&code).unwrap();
+        assert_eq!(canonical, code.replace('-', ""));
+        let typed = code.to_lowercase().replace('-', " ").replace('0', "o");
+        assert_eq!(
+            normalize_recovery_code(&typed).as_deref(),
+            Some(&*canonical)
+        );
+        assert_ne!(new_recovery_code(), code, "codes are random");
+        assert_eq!(normalize_recovery_code("ABCD-EFGH"), None, "too short");
+        let padded = format!("{code}{}", " ".repeat(MAX_RECOVERY_CODE_CHARS));
+        assert_eq!(normalize_recovery_code(&padded), None, "too long as typed");
+        assert_eq!(
+            normalize_recovery_code(&format!("{code}U")),
+            None,
+            "not Crockford"
+        );
     }
 
     #[test]
