@@ -8,6 +8,7 @@ inspected with `merod inspect` (`crates/merod`).
 | Tool           | Binary     | Purpose                                      |
 | -------------- | ---------- | -------------------------------------------- |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519); `sign --dev` uses the well-known development key, which a public registry refuses |
+| `mero-compute` | `mero-compute` | Run one compute method of a compute component alone, as a job node would (`run --method M --out DIR`); `README.md` has the flags and what it leaves out |
 | `search-bench` | `search-bench` | `calimero-search`'s engine over the node's `RamDirectory` (and `MmapDirectory`): index size, query latency, memory, the search-gas fit; `README.md` holds the results, CI's `benchmarks.yml` uploads a report |
 
 Everything here is a Rust crate.
