@@ -32,6 +32,10 @@
   cluster; adding one needs every node on this release. Certificates, routing
   and the console flow come from mdma and mero-tee; design in
   `docs/specs/custom-domains.md`.
+- **`meroctl app origins add --served`** registers a custom domain (a served
+  origin, above): the body and the manager's consent carry `served: true`,
+  only when the flag is given. `app origins list` shows each origin's
+  `served`.
 
 ## [1.0.0-rc.10] - 2026-11-05
 
