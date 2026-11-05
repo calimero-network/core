@@ -484,7 +484,7 @@ pub struct Node {
     /// What this node, as a leader, remembers of the compute runs it drives.
     compute: component::ComputeState,
     /// Wakes the compute driver: a call started or cancelled a run.
-    pub runs_kick: tokio::sync::Notify,
+    pub runs_kick: Arc<tokio::sync::Notify>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
@@ -831,7 +831,7 @@ impl Node {
             job_ops: tokio::sync::Semaphore::new(job::MAX_INFLIGHT_JOB_OPS),
             job_control: tokio::sync::Semaphore::new(job::MAX_INFLIGHT_JOB_CONTROL),
             compute: component::ComputeState::default(),
-            runs_kick: tokio::sync::Notify::new(),
+            runs_kick: Arc::new(tokio::sync::Notify::new()),
             sys_reads: ReadRounds::default(),
             sys_rounds: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),

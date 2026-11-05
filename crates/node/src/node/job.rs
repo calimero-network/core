@@ -36,16 +36,9 @@ pub const MAX_INFLIGHT_JOB_OPS: usize = 8;
 pub(super) const MAX_INFLIGHT_JOB_CONTROL: usize = 32;
 
 /// This node's own queue for control requests was full: nothing is known of the job node.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("no free place for a control request to a job node")]
 pub(crate) struct BusyHere;
-
-impl std::fmt::Display for BusyHere {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("no free place for a control request to a job node")
-    }
-}
-
-impl std::error::Error for BusyHere {}
 
 /// Whether `e` is [`BusyHere`].
 pub(crate) fn busy_here(e: &eyre::Report) -> bool {
