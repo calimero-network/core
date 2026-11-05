@@ -916,8 +916,7 @@ impl Client {
     /// # Errors
     /// As [`Self::get`].
     pub async fn package_origins(&self, package: &str) -> Result<Value> {
-        self.get(&format!("package-origins/{}", path_segment(package)))
-            .await
+        self.get(&package_origins_path(package)).await
     }
 
     /// Register `origin` for `package`'s frontend (its rp-id `rp_id`, else
@@ -937,12 +936,8 @@ impl Client {
         if let (Some(b), Some(rp)) = (body.as_object_mut(), rp_id) {
             let _prev = b.insert("rpId".into(), json!(rp));
         }
-        self.post_confirmed(
-            &format!("package-origins/{}", path_segment(package)),
-            body,
-            passkey,
-        )
-        .await
+        self.post_confirmed(&package_origins_path(package), body, passkey)
+            .await
     }
 
     /// Remove a registered origin of `package`, approved with the manager's
@@ -958,7 +953,7 @@ impl Client {
     ) -> Result<Value> {
         self.confirmed(
             Method::DELETE,
-            &format!("package-origins/{}", path_segment(package)),
+            &package_origins_path(package),
             json!({ "origin": origin }),
             passkey,
         )
@@ -1500,6 +1495,14 @@ impl Client {
 
 /// One URL path segment: everything but unreserved characters escaped, so an
 /// id cannot reach another route.
+/// The route of `package`'s registered origins (`package-origins/{package}`,
+/// the package percent-encoded): for a caller that sends the change without a
+/// passkey and lets the node answer `412 CONFIRM_REQUIRED`.
+#[must_use]
+pub fn package_origins_path(package: &str) -> String {
+    format!("package-origins/{}", path_segment(package))
+}
+
 fn path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -1518,7 +1521,7 @@ mod retry_tests {
 
     use serde_json::Value;
 
-    use super::{retry_unavailable, Error, CALL_RETRIES};
+    use super::{package_origins_path, retry_unavailable, Error, CALL_RETRIES};
 
     fn api(status: u16) -> Error {
         Error::Api {
@@ -1527,6 +1530,15 @@ mod retry_tests {
             message: String::new(),
             details: Value::Null,
         }
+    }
+
+    #[test]
+    fn a_package_names_one_path_segment() {
+        assert_eq!(
+            package_origins_path("com.example.kv"),
+            "package-origins/com.example.kv"
+        );
+        assert_eq!(package_origins_path("a/b?c"), "package-origins/a%2Fb%3Fc");
     }
 
     #[tokio::test(start_paused = true)]

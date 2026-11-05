@@ -1,10 +1,12 @@
 //! `meroctl app`: signed packages, v1's applications. An application is
 //! installed once on the cluster (verified on every node); contexts are its
-//! running instances (`meroctl context create --package`).
+//! running instances (`meroctl context create --package`). `meroctl package`
+//! is the same command.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use calimero_client::package_origins_path;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
@@ -60,6 +62,41 @@ pub enum AppCmd {
         /// How often to look at the file, in milliseconds.
         #[arg(long, default_value_t = 500)]
         interval_ms: u64,
+    },
+    /// The web origins (a developer's own site, a hosting preview) whose
+    /// pages may sign people in to this application, each under its own
+    /// passkey rp-id. Its manager's: the publisher organization's
+    /// `MANAGE_APPLICATION` holders, else whoever installed it first.
+    #[command(subcommand)]
+    Origins(OriginsCmd),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OriginsCmd {
+    /// The origins registered for an application, with their rp-ids.
+    #[command(alias = "ls")]
+    List { package: String },
+    /// Register an origin (`https://host[:port]`, as a browser writes it).
+    /// The manager approves with a passkey: `--dev-passkey` on a development
+    /// cluster; without it the node answers `412 CONFIRM_REQUIRED` and the
+    /// change is made in the console (Web addresses).
+    Add {
+        package: String,
+        origin: String,
+        /// The passkey rp-id ceremonies there use: the origin's host (the
+        /// default) or a parent domain of it, never the cluster's.
+        #[arg(long)]
+        rp_id: Option<String>,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Remove an origin; the sessions opened there end. Approved as `add`.
+    #[command(alias = "rm")]
+    Remove {
+        package: String,
+        origin: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -126,7 +163,75 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             watch(env, &path, &contexts, &dev_passkey, once, interval_ms, true).await?;
             return Ok(Value::Null);
         }
+        AppCmd::Origins(cmd) => origins(cmd, env).await?,
     })
+}
+
+/// `meroctl app origins`. A change goes out with the manager's passkey
+/// assertion when `--dev-passkey` names one; without it the request goes as
+/// is, and the node's `412 CONFIRM_REQUIRED` is the answer (no passkey, no
+/// change: the console makes it with the manager's own).
+async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
+    let client = &env.client;
+    Ok(match cmd {
+        OriginsCmd::List { package } => client.package_origins(&package).await?,
+        OriginsCmd::Add {
+            package,
+            origin,
+            rp_id,
+            dev_passkey: Some(file),
+        } => {
+            let mut pk = load_dev_passkey(&file)?;
+            let out = client
+                .add_package_origin(&package, &origin, rp_id.as_deref(), &mut pk)
+                .await;
+            save_passkey(&file, &pk)?;
+            out?
+        }
+        OriginsCmd::Add {
+            package,
+            origin,
+            rp_id,
+            dev_passkey: None,
+        } => {
+            client
+                .post(
+                    &package_origins_path(&package),
+                    add_origin_body(&origin, rp_id.as_deref()),
+                )
+                .await?
+        }
+        OriginsCmd::Remove {
+            package,
+            origin,
+            dev_passkey: Some(file),
+        } => {
+            let mut pk = load_dev_passkey(&file)?;
+            let out = client
+                .remove_package_origin(&package, &origin, &mut pk)
+                .await;
+            save_passkey(&file, &pk)?;
+            out?
+        }
+        OriginsCmd::Remove {
+            package,
+            origin,
+            dev_passkey: None,
+        } => {
+            client
+                .delete_with_body(&package_origins_path(&package), json!({ "origin": origin }))
+                .await?
+        }
+    })
+}
+
+/// What `POST /package-origins/{package}` takes: the rp-id only when named
+/// (the node resolves the origin's host otherwise).
+fn add_origin_body(origin: &str, rp_id: Option<&str>) -> Value {
+    match rp_id {
+        Some(rp_id) => json!({ "origin": origin, "rpId": rp_id }),
+        None => json!({ "origin": origin }),
+    }
 }
 
 /// Push `path` to its contexts (now, if `push_first`), and again on every
@@ -230,4 +335,23 @@ async fn resolve_all(env: &Env, names: &[String]) -> eyre::Result<Vec<String>> {
         out.push(env.app(n).await?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::add_origin_body;
+
+    #[test]
+    fn an_origin_names_its_rp_id_only_when_given() {
+        assert_eq!(
+            add_origin_body("https://kv.example.com", None),
+            json!({ "origin": "https://kv.example.com" })
+        );
+        assert_eq!(
+            add_origin_body("https://kv.example.com", Some("example.com")),
+            json!({ "origin": "https://kv.example.com", "rpId": "example.com" })
+        );
+    }
 }
