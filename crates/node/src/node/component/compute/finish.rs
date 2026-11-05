@@ -7,7 +7,7 @@ use calimero_log::Bytes;
 use serde_json::{json, Value};
 use tracing::warn;
 
-use super::{Drive, FinalPlan, Stored, Watch};
+use super::{stored_of, Drive, FinalPlan, Stored, Watch};
 use crate::app::AppMachine;
 use crate::component::{Attempt, FailedReason, FileMark, FinalOutcome, RunRecord, RunState};
 use crate::files::{sealed_len, wrap_key, FileOpener, CHUNK_BYTES};
@@ -151,7 +151,14 @@ impl Drive<'_> {
             }
         }
         let Ok(peer) = node.attest_job(attempt.node, self.app).await else {
-            self.refund(total);
+            node.discard(
+                &self.app.app_id,
+                Stored {
+                    charged: total,
+                    outputs: true,
+                    ..Stored::default()
+                },
+            );
             return Staging::Retry;
         };
         let mut marks: Vec<FileMark> = Vec::new();
@@ -163,9 +170,8 @@ impl Drive<'_> {
                     node.discard(
                         app_id,
                         Stored {
-                            ids: marks.iter().map(|m| m.id.clone()).collect(),
                             charged: total,
-                            outputs: true,
+                            ..stored_of(&marks)
                         },
                     );
                     return staging;
@@ -174,17 +180,6 @@ impl Drive<'_> {
         }
         watch.staged = Some(marks.clone());
         Staging::Ready(marks)
-    }
-
-    fn refund(&self, total: u64) {
-        self.node.discard(
-            &self.app.app_id,
-            Stored {
-                ids: Vec::new(),
-                charged: total,
-                outputs: true,
-            },
-        );
     }
 
     /// Output `i` of `report`: fetched, checked against the hash and the size the job signed,

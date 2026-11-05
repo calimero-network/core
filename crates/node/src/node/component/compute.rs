@@ -42,8 +42,6 @@ pub const CANCEL_DEADLINE: Duration = Duration::from_secs(20);
 const MAX_PROPOSED_KEPT: usize = 8;
 /// How long a granted run may wait for a job node that can take it before it ends refused.
 const QUEUED_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// The most outage time a deadline forgives: a leader whose reads keep failing still ends a run.
-const MAX_OUTAGE_CREDIT: Duration = QUEUED_RUN_TIMEOUT;
 /// How many times its healthy limit the lost and cancel clocks may run in wall time.
 const WALL_FALLBACK_FACTOR: u32 = 10;
 /// The reserved view that answers a run's record: the node's own, never an app's method.
@@ -66,7 +64,7 @@ impl Default for ComputeLimits {
             deadline_grace: DEADLINE_GRACE,
             queued_timeout: QUEUED_RUN_TIMEOUT,
             cancel_deadline: CANCEL_DEADLINE,
-            outage_credit: MAX_OUTAGE_CREDIT,
+            outage_credit: QUEUED_RUN_TIMEOUT,
         }
     }
 }
@@ -387,7 +385,7 @@ impl FinalPlan {
     /// The leader's own outcome: no report, no outputs, no usage.
     fn leader(rec: &RunRecord, outcome: FinalOutcome) -> Self {
         Self {
-            attempt: u32::try_from(rec.attempts.len()).unwrap_or(u32::MAX),
+            attempt: attempts_made(rec),
             outcome,
             report: None,
             signature: None,
@@ -606,7 +604,7 @@ impl Node {
         else {
             return;
         };
-        let attempts = u32::try_from(rec.attempts.len()).unwrap_or(u32::MAX);
+        let attempts = attempts_made(&rec);
         let (mut watch, orphaned) = self.compute.take(&app.app_id, run, term, attempts);
         if let Some(marks) = orphaned {
             self.discard_unowned(g, &app.app_id, &marks);
@@ -765,9 +763,7 @@ impl Drive<'_> {
     /// Chooses a job node (not one of `avoid` while another is free), hands it the attempt and only
     /// then commits it, so a busy or unreachable node spends no attempt. Whether one was found.
     async fn assign(&self, avoid: &[NodeId], watch: &mut Watch) -> bool {
-        let attempt = u32::try_from(self.rec.attempts.len())
-            .unwrap_or(u32::MAX)
-            .saturating_add(1);
+        let attempt = attempts_made(self.rec).saturating_add(1);
         let blobs = self.g.read_local(|m, _| m.blob_view());
         let mut failed: Vec<NodeId> = Vec::new();
         loop {
@@ -1307,6 +1303,11 @@ fn ended_with_a_proposed(
         .map(|(_, reported)| (end.usage, *reported))
 }
 
+/// How many attempts `rec` has started.
+fn attempts_made(rec: &RunRecord) -> u32 {
+    u32::try_from(rec.attempts.len()).unwrap_or(u32::MAX)
+}
+
 /// What a final's staged outputs hold on the replicas and in the quota.
 fn stored_of(marks: &[FileMark]) -> Stored {
     Stored {
@@ -1483,7 +1484,7 @@ mod tests {
     fn an_outage_is_forgiven_only_up_to_the_cap() {
         let watch = Watch::new(1, 1);
         let at = watch.born;
-        let cap = MAX_OUTAGE_CREDIT;
+        let cap = QUEUED_RUN_TIMEOUT;
         assert_eq!(
             watch.outage(at + Duration::from_secs(30), cap),
             Duration::from_secs(30)

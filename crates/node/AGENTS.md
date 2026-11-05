@@ -515,8 +515,8 @@ is its command line.
   The healthy-time accumulator counts the time in rounds whose system read succeeded; the lost clock, the run deadline and `QUEUED_RUN_TIMEOUT` count only it, so a system-group outage burns none of them.
   A new leader starts the lost clock at takeover.
   The held report is kept per attempt, so the leader's own failing charge, push or propose never counts as silence; a job node that will not hand its outputs over still does.
-  Outage credit is capped at `MAX_OUTAGE_CREDIT` (`QUEUED_RUN_TIMEOUT`), and the lost and cancel clocks also end at 10 times their limit in wall time.
-  A running run ends by timeout at an absolute ceiling of wall cap + `DEADLINE_GRACE` + `MAX_OUTAGE_CREDIT` on the app clock from the attempt's `tsMs`, which survives leader changes.
+  Outage credit is capped at `QUEUED_RUN_TIMEOUT`, and the lost and cancel clocks also end at 10 times their limit in wall time.
+  A running run ends by timeout at an absolute ceiling of wall cap + `DEADLINE_GRACE` + `QUEUED_RUN_TIMEOUT` on the app clock from the attempt's `tsMs`, which survives leader changes.
   The unplaced and cancel clocks start when the current leader first sees the run in that state and restart with each term: unplaced `QUEUED_RUN_TIMEOUT` of healthy time, cancel `CANCEL_DEADLINE` (20 s) of healthy time.
   A loss the job node announces (`lost`, a new key, `UNKNOWN_RUN` after sending) first finishes from a held report (`lost_unless_held`).
   A queued run takes `AcquireRun` first (only when a job node is registered; the payer comes from fresh system state; a permanent refusal ends the run `Failed{refused}`, a retryable one waits).
