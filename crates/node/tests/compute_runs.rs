@@ -144,6 +144,20 @@ impl Rig {
         }
     }
 
+    /// The leader's metrics once every series in `names` shows: it counts a run's usage after
+    /// the final commits and the job node drops the run, so the outcome is visible first.
+    async fn metrics_with(&self, names: &[&str]) -> String {
+        let started = Instant::now();
+        loop {
+            let metrics = self.metrics().await;
+            if names.iter().all(|n| metrics.contains(n)) {
+                return metrics;
+            }
+            assert!(started.elapsed() < WAIT, "{names:?} in\n{metrics}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn metrics(&self) -> String {
         let leader = self.c.app_leader(&self.app).unwrap();
         let ops = self.c.client(leader);
@@ -311,14 +325,13 @@ async fn a_run_ends_with_its_output_usage_and_one_result() {
         .unwrap();
     assert_eq!(done.result, json!("1"), "one result");
 
-    let metrics = rig.metrics().await;
-    for series in [
-        "calimero_app_compute_cpu_seconds_total{",
-        "calimero_app_compute_fuel_total{",
-        "calimero_app_calls_total{",
-    ] {
-        assert!(metrics.contains(series), "{series} in\n{metrics}");
-    }
+    let metrics = rig
+        .metrics_with(&[
+            "calimero_app_compute_cpu_seconds_total{",
+            "calimero_app_compute_fuel_total{",
+            "calimero_app_calls_total{",
+        ])
+        .await;
     assert!(metrics.contains("kind=\"compute\""), "{metrics}");
     rig.until("the slot is released", || rig.slots() == 0).await;
 
@@ -383,11 +396,9 @@ async fn a_cancel_ends_the_run_and_stops_the_job() {
         outcome["fuel"], "0",
         "the job node's usage is billed: {outcome}"
     );
-    let metrics = rig.metrics().await;
-    assert!(
-        metrics.contains("calimero_app_compute_fuel_total{"),
-        "{metrics}"
-    );
+    let _metrics = rig
+        .metrics_with(&["calimero_app_compute_fuel_total{"])
+        .await;
     assert_eq!(
         rig.job_running(JOB_A).await,
         0,
