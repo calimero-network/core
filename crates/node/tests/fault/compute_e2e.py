@@ -400,11 +400,14 @@ def scenarios(cl, rig, in_process):
           f"status {out4['status']} fuel {out4['fuel']} load {cl.job_load(node4)}")
 
     say("\n== 5 caps")
-    for method, reason in (("spin", "time"), ("hog", "memory"), ("burn", "fuel")):
+    # A wall clock that ran out is a lost attempt: spin is retried and ends lost after MAX_ATTEMPTS.
+    for method, reason, attempts in (("spin", "lost", 3), ("hog", "memory", None), ("burn", "fuel", None)):
         r = rig.start("startRun", {"method": method})
         o = rig.outcome(r)
-        check(f"5 cap {method}", o["status"] == "failed" and o["reason"] == reason and o["outputs"] == 0,
-              f"{method} started", f"status {o['status']} reason {o['reason']} outputs {o['outputs']}")
+        made = len(rig.record(r).get("attempts") or [])
+        check(f"5 cap {method}",
+              o["status"] == "failed" and o["reason"] == reason and o["outputs"] == 0 and attempts in (None, made),
+              f"{method} started", f"status {o['status']} reason {o['reason']} outputs {o['outputs']} attempts {made}")
 
     say("\n== 6 forged final, unassigned-node decryption and a retired job node (in-process: a forger or a")
     say("  release the operator retired must sit inside the cluster)")
