@@ -1985,13 +1985,14 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             package,
             origin,
             rp_id,
+            served,
             actor,
             consent,
             ..
         } => {
             let (st, used) = fresh(consent_of(actor, consent)?)?;
             states(&st, &format!("package:{package}"), "__add_origin", &|a| {
-                *a == json!({ "origin": origin, "rpId": rp_id })
+                *a == crate::origins::add_args(origin, rp_id, *served)
             })?;
             Ok(Some(used))
         }
@@ -3114,11 +3115,16 @@ pub enum SystemCmd {
     },
     /// Register `origin` for `package`'s frontend, its ceremonies verified
     /// against `rp_id` (`package:{package} / __add_origin / { origin, rpId }`,
-    /// the manager's passkey `consent`; [`crate::origins`]).
+    /// the manager's passkey `consent`; [`crate::origins`]). `served`: the
+    /// cluster serves the frontend on it too (a custom domain; the consent
+    /// then names `served: true`). Left out when false, so a command from
+    /// before reads as it did.
     AddPackageOrigin {
         package: String,
         origin: String,
         rp_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        served: bool,
         actor: AccountId,
         at: u64,
         #[serde(default)]
@@ -4774,10 +4780,11 @@ impl SystemMachine {
                 package,
                 origin,
                 rp_id,
+                served,
                 actor,
                 at,
                 consent: _,
-            } => s.add_package_origin(package, origin, &rp_id, actor, at),
+            } => s.add_package_origin(package, origin, &rp_id, served, actor, at),
             SystemCmd::RemovePackageOrigin {
                 package,
                 origin,
@@ -9207,6 +9214,19 @@ mod tests {
             package: package.into(),
             origin: origin.into(),
             rp_id: rp_id.into(),
+            served: false,
+            actor: actor.into(),
+            at: 1,
+            consent,
+        }
+    }
+
+    fn add_served(actor: &str, origin: &str, rp_id: &str, consent: Value) -> SystemCmd {
+        SystemCmd::AddPackageOrigin {
+            package: "p".into(),
+            origin: origin.into(),
+            rp_id: rp_id.into(),
+            served: true,
             actor: actor.into(),
             at: 1,
             consent,
@@ -9404,6 +9424,124 @@ mod tests {
             ["https://q.example.org"],
             "p's origins went with it"
         );
+    }
+
+    /// A served origin (a custom domain) applies only with its manager's
+    /// consent naming it served: the consent to the same origin unserved,
+    /// as a client from before signs it, does not make it served. One
+    /// registration holds an origin either way, at most
+    /// `MAX_SERVED_ORIGINS_PER_PACKAGE` of a package's are served, and one
+    /// with a port is refused where it applies.
+    #[test]
+    fn served_origins_carry_their_own_consent_and_limit() {
+        use crate::origins::{add_args, MAX_SERVED_ORIGINS, MAX_SERVED_ORIGINS_PER_PACKAGE};
+        const KV: &str = "https://kv.example.com";
+        let (mut m, mut alice, mut bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let plain = consent(
+            &mut alice,
+            "package:p",
+            "__add_origin",
+            &add_args(KV, "kv.example.com", false),
+        );
+        assert!(
+            m.run(add_served("alice", KV, "kv.example.com", plain))
+                .is_err(),
+            "a consent to an unserved origin"
+        );
+        let args = add_args(KV, "kv.example.com", true);
+        let by_bob = consent(&mut bob, "package:p", "__add_origin", &args);
+        assert!(m
+            .run(add_served("bob", KV, "kv.example.com", by_bob))
+            .unwrap_err()
+            .contains("manager"));
+        assert!(m.state.package_origins.is_empty());
+        let c = consent(&mut alice, "package:p", "__add_origin", &args);
+        let out = m.run(add_served("alice", KV, "kv.example.com", c)).unwrap();
+        assert_eq!(out["served"], true, "{out}");
+        assert!(m.state.served_origin(KV).is_some());
+        // The served consent does not register it unserved either.
+        let c = consent(&mut alice, "package:p", "__add_origin", &args);
+        assert!(m
+            .run(add_origin("alice", "p", KV, "kv.example.com", c))
+            .is_err());
+
+        let add = |m: &mut SystemMachine, origin: &str, served: bool| {
+            let mut cmd = add_origin("alice", "p", origin, "example.com", Value::Null);
+            if let SystemCmd::AddPackageOrigin { served: s, .. } = &mut cmd {
+                *s = served;
+            }
+            m.run_unproven(cmd)
+        };
+        assert!(
+            add(&mut m, KV, false).is_err(),
+            "held served, under another rpId too"
+        );
+        assert!(
+            add(&mut m, "https://kv.example.com:8443", true).is_err(),
+            "a port"
+        );
+        for i in 1..MAX_SERVED_ORIGINS_PER_PACKAGE {
+            let _ok = add(&mut m, &format!("https://s{i}.example.com"), true).unwrap();
+        }
+        assert!(add(&mut m, "https://more.example.com", true)
+            .unwrap_err()
+            .starts_with(QUOTA_PREFIX));
+        let _ok = add(&mut m, "https://plain.example.com", false).unwrap();
+        assert!(m.state.served_origin("https://plain.example.com").is_none());
+
+        // The cluster's own bound, whoever holds the rest.
+        let _ok = m.run_unproven(install_q("bob")).unwrap();
+        let held = m
+            .state
+            .package_origins
+            .values()
+            .filter(|o| o.served)
+            .count();
+        for i in held..MAX_SERVED_ORIGINS {
+            let mut o = m.state.package_origins[KV].clone();
+            o.package = "elsewhere".into();
+            let _prev = m
+                .state
+                .package_origins
+                .insert(format!("https://e{i}.example.org"), o);
+        }
+        let mut cmd = add_origin(
+            "bob",
+            "q",
+            "https://q.example.org",
+            "q.example.org",
+            Value::Null,
+        );
+        if let SystemCmd::AddPackageOrigin { served, .. } = &mut cmd {
+            *served = true;
+        }
+        assert_eq!(
+            m.run_unproven(cmd).unwrap_err(),
+            "quota exceeded: served origins"
+        );
+    }
+
+    /// A registration and an `AddPackageOrigin` from before served origins
+    /// read as unserved and write the bytes they did.
+    #[test]
+    fn origins_from_before_served_ones_read_unserved_and_write_as_before() {
+        let record = json!({
+            "package": "p", "rpId": "notes.example.com", "addedBy": "alice", "addedAt": 1
+        });
+        let o: crate::origins::PackageOrigin = serde_json::from_value(record.clone()).unwrap();
+        assert!(!o.served);
+        assert_eq!(serde_json::to_value(&o).unwrap(), record);
+        let cmd = json!({
+            "op": "addPackageOrigin", "package": "p", "origin": NOTES,
+            "rp_id": "notes.example.com", "actor": "alice", "at": 1, "consent": null
+        });
+        let read: SystemCmd = serde_json::from_value(cmd.clone()).unwrap();
+        assert!(matches!(
+            read,
+            SystemCmd::AddPackageOrigin { served: false, .. }
+        ));
+        assert_eq!(serde_json::to_value(&read).unwrap(), cmd);
     }
 
     /// State, refresh records and session claims from before package origins

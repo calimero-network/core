@@ -197,7 +197,9 @@ and uploads. Its step-up confirmations come from its own origin only.
 A package's manager can also register origins of their own (a developer's
 site): `GET|POST|DELETE /package-origins/{package}`, each change approved with
 their passkey. A ceremony there uses the origin's own rp-id and opens the same
-package-bound session; removing the origin ends those sessions. See
+package-bound session; removing the origin ends those sessions. Registered
+with `served: true` (a custom domain), the cluster also serves the package's
+frontend there. See
 [Registered origins](/protocol/identities/#registered-origins).
 
 ## The ops token

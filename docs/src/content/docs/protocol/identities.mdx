@@ -205,7 +205,7 @@ a package-bound session.
 | Change | Route | Consent (`412` first) |
 | --- | --- | --- |
 | List | `GET /package-origins/{package}` | none |
-| Register | `POST /package-origins/{package} { origin, rpId? }` | `package:{package} / __add_origin / { origin, rpId }` |
+| Register | `POST /package-origins/{package} { origin, rpId?, served? }` | `package:{package} / __add_origin / { origin, rpId }` (`{ origin, rpId, served: true }` for a served one) |
 | Remove | `DELETE /package-origins/{package} { origin }` | `package:{package} / __remove_origin / { origin }` |
 
 The consent is logged with the command (`AddPackageOrigin`,
@@ -258,6 +258,25 @@ at `info`, each registration and removal (package, origin, rp-id) and each
 session opened on a registered origin (package and origin); who made the
 change is in the system log's command and at `debug` only, never in the
 journal an operator reads.
+
+**Served origins (custom domains).** Registered with `served: true`, the
+origin is one the cluster also serves the package's frontend on, from its
+signed bundle, as at `{label}.D`: the developer points their domain at the
+cluster, and a request whose `Host` is that name (on 443) gets the package's
+site before any node route. Everything else is a registered origin's: its own
+rp-id, package-bound sessions naming it, removal ending them and the site with
+them. Its consent names `served: true`, so a consent to the plain origin never
+makes it served, and one origin is held either way (change it by removing it
+first). Only `https://host` with no port (`http://name.localhost:port` on a
+`--dev` node); not on a node without `--apps-domain` (`400 NOT_SERVING`), not
+under the apps domain or the cluster's rp-id, not a node's API host; 4 per
+package and 64 per cluster; adding one needs every node on this release
+(`409 CLUSTER_NOT_UPGRADED`). The operator lists them, by the package's label,
+at `GET /ops/served-origins`, from which Calimero Cloud orders each one's TLS
+certificate for the cluster's attested nodes and routes the name. A custom
+domain's sessions are only as safe as its DNS: whoever controls the name can
+serve their own page there and use its passkeys for that package. Design:
+`docs/specs/custom-domains.md`.
 
 Not yet: proof that the manager controls the origin (a squatter on another
 developer's origin denies them its use on this cluster, but never sees a

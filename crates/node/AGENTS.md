@@ -684,6 +684,30 @@ is its command line.
   `tests/package_origins.rs`, `package_origins_carry_their_managers_consent`,
   `package_origins_are_unique_bounded_and_go_with_their_package`,
   `state_from_before_package_origins_reads_with_none_and_writes_as_before`.
+  **Served origins** (custom domains; design `docs/specs/custom-domains.md`):
+  `served: true` on the body, `PackageOrigin::served` and
+  `AddPackageOrigin::served` (both left out when false), consent
+  `{ origin, rpId, served: true }` (`origins::add_args`, the one builder for
+  the API and `authorize`). `app_host::layer` serves the package's site on a
+  `Host` whose origin (`served_origin_of`: `https://name` on 443, or
+  `http://name.localhost:port`) is a served one (`Node::served_site`, after
+  `app_host_site`; never under the apps domain or on a node's API host).
+  Ceremonies, CORS, binding and removal are the registered origin's, unchanged
+  (`app_origin` answers it with its rp-id; `app_origin_package` stays
+  apps-domain only). The API refuses (`served_fits`) a port, no
+  `--apps-domain` (`NOT_SERVING`), a name under the apps domain or the
+  cluster's rp-id, a node's API host, a held origin with the other `served`;
+  limits `MAX_SERVED_ORIGINS_PER_PACKAGE` (4), `MAX_SERVED_ORIGINS` (64, the
+  certificate metadata budget); `require_upgraded_nodes` before the consent,
+  so no older node drops the flag. `GET /ops/served-origins` (ops token)
+  lists `{ origin, host, label, addedAt }`, no package names, for mdma's
+  certificates and resolver routes. merod terminates no TLS: Traefik in the
+  TD does, with certificates mdma delivers. Regressions:
+  `a_served_origin_serves_its_packages_frontend_and_binds_its_sessions`,
+  `served_origins_carry_their_own_consent_and_limit`,
+  `origins_from_before_served_ones_read_unserved_and_write_as_before`,
+  `a_served_origin_is_an_https_host_without_a_port`,
+  `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
   `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,

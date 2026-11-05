@@ -197,7 +197,9 @@ cluster's `{cluster_label}.apps.example.com`, and each
 deployment's at its own `{dlabel}.apps.example.com`. TLS for the
 wildcard name is the front's job; a front shared by several clusters routes
 each cluster label to its cluster. Keep `--cluster` stable: the cluster labels
-derive from it. See
+derive from it. A custom domain a package's manager registered as a served
+origin also needs its own DNS record to the front and a certificate for its
+name; `GET /ops/served-origins` lists them. See
 [Networking](/operate/networking/#app-frontends).
 
 ## Checklist

@@ -14,6 +14,15 @@
 //! adding and removing one carries the manager's passkey consent
 //! (`package:{package} / __add_origin / { origin, rpId }`,
 //! `__remove_origin / { origin }`), checked where it applies.
+//!
+//! A **served** origin (`served: true`, a custom domain) is one the cluster
+//! also serves the package's frontend on, from its signed bundle, as it does
+//! at `{label}.{apps_domain}` (`app_host`): the developer points their domain
+//! at the cluster and the node answers it. Everything else is a registered
+//! origin's: its own rp-id, sessions bound to the package and naming the
+//! origin, removal ending them. Its consent says so
+//! (`{ origin, rpId, served: true }`), so a consent to a plain origin never
+//! makes one served. Design: `docs/specs/custom-domains.md`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -30,6 +39,15 @@ pub const MAX_PACKAGE_ORIGINS: usize = 4096;
 /// The longest origin, in bytes (`scheme://host:port`).
 pub const MAX_ORIGIN_BYTES: usize = 255;
 
+/// How many of a package's origins the cluster serves its frontend on
+/// (custom domains); each costs a certificate and a route outside the node.
+pub const MAX_SERVED_ORIGINS_PER_PACKAGE: usize = 4;
+
+/// How many served origins a cluster keeps: every node holds a certificate
+/// chain for each, delivered as instance metadata (a few KiB each, within
+/// the 512 KiB a GCE instance's metadata may hold, beside the node's own).
+pub const MAX_SERVED_ORIGINS: usize = 64;
+
 /// One registered origin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +58,11 @@ pub struct PackageOrigin {
     pub rp_id: String,
     pub added_by: AccountId,
     pub added_at: u64,
+    /// Whether the cluster serves the package's frontend on this origin (a
+    /// custom domain). Left out when false, so a registration from before
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub served: bool,
 }
 
 /// Why an origin is refused before anything is recorded.
@@ -50,6 +73,9 @@ pub enum Refusal {
     Origin,
     /// Not the origin's host, nor a parent domain of it.
     RpId,
+    /// A served origin with a port (or `http` with none): browsers reach a
+    /// custom domain on 443 only.
+    Served,
 }
 
 impl Refusal {
@@ -59,6 +85,7 @@ impl Refusal {
         match self {
             Self::Origin => "an origin is https://host[:port] exactly as a browser writes it (lowercase, no path, no default port); http only on a localhost name",
             Self::RpId => "an rpId is the origin's host or a parent domain of it, with at least one dot (or localhost)",
+            Self::Served => "a served origin is https://host with no port (http://name.localhost:port on a development node)",
         }
     }
 }
@@ -98,6 +125,52 @@ pub fn origin_host(origin: &str) -> Result<String, Refusal> {
     Ok(host.to_owned())
 }
 
+/// The host of `origin` when the cluster may serve a frontend on it: an
+/// origin [`origin_host`] takes, `https` with no port (browsers reach it on
+/// 443, through the resolver), or `http` on a `localhost` name with one.
+///
+/// # Errors
+/// [`Refusal::Origin`], [`Refusal::Served`].
+pub fn served_host(origin: &str) -> Result<String, Refusal> {
+    let host = origin_host(origin)?;
+    let rest = origin
+        .split_once("://")
+        .map_or(origin, |(_, rest)| rest)
+        .strip_prefix(host.as_str())
+        .unwrap_or_default();
+    let fits = if origin.starts_with("https://") {
+        rest.is_empty()
+    } else {
+        !rest.is_empty()
+    };
+    if !fits {
+        return Err(Refusal::Served);
+    }
+    Ok(host)
+}
+
+/// The arguments the manager's consent to `AddPackageOrigin` names:
+/// `{ origin, rpId }`, plus `served: true` for a served one, so either
+/// consent fits only its own change.
+#[must_use]
+pub fn add_args(origin: &str, rp_id: &str, served: bool) -> Value {
+    if served {
+        json!({ "origin": origin, "rpId": rp_id, "served": true })
+    } else {
+        json!({ "origin": origin, "rpId": rp_id })
+    }
+}
+
+/// Whether `name` is `domain` or a name under it (both lowercase, no
+/// trailing dot).
+#[must_use]
+pub fn within(name: &str, domain: &str) -> bool {
+    name == domain
+        || name
+            .strip_suffix(domain)
+            .is_some_and(|rest| rest.ends_with('.'))
+}
+
 /// The rp-id ceremonies on `origin` use: `rp_id` when given, else the
 /// origin's host. It must be the host or a parent domain of it, as WebAuthn
 /// requires of a relying party; a browser also refuses a public suffix.
@@ -128,10 +201,7 @@ pub fn covers_cluster(rp_id: &str, cluster_rp_id: &str) -> bool {
     if rp_id == "localhost" {
         return false;
     }
-    cluster_rp_id == rp_id
-        || cluster_rp_id
-            .strip_suffix(rp_id)
-            .is_some_and(|rest| rest.ends_with('.'))
+    within(cluster_rp_id, rp_id)
 }
 
 impl SystemState {
@@ -163,13 +233,22 @@ impl SystemState {
             .filter(move |(_, o)| o.package == package)
     }
 
+    /// The registration whose origin the cluster serves `package`'s
+    /// frontend on, for an origin (`scheme://host[:port]`).
+    #[must_use]
+    pub fn served_origin(&self, origin: &str) -> Option<&PackageOrigin> {
+        self.package_origins.get(origin).filter(|o| o.served)
+    }
+
     /// `AddPackageOrigin`: by the package's manager, an origin no package
-    /// holds yet, within the limits.
+    /// holds yet, within the limits; `served`, one the cluster serves the
+    /// package's frontend on.
     pub(crate) fn add_package_origin(
         &mut self,
         package: String,
         origin: String,
         rp_id: &str,
+        served: bool,
         actor: AccountId,
         at: u64,
     ) -> Result<Value, &'static str> {
@@ -177,6 +256,9 @@ impl SystemState {
             return Err("only the package's manager registers its origins: its publisher's MANAGE_APPLICATION holders, or whoever installed it first");
         }
         let resolved = resolve_rp_id(&origin, Some(rp_id)).map_err(Refusal::message)?;
+        if served {
+            let _host = served_host(&origin).map_err(Refusal::message)?;
+        }
         if let Some(held) = self.package_origins.get(&origin) {
             if held.package != package {
                 return Err("another package registered that origin");
@@ -184,10 +266,24 @@ impl SystemState {
             if held.rp_id != resolved {
                 return Err("that origin is registered with another rpId; remove it first");
             }
+            if held.served != served {
+                return Err("that origin is registered with the other `served`; remove it first");
+            }
             return Ok(origin_json(&origin, held));
         }
         if self.origins_of(&package).count() >= MAX_ORIGINS_PER_PACKAGE {
             return Err("quota exceeded: origins per package");
+        }
+        if served
+            && self.origins_of(&package).filter(|(_, o)| o.served).count()
+                >= MAX_SERVED_ORIGINS_PER_PACKAGE
+        {
+            return Err("quota exceeded: served origins per package");
+        }
+        if served
+            && self.package_origins.values().filter(|o| o.served).count() >= MAX_SERVED_ORIGINS
+        {
+            return Err("quota exceeded: served origins");
         }
         if self.package_origins.len() >= MAX_PACKAGE_ORIGINS {
             return Err("quota exceeded: origins");
@@ -197,6 +293,7 @@ impl SystemState {
             rp_id: resolved,
             added_by: actor,
             added_at: at,
+            served,
         };
         let out = origin_json(&origin, &record);
         let _prev = self.package_origins.insert(origin, record);
@@ -240,6 +337,7 @@ pub fn origin_json(origin: &str, o: &PackageOrigin) -> Value {
         "rpId": o.rp_id,
         "addedBy": o.added_by,
         "addedAt": crate::system::rfc3339(o.added_at),
+        "served": o.served,
     })
 }
 
@@ -312,6 +410,49 @@ mod tests {
             resolve_rp_id("http://my.localhost:3000", Some("localhost")).unwrap(),
             "localhost"
         );
+    }
+
+    /// A custom domain is reached on 443 through the resolver, so its origin
+    /// has no port; only a development node's `localhost` name has one (and
+    /// `http`).
+    #[test]
+    fn a_served_origin_is_an_https_host_without_a_port() {
+        assert_eq!(
+            served_host("https://kv.example.com").unwrap(),
+            "kv.example.com"
+        );
+        assert_eq!(
+            served_host("http://kv.localhost:2501").unwrap(),
+            "kv.localhost"
+        );
+        for bad in ["https://kv.example.com:8443", "http://kv.localhost"] {
+            assert_eq!(served_host(bad), Err(Refusal::Served), "{bad}");
+        }
+        for bad in ["http://kv.example.com", "https://kv.example.com/", ""] {
+            assert_eq!(served_host(bad), Err(Refusal::Origin), "{bad}");
+        }
+    }
+
+    /// The consent to a served origin names `served`, so the one to a plain
+    /// origin (as the clients sign it today) never stands for it.
+    #[test]
+    fn a_served_origins_consent_names_it_served() {
+        let plain = add_args("https://kv.example.com", "kv.example.com", false);
+        assert_eq!(
+            plain,
+            json!({ "origin": "https://kv.example.com", "rpId": "kv.example.com" })
+        );
+        let served = add_args("https://kv.example.com", "kv.example.com", true);
+        assert_eq!(served["served"], true);
+        assert_ne!(plain, served);
+    }
+
+    #[test]
+    fn within_matches_whole_labels_only() {
+        assert!(within("kv.example.com", "example.com"));
+        assert!(within("example.com", "example.com"));
+        assert!(!within("kvexample.com", "example.com"));
+        assert!(!within("example.com", "kv.example.com"));
     }
 
     #[test]

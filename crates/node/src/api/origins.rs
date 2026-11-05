@@ -1,7 +1,10 @@
 //! `/package-origins/{package}`: the web origins a package's manager
 //! registers for its frontend ([`crate::origins`]), listed, added and removed
 //! with the manager's passkey session; adding and removing also with a
-//! passkey assertion over the change (`412 CONFIRM_REQUIRED` first).
+//! passkey assertion over the change (`412 CONFIRM_REQUIRED` first). An
+//! origin added with `served: true` is a custom domain the cluster serves the
+//! frontend on (`app_host`); `GET /ops/served-origins` lists every one for
+//! the operator (mdma), which orders their certificates and routes them.
 
 use std::sync::Arc;
 
@@ -12,12 +15,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, info};
 
-use super::{consent, holder, ApiResult, ConfirmBody};
+use super::{consent, holder, operator, ApiResult, ConfirmBody};
+use crate::app_host::label;
 use crate::error::ApiError;
 use crate::node::Node;
 use crate::origins::{
-    covers_cluster, origin_host, origin_json, resolve_rp_id, MAX_ORIGINS_PER_PACKAGE,
-    MAX_PACKAGE_ORIGINS,
+    add_args, covers_cluster, origin_host, origin_json, resolve_rp_id, served_host, within,
+    MAX_ORIGINS_PER_PACKAGE, MAX_PACKAGE_ORIGINS, MAX_SERVED_ORIGINS,
+    MAX_SERVED_ORIGINS_PER_PACKAGE,
 };
 use crate::system::SystemCmd;
 use crate::types::now_secs;
@@ -29,6 +34,10 @@ pub(super) struct AddOriginBody {
     /// The relying-party id; the origin's host when absent.
     #[serde(default)]
     rp_id: Option<String>,
+    /// The cluster serves the package's frontend on this origin too (a
+    /// custom domain).
+    #[serde(default)]
+    served: bool,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
@@ -130,11 +139,20 @@ pub(super) async fn add(
             "that is one of the cluster's own origins, or a frontend it serves",
         ));
     }
+    if body.served {
+        served_fits(&node, &origin)?;
+    }
     managed(&node, &account, &package).await?;
+    let served = body.served;
     node.sys(|s| {
         match s.package_origins.get(&origin) {
             Some(o) if o.package != package => {
                 return Err(taken("another package registered that origin"))
+            }
+            Some(o) if o.served != served => {
+                return Err(taken(
+                    "that origin is registered with the other `served`; remove it first",
+                ))
             }
             Some(_) => return Ok(()),
             None => {}
@@ -146,6 +164,25 @@ pub(super) async fn add(
                 &format!("a package registers at most {MAX_ORIGINS_PER_PACKAGE} origins"),
             ));
         }
+        if served
+            && s.origins_of(&package).filter(|(_, o)| o.served).count()
+                >= MAX_SERVED_ORIGINS_PER_PACKAGE
+        {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                &format!(
+                    "a package has the cluster serve it on at most {MAX_SERVED_ORIGINS_PER_PACKAGE} origins"
+                ),
+            ));
+        }
+        if served && s.package_origins.values().filter(|o| o.served).count() >= MAX_SERVED_ORIGINS {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                "this cluster serves as many custom domains as it takes",
+            ));
+        }
         if s.package_origins.len() >= MAX_PACKAGE_ORIGINS {
             return Err(ApiError::new(
                 429,
@@ -155,12 +192,17 @@ pub(super) async fn add(
         }
         Ok(())
     })?;
+    if served {
+        // No node that would read the record without `served`, and so hold
+        // other state than the rest, may be in the cluster.
+        node.require_upgraded_nodes().await?;
+    }
     let consent = consent(
         &node,
         &p,
         &format!("package:{package}"),
         "__add_origin",
-        &json!({ "origin": origin, "rpId": rp_id }),
+        &add_args(&origin, &rp_id, served),
         body.confirm,
     )
     .await?;
@@ -169,15 +211,70 @@ pub(super) async fn add(
             package: package.clone(),
             origin: origin.clone(),
             rp_id: rp_id.clone(),
+            served,
             actor: account.clone(),
             at: now_secs(),
             consent,
         })
         .await?;
     // Who did it is the log's to keep (the command's actor), not the journal's.
-    info!(%package, %origin, %rp_id, "registered an origin for a package");
+    info!(%package, %origin, %rp_id, served, "registered an origin for a package");
     debug!(%package, %origin, %account, "the origin's registrant");
     Ok(Json(out))
+}
+
+/// Refuse a served origin (a custom domain) the cluster cannot or must not
+/// serve: one with a port, on a node that serves no frontends, under the apps
+/// domain (served there already), on a node's API host, or under the
+/// cluster's rp-id (whose pages must stay the cluster's own).
+fn served_fits(node: &Node, origin: &str) -> Result<(), ApiError> {
+    let host = served_host(origin).map_err(|r| bad_origin(r.message()))?;
+    let Some(domain) = node.config.apps_domain.as_deref() else {
+        return Err(ApiError::bad_request(
+            "NOT_SERVING",
+            "this cluster serves no frontends (merod --apps-domain); register the origin unserved",
+        ));
+    };
+    if within(&host, domain) {
+        return Err(bad_origin(
+            "that name is under the cluster's apps domain, where the frontend is served already",
+        ));
+    }
+    let rp = node.config.rp_id.as_str();
+    if rp != "localhost" && within(&host, rp) {
+        return Err(bad_origin(
+            "that name is under the cluster's rpId: its pages stay the cluster's own",
+        ));
+    }
+    if node.is_api_host(&host) {
+        return Err(taken("that is a node's own API host"));
+    }
+    Ok(())
+}
+
+/// Every served origin of the cluster (custom domains), for the operator:
+/// mdma orders each one's certificate for the cluster's attested nodes and
+/// routes its name here, but only for what the log holds. As the rest of the
+/// Ops API, no package name and no account: the package's [`label`], which
+/// mdma already routes by, ties a domain to its package.
+pub(super) async fn ops_served(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    let fresh = node.sys_fresh().await;
+    let served: Vec<Value> = node.sys(|s| {
+        s.package_origins
+            .iter()
+            .filter(|(_, o)| o.served)
+            .filter_map(|(origin, o)| {
+                Some(json!({
+                    "origin": origin,
+                    "host": served_host(origin).ok()?,
+                    "label": label(&o.package),
+                    "addedAt": crate::system::rfc3339(o.added_at),
+                }))
+            })
+            .collect()
+    });
+    Ok(Json(json!({ "fresh": fresh, "origins": served })))
 }
 
 /// Remove an origin of `package`, with the manager's passkey assertion over
