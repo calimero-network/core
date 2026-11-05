@@ -3,6 +3,8 @@
 Redacts a CSV file on compute runs, on the component SDK (`calimero-sdk`, `wasm32-wasip2`).
 One crate builds two components: `app.wasm` (state and calls) and `compute.wasm` (the rules engine, which is all a job node receives).
 
+To write a compute app like this one, see the [compute actions guide](../../docs/src/content/docs/build/guides/compute-actions.mdx).
+
 ## Roles
 
 - The organization's admin or owner sets the policy once with `setPolicy {policy}`.
