@@ -37,10 +37,7 @@ const STOP_WAIT: Duration = Duration::from_secs(2); // How long [`RunningJob::st
 
 const SWEEP_EVERY: Duration = Duration::from_secs(1); // How often finished and abandoned runs are looked for
 
-pub use runs::{
-    AWAITING_INPUTS_TTL, CANCEL_WAIT, JOB_RESULT_TTL, MAX_ASSIGNMENT_BYTES, MAX_FINISHED_BYTES,
-    MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, TOKEN_HEADER,
-};
+pub use runs::{CANCEL_WAIT, MAX_ASSIGNMENT_BYTES, MAX_RUN_INPUTS, TOKEN_HEADER};
 
 /// What a job node is started with: nothing of a cluster's storage or keys.
 #[derive(Clone, Debug)]
@@ -119,7 +116,7 @@ impl RunningJob {
 
 /// Refuses a cluster identity that is not a curve point, or is one of small order: a signature
 /// by such a key can be made without holding it.
-pub fn check_cluster_identity(identity: &[u8; 32]) -> eyre::Result<()> {
+fn check_cluster_identity(identity: &[u8; 32]) -> eyre::Result<()> {
     let key = ed25519_dalek::VerifyingKey::from_bytes(identity)
         .map_err(|_| eyre::eyre!("the cluster identity is not a point of the curve"))?;
     if key.is_weak() {
