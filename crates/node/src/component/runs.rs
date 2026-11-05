@@ -298,7 +298,7 @@ pub struct FinalEntry {
 }
 
 /// The app's active runs as the host core asks for them, read from the group's rows when asked.
-pub struct NodeRuns {
+struct NodeRuns {
     state: GroupState,
     ids: Vec<String>,
 }
