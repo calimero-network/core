@@ -42,8 +42,8 @@ use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
 
 pub use runs::{
-    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome, NodeRuns,
-    RunCaps, RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT, MAX_ATTEMPTS,
+    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome, RunCaps,
+    RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT, MAX_ATTEMPTS,
 };
 
 /// An event a run emitted, with its audience (R9).

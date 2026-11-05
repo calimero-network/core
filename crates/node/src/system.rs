@@ -4211,10 +4211,11 @@ impl SystemMachine {
                     );
                     s.grant_runs();
                 }
-                if s.run_slot(&app, &run).is_some_and(|r| r.refused) {
+                let slot = s.run_slot(&app, &run);
+                if slot.is_some_and(|r| r.refused) {
                     return Ok(acquire_refused(RUN_FUEL_OVER_QUOTA, false));
                 }
-                let granted = s.run_slot(&app, &run).is_some_and(|r| r.granted);
+                let granted = slot.is_some_and(|r| r.granted);
                 Ok(json!({
                     "state": if granted { "granted" } else { "queued" },
                     "code": null,
