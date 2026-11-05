@@ -60,9 +60,21 @@ use calimero_bundle::{mime_type, FRONTEND_ROOT};
 use crate::node::Node;
 use crate::system::{compare_versions, Deployment, SystemState};
 
-/// v1's content security policy, with the cluster's API origins added to
-/// `connect-src` (the page talks to the cluster, not to its own origin).
+/// v1's content security policy; [`page_csp`] completes its `connect-src`.
 const CSP_HEAD: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; connect-src 'self'";
+/// Where a page's client gets what it verifies a node's quote against: the
+/// release's signed measurements (`/api/tee/node-releases/{version}`) and
+/// Intel's collateral (`/api/tee/pcs`), mero-js's `DEFAULT_RELEASE_MIRROR`
+/// and `DEFAULT_COLLATERAL_MIRROR`. Both are signed (Sigstore over the
+/// measurements, Intel over the collateral) and checked by the client, so the
+/// mirror is trusted with nothing; without it no page can verify a TDX node.
+const ATTESTATION_MIRROR: &str = "https://cloud.calimero.network";
+
+/// A served page's content security policy: it talks to its own origin, the
+/// attestation mirror and the cluster's nodes (`api_origins`), and nothing else.
+fn page_csp(api_origins: &[String]) -> String {
+    format!("{CSP_HEAD} {ATTESTATION_MIRROR} {}", api_origins.join(" "))
+}
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 const MAX_STRIPPED_SEGMENTS: usize = 16;
@@ -453,7 +465,7 @@ async fn serve(node: &Node, site: &Site, req: Request) -> Response {
     let Some(mime) = mime_type(&name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let csp = format!("{CSP_HEAD} {}", node.api_origins().join(" "));
+    let csp = page_csp(&node.api_origins());
     let mut resp = if req.method() == Method::HEAD {
         Response::new(Body::empty())
     } else {
@@ -553,6 +565,38 @@ mod tests {
             .into_iter()
             .collect(),
         }
+    }
+
+    /// A served page verifies the node before it signs anyone in, and on a TDX
+    /// node that means fetching the release's signed measurements and Intel's
+    /// collateral from the attestation mirror. Without the mirror in
+    /// `connect-src` the browser blocks both and no one can sign in (Safari:
+    /// "Load failed"); `merod local`'s mock quotes never fetch, so no e2e test
+    /// saw it.
+    #[test]
+    fn a_served_page_may_reach_the_cluster_and_the_attestation_mirror() {
+        let origins = vec![
+            "https://n1.example.com".to_owned(),
+            "https://n2.example.com".to_owned(),
+        ];
+        let csp = page_csp(&origins);
+        let connect = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("connect-src "))
+            .expect("a connect-src directive");
+        let sources: Vec<&str> = connect.split_whitespace().skip(1).collect();
+        assert_eq!(
+            sources,
+            [
+                "'self'",
+                ATTESTATION_MIRROR,
+                "https://n1.example.com",
+                "https://n2.example.com"
+            ],
+            "{csp}"
+        );
+        assert!(csp.starts_with("default-src 'self';"), "{csp}");
     }
 
     #[test]

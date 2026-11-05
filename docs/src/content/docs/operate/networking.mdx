@@ -89,7 +89,9 @@ signature before a byte is served.
   `/.well-known/calimero.json` lists the package, its releases, the
   deployments offering it and the cluster's API URLs for the page to connect to.
 - Responses carry a strict CSP whose `connect-src` adds the cluster's API
-  origins.
+  origins and the attestation mirror, `https://cloud.calimero.network`, where
+  the page's client fetches the release's signed measurements and Intel's
+  collateral to verify the nodes.
 - An unknown label under `D` answers `404`, never a node route.
 - On this cluster each package is also at `{cluster_label}.D`
   (`calimero_node::app_host::cluster_label` of `--cluster` and the package):
