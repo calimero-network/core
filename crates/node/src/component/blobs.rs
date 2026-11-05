@@ -43,8 +43,6 @@ pub const MAX_BLOB_MIME_BYTES: usize = 127;
 pub const MAX_GRANT_BYTES: usize = 128;
 /// Blobs one `BlobsCollected` entry names at most.
 pub const COLLECT_BATCH: usize = 64;
-/// The content type of a published output: its bytes carry no type of their own.
-const PUBLISHED_MIME: &str = "application/octet-stream";
 
 /// What the host records of one of a component app's blobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,11 +191,7 @@ impl BlobTable {
     /// a value stored by the same entry or a later one refers to it. Not bounded by
     /// [`MAX_COMPONENT_BLOBS`]: the guest was already told it exists.
     pub fn add_file(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
-        let Some((id, record)) = BlobRecord::sealed(mark, ts_ms) else {
-            return;
-        };
-        let _new = self.idle.insert((ts_ms, id));
-        self.put(tx, id, record);
+        self.add_sealed(tx, mark, ts_ms, |_| {});
     }
 
     /// [`Self::add_file`] for a file `uploader` uploaded.
@@ -208,23 +202,26 @@ impl BlobTable {
         ts_ms: u64,
         uploader: Option<String>,
     ) {
-        let Some((id, mut record)) = BlobRecord::sealed(mark, ts_ms) else {
-            return;
-        };
-        if let Some(seal) = record.file.as_mut() {
-            seal.uploader = uploader;
-        }
-        let _new = self.idle.insert((ts_ms, id));
-        self.put(tx, id, record);
+        self.add_sealed(tx, mark, ts_ms, |seal| seal.uploader = uploader);
     }
 
     /// [`Self::add_file`] for an output of a done compute run: the file may be published.
     pub fn add_output(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
+        self.add_sealed(tx, mark, ts_ms, |seal| seal.output = true);
+    }
+
+    fn add_sealed(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        mark: &FileMark,
+        ts_ms: u64,
+        tag: impl FnOnce(&mut FileSeal),
+    ) {
         let Some((id, mut record)) = BlobRecord::sealed(mark, ts_ms) else {
             return;
         };
         if let Some(seal) = record.file.as_mut() {
-            seal.output = true;
+            tag(seal);
         }
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);
@@ -250,7 +247,7 @@ impl BlobTable {
         }
         let record = BlobRecord {
             size,
-            mime: PUBLISHED_MIME.to_owned(),
+            mime: "application/octet-stream".to_owned(),
             refs: 0,
             idle_since_ms: ts_ms,
             file: None,
