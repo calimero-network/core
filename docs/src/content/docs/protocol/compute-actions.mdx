@@ -12,6 +12,7 @@ A compute run may take up to 15 minutes and 4 GiB, reads up to 64 input files (2
 Raw data leaves the attested machines only where an app sends it out over outbound HTTP from a call or an action.
 Files are sealed at rest and in transit.
 A job node is an attested TDX node that holds no cluster key, so it sees an input's plaintext only while the run reads it (the ciphertext is kept for up to `JOB_RESULT_TTL`, 1 hour).
+To write one, see the [Compute actions guide](/build/guides/compute-actions/).
 
 ## A call or a compute run
 

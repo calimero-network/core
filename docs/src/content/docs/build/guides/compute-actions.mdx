@@ -1,0 +1,240 @@
+---
+title: Compute actions
+description: Run long, private work over sealed files outside the log - write a compute method and its result method, build both components, start and cancel runs, publish an output with a grant link, and test it locally.
+sidebar:
+  order: 6.4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** run work that a call cannot (minutes of CPU over large files that must stay private) and keep its result in your app.
+
+This guide is the how-to.
+Why a run is built the way it is, and every rule a node applies, is in the [Compute actions](/protocol/compute-actions/) chapter.
+Every snippet is from `apps/compute-redact` (a CSV redactor) or `apps/v2-fixtures/compute`.
+
+## A compute method or a normal method
+
+A call stops at 2 s, and its whole log entry stays under 1 MiB.
+A compute run may take up to 15 minutes, reads and writes sealed files, and leaves only a small result in the log.
+
+- Use a normal method for anything that reads or writes state.
+- Use a compute method for work that only turns files into files, such as redaction, transcoding or a digest.
+- A compute run has no state, no network and no way to start another run.
+  It reaches state in one place, its **result method**, which the node runs as an ordinary logged call when the run ends.
+
+Compute runs need a component app (the `calimero-sdk` and `wasm32-wasip2` toolchain).
+
+## Build the two components
+
+A compute method is marked in the same crate as the rest of the app.
+The crate is built twice, once as `app.wasm` (every method, the state, the result methods) and once as `compute.wasm` (the compute methods only, which is all a job node receives).
+
+```bash
+scripts/install-mero-app-build.sh
+mero-app-build apps/compute-redact --out app.wasm --compute-out compute.wasm
+```
+
+Without `--compute-out`, the compute component is written beside `--out` as `compute.component.wasm`.
+A crate with no compute method builds one component and no compute output.
+
+Pack both into the signed bundle, which carries the compute component as `compute` next to `wasm`:
+
+```bash
+scripts/pack-component.py --wasm app.wasm --compute compute.wasm
+```
+
+A raw single `.wasm` upload has no compute component and cannot start runs, so ship the `.mpk`.
+The install checks are in [Compute actions](/protocol/compute-actions/#two-components).
+
+## Write a compute method and its result method
+
+```rust
+use calimero_sdk::compute::{self, ComputeOutcome, ComputeStatus};
+use calimero_sdk::files;
+
+#[app::compute(
+    fuel = 100_000_000_000,
+    memory_mib = 256,
+    wall_secs = 300,
+    result = "on_run"
+)]
+pub fn redact(policy: Policy, job: String, start: u32, rows: u32) -> app::Result<Redacted> {
+    let reader = files::open(&input()?)?;
+    let mut writer = files::create()?;
+    // let stats = rules::redact_part(reader, &mut writer, ...), reporting compute::progress as it goes
+    writer.finish()?;
+    Ok(Redacted { rows: stats.rows, cells: stats.cells })
+}
+
+fn input() -> app::Result<BlobRef> {
+    compute::inputs().into_iter().next().ok_or_else(|| Error::NoInput.into())
+}
+```
+
+- `fuel`, `memory_mib`, `wall_secs` and `result` are the four attributes, and the caps cannot exceed the host's ([Limits](/protocol/limits/)).
+  `result` names the result method.
+- `compute::inputs()` lists the input files the run was started with, and `compute::progress(percent, step)` reports progress (it is never logged).
+- `files::open` gives a `Read` and `files::create` a `Write`.
+  `finish()` returns the output's `BlobRef`, and a writer dropped unfinished leaves no file.
+- The return value is the run's `result`, at most 64 KiB.
+- The run is deterministic: its clock is fixed and its randomness is seeded per run, so a retry writes the same bytes.
+
+The result method takes the whole outcome:
+
+```rust
+#[app::compute_result]
+pub fn on_done(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
+    if outcome.status == ComputeStatus::Done {
+        for output in &outcome.outputs {
+            self.kept.insert(&output.id.id(), &output.id)?;
+        }
+    }
+    Ok(())
+}
+```
+
+- `outcome` has `run`, `method`, `attempt`, `status` (`Done`, `Failed` or `Cancelled`), `reason`, `result` (base64, only when done), `outputs` (`id`, `size`, `sha256`) and `usage`.
+- **An output is kept only if the result method stores its `BlobRef`.**
+  One it does not store is forgotten an hour after the run ends.
+- The result method is not public: no client can call it, so no client can forge an outcome.
+- If it fails, the run keeps its outcome but its outputs go the same way.
+
+### Start the next run from a result method
+
+A result method is a logged write, so it may call `compute::start`.
+`compute-redact` does this: the `preview` run's result method plans the parts and queues them, and every result method starts waiting runs while fewer than 4 are active.
+
+```rust
+#[app::compute_result]
+pub fn on_then(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
+    let started = match compute::start("digest", &(), &[]) {
+        Ok(run) => run.to_string(),
+        Err(e) => format!("error: {e:?}"),
+    };
+    self.chained.insert(&outcome.run.to_string(), &started)?;
+    Ok(())
+}
+```
+
+`start(method, &args, &inputs)` takes the arguments as anything serializable (`&()` sends none) and answers a `RunId`.
+Each input must be one of the app's own sealed files.
+A run with the same method, arguments and inputs that is still active is answered instead of a second one, so a retried call starts nothing twice.
+A call may start at most 16 runs, and an app may have 64 active.
+A refused start (for example when the release ships no compute component) returns an error you can handle, as `compute-redact` does by failing the job.
+
+## Sealed files and who may submit
+
+A sealed file is a blob whose bytes the app can read only inside a compute run.
+A call or a view can ask a file's size and hash (`file.info()`), and `files::open` is refused there.
+The bytes leave only as a compute output you publish.
+
+A client uploads one with `POST /apps/{app}/blobs?sealed=true`, with the raw bytes, up to 47 MiB.
+Only the app's owner and members of its organization may upload, and the answer carries the file's `id`, which a call takes as a `BlobRef`.
+`calimero-client`'s `Client::upload_file` does this.
+`meroctl blob upload` uploads an ordinary blob, not a sealed file.
+
+The app sets the policy for who may start a run.
+`compute-redact` lets a member submit only a file they uploaded, and admins any file:
+
+```rust
+pub fn submit(&mut self, file: BlobRef, rows_per_part: Option<u32>) -> app::Result<String> {
+    let who = member()?;
+    if file.info().is_none() {
+        return Err(Error::NoSuchFile.into());
+    }
+    if !is_admin() && files::uploader(&file).as_deref() != Some(&who) {
+        return Err(Error::NotYourFile.into());
+    }
+    // ... store the job, queue its first run with compute::start ...
+}
+```
+
+`files::uploader(&file)` is the account the node recorded from the authenticated upload.
+It is `None` for a file a call or a run made, and cannot be called inside a compute run.
+
+## Start, list and cancel runs
+
+There is no "start a run" route.
+A run starts when a logged call, timer or `init` calls `compute::start`, so you expose it as an ordinary method and call that:
+
+```bash
+meroctl call -c CONTEXT submit --args '{"file":"<file id>","rowsPerPart":50000}'
+```
+
+`GET /apps/{app}/runs/{run}` answers one run's state, attempts, input and output ids, usage, reason and `progress` while it runs.
+`GET /apps/{app}/runs?limit=<n>&before=<cursor>` lists the active runs and the last 256 finished ones, newest first.
+Neither carries the arguments or any key.
+They are reachable from `meroctl raw get` (the node API reference lists them).
+
+To cancel, expose a method that calls `compute::cancel(&run)`, and decide in it who may:
+
+```rust
+pub fn cancel(&mut self, run: RunId) -> app::Result<()> {
+    compute::cancel(&run)
+}
+```
+
+The result method then receives a `Cancelled` outcome.
+A run that already finished keeps its report and outputs.
+
+## Share an output with a grant link
+
+A sealed output cannot be downloaded or granted.
+`compute::publish` turns the output of one of the app's done runs into a plain blob, in a logged write, and `grant` gives a link to it:
+
+```rust
+pub fn publish(&mut self, output: BlobRef) -> app::Result<BlobRef> {
+    let blob = compute::publish(&output)?;
+    self.published.insert(&blob.id(), &blob)?;
+    Ok(blob)
+}
+
+pub fn link(&mut self, job: String, part: u32, ttl_secs: u32) -> app::Result<String> {
+    // ... check the caller may see the job, find the published part ...
+    Ok(part.grant(ttl_secs))
+}
+```
+
+- Store the published blob's `BlobRef`, or it is forgotten like any unreferenced blob.
+- A published output over 47 MiB cannot be published, so size parts below that.
+- `grant(ttl_seconds)` takes 1 to 86,400 seconds and is a call, so the log records who shared it (a view is refused for a published blob).
+- Anyone holding the grant downloads with `GET /apps/{app}/blobs/{id}?grant=<grant>`, with no session.
+- The app's owner or an org admin ends every grant made so far with `meroctl blob revoke ID -c CONTEXT`, or removes the blob with `meroctl blob delete ID -c CONTEXT`.
+
+## Test it before you deploy
+
+Run the compute component alone with `mero-compute`:
+
+```bash
+scripts/install-mero-compute.sh
+mero-compute run compute.wasm --method redact \
+  --args @apps/compute-redact/example/redact.json \
+  --input apps/compute-redact/example/people.csv \
+  --out out --twice
+```
+
+It uses the engine, caps and determinism of a job node, writes outputs to `out/output-0` and fails, naming the reason, if a cap is hit or if `--twice` finds the two runs differ.
+It runs no app, no state and no result method ([mero-compute](https://github.com/calimero-network/core/blob/master/tools/mero-compute/README.md)).
+
+Test the app side with the SDK's `TestApp` harness, which runs the real component but no compute: `compute::start` fails on the host target.
+`compute-redact` therefore passes the start and the publish as parameters (`Starter`, `Publisher`) and tests the queue and the outcomes with fakes in `src/lib.rs`.
+`TestApp::add_run_output` seeds a file that `compute::publish` accepts.
+
+## Limits and failures
+
+The numbers are in [Limits](/protocol/limits/) and the chapter's [limits table](/protocol/compute-actions/#limits).
+What to expect:
+
+- A run has at most 3 attempts.
+  A node that goes silent, or a wall clock that runs out, loses the attempt and the run restarts on another job node, then ends `failed` with reason `lost` when the attempts are spent.
+- Running out of `fuel` or `memory` is the app's failure: the run ends `failed` at once with that reason, and no output is registered.
+- Your result method sees every ending: `status` and `reason` tell it which.
+  The reasons are listed in [One run's life](/protocol/compute-actions/#one-runs-life).
+- A restart must give the same output, so keep the method a pure function of its inputs and arguments.
+- A run no job node takes within 10 minutes ends `refused`, and one over the organization's quota waits in the queue.
+  See [Restarts, cancel and caps](/protocol/compute-actions/#restarts-cancel-and-caps).
+
+<Aside type="tip">
+  Keep a part's output under 47 MiB and its progress step under 128 bytes, and split big files into one run per part, as `compute-redact` does.
+</Aside>
