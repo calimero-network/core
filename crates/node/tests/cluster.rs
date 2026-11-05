@@ -1791,10 +1791,25 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
             })
             .collect()
     };
+    // Snapshot only once every replica holds the app's log as far as its
+    // leader does: a follower still appending the deploy's entries would grow
+    // between this snapshot and the check below with no write proposed.
+    let settled = |logs: &[Option<u64>]| {
+        let held: Vec<u64> = logs.iter().flatten().copied().collect();
+        !held.is_empty() && held.iter().all(|n| *n == held[0])
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !settled(&logs(&c)) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let before = logs(&c);
     assert!(
         before.iter().any(Option::is_some),
         "some node hosts the app"
+    );
+    assert!(
+        settled(&before),
+        "the app's replicas agree on its log: {before:?}"
     );
     for i in 0..3 {
         let (cl, _) = signed_up(&c, i, &format!("user{i}")).await;
