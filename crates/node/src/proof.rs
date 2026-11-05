@@ -413,3 +413,90 @@ pub fn verify_recover(
         .map_err(|_| "the recovery is not signed with the code's key")?;
     Ok(used(b"recover", &message))
 }
+
+/// What an upgrade key's Ed25519 key is derived from, before the API key.
+pub const API_KEY_DOMAIN: &[u8] = b"calimero.api-key.v1\0";
+
+/// What an upgrade key's signature covers, before the statement.
+pub const API_KEY_UPGRADE_DOMAIN: &[u8] = b"calimero.api-key-upgrade.v1\0";
+
+/// The Ed25519 key an API key (`cal_…`) stands for: its seed is
+/// `SHA-256("calimero.api-key.v1\0" || key)`. The log keeps only the public
+/// half ([`api_key_public`]) and the key's hash, so a node that sees the log,
+/// and not the key, cannot sign an upgrade with it.
+#[must_use]
+pub fn api_key_signing_key(key: &str) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&sha256(&[API_KEY_DOMAIN, key.as_bytes()].concat()))
+}
+
+/// An API key's public key, hex: what an upgrade key's scope records.
+#[must_use]
+pub fn api_key_public(key: &str) -> String {
+    hex::encode(api_key_signing_key(key).verifying_key().to_bytes())
+}
+
+/// An upgrade key's proof over a statement, as the log carries it in
+/// `UpgradeApp::consent`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyProof {
+    /// The key's id (`ApiKeyRecord::key_id`).
+    pub api_key: String,
+    #[serde(flatten)]
+    pub statement: Statement,
+    /// Ed25519, hex.
+    pub signature: String,
+}
+
+impl Statement {
+    /// The bytes an upgrade key signs for it: the domain, the key's id, then
+    /// each part, each followed by a zero byte.
+    #[must_use]
+    pub fn api_key_message(&self, key_id: &str) -> Vec<u8> {
+        let mut m = API_KEY_UPGRADE_DOMAIN.to_vec();
+        for part in [key_id, &self.subject, &self.method, &self.args, &self.nonce] {
+            m.extend_from_slice(part.as_bytes());
+            m.push(0);
+        }
+        m
+    }
+}
+
+/// The proof the node that received `key` (id `key_id`) makes over
+/// `statement`.
+#[must_use]
+pub fn sign_key_upgrade(key: &str, key_id: &str, statement: Statement) -> KeyProof {
+    use ed25519_dalek::Signer;
+    let signature = api_key_signing_key(key).sign(&statement.api_key_message(key_id));
+    KeyProof {
+        api_key: key_id.to_owned(),
+        statement,
+        signature: hex::encode(signature.to_bytes()),
+    }
+}
+
+/// Check that `proof` is signed by the key whose public half is `public`,
+/// and answer its key id, its statement and what marks it used.
+///
+/// # Errors
+/// A proof that is malformed or not signed with that key.
+pub fn verify_key_upgrade(
+    proof: &Value,
+    public: &str,
+) -> Result<(String, Statement, String), &'static str> {
+    let proof: KeyProof = serde_json::from_value(proof.clone())
+        .map_err(|_| "the upgrade carries no API key signature")?;
+    let public = hex::decode(public).map_err(|_| "a malformed API key proof key")?;
+    let signature = hex::decode(&proof.signature).map_err(|_| "a malformed API key signature")?;
+    let message = proof.statement.api_key_message(&proof.api_key);
+    UnparsedPublicKey::new(&ED25519, &public)
+        .verify(&message, &signature)
+        .map_err(|_| "the upgrade is not signed with the API key")?;
+    Ok((proof.api_key, proof.statement, used(b"api-key", &message)))
+}
+
+/// The key id a [`KeyProof`] names, before it is verified.
+#[must_use]
+pub fn key_proof_id(proof: &Value) -> Option<&str> {
+    proof.get("apiKey").and_then(Value::as_str)
+}

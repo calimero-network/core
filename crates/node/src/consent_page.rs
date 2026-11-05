@@ -445,7 +445,7 @@ async fn release_facts(
         signer: bundle.signer_id().to_owned(),
         abi: wasm
             .iter()
-            .map(|(name, bytes)| (name.clone(), crate::component::embedded_abi(bytes)))
+            .map(|s| (s.name.clone(), crate::component::embedded_abi(&s.wasm)))
             .collect(),
     });
     node.consent.cache(&v.mpk, Arc::clone(&facts));
@@ -602,7 +602,7 @@ async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Res
             .iter()
             .any(|o| o.trim_end_matches('/') == origin),
         Some(p) => {
-            node.app_origin_package(&origin).as_deref() == Some(p)
+            crate::api::app_origin(node, &origin).is_some_and(|a| a.package == p)
                 || manifest_origins(node, p).await?.contains(&origin)
         }
     };
@@ -610,7 +610,7 @@ async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Res
         Ok(u)
     } else {
         Err(refuse(
-            "must be the requesting app's own frontend origin (or one its signed manifest names), \
+            "must be the requesting app's own frontend origin (served, registered, or one its signed manifest names), \
              or the cluster's own origin",
         ))
     }
@@ -1915,6 +1915,7 @@ async fn act(
                     confirm,
                     ..UpgradeBody::default()
                 },
+                None,
             )
             .await?
         }

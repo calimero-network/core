@@ -53,6 +53,8 @@ const CHALLENGE_TTL: u64 = 5 * 60;
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
+mod origins;
+
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
 /// holds it (`internal/challenge/take`), so a challenge is still used once.
@@ -80,6 +82,10 @@ pub enum Pending {
         account: Box<Account>,
         session: NewSession,
         app: Option<String>,
+        /// The registered origin the sign-up came from, which the session
+        /// names (`SessionClaims::origin`).
+        #[serde(default)]
+        origin: Option<String>,
     },
     AddPasskey {
         challenge: [u8; 32],
@@ -226,20 +232,68 @@ async fn internal_challenge_take(
     ))
 }
 
-/// The package whose frontend origin a ceremony claims (unverified: the
-/// ceremony is then checked against that origin), and the origin.
-fn claimed_app(node: &Node, client_data_json: &str) -> Option<(String, String)> {
-    let origin = calimero_identity::claimed_origin(client_data_json)?;
-    let package = node.app_origin_package(&origin)?;
-    Some((package, origin))
+/// A package's frontend origin a ceremony comes from: one the node serves
+/// (`app_host`), or one its manager registered (`crate::origins`).
+#[derive(Clone, Debug)]
+pub(crate) struct AppOrigin {
+    pub(crate) package: String,
+    pub(crate) origin: String,
+    /// A registered origin's rp-id; `None` for a served frontend, whose
+    /// ceremonies use the cluster's.
+    pub(crate) rp_id: Option<String>,
+}
+
+impl AppOrigin {
+    /// The origin a session opened here names (`SessionClaims::origin`):
+    /// only a registered one, which can be removed.
+    fn registered(&self) -> Option<String> {
+        self.rp_id.as_ref().map(|_| self.origin.clone())
+    }
+}
+
+/// The package frontend `origin` is, if any: a served one first, else a
+/// registered one whose rp-id cannot answer for the cluster's passkeys.
+pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
+    if let Some(package) = node.app_origin_package(origin) {
+        return Some(AppOrigin {
+            package,
+            origin: origin.to_owned(),
+            rp_id: None,
+        });
+    }
+    let held = node.sys(|s| s.package_origins.get(origin).cloned())?;
+    if crate::origins::covers_cluster(&held.rp_id, &node.config.rp_id) {
+        return None;
+    }
+    Some(AppOrigin {
+        package: held.package,
+        origin: origin.to_owned(),
+        rp_id: Some(held.rp_id),
+    })
+}
+
+/// The package frontend a ceremony claims to come from (unverified: the
+/// ceremony is then checked against that origin).
+fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
+    app_origin(node, &calimero_identity::claimed_origin(client_data_json)?)
 }
 
 /// The relying party for a ceremony that may come from `app`'s frontend
-/// origin as well as the cluster's own.
-fn rp_with(base: RelyingParty, app: Option<&(String, String)>) -> RelyingParty {
+/// origin: a served one as well as the cluster's own origins; a registered
+/// one alone, under its own rp-id.
+fn rp_with(base: RelyingParty, app: Option<&AppOrigin>) -> RelyingParty {
     let mut rp = base;
-    if let Some((_, origin)) = app {
-        rp.origins.push(origin.clone());
+    match app {
+        Some(AppOrigin {
+            origin,
+            rp_id: Some(id),
+            ..
+        }) => {
+            rp.id.clone_from(id);
+            rp.origins = vec![origin.clone()];
+        }
+        Some(a) => rp.origins.push(a.origin.clone()),
+        None => {}
     }
     rp
 }
@@ -290,6 +344,11 @@ impl Principal {
             .account()
             .map(str::to_owned)
             .ok_or_else(|| ApiError::unauthenticated("sign in first"))
+    }
+
+    /// Whether the caller is an upgrade key ([`ApiKeyRecord::upgrades`]).
+    pub(crate) fn upgrade_key(&self) -> bool {
+        self.api_key.as_ref().is_some_and(|k| k.upgrades.is_some())
     }
 
     /// The package a session opened on that package's frontend origin is
@@ -347,11 +406,37 @@ async fn holder(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError>
     Ok(p)
 }
 
+/// Who is calling, refusing an upgrade key: such a key upgrades one app
+/// (`POST /apps/{app}/upgrade`, [`credential`]) and is refused everywhere
+/// else, reads included.
 async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
-    let Some(value) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+    let p = credential(node, headers).await?;
+    if p.as_ref().is_some_and(Principal::upgrade_key) {
+        return Err(upgrade_key_only());
+    }
+    Ok(p)
+}
+
+/// What an upgrade key gets on any route but its app's upgrade.
+fn upgrade_key_only() -> ApiError {
+    ApiError::new(
+        403,
+        "UPGRADE_KEY_ONLY",
+        "this API key upgrades one app and does nothing else",
+    )
+}
+
+/// The bearer token of the `Authorization` header.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get("authorization").and_then(|v| v.to_str().ok())?;
+    Some(value.strip_prefix("Bearer ").unwrap_or(value).trim())
+}
+
+/// Who is calling, from the `Authorization` header, upgrade keys included.
+async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
+    let Some(token) = bearer(headers) else {
         return Ok(None);
     };
-    let token = value.strip_prefix("Bearer ").unwrap_or(value).trim();
     // A credential is judged on the cluster's latest system state (a read
     // index): a session or key revoked through another node is refused here
     // at once, not once this replica catches up.
@@ -390,6 +475,12 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
             ));
         }
     }
+    // A session opened on a registered origin ends when the origin is removed.
+    if let Some(origin) = &claims.origin {
+        if !origin_holds(node, claims.app.as_deref(), origin) {
+            return Err(origin_gone());
+        }
+    }
     Ok(Some(Principal {
         caller: Caller::Account {
             account: claims.account.clone(),
@@ -400,6 +491,21 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
         consent_page: false,
         sys_index,
     }))
+}
+
+/// Whether `origin` is still registered for `package`.
+fn origin_holds(node: &Node, package: Option<&str>, origin: &str) -> bool {
+    node.sys(|s| {
+        s.package_origins
+            .get(origin)
+            .is_some_and(|o| Some(o.package.as_str()) == package)
+    })
+}
+
+fn origin_gone() -> ApiError {
+    ApiError::unauthenticated(
+        "the origin this session was opened on is no longer registered for its app; sign in again",
+    )
 }
 
 /// Check a session token: signed by the receipt key of the node it names,
@@ -536,13 +642,20 @@ impl NewSession {
         b64url(&sha256(self.refresh.as_bytes()))
     }
 
-    fn record(&self, account: &str, passkey: &str, app: Option<String>) -> RefreshRecord {
+    fn record(
+        &self,
+        account: &str,
+        passkey: &str,
+        app: Option<String>,
+        origin: Option<String>,
+    ) -> RefreshRecord {
         RefreshRecord {
             account: account.to_owned(),
             session: self.session.clone(),
             expires_at: self.expires_at,
             passkey: Some(passkey.to_owned()),
             app,
+            origin,
             key: crate::proof::refresh_key(&self.refresh),
         }
     }
@@ -551,7 +664,7 @@ impl NewSession {
     /// record's account, passkey and package are not known yet and not
     /// stated; the passkey that signs names them.
     fn sign_in_statement(&self) -> crate::proof::Statement {
-        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None));
+        let args = crate::system::sign_in_args(&self.hash(), &self.record("", "", None, None));
         crate::proof::Statement::new("session", "__sign_in", &args)
     }
 }
@@ -562,15 +675,20 @@ async fn new_session(
     node: &Node,
     account: &str,
     passkey: &str,
-    app: Option<String>,
+    from: Option<AppOrigin>,
     new: NewSession,
     consent: Value,
 ) -> ApiResult {
-    let token = session_token_for(node, account, passkey, app.clone(), &new)?;
+    let origin = from.as_ref().and_then(AppOrigin::registered);
+    let app = from.map(|a| a.package);
+    if let (Some(package), Some(origin)) = (&app, &origin) {
+        info!(%package, %origin, "a session opened on a registered origin");
+    }
+    let token = session_token_for(node, account, passkey, app.clone(), origin.clone(), &new)?;
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
             hash: new.hash(),
-            record: new.record(account, passkey, app),
+            record: new.record(account, passkey, app, origin),
             consent,
         })
         .await?;
@@ -583,6 +701,7 @@ fn session_token_for(
     account: &str,
     passkey: &str,
     app: Option<String>,
+    origin: Option<String>,
     new: &NewSession,
 ) -> Result<(String, u64), ApiError> {
     let expires_at = now_secs() + SESSION_TTL;
@@ -594,6 +713,7 @@ fn session_token_for(
             expires_at,
             passkey: Some(passkey.to_owned()),
             app,
+            origin,
             node: 0,
             key: String::new(),
         },
@@ -760,12 +880,58 @@ async fn app_attestation(
 struct RegisterBegin {
     #[serde(default)]
     name: String,
+    /// The page's origin, for a registered origin's rp-id.
+    #[serde(default)]
+    origin: Option<String>,
     /// The invite the person signs up with (an organization invite token or
     /// a cluster sign-up invite token), checked here so a cluster whose
     /// sign-up is not open refuses before the passkey ceremony; the finish
     /// carries it again.
     #[serde(default)]
     invite: Option<String>,
+}
+
+/// What a sign-in begins with: the page's origin, when it is a registered
+/// one (its rp-id differs from the cluster's).
+// Open to other fields: clients sent arbitrary bodies here before it took any.
+#[derive(Deserialize, Default)]
+struct LoginBegin {
+    #[serde(default)]
+    origin: Option<String>,
+}
+
+/// The rp-id a ceremony begun on `origin` uses: the cluster's for its own
+/// origins and the frontends it serves (and when no origin is named), a
+/// registered origin's own; any other origin is refused, `403
+/// ORIGIN_NOT_REGISTERED`.
+async fn begin_rp_id(node: &Node, origin: Option<&str>) -> Result<String, ApiError> {
+    let cluster = node.config.rp_id.clone();
+    let Some(origin) = origin else {
+        return Ok(cluster);
+    };
+    // The cluster's own origins, and the nodes' own (a page a node serves).
+    if node
+        .config
+        .origins
+        .iter()
+        .any(|o| o.trim_end_matches('/') == origin)
+        || node.api_origins().iter().any(|o| o == origin)
+    {
+        return Ok(cluster);
+    }
+    let mut found = app_origin(node, origin);
+    if found.is_none() {
+        // Registered through another node a moment ago, perhaps.
+        let _caught_up = node.sys_fresh().await;
+        found = app_origin(node, origin);
+    }
+    found.map(|a| a.rp_id.unwrap_or(cluster)).ok_or_else(|| {
+        ApiError::new(
+            403,
+            "ORIGIN_NOT_REGISTERED",
+            "this origin is not one of the cluster's, nor registered for an app",
+        )
+    })
 }
 
 /// Refuse a sign-up the cluster's policy would refuse (`403
@@ -805,6 +971,7 @@ async fn register_begin(
     Json(body): Json<RegisterBegin>,
 ) -> ApiResult {
     refuse_sign_up(&node, body.invite.as_deref()).await?;
+    let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     let challenge = random::<32>();
     let user_id = random::<16>();
     let name = if body.name.is_empty() {
@@ -824,7 +991,7 @@ async fn register_begin(
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
-            "rp": { "id": node.config.rp_id, "name": "Calimero" },
+            "rp": { "id": rp_id, "name": "Calimero" },
             "user": { "id": b64url(&user_id), "name": name, "displayName": name },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "timeout": 60000,
@@ -901,10 +1068,16 @@ async fn register_finish(
     // `none`): the new passkey signs the account it creates, and the session
     // it opens, before the log takes it (412, then the retry).
     let session = NewSession::new();
-    let app = app.map(|(pkg, _)| pkg);
+    // The new passkey belongs to the rp-id of the origin it was made on.
+    let rp_id = app
+        .as_ref()
+        .and_then(|a| a.rp_id.clone())
+        .unwrap_or_else(|| node.config.rp_id.clone());
+    let origin = app.as_ref().and_then(AppOrigin::registered);
+    let app = app.map(|a| a.package);
     let grant = RefreshGrant {
         hash: session.hash(),
-        record: session.record(&account.account_id, &cred.id, app.clone()),
+        record: session.record(&account.account_id, &cred.id, app.clone(), origin.clone()),
     };
     let statement = crate::proof::Statement::new(
         &format!("account:{}", account.account_id),
@@ -921,6 +1094,7 @@ async fn register_finish(
             account: Box::new(account),
             session,
             app,
+            origin,
         },
     )?;
     Err(ApiError::new(
@@ -931,7 +1105,7 @@ async fn register_finish(
     .with_details(json!({
         "challengeId": id,
         "challenge": b64url(&signed),
-        "rpId": node.config.rp_id,
+        "rpId": rp_id,
         "allowCredentials": [cred.id],
     })))
 }
@@ -946,6 +1120,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         account,
         session,
         app,
+        origin,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
     else {
@@ -958,11 +1133,17 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         .passkeys
         .first()
         .ok_or_else(|| ApiError::internal("a sign-up without its passkey"))?;
-    // From the origin the sign-up came from: the package's, or the cluster's.
-    let origin = claimed_app(node, &confirm.assertion.client_data_json)
-        .filter(|(pkg, _)| app.as_ref() == Some(pkg));
+    // From the origin the sign-up came from: the package's (the registered
+    // origin itself, for one), or the cluster's.
+    let from = claimed_app(node, &confirm.assertion.client_data_json)
+        .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
+    if origin.is_some() && from.is_none() {
+        return Err(ApiError::unauthenticated(
+            "confirm the sign-up on the origin it began on",
+        ));
+    }
     let _count = verify_assertion(
-        &rp_with(rp(node), origin.as_ref()),
+        &rp_with(rp(node), from.as_ref()),
         &challenge,
         cred,
         &confirm.assertion,
@@ -970,7 +1151,14 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
     let account_id = account.account_id.clone();
     let passkey = cred.id.clone();
-    let token = session_token_for(node, &account_id, &passkey, app.clone(), &session)?;
+    let token = session_token_for(
+        node,
+        &account_id,
+        &passkey,
+        app.clone(),
+        origin.clone(),
+        &session,
+    )?;
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
@@ -987,7 +1175,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
             invite,
             refresh: Some(RefreshGrant {
                 hash: session.hash(),
-                record: session.record(&account_id, &passkey, app),
+                record: session.record(&account_id, &passkey, app, origin),
             }),
             consent: serde_json::to_value(&consent).unwrap_or_default(),
         })
@@ -995,7 +1183,9 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     Ok(session_answer(&account_id, &token, &session))
 }
 
-async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
+async fn login_begin(State(node): State<Arc<Node>>, body: Option<Json<LoginBegin>>) -> ApiResult {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     // The challenge states the session the sign-in opens, so the log takes
     // its refresh token only with this assertion (`CreateRefresh`).
     let session = NewSession::new();
@@ -1012,7 +1202,7 @@ async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
     )?;
     Ok(Json(json!({
         "challengeId": id,
-        "options": { "challenge": b64url(&challenge), "rpId": node.config.rp_id, "userVerification": "preferred", "timeout": 60000 }
+        "options": { "challenge": b64url(&challenge), "rpId": rp_id, "userVerification": "preferred", "timeout": 60000 }
     })))
 }
 
@@ -1035,7 +1225,7 @@ async fn check_assertion(
     step_up: bool,
     bound: Option<&str>,
     any_app: bool,
-) -> Result<(String, Option<String>), ApiError> {
+) -> Result<(String, Option<AppOrigin>), ApiError> {
     let base = if step_up { rp_step_up(node) } else { rp(node) };
     check_assertion_for(node, base, challenge, assertion, account, bound, any_app).await
 }
@@ -1050,9 +1240,9 @@ async fn check_assertion_for(
     account: Option<&str>,
     bound: Option<&str>,
     any_app: bool,
-) -> Result<(String, Option<String>), ApiError> {
+) -> Result<(String, Option<AppOrigin>), ApiError> {
     let app = claimed_app(node, &assertion.client_data_json)
-        .filter(|(pkg, _)| any_app || bound == Some(pkg.as_str()));
+        .filter(|a| any_app || bound == Some(a.package.as_str()));
     let (owner, cred) = node
         .sys_until(|s| {
             s.account_of_credential(&assertion.credential_id)
@@ -1084,7 +1274,7 @@ async fn check_assertion_for(
                 }
             })?;
     }
-    Ok((owner, app.map(|(pkg, _)| pkg)))
+    Ok((owner, app))
 }
 
 async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
@@ -1319,6 +1509,14 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
     if !serves(&node, &rec.account) {
         return Err(wrong_node());
     }
+    if let Some(origin) = &rec.origin {
+        // Judged on the cluster's latest state: a removal made through
+        // another node holds here at once.
+        let _caught_up = node.sys_fresh().await;
+        if !origin_holds(&node, rec.app.as_deref(), origin) {
+            return Err(origin_gone());
+        }
+    }
     let new_refresh = format!("rt_{}", b64url(&random::<32>()));
     let record = RefreshRecord {
         account: rec.account.clone(),
@@ -1326,6 +1524,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         expires_at: now_secs() + REFRESH_TTL,
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
+        origin: rec.origin.clone(),
         key: crate::proof::refresh_key(&new_refresh),
     };
     let new_hash = b64url(&sha256(new_refresh.as_bytes()));
@@ -1378,6 +1577,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             expires_at,
             passkey: rec.passkey,
             app: rec.app,
+            origin: rec.origin,
             node: 0,
             key: String::new(),
         },
@@ -1652,6 +1852,10 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         "via": if p.api_key.is_some() { "apiKey" } else { "session" },
         // The passkey (device) this session was opened with.
         "passkeyId": p.session.as_ref().and_then(|s| s.passkey.clone()),
+        // The package a frontend's session is bound to, and the registered
+        // origin that opened it.
+        "app": p.bound_app(),
+        "origin": p.session.as_ref().and_then(|s| s.origin.clone()),
         // Releases approved to hold this account's own apps.
         "approvedReleases": acc.approved_releases,
         // Outbound prefixes approved for this account's own apps, by signer.
@@ -2075,8 +2279,56 @@ struct ApiKeyBody {
     allow_confirm: bool,
     #[serde(default)]
     ttl_secs: Option<u64>,
+    /// An upgrade key: upgrades this app, and nothing else.
+    #[serde(default)]
+    upgrades: Option<UpgradesBody>,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+}
+
+/// An upgrade key's scope as asked: the app, and the package whose signed
+/// releases it may move the app to (default: the package the app runs).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpgradesBody {
+    app: String,
+    #[serde(default)]
+    package: Option<String>,
+}
+
+/// The scope an upgrade key asked for `body` gets, its proof key left for
+/// the key it is made with: the app (by id or context id), its package by
+/// default, and that package's pinned signer as the log holds it now.
+async fn upgrade_scope(
+    node: &Node,
+    account: &str,
+    body: &UpgradesBody,
+) -> Result<crate::types::UpgradeScope, ApiError> {
+    let app = node.app(&node.canonical_app_id(&body.app)).await?;
+    let package = body
+        .package
+        .clone()
+        .or_else(|| node.release_of(&app.bundle).map(|r| r.at.package))
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "NOT_A_PACKAGE",
+                "an upgrade key needs an app that runs a signed package",
+            )
+        })?;
+    let signer = node
+        .sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone()))
+        .ok_or_else(|| ApiError::not_found("no such package"))?;
+    if !node.sys(|s| s.may_upgrade(&app, account)) {
+        return Err(ApiError::forbidden(
+            "an upgrade key is made by someone who may upgrade the app",
+        ));
+    }
+    Ok(crate::types::UpgradeScope {
+        app: app.app_id,
+        package,
+        signer,
+        proof_key: String::new(),
+    })
 }
 
 /// The longest an API key lives.
@@ -2094,6 +2346,16 @@ async fn apikey_create(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let (key, hash) = calimero_identity::new_api_key();
+    let upgrades = match &body.upgrades {
+        Some(u) => Some(upgrade_scope(&node, &account, u).await?),
+        None => None,
+    };
+    let with_key = |key: &str| {
+        upgrades.clone().map(|u| crate::types::UpgradeScope {
+            proof_key: crate::proof::api_key_public(key),
+            ..u
+        })
+    };
     let record = ApiKeyRecord {
         key_id: typed_id::<8>(),
         account: account.clone(),
@@ -2107,7 +2369,12 @@ async fn apikey_create(
                 .ttl_secs
                 .unwrap_or(MAX_API_KEY_TTL)
                 .min(MAX_API_KEY_TTL),
+        upgrades: with_key(&key),
     };
+    if let Some(scope) = &record.upgrades {
+        node.sys(|s| s.upgrade_key_fits(&record, scope))
+            .map_err(|e| ApiError::bad_request("BAD_UPGRADE_KEY", e))?;
+    }
     let args = crate::system::api_key_args(&hash, &record);
     let c = consent_minted(
         &node,
@@ -2132,6 +2399,7 @@ async fn apikey_create(
     let record = ApiKeyRecord {
         key_id: signed("keyId").as_str().unwrap_or_default().to_owned(),
         expires_at: signed("expiresAt").as_u64().unwrap_or_default(),
+        upgrades: with_key(&key),
         ..record
     };
     if crate::system::api_key_args(&hash, &record) != c.args
@@ -2480,8 +2748,9 @@ async fn ops_package_version_uninstall(
     ))
 }
 
-/// The bundle a create or upgrade names: a bundle hash, or a package release
-/// (installed from the registry first if the fleet lacks it).
+/// The bundle a create or upgrade names, with the compute component of the release it
+/// comes from: a bundle hash (a raw upload, no compute), or a package release (installed
+/// from the registry first if the fleet lacks it).
 async fn bundle_named(
     node: &Node,
     bundle: Option<String>,
@@ -2490,13 +2759,13 @@ async fn bundle_named(
     service: Option<&str>,
     actor: &str,
     frontend: bool,
-) -> Result<String, ApiError> {
+) -> Result<(String, Option<String>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release.
-        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok(b),
+        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok((b, None)),
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
-            node.resolve_release(p, version, service, actor, frontend)
+            node.resolve_release_parts(p, version, service, actor, frontend)
                 .await
         }
         _ => Err(ApiError::bad_request(
@@ -2505,6 +2774,9 @@ async fn bundle_named(
         )),
     }
 }
+
+/// A release's service name to bundle hash map.
+type Services = BTreeMap<String, String>;
 
 /// The bundle an instance of `package` from deployment `id` runs: the
 /// release the deployment offers for it (`version`, when given, must be that
@@ -2517,15 +2789,18 @@ async fn offered_bundle(
     package: &str,
     version: Option<&str>,
     service: Option<&str>,
-) -> Result<String, ApiError> {
+) -> Result<(String, Option<String>), ApiError> {
     let find = || {
         node.sys(|s| {
             let d = s.deployments.get(id)?;
-            let mut releases: Vec<(String, BTreeMap<String, String>)> = d
+            let mut releases: Vec<(String, Services, Services)> = d
                 .apps
                 .values()
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
-                .filter_map(|o| Some((o.version.clone(), s.offered_release(o)?.services.clone())))
+                .filter_map(|o| {
+                    let r = s.offered_release(o)?;
+                    Some((o.version.clone(), r.services.clone(), r.compute.clone()))
+                })
                 .collect();
             releases.sort_by(|a, b| a.0.cmp(&b.0));
             releases.dedup_by(|a, b| a.0 == b.0);
@@ -2539,7 +2814,7 @@ async fn offered_bundle(
             find().ok_or_else(|| ApiError::not_found("no such deployment"))?
         }
     };
-    let (version, services) = match releases.as_slice() {
+    let (version, services, compute) = match releases.as_slice() {
         [] => {
             return Err(ApiError::bad_request(
                 "NOT_OFFERED",
@@ -2558,7 +2833,10 @@ async fn offered_bundle(
         }
     };
     let key = service.unwrap_or_default();
-    services.get(key).cloned().ok_or_else(|| {
+    let found = services
+        .get(key)
+        .map(|b| (b.clone(), compute.get(key).cloned()));
+    found.ok_or_else(|| {
         ApiError::bad_request(
             "NO_SUCH_SERVICE",
             &format!("{package}@{version} has no service {key:?}"),
@@ -2622,7 +2900,7 @@ async fn app_create(
     }
     let owner = p.account()?;
     let now = now_secs();
-    let bundle = match &body.deployment {
+    let (bundle, compute_bundle) = match &body.deployment {
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
         Some(d) => {
@@ -2714,6 +2992,7 @@ async fn app_create(
                 metadata: body.metadata,
                 last_upgrade: None,
                 deployment: body.deployment,
+                compute_bundle,
             }),
         })
         .await?;
@@ -3083,6 +3362,14 @@ async fn step_up(
                 .map(|a| a.passkeys.iter().map(|c| c.id.clone()).collect())
                 .unwrap_or_default()
         });
+        // A session opened on a registered origin steps up there, under its rp-id.
+        let rp_id = p
+            .session
+            .as_ref()
+            .and_then(|s| s.origin.as_deref())
+            .and_then(|o| app_origin(node, o))
+            .and_then(|a| a.rp_id)
+            .unwrap_or_else(|| node.config.rp_id.clone());
         return Err(ApiError::new(
             412,
             "CONFIRM_REQUIRED",
@@ -3091,7 +3378,7 @@ async fn step_up(
         .with_details(json!({
             "challengeId": id,
             "challenge": b64url(&challenge),
-            "rpId": node.config.rp_id,
+            "rpId": rp_id,
             "allowCredentials": creds,
         })));
     };
@@ -3633,19 +3920,70 @@ async fn app_upgrade(
     Json(body): Json<UpgradeBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
+    // An upgrade key upgrades here and nowhere else; any other credential
+    // is a passkey session's, as before.
+    let p = credential(&node, &headers)
+        .await?
+        .ok_or_else(|| ApiError::unauthenticated("sign in first"))?;
+    if p.upgrade_key() {
+        let key = bearer(&headers).unwrap_or_default();
+        return upgrade_app(&node, &p, app_id, body, Some(key)).await;
+    }
     let p = holder(&node, &headers).await?;
-    upgrade_app(&node, &p, app_id, body).await
+    upgrade_app(&node, &p, app_id, body, None).await
 }
 
 /// Upgrade `app_id` as `p`: the route's, and the consent page's for an
 /// upgrade request.
+///
+/// `key` is the upgrade key `p` came with (`ApiKeyRecord::upgrades`): it
+/// signs the upgrade in place of a passkey, only to a signed release of the
+/// key's package; every other rule is the same.
 pub(crate) async fn upgrade_app(
     node: &Node,
     p: &Principal,
     app_id: String,
     mut body: UpgradeBody,
+    key: Option<&str>,
 ) -> ApiResult {
     let account = p.account()?;
+    let scope = match key {
+        Some(key) => {
+            let k = p
+                .api_key
+                .as_ref()
+                .filter(|k| k.upgrades.is_some())
+                .ok_or_else(upgrade_key_only)?;
+            Some((key, k))
+        }
+        None if p.upgrade_key() => return Err(upgrade_key_only()),
+        None => None,
+    };
+    if let Some((_, k)) = scope {
+        let package = k.upgrades.as_ref().map(|u| u.package.clone());
+        if k.upgrades.as_ref().is_some_and(|u| u.app != app_id) {
+            return Err(ApiError::forbidden("this API key upgrades another app"));
+        }
+        // A key moves its app to a signed release of its package only: a
+        // raw bundle hash or another package is refused.
+        if body.bundle.is_some()
+            || body
+                .package
+                .as_ref()
+                .is_some_and(|p| Some(p) != package.as_ref())
+        {
+            return Err(ApiError::forbidden(
+                "an upgrade key upgrades only to a version of its own package",
+            ));
+        }
+        if body.version.is_none() {
+            return Err(ApiError::bad_request(
+                "VERSION_REQUIRED",
+                "an upgrade key names the version to upgrade to",
+            ));
+        }
+        body.package = package;
+    }
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
     // a refused or failed upgrade records nothing. An upgrade is the app's
     // owner's decision, or, for an org app, of whoever holds
@@ -3680,7 +4018,7 @@ pub(crate) async fn upgrade_app(
         .service
         .clone()
         .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()));
-    let bundle = bundle_named(
+    let (bundle, compute_bundle) = bundle_named(
         node,
         body.bundle.clone(),
         package.as_deref(),
@@ -3708,20 +4046,32 @@ pub(crate) async fn upgrade_app(
         &bundle,
     )
     .await?;
-    // A fresh passkey assertion over this exact upgrade, logged as consent.
-    let consent = consent(
-        node,
-        p,
-        &app_id,
-        "__upgrade",
-        &json!({ "bundle": bundle, "migrate": body.migrate, "manifest": manifest }),
-        body.confirm.take(),
-    )
-    .await?;
+    let args = json!({ "bundle": bundle, "migrate": body.migrate, "manifest": manifest });
+    let consent = match scope {
+        // The upgrade key's own signature over this exact upgrade, judged
+        // here as `authorize` judges it where it applies.
+        Some((key, k)) => {
+            let refused = node.sys(|s| s.key_may_upgrade(k, &app_id, &bundle, now_secs()).err());
+            if let Some(e) = refused {
+                return Err(ApiError::forbidden(e));
+            }
+            tracing::info!(
+                app = %app_id,
+                key_id = %k.key_id,
+                %bundle,
+                "an upgrade key upgrades its app"
+            );
+            let statement = crate::proof::Statement::new(&app_id, "__upgrade", &args);
+            json!(crate::proof::sign_key_upgrade(key, &k.key_id, statement))
+        }
+        // A fresh passkey assertion over this exact upgrade, logged as consent.
+        None => consent(node, p, &app_id, "__upgrade", &args, body.confirm.take()).await?,
+    };
     run_upgrade(
         node,
         app_id,
         bundle,
+        compute_bundle,
         body.migrate,
         Upgrader {
             caller: Caller::Account {
@@ -3766,6 +4116,7 @@ async fn run_upgrade(
     node: &Node,
     app_id: String,
     bundle: String,
+    compute_bundle: Option<String>,
     migrate: Option<String>,
     who: Upgrader,
 ) -> ApiResult {
@@ -3829,6 +4180,7 @@ async fn run_upgrade(
         .sys_write(&SystemCmd::UpgradeApp {
             app_id,
             bundle,
+            compute_bundle,
             by_operator: who.by_operator,
             actor: who.actor,
             at: begun,
@@ -3931,14 +4283,14 @@ fn run_targets(
         .collect()
 }
 
-/// The bundle `version` of the package gives an app (same service), if
-/// installed and the upgrader may see it ([`upgrade_sees`]).
+/// The bundle `version` of the package gives an app (same service), with that release's
+/// compute component, if installed and the upgrader may see it ([`upgrade_sees`]).
 fn target_bundle(
     node: &Node,
     app: &crate::types::AppRecord,
     version: &str,
     who: &Upgrader,
-) -> Option<String> {
+) -> Option<(String, Option<String>)> {
     let r = node.release_of(&app.bundle)?;
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
@@ -3946,7 +4298,8 @@ fn target_bundle(
         if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
             return None;
         }
-        v.services.get(&service).cloned()
+        let bundle = v.services.get(&service).cloned()?;
+        Some((bundle, v.compute.get(&service).cloned()))
     })
 }
 
@@ -4006,12 +4359,13 @@ async fn start_run(
     let _task = tokio::spawn(async move {
         for app in apps {
             match target_bundle(&node, &app, &version, &who) {
-                Some(bundle) if bundle == app.bundle => {
-                    // Already there: done, nothing to run.
+                Some((bundle, compute_bundle)) if bundle == app.bundle => {
+                    // Same app component: nothing to run, though its compute component may differ.
                     let _r = node
                         .sys_write(&SystemCmd::UpgradeApp {
                             app_id: app.app_id.clone(),
                             bundle,
+                            compute_bundle,
                             by_operator: who.by_operator,
                             actor: who.actor.clone(),
                             at: now_secs(),
@@ -4020,11 +4374,12 @@ async fn start_run(
                         })
                         .await;
                 }
-                Some(bundle) => {
+                Some((bundle, compute_bundle)) => {
                     let _r = run_upgrade(
                         &node,
                         app.app_id.clone(),
                         bundle,
+                        compute_bundle,
                         migrate.clone(),
                         who.clone(),
                     )
@@ -8541,8 +8896,8 @@ async fn ops_upgrade(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let current = node.release_of(&app.bundle);
-    let bundle = match (body.bundle, body.version) {
-        (Some(b), _) => b,
+    let (bundle, compute_bundle) = match (body.bundle, body.version) {
+        (Some(b), _) => (b, None),
         (None, Some(version)) => {
             let package = body
                 .package
@@ -8559,7 +8914,10 @@ async fn ops_upgrade(
                     .get(&package)
                     .and_then(|p| p.versions.get(&version))
                     .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
-                    .and_then(|v| v.services.get(&service).cloned())
+                    .and_then(|v| {
+                        let bundle = v.services.get(&service).cloned()?;
+                        Some((bundle, v.compute.get(&service).cloned()))
+                    })
             })
             .ok_or_else(|| {
                 ApiError::new(
@@ -8594,6 +8952,7 @@ async fn ops_upgrade(
         &node,
         app_id,
         bundle,
+        compute_bundle,
         body.migrate,
         Upgrader {
             caller: Caller::Public,
@@ -8649,6 +9008,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/packages/install", post(package_install))
         .route("/packages/{package}", get(package_get).delete(package_uninstall))
         .route("/packages/{package}/{version}", delete(package_version_uninstall))
+        .route(
+            "/package-origins/{package}",
+            get(origins::list).post(origins::add).delete(origins::remove),
+        )
         .route("/apps", post(app_create).get(app_list))
         .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/metadata", post(app_metadata))

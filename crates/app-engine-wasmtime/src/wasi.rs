@@ -6,13 +6,13 @@
 //!   `filesystem/{types, preopens}` with no preopened directory, so no descriptor ever
 //!   exists and nothing reaches the node's file system.
 //! - this module: `clocks/wall-clock` and `clocks/monotonic-clock` (fixed per invocation;
-//!   a sleep is ready at once and never blocks a node thread), `random/random` (the host
-//!   core's RNG).
+//!   a sleep is ready at once and never blocks a node thread), `random/random` and
+//!   `random/insecure-seed` (the host core's RNG).
 //! - `http/types` and `http/outgoing-handler`: `http.rs`, buffered bodies that never block,
 //!   requests sent only from actions (D12, S9). wasmtime-wasi-http is not linked: its body
 //!   streams can block a node thread past the epoch deadline.
 //!
-//! `wasi:sockets` and `wasi:random/insecure*` are never linked, and `prepare` refuses any
+//! `wasi:sockets` and `wasi:random/insecure` are never linked, and `prepare` refuses any
 //! component importing them.
 
 use std::io;
@@ -25,6 +25,8 @@ use std::task::Poll;
 
 use bytes::Bytes;
 use calimero_app_host::{HostDenied, MAX_LOG_BYTES};
+
+use crate::MAX_RANDOM_BYTES_PER_CALL;
 use tokio::io::AsyncWrite;
 use wasmtime::component::HasData;
 use wasmtime::component::HasSelf;
@@ -40,7 +42,7 @@ use wasmtime_wasi::filesystem::WasiFilesystem;
 use wasmtime_wasi::filesystem::WasiFilesystemView;
 use wasmtime_wasi::p2::bindings::clocks::monotonic_clock;
 use wasmtime_wasi::p2::bindings::clocks::wall_clock;
-use wasmtime_wasi::p2::bindings::random::random;
+use wasmtime_wasi::p2::bindings::random::{insecure_seed, random};
 use wasmtime_wasi::p2::bindings::sync as wasi_sync;
 use wasmtime_wasi::p2::bindings::{cli, filesystem};
 use wasmtime_wasi::p2::DynPollable;
@@ -69,6 +71,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     wall_clock::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     monotonic_clock::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     random::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    insecure_seed::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
 
     cli::environment::add_to_linker::<StoreData, WasiCli>(l, StoreData::cli)?;
     cli::stdout::add_to_linker::<StoreData, WasiCli>(l, StoreData::cli)?;
@@ -152,12 +155,10 @@ impl monotonic_clock::Host for StoreData {
 
 impl random::Host for StoreData {
     fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
-        // A request larger than the instance's memory could never be returned; refuse it
-        // before allocating.
         let len = usize::try_from(len)
             .ok()
-            .filter(|len| *len <= self.max_random_bytes)
-            .ok_or_else(|| denied(HostDenied("random request larger than memory".into())))?;
+            .filter(|len| *len <= MAX_RANDOM_BYTES_PER_CALL)
+            .ok_or_else(|| denied(HostDenied("random request over the per-call limit".into())))?;
         let mut buf = vec![0; len];
         self.host.random_fill(&mut buf);
         Ok(buf)
@@ -167,6 +168,19 @@ impl random::Host for StoreData {
         let mut buf = [0; 8];
         self.host.random_fill(&mut buf);
         Ok(u64::from_le_bytes(buf))
+    }
+}
+
+impl insecure_seed::Host for StoreData {
+    // Drawn from the seeded stream, never the OS, so a rerun hashes and iterates alike.
+    fn insecure_seed(&mut self) -> Result<(u64, u64)> {
+        let mut buf = [0; 16];
+        self.host.random_fill(&mut buf);
+        let (a, b) = buf.split_at(8);
+        Ok((
+            u64::from_le_bytes(a.try_into()?),
+            u64::from_le_bytes(b.try_into()?),
+        ))
     }
 }
 

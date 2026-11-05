@@ -664,6 +664,7 @@ dependencies = [
  "eyre",
  "hex",
  "ring",
+ "serde_json",
  "sha2 0.11.1",
  "subtle",
  "tempfile",
@@ -680,6 +681,7 @@ name = "calimero-app-host"
 version = "0.0.0"
 dependencies = [
  "calimero-app-host",
+ "calimero-app-wit",
  "ciborium",
  "hex",
  "rand 0.10.2",
@@ -933,6 +935,7 @@ dependencies = [
  "calimero-app-build",
  "calimero-app-engine-wasmtime",
  "calimero-app-host",
+ "calimero-app-wit",
  "calimero-sdk",
  "calimero-sdk-macros",
  "ciborium",

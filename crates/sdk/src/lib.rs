@@ -23,6 +23,7 @@ pub mod app;
 pub mod blob;
 pub mod collections;
 mod commons;
+pub mod compute;
 pub mod encoding;
 pub mod env;
 pub mod error;
@@ -39,6 +40,37 @@ pub mod testing;
 #[doc(hidden)]
 #[path = "private.rs"]
 pub mod __private;
+
+// What the `app` macros wrap their per-component items in: `__calimero_app_only!` keeps its
+// tokens in the app component's build and drops them in the compute component's, and
+// `__calimero_compute_only!` the reverse. The cfg is declared here, not in app crates.
+#[cfg(not(calimero_compute))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __calimero_app_only {
+    ($($tokens:tt)*) => { $($tokens)* };
+}
+
+#[cfg(calimero_compute)]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __calimero_app_only {
+    ($($tokens:tt)*) => {};
+}
+
+#[cfg(calimero_compute)]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __calimero_compute_only {
+    ($($tokens:tt)*) => { $($tokens)* };
+}
+
+#[cfg(not(calimero_compute))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __calimero_compute_only {
+    ($($tokens:tt)*) => {};
+}
 
 pub use action::{ActionCtx, Request, Response};
 pub use blob::{BlobInfo, BlobRef};

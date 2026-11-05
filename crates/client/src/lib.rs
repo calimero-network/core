@@ -473,7 +473,23 @@ impl Client {
     /// new passkey to sign the account it creates (`412 CONFIRM_REQUIRED`),
     /// so a sign-up asks the passkey twice: to create it, then to sign.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
-        self.sign_up_invited(passkey, name, None).await
+        self.sign_up_with(passkey, name, None, None).await
+    }
+
+    /// [`Self::sign_up`] from a page on `origin`: for an origin a package's
+    /// manager registered, the node answers its own rp-id, and the session is
+    /// bound to that package.
+    ///
+    /// # Errors
+    /// As [`Self::post`]; `403 ORIGIN_NOT_REGISTERED` for an origin the
+    /// cluster does not know.
+    pub async fn sign_up_at(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        origin: Option<&str>,
+    ) -> Result<Session> {
+        self.sign_up_with(passkey, name, origin, None).await
     }
 
     /// [`Self::sign_up`] with an invite: an organization invite token (the
@@ -487,12 +503,24 @@ impl Client {
         name: &str,
         invite: Option<&str>,
     ) -> Result<Session> {
-        let begin = self
-            .post(
-                "auth/passkey/register/begin",
-                json!({ "name": name, "invite": invite }),
-            )
-            .await?;
+        self.sign_up_with(passkey, name, None, invite).await
+    }
+
+    /// A sign-up from `origin` (see [`Self::sign_up_at`]) with `invite` (see
+    /// [`Self::sign_up_invited`]); the invite goes on the begin, the finish
+    /// and its `412` retry.
+    pub async fn sign_up_with(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        origin: Option<&str>,
+        invite: Option<&str>,
+    ) -> Result<Session> {
+        let mut body = json!({ "name": name, "invite": invite });
+        if let (Some(b), Some(o)) = (body.as_object_mut(), origin) {
+            let _prev = b.insert("origin".into(), json!(o));
+        }
+        let begin = self.post("auth/passkey/register/begin", body).await?;
         let registration = passkey.create(&begin["options"]);
         let s: Session = serde_json::from_value(
             self.post_confirmed(
@@ -546,7 +574,20 @@ impl Client {
 
     /// Sign in with an existing passkey.
     pub async fn sign_in(&self, passkey: &mut dyn Passkey) -> Result<Session> {
-        let begin = self.post("auth/passkey/login/begin", json!({})).await?;
+        self.sign_in_at(passkey, None).await
+    }
+
+    /// [`Self::sign_in`] from a page on `origin` (see [`Self::sign_up_at`]).
+    ///
+    /// # Errors
+    /// As [`Self::sign_up_at`].
+    pub async fn sign_in_at(
+        &self,
+        passkey: &mut dyn Passkey,
+        origin: Option<&str>,
+    ) -> Result<Session> {
+        let body = origin.map_or_else(|| json!({}), |o| json!({ "origin": o }));
+        let begin = self.post("auth/passkey/login/begin", body).await?;
         let challenge = calimero_identity::from_b64url(
             begin["options"]["challenge"].as_str().unwrap_or_default(),
         )
@@ -868,6 +909,60 @@ impl Client {
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
         self.confirmed(Method::POST, path, body, passkey).await
+    }
+
+    /// The web origins registered for `package`'s frontend (its manager's).
+    ///
+    /// # Errors
+    /// As [`Self::get`].
+    pub async fn package_origins(&self, package: &str) -> Result<Value> {
+        self.get(&format!("package-origins/{}", path_segment(package)))
+            .await
+    }
+
+    /// Register `origin` for `package`'s frontend (its rp-id `rp_id`, else
+    /// the origin's host), approved with the manager's `passkey`: a passkey
+    /// ceremony there opens a session bound to the package.
+    ///
+    /// # Errors
+    /// As [`Self::post_confirmed`].
+    pub async fn add_package_origin(
+        &self,
+        package: &str,
+        origin: &str,
+        rp_id: Option<&str>,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let mut body = json!({ "origin": origin });
+        if let (Some(b), Some(rp)) = (body.as_object_mut(), rp_id) {
+            let _prev = b.insert("rpId".into(), json!(rp));
+        }
+        self.post_confirmed(
+            &format!("package-origins/{}", path_segment(package)),
+            body,
+            passkey,
+        )
+        .await
+    }
+
+    /// Remove a registered origin of `package`, approved with the manager's
+    /// `passkey`; the sessions opened there end.
+    ///
+    /// # Errors
+    /// As [`Self::post_confirmed`].
+    pub async fn remove_package_origin(
+        &self,
+        package: &str,
+        origin: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.confirmed(
+            Method::DELETE,
+            &format!("package-origins/{}", path_segment(package)),
+            json!({ "origin": origin }),
+            passkey,
+        )
+        .await
     }
 
     /// End every session of this account, on every device.

@@ -183,7 +183,9 @@ fn abi_check(
         && !view
         && !from_action
         && matches!(caller, Caller::Account { .. } | Caller::ApiKey { .. });
-    if !matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action {
+    if (!matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action)
+        || m.compute_result
+    {
         return Err(app_refusal("WrongKind"));
     }
     // `allow(action)`: only the app's own actions call it, never a client directly.
@@ -375,6 +377,12 @@ impl Node {
     #[must_use]
     pub fn app_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {
         &self.wasm
+    }
+
+    /// The engine a release's compute components are prepared on.
+    #[must_use]
+    pub fn compute_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {
+        &self.compute_wasm
     }
 
     /// The executor `bundle` runs on, from its WASM (the bytes of its package's
@@ -747,6 +755,7 @@ impl Node {
                             id_seq,
                             seed: calimero_identity::random::<32>(),
                             timer: None,
+                            compute: None,
                         },
                         RunExtras::default(),
                     ),
@@ -757,7 +766,7 @@ impl Node {
                     },
                 };
                 let outcome = ran.outcome;
-                if outcome.is_timeout() {
+                if outcome.is_retryable() {
                     // Not logged (D23): reconcile runs init again.
                     timed_out = true;
                     return Proposal::Reply(Vec::new());
@@ -930,6 +939,7 @@ impl Node {
                             scheduled_ms: slot,
                             previous_ms,
                         }),
+                        compute: None,
                     },
                     RunExtras {
                         key: Some(format!("tick:{timer}:{slot}")),
@@ -937,8 +947,8 @@ impl Node {
                     },
                 );
                 let outcome = ran.outcome;
-                if outcome.is_timeout() {
-                    debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
+                if outcome.is_retryable() {
+                    debug!(app = %app_id, timer, slot, "tick hit its wall clock or the node was unavailable; proposed again");
                     return Proposal::Reply(Vec::new());
                 }
                 let cmd = ComponentCmd::Tick(Box::new(TickEntry {
@@ -964,7 +974,7 @@ impl Node {
             })
             .await
             .inspect_err(|e| self.discard_failed(app_id, std::mem::take(&mut persisted), e))?;
-        // A tick that timed out was not logged and runs again.
+        // A tick that was retryable (wall clock or node unavailable) was not logged and runs again.
         if p.appended {
             self.usage.called(&meter, RunKind::FollowUp);
             let applied: Applied = serde_json::from_slice(&p.output)
@@ -1135,6 +1145,7 @@ impl Node {
                             id_seq,
                             seed: calimero_identity::random::<32>(),
                             timer: None,
+                            compute: None,
                         },
                         RunExtras {
                             // The caller is part of the key: two callers' calls under the
@@ -1152,8 +1163,9 @@ impl Node {
                     ran
                 };
                 let outcome = ran.outcome;
-                // A timeout is not logged and does not spend the key (D23).
-                if outcome.is_timeout() {
+                // A retryable run (wall clock or node unavailable) is not logged and does not spend the
+                // key (D23).
+                if outcome.is_retryable() {
                     let a = Applied::unlogged(applied, outcome);
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
@@ -1422,6 +1434,7 @@ impl Node {
                 id_seq: 0,
                 seed: [0; 32],
                 timer: None,
+                compute: None,
             },
         );
         let meter = self.meter(&req.app_id, &bundle);
@@ -1447,12 +1460,12 @@ impl Node {
         .map_err(|e| ApiError::internal(&e.to_string()))?;
         self.usage.ran(&meter, run);
         crate::metrics::wasm_run(InvocationKind::View, run.wall);
-        if !out.is_timeout() {
+        if !out.is_retryable() {
             self.usage.called(&meter, RunKind::View);
         }
         Ok(ViewAnswer {
             index: applied,
-            timeout: out.is_timeout(),
+            timeout: out.is_retryable(),
             status: out.status,
             result: out.result,
             error: out.error,
@@ -1551,8 +1564,8 @@ impl Node {
             let out = self.attempt_action(&app_id, prepared, &record).await;
             match out.status {
                 Status::Ok => (None, false),
-                _ if out.is_timeout() && record.attempts + 1 < MAX_ATTEMPTS => (None, true),
-                _ if out.is_timeout() => (Some(format!("timed out {MAX_ATTEMPTS} times")), false),
+                _ if out.is_retryable() && record.attempts + 1 < MAX_ATTEMPTS => (None, true),
+                _ if out.is_retryable() => (Some(format!("timed out {MAX_ATTEMPTS} times")), false),
                 _ => (Some(reason(&out.error.to_string())), false),
             }
         } else {
@@ -1632,6 +1645,7 @@ impl Node {
             id_seq: 0,
             seed: [0; 32],
             timer: None,
+            compute: None,
         };
         let budget = Budget {
             wall_clock: Budget::action().wall_clock,
@@ -2275,5 +2289,36 @@ mod tests {
         // Five missed slots collapse into the latest one.
         assert_eq!(due_slot(10_000, every, 16_500), Some(16_000));
         assert_eq!(due_slot(10_000, Duration::ZERO, 16_500), None);
+    }
+
+    #[test]
+    fn compute_and_compute_result_methods_are_refused_to_every_caller() {
+        let abi = calimero_app_host::Abi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": {
+                "digest": { "kind": "compute", "compute": { "fuel": 1, "result": "onDone" } },
+                "onDone": { "kind": "call", "computeResult": true, "allowSystem": true },
+                "plain": { "kind": "call", "allowSystem": true, "public": true },
+            }
+        }))
+        .unwrap();
+        let prepared = Prepared {
+            hash: String::new(),
+            abi,
+            inner: std::sync::Arc::new(()),
+        };
+        let account = Caller::Account {
+            account: "alice".to_owned(),
+        };
+        for caller in [account, Caller::System, Caller::Public] {
+            for (view, from_action) in [(false, false), (true, false), (false, true)] {
+                for method in ["digest", "onDone"] {
+                    let refused =
+                        abi_check(&prepared, method, &caller, view, true, from_action).unwrap_err();
+                    assert_eq!(refused.details["code"], "WrongKind", "{method} {caller:?}");
+                }
+            }
+        }
+        assert!(abi_check(&prepared, "plain", &Caller::System, false, true, false).is_ok());
     }
 }

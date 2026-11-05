@@ -239,15 +239,22 @@ bump_cargo_workspace() {
   # ── every app's copy of the floor ────────────────────────────────────────
   local apps=0
   local m
+  # Each app is its own component crate with its own `[workspace]` and
+  # Cargo.lock, so its core dependencies are pinned in its own manifest too, not
+  # inherited from the root: rewrite those tags alongside the floor.
   for m in $(app_manifests); do
-    grep -q 'min-runtime-version' "$m" || continue
+    grep -Eq 'min-runtime-version|github\.com/calimero-network/core' "$m" || continue
     NEW="$VERSION" perl -i -pe '
+      if (m{git\s*=\s*"https://github\.com/calimero-network/core(?:\.git)?"}
+          && m{tag\s*=\s*"}) {
+        s{(tag\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
+      }
       s{^(\s*min-runtime-version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
     ' "$m"
     record_change "${m#$DIR/}"
     apps=$((apps + 1))
   done
-  note "min-runtime-version rewritten in $apps app manifest(s)"
+  note "core pins and min-runtime-version rewritten in $apps app manifest(s)"
 
   # ── every merobox scenario's node image ──────────────────────────────────
   local scen=0
@@ -294,11 +301,38 @@ bump_cargo_workspace() {
 
   command -v cargo >/dev/null 2>&1 || die "cargo is not installed; re-run with --no-lock to edit manifests only"
 
-  # One lockfile for the whole workspace. `cargo update -p` per crate would be
-  # nine resolutions of the same graph; the workspace root resolves once.
-  note "refreshing Cargo.lock"
-  ( cd "$DIR" && cargo update --quiet )
-  record_change "Cargo.lock"
+  # One lockfile for the whole workspace when the root is one. `cargo update -p`
+  # per crate would be nine resolutions of the same graph; the workspace root
+  # resolves once. Since the apps moved to standalone component crates (each
+  # apps/*/logic carries its own Cargo.lock), the root workspace lists no
+  # members and `cargo update` there fails with "you can't generate a lockfile
+  # for an empty workspace": refresh every app's own lockfile instead.
+  if [ -f "$DIR/Cargo.lock" ] && root_has_members; then
+    note "refreshing Cargo.lock"
+    ( cd "$DIR" && cargo update --quiet )
+    record_change "Cargo.lock"
+    return 0
+  fi
+  local m d locks=0
+  for m in $(app_manifests); do
+    d=$(dirname "$m")
+    [ -f "$d/Cargo.lock" ] || continue
+    note "refreshing ${d#$DIR/}/Cargo.lock"
+    ( cd "$d" && cargo update --quiet ) || die "cargo update failed in ${d#$DIR/}"
+    record_change "${d#$DIR/}/Cargo.lock"
+    locks=$((locks + 1))
+  done
+  [ "$locks" -gt 0 ] || die "no workspace members and no per-app Cargo.lock to refresh"
+  note "refreshed $locks per-app Cargo.lock file(s)"
+}
+
+# True when the root Cargo.toml's workspace resolves to at least one package.
+# `cargo metadata --no-deps` is enough: it reads manifests only, no network.
+root_has_members() {
+  local n
+  n=$(cd "$DIR" && cargo metadata --no-deps --format-version 1 2>/dev/null \
+        | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["packages"]))' 2>/dev/null) || return 1
+  [ "${n:-0}" -gt 0 ]
 }
 
 # ---------------------------------------------------------------------------

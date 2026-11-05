@@ -53,6 +53,13 @@ pub const MAX_OPEN_CURSORS: usize = 1_024;
 /// Bytes of app log one run keeps; later lines are dropped after one marker line.
 pub const MAX_LOG_BYTES: usize = 64 * 1024;
 
+/// Bytes of a compute run's result; it travels in a log entry.
+pub const MAX_COMPUTE_RESULT_BYTES: usize = 64 * 1024;
+/// Bytes of a progress step label; longer ones are cut.
+pub const MAX_PROGRESS_STEP_BYTES: usize = 128;
+const RESULT_TOO_LARGE: &str = "result too large";
+const NOT_A_COMPUTE_RUN: &str = "progress is only for compute runs";
+
 /// Events one run may emit (Rooms emits up to 500 per timer tick).
 pub const MAX_EVENTS: usize = 1_000;
 /// Bytes of an event name.
@@ -82,6 +89,9 @@ pub const MAX_XCALL_NAME_BYTES: usize = 128;
 pub const XCALL_TOO_MANY: &str = "too many xcalls";
 pub const XCALL_BAD_TARGET: &str = "malformed xcall target";
 const LOG_TRUNCATED: &str = "[log truncated]";
+
+/// Where a compute run's progress goes: percent (0-100) and a step label.
+pub type Progress = Arc<dyn Fn(u8, &str) + Send + Sync>;
 
 /// A range cursor handed to the guest; the WIT `cursor` resource maps onto it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -130,6 +140,7 @@ pub struct HostCore {
     peak_buffered: usize,
     provider: Arc<dyn Files>,
     files: FileTable,
+    progress: Option<Progress>,
 }
 
 impl HostCore {
@@ -147,6 +158,9 @@ impl HostCore {
             (true, false) => return Err(InvalidInvocation::TimerWithoutSlot),
             (false, true) => return Err(InvalidInvocation::SlotOutsideTimer),
             _ => {}
+        }
+        if inv.kind != InvocationKind::Action && inv.compute.is_some() {
+            return Err(InvalidInvocation::RunOutsideAction);
         }
         let rng = time::entropy(&inv);
         Ok(Self {
@@ -181,6 +195,7 @@ impl HostCore {
             peak_buffered: 0,
             provider: Arc::new(NoFiles),
             files: FileTable::default(),
+            progress: None,
         })
     }
 
@@ -218,6 +233,13 @@ impl HostCore {
     #[must_use]
     pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
         self.http = http;
+        self
+    }
+
+    /// Receives a compute run's `progress` calls; without it they are dropped.
+    #[must_use]
+    pub fn with_progress(mut self, progress: Progress) -> Self {
+        self.progress = Some(progress);
         self
     }
 
@@ -378,16 +400,25 @@ impl HostCore {
 
     #[must_use]
     pub fn app_owner(&self) -> String {
-        self.dir.app_owner()
+        match &self.inv.compute {
+            Some(run) => run.owner.clone(),
+            None => self.dir.app_owner(),
+        }
     }
 
     #[must_use]
     pub fn org(&self) -> Option<String> {
+        if self.is_compute() {
+            return None;
+        }
         self.dir.org()
     }
 
     #[must_use]
     pub fn org_role(&self, account: &str) -> Option<OrgRole> {
+        if self.is_compute() {
+            return None;
+        }
         self.dir.org_role(account)
     }
 
@@ -397,21 +428,28 @@ impl HostCore {
         if self.inv.kind == InvocationKind::Migrate {
             return Err(HostDenied::new("org_role_strict is not allowed in migrate"));
         }
-        Ok(self.dir.org_role(account))
+        Ok(self.org_role(account))
     }
 
     #[must_use]
     pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
+        if self.is_compute() {
+            return Vec::new();
+        }
         self.dir.orgs_of(account)
     }
 
     #[must_use]
     pub fn in_team(&self, account: &str, team: &str) -> bool {
-        self.dir.in_team(account, team)
+        !self.is_compute() && self.dir.in_team(account, team)
     }
 
+    /// The log index the run reads at; a compute run has no log to read, so 0.
     #[must_use]
     pub fn applied_index(&self) -> u64 {
+        if self.is_compute() {
+            return 0;
+        }
         self.applied_index
     }
 
@@ -456,6 +494,36 @@ impl HostCore {
             args: args.to_vec(),
         });
         Ok(Ok(id))
+    }
+
+    // --- compute -----------------------------------------------------------------------
+
+    /// The run's id; none outside a compute run.
+    #[must_use]
+    pub fn compute_run_id(&self) -> Option<String> {
+        self.inv.compute.as_ref().map(|run| run.run_id.clone())
+    }
+
+    /// The files the run may read; empty outside a compute run.
+    #[must_use]
+    pub fn compute_inputs(&self) -> Vec<String> {
+        self.inv
+            .compute
+            .as_ref()
+            .map_or_else(Vec::new, |run| run.inputs.clone())
+    }
+
+    /// Reports progress: `percent` is capped at 100 and `step` cut to
+    /// `MAX_PROGRESS_STEP_BYTES` on a character boundary. Compute runs only; never logged.
+    pub fn compute_progress(&mut self, percent: u8, step: &str) -> Result<(), HostDenied> {
+        if !self.is_compute() {
+            return Err(HostDenied::new(NOT_A_COMPUTE_RUN));
+        }
+        let end = step.floor_char_boundary(MAX_PROGRESS_STEP_BYTES);
+        if let Some(progress) = &self.progress {
+            progress(percent.min(100), &step[..end]);
+        }
+        Ok(())
     }
 
     // --- events, xcall, blobs, action ------------------------------------------------
@@ -578,10 +646,12 @@ impl HostCore {
         method: &str,
         args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        if !matches!(
-            self.inv.kind,
-            InvocationKind::Call | InvocationKind::Timer | InvocationKind::Action
-        ) {
+        if self.is_compute()
+            || !matches!(
+                self.inv.kind,
+                InvocationKind::Call | InvocationKind::Timer | InvocationKind::Action
+            )
+        {
             return Err(self.denied("xcall.call"));
         }
         let host = match self.sync_target(app, method, args) {
@@ -606,13 +676,15 @@ impl HostCore {
         method: &str,
         args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        if !matches!(
-            self.inv.kind,
-            InvocationKind::Call
-                | InvocationKind::Timer
-                | InvocationKind::Action
-                | InvocationKind::View
-        ) {
+        if self.is_compute()
+            || !matches!(
+                self.inv.kind,
+                InvocationKind::Call
+                    | InvocationKind::Timer
+                    | InvocationKind::Action
+                    | InvocationKind::View
+            )
+        {
             return Err(self.denied("xcall.view"));
         }
         let host = match self.sync_target(app, method, args) {
@@ -752,7 +824,7 @@ impl HostCore {
             self.inv.kind,
             InvocationKind::Call | InvocationKind::Timer | InvocationKind::XcallDeliver
         );
-        if !logged && self.inv.kind != InvocationKind::Action {
+        if self.is_compute() || (!logged && self.inv.kind != InvocationKind::Action) {
             return Err(HostDenied::new(
                 "outgoing http is not allowed in views, init or migrations",
             ));
@@ -773,7 +845,7 @@ impl HostCore {
 
     fn action_host(&self) -> Result<Arc<dyn ActionHost>, HostDenied> {
         match (&self.action, self.inv.kind) {
-            (Some(host), InvocationKind::Action) => Ok(Arc::clone(host)),
+            (Some(host), InvocationKind::Action) if !self.is_compute() => Ok(Arc::clone(host)),
             _ => Err(HostDenied::new(NOT_AN_ACTION)),
         }
     }
@@ -821,9 +893,24 @@ impl HostCore {
     /// result and the app log are kept. `usage.writes` is the core's own count.
     #[must_use]
     pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+        let reported = match &status {
+            Status::Ok => result.len(),
+            Status::AppError { code, message } => code.len().saturating_add(message.len()),
+            Status::Trap { .. } => 0,
+        };
+        let too_large = self.is_compute() && reported > MAX_COMPUTE_RESULT_BYTES;
+        let (status, result) = if too_large {
+            let denied = Status::Trap {
+                kind: TrapKind::HostDenied,
+                detail: RESULT_TOO_LARGE.to_owned(),
+            };
+            (denied, Vec::new())
+        } else {
+            (status, result)
+        };
         let status = if self.files.unavailable() {
             Status::Trap {
-                kind: TrapKind::Timeout,
+                kind: TrapKind::Unavailable,
                 detail: FILE_UNAVAILABLE.to_owned(),
             }
         } else {
@@ -864,6 +951,10 @@ impl HostCore {
     }
 
     // --- policy ----------------------------------------------------------------------
+
+    pub(crate) fn is_compute(&self) -> bool {
+        self.inv.compute.is_some()
+    }
 
     /// Invocations that become log entries and may change state (spec, env API).
     fn is_logged_write(&self) -> bool {

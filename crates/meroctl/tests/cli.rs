@@ -79,6 +79,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
             size: wasm.len() as u64,
         }),
         abi: None,
+        compute: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
@@ -427,6 +428,49 @@ fn scenario(root: &Path, url: &str) {
         "--view",
     ]);
     assert_eq!(view["result"], "1");
+
+    // account api-key --upgrades: CI upgrades its context with the key alone
+    // and can do nothing else with it.
+    let kv_1_2 = write(
+        "kv-1.2.0.mpk",
+        &mpk("com.test.kv", "1.2.0", &variant(&kv, "v12"), &publisher),
+    );
+    let _ = alice.run(&["app", "install", "--path", path(&kv_1_2)]);
+    let ci_key = alice.run(&[
+        "account",
+        "api-key",
+        "create",
+        "--label",
+        "ci",
+        "--upgrades",
+        "notes",
+        "--dev-passkey",
+        pk,
+    ]);
+    let ci_key = s(&ci_key["key"]);
+    let _ = service.run(&[
+        "--api-key",
+        &ci_key,
+        "context",
+        "update",
+        &notes,
+        "--version",
+        "1.2.0",
+    ]);
+    assert!(alice
+        .run(&["context", "get", "notes"])
+        .to_string()
+        .contains(&s(&alice.run(&["app", "versions", "com.test.kv"])
+            ["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["version"] == "1.2.0")
+            .unwrap()["services"][""])));
+    let refused = service
+        .try_run(&["--api-key", &ci_key, "whoami"])
+        .unwrap_err();
+    assert!(refused.contains("UPGRADE_KEY_ONLY"), "{refused}");
 
     // namespace and group: an organization, its teams, members, metadata.
     let org = alice.run(&["namespace", "create", "acme"]);

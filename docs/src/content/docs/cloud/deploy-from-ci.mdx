@@ -1,0 +1,64 @@
+---
+title: Deploy from CI
+description: Upgrade an app from a CI job without a passkey — an upgrade key made once by the app's owner, scoped to one app and its package's signed releases, and refused everything else.
+sidebar:
+  order: 4
+---
+
+Every upgrade made with a session needs a passkey step-up over that exact
+upgrade, and a CI job has no passkey. An **upgrade key** stands in for the
+step-up for one app: the owner makes it once with a passkey, and CI then
+upgrades that app to signed releases of its package with the key alone.
+
+## 1. Make the key (once, with a passkey)
+
+Whoever may upgrade the app makes it: the app's owner or, for an
+organization's app, a holder of `MANAGE_APPLICATION` (for a `publisher`
+package, the publisher's holders).
+
+```bash
+meroctl account api-key create --label ci --upgrades my-app --ttl-secs 7776000
+# { "keyId": "…", "key": "cal_…" }   shown once: store it as a CI secret
+```
+
+From JavaScript: `client.createApiKey({ label: 'ci', upgrades: { app }, ttlSecs }, passkey)`.
+The key is bound to the app, the package the app runs (or `--package`), and
+that package's pinned signer, all of which the passkey approves. It takes no
+other scope.
+
+## 2. Upgrade from CI
+
+Publish the new release to the cluster's registry (signed with
+`mero-sign` under the package's key), then:
+
+```bash
+export CALIMERO_API_KEY=cal_…
+meroctl context update <app-id> --version 1.4.0
+```
+
+or `ci.useApiKey(key); await ci.upgradeApp(app, { version: '1.4.0' })`. The
+node installs the release from the registry if it does not have it yet
+(verifying its signature and the pinned signer), then upgrades.
+
+## What a leaked key can do
+
+Only push signed releases of that package to that app:
+
+- every other request with it, reads included, is refused `403
+  UPGRADE_KEY_ONLY`; another app, a raw bundle, another package or another
+  signer is refused `403`;
+- the rules for any upgrade still hold: the key's account must still be
+  allowed to upgrade the app, release deadlines, deployer grants on a granted
+  cluster, and an `owner` release is never moved to a `publisher` one;
+- each upgrade carries the key's own signature, checked on every node, so a
+  node that saw only the log cannot make one.
+
+## Revoking and auditing
+
+`meroctl account api-key revoke <key-id>` (or `revokeApiKey`), approved with
+a passkey, stops it on
+every node at once; it also ends at its TTL (at most one year: prefer a short
+one and rotate). Each upgrade it makes is recorded on the app's `lastUpgrade`
+with the account and the key's id (`apiKey`), in `GET /auth/apps`
+and `GET /orgs/{org}/apps`. The protocol:
+[Upgrade keys](/protocol/identities/#upgrade-keys).

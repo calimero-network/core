@@ -49,6 +49,12 @@ impl Default for Quotas {
 /// The prefix of every apply error that is a quota refusal.
 pub const QUOTA_PREFIX: &str = "quota exceeded";
 
+/// The refusal when an app would run a compute component.
+const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never as an app";
+
+/// The refusal when an app names a compute component its bundle's release does not ship.
+const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
+
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
@@ -74,6 +80,9 @@ pub struct PackageRef {
     /// The service's name; `None` for a single-service bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    /// The bundle is the service's compute component, not the service itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compute: bool,
 }
 
 /// Where a release's `.mpk` came from, so a node that needs it knows where to get it.
@@ -110,6 +119,10 @@ pub struct PackageVersion {
     pub source: BundleSource,
     /// Service name (`""` for a single-service bundle) -> the WASM's bundle hash.
     pub services: BTreeMap<String, String>,
+    /// Service name -> its compute component's bundle hash, for the services that ship one.
+    /// Never a service: no app runs it, and only job nodes do.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub compute: BTreeMap<String, String>,
     /// The manifest's display metadata (name, description, icon, ...).
     #[serde(default)]
     pub metadata: Value,
@@ -131,6 +144,26 @@ pub struct PackageVersion {
 }
 
 impl PackageVersion {
+    /// Every WASM the release records under `package`, with the part of the release it is:
+    /// each service, then each service's compute component.
+    fn parts<'a>(&'a self, package: &'a str) -> impl Iterator<Item = (&'a str, PackageRef)> {
+        let at = move |service: &str, compute: bool| PackageRef {
+            package: package.to_owned(),
+            version: self.version.clone(),
+            service: (!service.is_empty()).then(|| service.to_owned()),
+            compute,
+        };
+        let services = self
+            .services
+            .iter()
+            .map(move |(s, h)| (h.as_str(), at(s, false)));
+        let computes = self
+            .compute
+            .iter()
+            .map(move |(s, h)| (h.as_str(), at(s, true)));
+        services.chain(computes)
+    }
+
     /// Whether `who` installed this release, first or again.
     #[must_use]
     pub fn installed_by_any(&self, who: &str) -> bool {
@@ -294,6 +327,12 @@ pub struct SystemState {
     /// empty, so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deployments: BTreeMap<String, Deployment>,
+    /// Web origins packages' managers registered for their frontends
+    /// (`AddPackageOrigin`), by origin: a passkey ceremony there opens a
+    /// session bound to the package ([`crate::origins`]). Left out when
+    /// empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package_origins: BTreeMap<String, crate::origins::PackageOrigin>,
     /// Plaintext bytes of the files each app holds (`ChargeFileBytes`).
     #[serde(default)]
     pub app_file_bytes: BTreeMap<AppId, u64>,
@@ -805,6 +844,33 @@ impl SystemState {
             .filter(move |v| self.sees_release(v, who))
     }
 
+    /// Whether `hash` is a release's compute component, which no app runs.
+    #[must_use]
+    pub fn is_compute_bundle(&self, hash: &str) -> bool {
+        self.bundles
+            .get(hash)
+            .and_then(|b| b.package.as_ref())
+            .is_some_and(|at| at.compute)
+    }
+
+    /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
+    /// whose app component is `bundle`. Releases may share an app component and differ in
+    /// compute, so the caller names the compute hash and this checks the pair.
+    #[must_use]
+    pub fn ships_compute(&self, bundle: &str, compute: Option<&str>) -> bool {
+        let Some(compute) = compute else {
+            return true;
+        };
+        self.packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .any(|v| {
+                v.services.iter().any(|(service, main)| {
+                    main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
+                })
+            })
+    }
+
     /// Whether `who` may name the bundle `hash` for an app: it must be
     /// recorded, and if a package release ships it, one such release must be
     /// visible to `who`, or `who` uploaded the same WASM as a raw bundle.
@@ -813,6 +879,9 @@ impl SystemState {
         let Some(b) = self.bundles.get(hash) else {
             return false;
         };
+        if self.is_compute_bundle(hash) {
+            return false;
+        }
         let mut shipped = self
             .packages
             .values()
@@ -1144,6 +1213,83 @@ impl SystemState {
     /// its owner, or, for an org app, whoever
     /// [manages the organization's apps](Self::manages_apps) on the app's
     /// team.
+    /// Whether upgrade key `key` may move `app_id` to `bundle` at `at`: the
+    /// key upgrades that app, has not expired, and `bundle` is a service of
+    /// an installed release of the key's package, whose pinned signer is
+    /// still the one the key names. Who may upgrade the app, deadlines and
+    /// authority are the upgrade's own rules, judged as for a passkey.
+    ///
+    /// # Errors
+    /// The key is not an upgrade key, or not for this app or this release.
+    pub fn key_may_upgrade<'k>(
+        &self,
+        key: &'k ApiKeyRecord,
+        app_id: &str,
+        bundle: &str,
+        at: u64,
+    ) -> Result<&'k crate::types::UpgradeScope, &'static str> {
+        let scope = key
+            .upgrades
+            .as_ref()
+            .ok_or("this API key does not upgrade apps")?;
+        if scope.app != app_id {
+            return Err("this API key upgrades another app");
+        }
+        if key.expires_at <= at {
+            return Err("this API key had expired");
+        }
+        let package = self
+            .packages
+            .get(&scope.package)
+            .filter(|p| p.signer_id == scope.signer)
+            .ok_or("this API key's package is not installed under the signer it names")?;
+        if !package
+            .versions
+            .values()
+            .any(|v| v.services.values().any(|h| h == bundle))
+        {
+            return Err("this API key upgrades only to signed releases of its package");
+        }
+        Ok(scope)
+    }
+
+    /// Whether `record` may be made with upgrade scope `scope`: nothing
+    /// else scoped, an app its account may upgrade now, running a release
+    /// of the package, whose pinned signer the scope names.
+    ///
+    /// # Errors
+    /// The scope names another app, package or signer, or the account may
+    /// not upgrade the app.
+    pub fn upgrade_key_fits(
+        &self,
+        record: &ApiKeyRecord,
+        scope: &crate::types::UpgradeScope,
+    ) -> Result<(), &'static str> {
+        if record.apps.is_some()
+            || record.methods.is_some()
+            || record.read_only
+            || record.allow_confirm
+        {
+            return Err("an upgrade key has no other scope");
+        }
+        let app = self.apps.get(&scope.app).ok_or("no such app")?;
+        if !self.may_upgrade(app, &record.account) {
+            return Err("an upgrade key needs an account that may upgrade the app");
+        }
+        let package = self.packages.get(&scope.package).ok_or("no such package")?;
+        if package.signer_id != scope.signer {
+            return Err("the package is signed by another key");
+        }
+        let runs = package
+            .versions
+            .values()
+            .any(|v| v.services.values().any(|h| *h == app.bundle));
+        if !runs {
+            return Err("the app does not run a release of that package");
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
         if !self.upgrades_of(&app.bundle).is_owner() {
@@ -1532,10 +1678,25 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             bundle,
             by_operator,
             actor,
+            at,
             run: None,
             consent,
             ..
         } => {
+            // An upgrade key's signature, judged against the key as the log
+            // holds it now: revoked or expired, it proves nothing.
+            if let (false, Some(key_id)) = (*by_operator, crate::proof::key_proof_id(consent)) {
+                let key = s
+                    .api_keys
+                    .values()
+                    .find(|k| k.key_id == key_id && k.account == *actor)
+                    .ok_or("no such API key: it was revoked")?;
+                let scope = s.key_may_upgrade(key, app_id, bundle, *at)?;
+                let (_, st, used) = crate::proof::verify_key_upgrade(consent, &scope.proof_key)?;
+                let (st, used) = fresh((st, used))?;
+                states(&st, app_id, "__upgrade", &|a| a["bundle"] == json!(bundle))?;
+                return Ok(Some(used));
+            }
             let (st, used) = if *by_operator {
                 fresh(operator(consent)?)?
             } else {
@@ -1820,6 +1981,35 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             )?;
             Ok(Some(used))
         }
+        SystemCmd::AddPackageOrigin {
+            package,
+            origin,
+            rp_id,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("package:{package}"), "__add_origin", &|a| {
+                *a == json!({ "origin": origin, "rpId": rp_id })
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemovePackageOrigin {
+            package,
+            origin,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(
+                &st,
+                &format!("package:{package}"),
+                "__remove_origin",
+                &|a| *a == json!({ "origin": origin }),
+            )?;
+            Ok(Some(used))
+        }
         SystemCmd::DeleteOrg {
             org,
             actor,
@@ -2060,6 +2250,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                 || old.session != record.session
                 || old.passkey != record.passkey
                 || old.app != record.app
+                || old.origin != record.origin
             {
                 return Err("the exchange is for another session");
             }
@@ -2383,7 +2574,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
 /// key, so the log cannot record another key under the same consent.
 #[must_use]
 pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
-    json!({
+    let mut args = json!({
         "hash": hash,
         "keyId": record.key_id,
         "label": record.label,
@@ -2392,7 +2583,13 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
         "readOnly": record.read_only,
         "allowConfirm": record.allow_confirm,
         "expiresAt": record.expires_at,
-    })
+    });
+    // Only an upgrade key states its scope: every other key's consent reads
+    // the bytes it did before upgrade keys.
+    if let (Some(scope), Some(obj)) = (&record.upgrades, args.as_object_mut()) {
+        let _prev = obj.insert("upgrades".to_owned(), json!(scope));
+    }
+    args
 }
 
 impl SystemCmd {
@@ -2502,6 +2699,10 @@ pub enum SystemCmd {
     UpgradeApp {
         app_id: AppId,
         bundle: String,
+        /// The compute component of the release `bundle` is taken from, which only the
+        /// caller knows when releases share an app component; `None` for a raw upload.
+        #[serde(default)]
+        compute_bundle: Option<String>,
         /// The operator upgraded it (`actor` empty): allowed only where the
         /// deployment gave it app upgrades, and then nobody else may.
         #[serde(default)]
@@ -2907,6 +3108,27 @@ pub enum SystemCmd {
     WithdrawApp {
         deployment: String,
         app: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Register `origin` for `package`'s frontend, its ceremonies verified
+    /// against `rp_id` (`package:{package} / __add_origin / { origin, rpId }`,
+    /// the manager's passkey `consent`; [`crate::origins`]).
+    AddPackageOrigin {
+        package: String,
+        origin: String,
+        rp_id: String,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Remove a registered origin (`package:{package} / __remove_origin /
+    /// { origin }`): the sessions opened there end with it.
+    RemovePackageOrigin {
+        package: String,
+        origin: String,
         actor: AccountId,
         #[serde(default)]
         consent: Value,
@@ -3371,14 +3593,9 @@ impl SystemMachine {
                 if !by_operator && used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
                     return Err("quota exceeded: bundle storage");
                 }
-                for (service, hash) in &release.services {
-                    let at = PackageRef {
-                        package: package.clone(),
-                        version: release.version.clone(),
-                        service: (!service.is_empty()).then(|| service.clone()),
-                    };
-                    let b = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
-                        hash: hash.clone(),
+                for (hash, at) in release.parts(&package) {
+                    let b = s.bundles.entry(hash.to_owned()).or_insert(BundleRecord {
+                        hash: hash.to_owned(),
                         size: release.mpk_size,
                         uploaded_by: actor.clone(),
                         package: None,
@@ -3424,7 +3641,7 @@ impl SystemMachine {
                 let hashes: BTreeSet<String> = gone
                     .iter()
                     .filter_map(|v| p.versions.get(v))
-                    .flat_map(|v| v.services.values().cloned())
+                    .flat_map(|v| v.parts(&package).map(|(h, _)| h.to_owned()))
                     .collect();
                 // Two releases may ship the same WASM: a hash another release
                 // still provides stays, recorded under that release.
@@ -3433,13 +3650,9 @@ impl SystemMachine {
                         p.versions.iter().find_map(|(v, r)| {
                             let gone_here = *name == package && gone.contains(v);
                             (!gone_here)
-                                .then(|| r.services.iter().find(|(_, x)| x.as_str() == h))
+                                .then(|| r.parts(name).find(|(x, _)| *x == h))
                                 .flatten()
-                                .map(|(svc, _)| PackageRef {
-                                    package: name.clone(),
-                                    version: v.clone(),
-                                    service: (!svc.is_empty()).then(|| svc.clone()),
-                                })
+                                .map(|(_, at)| at)
                         })
                     })
                 };
@@ -3449,9 +3662,10 @@ impl SystemMachine {
                         let _prev = keep.insert(h.clone(), r);
                     }
                 }
+                let in_use = |h: &String| hashes.contains(h) && !keep.contains_key(h);
                 if s.apps
                     .values()
-                    .any(|a| hashes.contains(&a.bundle) && !keep.contains_key(&a.bundle))
+                    .any(|a| in_use(&a.bundle) || a.compute_bundle.as_ref().is_some_and(in_use))
                 {
                     return Err("an app still runs that release; delete or upgrade it first");
                 }
@@ -3473,6 +3687,7 @@ impl SystemMachine {
                 }
                 if p.versions.is_empty() {
                     let _prev = s.packages.remove(&package);
+                    s.forget_origins(&package);
                 }
                 Ok(json!({ "removed": gone }))
             }
@@ -3480,6 +3695,12 @@ impl SystemMachine {
                 let mut app = *app;
                 if !s.bundles.contains_key(&app.bundle) {
                     return Err("unknown bundle");
+                }
+                if s.is_compute_bundle(&app.bundle) {
+                    return Err(COMPUTE_NOT_AN_APP);
+                }
+                if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
                 }
                 let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
                 if owned >= s.quotas.max_apps_per_account as usize {
@@ -3527,14 +3748,21 @@ impl SystemMachine {
             SystemCmd::UpgradeApp {
                 app_id,
                 bundle,
+                compute_bundle,
                 by_operator,
                 actor,
                 at,
                 run,
-                consent: _,
+                consent,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
+                }
+                if s.is_compute_bundle(&bundle) {
+                    return Err(COMPUTE_NOT_AN_APP);
+                }
+                if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
                 }
                 let operator = s.governance().app_upgrades == Authority::Operator;
                 let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
@@ -3576,8 +3804,12 @@ impl SystemMachine {
                         ok: true,
                         error: Value::Null,
                         run: run.clone(),
+                        api_key: crate::proof::key_proof_id(&consent)
+                            .filter(|_| !by_operator)
+                            .map(str::to_owned),
                     });
                     a.bundle = bundle;
+                    a.compute_bundle = compute_bundle;
                 }
                 s.note_run(run.as_deref(), &app_id, None);
                 Ok(Value::Null)
@@ -3599,6 +3831,7 @@ impl SystemMachine {
                     ok: false,
                     error: error.clone(),
                     run: run.clone(),
+                    api_key: None,
                 });
                 s.note_run(run.as_deref(), &app_id, Some(error));
                 Ok(Value::Null)
@@ -3896,6 +4129,9 @@ impl SystemMachine {
             SystemCmd::CreateApiKey { hash, record, .. } => {
                 if !s.accounts.contains_key(&record.account) {
                     return Err("unknown account");
+                }
+                if let Some(scope) = &record.upgrades {
+                    s.upgrade_key_fits(&record, scope)?;
                 }
                 let keys = s
                     .api_keys
@@ -4534,6 +4770,20 @@ impl SystemMachine {
                 }
                 Ok(out)
             }
+            SystemCmd::AddPackageOrigin {
+                package,
+                origin,
+                rp_id,
+                actor,
+                at,
+                consent: _,
+            } => s.add_package_origin(package, origin, &rp_id, actor, at),
+            SystemCmd::RemovePackageOrigin {
+                package,
+                origin,
+                actor,
+                consent: _,
+            } => s.remove_package_origin(&package, &origin, &actor),
             SystemCmd::WithdrawApp {
                 deployment,
                 app,
@@ -5202,12 +5452,13 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod tests {
 
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         Authority, Governance, OrgRole, Quotas, ReleaseScope, SystemCmd, SystemMachine,
-        SystemState, QUOTA_PREFIX,
+        SystemState, OPERATOR, QUOTA_PREFIX,
     };
+    use crate::types::RefreshRecord;
 
     // The tests above `account_with` judge each command's own authority rules
     // (`run_authorized`); the proofs `run` also requires are tested below it.
@@ -5555,6 +5806,7 @@ mod tests {
             let _prev = m.state.apps.insert(id.into(), a);
         }
         let upgrade = |app: &str, actor: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: app.into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -5658,6 +5910,7 @@ mod tests {
 
         // App upgrades.
         let upgrade = |by_operator: bool, actor: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "app".into(),
             bundle: "b2".into(),
             by_operator,
@@ -5845,6 +6098,95 @@ mod tests {
         assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
     }
 
+    /// A release's compute component is recorded as the compute part of its service: no app
+    /// runs it, the app's record carries it next to `bundle` on create and upgrade, and
+    /// uninstalling the release takes it with the service.
+    #[test]
+    fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() {
+        use super::{BundleSource, PackageVersion};
+        use calimero_bundle::UpgradeAuthority;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let release = |version: &str, main: &str, job: Option<&str>| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                version: version.into(),
+                mpk: format!("mpk{version}"),
+                mpk_size: 1,
+                source: BundleSource::Upload,
+                services: BTreeMap::from([(String::new(), main.to_owned())]),
+                compute: job
+                    .map(|j| BTreeMap::from([(String::new(), j.to_owned())]))
+                    .unwrap_or_default(),
+                metadata: Value::Null,
+                outbound: Vec::new(),
+                installed_by: "alice".into(),
+                installed_at: 0,
+                installers: BTreeSet::new(),
+                upgrades: UpgradeAuthority::Owner,
+            },
+        };
+        let _ok = m
+            .run_authorized(release("1.0.0", "m1", Some("j1")))
+            .unwrap();
+        let _ok = m.run_authorized(release("1.1.0", "m2", None)).unwrap();
+        let s = &m.state;
+        assert!(s.bundles["j1"].package.as_ref().unwrap().compute);
+        assert!(!s.bundles["m1"].package.as_ref().unwrap().compute);
+        assert!(s.is_compute_bundle("j1") && !s.is_compute_bundle("m1"));
+        assert!(!s.sees_bundle("j1", "alice") && s.sees_bundle("m1", "alice"));
+        assert!(s.ships_compute("m1", Some("j1")) && s.ships_compute("m1", None));
+        assert!(!s.ships_compute("m2", Some("j1")) && !s.ships_compute("m1", Some("m1")));
+
+        let e = m
+            .run_unproven(instance("bad", "alice", "j1", None))
+            .unwrap_err();
+        assert!(e.contains("compute component"), "{e}");
+        let with_compute = |id: &str, compute: &str| SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 0, "bundle": "m1", "owner": "alice",
+                    "replicas": [1], "createdAt": 10, "computeBundle": compute,
+                }))
+                .unwrap(),
+            ),
+        };
+        let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
+        assert!(e.contains("not shipped"), "{e}");
+        let _ok = m.run_unproven(with_compute("app", "j1")).unwrap();
+        assert_eq!(m.state.apps["app"].compute_bundle.as_deref(), Some("j1"));
+
+        let upgrade = |bundle: &str, compute: Option<&str>| SystemCmd::UpgradeApp {
+            compute_bundle: compute.map(str::to_owned),
+            app_id: "app".into(),
+            bundle: bundle.into(),
+            by_operator: false,
+            actor: "alice".into(),
+            at: 0,
+            run: None,
+            consent: Value::Null,
+        };
+        let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
+        assert!(e.contains("compute component"), "{e}");
+        let e = m.run_unproven(upgrade("m2", Some("j1"))).unwrap_err();
+        assert!(e.contains("not shipped"), "{e}");
+        assert_eq!(m.state.apps["app"].bundle, "m1");
+        let _ok = m.run_unproven(upgrade("m2", None)).unwrap();
+        assert_eq!(m.state.apps["app"].compute_bundle, None);
+
+        let uninstall = |version: &str| SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some(version.into()),
+            actor: "alice".into(),
+        };
+        let _ok = m.run_unproven(uninstall("1.0.0")).unwrap();
+        assert!(!m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j1"));
+    }
+
     /// An account `id` holding the passkey `pk`.
     fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator) -> SystemCmd {
         let rp = calimero_identity::RelyingParty {
@@ -5985,6 +6327,7 @@ mod tests {
     fn an_upgrade_names_its_consent_or_its_run() {
         let (mut m, mut alice, _bob) = two_accounts();
         let upgrade = |consent: serde_json::Value, run: Option<&str>| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "app".into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -6282,6 +6625,7 @@ mod tests {
             expires_at: 99,
             passkey: Some(passkey.into()),
             app: None,
+            origin: None,
             key: crate::proof::refresh_key(&token),
         };
         (token, hash, record)
@@ -6408,6 +6752,18 @@ mod tests {
                             ..next_record.clone()
                         }),
                     ),
+                ),
+            ),
+            // A session keeps the registered origin it was opened on, so
+            // removing the origin still ends it after an exchange.
+            (
+                "onto another origin",
+                exchange(
+                    crate::types::RefreshRecord {
+                        origin: Some("https://elsewhere.example.com".into()),
+                        ..next_record.clone()
+                    },
+                    crate::proof::sign_refresh_use(&token, &message(&next_record)),
                 ),
             ),
         ] {
@@ -7420,6 +7776,7 @@ mod tests {
             ),
         };
         let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: id.into(),
             bundle: "b2".into(),
             by_operator: false,
@@ -7734,6 +8091,122 @@ mod tests {
         assert_eq!(m.state.binding_generation(&signer), 2);
     }
 
+    /// An upgrade key's upgrade is judged where it applies, on fresh state:
+    /// the key's own signature, spent once; refused once its account may no
+    /// longer upgrade the app (a member who lost `MANAGE_APPLICATION`, or
+    /// left), once the key is revoked or expired, and for a bundle of another
+    /// package or of its package reinstalled under another signer.
+    #[test]
+    fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
+        use crate::types::caps::MANAGE_APPLICATION;
+        let (_key, signer) = publisher_key(9);
+        let mut m = publishing(&signer, "owner");
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
+        }
+        let secret = "cal_ci-secret";
+        let record = |expires_at: u64| super::ApiKeyRecord {
+            key_id: "k1".into(),
+            account: "dan".into(),
+            label: "ci".into(),
+            apps: None,
+            methods: None,
+            read_only: false,
+            allow_confirm: false,
+            expires_at,
+            upgrades: Some(crate::types::UpgradeScope {
+                app: "inst".into(),
+                package: "p".into(),
+                signer: signer.clone(),
+                proof_key: crate::proof::api_key_public(secret),
+            }),
+        };
+        let r = record(100);
+        assert_eq!(
+            m.state.upgrade_key_fits(&r, r.upgrades.as_ref().unwrap()),
+            Ok(())
+        );
+        assert!(
+            m.state
+                .upgrade_key_fits(
+                    &record(100),
+                    &crate::types::UpgradeScope {
+                        app: "rawapp".into(),
+                        ..r.upgrades.clone().unwrap()
+                    }
+                )
+                .is_err(),
+            "an app that runs no release of the package"
+        );
+        let _prev = m.state.api_keys.insert("h1".into(), r);
+        let upgrade = |bundle: &str, at: u64, secret: &str| {
+            let statement = crate::proof::Statement::new(
+                "inst",
+                "__upgrade",
+                &json!({ "bundle": bundle, "migrate": null, "manifest": null }),
+            );
+            SystemCmd::UpgradeApp {
+                app_id: "inst".into(),
+                bundle: bundle.into(),
+                compute_bundle: None,
+                by_operator: false,
+                actor: "dan".into(),
+                at,
+                run: None,
+                consent: json!(crate::proof::sign_key_upgrade(secret, "k1", statement)),
+            }
+        };
+        let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
+        assert!(e.contains("not signed with the API key"), "{e}");
+        let e = m.run(upgrade("raw", 10, secret)).unwrap_err();
+        assert!(e.contains("only to signed releases"), "{e}");
+        let e = m.run(upgrade("b2", 100, secret)).unwrap_err();
+        assert!(e.contains("expired"), "{e}");
+        let once = upgrade("b2", 10, secret);
+        let _ok = m.run(once.clone()).unwrap();
+        assert_eq!(m.state.apps["inst"].bundle, "b2");
+        assert_eq!(
+            m.state.apps["inst"]
+                .last_upgrade
+                .as_ref()
+                .and_then(|u| u.api_key.as_deref()),
+            Some("k1")
+        );
+        let e = m.run(once).unwrap_err();
+        assert!(e.contains("used already"), "{e}");
+
+        // Its maker loses the right to upgrade: so does the key.
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), 0);
+        }
+        assert!(!m.state.may_upgrade(&m.state.apps["inst"], "dan"));
+        assert!(m.run(upgrade("b1", 10, secret)).is_err(), "descoped");
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
+        }
+        let _ok = m.run(upgrade("b1", 11, secret)).unwrap();
+
+        // The package under another signer, then the key revoked.
+        let (_other, other_signer) = publisher_key(10);
+        if let Some(p) = m.state.packages.get_mut("p") {
+            p.signer_id = other_signer;
+        }
+        let e = m.run(upgrade("b2", 12, secret)).unwrap_err();
+        assert!(e.contains("signer it names"), "{e}");
+        if let Some(p) = m.state.packages.get_mut("p") {
+            p.signer_id = signer.clone();
+        }
+        let _ok = m
+            .run_unproven(SystemCmd::RevokeApiKey {
+                key_id: "k1".into(),
+                actor: "dan".into(),
+                consent: serde_json::Value::Null,
+            })
+            .unwrap();
+        let e = m.run(upgrade("b2", 13, secret)).unwrap_err();
+        assert!(e.contains("revoked"), "{e}");
+    }
+
     /// A package's manifest says who upgrades its instances. `publisher`:
     /// the publisher's `MANAGE_APPLICATION` holders, for every instance, and
     /// not the customer; until its key is bound, nobody. The
@@ -7770,6 +8243,7 @@ mod tests {
             assert_eq!(may(&m, who), expected, "{who}");
         }
         let upgrade = |actor: &str, bundle: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
             app_id: "inst".into(),
             bundle: bundle.into(),
             by_operator: false,
@@ -8716,6 +9190,253 @@ mod tests {
         let _ok = m.run_unproven(charge("b", -50)).unwrap();
         let _ok = m.run_unproven(transfer).unwrap();
         assert_eq!(m.state.file_bytes("account:bob"), 80);
+    }
+
+    // ------------------------------------------------------------ package origins
+
+    const NOTES: &str = "https://notes.example.com";
+
+    fn add_origin(
+        actor: &str,
+        package: &str,
+        origin: &str,
+        rp_id: &str,
+        consent: Value,
+    ) -> SystemCmd {
+        SystemCmd::AddPackageOrigin {
+            package: package.into(),
+            origin: origin.into(),
+            rp_id: rp_id.into(),
+            actor: actor.into(),
+            at: 1,
+            consent,
+        }
+    }
+
+    fn remove_origin(actor: &str, origin: &str, consent: Value) -> SystemCmd {
+        SystemCmd::RemovePackageOrigin {
+            package: "p".into(),
+            origin: origin.into(),
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    /// Package `q`, its first release installed by `by`.
+    fn install_q(by: &str) -> SystemCmd {
+        SystemCmd::InstallPackage {
+            package: "q".into(),
+            signer_id: "did:key:q".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "q1", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-q" }, "installedBy": by, "installedAt": 1
+            }))
+            .unwrap(),
+        }
+    }
+
+    /// Registering and removing a package's origin applies only with its
+    /// manager's passkey consent over exactly that change, once; anyone
+    /// else's, however valid, is refused where it applies.
+    #[test]
+    fn package_origins_carry_their_managers_consent() {
+        let (mut m, mut alice, mut bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let args = json!({ "origin": NOTES, "rpId": "notes.example.com" });
+        let by_bob = consent(&mut bob, "package:p", "__add_origin", &args);
+        assert!(
+            m.run(add_origin("bob", "p", NOTES, "notes.example.com", by_bob))
+                .unwrap_err()
+                .contains("manager"),
+            "not the package's manager"
+        );
+        for (why, rp_id, c) in [
+            ("no consent", "notes.example.com", Value::Null),
+            (
+                "over another rpId",
+                "example.com",
+                consent(&mut alice, "package:p", "__add_origin", &args),
+            ),
+            (
+                "over another package",
+                "notes.example.com",
+                consent(&mut alice, "package:q", "__add_origin", &args),
+            ),
+        ] {
+            assert!(
+                m.run(add_origin("alice", "p", NOTES, rp_id, c)).is_err(),
+                "{why}"
+            );
+        }
+        assert!(m.state.package_origins.is_empty());
+        let c = consent(&mut alice, "package:p", "__add_origin", &args);
+        let _ok = m
+            .run(add_origin(
+                "alice",
+                "p",
+                NOTES,
+                "notes.example.com",
+                c.clone(),
+            ))
+            .unwrap();
+        assert_eq!(m.state.package_origins[NOTES].package, "p");
+        assert_eq!(m.state.package_origins[NOTES].rp_id, "notes.example.com");
+        assert!(
+            m.run(add_origin("alice", "p", NOTES, "notes.example.com", c))
+                .unwrap_err()
+                .contains("used already"),
+            "a consent is spent once"
+        );
+
+        let gone = json!({ "origin": NOTES });
+        let by_bob = consent(&mut bob, "package:p", "__remove_origin", &gone);
+        assert!(m.run(remove_origin("bob", NOTES, by_bob)).is_err());
+        let wrong = consent(
+            &mut alice,
+            "package:p",
+            "__remove_origin",
+            &json!({ "origin": "https://x.example.com" }),
+        );
+        assert!(m.run(remove_origin("alice", NOTES, wrong)).is_err());
+        assert!(m.state.package_origins.contains_key(NOTES));
+        let c = consent(&mut alice, "package:p", "__remove_origin", &gone);
+        let _ok = m.run(remove_origin("alice", NOTES, c)).unwrap();
+        assert!(m.state.package_origins.is_empty());
+    }
+
+    /// A package's publisher manages its origins once its key is bound: the
+    /// first installer no longer does; the operator never does.
+    #[test]
+    fn a_bound_publisher_manages_its_packages_origins() {
+        let (mut m, _alice, _bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        assert!(m.state.manages_package("p", "alice"));
+        assert!(!m.state.manages_package("p", "bob"));
+        assert!(!m.state.manages_package("p", OPERATOR));
+        assert!(!m.state.manages_package("nope", "alice"));
+        let _ok = m
+            .run_unproven(SystemCmd::CreateOrg {
+                org_id: "o".into(),
+                name: "o".into(),
+                actor: "bob".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+            })
+            .unwrap();
+        let _prev = m.state.publishers.insert(
+            "did:key:z".into(),
+            super::PublisherBinding {
+                org: "o".into(),
+                generation: 1,
+            },
+        );
+        assert!(m.state.manages_package("p", "bob"));
+        assert!(!m.state.manages_package("p", "alice"));
+    }
+
+    /// One package per origin; at most `MAX_ORIGINS_PER_PACKAGE` per
+    /// package; an origin or rp-id that does not fit is refused at apply too;
+    /// a package uninstalled takes its origins with it.
+    #[test]
+    fn package_origins_are_unique_bounded_and_go_with_their_package() {
+        use crate::origins::MAX_ORIGINS_PER_PACKAGE;
+        let (mut m, _alice, _bob) = two_accounts();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let _ok = m.run_unproven(install_q("bob")).unwrap();
+        let add = |m: &mut SystemMachine, who: &str, pkg: &str, origin: &str, rp: &str| {
+            m.run_unproven(add_origin(who, pkg, origin, rp, Value::Null))
+        };
+        let _ok = add(&mut m, "alice", "p", NOTES, "example.com").unwrap();
+        // Again, the same: answered as it stands.
+        let _ok = add(&mut m, "alice", "p", NOTES, "example.com").unwrap();
+        assert!(
+            add(&mut m, "alice", "p", NOTES, "notes.example.com").is_err(),
+            "another rpId"
+        );
+        assert!(
+            add(&mut m, "bob", "q", NOTES, "notes.example.com")
+                .unwrap_err()
+                .contains("another package"),
+            "first come"
+        );
+        for (origin, rp) in [
+            ("http://notes.example.com", "notes.example.com"),
+            ("https://notes.example.com/", "notes.example.com"),
+            ("https://x.example.com", "other.com"),
+            ("https://x.example.com", "com"),
+        ] {
+            assert!(
+                add(&mut m, "alice", "p", origin, rp).is_err(),
+                "{origin} {rp}"
+            );
+        }
+        for i in 1..MAX_ORIGINS_PER_PACKAGE {
+            let _ok = add(
+                &mut m,
+                "alice",
+                "p",
+                &format!("https://n{i}.example.com"),
+                "example.com",
+            )
+            .unwrap();
+        }
+        assert!(add(
+            &mut m,
+            "alice",
+            "p",
+            "https://more.example.com",
+            "example.com"
+        )
+        .unwrap_err()
+        .starts_with(QUOTA_PREFIX));
+        let _ok = add(&mut m, "bob", "q", "https://q.example.org", "q.example.org").unwrap();
+
+        let _ok = m
+            .run_unproven(SystemCmd::UninstallPackage {
+                package: "p".into(),
+                version: None,
+                actor: "alice".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            m.state.package_origins.keys().collect::<Vec<_>>(),
+            ["https://q.example.org"],
+            "p's origins went with it"
+        );
+    }
+
+    /// State, refresh records and session claims from before package origins
+    /// read with none and write the bytes they did.
+    #[test]
+    fn state_from_before_package_origins_reads_with_none_and_writes_as_before() {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+        let refresh: RefreshRecord = serde_json::from_value(json!({
+            "account": "alice", "session": "s", "expiresAt": 9, "passkey": "c", "app": "p"
+        }))
+        .unwrap();
+        assert_eq!(refresh.origin, None);
+        let _prev = m.state.refresh.insert("h".into(), refresh);
+        let before = serde_json::to_value(&m.state).unwrap();
+        assert!(before.get("packageOrigins").is_none(), "{before}");
+        assert!(before["refresh"]["h"].get("origin").is_none(), "{before}");
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert!(restored.package_origins.is_empty());
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+
+        // A token minted before names no origin, and verifies as it did.
+        let claims: calimero_identity::SessionClaims = serde_json::from_value(json!({
+            "account": "alice", "session": "s", "expires_at": 9, "app": "p", "node": 1, "key": "k"
+        }))
+        .unwrap();
+        assert_eq!(claims.origin, None);
+        assert!(serde_json::to_value(&claims)
+            .unwrap()
+            .get("origin")
+            .is_none());
     }
 
     // ------------------------------------------------------------ recovery

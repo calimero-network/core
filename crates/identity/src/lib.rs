@@ -79,6 +79,12 @@ pub struct SessionClaims {
     /// that package's apps. `None` for the cluster's own origins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The registered web origin (a package manager's own site, not one the
+    /// node serves) whose ceremony opened the session; it binds the session
+    /// to `app` as well, and ends when the origin is removed. `None` for
+    /// the cluster's own origins and served frontends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// The node that issued and signed the token.
     pub node: u64,
     /// That node's signing key (Ed25519, base64url): the key its attestation
@@ -404,6 +410,7 @@ mod tests {
             expires_at: 1000,
             passkey: Some("cred".into()),
             app: None,
+            origin: None,
             node: 3,
             key: b64url(&public),
         };

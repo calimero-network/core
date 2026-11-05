@@ -164,8 +164,8 @@ is its command line.
   records only `{hash, size}`. A node missing a blob fetches it from a peer
   (`internal/blob/get`) on first use. Log entries are capped at
   `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
-  A call whose arguments alone pass the cap is refused where it arrives
-  (`413 TOO_LARGE`), never forwarded to the leader first (regression:
+  A call whose arguments pass `MAX_ARGS_BYTES` (below that cap) is refused where it arrives
+  (`413 ARGS_TOO_LARGE`), never proposed (regression:
   `a_write_too_large_for_the_log_is_refused_at_once_on_every_node`).
 - **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
   `POST /packages/install { package, version }` fetches from the
@@ -180,6 +180,17 @@ is its command line.
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.
+  A service may also ship a compute component (`compute` in the manifest): it is prepared on
+  `Node::compute_engine` only (never the replica engine), and the release is refused
+  `400 COMPUTE_ABI_MISMATCH` unless its ABI lists exactly the main ABI's compute methods,
+  each with the same caps, and `400 BAD_BUNDLE` when it imports outside the compute world or
+  its ABI is not the compute world's.
+  A release without one installs and its app runs calls; it cannot run compute.
+  `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
+  `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
+  `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
+  `AppRecord::compute_bundle` carries the running release's compute hash next to `bundle`.
+  Releases may share an app component and differ in compute, so create and upgrade carry the compute hash of the release they name (`resolve_release_parts`), and apply only checks that a release ships that pair (`SystemState::ships_compute`).
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
@@ -406,6 +417,18 @@ is its command line.
   Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
   `membership::tests`.
 - **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` records it; only the operator's signed `/ops/nodes` registers it again. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Upgrade keys** (`ApiKeyRecord::upgrades`, `types::UpgradeScope`; docs: protocol
+  "Upgrade keys", cloud "Deploy from CI"): `POST /auth/apikeys { upgrades: { app,
+  package? } }` (passkey consent; `api_key_args` states `upgrades` only when set, so
+  other keys' consents read as before) makes a key bound to one app, its package and
+  that package's pinned signer, plus the public half of an Ed25519 key derived from the
+  key (`proof::api_key_public`). `api::principal` refuses it everywhere (`403
+  UPGRADE_KEY_ONLY`); only `app_upgrade` takes it (`api::credential`), for `{ version }`
+  of its package (`SystemState::key_may_upgrade`), signing the statement in place of
+  the step-up (`proof::sign_key_upgrade`, carried in `UpgradeApp::consent`). `authorize`
+  verifies it under the key the log holds then (revoked or expired: refused) and spends
+  it; every other upgrade rule is unchanged. `UpgradeRecord::api_key` names the key
+  (`lastUpgrade.apiKey`). Regressions: `tests/upgrade_keys.rs`.
 - **Job nodes** (`NodeRole::Job`, `job_node.rs`, `node/job.rs`): `POST /ops/nodes { id, addr, zone?, role? }` (operator-signed; `role` is in the signed arguments unless it is `replica`; `"replica"` default, `"job"`; any other role is refused) registers a node that only runs compute. It is in the directory but never a Raft member (not even a learner: a member keeps its log sealed under K_c, which a job node never holds), never a replica, blob (a sealed file included, `a_sealed_file_is_never_sent_to_a_job_node`) or bundle target, majority member, presence peer, CSP origin or cluster-key recipient. Every site that picks nodes for the cluster's own work reads `SystemState::replica_nodes()` / `replica_node(id)`, never `nodes`; `/ops/apps/{app}/replicas` naming a job node answers `400 JOB_NODE`, `internal/cluster-key` for one is refused, `/ops/placement` lists it with `role` and app counts stay replica-only. `DELETE /ops/nodes/{id}` removes one without touching system voters. A node's role is fixed (`RegisterNode` refuses another role for an id; remove it first) and `/ops/nodes` refuses `role: job` for a system voter, learner or `--peers` id (`NODE_HOLDS_CLUSTER`); removal changes system membership only for a node that is in it. Nodes are reached by id: Raft's `PeerTransport::send` and `internal/cluster-key` take the address `Node::replica_addr(id)` holds (the directory's, else `--peers`; none for a job node), and address-only callers (`Node::peer`, so `peer_post` and streams) resolve it by a normalised comparison (`system::normalize_addr`) and refuse anything that is not a replica's, so the cluster secret never leaves for a job node. `RegisterNode` refuses an address another id holds (`ADDRESS_TAKEN` at the API). A ceremony holder is resolved through `replica_node`. Registering a job node (`POST /ops/nodes`, `role: job`) answers `409 CLUSTER_NOT_UPGRADED` unless every replica node, voter and learner runs at least this node's release, so no job record exists while an older node could misread it (upgrade the voters first). Upgrade the voters before anything else: the `RegisterNode` refusals (role fixed, address taken) bind only nodes that run this release. A node registered as a replica is admitted as a learner only after it attests its transport key as a cluster node (`attests_as_replica`): a job node registered as a replica never is, and `--peers` must list only replica nodes. `merod run --job-node` calls `run_job(JobConfig)`: no store, K_c, KMS, Raft or system group; it serves `/health`, `/attestation` (only `purpose=jobs`, answering `jobKey` bound with the transport key, release, cluster and node id in one quote; every other purpose or none is 404, so no channel that attests a transport key opens to it; a cluster node answers `purpose=jobs` with 404) and `GET /job/load` (`{ running, capacity }`, `RUNS_PER_JOB_NODE` = 2). Its Ed25519 job key is made in memory at start. Leader side: `Node::attest_job(id, app)` fetches `purpose=jobs` over a fresh nonce, verifies it with `verify_job_key` under the peer policy (`--peer-profiles`, `--peer-min-release`), keeps the result `JOB_ATTEST_TTL` (60 s) for as long as the directory's `node_epoch` for the id is unchanged (any registration or removal) and until a channel to it fails (`forget_job`); it fails outright when the directory could not be brought up to date. `attest_job` also refuses a release the app's org or account has not approved (`release_may_hold`, as `may_send` does), and `/ops/placement` reads a job node's release through the same cached attestation; `Node::job_load(peer)` asks over a sealed channel pinned to the attested transport key. Regressions: `tests/job_nodes.rs`, `placement::tests::a_job_node_is_never_placed`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
@@ -616,7 +639,9 @@ is its command line.
   `/{version}/?deployment={id}` of the release it offers (looked up again on
   fresh state when nothing matches),
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
-  origins in `connect-src`, `/.well-known/calimero.json` (with the deployments
+  origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
+  measurements and Intel's collateral; regression
+  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (with the deployments
   offering the package); an unknown label under
   D is a 404, never a node route. Each package is also at
   `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
@@ -634,6 +659,31 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, and it creates instances
   of its own package only. Its step-ups come from its own origin only.
+- **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
+  identities "Registered origins"): a package's manager
+  (`SystemState::manages_package`: the bound publisher's org-wide
+  `MANAGE_APPLICATION` holders, else `PackageRecord::owner`) registers a web
+  origin of their own (`GET|POST|DELETE /package-origins/{package}`;
+  `AddPackageOrigin`/`RemovePackageOrigin`, passkey consent `package:{p} /
+  __add_origin / { origin, rpId }`, `__remove_origin / { origin }`, checked in
+  `authorize`). Each carries its own rp-id (the host or a parent; never the
+  cluster's rp-id or a parent, `origins::covers_cluster`). `api::app_origin`
+  is the one lookup (served first, then registered) for ceremonies
+  (`claimed_app`, `rp_with`: a registered origin alone under its rp-id), CORS
+  (`lib.rs`) and the consent page's `returnTo`; begin routes take `origin`
+  (`403 ORIGIN_NOT_REGISTERED`). Sessions opened there are bound like a served
+  frontend's and name the origin (`SessionClaims::origin`,
+  `RefreshRecord::origin`, kept by a sign-up's `Pending::SignUp` and stated
+  nowhere in the sign-in challenge, like `app`); `principal` and `refresh`
+  refuse them once it is removed, and `UseRefresh` refuses an exchange that
+  changes it. A sign-up there answers its `412` with the origin's rp-id and
+  takes the confirmation from that origin only; the sign-up policy judges it
+  like any other (`a_registered_origin_signs_up_only_whom_the_cluster_takes`). `UninstallPackage` of the last release forgets them. Limits
+  `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`; `http` only for
+  `localhost` names on a `--dev` node (`allow_package_uploads`). Regressions:
+  `tests/package_origins.rs`, `package_origins_carry_their_managers_consent`,
+  `package_origins_are_unique_bounded_and_go_with_their_package`,
+  `state_from_before_package_origins_reads_with_none_and_writes_as_before`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
   `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
@@ -854,7 +904,9 @@ API and system group:
   cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
 - **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
   bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
-  (`AppRecord::confirm_methods` is always empty now: a request names none).
+  (`AppRecord::confirm_methods` is always empty now: a request names none). A compute method
+  (kind `compute`) and a `computeResult` method are `WrongKind` on `/intents` and `/views` for
+  every caller, System included: only the node runs them.
 - **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
   (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
   continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed

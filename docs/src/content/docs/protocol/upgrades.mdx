@@ -34,6 +34,12 @@ New code reads the app's data, so an upgrade is one of the three decisions
 - **Operator**: only the operator (`POST /ops/apps/{app}/upgrade`), to a release
   it installed itself.
 
+An owner-side upgrader may hand one app's upgrades to CI with an [upgrade
+key](/protocol/identities/#upgrade-keys): made once with a passkey, it signs
+each upgrade of that app to a signed release of its package in place of the
+step-up, and the node refuses it everything else. Who may upgrade and the
+deadline below are judged for it exactly as for a passkey.
+
 Past a [release deadline](/protocol/governance/#release-deadlines) its
 approver has not met, an upgrade is refused `409 RELEASE_DEADLINE` before the
 migration runs.

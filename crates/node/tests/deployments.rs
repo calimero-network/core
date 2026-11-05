@@ -52,6 +52,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], frontend: &[(&str, &[u8])]) ->
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm)),
         abi: None,
+        compute: None,
         links: None,
         frontend: (!frontend.is_empty()).then(|| calimero_bundle::BundleFrontend {
             entry: frontend[0].0.to_owned(),

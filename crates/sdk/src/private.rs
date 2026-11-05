@@ -29,6 +29,8 @@ pub enum MethodKind {
     Timer,
     /// `#[app::action]`: runs outside the log (D12), started, never called.
     Action,
+    /// `#[app::compute(..)]`: runs on a job node as an action with a compute run.
+    Compute,
 }
 
 /// One exposed method.
@@ -53,7 +55,7 @@ pub enum Kind {
     Call,
     /// A read on any node.
     View,
-    /// An action (D12): outside the log, with outbound HTTP.
+    /// An action (D12) or a compute run: outside the log.
     Action,
     /// A timer tick; `args` carry the tick.
     Timer,
@@ -107,7 +109,7 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
         (Kind::View, MethodKind::View)
         | (Kind::Call | Kind::XcallDeliver, MethodKind::Call | MethodKind::View)
         | (Kind::Timer, MethodKind::Timer)
-        | (Kind::Action, MethodKind::Action)
+        | (Kind::Action, MethodKind::Action | MethodKind::Compute)
         | (Kind::Init, MethodKind::Init) => {}
         (Kind::View, _) => return Err(AppError::new("NotAView")),
         _ => return Err(AppError::new("WrongKind")),
@@ -122,7 +124,8 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
     } else {
         args
     };
-    if kind != Kind::Init {
+    // The node vets the caller when it starts a compute run, so the run itself is not checked.
+    if kind != Kind::Init && m.kind != MethodKind::Compute {
         match env::caller() {
             Caller::Account(_) | Caller::ApiKey { .. } => {}
             Caller::System if m.allow_system => {}
@@ -242,10 +245,10 @@ pub const fn abi_concat<const N: usize>(parts: &[&str]) -> [u8; N] {
 }
 
 /// The `handle` export of a state type `D`, for `__calimero_export_handle!`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
 pub struct Export<D>(core::marker::PhantomData<D>);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(calimero_compute)))]
 impl<D: Dispatch> bindings::Guest for Export<D> {
     fn handle(
         kind: bindings::InvocationKind,
@@ -262,6 +265,21 @@ impl<D: Dispatch> bindings::Guest for Export<D> {
             bindings::InvocationKind::Migrate => Kind::Migrate,
         };
         handle::<D>(kind, &method, &args).map_err(|e| bindings::AppError {
+            message: error_message(&e),
+            code: e.code,
+        })
+    }
+}
+
+/// The `run` export of a state type `D`, for `__calimero_export_run!`: a compute method runs
+/// as an action.
+#[cfg(all(target_arch = "wasm32", calimero_compute))]
+pub struct Export<D>(core::marker::PhantomData<D>);
+
+#[cfg(all(target_arch = "wasm32", calimero_compute))]
+impl<D: Dispatch> bindings::Guest for Export<D> {
+    fn run(method: String, args: Vec<u8>) -> core::result::Result<Vec<u8>, bindings::AppError> {
+        handle::<D>(Kind::Action, &method, &args).map_err(|e| bindings::AppError {
             message: error_message(&e),
             code: e.code,
         })

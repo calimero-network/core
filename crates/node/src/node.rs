@@ -401,6 +401,8 @@ pub struct Node {
     /// engine for all of them, spec section 5); compiled artifacts cached under
     /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
+    /// Prepares a release's compute components at install; no run ever goes through it.
+    compute_wasm: calimero_app_engine_wasmtime::WasmtimeEngine,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
@@ -754,6 +756,7 @@ impl Node {
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
         )?);
+        let compute_wasm = calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?;
         let clock = Clock::new(config.clock_offset_ms);
         let node = Arc::new(Self {
             cluster_secret: cluster_secret(&cluster_key, &config.cluster),
@@ -764,6 +767,7 @@ impl Node {
             system,
             apps: RwLock::new(HashMap::new()),
             wasm,
+            compute_wasm,
             prepared: Mutex::new(HashMap::new()),
             preparing: Mutex::new(HashMap::new()),
             #[cfg(feature = "testing")]
