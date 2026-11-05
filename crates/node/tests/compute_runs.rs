@@ -1220,6 +1220,34 @@ async fn an_output_the_result_method_stores_is_kept_past_the_idle_time_and_a_run
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_result_method_can_start_the_next_run() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.begin("startDigestThen", json!({ "inputs": [] })).await;
+    until_ended(&rig, &run, 60).await;
+    let started = Instant::now();
+    let next = loop {
+        let v = rig
+            .alice
+            .view(
+                &rig.app,
+                "chained",
+                json!({ "run": run }),
+                Consistency::Strong,
+            )
+            .await
+            .unwrap();
+        if let Some(text) = v.result.as_str() {
+            break text.to_owned();
+        }
+        assert!(started.elapsed() < WAIT, "the result method did not run");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert!(!next.starts_with("error"), "{next}");
+    let record = until_ended(&rig, &next, 60).await;
+    assert_eq!(record.state, RunState::Done);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_output_the_result_method_does_not_store_is_collected_and_its_quota_released() {
     let rig = Rig::start(&[JOB_A]).await;
     let plain = input();

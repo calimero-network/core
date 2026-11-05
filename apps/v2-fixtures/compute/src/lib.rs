@@ -22,6 +22,9 @@ pub struct Compute {
     kept: UnorderedMap<String, BlobRef>,
     /// What each run's outcome said, by run id: JSON text.
     outcomes: UnorderedMap<String, String>,
+    /// What `onThen` got from starting the next run, by the finished run's id: the new run's
+    /// id or the error text.
+    chained: UnorderedMap<String, String>,
 }
 
 #[app::logic]
@@ -41,6 +44,12 @@ impl Compute {
     /// [`Compute::digest`] whose result method keeps no output.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_drop")]
     pub fn digest_unkept() -> app::Result<Vec<String>> {
+        digest_inputs()
+    }
+
+    /// [`Compute::digest`] whose result method starts another `digest` run.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_then")]
+    pub fn digest_then() -> app::Result<Vec<String>> {
         digest_inputs()
     }
 
@@ -94,6 +103,11 @@ impl Compute {
         compute::start("digestUnkept", &(), &inputs)
     }
 
+    /// Starts a `digestThen` run over `inputs`.
+    pub fn start_digest_then(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
+        compute::start("digestThen", &(), &inputs)
+    }
+
     /// Starts the argument-less compute method `method` with no input.
     pub fn start_run(&mut self, method: String) -> app::Result<RunId> {
         compute::start(&method, &(), &[])
@@ -141,6 +155,17 @@ impl Compute {
         Ok(())
     }
 
+    /// Starts a `digest` run with no input and records its id, or why it was refused.
+    #[app::compute_result]
+    pub fn on_then(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
+        let started = match compute::start("digest", &(), &[]) {
+            Ok(run) => run.to_string(),
+            Err(e) => format!("error: {e:?}"),
+        };
+        self.chained.insert(&outcome.run.to_string(), &started)?;
+        Ok(())
+    }
+
     /// Logs an entry that changes nothing else.
     pub fn ping(&mut self) -> app::Result<()> {
         self.pings.add(1)?;
@@ -151,6 +176,12 @@ impl Compute {
     #[app::view]
     pub fn outcome(&self, run: RunId) -> app::Result<Option<String>> {
         Ok(self.outcomes.get(&run.to_string())?)
+    }
+
+    /// What `onThen` recorded for the finished run `run`.
+    #[app::view]
+    pub fn chained(&self, run: RunId) -> app::Result<Option<String>> {
+        Ok(self.chained.get(&run.to_string())?)
     }
 
     /// How many outcomes `onDone` has received.
