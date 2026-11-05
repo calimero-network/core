@@ -608,7 +608,9 @@ is its command line.
   `/{version}/?deployment={id}` of the release it offers (looked up again on
   fresh state when nothing matches),
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
-  origins in `connect-src`, `/.well-known/calimero.json` (with the deployments
+  origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
+  measurements and Intel's collateral; regression
+  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (with the deployments
   offering the package); an unknown label under
   D is a 404, never a node route. Each package is also at
   `{cluster_label(config.cluster, package)}.D` on its cluster, the same site

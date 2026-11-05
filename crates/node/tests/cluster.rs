@@ -2602,6 +2602,10 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         csp.contains(&c.urls[0].trim_end_matches('/').to_owned()),
         "the API is reachable: {csp}"
     );
+    assert!(
+        csp.contains("https://cloud.calimero.network"),
+        "the attestation mirror is reachable, or no page verifies a TDX node: {csp}"
+    );
     assert_eq!(page.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(page.bytes().await.unwrap().as_ref(), html);
     let js = get("/0.1.0/assets/app.js", "*/*").await.unwrap();

@@ -211,7 +211,10 @@ uses `localhost`.
   not offer this one, is a `404`.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
   node route. Responses carry a fixed content security policy with the cluster's
-  API origins added to `connect-src`.
+  API origins and the attestation mirror (`https://cloud.calimero.network`, where
+  the page's client gets the release's signed measurements and Intel's
+  collateral; both are signed, so the mirror is trusted with nothing) added to
+  `connect-src`.
 
 ### Cluster hosts
 
