@@ -6,19 +6,26 @@ use crate::api::ct_eq;
 use crate::error::ApiError;
 use crate::job_wire::{verify_assignment, verify_bundle, Assignment};
 
-/// Accepts `assignment` only if the cluster identity this node was started with signed it.
-pub(super) fn admit_assignment(
-    config: &JobConfig,
-    assignment: &Assignment,
-) -> Result<(), ApiError> {
-    if verify_assignment(&config.cluster_identity, assignment) {
+fn forbid_unless(ok: bool, what: &str) -> Result<(), ApiError> {
+    if ok {
         return Ok(());
     }
     Err(ApiError::new(
         403,
         "BAD_SIGNATURE",
-        "the assignment is not signed by this node's cluster",
+        &format!("the {what} is not signed by this node's cluster"),
     ))
+}
+
+/// Accepts `assignment` only if the cluster identity this node was started with signed it.
+pub(super) fn admit_assignment(
+    config: &JobConfig,
+    assignment: &Assignment,
+) -> Result<(), ApiError> {
+    forbid_unless(
+        verify_assignment(&config.cluster_identity, assignment),
+        "assignment",
+    )
 }
 
 /// Accepts the component `hash` only if the cluster identity signed its name.
@@ -27,14 +34,10 @@ pub(super) fn admit_bundle(
     hash: &str,
     signature: &str,
 ) -> Result<(), ApiError> {
-    if verify_bundle(&config.cluster_identity, hash, signature) {
-        return Ok(());
-    }
-    Err(ApiError::new(
-        403,
-        "BAD_SIGNATURE",
-        "the component is not signed by this node's cluster",
-    ))
+    forbid_unless(
+        verify_bundle(&config.cluster_identity, hash, signature),
+        "component",
+    )
 }
 
 /// Whether `given` (hex) is the run's capability, in constant time.

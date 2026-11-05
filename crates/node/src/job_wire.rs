@@ -12,7 +12,7 @@ use crate::types::Caller;
 const ASSIGNMENT_LABEL: &[u8] = b"calimero.compute.assignment.v1\0"; // prefix of the signed assignment
 const BUNDLE_LABEL: &[u8] = b"calimero.compute.bundle.v1\0"; // prefix of the signed component hash
 const REPORT_LABEL: &[u8] = b"calimero.compute.report.v1\0"; // prefix of the signed report message
-const SHA256_LEN: usize = 32; // bytes of a SHA-256
+pub(crate) const SHA256_LEN: usize = 32; // bytes of a SHA-256
 pub const BUNDLE_SIGNATURE_HEADER: &str = "x-bundle-signature"; // the header carrying the cluster identity's signature over a component's hash
 pub const MAX_REPORT_MESSAGE_BYTES: usize = 512; // the failure text a signed report carries
 const MICROS_PER_SECOND: u128 = 1_000_000; // to turn GiB-microseconds into GiB-seconds

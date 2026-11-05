@@ -23,17 +23,16 @@ use super::admission::{admit_assignment, token_matches};
 use super::{exec, locked, JobNode, RUNS_PER_JOB_NODE};
 use crate::error::ApiError;
 use crate::files::{sealed_len, unwrap_for_job, JobWrap, WrapKind};
-use crate::job_wire::{assignment_message, is_hash, Assignment, Report};
+use crate::job_wire::{assignment_message, is_hash, Assignment, Report, SHA256_LEN};
 use crate::node::MAX_ARGS_BYTES;
 
-pub const JOB_RESULT_TTL: Duration = Duration::from_secs(60 * 60); // how long a finished or lost run is kept for its leader to collect
-pub const AWAITING_INPUTS_TTL: Duration = Duration::from_secs(10 * 60); // how long a run may wait for its inputs before it is dropped
+const JOB_RESULT_TTL: Duration = Duration::from_secs(60 * 60); // how long a finished or lost run is kept for its leader to collect
+const AWAITING_INPUTS_TTL: Duration = Duration::from_secs(10 * 60); // how long a run may wait for its inputs before it is dropped
 pub const CANCEL_WAIT: Duration = Duration::from_secs(5); // how long a cancel waits for the run to stop before answering that it still runs
 pub const MAX_RUN_INPUTS: usize = 64; // inputs one run may name
-pub const MAX_RUN_INPUT_BYTES: u64 = MAX_COMPUTE_FILE_BYTES; // declared plaintext bytes of all of one run's inputs
+const MAX_RUN_INPUT_BYTES: u64 = MAX_COMPUTE_FILE_BYTES; // declared plaintext bytes of all of one run's inputs
 const MAX_ID_BYTES: usize = 256; // longest app, run, method or file id an assignment may carry
-pub(super) const HASH_BYTES: usize = 32; // a run's token and every hash: 32 bytes
-pub const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for finished runs plus those active and new runs may still hold, past which work is refused
+const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for finished runs plus those active and new runs may still hold, past which work is refused
 pub const MAX_ASSIGNMENT_BYTES: usize = 1024 * 1024; // the most a request to assign a run may weigh
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
 
@@ -207,7 +206,7 @@ pub(super) struct Runs {
 impl Runs {
     /// Runs taking capacity: waiting for inputs or running.
     pub(super) fn active(&self) -> usize {
-        locked(&self.map).values().filter(|r| r.active()).count()
+        active_count(&locked(&self.map))
     }
 
     fn get(&self, app: &str, run: &str, attempt: u32) -> Result<Arc<Run>, ApiError> {
@@ -256,8 +255,17 @@ impl Runs {
     }
 }
 
+fn not_awaiting() -> ApiError {
+    ApiError::new(409, "NOT_AWAITING", "the run takes no more inputs")
+}
+
 fn key_of(a: &Assignment) -> RunKey {
     (a.app.clone(), a.run.clone(), a.attempt)
+}
+
+/// Runs in `map` taking capacity: waiting for inputs or running.
+fn active_count(map: &HashMap<RunKey, Arc<Run>>) -> usize {
+    map.values().filter(|r| r.active()).count()
 }
 
 /// Bytes the outputs of the finished runs in `map` hold on disk.
@@ -282,7 +290,7 @@ fn has_room(held: u64, reserved: u64) -> bool {
     held.saturating_add(reserved) <= MAX_FINISHED_BYTES
 }
 
-pub(super) fn hash_hex(field: &str) -> Option<[u8; HASH_BYTES]> {
+pub(super) fn hash_hex(field: &str) -> Option<[u8; SHA256_LEN]> {
     hex::decode(field).ok()?.try_into().ok()
 }
 
@@ -430,8 +438,7 @@ fn admit_run(
         }
         return Ok((Arc::clone(held), false));
     }
-    let active = map.values().filter(|r| r.active()).count();
-    if active >= RUNS_PER_JOB_NODE {
+    if active_count(&map) >= RUNS_PER_JOB_NODE {
         return Err(ApiError::new(
             503,
             "BUSY",
@@ -520,22 +527,14 @@ pub(super) async fn put_input(
         return Ok(Json(run.status()));
     }
     if !matches!(locked(&run.state).phase, Phase::Awaiting) {
-        return Err(ApiError::new(
-            409,
-            "NOT_AWAITING",
-            "the run takes no more inputs",
-        ));
+        return Err(not_awaiting());
     }
     let key = locked(&run.keys)
         .as_ref()
         .map(|keys| Zeroizing::new(*keys.inputs[i]));
     let (size, sha256) = (input.size, hash_hex(&input.sha256));
     let (Some(key), Some(sha256)) = (key, sha256) else {
-        return Err(ApiError::new(
-            409,
-            "NOT_AWAITING",
-            "the run takes no more inputs",
-        ));
+        return Err(not_awaiting());
     };
     let held = body.clone();
     let matches =
@@ -550,11 +549,7 @@ pub(super) async fn put_input(
     if let Err(e) = exec::store_input(&run.dir, i, &body).await {
         // A cancel removed the run's directory under this request.
         if e.kind() == std::io::ErrorKind::NotFound {
-            return Err(ApiError::new(
-                409,
-                "NOT_AWAITING",
-                "the run takes no more inputs",
-            ));
+            return Err(not_awaiting());
         }
         return Err(ApiError::internal(&format!("cannot store the input: {e}")));
     }
@@ -670,10 +665,6 @@ mod tests {
         let _none = locked(&runs.map).insert(key_of(&run.assignment), Arc::clone(run));
     }
 
-    fn finished() -> Phase {
-        Phase::Lost
-    }
-
     #[test]
     fn a_run_waiting_for_inputs_is_dropped_after_its_time_and_a_running_one_never() {
         let runs = Runs::default();
@@ -700,7 +691,7 @@ mod tests {
     fn an_ended_run_is_dropped_once_its_result_time_has_passed() {
         let runs = Runs::default();
         let ended = run("ended");
-        ended.end(finished());
+        ended.end(Phase::Lost);
         held(&runs, &ended);
         assert_eq!(runs.active(), 0);
         let at = locked(&ended.state).ended.unwrap();
