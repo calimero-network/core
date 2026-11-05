@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.10] - 2026-11-05
+
+### Added
+
+- **Upgrade keys** (#4852): an API key bound to one app and its package
+  (`POST /auth/apikeys { upgrades: { app } }`) upgrades that app from CI with
+  no passkey; it is refused everywhere else (`403 UPGRADE_KEY_ONLY`).
+- **Compute methods** (#4784): a package may ship a compute component, run
+  deterministically on job nodes, never on the replicas.
+
+### Fixed
+
+- **Served frontends can verify their nodes** (#4861). A frontend a node serves
+  from its bundle could not reach the attestation mirror
+  (`https://cloud.calimero.network`) under its content security policy, so it
+  could not fetch the release measurements or Intel's collateral, and no one
+  could sign in on a TDX cluster ("Load failed" in Safari). The mirror is now
+  in `connect-src`.
+
 ## [1.0.0-rc.9] - 2026-11-04
 
 ### Changed
