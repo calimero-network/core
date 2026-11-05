@@ -147,6 +147,15 @@ app_manifests() {
   find "$DIR/apps" -type f -path '*/logic/Cargo.toml' 2>/dev/null | sort
 }
 
+# Every tools/*/Cargo.toml that pins core by git tag (standalone crates with
+# their own lockfile, such as tools/component-bundle).
+tool_manifests() {
+  local m
+  for m in $(find "$DIR/tools" -maxdepth 2 -type f -name 'Cargo.toml' 2>/dev/null | sort); do
+    grep -Eq 'github\.com/calimero-network/core' "$m" && echo "$m"
+  done
+}
+
 # Every merobox scenario. The checker globs apps/*/logic/workflows/*.yml, one
 # level; this recurses, so the probes/ subdirectories that carry the same image
 # and that the checker never looks at do not quietly rot.
@@ -223,6 +232,10 @@ bump_cargo_workspace() {
       s{(tag\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
     }
     s{^(\s*min-runtime-version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
+    # `[workspace.metadata]` keys that check-component-pins.py in the apps repo
+    # compares every app with: missing them turned the bump PR red (apps#756).
+    s{^(\s*component-core-tag\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
+    s{^(\s*component-min-runtime-version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
     s{(ghcr\.io/calimero-network/merod:)[A-Za-z0-9._-]+}{$1$ENV{NEW}};
   ' "$root"
   record_change "Cargo.toml"
@@ -255,6 +268,22 @@ bump_cargo_workspace() {
     apps=$((apps + 1))
   done
   note "core pins and min-runtime-version rewritten in $apps app manifest(s)"
+
+  # ── standalone tool crates (e.g. tools/component-bundle) ─────────────────
+  # Their own `[workspace]` and Cargo.lock, pinned to core like an app, and
+  # checked by the same pin check (apps#756).
+  local tools=0
+  for m in $(tool_manifests); do
+    NEW="$VERSION" perl -i -pe '
+      if (m{git\s*=\s*"https://github\.com/calimero-network/core(?:\.git)?"}
+          && m{tag\s*=\s*"}) {
+        s{(tag\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
+      }
+    ' "$m"
+    record_change "${m#$DIR/}"
+    tools=$((tools + 1))
+  done
+  note "core pins rewritten in $tools tool manifest(s)"
 
   # ── every merobox scenario's node image ──────────────────────────────────
   local scen=0
@@ -321,6 +350,13 @@ bump_cargo_workspace() {
     ( cd "$d" && cargo update --quiet ) || die "cargo update failed in ${d#$DIR/}"
     record_change "${d#$DIR/}/Cargo.lock"
     locks=$((locks + 1))
+  done
+  for m in $(tool_manifests); do
+    d=$(dirname "$m")
+    [ -f "$d/Cargo.lock" ] || continue
+    note "refreshing ${d#$DIR/}/Cargo.lock"
+    ( cd "$d" && cargo update --quiet ) || die "cargo update failed in ${d#$DIR/}"
+    record_change "${d#$DIR/}/Cargo.lock"
   done
   [ "$locks" -gt 0 ] || die "no workspace members and no per-app Cargo.lock to refresh"
   note "refreshed $locks per-app Cargo.lock file(s)"
