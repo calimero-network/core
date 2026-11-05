@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`meroctl app origins`** (also `meroctl package origins`): `list PACKAGE`,
+  `add PACKAGE ORIGIN [--rp-id ID]` and `remove PACKAGE ORIGIN` handle a
+  package's registered web origins (`/package-origins/{package}`, #4846).
+  A change takes the manager's passkey: `--dev-passkey FILE` on a development
+  cluster; without it the node answers `412 CONFIRM_REQUIRED` and the change
+  is made in the console. `calimero_client::package_origins_path` names the
+  route for a caller that sends it without a passkey.
+
 ## [1.0.0-rc.10] - 2026-11-05
 
 ### Added

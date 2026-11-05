@@ -7,7 +7,7 @@ sealed; the node's quote is judged before anything is sent).
 | v1 | here | API |
 | --- | --- | --- |
 | `node add/remove/use/list` | saved nodes, `{home}/meroctl/nodes.json` | (local) |
-| `app install/list/get/versions/get-latest-version/uninstall/watch` | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle | `/packages*`, `/bundles` |
+| `app install/list/get/versions/get-latest-version/uninstall/watch` (also `package`) | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle; `app origins list/add/remove` its registered web origins (its manager's) | `/packages*`, `/bundles`, `/package-origins/{package}` |
 | `context create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
 | `call` | `call --context C METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
 | `blob list/upload/download/info/delete` | a context's blobs | `/apps/{app}/blobs*` |
@@ -28,7 +28,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   refreshed when they expire. A context argument is an alias of the account or
   an id (`Env::app`).
 - What an owner approves (`context update`, `context transfer`, `namespace delete`, approvals,
-  `group upgrade trigger/retry`) takes `--dev-passkey FILE` on a development
+  `group upgrade trigger/retry`, `app origins add/remove`) takes `--dev-passkey FILE` on a development
   cluster (`Env::post_approved`, `delete_approved`); without it the request is
   sent as is and the node answers `412 CONFIRM_REQUIRED`: on a real cluster
   the owner approves in the console.

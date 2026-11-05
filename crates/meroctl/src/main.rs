@@ -128,8 +128,9 @@ enum Cmd {
         #[arg(long, requires = "file")]
         nonce: Option<String>,
     },
-    /// Signed packages (v1's applications): install, list, versions, uninstall, watch.
-    #[command(subcommand)]
+    /// Signed packages (v1's applications): install, list, versions,
+    /// uninstall, watch, web origins. Also `meroctl package`.
+    #[command(subcommand, alias = "package")]
     App(app::AppCmd),
     /// App instances (v1's contexts): create, list, get, update, delete, aliases, access.
     #[command(subcommand)]
@@ -422,6 +423,37 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+
+    /// `package` is `app`: `meroctl package origins ...` reaches the same commands.
+    #[test]
+    fn package_is_app() {
+        for args in [
+            &["meroctl", "package", "origins", "list", "com.example.kv"][..],
+            &[
+                "meroctl",
+                "package",
+                "origins",
+                "add",
+                "com.example.kv",
+                "https://kv.example.com",
+                "--rp-id",
+                "example.com",
+            ][..],
+            &[
+                "meroctl",
+                "app",
+                "origins",
+                "rm",
+                "com.example.kv",
+                "https://kv.example.com",
+                "--dev-passkey",
+                "pk.json",
+            ][..],
+        ] {
+            let parsed = Cli::try_parse_from(args);
+            assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
+        }
+    }
 
     /// A passkey's credential id is base64url and may start with `-`; clap
     /// must take it as the value, not as a flag.
