@@ -1316,6 +1316,13 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
         .await
         .unwrap();
     let id = up["id"].as_str().unwrap();
+    let raw = <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap();
+    f.until("every replica applied the upload", || {
+        (0..f.c.nodes.len())
+            .filter_map(|i| f.node(i).hosted(&o.app))
+            .all(|g| g.read_local(|m, _| m.state.component.blobs.records.contains_key(&raw)))
+    })
+    .await;
 
     for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
         let info = c.blob_info(&o.app, id).await.unwrap();
