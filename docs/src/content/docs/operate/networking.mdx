@@ -70,7 +70,8 @@ release the app's owner (or the operator, per governance) approved.
 origins. The CORS layer allows `GET`, `POST` and `DELETE`, the `Content-Type`
 and `Authorization` headers, exposes `Retry-After`, and caches preflights for
 10 minutes. Origins of package frontends and deployment hosts under
-`--apps-domain` are allowed as well.
+`--apps-domain`, and origins packages' managers registered (served custom
+domains included), are allowed as well.
 
 ## App frontends
 
@@ -105,8 +106,16 @@ signature before a byte is served.
   [Deployment hosts](/protocol/applications/#deployment-hosts). A front that
   routes by hostname sends each deployment's host to the cluster holding it;
   the deployment API returns it as `host`.
+- A custom domain a package's manager registered as a served origin
+  (`POST /package-origins/{package} { origin, served: true }`) is served the
+  same site when a request's `Host` is that name (port 443, or none; on
+  `merod local` a `name.localhost:port` origin). It is a registered origin,
+  under its own rp-id; see
+  [Registered origins](/protocol/identities/#registered-origins).
+  `GET /ops/served-origins` lists them for whatever orders their certificates
+  and routes them (Calimero Cloud's mdma).
 - DNS: a wildcard record `*.D` pointing at the cluster, and a TLS certificate
-  for it on the front. `merod local` uses `localhost`, so frontends are at
+  for it on the front; for each custom domain, its own record and certificate. `merod local` uses `localhost`, so frontends are at
   `http://{label}.localhost:2501/`.
 
 ## Ports at a glance

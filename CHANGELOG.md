@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Custom domains for served frontends**: a package's manager registers an
+  origin with `served: true` (`POST /package-origins/{package} { origin,
+  served: true }`, passkey consent over `{ origin, rpId, served: true }`), and
+  the node serves the package's frontend from its signed bundle on that host,
+  as at `{label}.{apps_domain}`. Ceremonies there use the domain's own rp-id
+  and open sessions bound to the package; removing the origin ends the site
+  and its sessions. `GET /ops/served-origins` lists them (by package label)
+  for the operator's certificates and routes. At most 4 per package and 64 per
+  cluster; adding one needs every node on this release. Certificates, routing
+  and the console flow come from mdma and mero-tee; design in
+  `docs/specs/custom-domains.md`.
+
 ## [1.0.0-rc.10] - 2026-11-05
 
 ### Added

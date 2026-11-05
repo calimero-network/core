@@ -263,6 +263,21 @@ it.
   `GET /deployments` and `GET /deployments/{id}` carry it (`null` without
   `--apps-domain`).
 
+### Custom domains
+
+A package's manager may have the cluster serve its frontend on a domain of
+their own (`https://kv.example.com`) by registering it as a **served origin**
+(`POST /package-origins/{package} { origin, served: true }`, with their
+passkey; [Registered origins](/protocol/identities/#registered-origins)). A
+request whose `Host` is that name gets the package's site exactly as `{label}.D`
+serves it (every path above, the same content security policy, `/.well-known/calimero.json`),
+before any node route. Unlike the package's host, it is a registered origin: a
+passkey ceremony there runs under the domain's own rp-id, never the
+cluster's, and opens a session bound to the package that names the origin;
+removing it ends the site and those sessions together. TLS for the name ends
+inside the TD with a certificate Calimero Cloud orders for the node's attested
+key; the end-to-end design is `docs/specs/custom-domains.md`.
+
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its
 own origin it is a separate site to the browser, and a passkey ceremony from it

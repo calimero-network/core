@@ -46,6 +46,16 @@
 //! its own, of the same package: CORS admits it and a passkey ceremony from it
 //! opens a session bound to that package, as from the package's host
 //! (`Node::app_origin_package` answers for both).
+//!
+//! A package's manager may also have the cluster serve its frontend on a
+//! domain of their own (a custom domain, `kv.example.com`): an origin they
+//! registered with `served: true` (`crate::origins`). The node serves the
+//! same site there as on the package's host ([`Node::served_site`]); unlike
+//! the package's host it is a registered origin, under its own rp-id, so
+//! ceremonies, CORS and session binding go as they do for any registered
+//! origin. TLS for it ends where it does for the apps domain, inside the TD
+//! in front of merod, with a certificate mdma orders over the node's quote;
+//! design and rollout in `docs/specs/custom-domains.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -213,15 +223,7 @@ impl Node {
     #[must_use]
     pub fn app_host_site(&self, host: &str) -> Option<Site> {
         let domain = self.config.apps_domain.as_deref()?;
-        let name = host.rsplit_once(':').map_or(host, |(h, port)| {
-            if port.chars().all(|c| c.is_ascii_digit()) {
-                h
-            } else {
-                host
-            }
-        });
-        let name = name.to_ascii_lowercase();
-        let name = name.strip_suffix('.').unwrap_or(&name);
+        let (name, _port) = host_parts(host);
         let label = name.strip_suffix(domain)?.strip_suffix('.')?;
         if label.len() != 52 || label.contains('.') {
             return None;
@@ -246,6 +248,41 @@ impl Node {
                 package: deployment_package(d)?.to_owned(),
                 deployment: Some(d.id.clone()),
             })
+        })
+    }
+
+    /// What a `Host` header names when it is a custom domain: the package
+    /// whose manager registered its origin served ([`served_origin_of`]).
+    /// Never a name under the apps domain (those are [`Self::app_host_site`]'s)
+    /// nor a node's own API host, and only on a node that serves frontends.
+    #[must_use]
+    pub fn served_site(&self, host: &str) -> Option<Site> {
+        let domain = self.config.apps_domain.as_deref()?;
+        let (name, _port) = host_parts(host);
+        if crate::origins::within(&name, domain) {
+            return None;
+        }
+        let origin = served_origin_of(host)?;
+        // The state first: the node's own API requests pass here too, and
+        // almost never name a served origin.
+        let package = self.sys(|s| s.served_origin(&origin).map(|o| o.package.clone()))?;
+        if self.is_api_host(&name) {
+            return None;
+        }
+        Some(Site {
+            package,
+            deployment: None,
+        })
+    }
+
+    /// Whether `name` is the host of a node's API URL (this one's or a
+    /// replica's): never a frontend's.
+    pub(crate) fn is_api_host(&self, name: &str) -> bool {
+        self.api_origins().iter().any(|o| {
+            url::Url::parse(o)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+                .is_some_and(|h| h == name)
         })
     }
 
@@ -320,6 +357,41 @@ impl Node {
     }
 }
 
+/// A `Host` header's name, lowercase without a trailing dot, and its port
+/// when it has a numeric one.
+fn host_parts(host: &str) -> (String, Option<&str>) {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((h, port)) if port.bytes().all(|c| c.is_ascii_digit()) => {
+            (h, Some(port).filter(|p| !p.is_empty()))
+        }
+        _ => (host, None),
+    };
+    let mut name = name.to_ascii_lowercase();
+    if name.ends_with('.') {
+        let _dot = name.pop();
+    }
+    (name, port)
+}
+
+/// The origin a browser names on a page whose `Host` header is `host`, when
+/// the cluster may serve a custom domain there: `https://{name}` (TLS ended in
+/// front of merod, on 443), or `http://{name}:{port}` for a `localhost` name
+/// (`merod local`). Anything else (another port, a bracketed address) names
+/// none.
+#[must_use]
+pub fn served_origin_of(host: &str) -> Option<String> {
+    let (name, port) = host_parts(host);
+    if name.is_empty() || name.contains(['[', ']', '/', '@']) {
+        return None;
+    }
+    let local = name == "localhost" || name.ends_with(".localhost");
+    match (local, port) {
+        (true, Some(port)) => Some(format!("http://{name}:{port}")),
+        (false, None | Some("443")) => Some(format!("https://{name}")),
+        _ => None,
+    }
+}
+
 fn origin_of(url: &str) -> Option<String> {
     let u = url::Url::parse(url).ok()?;
     let origin = u.origin().ascii_serialization();
@@ -340,7 +412,10 @@ pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> R
     if node.config.apps_domain.is_none() {
         return next.run(req).await;
     }
-    match node.app_host_site(&host) {
+    let site = node
+        .app_host_site(&host)
+        .or_else(|| node.served_site(&host));
+    match site {
         Some(site) => serve(&node, &site, req).await,
         None if looks_like_app_host(&node, &host) => StatusCode::NOT_FOUND.into_response(),
         None => next.run(req).await,
@@ -632,6 +707,34 @@ mod tests {
         assert!(a.bytes().all(|c| BASE32.contains(&c)));
         assert_ne!(a, label("com.calimero.chat"));
         assert_eq!(a, "7pysax5oylhat255idekdoknnceibzxygvjbceej2umvlmpwx2aa");
+    }
+
+    /// A custom domain's `Host` maps to the one origin a browser on it names:
+    /// `https` on 443 (the port is never sent there), `http` with its port on
+    /// a `localhost` name; anything else to none, so a request on another
+    /// port never reaches a custom domain's site.
+    #[test]
+    fn a_custom_domains_host_names_one_origin() {
+        for (host, origin) in [
+            ("kv.example.com", Some("https://kv.example.com")),
+            ("KV.Example.com.", Some("https://kv.example.com")),
+            ("kv.example.com:443", Some("https://kv.example.com")),
+            ("kv.example.com:8443", None),
+            ("kv.localhost:2501", Some("http://kv.localhost:2501")),
+            ("kv.localhost", None),
+            ("[::1]:443", None),
+            ("", None),
+        ] {
+            assert_eq!(served_origin_of(host).as_deref(), origin, "{host}");
+        }
+        assert_eq!(
+            host_parts("Kv.Example.com.:2501"),
+            ("kv.example.com".to_owned(), Some("2501"))
+        );
+        assert_eq!(
+            host_parts("kv.example.com:"),
+            ("kv.example.com".to_owned(), None)
+        );
     }
 
     /// The value mdma's resolver pins too, computed once with Python's

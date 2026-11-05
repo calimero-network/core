@@ -213,13 +213,14 @@ async fn internal_challenge_take(
 }
 
 /// A package's frontend origin a ceremony comes from: one the node serves
-/// (`app_host`), or one its manager registered (`crate::origins`).
+/// under the apps domain (`app_host`), or one its manager registered
+/// (`crate::origins`), a custom domain the node serves included.
 #[derive(Clone, Debug)]
 pub(crate) struct AppOrigin {
     pub(crate) package: String,
     pub(crate) origin: String,
-    /// A registered origin's rp-id; `None` for a served frontend, whose
-    /// ceremonies use the cluster's.
+    /// A registered origin's rp-id (a custom domain's too); `None` for a
+    /// frontend under the apps domain, whose ceremonies use the cluster's.
     pub(crate) rp_id: Option<String>,
 }
 
@@ -8659,6 +8660,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/placement", get(ops_placement))
         .route("/ops/apps", get(ops_apps))
         .route("/ops/orgs", get(ops_orgs))
+        .route("/ops/served-origins", get(origins::ops_served))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
