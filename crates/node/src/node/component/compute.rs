@@ -1200,6 +1200,7 @@ impl Drive<'_> {
                         },
                         RunExtras {
                             runs: Some(m.runs_provider(Some(&rec.run))),
+                            compute_component: m.state.component.head.compute_bundle.is_some(),
                             ..RunExtras::default()
                         },
                     )
