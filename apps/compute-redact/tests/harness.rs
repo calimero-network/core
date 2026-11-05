@@ -13,13 +13,15 @@ use calimero_sdk::testing::{Failure, Org, TestApp};
 use calimero_sdk::BlobRef;
 use serde_json::{json, Value};
 
+/// The test's own target dir (`<target>/tmp`'s parent), so the guest shares its deps.
+fn target() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("..")
+}
+
 fn component() -> &'static [u8] {
     static BUILT: OnceLock<Vec<u8>> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        // The test's own target dir (`<target>/tmp`'s parent), so the guest shares its deps.
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("..");
-        build_component(dir, &target)
+        build_component(Path::new(env!("CARGO_MANIFEST_DIR")), &target())
             .unwrap_or_else(|e| panic!("build compute-redact: {e}"))
             .component
     })
@@ -28,9 +30,7 @@ fn component() -> &'static [u8] {
 fn compute_component() -> &'static [u8] {
     static BUILT: OnceLock<Vec<u8>> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("..");
-        build_compute_component(dir, &target)
+        build_compute_component(Path::new(env!("CARGO_MANIFEST_DIR")), &target())
             .unwrap_or_else(|e| panic!("build compute-redact's compute component: {e}"))
             .component
     })
@@ -45,6 +45,14 @@ fn app() -> TestApp {
             .guests(["gus"]),
         1_700_000_000_000,
     )
+}
+
+fn app_with_policy() -> TestApp {
+    let mut t = app();
+    t.as_("ada")
+        .call("setPolicy", json!({ "policy": policy() }))
+        .unwrap();
+    t
 }
 
 fn code<T: std::fmt::Debug>(r: Result<T, Failure>) -> String {
@@ -124,10 +132,7 @@ fn submit_needs_a_policy_a_member_and_a_file() {
 
 #[test]
 fn only_the_uploader_or_an_admin_submits_a_file() {
-    let mut t = app();
-    t.as_("ada")
-        .call("setPolicy", json!({ "policy": policy() }))
-        .unwrap();
+    let mut t = app_with_policy();
     let file = t.add_file_by(b"name\nJane\n", "bob");
     let made = t.add_file(b"name\nMade\n");
     let submit =
@@ -150,10 +155,7 @@ fn only_the_uploader_or_an_admin_submits_a_file() {
 
 #[test]
 fn a_job_is_seen_by_its_submitter_and_admins_only() {
-    let mut t = app();
-    t.as_("ada")
-        .call("setPolicy", json!({ "policy": policy() }))
-        .unwrap();
+    let mut t = app_with_policy();
     let id = submit_own(&mut t, "bob", b"name\nJane\n");
     let id = id.as_str().unwrap().to_owned();
 
@@ -172,10 +174,7 @@ fn a_job_is_seen_by_its_submitter_and_admins_only() {
 
 #[test]
 fn a_job_is_shared_by_its_submitter_or_an_admin_only() {
-    let mut t = app();
-    t.as_("ada")
-        .call("setPolicy", json!({ "policy": policy() }))
-        .unwrap();
+    let mut t = app_with_policy();
     let id = submit_own(&mut t, "bob", b"name\nJane\n");
     let id = id.as_str().unwrap().to_owned();
 
@@ -193,10 +192,7 @@ fn a_job_is_shared_by_its_submitter_or_an_admin_only() {
 
 #[test]
 fn a_link_is_for_the_submitter_or_an_admin_and_a_published_part() {
-    let mut t = app();
-    t.as_("ada")
-        .call("setPolicy", json!({ "policy": policy() }))
-        .unwrap();
+    let mut t = app_with_policy();
     let id = submit_own(&mut t, "bob", b"name\nJane\n");
     let args = json!({ "job": id, "part": 0, "ttlSecs": 600 });
 
@@ -222,10 +218,7 @@ fn the_compute_component_imports_only_what_a_job_node_allows() {
 
 #[test]
 fn jobs_past_one_page_are_all_reachable_through_the_cursor() {
-    let mut t = app();
-    t.as_("ada")
-        .call("setPolicy", json!({ "policy": policy() }))
-        .unwrap();
+    let mut t = app_with_policy();
     for n in 0..120 {
         submit_own(
             &mut t,

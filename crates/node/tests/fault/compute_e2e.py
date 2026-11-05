@@ -56,6 +56,11 @@ REDACT_PER_PART = 60_000  # three parts, so the pseudonyms must agree across par
 REDACT_SEED = 20260413  # the fake people are the same on every run
 REDACT_SALT = "pepper"
 REDACT_COLUMNS = {"name": "pseudonym", "email": "mask", "phone": "mask", "card": "mask", "ssn": "drop", "note": "scan"}
+FIRST = ["Ana", "Ben", "Chen", "Dara", "Eli", "Fay", "Gus", "Hana", "Ivo", "Jin", "Kai", "Lena", "Mo", "Nia", "Omar", "Pia"]
+LAST = ["Abel", "Brook", "Cruz", "Dunn", "Eze", "Fox", "Gray", "Hart", "Ito", "Jones", "Khan", "Lund", "Moss", "Nash", "Okoro"]
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+PHONE = re.compile(r"\+1 \d{3} \d{3} \d{4}|\(\d{3}\) \d{3}-\d{4}|\b\d{3}-\d{3}-\d{4}\b")
+CARD = re.compile(r"\b\d{4} \d{4} \d{4} \d{4}\b")
 ORG_QUOTA = 50_000_000_000  # the node's default maxFileBytesPerOrg, put back after the quota scenario
 KILL_AFTER = 0.4  # seconds a part runs before its job node is killed
 CANCEL_DEADLINE = 20  # the leader's wait for a job node to report a cancel
@@ -309,13 +314,6 @@ def quota(cl, rig):
     cl.operate("set-quotas", json.dumps({"maxFileBytesPerOrg": ORG_QUOTA}))
 
 
-FIRST = ["Ana", "Ben", "Chen", "Dara", "Eli", "Fay", "Gus", "Hana", "Ivo", "Jin", "Kai", "Lena", "Mo", "Nia", "Omar", "Pia"]
-LAST = ["Abel", "Brook", "Cruz", "Dunn", "Eze", "Fox", "Gray", "Hart", "Ito", "Jones", "Khan", "Lund", "Moss", "Nash", "Okoro"]
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-PHONE = re.compile(r"\+1 \d{3} \d{3} \d{4}|\(\d{3}\) \d{3}-\d{4}|\b\d{3}-\d{3}-\d{4}\b")
-CARD = re.compile(r"\b\d{4} \d{4} \d{4} \d{4}\b")
-
-
 def fake_people(seed, rows):
     """`rows` CSV records of invented people, from a fixed seed: the same bytes on every run."""
     rng = random.Random(seed)
@@ -416,7 +414,7 @@ def pseudonym(salt, value):
     return "P-" + hmac.new(salt.encode(), value.encode(), hashlib.sha256).hexdigest()[:12]
 
 
-def redact_job(cl, owner_home_passkey):
+def redact_job(cl):
     say("\n== 11 compute-redact: an admin's policy, a member's CSV, a job node killed mid-run, a shared output")
     wd = cl.workdir
     for j in JOBS:
@@ -434,7 +432,7 @@ def redact_job(cl, owner_home_passkey):
     org = cl.cli(1, "namespace", "create", "Redact")["orgId"]
     app = cl.cli(1, "context", "create", "--name", "redact", "--package", package, "--version", version,
                  "--namespace", org)["appId"]
-    owner = {"home": wd / "cfg", "passkey": owner_home_passkey}
+    owner = {"home": wd / "cfg", "passkey": wd / "dev-passkey.json"}
     admin, member, other = sign_up(cl, wd, "ada"), sign_up(cl, wd, "bob"), sign_up(cl, wd, "cyd")
     admin_client = Client(cl, app, join_org(cl, owner, admin, org, "admin"))
     member_key = join_org(cl, owner, member, org, "member")
@@ -447,7 +445,7 @@ def redact_job(cl, owner_home_passkey):
     data = people_csv(REDACT_SEED, REDACT_ROWS)
     csv_path = wd / "people.csv"
     csv_path.write_bytes(data)
-    file, _ = upload(cl, member_client.h["authorization"][7:], app, data=data)
+    file, _ = upload(cl, member_key, app, data=data)
     not_theirs = refused_with("NotYourFile", lambda: other_client.call(1, "submit", {"file": file}))
     submit = member_client.call(1, "submit", {"file": file, "rowsPerPart": REDACT_PER_PART})
     job = submit["result"]
@@ -649,7 +647,7 @@ def scenarios(cl, rig, in_process):
     stuck_cancel(cl, rig)
     unkept_output(cl, rig, in_process)
     quota(cl, rig)
-    redact_job(cl, cl.workdir / "dev-passkey.json")
+    redact_job(cl)
     only_compute_reaches_job_nodes(cl, rig)
 
 
