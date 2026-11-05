@@ -14,6 +14,13 @@
   after, `/auth/recovery/finish`, approved by the new passkey, adds it, ends
   every session of the account and signs in, with the sign-in proof #4849
   requires. `/auth/me` shows `recoveryCode` and `recoveryPending`.
+- **`meroctl app origins`** (also `meroctl package origins`): `list PACKAGE`,
+  `add PACKAGE ORIGIN [--rp-id ID]` and `remove PACKAGE ORIGIN` handle a
+  package's registered web origins (`/package-origins/{package}`, #4846).
+  A change takes the manager's passkey: `--dev-passkey FILE` on a development
+  cluster; without it the node answers `412 CONFIRM_REQUIRED` and the change
+  is made in the console. `calimero_client::package_origins_path` names the
+  route for a caller that sends it without a passkey.
 - **Custom domains for served frontends**: a package's manager registers an
   origin with `served: true` (`POST /package-origins/{package} { origin,
   served: true }`, passkey consent over `{ origin, rpId, served: true }`), and

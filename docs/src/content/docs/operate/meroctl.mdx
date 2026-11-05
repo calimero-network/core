@@ -62,8 +62,8 @@ That holds for `context update`, `context transfer`, `namespace delete`, `namesp
 `namespace members add`, `namespace members remove`, `namespace capabilities`,
 `account outbound`, `account approve-release`, `account api-key create`,
 `account device revoke`, `group members add`, `group members remove`,
-`group settings`, `group leave`, `group upgrade trigger` and
-`group upgrade retry`. `account device add` takes `--approve-with FILE`, a
+`group settings`, `group leave`, `group upgrade trigger`,
+`group upgrade retry`, `app origins add` and `app origins remove`. `account device add` takes `--approve-with FILE`, a
 passkey file the account already has.
 
 ## node
@@ -90,7 +90,8 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 ## app
 
 Signed packages. An application is installed once on the
-cluster and verified on every node that runs it.
+cluster and verified on every node that runs it. `meroctl package` is the
+same command (`meroctl package origins list PACKAGE`).
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -102,6 +103,19 @@ cluster and verified on every node that runs it.
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
+| `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy` and `addedAt`. Its manager's only. |
+| `app origins add PACKAGE ORIGIN [--rp-id ID] [--dev-passkey FILE]` | `POST /package-origins/{package}` | Register a web origin whose pages may sign people in to the application ([registered origins](/protocol/identities/#registered-origins)). `ORIGIN` is `https://host[:port]` as a browser writes it (`http` only on a `localhost` name, on a `--dev` node). `--rp-id` is the passkey relying party there: the origin's host (the default) or a parent domain of it, never the cluster's rp-id or a parent of it; passkeys made there belong to that domain. A package registers at most 8. |
+| `app origins remove PACKAGE ORIGIN [--dev-passkey FILE]` (`rm`) | `DELETE /package-origins/{package}` | Remove a registered origin; the sessions opened there end. |
+
+The application's manager handles its origins: where its signing key is bound
+to a publisher organization, that organization's org-wide `MANAGE_APPLICATION`
+holders, else the account that installed it first. Each change carries the
+manager's passkey consent (`package:{package} / __add_origin / { origin, rpId }`,
+`__remove_origin / { origin }`): `--dev-passkey` on a development cluster;
+without it the node answers `412 CONFIRM_REQUIRED` and nothing changes, and on
+a real cluster the manager makes the change in the console (Web addresses),
+where the browser holds their passkey. A frontend the cluster serves from the
+bundle needs no origin here.
 
 ## context
 

@@ -252,6 +252,58 @@ fn scenario(root: &Path, url: &str) {
         "1.1.0"
     );
 
+    // Web origins: the first installer manages them, with a passkey per change.
+    let site = "https://kv.example.com";
+    let asked = alice
+        .try_run(&["package", "origins", "add", "com.test.kv", site])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let bad = alice
+        .try_run(&[
+            "package",
+            "origins",
+            "add",
+            "com.test.kv",
+            site,
+            "--rp-id",
+            "other.com",
+            "--dev-passkey",
+            pk,
+        ])
+        .unwrap_err();
+    assert!(bad.contains("BAD_RP_ID"), "{bad}");
+    let _ = alice.run(&[
+        "package",
+        "origins",
+        "add",
+        "com.test.kv",
+        site,
+        "--rp-id",
+        "example.com",
+        "--dev-passkey",
+        pk,
+    ]);
+    let listed = alice.run(&["app", "origins", "list", "com.test.kv"]);
+    assert_eq!(listed["origins"][0]["origin"], site, "{listed}");
+    assert_eq!(listed["origins"][0]["rpId"], "example.com", "{listed}");
+    let asked = alice
+        .try_run(&["app", "origins", "remove", "com.test.kv", site])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let _ = alice.run(&[
+        "app",
+        "origins",
+        "remove",
+        "com.test.kv",
+        site,
+        "--dev-passkey",
+        pk,
+    ]);
+    assert_eq!(
+        alice.run(&["app", "origins", "list", "com.test.kv"])["origins"],
+        json!([])
+    );
+
     // context: an instance of an application, named by an alias.
     let created = alice.run(&[
         "context",
