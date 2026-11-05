@@ -2049,6 +2049,27 @@ fn publishing_what_is_no_done_runs_output_is_refused_and_changes_nothing() {
 }
 
 #[test]
+fn a_cancel_of_the_done_run_in_the_publishing_call_leaves_the_publish_and_the_run_as_they_are() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    let mut cmd = publish_call(&w, marks, vec![store_ref("report", 2)]);
+    if let ComponentCmd::Call(c) = &mut cmd {
+        c.outcome.compute_cancels = vec!["r1".into()];
+    }
+    let a = w.push(&cmd);
+    assert!(!a.conflict && a.status == Status::Ok, "{a:?}");
+    assert_eq!(w.state("r1"), RunState::Done);
+    assert!(!w.record("r1").cancel_requested);
+    assert!(plain_record(&w, 1).is_some_and(|r| r.charged && r.refs == 1));
+    let _a = w.call(Vec::new(), &["r1"]);
+    assert!(!w.record("r1").cancel_requested);
+    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
+        .file
+        .as_ref()
+        .is_some_and(|f| f.output));
+}
+
+#[test]
 fn a_run_that_did_not_finish_done_leaves_nothing_to_publish() {
     let mut w = World::new();
     w.start("r1");
