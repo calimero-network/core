@@ -476,9 +476,38 @@ pub struct PendingRecovery {
     pub ready_at: u64,
 }
 
-/// How long a started recovery waits before it may finish: the owner's time
-/// to notice and cancel (72 hours).
+/// How long a started recovery, an organization's or an account's, waits
+/// before it may finish: the owner's time to notice and cancel (72 hours).
 pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
+
+/// An account recovery started with the account's recovery code, not
+/// finished or cancelled yet (`docs/specs/account-recovery.md`): the passkey
+/// it adds, [`RECOVERY_DELAY_SECS`] after the start (the same delay as an
+/// organization's), unless one of the account's passkeys cancels first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAccountRecovery {
+    /// The new passkey, registered at the start.
+    pub credential: Credential,
+    /// When it started (the start command's time, Unix seconds).
+    pub started_at: u64,
+    /// The earliest time it may finish.
+    pub ready_at: u64,
+}
+
+impl PendingAccountRecovery {
+    /// What the start answers and `/auth/me` shows: never the credential's
+    /// public key.
+    #[must_use]
+    pub fn json(&self, account: &str) -> serde_json::Value {
+        serde_json::json!({
+            "accountId": account,
+            "credentialId": self.credential.id,
+            "startedAt": self.started_at,
+            "readyAt": self.ready_at,
+        })
+    }
+}
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).
 pub const MAX_METADATA_BYTES: usize = 16 * 1024;

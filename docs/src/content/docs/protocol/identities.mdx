@@ -43,6 +43,7 @@ party id.
 | Sign up | `/auth/passkey/register/{begin,finish}` | A new account with this passkey, and a session |
 | Sign in | `/auth/passkey/login/{begin,finish}` | A session for the passkey's account |
 | Add a device | `/auth/passkeys/add/{begin,finish}` (signed in; `finish` answers `412` and is approved by a passkey the account already has) | Another passkey on the account |
+| Recover (lost every passkey) | `/auth/recovery/{begin,start}` (signed out; the account's recovery code and a new passkey), then after 72 hours `/auth/recovery/finish` (the new passkey; `/auth/recovery/cancel` with an existing passkey stops it before) | The code spent and the passkey pending; at finish the passkey on the account, every earlier session revoked, and a session |
 | Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` (removal approved with a passkey, `412` first) | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
 
 A ceremony's challenge lives in the memory of the node that issued it, for 5
