@@ -55,16 +55,16 @@ pub fn save_file(&mut self, data: Vec<u8>) -> app::Result<BlobRef> {
 }
 
 #[app::view]
-pub fn file_len(&self, id: BlobRef) -> app::Result<u64> {
-    let mut bytes = Vec::new();
-    files::open(&id)?.read_to_end(&mut bytes)?;
-    Ok(bytes.len() as u64)
+pub fn file_len(&self, id: BlobRef) -> app::Result<Option<u64>> {
+    Ok(id.info().map(|info| info.size))
 }
 ```
 
 - `files::create()` returns a `Writer` (`std::io::Write`); `finish()` gives the
   `BlobRef`. A writer dropped unfinished leaves no file.
-- `files::open(&blob)` returns a `Reader` (`std::io::Read`).
+- `files::open(&blob)` returns a `Reader` (`std::io::Read`), but only inside an
+  `#[app::compute]` run: in a call, view, timer or `init` it is refused, and
+  `BlobRef::info` gives the size and hash instead.
 - A file a failed call wrote is not kept: only a committed call's files are.
 
 ## Let a client download one

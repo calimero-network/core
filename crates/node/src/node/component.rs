@@ -710,9 +710,15 @@ impl Node {
         // INIT_FAILED); anything else is retried by `reconcile`.
         // The bundle the group names if an upgrade gave it one before init applied
         // (its first bundle's init timed out), else the app record's.
-        let bundle = g
-            .read_local(|m, _| m.state.bundle.clone())
-            .unwrap_or_else(|| app.bundle.clone());
+        let (bundle, compute_bundle) = g
+            .read_local(|m, _| {
+                let head = &m.state.component.head;
+                m.state
+                    .bundle
+                    .clone()
+                    .map(|b| (b, head.compute_bundle.clone()))
+            })
+            .unwrap_or_else(|| (app.bundle.clone(), app.compute_bundle.clone()));
         let prepared = match self.prepared_for(&bundle).await {
             Ok(p) => Ok(p),
             Err(e) if e.code == BAD_BUNDLE => Err(format!("component refused: {}", e.message)),
@@ -774,6 +780,7 @@ impl Node {
                 timed_out = false;
                 let cmd = ComponentCmd::Init {
                     bundle: bundle.clone(),
+                    compute_bundle: compute_bundle.clone(),
                     base_index: m.state.last_index,
                     ts_ms,
                     id_term,
@@ -1914,6 +1921,7 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         bundle: &str,
+        compute_bundle: Option<&str>,
         migrate: Option<&str>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
@@ -1939,6 +1947,7 @@ impl Node {
             .propose_led(|m, _, _| {
                 let (entry, _replaced) = entry_bytes(ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
+                    compute_bundle: compute_bundle.map(str::to_owned),
                     base_index: m.state.last_index,
                 });
                 Proposal::Append(entry)
