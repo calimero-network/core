@@ -1401,3 +1401,21 @@ async fn a_run_the_queue_never_grants_ends_not_granted_instead_of_waiting_foreve
     );
     assert!(rec.attempts.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_a_call_that_starts_a_run_wakes_the_run_driver() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let leader = rig.leader();
+    let before = leader.run_kicks();
+    let _ok = rig
+        .alice
+        .call(&rig.app, "ping", json!({}), None)
+        .await
+        .unwrap();
+    assert_eq!(leader.run_kicks(), before, "an ordinary call woke it");
+    let _run = rig.begin("startRun", json!({ "method": "burn" })).await;
+    assert!(
+        leader.run_kicks() > before,
+        "a call that starts a run did not"
+    );
+}

@@ -127,6 +127,7 @@ pub(crate) struct Uploaded {
 pub(crate) struct Probes {
     pub peer_blobs: std::sync::Mutex<crate::node::PeerBlobs>,
     pub file_pushes: std::sync::atomic::AtomicU64,
+    pub run_kicks: std::sync::atomic::AtomicU64,
     pub blob_puts_seen: std::sync::atomic::AtomicU64,
     pub conflict_next_call: std::sync::atomic::AtomicBool,
     /// While set, every run final this node logs conflicts.
@@ -147,6 +148,7 @@ impl Default for Probes {
         Self {
             peer_blobs: std::sync::Mutex::new(crate::node::PeerBlobs::Accept),
             file_pushes: std::sync::atomic::AtomicU64::new(0),
+            run_kicks: std::sync::atomic::AtomicU64::new(0),
             blob_puts_seen: std::sync::atomic::AtomicU64::new(0),
             conflict_next_call: std::sync::atomic::AtomicBool::new(false),
             conflict_finals: std::sync::atomic::AtomicBool::new(false),
