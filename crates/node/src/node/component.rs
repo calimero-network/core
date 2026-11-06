@@ -225,7 +225,7 @@ fn abi_check(
 /// The code of a final entry that is over the log's cap even without its result method's outcome.
 pub const FINAL_TOO_LARGE: &str = "FINAL_TOO_LARGE";
 
-/// `FINAL_TOO_LARGE`: nothing can be logged for the run's end; the leader ends it `Failed{timeout}`.
+/// `FINAL_TOO_LARGE`: nothing can be logged for the run's end; the leader ends it `Failed{tooLarge}`.
 #[must_use]
 pub fn final_too_large() -> ApiError {
     ApiError::new(
