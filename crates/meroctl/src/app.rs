@@ -73,7 +73,8 @@ pub enum AppCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum OriginsCmd {
-    /// The origins registered for an application, with their rp-ids.
+    /// The origins registered for an application, with their rp-ids and
+    /// whether the cluster serves its frontend there (`served`).
     #[command(alias = "ls")]
     List { package: String },
     /// Register an origin (`https://host[:port]`, as a browser writes it).
@@ -87,6 +88,11 @@ pub enum OriginsCmd {
         /// default) or a parent domain of it, never the cluster's.
         #[arg(long)]
         rp_id: Option<String>,
+        /// Have the cluster serve the application's frontend on this origin
+        /// too (a custom domain: `https://host`, no port). The approval names
+        /// it, and every node of the cluster must run this release or later.
+        #[arg(long)]
+        served: bool,
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
@@ -179,11 +185,16 @@ async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
             package,
             origin,
             rp_id,
+            served,
             dev_passkey: Some(file),
         } => {
             let mut pk = load_dev_passkey(&file)?;
             let out = client
-                .add_package_origin(&package, &origin, rp_id.as_deref(), &mut pk)
+                .post_confirmed(
+                    &package_origins_path(&package),
+                    add_origin_body(&origin, rp_id.as_deref(), served),
+                    &mut pk,
+                )
                 .await;
             save_passkey(&file, &pk)?;
             out?
@@ -192,12 +203,13 @@ async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
             package,
             origin,
             rp_id,
+            served,
             dev_passkey: None,
         } => {
             client
                 .post(
                     &package_origins_path(&package),
-                    add_origin_body(&origin, rp_id.as_deref()),
+                    add_origin_body(&origin, rp_id.as_deref(), served),
                 )
                 .await?
         }
@@ -226,12 +238,17 @@ async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
 }
 
 /// What `POST /package-origins/{package}` takes: the rp-id only when named
-/// (the node resolves the origin's host otherwise).
-fn add_origin_body(origin: &str, rp_id: Option<&str>) -> Value {
-    match rp_id {
-        Some(rp_id) => json!({ "origin": origin, "rpId": rp_id }),
-        None => json!({ "origin": origin }),
+/// (the node resolves the origin's host otherwise), and `served` only when
+/// set, so a plain add is the body a node from before served origins takes.
+fn add_origin_body(origin: &str, rp_id: Option<&str>, served: bool) -> Value {
+    let mut body = json!({ "origin": origin });
+    if let Some(rp_id) = rp_id {
+        body["rpId"] = json!(rp_id);
     }
+    if served {
+        body["served"] = json!(true);
+    }
+    body
 }
 
 /// Push `path` to its contexts (now, if `push_first`), and again on every
@@ -346,12 +363,29 @@ mod tests {
     #[test]
     fn an_origin_names_its_rp_id_only_when_given() {
         assert_eq!(
-            add_origin_body("https://kv.example.com", None),
+            add_origin_body("https://kv.example.com", None, false),
             json!({ "origin": "https://kv.example.com" })
         );
         assert_eq!(
-            add_origin_body("https://kv.example.com", Some("example.com")),
+            add_origin_body("https://kv.example.com", Some("example.com"), false),
             json!({ "origin": "https://kv.example.com", "rpId": "example.com" })
         );
+    }
+
+    /// `--served` sends `served: true`, and nothing about it otherwise: the
+    /// node's consent names `served` only for a served origin.
+    #[test]
+    fn a_served_origin_says_so_and_a_plain_one_does_not() {
+        assert_eq!(
+            add_origin_body("https://kv.example.com", None, true),
+            json!({ "origin": "https://kv.example.com", "served": true })
+        );
+        assert_eq!(
+            add_origin_body("https://kv.example.com", Some("example.com"), true),
+            json!({ "origin": "https://kv.example.com", "rpId": "example.com", "served": true })
+        );
+        assert!(add_origin_body("https://kv.example.com", None, false)
+            .get("served")
+            .is_none());
     }
 }

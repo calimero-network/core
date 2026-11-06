@@ -7,7 +7,7 @@ sealed; the node's quote is judged before anything is sent).
 | v1 | here | API |
 | --- | --- | --- |
 | `node add/remove/use/list` | saved nodes, `{home}/meroctl/nodes.json` | (local) |
-| `app install/list/get/versions/get-latest-version/uninstall/watch` (also `package`) | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle; `app origins list/add/remove` its registered web origins (its manager's) | `/packages*`, `/bundles`, `/package-origins/{package}` |
+| `app install/list/get/versions/get-latest-version/uninstall/watch` (also `package`) | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle; `app origins list/add/remove` its registered web origins (its manager's; `add --served` a custom domain the cluster serves the frontend on) | `/packages*`, `/bundles`, `/package-origins/{package}` |
 | `context create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
 | `call` | `call --context C METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
 | `blob list/upload/download/info/delete` | a context's blobs | `/apps/{app}/blobs*` |
