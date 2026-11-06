@@ -5,7 +5,14 @@
 //! - one app, 1 call in flight;
 //! - one app, 64 in flight;
 //! - two apps, 64 in flight each, both led by the same node;
-//! - two apps, 64 in flight each, led by different nodes.
+//! - two apps, 64 in flight each, led by different nodes;
+//! - session refreshes, 64 sessions refreshing back to back on all three
+//!   nodes, with every refresh exchanging its token in the system log (the
+//!   harness's `refresh_rotate_after` of zero, what every refresh did before
+//!   `api::REFRESH_ROTATE_AFTER`), then on a cluster that keeps young tokens
+//!   (the production default). Each row reports the entries the system log
+//!   appended per second: the system group is one Raft group per cluster, so
+//!   that rate, not the refreshes, is what bounds the cluster's active users.
 //!
 //! Two apps at about twice one app's rate means the limit is per app (each
 //! app's group proposes one call at a time, `calimero_log::Group::propose`);
@@ -65,6 +72,9 @@ struct Row {
     secs: f64,
     p50_ms: f64,
     p99_ms: f64,
+    /// Entries the system log appended per second over the row, when the row
+    /// measures it.
+    system_entries: Option<f64>,
 }
 
 impl Row {
@@ -85,6 +95,7 @@ impl Row {
             "callsPerSecond": self.per_sec(),
             "p50Ms": self.p50_ms,
             "p99Ms": self.p99_ms,
+            "systemEntriesPerSecond": self.system_entries,
         })
     }
 }
@@ -174,6 +185,84 @@ async fn load(
         secs: measured,
         p50_ms: pct(&all, 0.5),
         p99_ms: pct(&all, 0.99),
+        system_entries: None,
+    }
+}
+
+/// The system log's last index, as the node that leads it holds it, and that
+/// node (an index into the cluster).
+fn system_log(c: &Cluster) -> (u64, usize) {
+    c.nodes
+        .iter()
+        .enumerate()
+        .find_map(|(i, r)| {
+            let s = r.as_ref()?.node.system.status();
+            s.is_leader.then(|| (s.last_log.unwrap_or(0), i))
+        })
+        .unwrap_or((0, 0))
+}
+
+/// `sessions` sessions of one account, signed in round the three nodes, each
+/// refreshing back to back on its node for `secs` after the warm-up: the
+/// refreshes per second, and the entries the system log took meanwhile.
+async fn refreshes(c: &Cluster, name: &'static str, sessions: usize, secs: Duration) -> Row {
+    let (_owner, mut pk) = signed_up(c, 0, "refresher").await;
+    let mut clients = Vec::new();
+    for s in 0..sessions {
+        clients.push(signed_in(c, &mut pk, s % 3).await);
+    }
+    let measuring = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut workers = Vec::new();
+    for client in clients {
+        let measuring = Arc::clone(&measuring);
+        let stop = Arc::clone(&stop);
+        workers.push(tokio::spawn(async move {
+            let mut times = Vec::new();
+            let mut errors = 0;
+            while !stop.load(Ordering::Relaxed) {
+                let start = Instant::now();
+                let ok = client.refresh().await.is_ok();
+                let took = start.elapsed();
+                if !measuring.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
+                    continue;
+                }
+                if ok {
+                    times.push(took);
+                } else {
+                    errors += 1;
+                }
+            }
+            (times, errors)
+        }));
+    }
+    tokio::time::sleep(WARM_UP).await;
+    let (first, leader) = system_log(c);
+    measuring.store(true, Ordering::Relaxed);
+    let start = Instant::now();
+    tokio::time::sleep(secs).await;
+    stop.store(true, Ordering::Relaxed);
+    let measured = start.elapsed().as_secs_f64();
+    let (last, _) = system_log(c);
+    let mut all = Vec::new();
+    let mut errors = 0;
+    for w in workers {
+        let (times, e) = w.await.expect("a worker ran");
+        all.extend(times);
+        errors += e;
+    }
+    all.sort();
+    Row {
+        name,
+        in_flight: sessions,
+        leaders: vec![leader as u64 + 1],
+        per_app: vec![all.len() as f64 / measured],
+        calls: all.len(),
+        errors,
+        secs: measured,
+        p50_ms: pct(&all, 0.5),
+        p99_ms: pct(&all, 0.99),
+        system_entries: Some(last.saturating_sub(first) as f64 / measured),
     }
 }
 
@@ -403,24 +492,58 @@ async fn main() {
         )
         .await,
     );
+    // The harness's clusters exchange every refresh token in the log.
+    rows.push(
+        refreshes(
+            &c,
+            "session refreshes, 64 sessions, every refresh exchanged",
+            WIDE,
+            secs,
+        )
+        .await,
+    );
     for i in 0..3 {
         c.stop(i).await;
     }
+    let mut kept = Cluster::start_with(3, |cfg| {
+        cfg.raft = calimero_log::Config::default();
+        cfg.refresh_rotate_after = calimero_node::api::REFRESH_ROTATE_AFTER;
+        if let Some(delay) = &delay {
+            delay(cfg);
+        }
+    })
+    .await;
+    rows.push(
+        refreshes(
+            &kept,
+            "session refreshes, 64 sessions, young tokens kept",
+            WIDE,
+            secs,
+        )
+        .await,
+    );
+    for i in 0..3 {
+        kept.stop(i).await;
+    }
 
     println!();
-    println!("| scenario | leader node(s) | calls/s | per app | p50 | p99 | errors |");
-    println!("|---|---|---|---|---|---|---|");
+    println!("| scenario | leader node(s) | calls/s | per app | p50 | p99 | errors | system log entries/s |");
+    println!("|---|---|---|---|---|---|---|---|");
     for r in &rows {
         let per_app: Vec<String> = r.per_app.iter().map(|x| format!("{x:.1}")).collect();
+        let entries = r
+            .system_entries
+            .map_or_else(|| "-".to_owned(), |e| format!("{e:.1}"));
         println!(
-            "| {} | {:?} | {:.1} | {} | {:.2} ms | {:.2} ms | {} |",
+            "| {} | {:?} | {:.1} | {} | {:.2} ms | {:.2} ms | {} | {} |",
             r.name,
             r.leaders,
             r.per_sec(),
             per_app.join(" + "),
             r.p50_ms,
             r.p99_ms,
-            r.errors
+            r.errors,
+            entries
         );
     }
     let one = rows[1].per_sec();
