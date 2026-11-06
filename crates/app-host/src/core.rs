@@ -878,8 +878,8 @@ impl HostCore {
 
     /// A download grant for one of the app's blobs, valid for `ttl_seconds` (1 to
     /// [`MAX_GRANT_TTL_SECS`]) from the run's wall clock. An unknown blob or a TTL out of
-    /// range, or a sealed file (only the app's code reads those), is refused: the WIT result
-    /// has no error case.
+    /// range, a sealed file (only the app's code reads those), or a published blob outside a
+    /// logged write, is refused: the WIT result has no error case.
     pub fn blobs_grant(&mut self, id: &str, ttl_seconds: u32) -> Result<String, HostDenied> {
         self.may_use_blobs("blobs.grant")?;
         if ttl_seconds == 0 || ttl_seconds > MAX_GRANT_TTL_SECS {
@@ -891,6 +891,9 @@ impl HostCore {
         let Some(id) = parse_blob_id(id).filter(|id| self.blobs.info(id).is_some()) else {
             return Err(HostDenied::new("unknown blob"));
         };
+        if self.blobs.published(&id) && !self.is_logged_write() {
+            return Err(self.denied("blobs.grant of a published blob"));
+        }
         let expires_ms = self
             .wall_ms()
             .saturating_add(u64::from(ttl_seconds).saturating_mul(1_000));
@@ -1058,10 +1061,10 @@ impl HostCore {
             status
         };
         let ok = status == Status::Ok;
-        let new_files = if ok {
-            self.files.into_created()
+        let (new_files, published) = if ok {
+            self.files.into_outputs()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let (compute_starts, compute_cancels) = if ok {
             (self.starts, self.cancels)
@@ -1082,6 +1085,7 @@ impl HostCore {
             logs: self.logs,
             http: self.http_log,
             new_files,
+            published,
             compute_starts,
             compute_cancels,
             usage: Usage {
@@ -1137,10 +1141,11 @@ impl HostCore {
     /// A value may refer only to the app's own blobs (R8): retention follows the
     /// references, so one to a blob the app does not hold would keep nothing alive.
     fn check_blob_refs(&self, value: &[u8]) -> Result<(), HostDenied> {
-        if blob_refs(value)
-            .iter()
-            .any(|id| self.blobs.info(id).is_none() && self.file_info(&blob_id_hex(id)).is_none())
-        {
+        if blob_refs(value).iter().any(|id| {
+            self.blobs.info(id).is_none()
+                && self.file_info(&blob_id_hex(id)).is_none()
+                && !self.files.published(&blob_id_hex(id))
+        }) {
             return Err(HostDenied::new("unknown blob"));
         }
         Ok(())

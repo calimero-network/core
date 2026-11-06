@@ -170,6 +170,7 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/blobs/{id}` | app access | Download (id base58 or hex) | `blob download` |
 | `GET /apps/{app}/blobs/{id}/info` | app access | Size, and a file's plaintext SHA-256 for the app's owner and its organization's members | `blob info` |
 | `DELETE /apps/{app}/blobs/{id}` | app access | Forget (owner or org admin) | `blob delete` |
+| `POST /apps/{app}/blobs/{id}/revoke` | app access | Invalidate the grants made so far for a published blob (owner or org admin) | `blob revoke` |
 
 Every `/intents` and `/views` answer carries a receipt signed by the answering
 node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.

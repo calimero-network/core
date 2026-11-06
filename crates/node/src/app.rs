@@ -389,6 +389,22 @@ impl AppMachine {
         self.is_component() && self.state.component.blobs.records.contains_key(id)
     }
 
+    /// The account that uploaded the sealed file `id`; none for a file a call or a run made.
+    #[must_use]
+    pub fn file_uploader(&self, id: &[u8; 32]) -> Option<String> {
+        let record = self.state.component.blobs.records.get(id)?;
+        record.file.as_ref()?.uploader.clone()
+    }
+
+    /// A component app's blob `id` as a download judges it: whether it is a published
+    /// output (served only through a grant) and its revocation count; `None` if not held.
+    #[must_use]
+    pub fn blob_standing(&self, id: &[u8; 32]) -> Option<(bool, u32)> {
+        let record = self.state.component.blobs.records.get(id)?;
+        self.is_component()
+            .then_some((record.charged, record.epoch))
+    }
+
     fn is_component(&self) -> bool {
         self.state.executor() == Some(crate::types::Executor::Component)
     }

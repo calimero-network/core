@@ -127,3 +127,39 @@ fn stubbed_imports_are_nine_disjoint_and_not_sockets() {
     let allowed: BTreeSet<_> = allowed_imports().iter().collect();
     assert!(stubbed.iter().all(|s| !allowed.contains(s)));
 }
+
+#[test]
+fn runs_uploader_takes_a_blob_id_and_answers_an_optional_account_and_files_has_none() {
+    let mut resolve = Resolve::default();
+    let (pkg, _) = resolve.push_dir(WIT_DIR).expect("wit dir parses");
+    let interfaces = &resolve.packages[pkg].interfaces;
+    let uploader = resolve.interfaces[interfaces["runs"]]
+        .functions
+        .get("uploader")
+        .expect("runs.uploader");
+    assert_eq!(uploader.params.len(), 1);
+    assert_eq!(uploader.params[0].name, "id");
+    assert!(uploader.result.is_some());
+    let files = &resolve.interfaces[interfaces["files"]].functions;
+    assert!(
+        !files.contains_key("uploader"),
+        "the compute world imports files"
+    );
+}
+
+#[test]
+fn runs_publish_takes_a_blob_id_and_answers_a_blob_id_or_a_string() {
+    let mut resolve = Resolve::default();
+    let (pkg, _) = resolve.push_dir(WIT_DIR).expect("wit dir parses");
+    let runs = resolve.packages[pkg]
+        .interfaces
+        .get("runs")
+        .expect("interface runs");
+    let publish = resolve.interfaces[*runs]
+        .functions
+        .get("publish")
+        .expect("runs.publish");
+    assert_eq!(publish.params.len(), 1);
+    assert_eq!(publish.params[0].name, "id");
+    assert!(publish.result.is_some());
+}

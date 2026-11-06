@@ -12,7 +12,9 @@ Holds the `calimero:app@0.5.1` world: the spec's 0.5.0 plus `search`, below, plu
 
 ## The compute world
 
+`runs.publish(id) -> result<blob-id, string>` turns a done run's output into a plain blob; it lives in `runs`, so the compute world cannot import it, and the engine test `a_compute_component_that_imports_the_publish_call_is_refused_at_prepare` pins the link-time refusal.
 `world compute` is the compute methods of an app built as their own component for job nodes: it imports `types`, `files`, `job` (`run-id`, `inputs`, `progress`) and the WASI set a Rust guest needs, and exports `run(method, args)`.
+`runs.uploader(id) -> option<string>` answers who uploaded a sealed file (none for a file a call or a run made); it is in `runs` because the compute world imports `files` whole and must not see it, and it adds no field to `blob-info`.
 The app world imports `runs` (`start`, `cancel`: logged writes only) and not `job`, so it has 23 imports.
 It cannot be named `compute`, which is the world's name; the compute world does not import `runs`, so a run cannot start runs.
 The compute world imports no state, xcall, context, events, blobs, search, action or `wasi:http`, so a compute component cannot even ask for them: the install-time import check is the enforcement.

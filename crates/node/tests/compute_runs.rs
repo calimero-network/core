@@ -1599,3 +1599,273 @@ async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_fil
     assert!(listed["runs"][0]["final"]["message"].is_null(), "{listed}");
     assert!(listed["runs"][0]["progress"].is_null(), "{listed}");
 }
+
+impl Rig {
+    /// A finished `digest` run over a 100 kB input: its output id and the plaintext it wrote.
+    async fn finished_output(&self) -> (String, Vec<u8>) {
+        let plain = input()[..100_000].to_vec();
+        let file = self.upload(&plain).await;
+        let run = self.begin("startDigest", json!({ "inputs": [file] })).await;
+        let outcome = self.outcome(&run).await;
+        assert_eq!(outcome["status"], "done", "{outcome}");
+        let output = self.record(&run).final_.unwrap().outputs[0].id.clone();
+        let seed = noise_seed(&self.leader().app_file_key(&self.app), &run);
+        (output, expected_output(&plain, seed))
+    }
+
+    async fn publish(&self, id: &str) -> String {
+        let r = self
+            .alice
+            .call(&self.app, "publish", json!({ "output": id }), None)
+            .await
+            .unwrap();
+        r.result.as_str().unwrap().to_owned()
+    }
+
+    async fn grant(&self, id: &str) -> String {
+        let r = self
+            .alice
+            .call(&self.app, "share", json!({ "id": id, "ttl": 600 }), None)
+            .await
+            .unwrap();
+        r.result.as_str().unwrap().to_owned()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+
+    let refused = rig
+        .alice
+        .download_blob(&rig.app, &output)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("NOT_SUPPORTED"), "{refused}");
+
+    let blob = rig.publish(&output).await;
+    assert_eq!(blob, sha256_hex(&expected));
+    let record = rig.blob(&blob).expect("the app holds the plain blob");
+    assert!(record.file.is_none() && record.charged && record.refs == 1);
+    assert_eq!(rig.charged().await, charged + expected.len() as u64);
+
+    let grant = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap();
+    assert_eq!(bytes, expected);
+    let again = rig.publish(&output).await;
+    assert_eq!(again, blob, "publishing twice answers the same blob");
+    assert_eq!(rig.charged().await, charged + expected.len() as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_blob_downloads_only_through_a_grant_a_logged_call_made() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+
+    let e = rig.alice.download_blob(&rig.app, &blob).await.unwrap_err();
+    assert_eq!(
+        e.code(),
+        Some("NOT_FOUND"),
+        "the owner needs a grant too: {e}"
+    );
+    let peeked = rig
+        .alice
+        .view(
+            &rig.app,
+            "shareView",
+            json!({ "id": blob, "ttl": 600 }),
+            Consistency::Strong,
+        )
+        .await;
+    assert!(peeked.is_err(), "a view mints no grant for it");
+
+    let grant = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let old = rig.grant(&blob).await;
+
+    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    for i in 0..3 {
+        let e = rig
+            .c
+            .client(i)
+            .download_blob_granted(&rig.app, &blob, &old)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "node {i}: {e}");
+    }
+    let fresh = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &fresh)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+
+    let was = rig.c.app_leader(&rig.app).unwrap();
+    rig.c.stop(was).await;
+    rig.until("another node leads", || {
+        rig.c.app_leader(&rig.app).is_some()
+    })
+    .await;
+    let new = rig.c.client(usize::from(was == 0));
+    let e = new
+        .download_blob_granted(&rig.app, &blob, &old)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let bytes = new.download_blob_granted(&rig.app, &blob, &fresh).await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_grant_stays_revoked_after_the_blob_is_deleted_and_published_again() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let revoked = rig.grant(&blob).await;
+    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    let live = rig.grant(&blob).await;
+
+    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    assert_eq!(rig.publish(&output).await, blob);
+    for (name, old) in [("revoked", &revoked), ("deleted", &live)] {
+        let e = rig
+            .alice
+            .download_blob_granted(&rig.app, &blob, old)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "{name} grant: {e}");
+    }
+    let fresh = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &fresh)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_owner_takes_a_published_blob_down_and_its_charge_is_released() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, _expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+    let blob = rig.publish(&output).await;
+    let grant = rig.grant(&blob).await;
+    assert!(rig.charged().await > charged);
+
+    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    assert!(rig.blob(&blob).is_none());
+    let e = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    rig.until("the bytes are collected and the quota released", || {
+        let now = tokio::runtime::Handle::current();
+        !rig.holds_bytes(&blob)
+            && tokio::task::block_in_place(|| now.block_on(rig.charged())) == charged
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publish_apply_refuses_keeps_no_charge_and_no_bytes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+    let blob = sha256_hex(&expected);
+
+    rig.leader().forge_next_publish();
+    let e = rig
+        .alice
+        .call(&rig.app, "publish", json!({ "output": output }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e:?}");
+    assert!(rig.blob(&blob).is_none());
+    rig.until("the bytes are discarded and the charge refunded", || {
+        let now = tokio::runtime::Handle::current();
+        !rig.holds_bytes(&blob)
+            && tokio::task::block_in_place(|| now.block_on(rig.charged())) == charged
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_an_output_of_this_apps_done_runs_publishes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, _expected) = rig.finished_output().await;
+    let uploaded = rig.upload(&input()[..1000]).await;
+    let other = rig
+        .alice
+        .create_app_from_package(
+            "compute2",
+            "com.test.compute",
+            Some("1.0.0"),
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+    for (what, app, id) in [
+        ("an uploaded file", rig.app.as_str(), uploaded.as_str()),
+        ("an unknown id", rig.app.as_str(), &"ab".repeat(32)),
+        ("another app's output", other.as_str(), output.as_str()),
+    ] {
+        let e = rig
+            .alice
+            .call(app, "publish", json!({ "output": id }), None)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{e:?}").contains("NOT_A_RUN_OUTPUT"),
+            "{what}: {e:?}"
+        );
+    }
+    assert!(rig.blob(&uploaded).is_some_and(|r| r.file.is_some()));
+    let e = rig
+        .alice
+        .download_blob(&rig.app, &uploaded)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_blob_survives_a_leader_change() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let grant = rig.grant(&blob).await;
+    let old = rig.c.app_leader(&rig.app).unwrap();
+    rig.c.stop(old).await;
+    let client = usize::from(old == 0);
+    rig.until("another node leads", || {
+        rig.c.app_leader(&rig.app).is_some()
+    })
+    .await;
+    let new = rig.c.client(client);
+    let bytes = new
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap();
+    assert_eq!(bytes, expected);
+}

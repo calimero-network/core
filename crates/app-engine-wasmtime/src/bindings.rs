@@ -395,6 +395,14 @@ impl runs::Host for StoreData {
     fn cancel(&mut self, run: String) -> Result<std::result::Result<(), String>> {
         self.host.compute_cancel(&run).map_err(denied)
     }
+
+    fn uploader(&mut self, id: String) -> Result<Option<String>> {
+        self.host.files_uploader(&id).map_err(denied)
+    }
+
+    fn publish(&mut self, id: String) -> Result<std::result::Result<String, String>> {
+        self.host.compute_publish(&id).map_err(denied)
+    }
 }
 
 impl xcall::Host for StoreData {

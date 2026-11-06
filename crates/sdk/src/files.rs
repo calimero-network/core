@@ -69,6 +69,12 @@ pub fn info(id: &BlobRef) -> Option<FileInfo> {
     backend::info(&id.id())
 }
 
+/// The account that uploaded the file, fixed at its upload; none for a file a call or a run
+/// made, and for one the app does not hold. Not available in a compute run.
+pub fn uploader(id: &BlobRef) -> Option<String> {
+    crate::compute::uploader(id)
+}
+
 impl Writer {
     /// Seals the file and returns the reference to store in state.
     pub fn finish(self) -> Result<BlobRef> {

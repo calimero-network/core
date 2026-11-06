@@ -95,12 +95,14 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
-// Starting and cancelling compute runs: logged writes only (call, timer, init, xcall delivery).
-// The compute world does not import it: a run cannot start runs.
+// Starting and cancelling compute runs, and publishing a done run's output: logged writes only (call, timer, init, xcall delivery).
+// The compute world does not import it: a run cannot start runs. `uploader` is a read, for every kind but a migration.
 interface runs {
   use types.{blob-id, action-id};
   start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
   cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+  uploader: func(id: blob-id) -> option<string>;       // the account that uploaded the sealed file, fixed at its upload; none for a file a call or a run made, and for an unknown id
+  publish: func(id: blob-id) -> result<blob-id, string>; // a done run's output as a plain blob, the only way a file's bytes leave the cluster: its id is the SHA-256 of the plaintext; an id that is no output of this app's done runs answers NOT_A_RUN_OUTPUT
 }
 
 // What a compute component sees of its run; the app world does not import it.

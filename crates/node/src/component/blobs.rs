@@ -38,11 +38,13 @@ pub const MAX_COMPONENT_BLOBS: usize = 100_000;
 pub const MAX_COLLECT_QUEUE: usize = 4_096;
 /// Bytes of a blob's content type.
 pub const MAX_BLOB_MIME_BYTES: usize = 127;
-/// Bytes of a grant a download presents (`<expires_ms>.<base64url HMAC>` is 64 at most);
+/// Bytes of a grant a download presents (`<expires_ms>.<epoch>.<base64url HMAC>` is 75 at most);
 /// a longer one is refused before it is parsed.
 pub const MAX_GRANT_BYTES: usize = 128;
 /// Blobs one `BlobsCollected` entry names at most.
 pub const COLLECT_BATCH: usize = 64;
+/// Key of the app's epoch floor in `rows::CBLOB`; a blob id is 32 bytes, so it never collides.
+pub(crate) const FLOOR_KEY: &[u8] = b"floor";
 
 /// What the host records of one of a component app's blobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,18 @@ pub struct BlobRecord {
     /// Set for a sealed file: what opening it needs beyond the ciphertext.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<FileSeal>,
+    /// Set for a plain blob made by publishing a compute output: its size is charged to the
+    /// file quota, which collecting it releases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub charged: bool,
+    /// How many times the owner revoked the grants of a published blob: a grant names the
+    /// count it was made under, and one made under another no longer holds.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub epoch: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl BlobRecord {
@@ -74,7 +88,11 @@ impl BlobRecord {
             file: Some(FileSeal {
                 sha256: mark.sha256.clone(),
                 wrapped_key: mark.wrapped_key.clone(),
+                output: false,
+                uploader: None,
             }),
+            charged: false,
+            epoch: 0,
         };
         Some((id, record))
     }
@@ -88,6 +106,14 @@ pub struct FileSeal {
     pub sha256: Bytes,
     /// The data key, wrapped under the app's file key.
     pub wrapped_key: Bytes,
+    /// Set when the file is an output of a done compute run: the only kind of file that
+    /// can be published.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output: bool,
+    /// The account that uploaded the file, as the authenticated upload route saw it; none for a
+    /// file a call or a run made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploader: Option<String>,
 }
 
 /// A component app's blobs, by SHA-256.
@@ -99,17 +125,24 @@ pub type Blobs = Arc<BTreeMap<[u8; 32], BlobRecord>>;
 pub struct BlobTable {
     pub records: Blobs,
     idle: BTreeSet<(u64, [u8; 32])>,
+    /// Above the epoch of every grantable blob forgotten so far: a record made again starts
+    /// here, so a grant of a forgotten blob never holds for its successor.
+    floor: u32,
 }
 
 impl BlobTable {
     /// Read the records from the group's rows (a restart, a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
         let mut records = BTreeMap::new();
+        let mut floor = 0;
         state.scan_hidden(rows::CBLOB, |k, v| {
-            if let (Ok(id), Ok(r)) = (
-                <[u8; 32]>::try_from(k),
-                serde_json::from_slice::<BlobRecord>(v),
-            ) {
+            if k == FLOOR_KEY {
+                floor = serde_json::from_slice(v)
+                    .map_err(|e| eyre::eyre!("the blob epoch floor is unreadable: {e}"))?;
+            }
+            if let Ok(id) = <[u8; 32]>::try_from(k) {
+                let r = serde_json::from_slice::<BlobRecord>(v)
+                    .map_err(|e| eyre::eyre!("a blob record is unreadable: {e}"))?;
                 let _prev = records.insert(id, r);
             }
             Ok(true)
@@ -120,6 +153,7 @@ impl BlobTable {
             .map(|(id, r)| (r.idle_since_ms, *id))
             .collect();
         self.records = Arc::new(records);
+        self.floor = floor;
         Ok(())
     }
 
@@ -153,6 +187,8 @@ impl BlobTable {
             refs,
             idle_since_ms: ts_ms,
             file: None,
+            charged: prev.as_ref().is_some_and(|p| p.charged),
+            epoch: prev.as_ref().map_or(self.floor, |p| p.epoch),
         };
         if refs == 0 {
             let _new = self.idle.insert((ts_ms, id));
@@ -165,17 +201,90 @@ impl BlobTable {
     /// a value stored by the same entry or a later one refers to it. Not bounded by
     /// [`MAX_COMPONENT_BLOBS`]: the guest was already told it exists.
     pub fn add_file(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
-        let Some((id, record)) = BlobRecord::sealed(mark, ts_ms) else {
+        self.add_sealed(tx, mark, ts_ms, |_| {});
+    }
+
+    /// [`Self::add_file`] for a file `uploader` uploaded.
+    pub fn add_uploaded(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        mark: &FileMark,
+        ts_ms: u64,
+        uploader: Option<String>,
+    ) {
+        self.add_sealed(tx, mark, ts_ms, |seal| seal.uploader = uploader);
+    }
+
+    /// [`Self::add_file`] for an output of a done compute run: the file may be published.
+    pub fn add_output(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
+        self.add_sealed(tx, mark, ts_ms, |seal| seal.output = true);
+    }
+
+    fn add_sealed(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        mark: &FileMark,
+        ts_ms: u64,
+        tag: impl FnOnce(&mut FileSeal),
+    ) {
+        let Some((id, mut record)) = BlobRecord::sealed(mark, ts_ms) else {
             return;
+        };
+        if let Some(seal) = record.file.as_mut() {
+            tag(seal);
+        }
+        let _new = self.idle.insert((ts_ms, id));
+        self.put(tx, id, record);
+    }
+
+    /// The sealed file `id` is an output of a done compute run, and its plaintext is `sha256`
+    /// of `size` bytes.
+    #[must_use]
+    pub fn is_output_of(&self, id: &[u8; 32], sha256: &[u8; 32], size: u64) -> bool {
+        self.records.get(id).is_some_and(|r| {
+            r.size == size
+                && r.file
+                    .as_ref()
+                    .is_some_and(|f| f.output && f.sha256.0 == sha256)
+        })
+    }
+
+    /// Record the plain blob a published output made, charged and idle from `ts_ms`; one the app
+    /// already holds stays as it is. Past [`MAX_COMPONENT_BLOBS`] too: the guest was told it exists.
+    pub fn add_published(&mut self, tx: &mut StateTx<'_>, id: [u8; 32], size: u64, ts_ms: u64) {
+        if self.records.contains_key(&id) {
+            return;
+        }
+        let record = BlobRecord {
+            size,
+            mime: "application/octet-stream".to_owned(),
+            refs: 0,
+            idle_since_ms: ts_ms,
+            file: None,
+            charged: true,
+            epoch: self.floor,
         };
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);
     }
 
     /// The owner deletes a blob: [`Self::forget`], except a sealed file, which only the
-    /// retention rules forget.
-    pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
-        self.records.get(id).is_some_and(|r| r.file.is_none()) && self.forget(tx, id)
+    /// retention rules forget. Answers the bytes it had charged to the quota, if it held it.
+    pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> Option<u64> {
+        let r = self.records.get(id).filter(|r| r.file.is_none())?;
+        let charged = if r.charged { r.size } else { 0 };
+        self.forget(tx, id).then_some(charged)
+    }
+
+    /// Invalidates the grants made so far for the published blob `id`; the reason it cannot.
+    pub fn revoke(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> Result<(), &'static str> {
+        let mut r = (self.records.get(id))
+            .filter(|r| r.charged)
+            .cloned()
+            .ok_or("no such published blob")?;
+        r.epoch = r.epoch.checked_add(1).ok_or("no revocation left")?;
+        self.put(tx, *id, r);
+        Ok(())
     }
 
     /// Forget a blob; whether the app held it.
@@ -185,6 +294,14 @@ impl BlobTable {
         };
         let _was = self.idle.remove(&(prev.idle_since_ms, *id));
         tx.delete_hidden(rows::CBLOB, id);
+        let next = prev.epoch.checked_add(1).filter(|n| *n > self.floor);
+        if let (None, Some(next)) = (&prev.file, next) {
+            self.floor = next;
+            match serde_json::to_vec(&self.floor) {
+                Ok(v) => tx.put_hidden(rows::CBLOB, FLOOR_KEY, &v),
+                Err(e) => tx.fail(e),
+            }
+        }
         true
     }
 
@@ -216,7 +333,8 @@ impl BlobTable {
     }
 
     /// Forget the blobs idle for [`BLOB_IDLE_MS`] at `now_ms`, at most [`BLOB_EXPIRY_STEP`];
-    /// returns them, with the plaintext size of each that was a sealed file.
+    /// returns them, with the size of each that was charged to the quota (a sealed file or a
+    /// published blob).
     pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<([u8; 32], Option<u64>)> {
         let due: Vec<(u64, [u8; 32])> = self
             .idle
@@ -227,11 +345,11 @@ impl BlobTable {
             .collect();
         due.into_iter()
             .filter_map(|(_, id)| {
-                let file = self
+                let charged = self
                     .records
                     .get(&id)
-                    .and_then(|r| r.file.as_ref().map(|_| r.size));
-                self.forget(tx, &id).then_some((id, file))
+                    .and_then(|r| (r.file.is_some() || r.charged).then_some(r.size));
+                self.forget(tx, &id).then_some((id, charged))
             })
             .collect()
     }
@@ -268,43 +386,67 @@ pub fn grant_key(cluster_key: &[u8; 32]) -> [u8; 32] {
     out
 }
 
-fn grant_message(app_id: &str, id: &[u8; 32], expires_ms: u64) -> Vec<u8> {
-    format!("{app_id}|{}|{expires_ms}", hex::encode(id)).into_bytes()
+fn grant_message(app_id: &str, id: &[u8; 32], expires_ms: u64, epoch: u32) -> Vec<u8> {
+    let epoch = if epoch == 0 {
+        String::new()
+    } else {
+        format!("|{epoch}")
+    };
+    format!("{app_id}|{}|{expires_ms}{epoch}", hex::encode(id)).into_bytes()
 }
 
-/// A grant to download blob `id` of `app_id` until `expires_ms` (app time):
-/// `<expires_ms>.<base64url HMAC>`.
+/// A grant to download blob `id` of `app_id` until `expires_ms` (app time) under revocation
+/// count `epoch`: `<expires_ms>[.<epoch>].<base64url HMAC>`, the epoch only when above zero.
 #[must_use]
-pub fn grant_token(key: &[u8; 32], app_id: &str, id: &[u8; 32], expires_ms: u64) -> String {
+pub fn grant_token(
+    key: &[u8; 32],
+    app_id: &str,
+    id: &[u8; 32],
+    expires_ms: u64,
+    epoch: u32,
+) -> String {
     let mac = hmac::sign(
         &hmac::Key::new(hmac::HMAC_SHA256, key),
-        &grant_message(app_id, id, expires_ms),
+        &grant_message(app_id, id, expires_ms, epoch),
     );
-    format!("{expires_ms}.{}", calimero_identity::b64url(mac.as_ref()))
+    let mac = calimero_identity::b64url(mac.as_ref());
+    if epoch == 0 {
+        format!("{expires_ms}.{mac}")
+    } else {
+        format!("{expires_ms}.{epoch}.{mac}")
+    }
 }
 
-/// Whether `token` grants blob `id` of `app_id` at `now_ms` (app time).
+/// The revocation count `token` was made under, if it grants blob `id` of `app_id` at
+/// `now_ms` (app time); the caller compares it with the blob's current count.
 #[must_use]
-pub fn grant_valid(key: &[u8; 32], app_id: &str, id: &[u8; 32], token: &str, now_ms: u64) -> bool {
+pub fn grant_epoch(
+    key: &[u8; 32],
+    app_id: &str,
+    id: &[u8; 32],
+    token: &str,
+    now_ms: u64,
+) -> Option<u32> {
     if token.len() > MAX_GRANT_BYTES {
-        return false;
+        return None;
     }
-    let Some((expires, mac)) = token.split_once('.') else {
-        return false;
+    let mut parts = token.split('.');
+    let expires_ms = parts.next()?.parse::<u64>().ok()?;
+    let (epoch, mac) = match (parts.next()?, parts.next()) {
+        (mac, None) => (0, mac),
+        (epoch, Some(mac)) => (epoch.parse::<u32>().ok().filter(|e| *e > 0)?, mac),
     };
-    let (Ok(expires_ms), Ok(mac)) = (expires.parse::<u64>(), calimero_identity::from_b64url(mac))
-    else {
-        return false;
-    };
-    if now_ms > expires_ms {
-        return false;
+    if parts.next().is_some() || now_ms > expires_ms {
+        return None;
     }
+    let mac = calimero_identity::from_b64url(mac).ok()?;
     hmac::verify(
         &hmac::Key::new(hmac::HMAC_SHA256, key),
-        &grant_message(app_id, id, expires_ms),
+        &grant_message(app_id, id, expires_ms, epoch),
         &mac,
     )
-    .is_ok()
+    .ok()
+    .map(|()| epoch)
 }
 
 /// What a run sees of the app's blobs: the replica's records at the state it reads.
@@ -327,7 +469,12 @@ impl BlobHost for RunBlobs {
     }
 
     fn grant(&self, id: &[u8; 32], expires_ms: u64) -> String {
-        grant_token(&self.key, &self.app_id, id, expires_ms)
+        let epoch = self.records.get(id).map_or(0, |r| r.epoch);
+        grant_token(&self.key, &self.app_id, id, expires_ms, epoch)
+    }
+
+    fn published(&self, id: &[u8; 32]) -> bool {
+        self.records.get(id).is_some_and(|r| r.charged)
     }
 }
 
@@ -338,19 +485,47 @@ mod tests {
     #[test]
     fn a_grant_holds_for_its_blob_and_app_until_it_expires() {
         let key = grant_key(&[1; 32]);
-        let t = grant_token(&key, "app", &[2; 32], 1_000);
-        assert!(grant_valid(&key, "app", &[2; 32], &t, 1_000));
-        assert!(!grant_valid(&key, "app", &[2; 32], &t, 1_001), "expired");
-        assert!(!grant_valid(&key, "other", &[2; 32], &t, 0), "another app");
-        assert!(!grant_valid(&key, "app", &[3; 32], &t, 0), "another blob");
+        let t = grant_token(&key, "app", &[2; 32], 1_000, 0);
+        let epoch = |key, app, id: &[u8; 32], t: &str, now| grant_epoch(key, app, id, t, now);
+        assert_eq!(epoch(&key, "app", &[2; 32], &t, 1_000), Some(0));
+        assert_eq!(epoch(&key, "app", &[2; 32], &t, 1_001), None, "expired");
+        assert_eq!(epoch(&key, "other", &[2; 32], &t, 0), None, "another app");
+        assert_eq!(epoch(&key, "app", &[3; 32], &t, 0), None, "another blob");
         let forged = t.replacen("1000", "9000", 1);
-        assert!(
-            !grant_valid(&key, "app", &[2; 32], &forged, 0),
+        assert_eq!(
+            epoch(&key, "app", &[2; 32], &forged, 0),
+            None,
             "moved expiry"
         );
-        assert!(
-            !grant_valid(&grant_key(&[9; 32]), "app", &[2; 32], &t, 0),
+        assert_eq!(
+            epoch(&grant_key(&[9; 32]), "app", &[2; 32], &t, 0),
+            None,
             "another cluster"
+        );
+    }
+
+    #[test]
+    fn a_grant_names_the_revocation_count_it_was_made_under() {
+        let key = grant_key(&[1; 32]);
+        let old = grant_token(&key, "app", &[2; 32], 1_000, 0);
+        let new = grant_token(&key, "app", &[2; 32], 1_000, 3);
+        assert_eq!(grant_epoch(&key, "app", &[2; 32], &old, 0), Some(0));
+        assert_eq!(grant_epoch(&key, "app", &[2; 32], &new, 0), Some(3));
+        let mac = new.rsplit('.').next().unwrap();
+        for forged in [
+            format!("1000.4.{mac}"),
+            format!("1000.0.{mac}"),
+            format!("1000.{mac}"),
+        ] {
+            assert_eq!(
+                grant_epoch(&key, "app", &[2; 32], &forged, 0),
+                None,
+                "{forged}"
+            );
+        }
+        assert_eq!(
+            grant_epoch(&key, "app", &[2; 32], &format!("{new}.x"), 0),
+            None
         );
     }
 
@@ -369,7 +544,11 @@ mod tests {
             file: file.then(|| FileSeal {
                 sha256: Bytes(vec![9; 32]),
                 wrapped_key: Bytes(vec![8; 60]),
+                output: false,
+                uploader: None,
             }),
+            charged: false,
+            epoch: 0,
         };
         let _ = records.insert([1; 32], record(true));
         let _ = records.insert([2; 32], record(false));

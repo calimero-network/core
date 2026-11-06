@@ -83,7 +83,8 @@ impl BlobRef {
 
     /// A download grant valid for `ttl_seconds` (1 to 86,400) from the run's clock: a client
     /// downloads with `GET /apps/{app}/blobs/{id}?grant=<grant>`, signed in or not. Traps
-    /// `HostDenied` for a blob the app does not hold or a TTL out of range.
+    /// `HostDenied` for a blob the app does not hold, a TTL out of range, or a published blob in
+    /// a view.
     #[must_use]
     pub fn grant(&self, ttl_seconds: u32) -> String {
         env::blob_grant(&self.id(), ttl_seconds)

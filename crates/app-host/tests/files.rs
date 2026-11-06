@@ -10,7 +10,8 @@ use calimero_app_host::{
     NewFile, OrgRole, Outcome, ReadError, ReaderId, Status, TimerCtx, TrapKind, Usage, WriterId,
     FILES_DISABLED, FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW,
     FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
-    MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
+    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
+    NOT_A_RUN_OUTPUT, NO_SUCH_FILE, RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
 
 struct NoDirectory;
@@ -833,4 +834,241 @@ fn a_read_fills_to_max_whatever_the_provider_chunks() {
     assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"g");
     assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
     assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
+}
+
+fn plain_blob_id(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+#[test]
+fn publish_is_a_logged_write_only() {
+    let files = MemoryFiles::default();
+    let id = files.insert(b"report");
+    files.mark_output(&id);
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::Init,
+        InvocationKind::XcallDeliver,
+    ] {
+        let mut h = host(inv(kind), Arc::new(files.clone()));
+        assert_eq!(
+            h.compute_publish(&id).unwrap().unwrap(),
+            plain_blob_id(b"report")
+        );
+    }
+    let mut h = host(timer_inv(), Arc::new(files.clone()));
+    assert!(h.compute_publish(&id).unwrap().is_ok());
+    for kind in [
+        InvocationKind::View,
+        InvocationKind::Action,
+        InvocationKind::Migrate,
+    ] {
+        let mut h = host(inv(kind), Arc::new(files.clone()));
+        denied(h.compute_publish(&id));
+    }
+    let mut run = inv(InvocationKind::Action);
+    run.compute = Some(calimero_app_host::ComputeCtx {
+        run_id: "r".to_owned(),
+        owner: "owner".to_owned(),
+        inputs: vec![id.clone()],
+    });
+    let mut h = host(run, Arc::new(files));
+    denied(h.compute_publish(&id));
+}
+
+#[test]
+fn a_published_file_reaches_the_outcome_with_its_bytes_only_when_the_run_is_ok() {
+    let files = MemoryFiles::default();
+    let id = files.insert(b"report");
+    files.mark_output(&id);
+    let mut h = call_host(&files);
+    let blob = h.compute_publish(&id).unwrap().unwrap();
+    let out = finish(h, Status::Ok);
+    assert_eq!(out.published.len(), 1);
+    let published = &out.published[0];
+    assert_eq!(
+        (
+            published.source.as_str(),
+            published.id.as_str(),
+            published.size
+        ),
+        (id.as_str(), blob.as_str(), 6)
+    );
+    assert_eq!(published.bytes, b"report");
+
+    let mut h = call_host(&files);
+    h.compute_publish(&id).unwrap().unwrap();
+    let trapped = Status::Trap {
+        kind: TrapKind::Fault,
+        detail: String::new(),
+    };
+    assert!(finish(h, trapped).published.is_empty());
+}
+
+#[test]
+fn publishing_the_same_file_twice_answers_the_same_blob_and_records_one() {
+    let files = MemoryFiles::default();
+    let id = files.insert(b"report");
+    files.mark_output(&id);
+    let mut h = call_host(&files);
+    let first = h.compute_publish(&id).unwrap().unwrap();
+    assert_eq!(h.compute_publish(&id).unwrap().unwrap(), first);
+    assert_eq!(finish(h, Status::Ok).published.len(), 1);
+}
+
+#[test]
+fn a_file_the_store_does_not_call_an_output_is_a_soft_error_and_records_nothing() {
+    let files = MemoryFiles::default();
+    let uploaded = files.insert(b"secret");
+    let mut h = call_host(&files);
+    assert_eq!(
+        h.compute_publish(&uploaded).unwrap().unwrap_err(),
+        NOT_A_RUN_OUTPUT
+    );
+    assert_eq!(
+        h.compute_publish("nope").unwrap().unwrap_err(),
+        NOT_A_RUN_OUTPUT
+    );
+    let w = h.files_create().unwrap().unwrap();
+    h.writer_write(w, b"made here").unwrap().unwrap();
+    let made = h.writer_finish(w).unwrap().unwrap();
+    assert_eq!(
+        h.compute_publish(&made).unwrap().unwrap_err(),
+        NOT_A_RUN_OUTPUT
+    );
+    assert!(finish(h, Status::Ok).published.is_empty());
+}
+
+#[test]
+fn a_run_may_publish_a_bounded_number_of_files() {
+    let files = MemoryFiles::default();
+    let mut h = call_host(&files);
+    for n in 0..=MAX_PUBLISHED_PER_RUN {
+        let id = files.insert(format!("file {n}").as_bytes());
+        files.mark_output(&id);
+        let answer = h.compute_publish(&id).unwrap();
+        assert_eq!(answer.is_ok(), n < MAX_PUBLISHED_PER_RUN, "{n}");
+    }
+}
+
+#[test]
+fn the_uploader_of_a_file_is_known_to_the_app_and_not_to_a_compute_run() {
+    let files = MemoryFiles::default();
+    let uploaded = files.insert_by(b"theirs", "bob");
+    let made = files.insert(b"made by a call");
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::View,
+        InvocationKind::Action,
+    ] {
+        let h = host(inv(kind), Arc::new(files.clone()));
+        assert_eq!(
+            h.files_uploader(&uploaded).unwrap(),
+            Some("bob".to_owned()),
+            "{kind:?}"
+        );
+        assert_eq!(h.files_uploader(&made).unwrap(), None);
+        assert_eq!(h.files_uploader("nope").unwrap(), None);
+    }
+    denied(host(inv(InvocationKind::Migrate), Arc::new(files.clone())).files_uploader(&uploaded));
+    let mut run = inv(InvocationKind::Action);
+    run.compute = Some(calimero_app_host::ComputeCtx {
+        run_id: "r".to_owned(),
+        owner: "owner".to_owned(),
+        inputs: vec![uploaded.clone()],
+    });
+    denied(host(run, Arc::new(files)).files_uploader(&uploaded));
+}
+
+#[test]
+fn a_run_may_publish_a_bounded_number_of_bytes() {
+    let files = MemoryFiles::default();
+    let big = |n: u8| {
+        let id = files.insert(&vec![n; (MAX_PUBLISHED_BYTES / 2 + 1) as usize]);
+        files.mark_output(&id);
+        id
+    };
+    let (first, second) = (big(1), big(2));
+    let mut h = call_host(&files);
+    assert!(h.compute_publish(&first).unwrap().is_ok());
+    assert_eq!(
+        h.compute_publish(&second).unwrap().unwrap_err(),
+        RUN_PUBLISHED_TOO_MUCH
+    );
+    assert_eq!(finish(h, Status::Ok).published.len(), 1);
+}
+
+/// A store whose sealed files are named by their ciphertext, so a published plain blob's id is
+/// no file's id.
+struct SealedNames(MemoryFiles);
+
+impl Files for SealedNames {
+    fn open(&self, id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        self.0.open(id)
+    }
+    fn info(&self, id: &str) -> Option<FileInfo> {
+        (id == "sealed-name").then(|| FileInfo {
+            size: 6,
+            sha256: Vec::new(),
+        })
+    }
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        self.0.create()
+    }
+    fn publish(&self, id: &str) -> Result<calimero_app_host::PublishedFile, FileError> {
+        let plain = b"report".to_vec();
+        Ok(calimero_app_host::PublishedFile {
+            source: id.to_owned(),
+            id: plain_blob_id(&plain),
+            size: plain.len() as u64,
+            bytes: plain,
+        })
+    }
+}
+
+#[test]
+fn a_published_blob_may_be_stored_in_the_run_that_published_it() {
+    let mut h = host(
+        inv(InvocationKind::Call),
+        Arc::new(SealedNames(MemoryFiles::default())),
+    );
+    denied(h.storage_put(b"early", &blob_ref(&plain_blob_id(b"report"))));
+    let blob = h.compute_publish("sealed-name").unwrap().unwrap();
+    h.storage_put(b"published", &blob_ref(&blob)).unwrap();
+}
+
+/// A store that cannot get a file's bytes now.
+struct UnavailablePublish;
+
+impl Files for UnavailablePublish {
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Err(FileError::Unavailable)
+    }
+    fn info(&self, _id: &str) -> Option<FileInfo> {
+        None
+    }
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Err(FileError::Unavailable)
+    }
+    fn publish(&self, _id: &str) -> Result<calimero_app_host::PublishedFile, FileError> {
+        Err(FileError::Unavailable)
+    }
+}
+
+#[test]
+fn a_publish_the_node_cannot_serve_aborts_the_logged_run_as_unavailable() {
+    let mut h = host(inv(InvocationKind::Call), Arc::new(UnavailablePublish));
+    denied(h.compute_publish("f"));
+    let trapped = Status::Trap {
+        kind: TrapKind::HostDenied,
+        detail: String::new(),
+    };
+    assert!(matches!(
+        finish(h, trapped).status,
+        Status::Trap {
+            kind: TrapKind::Unavailable,
+            ..
+        }
+    ));
 }
