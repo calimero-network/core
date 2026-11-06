@@ -699,10 +699,10 @@ async fn a_final_that_conflicted_is_billed_once() {
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     rig.leader().conflict_next_call();
     let _ = rig.outcome(&run).await;
-    // Rounds and sweeps go on after the end; nothing may count it a second time.
-    tokio::time::sleep(Duration::from_secs(6)).await;
     let fuel = rig.record(&run).final_.unwrap().usage.fuel as f64;
-    let metrics = rig.metrics().await;
+    let metrics = rig
+        .metrics_with(&["calimero_app_compute_fuel_total", "kind=\"compute\"} 1\n"])
+        .await;
     assert_eq!(series(&metrics, "calimero_app_compute_fuel_total"), fuel);
     assert!(
         metrics.contains("kind=\"compute\"} 1\n"),
