@@ -864,7 +864,7 @@ impl Drive<'_> {
         }
         self.g
             .read_local(|m, _| m.run_record(run))
-            .and_then(|r| r.attempts.get(attempt as usize - 1).cloned())
+            .and_then(|r| r.attempt(attempt).cloned())
             .is_some_and(|a| a.node == peer.id && a.assignment_digest == digest)
     }
 

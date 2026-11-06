@@ -436,8 +436,7 @@ impl Drive<'_> {
         signature: &str,
     ) -> bool {
         self.rec
-            .attempts
-            .get(attempt as usize - 1)
+            .attempt(attempt)
             .is_some_and(|a| a.node == peer.id && self.report_is_valid(a, report, signature))
     }
 

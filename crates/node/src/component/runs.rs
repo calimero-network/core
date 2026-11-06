@@ -194,6 +194,14 @@ pub struct RunRecord {
     pub final_: Option<Final>,
 }
 
+impl RunRecord {
+    /// The attempt numbered `n`, counted from 1.
+    #[must_use]
+    pub fn attempt(&self, n: u32) -> Option<&Attempt> {
+        self.attempts.get(usize::try_from(n.checked_sub(1)?).ok()?)
+    }
+}
+
 /// Why a run failed. The first seven are a job's own outcome and need its signed report; the
 /// rest are the leader's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
