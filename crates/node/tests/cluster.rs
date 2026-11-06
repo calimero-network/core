@@ -3,7 +3,7 @@
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use calimero_client::{Client, Consistency, Error, Policy};
 use calimero_identity::testing::SoftAuthenticator;
@@ -5214,4 +5214,90 @@ async fn a_system_write_that_cannot_commit_answers_unavailable() {
         waited < Duration::from_secs(25),
         "answered only after {waited:?}"
     );
+}
+
+/// Unix seconds now, as the test's own clock reads it.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// `app`'s `lastWriteAt` in `route`'s report as `cl` reads it, once it names
+/// one (a follower may apply the write a moment after it commits).
+async fn reported_last_write(cl: &Client, route: &str, app: &str) -> u64 {
+    for _ in 0..100 {
+        let a = reported_app(cl, route, app).await;
+        if let Some(at) = a["lastWriteAt"].as_u64() {
+            return at;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{route} never named {app}'s last write");
+}
+
+/// When an app last committed a write (mdma's "last used"): `lastWriteAt` in
+/// the operator's `GET /ops/apps`, the owner's `GET /auth/apps` and
+/// `GET /apps/{app}/storage`. Nothing before the first write. The leader
+/// stamps the time into the entry, so every node names the same second: a
+/// replica from its own state, the node that holds no replica by asking one.
+/// A restarted replica reads it back from its state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
+    let mut c = Cluster::start(4).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _ctx) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let operator = ops(&c).await;
+    let a = reported_app(&operator, "ops/apps", &app).await;
+    assert_eq!(a["lastWriteAt"], Value::Null, "no write yet: {a}");
+
+    let before = unix_now();
+    set_through(&alice, &app, "k", "v").await.unwrap();
+    let after = unix_now();
+    let at = reported_last_write(&operator, "ops/apps", &app).await;
+    assert!(before <= at && at <= after, "{before} <= {at} <= {after}");
+
+    // Three of the four nodes hold a replica; the fourth asks one.
+    let outside: Vec<usize> = (0..4)
+        .filter(|i| {
+            c.nodes[*i]
+                .as_ref()
+                .is_some_and(|r| r.node.hosted(&app).is_none())
+        })
+        .collect();
+    assert_eq!(outside.len(), 1, "one node holds no replica");
+    for i in 0..4 {
+        let cl = c.client(i);
+        cl.use_api_key("ops-secret").await;
+        assert_eq!(
+            reported_last_write(&cl, "ops/apps", &app).await,
+            at,
+            "node {}",
+            i + 1
+        );
+    }
+    assert_eq!(reported_last_write(&alice, "auth/apps", &app).await, at);
+    let storage = alice.get(&format!("apps/{app}/storage")).await.unwrap();
+    assert_eq!(storage["lastWriteAt"], json!(at), "{storage}");
+
+    // A replica restarted on its data directory reads the same time back
+    // from its own state.
+    let replica = (0..4).find(|i| !outside.contains(i)).unwrap();
+    c.restart(replica).await;
+    let mut kept = None;
+    for _ in 0..100 {
+        kept = c.nodes[replica]
+            .as_ref()
+            .and_then(|r| r.node.hosted(&app))
+            .and_then(|g| g.read_local(|m, _| m.last_write_ms()));
+        if kept.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(kept.map(|ms| ms / 1000), Some(at), "node {}", replica + 1);
+    let cl = c.client(replica);
+    cl.use_api_key("ops-secret").await;
+    assert_eq!(reported_last_write(&cl, "ops/apps", &app).await, at);
 }

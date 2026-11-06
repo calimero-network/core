@@ -49,7 +49,7 @@ is its command line.
   with the RPC it never finished (regression:
   `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
-  (`view`, `call`, `events`, `storage`, `blob/held`, `app-ready`, `presence`)
+  (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
   refused while a hosted app marks the blob; `raft` needs `rpc.sender()` = the
@@ -524,9 +524,15 @@ is its command line.
   sees a package name only for releases it installed (`Reader::Operator`,
   `sees_release`), never an account, a name or an upgrade's error text.
   Node releases come from `Node::release_of_node` (attested once, then kept;
-  at most `PLACEMENT_RELEASE_WAIT` each), as for placement. Regressions:
+  at most `PLACEMENT_RELEASE_WAIT` each), as for placement. Every report also
+  names each app's `lastWriteAt` (Unix seconds, `null` before its first write;
+  `api::with_last_writes`): `ComponentHead::last_write_ms`, read from this
+  node's replica or, for an app it does not host, a replica's
+  (`Node::last_write_ms`, `internal/last-write`, at most `LAST_WRITE_WAIT`
+  each, one page at a time). Regressions:
   `app_versions_and_release_approvals_are_reported_without_names`,
-  `an_operator_upgrade_is_reported_as_the_operators`.
+  `an_operator_upgrade_is_reported_as_the_operators`,
+  `an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
@@ -778,7 +784,7 @@ is its command line.
   refreshes and is passed on too, `PRESENCE_TTL_MS` (7 s) sweep each second,
   `MAX_AUTHORS_PER_APP` (512, the stalest evicted), 4 KiB of state.
 - **Inspection**:
-  `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
+  `GET /apps/{app}/storage` (keys, bytes, blobs, `lastWriteAt`), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
   API keys, owned orgs, and the quotas).
 - **Teams** (`types::Org`): nested (`parent`, moved with
@@ -925,6 +931,11 @@ API and system group:
   still holds the previous one; `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
+  `last_write_ms` is the entry timestamp of the newest call that applied with a
+  diff or files, or of an uploaded blob or file (`ComponentHead::note_write`;
+  not `init`, ticks, refused calls or conflicts). It is left out at zero, so a head from before
+  it reads and writes as it did
+  (`a_head_from_before_the_last_write_reads_and_writes_as_it_did`).
   Idempotency (D74 in spec v0.26, `idempotency.rs`):
   records in `rows::CIDEM`, a ring per class in `rows::corder`. A key's class is its prefix (`class_of`): a `node:` key (the
   node's own, or a D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24

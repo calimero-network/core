@@ -2293,6 +2293,27 @@ impl Node {
         Err(ApiError::unavailable("no replica answered"))
     }
 
+    /// When `app` last committed a write (Unix milliseconds,
+    /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
+    /// this node's own if it hosts the app, else the first replica that
+    /// answers `internal/last-write`. `None` before the app's first write, and
+    /// when no replica answered.
+    pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
+        if let Some(g) = self.hosted(&app.app_id) {
+            return g.read_local(|m, _| m.last_write_ms());
+        }
+        let body = json!({ "app": app.app_id });
+        for id in &app.replicas {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
+                continue;
+            };
+            if let Ok(v) = self.peer_forward(&addr, "internal/last-write", &body).await {
+                return v["lastWriteMs"].as_u64();
+            }
+        }
+        None
+    }
+
     /// After an app forgot blob `id`: delete its bytes on every node, unless
     /// another app still marks it or it is a bundle or a package release.
     pub async fn collect_blob(&self, id: &[u8; 32]) {

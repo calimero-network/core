@@ -6407,7 +6407,8 @@ async fn app_xcalls(
     Ok(Json(json!({ "pending": pending, "deadLetters": dead })))
 }
 
-/// What the app's storage holds: keys, bytes, blobs.
+/// What the app's storage holds: keys, bytes, blobs, and when it last
+/// committed a write (Unix seconds; `null` before its first).
 async fn app_storage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -6417,11 +6418,13 @@ async fn app_storage(
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
     let stats = node.storage_stats(&app).await?;
+    let last_write = node.last_write_ms(&app).await;
     Ok(Json(json!({
         "keys": stats.keys,
         "bytes": stats.bytes,
         "blobs": stats.blobs.len(),
         "blobBytes": stats.blob_bytes,
+        "lastWriteAt": last_write.map(|ms| ms / 1000),
     })))
 }
 
@@ -6506,6 +6509,32 @@ async fn internal_storage(
         "blobs": stats.blobs.iter().map(|(id, s)| (hex::encode(id), *s)).collect::<Vec<_>>(),
         "files": stats.files.iter().map(|(id, s, h)| (hex::encode(id), *s, hex::encode(h))).collect::<Vec<_>>(),
     })))
+}
+
+/// When a hosted app last committed a write, for a peer's report
+/// ([`Node::last_write_ms`]). App data, so only for a release approved to
+/// hold the app, as `internal/storage`.
+async fn internal_last_write(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<LastWriteBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &body.app).await?;
+    let g = node
+        .hosted(&body.app)
+        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+    Ok(Json(
+        json!({ "lastWriteMs": g.read_local(|m, _| m.last_write_ms()) }),
+    ))
+}
+
+/// `internal/last-write`'s body: the app.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LastWriteBody {
+    app: String,
 }
 
 #[derive(Deserialize)]
@@ -7002,12 +7031,41 @@ async fn attested_releases(node: &Node) -> BTreeMap<u64, Option<String>> {
         .collect()
 }
 
+/// The most a report waits for one app's replicas to name its last write
+/// ([`Node::last_write_ms`]). A report asks for one page's apps at once, at
+/// most [`MAX_REPORT_PAGE`].
+pub(crate) const LAST_WRITE_WAIT: Duration = Duration::from_secs(2);
+
+/// Set each of a report's `apps` entries' `lastWriteAt`: when the app last
+/// committed a write (Unix seconds, the entry's timestamp, so every replica
+/// names the same one); `null` before its first write, or when no replica
+/// answered within [`LAST_WRITE_WAIT`].
+async fn with_last_writes(node: &Node, apps: &mut [Value]) {
+    let records: Vec<Option<crate::types::AppRecord>> = node.sys(|s| {
+        apps.iter()
+            .map(|a| a["app"].as_str().and_then(|id| s.apps.get(id)).cloned())
+            .collect()
+    });
+    let writes = futures_util::future::join_all(records.iter().map(|r| async move {
+        let r = r.as_ref()?;
+        tokio::time::timeout(LAST_WRITE_WAIT, node.last_write_ms(r))
+            .await
+            .ok()
+            .flatten()
+    }))
+    .await;
+    for (app, ms) in apps.iter_mut().zip(writes) {
+        app["lastWriteAt"] = json!(ms.map(|ms| ms / 1000));
+    }
+}
+
 /// What every app runs, for the operator (mdma): per app its id, group,
 /// scope (organization id or `account`, never the account), bundle digest,
 /// package release only where the operator may see it
 /// (`SystemState::sees_release`: the releases it installed), who holds app
 /// upgrades, its last upgrade by actor kind, the releases approved to hold
-/// it, and each replica's release and whether it is approved. Paged.
+/// it, each replica's release and whether it is approved, and when it last
+/// committed a write ([`with_last_writes`]). Paged.
 async fn ops_apps(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -7017,7 +7075,7 @@ async fn ops_apps(
     let limit = q.limit()?;
     let fresh = node.sys_fresh().await;
     let releases = attested_releases(&node).await;
-    let (apps, next, governance) = node.sys(|s| {
+    let (mut apps, next, governance) = node.sys(|s| {
         let (page, next) = report::page(s, q.after.as_deref(), limit, |_| true);
         let apps: Vec<Value> = page
             .into_iter()
@@ -7025,6 +7083,7 @@ async fn ops_apps(
             .collect();
         (apps, next, s.governance())
     });
+    with_last_writes(&node, &mut apps).await;
     Ok(Json(json!({
         "fresh": fresh,
         "governance": governance,
@@ -7078,7 +7137,8 @@ async fn ops_orgs(
 /// organization's (`org`) or the account's own outside one (`None`). Lists
 /// the apps the account reaches or may upgrade, within what its credential
 /// is scoped to (a package-bound session: that package's apps; an API key
-/// naming apps: those).
+/// naming apps: those). Each app carries when it last committed a write
+/// ([`with_last_writes`]).
 async fn scope_report(
     node: &Node,
     p: &Principal,
@@ -7093,7 +7153,7 @@ async fn scope_report(
     let releases = attested_releases(node).await;
     let bound = p.bound_app();
     let key_apps = p.api_key.as_ref().and_then(|k| k.apps.as_ref());
-    node.sys(|s| {
+    let mut out = node.sys(|s| {
         let keep = |a: &crate::types::AppRecord| {
             let in_scope = match org {
                 Some(o) => a.org.as_deref() == Some(o),
@@ -7127,7 +7187,11 @@ async fn scope_report(
             "apps": apps,
             "next": next,
         })
-    })
+    });
+    if let Some(apps) = out["apps"].as_array_mut() {
+        with_last_writes(node, apps).await;
+    }
+    out
 }
 
 /// An organization's apps, what they run and who upgraded them, the
@@ -9168,6 +9232,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))
         .route("/internal/storage", post(internal_storage))
+        .route("/internal/last-write", post(internal_last_write))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))

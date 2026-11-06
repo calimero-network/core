@@ -524,6 +524,11 @@ fn stamps(raw: &[u8]) -> Option<(u64, u64)> {
 /// An app's stored keys and values, shared between the machine and the runs reading it.
 pub type Kv = Arc<BTreeMap<Vec<u8>, Vec<u8>>>;
 
+/// Whether `n` is zero: a field serde leaves out then.
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 /// A component's host records (D39), kept in the group's `Head`, so a snapshot
 /// carries them like every other row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -533,6 +538,13 @@ pub struct ComponentHead {
     /// after it, and views see it (D19).
     #[serde(default)]
     pub last_ts_ms: u64,
+    /// The timestamp (D16) of the newest entry that wrote the app's data: a
+    /// call that applied with a diff or files, or an uploaded blob or file
+    /// the app took. The leader stamps it into the entry, so every replica
+    /// keeps the same one. Zero before the first write, and in a state
+    /// written before it was kept, which then reads and writes as it did.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_write_ms: u64,
     /// The highest `(id_term, id_seq)` any logged run carried, conflicted ones
     /// included (D52, Ruling 29): a node leading the same term again after a
     /// restart continues after it instead of reusing an id.
@@ -562,6 +574,13 @@ pub struct ComponentHead {
     /// The actions started and not ended (D17).
     #[serde(default)]
     pub actions: ActionsHead,
+}
+
+impl ComponentHead {
+    /// An entry stamped `ts_ms` wrote the app's data.
+    pub fn note_write(&mut self, ts_ms: u64) {
+        self.last_write_ms = self.last_write_ms.max(ts_ms);
+    }
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -1049,6 +1068,10 @@ impl AppMachine {
                     &call.outcome,
                     &call.caller,
                 );
+                let wrote = !call.outcome.diff.is_empty() || !call.outcome.files.is_empty();
+                if !a.conflict && a.status == Status::Ok && wrote {
+                    self.state.component.head.note_write(call.ts_ms);
+                }
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
                 }
@@ -1069,6 +1092,9 @@ impl AppMachine {
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
                 let held =
                     parse_hex32(&id).is_some_and(|raw| c.blobs.upload(tx, raw, size, &mime, ts_ms));
+                if held {
+                    c.head.note_write(ts_ms);
+                }
                 host_answer(index, held, "the app holds too many blobs")
             }
             Ok(ComponentCmd::File { mark, ts_ms, key }) => {
@@ -1077,6 +1103,7 @@ impl AppMachine {
                 let raw = parse_hex32(&mark.id).filter(|id| !c.blobs.records.contains_key(id));
                 let a = if raw.is_some() {
                     c.blobs.add_file(tx, &mark, ts_ms);
+                    c.head.note_write(ts_ms);
                     Applied {
                         result: json!({ "mark": mark }),
                         ..host_answer(index, true, "")
@@ -1800,6 +1827,84 @@ mod tests {
         let record = &r.machine.state.component.blobs.records[&[1; 32]];
         assert_eq!((record.size, record.mime.as_str()), (5, ""));
         assert!(record.file.is_some());
+    }
+
+    /// A call stamped `ts_ms` on `base`, which ended with `status` and `diff`.
+    fn call_ending(base: u64, ts_ms: u64, status: Status, diff: Vec<Write>) -> Vec<u8> {
+        let ComponentCmd::Call(mut entry) =
+            serde_json::from_slice(&call(base, None, diff)).unwrap()
+        else {
+            panic!("not a call");
+        };
+        entry.ts_ms = ts_ms;
+        entry.outcome.status = status;
+        serde_json::to_vec(&ComponentCmd::Call(entry)).unwrap()
+    }
+
+    /// The last write is the timestamp of the newest entry that wrote the app's
+    /// data: a call that applied with a diff, an uploaded blob. `init`, a call that
+    /// wrote nothing, one the app refused, a conflict and a timer tick leave it.
+    /// It is kept in the head, so a restart reads it back.
+    #[test]
+    fn the_last_write_is_the_newest_writing_entrys_timestamp() {
+        let mut r = Rig::new();
+        assert!(!r.apply(1, &init(0)).conflict);
+        assert_eq!(r.machine.last_write_ms(), None, "no write yet");
+        assert!(
+            !r.apply(2, &call_ending(1, 100, Status::Ok, vec![w("k", "v")]))
+                .conflict
+        );
+        assert_eq!(r.machine.last_write_ms(), Some(100));
+        assert!(
+            !r.apply(3, &call_ending(2, 200, Status::Ok, vec![]))
+                .conflict
+        );
+        assert!(
+            !r.apply(4, &call_ending(3, 300, Status::AppError, vec![w("k", "x")]))
+                .conflict
+        );
+        assert!(
+            r.apply(5, &call_ending(1, 400, Status::Ok, vec![w("k", "y")]))
+                .conflict
+        );
+        assert!(
+            !r.apply(6, &tick(5, 500, Status::Ok, vec![w("t", "1")]))
+                .conflict
+        );
+        assert_eq!(r.machine.last_write_ms(), Some(100), "none of those wrote");
+        let blob = serde_json::to_vec(&ComponentCmd::Blob {
+            id: fid(9),
+            size: 3,
+            mime: "text/plain".into(),
+            ts_ms: 600,
+        })
+        .unwrap();
+        assert_eq!(r.apply(7, &blob).status, Status::Ok);
+        assert_eq!(r.machine.last_write_ms(), Some(600), "an upload writes");
+
+        let mut again = AppMachine::new("app".into());
+        calimero_log::Machine::attach(&mut again, r.engine.group_state(5));
+        calimero_log::Machine::restore(&mut again, &[]).unwrap();
+        assert_eq!(again.last_write_ms(), Some(600), "read back from the head");
+    }
+
+    /// A head written before the last write was kept reads with none and writes
+    /// back the same bytes; one that has it reads back as written.
+    #[test]
+    fn a_head_from_before_the_last_write_reads_and_writes_as_it_did() {
+        let before = serde_json::to_value(ComponentHead::default()).unwrap();
+        assert!(before.get("lastWriteMs").is_none(), "{before}");
+        let read: ComponentHead = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(read.last_write_ms, 0);
+        assert_eq!(serde_json::to_value(&read).unwrap(), before);
+
+        let mut head = ComponentHead::default();
+        head.note_write(42);
+        head.note_write(7);
+        let written = serde_json::to_value(&head).unwrap();
+        assert_eq!(written["lastWriteMs"], json!(42), "never moves back");
+        let back: ComponentHead = serde_json::from_value(written).unwrap();
+        assert_eq!(back, head);
     }
 
     #[test]
