@@ -1230,8 +1230,10 @@ impl AppMachine {
             }
             Ok(ComponentCmd::BlobRevoke { id }) => {
                 let c = &mut self.state.component;
-                let revoked = parse_hex32(&id).is_some_and(|raw| c.blobs.revoke(tx, &raw));
-                host_answer(index, revoked, "no such published blob")
+                let revoked = parse_hex32(&id)
+                    .ok_or("no such published blob")
+                    .and_then(|raw| c.blobs.revoke(tx, &raw));
+                host_answer(index, revoked.is_ok(), revoked.err().unwrap_or_default())
             }
             Ok(ComponentCmd::ActionEnd {
                 id,

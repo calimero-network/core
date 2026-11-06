@@ -2208,6 +2208,48 @@ fn an_unreadable_epoch_floor_fails_the_load_instead_of_resetting_to_zero() {
 }
 
 #[test]
+fn a_blob_published_over_a_forgotten_upload_starts_above_the_uploads_epoch() {
+    let mut w = done_world();
+    let upload = ComponentCmd::Blob {
+        id: plain(1),
+        size: out(1).size,
+        mime: "text/plain".to_owned(),
+        ts_ms: 20,
+    };
+    assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, 1);
+}
+
+#[test]
+fn an_unreadable_blob_record_fails_the_load_instead_of_losing_its_epoch() {
+    let mut w = published_world();
+    let state = w.r.engine.group_state(5);
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(rows::CBLOB, &[2; 32], b"not json");
+    tx.commit().unwrap();
+    assert!(calimero_log::Machine::restore(&mut w.r.machine, &[]).is_err());
+}
+
+#[test]
+fn a_revoke_at_the_last_epoch_is_refused_and_changes_nothing() {
+    let mut w = published_world();
+    let mut record = plain_record(&w, 1).unwrap();
+    record.epoch = u32::MAX;
+    let state = w.r.engine.group_state(5);
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(rows::CBLOB, &[2; 32], &serde_json::to_vec(&record).unwrap());
+    tx.commit().unwrap();
+    calimero_log::Machine::restore(&mut w.r.machine, &[]).unwrap();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(why(&owner_cmd(&mut w, &revoke)), "no revocation left");
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, u32::MAX);
+}
+
+#[test]
 fn an_entry_publishing_more_than_the_cap_is_refused_even_if_every_mark_is_valid() {
     let mut w = done_world();
     let mark = published(&out(1).id, &plain(1), out(1).size);
