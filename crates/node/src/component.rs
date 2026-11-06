@@ -1830,7 +1830,7 @@ mod tests {
     }
 
     /// A call stamped `ts_ms` on `base`, which ended with `status` and `diff`.
-    fn call_at(base: u64, ts_ms: u64, status: Status, diff: Vec<Write>) -> Vec<u8> {
+    fn call_ending(base: u64, ts_ms: u64, status: Status, diff: Vec<Write>) -> Vec<u8> {
         let ComponentCmd::Call(mut entry) =
             serde_json::from_slice(&call(base, None, diff)).unwrap()
         else {
@@ -1851,17 +1851,20 @@ mod tests {
         assert!(!r.apply(1, &init(0)).conflict);
         assert_eq!(r.machine.last_write_ms(), None, "no write yet");
         assert!(
-            !r.apply(2, &call_at(1, 100, Status::Ok, vec![w("k", "v")]))
+            !r.apply(2, &call_ending(1, 100, Status::Ok, vec![w("k", "v")]))
                 .conflict
         );
         assert_eq!(r.machine.last_write_ms(), Some(100));
-        assert!(!r.apply(3, &call_at(2, 200, Status::Ok, vec![])).conflict);
         assert!(
-            !r.apply(4, &call_at(3, 300, Status::AppError, vec![w("k", "x")]))
+            !r.apply(3, &call_ending(2, 200, Status::Ok, vec![]))
                 .conflict
         );
         assert!(
-            r.apply(5, &call_at(1, 400, Status::Ok, vec![w("k", "y")]))
+            !r.apply(4, &call_ending(3, 300, Status::AppError, vec![w("k", "x")]))
+                .conflict
+        );
+        assert!(
+            r.apply(5, &call_ending(1, 400, Status::Ok, vec![w("k", "y")]))
                 .conflict
         );
         assert!(
