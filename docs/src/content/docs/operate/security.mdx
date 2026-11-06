@@ -80,8 +80,9 @@ with the same 72-hour delay (`RECOVERY_DELAY_SECS`):
 | Cancel (`/auth/recovery/cancel`) | The account | A passkey it already has |
 | Finish (`/auth/recovery/finish`) | The new passkey | Its sign-in assertion over the session the finish opens |
 
-Finishing adds the new passkey, ends every session the account had, and signs
-the new passkey in. Nobody else can recover an account: the operator and the
+Finishing adds the new passkey, ends every session the account had, revokes
+every API key it made (whoever took the lost passkey could have made keys with
+it), and signs the new passkey in; machines that used a key need a new one. Nobody else can recover an account: the operator and the
 nodes never hold the code, the start names the one passkey it may add, and the
 finish needs that passkey. One recovery runs at a time, and a code starts only
 one. Someone who steals the code is stopped by any of the account's passkeys

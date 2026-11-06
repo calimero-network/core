@@ -3,8 +3,8 @@
 //! recovery code they made while signed in. The code starts a recovery with
 //! a new passkey; for `RECOVERY_DELAY_SECS` (72 hours, as an organization's
 //! recovery) a passkey the account still has cancels it; after, the new
-//! passkey finishes it, which ends every session the account had and signs
-//! in.
+//! passkey finishes it, which ends every session the account had, revokes
+//! its API keys and signs in.
 
 use calimero_client::{Client, Passkey, Session};
 use calimero_identity::testing::SoftAuthenticator;
@@ -64,8 +64,8 @@ async fn start(
 /// Make a code (412 step-up); start with it on another node; finishing
 /// early is refused; the old passkey cancels; the spent code is refused; a
 /// fresh code starts again, and once the delay passed the new passkey
-/// finishes: the same account, the old sessions out, and the new passkey
-/// signs in anywhere.
+/// finishes: the same account, the old sessions and API keys out, and the
+/// new passkey signs in anywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled() {
     let c = Cluster::start(3).await;
@@ -157,8 +157,16 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
         assert_eq!(e.code(), Some("UNAUTHENTICATED"), "node {i}: {e}");
     }
 
-    // A fresh code; then every passkey is lost.
+    // A fresh code, and an API key a machine of alice's holds; then every
+    // passkey is lost.
     let code = make_code(&alice, &mut old).await;
+    let (_key_id, key) = alice
+        .create_api_key(json!({ "label": "ci" }), &mut old)
+        .await
+        .unwrap();
+    let machine = c.client(1);
+    machine.use_api_key(&key).await;
+    assert_eq!(machine.me().await.unwrap()["accountId"], account);
     drop(old);
     // The code as written down (lower case, spaces) starts the recovery.
     let typed = code.to_lowercase().replace('-', " ");
@@ -201,6 +209,11 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     let e = alice.me().await.unwrap_err();
     assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
     assert!(alice.refresh().await.is_err());
+    // So is whoever holds the account's API keys: the finish revoked them.
+    let e = machine.me().await.unwrap_err();
+    assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
+    let keys = finisher.get("auth/apikeys").await.unwrap();
+    assert_eq!(keys["keys"], json!([]), "{keys}");
 
     // The finish is spent: the same passkey cannot finish again.
     let e = c

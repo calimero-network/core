@@ -2887,15 +2887,20 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// Finish a recovery once its delay passed, judged at `at`: add the
-    /// passkey the start logged, end every session the account had, and
-    /// open `refresh`. `consent` is that passkey's sign-in assertion over
-    /// [`sign_in_args`] of `refresh` (`session / __sign_in`), as
-    /// `CreateRefresh` carries.
+    /// passkey the start logged, end every session the account had, revoke
+    /// its API keys (`revoke_api_keys`), and open `refresh`. `consent` is
+    /// that passkey's sign-in assertion over [`sign_in_args`] of `refresh`
+    /// (`session / __sign_in`), as `CreateRefresh` carries.
     FinishAccountRecovery {
         account: AccountId,
         at: u64,
         refresh: RefreshGrant,
         consent: Value,
+        /// Revoke every API key of the account too. Absent (`false`) in a
+        /// finish an earlier release logged: replayed, it keeps the keys, as
+        /// that release did, so every replica reaches the same state.
+        #[serde(default)]
+        revoke_api_keys: bool,
     },
     /// A sign-in's refresh token: carries the sign-in's assertion, whose
     /// challenge states [`sign_in_args`] (`session / __sign_in`).
@@ -4265,6 +4270,7 @@ impl SystemMachine {
                 at,
                 refresh,
                 consent,
+                revoke_api_keys,
             } => {
                 let p = s
                     .account_recoveries
@@ -4298,10 +4304,20 @@ impl SystemMachine {
                 acc.passkeys.push(credential.clone());
                 let _prev = s.credentials.insert(credential.id, account.clone());
                 let _done = s.account_recoveries.remove(&account);
-                // Whoever holds the lost devices keeps no session.
+                // Whoever holds the lost devices keeps no session, and no
+                // machine credential either.
                 let revoked = s.revoke_account_sessions(&account, at);
+                let keys_before = s.api_keys.len();
+                if revoke_api_keys {
+                    s.api_keys.retain(|_, k| k.account != account);
+                }
+                let revoked_keys = keys_before - s.api_keys.len();
                 let _prev = s.refresh.insert(refresh.hash, refresh.record);
-                Ok(json!({ "accountId": account, "revoked": revoked }))
+                Ok(json!({
+                    "accountId": account,
+                    "revoked": revoked,
+                    "revokedApiKeys": revoked_keys,
+                }))
             }
             SystemCmd::RevokeApiKey { key_id, actor, .. } => {
                 let before = s.api_keys.len();
@@ -7327,6 +7343,7 @@ mod tests {
                 "__sign_in",
                 &super::sign_in_args(hash, record),
             ),
+            revoke_api_keys: true,
         }
     }
 
@@ -7599,6 +7616,69 @@ mod tests {
                 consent: c,
             })
             .unwrap();
+    }
+
+    /// An API key of `account`, kept under `hash`.
+    fn api_key(m: &mut SystemMachine, hash: &str, account: &str) {
+        let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+            "keyId": hash, "account": account, "label": "ci", "apps": null,
+            "methods": null, "readOnly": false, "allowConfirm": false, "expiresAt": 99,
+        }))
+        .unwrap();
+        let _prev = m.state.api_keys.insert(hash.into(), record);
+    }
+
+    /// Start alice's recovery with a new device's passkey: the finish that
+    /// device signs once the delay passed.
+    fn ready_recovery(m: &mut SystemMachine, alice: &mut Soft) -> SystemCmd {
+        let (code, key) = recovery_code();
+        set_code(m, alice, "alice", &key);
+        let (mut device, cred) = new_device();
+        let signature = crate::proof::sign_recover(&code, "alice", &cred, 200);
+        let _ok = m
+            .run(start_with(&key, "alice", &cred, 200, signature))
+            .unwrap();
+        let ready = 200 + crate::types::RECOVERY_DELAY_SECS;
+        let (_t, hash, record) = refresh_token("alice", &cred.id, "s2");
+        finish_with(&mut device, "alice", ready, (&hash, &record))
+    }
+
+    /// Whoever stole the lost passkey keeps no machine credential: the
+    /// finish revokes every API key of the account, and no other account's.
+    #[test]
+    fn an_account_recovery_revokes_the_accounts_api_keys() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        api_key(&mut m, "a1", "alice");
+        api_key(&mut m, "a2", "alice");
+        api_key(&mut m, "b1", "bob");
+        let finish = ready_recovery(&mut m, &mut alice);
+        let out = m.run(finish).unwrap();
+        assert_eq!(out["revokedApiKeys"], json!(2), "{out}");
+        assert_eq!(
+            m.state.api_keys.keys().collect::<Vec<_>>(),
+            ["b1"],
+            "alice's keys are gone, bob's stays"
+        );
+    }
+
+    /// A finish an earlier release logged (no `revoke_api_keys`) replays as
+    /// that release applied it: the keys stay, so a replica that replays it
+    /// after a restart agrees with one that applied it then.
+    #[test]
+    fn a_finish_logged_before_key_revocation_replays_as_it_did() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        api_key(&mut m, "a1", "alice");
+        let finish = ready_recovery(&mut m, &mut alice);
+        let mut logged = serde_json::to_value(&finish).unwrap();
+        assert_eq!(
+            logged.as_object_mut().unwrap().remove("revoke_api_keys"),
+            Some(json!(true))
+        );
+        let old: SystemCmd = serde_json::from_value(logged).unwrap();
+        let out = m.run(old).unwrap();
+        assert_eq!(out["revokedApiKeys"], json!(0), "{out}");
+        assert!(m.state.api_keys.contains_key("a1"));
+        assert!(m.state.account_recoveries.is_empty(), "it still finished");
     }
 
     /// State written before account recovery reads with no codes and no

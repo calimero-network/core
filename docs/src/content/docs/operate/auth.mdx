@@ -119,7 +119,7 @@ Recovery (lost every passkey; design:
 | `POST /auth/recovery/begin { code }` | signed out | A passkey registration for the account the code names; `401` for a wrong or spent code, `409 RECOVERY_PENDING` while one is under way |
 | `POST /auth/recovery/start { challengeId, code, registration }` | signed out | Spend the code and log the new passkey as pending: `{ accountId, credentialId, startedAt, readyAt }`. No passkey is added and no session opens. A wrong code answers `401` and spends the ceremony |
 | `POST /auth/recovery/cancel` | signed in with a passkey the account has (`412` first) | Cancel the recovery under way |
-| `POST /auth/recovery/finish { accountId? }` | signed out, the new passkey (`412` first) | Once `readyAt` passed (`RECOVERY_DELAY_SECS`, 72 hours, as for an organization): the passkey is added, every earlier session of the account ends, and the answer is a new session. `409 RECOVERY_NOT_READY` (with `readyAt`) before |
+| `POST /auth/recovery/finish { accountId? }` | signed out, the new passkey (`412` first) | Once `readyAt` passed (`RECOVERY_DELAY_SECS`, 72 hours, as for an organization): the passkey is added, every earlier session of the account ends, every API key of the account is revoked, and the answer is a new session. `409 RECOVERY_NOT_READY` (with `readyAt`) before |
 
 `/auth/me` answers `recoveryCode: true|false` and `recoveryPending` (`{
 accountId, credentialId, startedAt, readyAt }` or `null`), so every signed-in
