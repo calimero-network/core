@@ -451,6 +451,18 @@ fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
             None => quote! { #sdk::__private::encode(&__out) },
         }
     };
+    if m.attrs.compute_result {
+        if let [(name, ty)] = m.params.as_slice() {
+            // The node's outcome is one JSON object that the parameter takes whole.
+            return quote! {
+                #index => {
+                    let #name: #ty = #sdk::__private::decode_args::<#ty>(args)?;
+                    let __out = #call;
+                    #encode
+                }
+            };
+        }
+    }
     quote! {
         #index => {
             #[derive(#sdk::__private::serde::Deserialize)]
@@ -762,6 +774,22 @@ mod tests {
             out.contains(r#",\"world\":\"calimero:app@0.5.1\"}"#.replace(r#"\""#, "\"").as_str()),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_result_method_takes_the_whole_outcome_as_its_one_parameter() {
+        let out = expand(parse_quote! {
+            impl S {
+                #[app::compute(fuel = 1, result = "on_done")]
+                pub fn digest() -> Result<()> { Ok(()) }
+                #[app::compute_result]
+                pub fn on_done(&mut self, outcome: Outcome) -> Result<()> { Ok(()) }
+            }
+        })
+        .unwrap()
+        .to_string();
+        assert!(out.contains("decode_args :: < Outcome >"), "{out}");
+        assert!(!out.contains("rename = \"outcome\""), "{out}");
     }
 
     #[test]
