@@ -390,6 +390,17 @@ is its command line.
   (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
   and `GET /apps/{app}/attestation` gathers every replica's
   (`Client::verify_app_cluster`).
+- **Account proofs** (`api/account_proof.rs`, `Node::account_proof`): `POST
+  /auth/account-proof { nonce, audience }` (a passkey session, `holder`: never
+  an API key or a package-bound session) answers
+  `calimero_client::attest::AccountProof`, the receipt key's signature over
+  `"calimero.account-proof.v1\0" || JCS({ cluster, node, account, nonce,
+  audience, issuedAt, expiresAt })`, valid `ACCOUNT_PROOF_TTL` (5 min); limits
+  `ACCOUNT_PROOF_NONCE`, `MAX_ACCOUNT_PROOF_AUDIENCE`, plain text only.
+  `GET /ops/nodes/{id}/receipt-key` (ops token) answers the key
+  `Node::session_issuer` holds for that node, so the operator (mdma) checks a
+  proof from any node. Regression: `tests/account_proofs.rs`; vector:
+  `an_account_proof_binds_its_statement_and_key`.
 - **KMS evidence**: `GET /attestation?purpose=kms` adds `kms` (`config.kms_keys`: the
   KMS quote merod accepted for its storage key, and the boot script's record for the
   data disk's, `--kms-disk-evidence`) and binds it (`kms_report_data`). Without a

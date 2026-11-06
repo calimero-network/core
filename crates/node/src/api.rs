@@ -53,6 +53,7 @@ const CHALLENGE_TTL: u64 = 5 * 60;
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
+mod account_proof;
 mod origins;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
@@ -8998,6 +8999,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/releases", post(account_release_approval))
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))
+        .route("/auth/account-proof", post(account_proof::prove))
         .route("/auth/apps", get(account_apps))
         .route("/auth/usage", get(usage))
         .route("/auth/aliases", get(alias_list))
@@ -9093,6 +9095,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/served-origins", get(origins::ops_served))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
+        .route("/ops/nodes/{id}/receipt-key", get(account_proof::ops_receipt_key))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
         .route("/ops/releases", post(ops_release))
