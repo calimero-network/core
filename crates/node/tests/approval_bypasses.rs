@@ -506,6 +506,7 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
         account: bob.clone(),
         now,
         signature,
+        free_when_unchanged: true,
     };
     let refused = [
         ("a passkey without consent", add(Value::Null)),

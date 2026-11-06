@@ -391,6 +391,13 @@ pub enum Admission {
 /// cluster's policy; the API answers it `403 SIGN_UP_REFUSED`.
 pub const SIGN_UP_PREFIX: &str = "sign-up refused";
 
+/// A refusal: no organization invite is kept under that token. The last use
+/// of an invite removes it, as does deleting its organization, so a used-up
+/// invite reads the same as one that never existed.
+pub const INVITE_GONE: &str = "this invite was used up, revoked or never existed";
+/// A refusal: the organization invite is past its expiry.
+pub const INVITE_EXPIRED: &str = "this invite has expired";
+
 /// How many cluster sign-up invites a cluster keeps at once.
 pub const MAX_SIGN_UP_INVITES: usize = 10_000;
 
@@ -1032,7 +1039,9 @@ impl SystemState {
                     }
                     Admission::OrgInvite
                 } else {
-                    return Err("sign-up refused: unknown invite");
+                    return Err(
+                        "sign-up refused: this invite was used up, revoked or never existed",
+                    );
                 }
             }
         };
@@ -1052,20 +1061,34 @@ impl SystemState {
     /// Spend one use of an organization invite for `account`, which joins
     /// the organization (and the teams the invite names) at the invite's role,
     /// or keeps a higher one. Everything is checked before anything changes.
+    ///
+    /// With `free_when_unchanged`, a redemption that changes nothing for the
+    /// account (a member already, at the invite's role or above, in every
+    /// named team the organization still has) answers the organization and
+    /// spends no use: an owner opening their own link leaves it for the person
+    /// it was made for. Judged on the state alone, so every replica agrees.
     fn redeem_org_invite(
         &mut self,
         invite_key: &str,
         account: &str,
         now: u64,
+        free_when_unchanged: bool,
     ) -> Result<OrgId, &'static str> {
-        let inv = self.invites.get(invite_key).ok_or("unknown invite")?;
+        let inv = self.invites.get(invite_key).ok_or(INVITE_GONE)?;
         if inv.expires_at <= now || inv.uses_left == 0 {
-            return Err("invite expired");
+            return Err(INVITE_EXPIRED);
         }
-        if !self.orgs.contains_key(&inv.org) {
-            return Err("no such organization");
+        let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
+        let unchanged = o.members.get(account).is_some_and(|r| *r >= inv.role)
+            && inv.teams.iter().all(|t| {
+                o.teams
+                    .get(t)
+                    .is_none_or(|team| team.members.contains_key(account))
+            });
+        if free_when_unchanged && unchanged {
+            return Ok(inv.org.clone());
         }
-        let inv = self.invites.get_mut(invite_key).ok_or("unknown invite")?;
+        let inv = self.invites.get_mut(invite_key).ok_or(INVITE_GONE)?;
         inv.uses_left -= 1;
         let inv = inv.clone();
         if inv.uses_left == 0 {
@@ -2186,7 +2209,9 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                 if !s.invites.contains_key(&r.invite_key)
                     && !s.sign_up_invites.contains_key(&r.invite_key)
                 {
-                    return Err("sign-up refused: unknown invite");
+                    return Err(
+                        "sign-up refused: this invite was used up, revoked or never existed",
+                    );
                 }
                 let redeemed = crate::proof::verify_invite_redeem(
                     &r.invite_key,
@@ -2403,9 +2428,10 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             account,
             now,
             signature,
+            ..
         } => {
             if !s.invites.contains_key(invite_key) {
-                return Err("unknown invite");
+                return Err(INVITE_GONE);
             }
             let used = crate::proof::verify_invite_redeem(invite_key, account, *now, signature)?;
             if s.used_proofs.contains(&used) {
@@ -3336,6 +3362,13 @@ pub enum SystemCmd {
         now: u64,
         #[serde(default)]
         signature: String,
+        /// A redemption that changes nothing for `account` (a member at the
+        /// invite's role or above, in every team it names) spends no use.
+        /// Absent (`false`) in a redemption an earlier release logged:
+        /// replayed, it spends one, as that release did, so every replica
+        /// reaches the same state.
+        #[serde(default)]
+        free_when_unchanged: bool,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
     /// key: the owner's, with their passkey consent (`org:<org> /
@@ -4037,7 +4070,9 @@ impl SystemMachine {
                 }
                 let org = match (admission, invite) {
                     (Admission::OrgInvite, Some(r)) => {
-                        Some(s.redeem_org_invite(&r.invite_key, &id, r.now)?)
+                        // A new account is never a member yet: every use is
+                        // spent, as before the free redemption existed.
+                        Some(s.redeem_org_invite(&r.invite_key, &id, r.now, false)?)
                     }
                     (Admission::SignUpInvite, Some(r)) => {
                         s.spend_sign_up_invite(&r.invite_key);
@@ -5289,12 +5324,13 @@ impl SystemMachine {
                 invite_key,
                 account,
                 now,
+                free_when_unchanged,
                 ..
             } => {
                 if !s.accounts.contains_key(&account) {
                     return Err("unknown account");
                 }
-                let org = s.redeem_org_invite(&invite_key, &account, now)?;
+                let org = s.redeem_org_invite(&invite_key, &account, now, free_when_unchanged)?;
                 Ok(json!({ "org": org }))
             }
             SystemCmd::SetRecoveryKey {
@@ -5463,7 +5499,7 @@ mod tests {
 
     use super::{
         Authority, Governance, OrgRole, Quotas, ReleaseScope, SystemCmd, SystemMachine,
-        SystemState, OPERATOR, QUOTA_PREFIX,
+        SystemState, INVITE_GONE, OPERATOR, QUOTA_PREFIX,
     };
     use crate::types::RefreshRecord;
 
@@ -7090,6 +7126,7 @@ mod tests {
             account: "carol".into(),
             now: 10,
             signature,
+            free_when_unchanged: true,
         };
         assert!(m.run(redeem(String::new())).is_err(), "no signature");
         let forged = crate::proof::sign_invite_redeem("inv_guess", "carol", 10);
@@ -7104,6 +7141,106 @@ mod tests {
         assert!(m.state.orgs["org"].members.contains_key("carol"));
         assert!(m.run(redeem(real)).is_err(), "replay");
         assert_eq!(m.state.invites[&key].uses_left, 1);
+    }
+
+    /// An invite of `org` kept under `token`'s key: `role`, `teams`, `uses`.
+    fn keep_invite(m: &mut SystemMachine, token: &str, role: &str, teams: &[&str], uses: u32) {
+        let invite: crate::types::Invite = serde_json::from_value(json!({
+            "org": "org", "role": role, "teams": teams, "expiresAt": 100, "usesLeft": uses,
+        }))
+        .unwrap();
+        let _prev = m
+            .state
+            .invites
+            .insert(crate::proof::invite_key(token), invite);
+    }
+
+    /// `account`'s redemption of `token` at `now`, as this release's API logs it.
+    fn redemption(token: &str, account: &str, now: u64) -> SystemCmd {
+        SystemCmd::RedeemInvite {
+            invite_key: crate::proof::invite_key(token),
+            account: account.into(),
+            now,
+            signature: crate::proof::sign_invite_redeem(token, account, now),
+            free_when_unchanged: true,
+        }
+    }
+
+    /// The owner opening their own one-use link changes nothing for them, so
+    /// it spends nothing: the person it was made for still joins with it, and
+    /// only that redemption removes it. Before, the owner's spent the only
+    /// use and the invitee was told the invite was unknown.
+    #[test]
+    fn a_member_redeeming_an_invite_leaves_its_use_for_the_invitee() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        keep_invite(&mut m, "inv_link", "member", &[], 1);
+        let key = crate::proof::invite_key("inv_link");
+        let out = m.run(redemption("inv_link", "alice", 10)).unwrap();
+        assert_eq!(out, json!({ "org": "org" }));
+        assert_eq!(m.state.orgs["org"].members["alice"], OrgRole::Owner);
+        assert_eq!(m.state.invites[&key].uses_left, 1, "the owner spent none");
+        // A member at the invite's role spends none either.
+        let _same = m.run(redemption("inv_link", "bob", 11)).unwrap();
+        assert_eq!(m.state.invites[&key].uses_left, 1, "bob spent none");
+        let out = m.run(redemption("inv_link", "carol", 12)).unwrap();
+        assert_eq!(out, json!({ "org": "org" }));
+        assert_eq!(m.state.orgs["org"].members["carol"], OrgRole::Member);
+        assert!(
+            !m.state.invites.contains_key(&key),
+            "the invitee used it up"
+        );
+        let e = m.run(redemption("inv_link", "carol", 13)).unwrap_err();
+        assert_eq!(e, INVITE_GONE);
+    }
+
+    /// A member spends a use when the invite gives them something: a higher
+    /// role, or a team they are not in yet.
+    #[test]
+    fn a_member_spends_a_use_when_the_invite_raises_or_adds() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        keep_invite(&mut m, "inv_admin", "admin", &[], 2);
+        let _ok = m.run(redemption("inv_admin", "bob", 10)).unwrap();
+        assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Admin);
+        let admin = crate::proof::invite_key("inv_admin");
+        assert_eq!(m.state.invites[&admin].uses_left, 1, "a raised role");
+        keep_invite(&mut m, "inv_team", "member", &["t"], 2);
+        let _ok = m.run(redemption("inv_team", "bob", 11)).unwrap();
+        assert!(m.state.orgs["org"].teams["t"].members.contains_key("bob"));
+        let team = crate::proof::invite_key("inv_team");
+        assert_eq!(m.state.invites[&team].uses_left, 1, "an added team");
+        // In the team now, and an admin: the same invite gives bob nothing.
+        let _same = m.run(redemption("inv_team", "bob", 12)).unwrap();
+        assert_eq!(m.state.invites[&team].uses_left, 1, "nothing new");
+    }
+
+    /// A redemption an earlier release logged (no `free_when_unchanged`)
+    /// replays as that release applied it: the owner's spends the only use
+    /// and removes the invite, so the invitee's later redemption is refused
+    /// on a replica that replays the log after a restart as on one that
+    /// applied it then.
+    #[test]
+    fn a_redemption_logged_before_free_redemptions_replays_as_it_did() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        keep_invite(&mut m, "inv_link", "member", &[], 1);
+        let key = crate::proof::invite_key("inv_link");
+        // The entry as rc.10 logged it: no flag.
+        let logged = json!({
+            "op": "redeemInvite",
+            "invite_key": &key,
+            "account": "alice",
+            "now": 10,
+            "signature": crate::proof::sign_invite_redeem("inv_link", "alice", 10),
+        });
+        let old: SystemCmd = serde_json::from_value(logged).unwrap();
+        let out = m.run(old).unwrap();
+        assert_eq!(out, json!({ "org": "org" }));
+        assert!(!m.state.invites.contains_key(&key), "spent, as it was");
+        let e = m.run(redemption("inv_link", "carol", 11)).unwrap_err();
+        assert_eq!(e, INVITE_GONE);
+        assert!(!m.state.orgs["org"].members.contains_key("carol"));
+        // This release logs the flag, so its entries replay the new rule.
+        let new = serde_json::to_value(redemption("inv_link", "alice", 10)).unwrap();
+        assert_eq!(new["free_when_unchanged"], json!(true), "{new}");
     }
 
     // ---------------------------------------------------- account recovery
