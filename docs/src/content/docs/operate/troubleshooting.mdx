@@ -43,6 +43,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | --- | --- | --- |
 | `400 UNKNOWN_CHALLENGE` ("start again on this node") | `begin` and `finish` reached different nodes, or the challenge was used | Keep a ceremony on one node: session affinity on the balancer, or one node URL. |
 | `400 EXPIRED_CHALLENGE` | More than 5 minutes between `begin` and `finish` | Start again. |
+| `401 PASSKEY_UNKNOWN_HERE` | The browser offered a passkey from another cluster (clusters share an rp-id), or one that was removed | Sign up on this cluster, or open the app from the link for the cluster the account is on; the passkey's name in the password manager names its cluster. |
 | `400 BAD_REGISTRATION` or a refused assertion | Wrong origin or relying party | The page's origin must be in `--origins`; `--rp-id` must be its domain or a parent of it. |
 | `401 UNAUTHENTICATED` "token signed with an unknown key" | The node has not applied the session key yet, or the token is from another cluster | Retry; check you are talking to the cluster that issued it. |
 | `401` "refresh token already used; the session is revoked" | A refresh token was presented twice | Sign in again; find who else holds the token. |

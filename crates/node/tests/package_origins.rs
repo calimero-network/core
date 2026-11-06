@@ -280,6 +280,20 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap();
     assert_eq!(begin["options"]["rpId"], SITE_RP, "{begin}");
+    // Her password manager lists the passkey under the app and the cluster
+    // (the package id: its release names no display name).
+    let begin = carol
+        .post(
+            "auth/passkey/register/begin",
+            json!({ "name": "carol", "origin": SITE }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        begin["options"]["user"]["name"],
+        format!("carol · {NOTES} ({})", c.name),
+        "{begin}"
+    );
     let s = carol
         .sign_up_at(&mut carol_pk, "carol", Some(SITE))
         .await

@@ -54,6 +54,7 @@ const CHALLENGE_TTL: u64 = 5 * 60;
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod origins;
+mod passkeys;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
@@ -980,6 +981,13 @@ async fn register_begin(
     } else {
         body.name
     };
+    // `begin_rp_id` admitted the origin, on fresh state when it had to.
+    let app = body
+        .origin
+        .as_deref()
+        .and_then(|o| app_origin(&node, o))
+        .map(|a| passkeys::app_name(&node, &a.package));
+    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, app.as_deref());
     let id = put_pending(
         &node,
         Pending::Register {
@@ -993,7 +1001,7 @@ async fn register_begin(
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&user_id), "name": name, "displayName": name },
+            "user": { "id": b64url(&user_id), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "timeout": 60000,
             "attestation": "none",
@@ -1250,7 +1258,7 @@ async fn check_assertion_for(
                 .map(|(a, c)| (a.account_id.clone(), c.clone()))
         })
         .await
-        .ok_or_else(|| ApiError::unauthenticated("unknown passkey"))?;
+        .ok_or_else(passkeys::unknown_here)?;
     if account.is_some_and(|a| a != owner) {
         return Err(ApiError::forbidden(
             "this passkey belongs to another account",
@@ -1331,23 +1339,24 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
             expires: now_secs() + CHALLENGE_TTL,
         },
     )?;
-    let exclude: Vec<Value> = node.sys(|s| {
-        s.accounts
-            .get(&account)
-            .map(|a| {
+    let (name, exclude): (String, Vec<Value>) = node.sys(|s| {
+        s.accounts.get(&account).map_or_else(Default::default, |a| {
+            (
+                a.name.clone(),
                 a.passkeys
                     .iter()
                     .map(|c| json!({ "type": "public-key", "id": c.id }))
-                    .collect()
-            })
-            .unwrap_or_default()
+                    .collect(),
+            )
+        })
     });
+    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, None);
     Ok(Json(json!({
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": account, "displayName": account },
+            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "attestation": "none",
@@ -2024,12 +2033,13 @@ async fn account_recovery_begin(
             )
         })
     });
+    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, None);
     Ok(Json(json!({
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": name, "displayName": name },
+            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "timeout": 60000,
