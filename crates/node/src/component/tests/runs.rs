@@ -369,6 +369,9 @@ fn attempts_are_numbered_from_one_in_order_up_to_three() {
         "no attempts left"
     );
     let rec = w.record("r1");
+    assert!(rec.attempt(0).is_none(), "attempts count from 1");
+    assert_eq!(rec.attempt(2).map(|a| a.node), Some(42));
+    assert!(rec.attempt(4).is_none());
     let nodes: Vec<_> = rec
         .attempts
         .iter()
