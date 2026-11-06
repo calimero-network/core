@@ -2184,6 +2184,30 @@ fn an_upload_of_a_published_blobs_bytes_keeps_its_revocations() {
 }
 
 #[test]
+fn a_blob_published_again_after_a_restart_starts_at_the_persisted_epoch_floor() {
+    let mut w = published_world();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+
+    calimero_log::Machine::restore(&mut w.r.machine, &[]).unwrap();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, 2);
+}
+
+#[test]
+fn an_unreadable_epoch_floor_fails_the_load_instead_of_resetting_to_zero() {
+    let mut w = published_world();
+    let state = w.r.engine.group_state(5);
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(rows::CBLOB, blobs::FLOOR_KEY, b"not json");
+    tx.commit().unwrap();
+    assert!(calimero_log::Machine::restore(&mut w.r.machine, &[]).is_err());
+}
+
+#[test]
 fn an_entry_publishing_more_than_the_cap_is_refused_even_if_every_mark_is_valid() {
     let mut w = done_world();
     let mark = published(&out(1).id, &plain(1), out(1).size);
