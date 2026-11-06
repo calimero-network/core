@@ -146,10 +146,12 @@ fn twice_passes_on_a_run_that_is_the_same_both_times() {
     assert!(run.status.success(), "{}", text(&run.stderr));
     assert!(text(&run.stdout).contains("both runs are identical"));
     assert!(out.join("output-0").exists());
-    assert!(
-        !out.join("second").exists(),
-        "the second run leaves nothing"
-    );
+    let mut left: Vec<_> = std::fs::read_dir(&out)
+        .expect("read out")
+        .map(|e| e.expect("entry").file_name().into_string().expect("utf8"))
+        .collect();
+    left.sort();
+    assert_eq!(left, ["output-0"], "the second run leaves nothing");
 }
 
 #[test]
