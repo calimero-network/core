@@ -477,6 +477,76 @@ fn only_the_first_final_of_a_run_applies() {
     assert_eq!(w.r.machine.state.component.head.finished_runs.len(), 1);
 }
 
+/// `r1` ended `Done`, or `Failed` as lost after its last attempt.
+fn ended_world(done: bool) -> World {
+    let mut w = World::new();
+    w.start("r1");
+    for n in 1..=MAX_ATTEMPTS {
+        let _a = w.assign("r1", &job_key(n as u8));
+    }
+    let k = job_key(MAX_ATTEMPTS as u8);
+    let entry = if done {
+        w.done("r1", &k)
+    } else {
+        leader(
+            &w,
+            "r1",
+            FinalOutcome::Failed {
+                reason: FailedReason::Lost,
+            },
+        )
+    };
+    assert!(!w.finish(entry).conflict);
+    w
+}
+
+#[test]
+fn a_late_report_lost_signal_or_new_attempt_for_an_ended_run_changes_nothing() {
+    for done in [true, false] {
+        let mut w = ended_world(done);
+        let before = serde_json::to_value(w.record("r1")).unwrap();
+        let finished = w.r.machine.state.component.head.finished_runs.len();
+        let k = job_key(MAX_ATTEMPTS as u8);
+        let mut late_done = w.done("r1", &k);
+        late_done.result.diff = vec![w2("late")];
+        let lost = FinalOutcome::Failed {
+            reason: FailedReason::Lost,
+        };
+        let timeout = FinalOutcome::Failed {
+            reason: FailedReason::Timeout,
+        };
+        for entry in [
+            late_done,
+            leader(&w, "r1", lost),
+            leader(&w, "r1", timeout),
+            leader(&w, "r1", FinalOutcome::Cancelled),
+        ] {
+            assert_eq!(why(&w.finish(entry)), "already final", "done: {done}");
+        }
+        let next = u32::try_from(w.record("r1").attempts.len()).unwrap() + 1;
+        assert_eq!(
+            why(&w.push(&attempt("r1", next, &k, DIGEST))),
+            "run is not active"
+        );
+        assert_eq!(
+            why(&w.push(&attempt("r1", 1, &k, DIGEST))),
+            "run is not active"
+        );
+        let _a = w.call(Vec::new(), &["r1"]);
+        assert_eq!(
+            serde_json::to_value(w.record("r1")).unwrap(),
+            before,
+            "done: {done}"
+        );
+        assert_eq!(w.wrote("late"), None);
+        assert!(w.active().is_empty());
+        assert_eq!(
+            w.r.machine.state.component.head.finished_runs.len(),
+            finished
+        );
+    }
+}
+
 fn w2(key: &str) -> Write {
     w(key, "x")
 }
