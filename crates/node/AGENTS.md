@@ -520,7 +520,7 @@ is its command line.
   The unplaced and cancel clocks start when the current leader first sees the run in that state and restart with each term: unplaced `QUEUED_RUN_TIMEOUT` of healthy time, cancel `CANCEL_DEADLINE` (20 s) of healthy time.
   A loss the job node announces (`lost`, a new key, `UNKNOWN_RUN` after sending) first finishes from a held report (`lost_unless_held`).
   A queued run takes `AcquireRun` first (only when a job node is registered; the payer comes from fresh system state; a permanent refusal ends the run `Failed{refused}`, a retryable one waits).
-  Once granted, `Node::choose_job` attests each job node and asks its load, and picks the fewest runs, then the lowest id; a node that lost an attempt is picked only if no other is free.
+  Once granted, `Node::survey_jobs` attests each job node and asks its load outside the assignment lock, then `pick_job` under it picks the fewest runs, then the lowest id; a node that lost an attempt is picked only if no other is free.
   The assignment is built and delivered (component, assignment, inputs) to that node first, and only then is the attempt committed with the job key and the digest, so a busy or unreachable node (503 is not a failed channel) spends no attempt and the next candidate is tried.
   A delivered run whose attempt did not commit is deleted.
   Choosing and reserving a place is serialized (`assigning`, `reserved`), the transfers are not.

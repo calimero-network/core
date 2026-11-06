@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 
 const JOB_A: u64 = 4;
 const JOB_B: u64 = 5;
+const JOB_C: u64 = 6;
 const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 const READ_PIECE: usize = 64 * 1024; // what the fixture reads and keys at a time
 const WAIT: Duration = Duration::from_secs(180);
@@ -1418,4 +1419,21 @@ async fn only_a_call_that_starts_a_run_wakes_the_run_driver() {
         leader.run_kicks() > before,
         "a call that starts a run did not"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_that_never_answers_its_load_does_not_serialize_assignments() {
+    let rig = Rig::start(&[JOB_A, JOB_B, JOB_C]).await;
+    rig.jobs[0].running.freeze();
+    let started = Instant::now();
+    let mut runs = Vec::new();
+    for method in ["spin", "burn", "hog"] {
+        runs.push(rig.begin("startRun", json!({ "method": method })).await);
+    }
+    for run in &runs {
+        rig.until("the run is placed", || !rig.record(run).attempts.is_empty())
+            .await;
+    }
+    let took = started.elapsed();
+    assert!(took < JOB_CONTROL_TIMEOUT * 2, "placed after {took:?}");
 }
