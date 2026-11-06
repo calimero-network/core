@@ -438,6 +438,15 @@ impl AppMachine {
         }
     }
 
+    /// When the app last committed a write (Unix milliseconds, the entry's
+    /// timestamp: [`crate::component::ComponentHead::last_write_ms`]); `None`
+    /// before its first, and for an SDK 0.12 app.
+    #[must_use]
+    pub fn last_write_ms(&self) -> Option<u64> {
+        let ms = self.state.component.head.last_write_ms;
+        (self.is_component() && ms > 0).then_some(ms)
+    }
+
     /// What applying an entry of an app this node does not run answers: nothing
     /// changes but the app's position in its log, the same on every replica.
     fn unsupported(index: u64) -> Vec<u8> {

@@ -181,6 +181,7 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
         ("internal/view".into(), false, view.clone()),
         ("internal/call".into(), false, call.clone()),
         ("internal/storage".into(), false, json!({ "app": app })),
+        ("internal/last-write".into(), false, json!({ "app": app })),
         (
             "internal/blob/held".into(),
             false,
