@@ -153,7 +153,8 @@ impl Rig {
             if names.iter().all(|n| metrics.contains(n)) {
                 return metrics;
             }
-            assert!(started.elapsed() < WAIT, "{names:?} in\n{metrics}");
+            let seen: Vec<&str> = metrics.lines().filter(|l| l.contains("compute")).collect();
+            assert!(started.elapsed() < WAIT, "{names:?} not in {seen:#?}");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -700,9 +701,21 @@ async fn a_final_that_conflicted_is_billed_once() {
     rig.leader().conflict_next_call();
     let _ = rig.outcome(&run).await;
     let fuel = rig.record(&run).final_.unwrap().usage.fuel as f64;
-    let metrics = rig
+    let _counted = rig
         .metrics_with(&["calimero_app_compute_fuel_total", "kind=\"compute\"} 1\n"])
         .await;
+    rig.until("the run ended on every node", || {
+        rig.c.nodes.iter().flatten().all(|n| {
+            n.node.hosted(&rig.app).is_some_and(|g| {
+                g.read_local(|m, _| m.run_record(&run))
+                    .is_some_and(|r| !r.state.is_active())
+            })
+        })
+    })
+    .await;
+    // No signal says the leader's sweeps are done, so a bounded window shows no later count.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let metrics = rig.metrics().await;
     assert_eq!(series(&metrics, "calimero_app_compute_fuel_total"), fuel);
     assert!(
         metrics.contains("kind=\"compute\"} 1\n"),
