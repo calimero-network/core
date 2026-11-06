@@ -15,7 +15,7 @@ The code stands for an Ed25519 key, as an invite token does (`proof::recovery_si
 The log keeps only the public half (`SystemState::recovery_keys`, key -> account).
 
 Starting a recovery with the code and a new passkey spends the code and logs the new passkey as pending.
-After `RECOVERY_DELAY_SECS` (72 hours, the constant organization recovery uses), that passkey finishes it: it is added to the account, every session the account had ends, and the new passkey is signed in.
+After `RECOVERY_DELAY_SECS` (72 hours, the constant organization recovery uses), that passkey finishes it: it is added to the account, every session the account had ends, every API key it made is revoked, and the new passkey is signed in.
 Until then, any passkey the account still has cancels it.
 
 ## Flow
@@ -27,7 +27,7 @@ Until then, any passkey the account still has cancels it.
 | Begin | `POST /auth/recovery/begin { code }` | anyone, signed out | none (nothing logged) | a registration challenge for the account the code names |
 | Start | `POST /auth/recovery/start { challengeId, code, registration }` | anyone, signed out | the code key's signature over `recover_message(key, account, credential, at)` | `StartAccountRecovery`: the code is spent; `accountRecoveries[a] = { credential, startedAt, readyAt = startedAt + RECOVERY_DELAY_SECS }`; no passkey added, no session |
 | Cancel | `POST /auth/recovery/cancel` (412 first) | the account, with a passkey it already has | consent over `account:<a> / __cancel_recovery / { credentialId }` | `CancelAccountRecovery`: the pending recovery goes; the code stays spent |
-| Finish | `POST /auth/recovery/finish { accountId? }` (412 first) | the new passkey, signed out, at or after `readyAt` | the new passkey's sign-in assertion over `session / __sign_in / sign_in_args(refresh)` | `FinishAccountRecovery`: the passkey is added, every session and refresh token of the account is revoked, and the new session's refresh token is recorded |
+| Finish | `POST /auth/recovery/finish { accountId? }` (412 first) | the new passkey, signed out, at or after `readyAt` | the new passkey's sign-in assertion over `session / __sign_in / sign_in_args(refresh)` | `FinishAccountRecovery`: the passkey is added, every session, refresh token and API key of the account is revoked, and the new session's refresh token is recorded |
 
 `recover_message` is `"calimero.account-recovery-start.v1\0" || key || 0 || account || 0 || credential id || 0 || SHA-256(credential public key JSON) || 0 || at`.
 It names the passkey, so a node that saw the log cannot swap in its own, and it is spent once (`used_proofs`).
@@ -61,6 +61,10 @@ So no node can finish a recovery, or open its session, without the new passkey.
 `SystemState::recovery_keys` and `account_recoveries` are `#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]`, so state from before reads with neither and writes the same bytes (`state_from_before_account_recovery_reads_and_writes_as_before`).
 The new system commands are not understood by a node on an earlier release; as for every system command, a cluster runs one release.
 
-## Not covered
+`FinishAccountRecovery { revoke_api_keys }` is `#[serde(default)]`: the API always sets it, and a finish logged by a release before key revocation (1.0.0-rc.10) reads without it and replays as that release applied it, keeping the account's API keys, so a replica that replays it after a restart reaches the state the others reached (`a_finish_logged_before_key_revocation_replays_as_it_did`).
+An account recovered on such a release revokes its keys itself (`DELETE /auth/apikeys/{keyId}`) once signed in.
 
-API keys the account made before are not revoked by a finish (they are not sessions); the person removes them once signed in.
+## API keys
+
+A finish revokes every API key of the account, as it ends every session: whoever took the lost passkey may also have made keys with it, and a key works without a passkey.
+The machines the person runs need new keys once the recovery finishes (`an_account_recovery_revokes_the_accounts_api_keys`, and the API key in `tests/recovery.rs`).

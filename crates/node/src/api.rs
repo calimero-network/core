@@ -2260,6 +2260,7 @@ async fn account_recovery_finish(
                 record: session.record(&account, &passkey, None, None),
             },
             consent: serde_json::to_value(&consent).unwrap_or_default(),
+            revoke_api_keys: true,
         })
         .await?;
     Ok(session_answer(&account, &token, &session))
