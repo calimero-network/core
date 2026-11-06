@@ -229,6 +229,23 @@ jobs:
             --input "$out/input.bin" --out "$out/out" --twice
           test "$(wc -c < "$out/out/output-0")" -eq 300000
 
+      # The README's command for testing compute-redact's compute component alone, on its sample file.
+      - name: mero-compute on compute-redact
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          out=target/mero-compute-redact
+          rm -rf "$out" && mkdir -p "$out"
+          mero-app-build apps/compute-redact --target-dir "$out/build" \
+            --out "$out/app.wasm" --compute-out "$out/compute.wasm"
+          mero-compute run "$out/compute.wasm" --method redact \
+            --args @apps/compute-redact/example/redact.json \
+            --input apps/compute-redact/example/people.csv --out "$out/out" --twice
+          if grep -qE 'acme|4111|415' "$out/out/output-0"; then
+            echo "an email, card or phone number survived" >&2
+            exit 1
+          fi
+
       - name: Cargo test (standalone v2 apps)
         if: ${{ !cancelled() }}
         # Apps on the component SDK are workspaces of their own, so the workspace run above

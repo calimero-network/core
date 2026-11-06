@@ -426,7 +426,10 @@ gates; latency gates nothing.
   that carries the fixture's app and compute components, and drives compute runs
   through a job node's loss, a cancel, the caps and the collection of files no
   state references; it also checks that the job nodes were given only the compute
-  component (logs are the artifact `compute-e2e-logs` on failure);
+  component, and runs compute-redact end to end: an admin's policy, a member's
+  38 MB CSV of invented people, a job node killed mid-run, then the shared parts
+  downloaded through a grant and compared with `mero-compute`'s output (logs are
+  the artifact `compute-e2e-logs` on failure);
 - job `clients against merod` (`clients`): mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
