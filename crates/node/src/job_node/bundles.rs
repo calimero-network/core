@@ -74,7 +74,12 @@ pub(super) async fn put_bundle(
     if body.len() > MAX_BLOB_BYTES {
         return Err(ApiError::new(413, "TOO_LARGE", "the bundle is too large"));
     }
-    if hex::encode(calimero_identity::sha256(&body)) != hash {
+    let (held, named) = (body.clone(), hash.clone());
+    let named_bytes =
+        tokio::task::spawn_blocking(move || hex::encode(calimero_identity::sha256(&held)) == named)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !named_bytes {
         return Err(ApiError::bad_request(
             "HASH_MISMATCH",
             "the bytes are not the bundle named",

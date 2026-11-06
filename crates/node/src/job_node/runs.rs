@@ -516,7 +516,12 @@ pub(super) async fn put_input(
             "the ciphertext is not the size the input declares",
         ));
     }
-    if hex::encode(calimero_identity::sha256(&body)) != input.id {
+    let (held, id) = (body.clone(), input.id.clone());
+    let named =
+        tokio::task::spawn_blocking(move || hex::encode(calimero_identity::sha256(&held)) == id)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+    if !named {
         return Err(ApiError::bad_request(
             "BAD_INPUT_ID",
             "the ciphertext is not the file the input names",
