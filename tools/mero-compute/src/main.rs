@@ -130,6 +130,7 @@ fn run(
             .collect::<Result<_>>()?,
     };
 
+    clear_outputs(out)?;
     let first = setup.run(out, true)?;
     if let Err(reason) = settle(&first) {
         for o in &first.outputs {
@@ -193,6 +194,20 @@ impl Setup {
             outputs,
         })
     }
+}
+
+/// Removes the `output-*` files an earlier run left in `out`, so only this run's outputs remain.
+fn clear_outputs(out: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(out) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("output-") {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// `--args` as bytes: JSON text, or the content of the file after an `@`.
