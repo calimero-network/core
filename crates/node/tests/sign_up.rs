@@ -4,6 +4,11 @@
 //! `closed` only a cluster sign-up invite (a pre-authorization). A refusal is
 //! `403 SIGN_UP_REFUSED` before the passkey ceremony, and `apply` refuses
 //! again; the policy changes only with the operator's signature.
+//!
+//! Passkeys are each cluster's own while every cluster shares one rp-id: the
+//! browser offers a passkey from one cluster on another, so the name it is
+//! made under says which cluster, and a sign-in with one this cluster does
+//! not hold says so (`401 PASSKEY_UNKNOWN_HERE`).
 
 use calimero_client::{Client, Passkey};
 use calimero_identity::testing::SoftAuthenticator;
@@ -277,4 +282,49 @@ async fn a_policy_change_needs_the_operators_signature() {
     let public = c.client(2).get("releases").await.unwrap();
     assert_eq!(public["governance"]["signUp"], "invite", "{public}");
     refused(sign_up(&c, 1, "bob", None).await, "invite only now");
+}
+
+/// Two clusters under one rp-id, as Calimero Cloud's are: a passkey is made
+/// under a name that says which cluster it is for, and signing in on the
+/// other cluster with it answers `401 PASSKEY_UNKNOWN_HERE`, which names
+/// neither the cluster nor the account it belongs to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() {
+    // Each test cluster has a name of its own (`test-{pid}-{n}`), and both
+    // take `localhost` as their rp-id.
+    let home = Cluster::start(1).await;
+    let away = Cluster::start(1).await;
+    let shown = format!("alice · {}", home.name);
+    let begin = home
+        .client(0)
+        .post("auth/passkey/register/begin", json!({ "name": "alice" }))
+        .await
+        .unwrap();
+    let user = &begin["options"]["user"];
+    assert_eq!(user["name"], shown, "{begin}");
+    assert_eq!(user["displayName"], shown, "{begin}");
+
+    let (_alice, mut pk) = sign_up(&home, 0, "alice", None).await.unwrap();
+    let _s = home.client(0).sign_in(&mut pk).await.unwrap();
+    let e = away.client(0).sign_in(&mut pk).await.unwrap_err();
+    let calimero_client::Error::Api {
+        status,
+        code,
+        message,
+        details,
+    } = &e
+    else {
+        panic!("not an API error: {e}");
+    };
+    assert_eq!(
+        (*status, code.as_str()),
+        (401, "PASSKEY_UNKNOWN_HERE"),
+        "{e}"
+    );
+    assert!(message.contains("another Calimero cluster"), "{e}");
+    assert!(
+        !message.contains(&home.name) && !message.contains("alice"),
+        "{e}"
+    );
+    assert!(details.is_null(), "{e}");
 }

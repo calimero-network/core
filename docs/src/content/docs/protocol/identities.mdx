@@ -52,6 +52,28 @@ the challenge from the issuer over the attested peer channel, so it is still
 used once (a load balancer may send the two requests anywhere). A node holds
 at most 10 000 open ceremonies; past that it answers `429`.
 
+### Passkeys are each cluster's own
+
+Accounts and passkeys live in one cluster's system group, while clusters may
+share a relying party id (every Calimero Cloud cluster uses
+`calimero.network`). A browser therefore offers a passkey made on one cluster
+on every other one. Two things keep that from confusing anyone:
+
+- **The name it is made under.** A registration's `user.name` and
+  `user.displayName` (sign-up, adding a device, recovery) are the person's name
+  and the cluster's (`--cluster`), `alice · eu-shared-1`; a sign-up begun on a
+  package's frontend (a served or registered origin, `origin` on
+  `register/begin`) names the app too, `alice · kv-store (eu-shared-1)`: the
+  newest release's display name, else the package id. Each part is cut at 32
+  characters (`MAX_PASSKEY_NAME_PART_CHARS`). The account's own name is the
+  person's alone.
+- **The answer to a passkey from elsewhere.** An assertion (sign-in or step-up)
+  whose credential no account here has answers `401 PASSKEY_UNKNOWN_HERE`,
+  "this passkey belongs to another Calimero cluster or was removed from this
+  one; sign up here, or open the app from the link for the cluster your account
+  is on". It names no cluster and no account: a node knows only its own
+  cluster's passkeys, and the answer is the same for a passkey that was removed.
+
 Sign-in and sign-up need the user present. A **step-up** — approving a confirm
 method, an upgrade, an approval or an organization's deletion — needs the user
 **verified** too (PIN or biometric): a touch alone is not consent.

@@ -627,6 +627,15 @@ is its command line.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+- **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
+  "Passkeys are each cluster's own"): clusters share an rp-id, so a
+  registration's `user.name`/`displayName` is `passkey_user_name` (person ·
+  `config.cluster`, plus the app's name for a sign-up begun on a package
+  origin), and an assertion with a credential no account has answers `401
+  PASSKEY_UNKNOWN_HERE` (`unknown_here`, from `check_assertion_for`), naming no
+  other cluster or account. Regressions:
+  `a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here`,
+  `a_registered_origin_signs_people_in_to_its_package_only`.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API

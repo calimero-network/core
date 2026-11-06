@@ -185,7 +185,7 @@ three strengths:
   can tolerate a moment's lag.
 - **Until found** (`Node::sys_until`): wait up to 2 seconds for a lookup to
   find something. A passkey registered through node 1 and used through node 2 a
-  moment later is found instead of answering "unknown passkey".
+  moment later is found instead of answering `PASSKEY_UNKNOWN_HERE`.
 - **Fresh** (`Node::sys_fresh`): a read index. The node asks the system leader
   for its applied index (`internal/system/index`, or locally if it leads) and
   waits up to 2 seconds to apply it. Every request that carries a credential,

@@ -77,6 +77,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 400 | `BAD_REQUEST`, `BAD_NONCE`, `BAD_PACKAGE`, `BAD_BUNDLE`, `UNKNOWN_CHALLENGE`, `EXPIRED_CHALLENGE`, `TOO_FEW`, `NO_REGISTRY` | The request is malformed, refers to nothing valid, or needs a registry the node lacks. |
 | 400 | `REJECTED` | The system log refused the command when it applied; `message` says why (for example the caller is not an admin of the organization). |
 | 401 | `UNAUTHENTICATED` | No, unknown, expired or revoked credential. |
+| 401 | `PASSKEY_UNKNOWN_HERE` | A sign-in or step-up with a passkey no account of this cluster has: one from another cluster under the same rp-id, or a removed one. |
 | 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
 | 409 | `CONFLICT` | The state does not allow it now. |
