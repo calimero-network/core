@@ -335,6 +335,18 @@ impl Drop for Stepping<'_> {
     }
 }
 
+/// Marks an app group as being driven until dropped, even if its round panics.
+struct Driving<'a> {
+    groups: &'a Mutex<HashSet<GroupId>>,
+    group: GroupId,
+}
+
+impl Drop for Driving<'_> {
+    fn drop(&mut self) {
+        let _was = locked(self.groups).remove(&self.group);
+    }
+}
+
 /// Where a queued run stands with the system group's queue.
 enum Acquired {
     Granted,
@@ -490,8 +502,11 @@ impl Node {
             }
             let node = Arc::clone(self);
             drop(tokio::spawn(async move {
+                let _driving = Driving {
+                    groups: &node.compute.driving,
+                    group,
+                };
                 node.drive_app_runs(&g).await;
-                let _was = locked(&node.compute.driving).remove(&group);
             }));
         }
     }
@@ -1353,6 +1368,22 @@ mod tests {
             },
             false
         ));
+    }
+
+    #[test]
+    fn a_panicking_round_still_frees_its_group_to_be_driven_again() {
+        let groups = Mutex::new(HashSet::new());
+        let group = GroupId::default();
+        assert!(locked(&groups).insert(group));
+        let round = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _driving = Driving {
+                groups: &groups,
+                group,
+            };
+            panic!("round failed");
+        }));
+        assert!(round.is_err());
+        assert!(locked(&groups).insert(group), "the group stayed marked");
     }
 
     #[test]
