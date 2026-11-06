@@ -608,6 +608,53 @@ async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client:
         .map_err(Box::new)
 }
 
+/// An owner who opens their own one-use invite link, out of curiosity,
+/// gains nothing from it, so they spend nothing: the new account it was made
+/// for still joins with it, and only then is it used up (`400 REJECTED`,
+/// saying so). Before, the owner's redemption spent the only use and the
+/// invitee was told "unknown invite".
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_opening_their_own_invite_leaves_it_for_the_invitee() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut a,
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let redeem = format!("invites/{token}/redeem");
+    let own = alice.post(&redeem, json!({})).await.unwrap();
+    assert_eq!(own["org"], json!(org), "{own}");
+    let joined = bob.post(&redeem, json!({})).await.unwrap();
+    assert_eq!(joined["org"], json!(org), "{joined}");
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let listed = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(listed["members"][&bob_id], "member", "{listed}");
+    assert_eq!(listed["members"][&alice_id], "owner", "{listed}");
+    let e = carol.post(&redeem, json!({})).await.unwrap_err();
+    assert_eq!(e.code(), Some("REJECTED"), "{e}");
+    assert!(e.to_string().contains("used up"), "{e}");
+}
+
 /// Member capabilities: a member who is not an admin creates apps in the
 /// organization only with `CREATE_APP`, invites only with `INVITE_MEMBERS`,
 /// and upgrades another's org app only with `MANAGE_APPLICATION` (none by

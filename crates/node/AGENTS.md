@@ -103,7 +103,14 @@ is its command line.
   Invites are kept under the token's Ed25519 public key
   (`proof::invite_key`); `RedeemInvite` carries the token key's signature
   (`proof::sign_invite_redeem`), so a node that only saw the log cannot
-  redeem one. The fleet carries the operator's signature (`cluster /
+  redeem one. A redemption that changes nothing for the account (a member at
+  the invite's role or above, in every team it names) spends no use
+  (`RedeemInvite { free_when_unchanged }`, which the API always sets; absent in
+  an entry an earlier release logged, which replays spending one; regressions:
+  `a_member_redeeming_an_invite_leaves_its_use_for_the_invitee`,
+  `a_redemption_logged_before_free_redemptions_replays_as_it_did`,
+  `an_owner_opening_their_own_invite_leaves_it_for_the_invitee`). The fleet
+  carries the operator's signature (`cluster /
   __register_node { id, addr, zone }`, `__remove_node { id }`,
   `__set_quotas { quotas }`; `<app> / __set_replicas { replicas }`, one
   signature for both of a move's writes: the union applies with it unspent,

@@ -5437,7 +5437,9 @@ async fn invite_create(
 }
 
 /// Redeem an invite for the signed-in account. This node, holding the token,
-/// signs the redemption with the token's key; no passkey prompt.
+/// signs the redemption with the token's key; no passkey prompt. One that
+/// changes nothing for the account (already a member, at the invite's role or
+/// above, in every team it names) spends no use.
 async fn invite_redeem(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5451,6 +5453,7 @@ async fn invite_redeem(
             signature: crate::proof::sign_invite_redeem(&token, &account, now),
             account,
             now,
+            free_when_unchanged: true,
         })
         .await?;
     Ok(Json(v))
