@@ -44,7 +44,7 @@ pub const MAX_GRANT_BYTES: usize = 128;
 /// Blobs one `BlobsCollected` entry names at most.
 pub const COLLECT_BATCH: usize = 64;
 /// Key of the app's epoch floor in `rows::CBLOB`; a blob id is 32 bytes, so it never collides.
-const FLOOR_KEY: &[u8] = b"floor";
+pub(crate) const FLOOR_KEY: &[u8] = b"floor";
 
 /// What the host records of one of a component app's blobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +137,8 @@ impl BlobTable {
         let mut floor = 0;
         state.scan_hidden(rows::CBLOB, |k, v| {
             if k == FLOOR_KEY {
-                floor = serde_json::from_slice(v).unwrap_or(0);
+                floor = serde_json::from_slice(v)
+                    .map_err(|e| eyre::eyre!("the blob epoch floor is unreadable: {e}"))?;
             }
             if let (Ok(id), Ok(r)) = (
                 <[u8; 32]>::try_from(k),
