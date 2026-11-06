@@ -368,6 +368,80 @@ impl Receipt {
     }
 }
 
+/// What an [`AccountProof`]'s signature covers before its statement.
+pub const ACCOUNT_PROOF_DOMAIN: &[u8] = b"calimero.account-proof.v1\0";
+
+/// What a node states in an [`AccountProof`]: the passkey session that asked
+/// was `account`'s, on `node` of `cluster`, and it bound a relying party's
+/// `nonce` for `audience`, valid from `issued_at` until `expires_at` (Unix
+/// seconds). The node only vouches for who asked; the relying party issued
+/// the nonce and names its own audience.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountStatement {
+    pub cluster: String,
+    pub node: u64,
+    pub account: String,
+    pub nonce: String,
+    pub audience: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+
+impl AccountStatement {
+    /// The bytes signed: [`ACCOUNT_PROOF_DOMAIN`] then the statement's
+    /// canonical JSON (RFC 8785), so a verifier in any language rebuilds them
+    /// from the statement it was handed.
+    #[must_use]
+    pub fn message(&self) -> Vec<u8> {
+        let mut m = ACCOUNT_PROOF_DOMAIN.to_vec();
+        // SAFETY: a struct of strings and integers always serializes.
+        m.extend(serde_json_canonicalizer::to_vec(self).expect("a statement serializes"));
+        m
+    }
+}
+
+/// A node's signed [`AccountStatement`] (`POST /auth/account-proof`): signed
+/// by the node's attested receipt key, so a third party that knows that key
+/// (`GET /attestation?purpose=receipts`, or an operator's
+/// `GET /ops/nodes/{id}/receipt-key`) checks which account a person controls
+/// without taking their word for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountProof {
+    pub statement: AccountStatement,
+    /// The receipt key, hex.
+    pub key: String,
+    /// Ed25519 over [`AccountStatement::message`], hex.
+    pub signature: String,
+}
+
+impl AccountProof {
+    /// Whether this proof is signed by `key` (the node's attested receipt
+    /// key). The caller still checks the statement: its cluster, nonce,
+    /// audience and expiry.
+    #[must_use]
+    pub fn verify(&self, key: &[u8; 32]) -> bool {
+        use ed25519_dalek::Verifier;
+        let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(key) else {
+            return false;
+        };
+        let Some(sig) = hex::decode(&self.signature)
+            .ok()
+            .and_then(|b| <[u8; 64]>::try_from(b).ok())
+        else {
+            return false;
+        };
+        hex::encode(key) == self.key
+            && vk
+                .verify(
+                    &self.statement.message(),
+                    &ed25519_dalek::Signature::from_bytes(&sig),
+                )
+                .is_ok()
+    }
+}
+
 /// Build the 64 bytes of report data.
 #[must_use]
 pub fn report_data(nonce: &[u8; 32], app_hash: &[u8; 32], transport_key: &[u8; 32]) -> [u8; 64] {
@@ -881,6 +955,53 @@ mod tests {
         assert!(!r.verify(&[9; 32], &result));
         let moved = Receipt { index: 8, ..r };
         assert!(!moved.verify(&key, &result));
+    }
+
+    /// An account proof holds for its statement and key only, and its bytes
+    /// are the published vector mdma checks too (`calimero-network/mdma`,
+    /// `tests/test_v2_node_account_proof.py`).
+    #[test]
+    fn an_account_proof_binds_its_statement_and_key() {
+        use ed25519_dalek::Signer;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let key = sk.verifying_key().to_bytes();
+        let statement = AccountStatement {
+            cluster: "eu-shared-1".into(),
+            node: 2,
+            account: "acct-A".into(),
+            nonce: "n0nce-0123456789abcdef".into(),
+            audience: "mdma".into(),
+            issued_at: 1_700_000_000,
+            expires_at: 1_700_000_300,
+        };
+        let message = statement.message();
+        assert_eq!(
+            message,
+            b"calimero.account-proof.v1\0{\"account\":\"acct-A\",\"audience\":\"mdma\",\"cluster\":\"eu-shared-1\",\"expiresAt\":1700000300,\"issuedAt\":1700000000,\"node\":2,\"nonce\":\"n0nce-0123456789abcdef\"}"
+        );
+        assert_eq!(
+            hex::encode(key),
+            "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
+        );
+        let proof = AccountProof {
+            statement: statement.clone(),
+            key: hex::encode(key),
+            signature: hex::encode(sk.sign(&message).to_bytes()),
+        };
+        assert_eq!(
+            proof.signature,
+            "e68bd3aa01d968d879599c293068ae604d018430a42e37f81efaddb59542bd934e7797ce3af78f81a8e47a76d8575bf29a0c9724fe34c8398dc5072298d29807"
+        );
+        assert!(proof.verify(&key));
+        assert!(!proof.verify(&[9; 32]));
+        let other = AccountProof {
+            statement: AccountStatement {
+                account: "acct-B".into(),
+                ..statement
+            },
+            ..proof
+        };
+        assert!(!other.verify(&key));
     }
 
     #[tokio::test]

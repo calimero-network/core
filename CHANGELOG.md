@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Account proofs**: `POST /auth/account-proof { nonce, audience }` (a
+  passkey session) answers the node's receipt-key signature over
+  `{ cluster, node, account, nonce, audience, issuedAt, expiresAt }`
+  (`calimero_client::attest::AccountProof`, five minutes), so a third party
+  such as Calimero Cloud learns which account a person controls without
+  taking their word for it. `GET /ops/nodes/{id}/receipt-key` answers the
+  operator the attested receipt key of any node of the cluster to check one.
 - **Account recovery codes** (#4844, `docs/specs/account-recovery.md`). A
   person who lost every passkey gets their account back with a recovery code
   made while signed in (`POST /auth/recovery`, a passkey step-up; shown once;

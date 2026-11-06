@@ -147,6 +147,32 @@ cluster's governance. So a receipt is checkable later, offline, by anyone who
 holds that node's receipt-key attestation: it shows that a genuine node of a
 cluster deployed under those rules returned that answer.
 
+## Account proofs
+
+A third party (Calimero Cloud's console, which records which account on a
+cluster is a developer's) can learn which account a person controls without
+taking their word for it. It hands the person a fresh nonce; their browser,
+signed in with a passkey, asks the node to sign it:
+
+```text
+POST /auth/account-proof { nonce, audience }          // a passkey session; not an API key
+AccountProof { statement, key, signature }
+statement  = { cluster, node, account, nonce, audience, issuedAt, expiresAt }   // expiresAt = issuedAt + 300
+signature  = Ed25519(receipt_key, "calimero.account-proof.v1\0" ‖ JCS(statement))
+```
+
+`account` is the session's own; the body names only the nonce (16 to 128
+characters) and the audience (1 to 128), each in letters, digits and `-_.:/`.
+A session opened on an app's frontend or a registered origin is refused, so an
+app cannot vouch for its user to someone else. The third party checks the
+signature under that node's attested receipt key: from its own
+`purpose=receipts` attestation, or, as the cluster's operator, from
+`GET /ops/nodes/{node}/receipt-key` (`{ node, key, release, attestedAt }`: the
+key the answering node attested for that peer, or its own), read over its
+attested channel. Then it checks the statement: its cluster, its own nonce
+(once), its own audience, and `expiresAt`.
+`calimero_client::attest::AccountProof::verify` checks the signature.
+
 ## Job nodes
 
 A job node (`merod run --job-node`) runs compute for a cluster's apps and holds no replica, vote or cluster key.

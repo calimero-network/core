@@ -1537,6 +1537,37 @@ impl Node {
         }
     }
 
+    /// A proof that the passkey session of `account` asked this node to bind
+    /// `nonce` for `audience`, valid for `ttl` seconds, signed with this
+    /// node's receipt key (`POST /auth/account-proof`).
+    #[must_use]
+    pub fn account_proof(
+        &self,
+        account: &str,
+        nonce: &str,
+        audience: &str,
+        ttl: u64,
+    ) -> calimero_client::attest::AccountProof {
+        use calimero_client::attest::{AccountProof, AccountStatement};
+        use ed25519_dalek::Signer;
+        let issued_at = crate::types::now_secs();
+        let statement = AccountStatement {
+            cluster: self.config.cluster.clone(),
+            node: self.config.node_id,
+            account: account.to_owned(),
+            nonce: nonce.to_owned(),
+            audience: audience.to_owned(),
+            issued_at,
+            expires_at: issued_at + ttl,
+        };
+        let signature = self.receipt_key.sign(&statement.message());
+        AccountProof {
+            statement,
+            key: hex::encode(self.receipt_public()),
+            signature: hex::encode(signature.to_bytes()),
+        }
+    }
+
     /// The mero-tee release this node runs, as its attestation names it.
     #[must_use]
     pub fn own_release(&self) -> String {
