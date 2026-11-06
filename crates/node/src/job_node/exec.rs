@@ -117,6 +117,7 @@ impl Files for JobFiles {
             size: input.size,
             sha256: input.sha256,
             pending: Vec::new(),
+            offset: 0,
             buf: vec![0; CHUNK_BYTES + TAG_BYTES],
         }))
     }
@@ -151,15 +152,18 @@ struct InputReader {
     size: u64,
     sha256: [u8; 32],
     pending: Vec<u8>,
+    offset: usize, // how much of `pending` was already served
     buf: Vec<u8>,
 }
 
 impl FileRead for InputReader {
     fn read(&mut self, max: usize) -> Result<Vec<u8>, ReadError> {
         loop {
-            if !self.pending.is_empty() {
-                let take = max.min(self.pending.len());
-                return Ok(self.pending.drain(..take).collect());
+            if self.offset < self.pending.len() {
+                let end = self.pending.len().min(self.offset.saturating_add(max));
+                let out = self.pending[self.offset..end].to_vec();
+                self.offset = end;
+                return Ok(out);
             }
             let Some(opener) = self.opener.as_mut() else {
                 return Ok(Vec::new());
@@ -178,6 +182,7 @@ impl FileRead for InputReader {
             };
             // An input was proved whole when it arrived: failing now is the node's own disk.
             self.pending = plain.map_err(|_| ReadError::Failed(CHANGED_ON_DISK.to_owned()))?;
+            self.offset = 0;
         }
     }
 }
@@ -659,7 +664,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for len in [0, 1, CHUNK_BYTES, CHUNK_BYTES + 1, 3 * CHUNK_BYTES + 5] {
             let (files, data, _) = files(dir.path(), len);
-            for piece in [1000, CHUNK_BYTES, 1 << 20] {
+            for piece in [7, 1000, CHUNK_BYTES, 1 << 20] {
                 let read = read_all(files.open(&id(&files)).unwrap(), piece).unwrap();
                 assert_eq!(read, data, "{len} in {piece}");
             }
