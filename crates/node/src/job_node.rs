@@ -221,7 +221,9 @@ async fn sweep_runs(job: Arc<JobNode>, shutdown: CancellationToken) {
             () = tokio::time::sleep(SWEEP_EVERY) => {}
         }
         for run in job.runs.sweep(Instant::now()) {
-            let _ = tokio::fs::remove_dir_all(&run.dir).await;
+            if let Err(e) = tokio::fs::remove_dir_all(&run.dir).await {
+                warn!(path = %run.dir.display(), error = %e, "cannot remove a run's directory");
+            }
         }
     }
 }
