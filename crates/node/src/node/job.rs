@@ -15,10 +15,28 @@ use super::Node;
 use crate::api::PLACEMENT_RELEASE_WAIT;
 use crate::attest::{verify_job_key, AttestationDoc};
 use crate::error::ApiError;
+use crate::job_wire::{self, Assignment};
 use crate::types::AppRecord;
 
 /// How long an attested job node is trusted before it is attested again.
 const JOB_ATTEST_TTL: Duration = Duration::from_secs(60);
+
+/// The most a job node's answer to the leader may weigh (an attestation, a load report).
+const MAX_JOB_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// What a job node answered, refused past [`MAX_JOB_RESPONSE_BYTES`] before it is held whole.
+async fn bounded_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> eyre::Result<T> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_JOB_RESPONSE_BYTES {
+            eyre::bail!("the job node's answer is larger than {MAX_JOB_RESPONSE_BYTES} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&body)?)
+}
 
 /// A job node whose transport and job signing keys one quote bound.
 #[derive(Clone, Debug)]
@@ -82,6 +100,31 @@ impl Node {
         Ok(peer)
     }
 
+    /// The cluster's identity key (public half): what a job node is started with to take this
+    /// cluster's work.
+    #[must_use]
+    pub fn cluster_identity(&self) -> [u8; 32] {
+        crate::backup::cluster_identity_key(&self.cluster_key)
+            .verifying_key()
+            .to_bytes()
+    }
+
+    /// The cluster identity's signature (hex) over `assignment`.
+    pub fn sign_assignment(&self, assignment: &Assignment) -> eyre::Result<String> {
+        job_wire::sign_assignment(
+            &crate::backup::cluster_identity_key(&self.cluster_key),
+            assignment,
+        )
+    }
+
+    /// The cluster identity's signature (hex) that lets a job node take the component `hash`.
+    pub fn sign_bundle(&self, hash: &str) -> eyre::Result<String> {
+        job_wire::sign_bundle(
+            &crate::backup::cluster_identity_key(&self.cluster_key),
+            hash,
+        )
+    }
+
     /// Drops what is kept for job node `id`: every failure of a channel to it goes through here.
     pub(crate) fn forget_job(&self, id: NodeId) {
         if let Ok(mut peers) = self.job_peers.lock() {
@@ -96,14 +139,8 @@ impl Node {
             .query_pairs_mut()
             .append_pair("nonce", &hex::encode(nonce))
             .append_pair("purpose", "jobs");
-        let doc: AttestationDoc = self
-            .http
-            .get(at)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let doc: AttestationDoc =
+            bounded_json(self.http.get(at).send().await?.error_for_status()?).await?;
         if doc.cluster != self.config.cluster || doc.node != id {
             eyre::bail!(
                 "job node {id} attests as node {} of cluster {}",
@@ -113,6 +150,10 @@ impl Node {
         }
         let (transport_key, job_key) =
             verify_job_key(&doc, &nonce, &self.config.peer_policy()).await?;
+        // The quote binds the identity the job node takes work from: not this cluster's, no work.
+        if doc.cluster_identity.as_deref() != Some(hex::encode(self.cluster_identity()).as_str()) {
+            eyre::bail!("job node {id} takes work from another cluster");
+        }
         Ok(JobPeer {
             id,
             url: url.to_owned(),
@@ -138,7 +179,7 @@ impl Node {
             SealedTransport::with_key(base.clone(), self.http.clone(), peer.transport_key);
         let url = resolve_path(&base, "job/load")?;
         let resp = channel.execute(self.http.get(url).build()?).await?;
-        let load: Load = resp.error_for_status()?.json().await?;
+        let load: Load = bounded_json(resp.error_for_status()?).await?;
         Ok((load.running, load.capacity))
     }
 }
