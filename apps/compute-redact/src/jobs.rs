@@ -191,6 +191,11 @@ impl Job {
     }
 
     pub fn view(&self, id: &str) -> JobView {
+        self.view_with(id, self.preview.clone())
+    }
+
+    /// The view with `preview` in place of the job's own, so a list need not clone it.
+    pub fn view_with(&self, id: &str, preview: Option<Preview>) -> JobView {
         let done = self.parts.iter().filter(|p| p.status == Status::Done);
         JobView {
             id: id.to_owned(),
@@ -210,7 +215,7 @@ impl Job {
                     published: p.published,
                 })
                 .collect(),
-            preview: self.preview.clone(),
+            preview,
             reason: self.reason.clone(),
         }
     }

@@ -219,10 +219,7 @@ impl Redact {
             .items
             .iter()
             .filter(|(_, job)| self.may_see(job))
-            .map(|(id, job)| JobView {
-                preview: None,
-                ..job.view(id)
-            })
+            .map(|(id, job)| job.view_with(id, None))
             .collect();
         Ok(JobsPage {
             jobs,
