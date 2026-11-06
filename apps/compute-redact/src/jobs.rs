@@ -87,9 +87,9 @@ pub fn plan_parts(total: u64, per_part: u32) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// The SHA-256 of the policy's canonical JSON, hex.
+/// The SHA-256 of the policy's column rules as JSON, hex; the salt stays out so it cannot be guessed from the hash.
 pub fn policy_hash(policy: &Policy) -> String {
-    let json = serde_json::to_vec(policy).expect("a policy is JSON");
+    let json = serde_json::to_vec(&policy.columns).expect("rules are JSON");
     Sha256::digest(json)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -370,8 +370,9 @@ mod tests {
         assert_eq!(job.policy_hash.len(), 64);
         let mut other = policy();
         other.salt = "salt".to_owned();
+        assert_eq!(policy_hash(&other), job.policy_hash);
+        other.columns.clear();
         assert_ne!(policy_hash(&other), job.policy_hash);
-        assert_eq!(policy_hash(&policy()), job.policy_hash);
     }
 
     #[test]

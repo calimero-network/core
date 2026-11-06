@@ -7,7 +7,7 @@ One crate builds two components: `app.wasm` (state and calls) and `compute.wasm`
 
 - The organization's admin or owner sets the policy once with `setPolicy {policy}`.
 - A member uploads a CSV as a sealed file and calls `submit {file, rowsPerPart?}`; only the account that uploaded the file (`files::uploader`, which the node records from the authenticated upload) and admins can submit it, and the job copies the policy, so a later `setPolicy` does not change it.
-- `job {id}` shows a job to its submitter and to admins; the view holds the policy's SHA-256, never the salt.
+- `job {id}` shows a job to its submitter and to admins; the view holds the SHA-256 of the policy's column rules, never the salt, and the hash does not change with the salt.
 - `jobs {after?}` lists the jobs the caller may see, without their preview rows, from one page of 50 jobs; call it again with `next` as `after` until `next` is null.
 - A sealed file is read only inside compute runs, so a call or a view never opens the CSV; the app sees only its size and hash.
 - `share {job}` publishes a done job's outputs as plain blobs, for the submitter or an admin; the parts of `job {id}` then name them in `published`.
