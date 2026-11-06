@@ -155,6 +155,27 @@ fn twice_passes_on_a_run_that_is_the_same_both_times() {
 }
 
 #[test]
+fn a_stale_output_from_an_earlier_run_is_removed() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let (input, _) = input_file(work.path(), PIECE + 7);
+    let out = work.path().join("out");
+    std::fs::create_dir_all(&out).expect("mkdir");
+    std::fs::write(out.join("output-5"), b"stale").expect("write");
+    let run = tool(&[
+        built().compute.to_str().unwrap(),
+        "--method",
+        "digest",
+        "--input",
+        input.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    assert!(out.join("output-0").exists());
+    assert!(!out.join("output-5").exists());
+}
+
+#[test]
 fn an_app_component_is_refused_with_a_message_that_says_why() {
     let work = tempfile::tempdir().expect("tempdir");
     let run = tool(&[
