@@ -389,21 +389,25 @@ pub struct SystemState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sign_up_invites: BTreeMap<String, SignUpInvite>,
     /// The compute runs queued or granted, by app and run id.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub compute: BTreeMap<AppId, BTreeMap<String, RunSlot>>,
     /// The `seq` the next queued run gets.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub next_run_seq: u64,
     /// When each payer last got a place, as a count of grants: free places go to the payer
     /// served longest ago. Only payers that still have runs are kept.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub run_served: BTreeMap<String, u64>,
     /// Places granted so far, the clock of `run_served`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub run_grants: u64,
     /// The last run ids released per app, oldest first.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub released_runs: BTreeMap<AppId, VecDeque<String>>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A cluster sign-up invite: issued by the operator (its signature) or the
@@ -10174,6 +10178,16 @@ mod tests {
             .unwrap()
             .get("origin")
             .is_none());
+    }
+
+    #[test]
+    fn state_with_no_compute_use_writes_no_compute_keys() {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let before = serde_json::to_value(&m.state).unwrap();
+        for key in ["compute", "nextRunSeq", "runGrants", "releasedRuns"] {
+            assert!(before.get(key).is_none(), "{key} in {before}");
+        }
     }
 
     // ------------------------------------------------------------ recovery
