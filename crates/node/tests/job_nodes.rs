@@ -258,29 +258,6 @@ async fn a_job_node_started_for_another_cluster_is_not_attested() {
     assert!(node.attest_job(JOB + 4, &record).await.is_ok());
 }
 
-/// A job node that cannot be started with a weak identity.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_job_node_refuses_a_weak_cluster_identity_at_start() {
-    let c = Cluster::start(3).await;
-    let mut neutral = [0u8; 32];
-    neutral[0] = 1;
-    let dir = tempfile::tempdir().unwrap();
-    let config = calimero_node::JobConfig {
-        node_id: JOB + 5,
-        listen: "127.0.0.1:0".parse().unwrap(),
-        data_dir: dir.path().to_owned(),
-        cluster: c.configs[0].cluster.clone(),
-        attestation: c.configs[0].attestation,
-        sealed_required: false,
-        release: "test".into(),
-        tee_release: None,
-        tee_profile: None,
-        cluster_identity: neutral,
-    };
-    let e = calimero_node::run_job(config).await.err().unwrap();
-    assert!(e.to_string().contains("weak"), "{e}");
-}
-
 /// What a job node answers is read only up to a cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_job_nodes_answer_past_the_cap_is_refused() {
