@@ -17,6 +17,7 @@ use calimero_app_host::{
 };
 use serde_json::{json, Value};
 use tokio::sync::watch;
+use tracing::warn;
 use zeroize::Zeroizing;
 
 use super::admission::{admit_assignment, token_matches};
@@ -633,7 +634,9 @@ pub(super) async fn cancel(
         return Ok(Json(answer));
     }
     job.runs.remove(&run);
-    let _ = tokio::fs::remove_dir_all(&run.dir).await;
+    if let Err(e) = tokio::fs::remove_dir_all(&run.dir).await {
+        warn!(path = %run.dir.display(), error = %e, "cannot remove a run's directory");
+    }
     Ok(Json(answer))
 }
 

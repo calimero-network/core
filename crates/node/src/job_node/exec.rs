@@ -505,7 +505,9 @@ fn remove_files(dir: &Path, keep_outputs: bool) {
                 .starts_with(OUTPUT_PREFIX)
             && !entry.file_name().to_string_lossy().ends_with(PART_SUFFIX);
         if !keep {
-            let _ = std::fs::remove_file(entry.path());
+            if let Err(e) = std::fs::remove_file(entry.path()) {
+                warn!(path = %entry.path().display(), error = %e, "cannot remove a run file");
+            }
         }
     }
 }
