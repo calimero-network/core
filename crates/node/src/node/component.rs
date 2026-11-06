@@ -296,8 +296,12 @@ fn writes(outcome: &Outcome) -> bool {
     !outcome.diff.is_empty()
         || !outcome.events.is_empty()
         || !outcome.files.is_empty()
-        || !outcome.compute_starts.is_empty()
-        || !outcome.compute_cancels.is_empty()
+        || moves_runs(outcome)
+}
+
+/// Whether a call's outcome starts or cancels a compute run.
+fn moves_runs(outcome: &Outcome) -> bool {
+    !outcome.compute_starts.is_empty() || !outcome.compute_cancels.is_empty()
 }
 
 /// A finished run: its outcome, and the ciphertext of the files it made, which stays
@@ -314,6 +318,20 @@ impl Node {
     #[must_use]
     pub fn app_clock(&self) -> Clock {
         self.clock.clone()
+    }
+
+    /// Wakes the compute driver: a logged call started or cancelled a run.
+    fn kick_runs(&self) {
+        #[cfg(feature = "testing")]
+        let _n = self.probes.run_kicks.fetch_add(1, Ordering::Relaxed);
+        self.runs_kick.notify_one();
+    }
+
+    /// How many times a logged call woke the compute driver. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn run_kicks(&self) -> u64 {
+        self.probes.run_kicks.load(Ordering::Relaxed)
     }
 
     /// Moves this node's app time by `ms` (negative: back). Tests only.
@@ -1212,10 +1230,12 @@ impl Node {
         // call's two phases (`calimero_call_phase_duration_seconds`).
         let mut ran_for = None;
         let mut proposed_at = None;
+        let mut moved_runs = false;
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
                 answered = false;
+                moved_runs = false;
                 ran_for = None;
                 proposed_at = None;
                 // A retry of a call that committed is its recorded answer, whatever
@@ -1328,6 +1348,7 @@ impl Node {
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
                 answered = true;
+                moved_runs = moves_runs(&outcome);
                 // Events are logged side effects too (Ruling 41): an emit-only call
                 // is refused like one that writes keys.
                 if read_only && writes(&outcome) {
@@ -1384,8 +1405,8 @@ impl Node {
         }
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))?;
-        if p.appended {
-            self.runs_kick.notify_one();
+        if p.appended && moved_runs {
+            self.kick_runs();
         }
         if p.appended && a.conflict {
             let _prev = self
