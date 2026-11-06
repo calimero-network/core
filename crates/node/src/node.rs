@@ -114,6 +114,11 @@ pub struct Config {
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
     pub read_wait: Duration,
+    /// How long a refresh token serves the refreshes that present it before
+    /// one of them exchanges it in the system log
+    /// (`api::REFRESH_ROTATE_AFTER` in production). Zero: every refresh
+    /// exchanges it, a system write each.
+    pub refresh_rotate_after: Duration,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
     pub tee_release: Option<String>,

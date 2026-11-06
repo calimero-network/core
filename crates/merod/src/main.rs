@@ -512,6 +512,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         backup_dir: args.backup_dir.clone(),
         raft: calimero_log::Config::default(),
         read_wait: std::time::Duration::from_secs(2),
+        refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
         peer_measurements,

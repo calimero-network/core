@@ -67,9 +67,15 @@ crash, a rolling upgrade of the binary) keeps it.
 The claims are the account, a session id, the expiry (15 minutes), the passkey
 the session was opened with, for a session opened on a package's frontend that
 package (and, on a registered origin, that origin), and the issuing node with its key. Signing in also returns a refresh
-token (`rt_…`, 30 days, single use): `POST /auth/refresh` on any node exchanges
-it for a new token, signed by that node, and a new refresh token; a refresh
-token presented a second time revokes its session.
+token (`rt_…`, 30 days): `POST /auth/refresh` on any node answers a new
+token, signed by that node. A refresh token younger than an hour
+(`api::REFRESH_ROTATE_AFTER`) is kept: the node judges it on the cluster's
+latest system state (a read index) and writes nothing to the system log, so a
+sign-out, a recovery or a passkey removal committed through any node already
+ends it. An older one is exchanged in the system log for a new refresh token;
+a refresh token presented again after it was exchanged revokes its session.
+So every active session writes to the system log once an hour, not once per
+session token.
 
 A node verifies a token issued elsewhere without asking the issuer: it checks
 the signature against the issuer's signing key as it attested it at the

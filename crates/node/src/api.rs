@@ -49,6 +49,13 @@ const HAND_OVER_AGAIN_WITHIN: Duration = Duration::from_secs(10);
 const HAND_OVER_AGAIN_PAUSE: Duration = Duration::from_millis(500);
 const SESSION_TTL: u64 = 15 * 60;
 const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
+
+/// How long a refresh token is kept by the refreshes that present it
+/// (`Config::refresh_rotate_after`): younger, a refresh mints a session on the
+/// system state at a read index and writes nothing to the system log; older,
+/// it is exchanged for a new token in the log (`UseRefresh`). Each active
+/// session then writes once per this, not once per [`SESSION_TTL`].
+pub const REFRESH_ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const CHALLENGE_TTL: u64 = 5 * 60;
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
@@ -1518,6 +1525,9 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             return Err(origin_gone());
         }
     }
+    if let Some(kept) = kept_refresh(&node, &body.refresh_token, &old_hash, &rec).await? {
+        return Ok(kept);
+    }
     let new_refresh = format!("rt_{}", b64url(&random::<32>()));
     let record = RefreshRecord {
         account: rec.account.clone(),
@@ -1586,6 +1596,67 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
     Ok(Json(
         json!({ "accountId": rec.account, "sessionToken": token, "expiresAt": expires_at, "refreshToken": new_refresh }),
     ))
+}
+
+/// A refresh that keeps its token and writes nothing to the system log: the
+/// token is younger than `Config::refresh_rotate_after`, and the cluster's
+/// latest system state (a read index the system leader confirmed) still holds
+/// it, live, for a session that is not revoked, of an account that still has
+/// the passkey it was opened with. So a sign-out, a sign-out everywhere, a
+/// recovery or a passkey removal committed through any node before this
+/// refresh ends it here, and no node mints a session for a token the log does
+/// not hold. `None`: the log decides, by exchanging the token (`UseRefresh`):
+/// it is old enough to rotate, it uses no key (`RefreshRecord::key`), this
+/// replica could not catch up, or the fresh state no longer holds it (revoked,
+/// or exchanged elsewhere, which the log then tells from a stolen copy).
+async fn kept_refresh(
+    node: &Node,
+    token: &str,
+    hash: &str,
+    rec: &RefreshRecord,
+) -> Result<Option<Json<Value>>, ApiError> {
+    let now = now_secs();
+    let issued = rec.expires_at.saturating_sub(REFRESH_TTL);
+    if rec.key.is_empty()
+        || now.saturating_sub(issued) >= node.config.refresh_rotate_after.as_secs()
+    {
+        return Ok(None);
+    }
+    if !node.sys_fresh().await {
+        return Ok(None);
+    }
+    let live = node.sys(|s| {
+        s.refresh.get(hash) == Some(rec)
+            && rec.expires_at > now
+            && !s.revoked_sessions.contains(&rec.session)
+            && rec
+                .passkey
+                .as_ref()
+                .is_none_or(|p| s.credentials.get(p) == Some(&rec.account))
+    });
+    if !live {
+        return Ok(None);
+    }
+    let expires_at = now_secs() + SESSION_TTL;
+    let session = session_token(
+        node,
+        SessionClaims {
+            account: rec.account.clone(),
+            session: rec.session.clone(),
+            expires_at,
+            passkey: rec.passkey.clone(),
+            app: rec.app.clone(),
+            origin: rec.origin.clone(),
+            node: 0,
+            key: String::new(),
+        },
+    )?;
+    Ok(Some(Json(json!({
+        "accountId": rec.account,
+        "sessionToken": session,
+        "expiresAt": expires_at,
+        "refreshToken": token,
+    }))))
 }
 
 async fn logout(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {

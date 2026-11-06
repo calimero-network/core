@@ -120,6 +120,10 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
             snapshot_every: 200,
         },
         read_wait: Duration::from_secs(2),
+        // Every refresh exchanges its token in the log, as the tests of
+        // rotation and reuse expect; `tests/refresh.rs` runs the production
+        // `api::REFRESH_ROTATE_AFTER`.
+        refresh_rotate_after: Duration::ZERO,
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,

@@ -870,6 +870,14 @@ is its command line.
   and is refused if it never was (then a replica that is behind answers 503,
   never "unknown"). Regression:
   `a_reused_refresh_token_revokes_the_session_on_a_lagging_node`.
+- **Kept refresh tokens** (`api::kept_refresh`, `Config::refresh_rotate_after`,
+  production `api::REFRESH_ROTATE_AFTER`, 1 h; the test harness 0): a refresh
+  token younger than that mints a session from the system state at a read
+  index (`sys_fresh`), live, its session not revoked, its passkey still the
+  account's, and writes nothing; older, unkeyed, not caught up or not held
+  fresh, it goes through `UseRefresh` as above. Every active session then
+  writes once per rotation, not once per `SESSION_TTL`. Regressions:
+  `tests/refresh.rs`.
 
 ## Component executor (`calimero:app` components, the v2 SDK)
 
@@ -1129,6 +1137,7 @@ python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [-
 python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
 python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
+# (also session refreshes and the system log's entries/s they cost, exchanged and kept)
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help
 cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)

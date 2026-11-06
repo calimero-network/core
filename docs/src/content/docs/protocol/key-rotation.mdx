@@ -15,7 +15,7 @@ process that made them. This page lists them all, shortest-lived first.
 | Transport key (X25519) | Each node, in memory, at start | Until the process stops | On restart; clients get `stale_transport_key` and attest again |
 | Receipt key (Ed25519) | Each node, on its first start; kept in its data directory wrapped under K_r; signs receipts and the sessions the node issues | As long as the node's data directory | When a node is replaced (a new data directory): `verify_app_cluster` returns the new key, and the node's sessions refresh |
 | Session token | The node that signs someone in, with its receipt key | 15 minutes | Exchanged with a refresh token |
-| Refresh token (`rt_…`) | The same node; only its hash is stored | 30 days, single use | Each refresh returns a new one |
+| Refresh token (`rt_…`) | The same node; only its hash is stored | 30 days | The first refresh once it is an hour old returns a new one; younger, it is kept and nothing is logged |
 | Operator key (Ed25519) | The operator (mdma); only the public half is in the system state | The cluster's lifetime | Not rotated yet |
 | API key (`cal_…`) | Generated for an account; only its hash is stored | Up to 1 year (`ttlSecs`) | Revoked by the account, or expires |
 | Passkey | The person's authenticator | Until removed from the account | Added and removed by the account (at least one stays) |
@@ -43,7 +43,7 @@ request anywhere.
 | `POST /auth/logout` | This session: its refresh tokens go, its tokens stop verifying |
 | `POST /auth/logout-all` | Every session of the account |
 | Removing a passkey | Every session opened with that passkey; tokens of a session whose passkey is gone are also refused directly |
-| A refresh token presented twice | Its session (`RefreshReused`): someone else holds a copy |
+| A refresh token presented again after it was exchanged | Its session (`RefreshReused`): someone else holds a copy |
 | Revoking an API key | That key, at once |
 
 A revoked session id is remembered for an hour (`REVOKED_SESSION_KEEP_SECS`),
