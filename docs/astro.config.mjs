@@ -211,6 +211,7 @@ export default defineConfig({
                 'protocol/upgrades',
                 'protocol/xcall',
                 'protocol/blobs',
+                'protocol/compute-actions',
                 'protocol/presence',
               ],
             },
