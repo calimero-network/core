@@ -85,7 +85,7 @@ struct JobNode {
     /// While set, every run answers `running`, as a stuck node would (feature `testing`).
     #[cfg(feature = "testing")]
     stuck: AtomicBool,
-    /// While set, run status and cancel never answer, as a frozen node (feature `testing`).
+    /// While set, run status, cancel and load never answer, as a frozen node (feature `testing`).
     #[cfg(feature = "testing")]
     frozen: AtomicBool,
     /// While set, every output route answers an error (feature `testing`).
@@ -132,7 +132,7 @@ impl RunningJob {
         self.job.stuck.store(true, Ordering::Relaxed);
     }
 
-    /// Makes run status and cancel requests hang from now on. Tests only.
+    /// Makes run status, cancel and load requests hang from now on. Tests only.
     #[cfg(feature = "testing")]
     pub fn freeze(&self) {
         self.job.frozen.store(true, Ordering::Relaxed);
@@ -346,6 +346,10 @@ async fn attestation(
 
 /// `GET /job/load`: how many runs this node has and how many it takes.
 async fn load(State(job): State<Arc<JobNode>>) -> Json<Value> {
+    #[cfg(feature = "testing")]
+    if job.frozen.load(Ordering::Relaxed) {
+        std::future::pending::<()>().await;
+    }
     Json(json!({
         "running": job.runs.active(),
         "capacity": RUNS_PER_JOB_NODE,

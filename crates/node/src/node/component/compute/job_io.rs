@@ -86,15 +86,13 @@ pub enum Sent {
 }
 
 impl Node {
-    /// The free job node with the fewest runs (those being delivered to it counted), lowest id
-    /// first, never one of `skip`; one of `avoid` only when no other is free.
-    pub(super) async fn choose_job(
+    /// Each job node not in `skip` that attests and answers its load, with its running count and
+    /// capacity. Holds no lock: a node that never answers costs only its own timeout.
+    pub(super) async fn survey_jobs(
         &self,
         app: &AppRecord,
-        avoid: &[NodeId],
         skip: &[NodeId],
-        reserved: &HashMap<NodeId, usize>,
-    ) -> Option<JobPeer> {
+    ) -> Vec<(usize, usize, JobPeer)> {
         let ids: Vec<NodeId> = self.sys(|s| {
             s.job_nodes()
                 .map(|n| n.id)
@@ -104,17 +102,10 @@ impl Node {
         let found = join_all(ids.into_iter().map(|id| async move {
             let peer = self.attest_job(id, app).await.ok()?;
             let (running, capacity) = self.job_load(&peer).await.ok()?;
-            let running = running + reserved.get(&id).copied().unwrap_or(0);
-            (running < capacity).then_some((running, id, peer))
+            Some((running, capacity, peer))
         }))
         .await;
-        let mut free: Vec<_> = found.into_iter().flatten().collect();
-        free.sort_by_key(|(running, id, _)| (*running, *id));
-        let pick = free
-            .iter()
-            .position(|(_, id, _)| !avoid.contains(id))
-            .or_else(|| (!free.is_empty()).then_some(0))?;
-        Some(free.swap_remove(pick).2)
+        found.into_iter().flatten().collect()
     }
 
     /// The assignment of `attempt` to `peer`, signed by the cluster identity: a function of the
@@ -477,4 +468,31 @@ impl Drive<'_> {
             .map_err(|_| eyre::eyre!("an output key is 32 bytes"))?;
         Ok((body.body, Zeroizing::new(key)))
     }
+}
+
+/// The free job node of `surveyed` with the fewest runs (those being delivered to it counted),
+/// lowest id first; one of `avoid` only when no other is free.
+pub(super) fn pick_job(
+    surveyed: Vec<(usize, usize, JobPeer)>,
+    avoid: &[NodeId],
+    reserved: &HashMap<NodeId, usize>,
+) -> Option<JobPeer> {
+    let mut free: Vec<_> = surveyed
+        .into_iter()
+        .map(|(running, capacity, peer)| {
+            (
+                running + reserved.get(&peer.id).copied().unwrap_or(0),
+                capacity,
+                peer,
+            )
+        })
+        .filter(|(running, capacity, _)| running < capacity)
+        .map(|(running, _, peer)| (running, peer.id, peer))
+        .collect();
+    free.sort_by_key(|(running, id, _)| (*running, *id));
+    let pick = free
+        .iter()
+        .position(|(_, id, _)| !avoid.contains(id))
+        .or_else(|| (!free.is_empty()).then_some(0))?;
+    Some(free.swap_remove(pick).2)
 }

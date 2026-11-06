@@ -782,14 +782,11 @@ impl Drive<'_> {
         let blobs = self.g.read_local(|m, _| m.blob_view());
         let mut failed: Vec<NodeId> = Vec::new();
         loop {
+            let surveyed = self.node.survey_jobs(self.app, &failed).await;
             let peer = {
                 let _one = self.node.compute.assigning.lock().await;
                 let reserved = self.node.compute.reserved();
-                let Some(peer) = self
-                    .node
-                    .choose_job(self.app, avoid, &failed, &reserved)
-                    .await
-                else {
+                let Some(peer) = job_io::pick_job(surveyed, avoid, &reserved) else {
                     return false;
                 };
                 self.node.compute.reserve(peer.id);
