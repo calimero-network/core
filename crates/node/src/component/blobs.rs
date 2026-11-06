@@ -43,6 +43,8 @@ pub const MAX_BLOB_MIME_BYTES: usize = 127;
 pub const MAX_GRANT_BYTES: usize = 128;
 /// Blobs one `BlobsCollected` entry names at most.
 pub const COLLECT_BATCH: usize = 64;
+/// Key of the app's epoch floor in `rows::CBLOB`; a blob id is 32 bytes, so it never collides.
+const FLOOR_KEY: &[u8] = b"floor";
 
 /// What the host records of one of a component app's blobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,13 +125,20 @@ pub type Blobs = Arc<BTreeMap<[u8; 32], BlobRecord>>;
 pub struct BlobTable {
     pub records: Blobs,
     idle: BTreeSet<(u64, [u8; 32])>,
+    /// Above the epoch of every published blob forgotten so far: a record made again starts
+    /// here, so a grant of a forgotten blob never holds for its successor.
+    floor: u32,
 }
 
 impl BlobTable {
     /// Read the records from the group's rows (a restart, a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
         let mut records = BTreeMap::new();
+        let mut floor = 0;
         state.scan_hidden(rows::CBLOB, |k, v| {
+            if k == FLOOR_KEY {
+                floor = serde_json::from_slice(v).unwrap_or(0);
+            }
             if let (Ok(id), Ok(r)) = (
                 <[u8; 32]>::try_from(k),
                 serde_json::from_slice::<BlobRecord>(v),
@@ -144,6 +153,7 @@ impl BlobTable {
             .map(|(id, r)| (r.idle_since_ms, *id))
             .collect();
         self.records = Arc::new(records);
+        self.floor = floor;
         Ok(())
     }
 
@@ -178,7 +188,7 @@ impl BlobTable {
             idle_since_ms: ts_ms,
             file: None,
             charged: prev.as_ref().is_some_and(|p| p.charged),
-            epoch: prev.as_ref().map_or(0, |p| p.epoch),
+            epoch: prev.as_ref().map_or(self.floor, |p| p.epoch),
         };
         if refs == 0 {
             let _new = self.idle.insert((ts_ms, id));
@@ -252,7 +262,7 @@ impl BlobTable {
             idle_since_ms: ts_ms,
             file: None,
             charged: true,
-            epoch: 0,
+            epoch: self.floor,
         };
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);
@@ -283,6 +293,13 @@ impl BlobTable {
         };
         let _was = self.idle.remove(&(prev.idle_since_ms, *id));
         tx.delete_hidden(rows::CBLOB, id);
+        if prev.charged && prev.epoch >= self.floor {
+            self.floor = prev.epoch.saturating_add(1);
+            match serde_json::to_vec(&self.floor) {
+                Ok(v) => tx.put_hidden(rows::CBLOB, FLOOR_KEY, &v),
+                Err(e) => tx.fail(e),
+            }
+        }
         true
     }
 

@@ -1680,6 +1680,33 @@ async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_grant_stays_revoked_after_the_blob_is_deleted_and_published_again() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let revoked = rig.grant(&blob).await;
+    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    let live = rig.grant(&blob).await;
+
+    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    assert_eq!(rig.publish(&output).await, blob);
+    for (name, old) in [("revoked", &revoked), ("deleted", &live)] {
+        let e = rig
+            .alice
+            .download_blob_granted(&rig.app, &blob, old)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "{name} grant: {e}");
+    }
+    let fresh = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &fresh)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_owner_takes_a_published_blob_down_and_its_charge_is_released() {
     let rig = Rig::start(&[JOB_A]).await;
     let (output, _expected) = rig.finished_output().await;

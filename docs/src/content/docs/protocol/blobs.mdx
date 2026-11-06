@@ -176,6 +176,7 @@ A published blob downloads only through a grant, for every caller including the 
 `blobs.grant` of it works only in logged writes (calls, timers, init, xcall deliveries), never in a view, so the log records who shared it.
 The owner or an org admin can revoke every grant made so far with `POST /apps/{app}/blobs/{id}/revoke`, after which a new grant holds.
 The blob record counts the revokes and a grant names the count it was made under, so every replica refuses a revoked grant, and a new leader does too.
+The app also keeps a floor above the count of every published blob it forgot, and a blob made again starts there, so a revoked grant stays refused when the same output is published again.
 `DELETE /apps/{app}/blobs/{id}` takes a published blob down: the app forgets it, its bytes are collected and its charge is released.
 
 The platform enforces one rule: the id must be an output of a `done` run of this app.
