@@ -29,7 +29,8 @@ meet.
 ```bash
 cargo build -p merod -p meroctl          # the two binaries
 cargo check --workspace                  # everything
-cargo run -p calimero-app-build --bin mero-app-build -- apps/kv-store --out kv_store.wasm   # one app's component
+scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+mero-app-build apps/kv-store --out kv_store.wasm   # one app's component
 cargo test --manifest-path apps/kv-store/Cargo.toml   # an app's own tests, on the real engine
 ```
 

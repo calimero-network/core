@@ -29,7 +29,8 @@ detail.
    `calimero:abi` section):
 
    ```bash
-   cargo run -p calimero-app-build --bin mero-app-build -- apps/my-app --out my-app.wasm
+   scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+   mero-app-build apps/my-app --out my-app.wasm
    ```
 
    A WASM core module (an SDK 0.12 app) is refused by the node

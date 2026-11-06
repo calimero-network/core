@@ -47,6 +47,7 @@ mod cache;
 mod compute;
 mod errors;
 mod http;
+mod run;
 mod wasi;
 
 use bindings::AppPre;
@@ -55,6 +56,7 @@ use compute::ComputePre;
 use errors::{classify, Cancelled, GrowFailed, GrowRefused, HostPanic, Phase};
 
 pub use errors::{CANCELLED, WALL_CLOCK_EXCEEDED};
+pub use run::{ending_of, measure, ComputeRun, Ending, Measured, Reason, THREAD_CPU};
 use wasi::{LogPipe, SharedLog};
 
 /// Wasm stack per call, as in the v1 runtime (spec section 5).

@@ -9,7 +9,8 @@ sidebar:
 
 ```bash
 # in core
-cargo run -p calimero-app-build --bin mero-app-build -- apps/kv-store --out kv_store.wasm
+scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+mero-app-build apps/kv-store --out kv_store.wasm
 cargo run -p merod -- local
 ```
 
@@ -88,7 +89,7 @@ within a time budget.
 ```bash
 cargo test -p calimero-node --test scenarios -- apps/kv-store/   # kv-store's scenarios
 cargo build --release -p merod -p meroctl
-cargo run -p calimero-app-build --bin mero-app-build -- apps/v2-fixtures/kv --out target/app-components/kv.wasm
+mero-app-build apps/v2-fixtures/kv --out target/app-components/kv.wasm
 python3 -I crates/node/tests/fault/suite.py --only frozen-leader
 ```
 
