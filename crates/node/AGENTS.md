@@ -1223,6 +1223,8 @@ API and system group:
   Then `BlobTable::add_published` records the plain blob (`BlobRecord::charged`, `application/octet-stream`) before the diff, unless the app already holds that id; `expire` and `BlobsCollected` release the charge of a file or a charged blob.
   A published blob is served only through a grant (`blob_download` judges it on the leader's record, `Node::blob_standing_strong`), and `blobs.grant` is refused for it outside a logged write.
   `BlobRecord::epoch` counts the owner's revokes (`ComponentCmd::BlobRevoke`, `POST /apps/{app}/blobs/{id}/revoke`, `__blob_revoke`); a grant above zero carries its epoch (`grant_token`), and a download whose grant names another epoch than the record's answers `404`.
+  The app also keeps an epoch floor (`BlobTable::floor`, the hidden `rows::CBLOB` row `floor`): forgetting any blob but a sealed file raises it above that blob's epoch, and a record made again (`add_published`, `upload`) starts there, so a grant of a forgotten blob never holds for its successor.
+  `load` fails on an unreadable floor or record instead of defaulting, and `revoke` refuses at `u32::MAX` (`no revocation left`).
   The owner's delete (`forget_blob`) forgets a published blob too, queuing its bytes and charge in `collect` and `collect_files` like `expire` does; it still refuses a sealed file.
   A result method sees its own run's outputs without the flag (`blob_view_with_outputs`), so it cannot publish them; it stores the `BlobRef` and a later call publishes.
   Tests: `component/tests/runs.rs` (the apply rule) and `compute_runs.rs` (`a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote`, `only_an_output_of_this_apps_done_runs_publishes`, `a_published_blob_survives_a_leader_change`).

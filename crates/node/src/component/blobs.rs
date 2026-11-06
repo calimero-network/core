@@ -125,7 +125,7 @@ pub type Blobs = Arc<BTreeMap<[u8; 32], BlobRecord>>;
 pub struct BlobTable {
     pub records: Blobs,
     idle: BTreeSet<(u64, [u8; 32])>,
-    /// Above the epoch of every published blob forgotten so far: a record made again starts
+    /// Above the epoch of every grantable blob forgotten so far: a record made again starts
     /// here, so a grant of a forgotten blob never holds for its successor.
     floor: u32,
 }
@@ -140,10 +140,9 @@ impl BlobTable {
                 floor = serde_json::from_slice(v)
                     .map_err(|e| eyre::eyre!("the blob epoch floor is unreadable: {e}"))?;
             }
-            if let (Ok(id), Ok(r)) = (
-                <[u8; 32]>::try_from(k),
-                serde_json::from_slice::<BlobRecord>(v),
-            ) {
+            if let Ok(id) = <[u8; 32]>::try_from(k) {
+                let r = serde_json::from_slice::<BlobRecord>(v)
+                    .map_err(|e| eyre::eyre!("a blob record is unreadable: {e}"))?;
                 let _prev = records.insert(id, r);
             }
             Ok(true)
@@ -277,14 +276,15 @@ impl BlobTable {
         self.forget(tx, id).then_some(charged)
     }
 
-    /// Invalidates the grants made so far for the published blob `id`; whether it is one.
-    pub fn revoke(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
-        let Some(mut r) = self.records.get(id).filter(|r| r.charged).cloned() else {
-            return false;
-        };
-        r.epoch = r.epoch.saturating_add(1);
+    /// Invalidates the grants made so far for the published blob `id`; the reason it cannot.
+    pub fn revoke(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> Result<(), &'static str> {
+        let mut r = (self.records.get(id))
+            .filter(|r| r.charged)
+            .cloned()
+            .ok_or("no such published blob")?;
+        r.epoch = r.epoch.checked_add(1).ok_or("no revocation left")?;
         self.put(tx, *id, r);
-        true
+        Ok(())
     }
 
     /// Forget a blob; whether the app held it.
@@ -294,8 +294,9 @@ impl BlobTable {
         };
         let _was = self.idle.remove(&(prev.idle_since_ms, *id));
         tx.delete_hidden(rows::CBLOB, id);
-        if prev.charged && prev.epoch >= self.floor {
-            self.floor = prev.epoch.saturating_add(1);
+        let next = prev.epoch.checked_add(1).filter(|n| *n > self.floor);
+        if let (None, Some(next)) = (&prev.file, next) {
+            self.floor = next;
             match serde_json::to_vec(&self.floor) {
                 Ok(v) => tx.put_hidden(rows::CBLOB, FLOOR_KEY, &v),
                 Err(e) => tx.fail(e),
