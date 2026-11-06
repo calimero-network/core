@@ -112,7 +112,9 @@ Sessions carry their proofs too:
   over the new token and the session (`proof::refresh_use_message`), which
   must stay the old token's. A node that only saw the log, or the proposal,
   cannot exchange a token. Tokens from before keys are not exchanged: their
-  holders sign in again.
+  holders sign in again. A token younger than `api::REFRESH_ROTATE_AFTER`
+  (an hour) is not exchanged at all: a refresh reads its record at a read
+  index and logs nothing (`api::kept_refresh`).
 - **Counters** (`SetSignCount`): the assertion that carries the counter; only
   the authenticator signs one, so no node can set a counter past it and lock
   a passkey out.

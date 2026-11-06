@@ -112,7 +112,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/recovery/begin`, `/start` | signed out | `begin { code }` → a passkey registration; `start { challengeId, code, registration }` spends the code and logs the new passkey as pending → `{ accountId, credentialId, startedAt, readyAt }`. `401` wrong or spent code, `409 RECOVERY_PENDING` | - |
 | `POST /auth/recovery/cancel` | account holder | Cancel the recovery under way with a passkey the account has; `412` first | - |
 | `POST /auth/recovery/finish` | signed out | `{ accountId? }`, `412` first, approved by the new passkey once `readyAt` passed (72 h): adds it, ends every session of the account → a session. `409 RECOVERY_NOT_READY` before | - |
-| `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and refresh token | (automatic) |
+| `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and the refresh token to use next (the same one until it is an hour old) | (automatic) |
 | `POST /auth/logout` | session | End this session | |
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
 | `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |

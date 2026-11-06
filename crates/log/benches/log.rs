@@ -1,8 +1,11 @@
 //! What one write through `calimero-log` costs: a proposal appended, committed
 //! and applied on one group, on a single node and on a 3-node group in one
 //! process (the in-memory transport of `tests/cluster.rs`), one at a time and
-//! 64 in flight. Beside it, one RocksDB write synced and unsynced on the same
-//! disk, the unit a commit's latency is made of.
+//! 64 in flight; the same through `Group::write` (`client_write`), the path
+//! the node's system group takes, where 64 in flight reach openraft at once
+//! instead of queueing behind the propose lock. Beside it, one RocksDB write
+//! synced and unsynced on the same disk, the unit a commit's latency is made
+//! of.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hint::black_box;
@@ -133,11 +136,30 @@ impl Cluster {
     }
 }
 
-async fn propose(group: &Group<Rows>) {
-    let _ = group
-        .propose(|_m, _applied| Proposal::Append(vec![0xAB_u8; COMMAND_BYTES]))
-        .await
-        .expect("the leader appends");
+/// How a bench row appends one command.
+#[derive(Clone, Copy)]
+enum Path {
+    /// `Group::propose`: built against the applied state, one at a time.
+    Propose,
+    /// `Group::write`: handed to openraft as it comes (the system group's path).
+    Write,
+}
+
+async fn append(group: &Group<Rows>, path: Path) {
+    match path {
+        Path::Propose => {
+            let _ = group
+                .propose(|_m, _applied| Proposal::Append(vec![0xAB_u8; COMMAND_BYTES]))
+                .await
+                .expect("the leader appends");
+        }
+        Path::Write => {
+            let _ = group
+                .write(vec![0xAB_u8; COMMAND_BYTES])
+                .await
+                .expect("the leader appends");
+        }
+    }
 }
 
 fn append_commit(c: &mut Criterion) {
@@ -155,13 +177,24 @@ fn append_commit(c: &mut Criterion) {
         group.bench_function(
             BenchmarkId::new("one_in_flight", format!("{nodes}_node")),
             |b| {
-                b.iter_custom(|iters| timed(&rt, iters, 1, &cluster.leader));
+                b.iter_custom(|iters| timed(&rt, iters, 1, &cluster.leader, Path::Propose));
             },
         );
         group.throughput(Throughput::Elements(IN_FLIGHT as u64));
         group.bench_function(
             BenchmarkId::new(format!("{IN_FLIGHT}_in_flight"), format!("{nodes}_node")),
-            |b| b.iter_custom(|iters| timed(&rt, iters, IN_FLIGHT, &cluster.leader)),
+            |b| {
+                b.iter_custom(|iters| timed(&rt, iters, IN_FLIGHT, &cluster.leader, Path::Propose));
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new(
+                format!("{IN_FLIGHT}_writes_in_flight"),
+                format!("{nodes}_node"),
+            ),
+            |b| {
+                b.iter_custom(|iters| timed(&rt, iters, IN_FLIGHT, &cluster.leader, Path::Write));
+            },
         );
         rt.block_on(cluster.stop());
     }
@@ -170,14 +203,20 @@ fn append_commit(c: &mut Criterion) {
 
 /// `iters` rounds of `width` proposals started together, each round waiting
 /// for all of them.
-fn timed(rt: &Runtime, iters: u64, width: usize, leader: &Arc<Group<Rows>>) -> Duration {
+fn timed(
+    rt: &Runtime,
+    iters: u64,
+    width: usize,
+    leader: &Arc<Group<Rows>>,
+    path: Path,
+) -> Duration {
     rt.block_on(async {
         let start = Instant::now();
         for _ in 0..iters {
             let tasks: Vec<_> = (0..width)
                 .map(|_| {
                     let leader = Arc::clone(leader);
-                    tokio::spawn(async move { propose(&leader).await })
+                    tokio::spawn(async move { append(&leader, path).await })
                 })
                 .collect();
             for t in tasks {

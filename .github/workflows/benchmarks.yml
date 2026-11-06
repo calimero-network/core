@@ -156,8 +156,11 @@ jobs:
           # The bench builds the kv component (apps/v2-fixtures/kv) itself.
           targets: wasm32-wasip2
 
+      # Cargo runs a bench in its package's directory, so the report is named
+      # from the workspace root; a relative name landed in crates/node/ and
+      # the upload below found nothing.
       - name: Run the cluster bench
-        run: cargo bench -p calimero-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
+        run: cargo bench -p calimero-node --bench cluster_throughput -- --secs 20 --out "$GITHUB_WORKSPACE/cluster-throughput.json"
 
       - name: Upload the report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

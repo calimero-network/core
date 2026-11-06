@@ -136,9 +136,11 @@ refreshToken }`.
   release may serve the account ([Sessions](/protocol/identities/#sessions)).
   A node on a release the account's owners have not approved answers
   `421 WRONG_NODE` instead of issuing or taking one: use another node.
-- **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` exchanges it
-  for a new session and a new refresh token. Reusing a refresh token is
-  recorded and ends the session.
+- **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` answers a
+  new session and the refresh token to use next: the same one while it is
+  younger than an hour (nothing is written to the system log), a new one
+  after. Presenting a refresh token again after it was exchanged is recorded
+  and ends the session.
 - **Signing keys.** Each node signs with its receipt key, made on its first
   start and kept in its data directory wrapped under K_r: a restart or a
   rolling upgrade of the binary keeps the sessions it issued, and they verify

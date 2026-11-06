@@ -78,5 +78,8 @@ the redb migration (`migration_tests.rs`).
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group
 over the in-memory transport, 1 and 64 in flight (64 only queue behind the
-propose lock; an append takes no leadership round); and one RocksDB write synced and unsynced on the same disk, the
+propose lock; an append takes no leadership round); 64 `Group::write`s in flight
+(the system group's path, straight to openraft: openraft 0.9 appends each
+`client_write` as its own synced RocksDB write on the leader's core task, so
+these too commit no faster than one sync each); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.
