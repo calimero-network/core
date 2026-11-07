@@ -146,14 +146,18 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
         .await;
     assert!(missing.is_err(), "{missing:?}");
 
-    // A cancel is recorded on the active run; nothing grants it, so it stays queued.
+    // A cancel is recorded on the active run; nothing grants it, so the leader may end it cancelled.
     let _ok = alice
         .call(&app, "cancel", json!({ "run": run }), None)
         .await
         .unwrap();
     let (record, _) = leader_record(&c, &app, &run);
     assert!(record.cancel_requested);
-    assert_eq!(record.state, RunState::Queued);
+    assert!(
+        matches!(record.state, RunState::Queued | RunState::Cancelled),
+        "{:?}",
+        record.state
+    );
     let unknown = alice
         .call(&app, "cancel", json!({ "run": "nobody" }), None)
         .await;

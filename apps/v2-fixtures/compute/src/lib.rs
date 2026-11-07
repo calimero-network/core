@@ -7,51 +7,24 @@
 use std::io::{Read, Write};
 
 use calimero_sdk::blob::BlobRef;
-use calimero_sdk::compute::{self, RunId};
+use calimero_sdk::compute::{self, ComputeOutcome, ComputeStatus, RunId};
 use calimero_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// One read or write call's size.
 const PIECE: usize = 64 * 1024;
 
-/// The outcome the node hands `onDone`: the shape of the SDK's `ComputeOutcome`.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Outcome {
-    pub run: RunId,
-    pub method: String,
-    pub attempt: u32,
-    pub status: String,
-    pub reason: Option<String>,
-    pub result: Option<String>,
-    pub outputs: Vec<Output>,
-    pub usage: Usage,
-}
-
-/// A file the run wrote: its id is the `BlobRef` to keep, size and hash are of the plaintext.
-#[derive(serde::Deserialize)]
-pub struct Output {
-    pub id: BlobRef,
-    #[serde(with = "calimero_sdk::json::u64_str")]
-    pub size: u64,
-    pub sha256: String,
-}
-
-/// What the run cost.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Usage {
-    pub cpu_seconds: f64,
-    pub gib_seconds: f64,
-    #[serde(with = "calimero_sdk::json::u64_str")]
-    pub fuel: u64,
-}
-
 #[app::state(version = 1)]
 pub struct Compute {
     done: Counter,
+    pings: Counter,
     /// The outputs kept, by id: a reference in state retains one.
     kept: UnorderedMap<String, BlobRef>,
+    /// What each run's outcome said, by run id: JSON text.
+    outcomes: UnorderedMap<String, String>,
+    /// What `onThen` got from starting the next run, by the finished run's id: the new run's
+    /// id or the error text.
+    chained: UnorderedMap<String, String>,
 }
 
 #[app::logic]
@@ -65,28 +38,19 @@ impl Compute {
     /// SHA-256 of each input in order.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_done")]
     pub fn digest() -> app::Result<Vec<String>> {
-        let inputs = compute::inputs();
-        let mut writer = calimero_sdk::files::create()?;
-        let mut hashes = Vec::new();
-        for (i, id) in inputs.iter().enumerate() {
-            let mut reader = calimero_sdk::files::open(id)?;
-            let mut hash = Sha256::new();
-            let mut buf = vec![0u8; PIECE];
-            loop {
-                let n = reader.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hash.update(&buf[..n]);
-                let key = env::random_bytes(n);
-                let out: Vec<u8> = buf[..n].iter().zip(&key).map(|(b, k)| b ^ k).collect();
-                writer.write_all(&out)?;
-            }
-            hashes.push(hex(&hash.finalize()));
-            compute::progress(percent(i + 1, inputs.len()), "hashing");
-        }
-        writer.finish()?;
-        Ok(hashes)
+        digest_inputs()
+    }
+
+    /// [`Compute::digest`] whose result method keeps no output.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_drop")]
+    pub fn digest_unkept() -> app::Result<Vec<String>> {
+        digest_inputs()
+    }
+
+    /// [`Compute::digest`] whose result method starts another `digest` run.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_then")]
+    pub fn digest_then() -> app::Result<Vec<String>> {
+        digest_inputs()
     }
 
     /// Loops until the wall clock ends it.
@@ -116,6 +80,12 @@ impl Compute {
         }
     }
 
+    /// Returns more bytes than a run may hand back.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn big() -> app::Result<Vec<u8>> {
+        Ok(vec![7u8; 70_000])
+    }
+
     /// Opens the file `id`, which a test names outside the run's inputs.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
     pub fn peek(id: BlobRef) -> app::Result<u64> {
@@ -128,22 +98,90 @@ impl Compute {
         compute::start("digest", &(), &inputs)
     }
 
+    /// Starts a `digestUnkept` run over `inputs`.
+    pub fn start_unkept(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
+        compute::start("digestUnkept", &(), &inputs)
+    }
+
+    /// Starts a `digestThen` run over `inputs`.
+    pub fn start_digest_then(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
+        compute::start("digestThen", &(), &inputs)
+    }
+
+    /// Starts the argument-less compute method `method` with no input.
+    pub fn start_run(&mut self, method: String) -> app::Result<RunId> {
+        compute::start(&method, &(), &[])
+    }
+
     /// Asks for the active run `run` to end.
     pub fn cancel(&mut self, run: RunId) -> app::Result<()> {
         compute::cancel(&run)
     }
 
-    /// Receives the outcome of `digest` and keeps its outputs; an output a result method does
-    /// not store is collected.
+    /// Receives the outcome of a run, keeps its outputs and records what it said; an output a
+    /// result method does not store is collected.
     #[app::compute_result]
-    pub fn on_done(&mut self, outcome: Outcome) -> app::Result<()> {
-        if outcome.status == "done" {
-            for output in outcome.outputs {
+    pub fn on_done(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
+        let status = match outcome.status {
+            ComputeStatus::Done => "done",
+            ComputeStatus::Failed => "failed",
+            ComputeStatus::Cancelled => "cancelled",
+        };
+        if outcome.status == ComputeStatus::Done {
+            for output in &outcome.outputs {
                 self.kept.insert(&output.id.id(), &output.id)?;
             }
         }
+        let text = serde_json::json!({
+            "run": outcome.run,
+            "status": status,
+            "reason": outcome.reason,
+            "attempt": outcome.attempt,
+            "sha256": outcome.outputs.first().map(|o| o.sha256.clone()),
+            "outputs": outcome.outputs.len(),
+            "fuel": outcome.usage.fuel.to_string(),
+            "cpuSeconds": outcome.usage.cpu_seconds,
+        });
+        self.outcomes
+            .insert(&outcome.run.to_string(), &text.to_string())?;
         self.done.add(1)?;
         Ok(())
+    }
+
+    /// Receives the outcome of `digestUnkept` and stores no output.
+    #[app::compute_result]
+    pub fn on_drop(&mut self, _outcome: ComputeOutcome) -> app::Result<()> {
+        self.done.add(1)?;
+        Ok(())
+    }
+
+    /// Starts a `digest` run with no input and records its id, or why it was refused.
+    #[app::compute_result]
+    pub fn on_then(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
+        let started = match compute::start("digest", &(), &[]) {
+            Ok(run) => run.to_string(),
+            Err(e) => format!("error: {e:?}"),
+        };
+        self.chained.insert(&outcome.run.to_string(), &started)?;
+        Ok(())
+    }
+
+    /// Logs an entry that changes nothing else.
+    pub fn ping(&mut self) -> app::Result<()> {
+        self.pings.add(1)?;
+        Ok(())
+    }
+
+    /// The outcome recorded for `run`, as JSON text, if its result method ran.
+    #[app::view]
+    pub fn outcome(&self, run: RunId) -> app::Result<Option<String>> {
+        Ok(self.outcomes.get(&run.to_string())?)
+    }
+
+    /// What `onThen` recorded for the finished run `run`.
+    #[app::view]
+    pub fn chained(&self, run: RunId) -> app::Result<Option<String>> {
+        Ok(self.chained.get(&run.to_string())?)
     }
 
     /// How many outcomes `onDone` has received.
@@ -151,6 +189,31 @@ impl Compute {
     pub fn done(&self) -> app::Result<u64> {
         Ok(self.done.get()?)
     }
+}
+
+fn digest_inputs() -> app::Result<Vec<String>> {
+    let inputs = compute::inputs();
+    let mut writer = calimero_sdk::files::create()?;
+    let mut hashes = Vec::new();
+    for (i, id) in inputs.iter().enumerate() {
+        let mut reader = calimero_sdk::files::open(id)?;
+        let mut hash = Sha256::new();
+        let mut buf = vec![0u8; PIECE];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buf[..n]);
+            let key = env::random_bytes(n);
+            let out: Vec<u8> = buf[..n].iter().zip(&key).map(|(b, k)| b ^ k).collect();
+            writer.write_all(&out)?;
+        }
+        hashes.push(hex(&hash.finalize()));
+        compute::progress(percent(i + 1, inputs.len()), "hashing");
+    }
+    writer.finish()?;
+    Ok(hashes)
 }
 
 fn percent(done: usize, total: usize) -> u8 {
