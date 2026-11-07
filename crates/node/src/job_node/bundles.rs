@@ -9,6 +9,7 @@ use axum::Json;
 use calimero_app_host::{Engine, Prepared};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
+use tracing::info;
 
 use super::admission::admit_bundle;
 use super::{locked, JobNode};
@@ -107,6 +108,7 @@ pub(super) async fn put_bundle(
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
     job.bundles.insert(Arc::new(prepared));
+    info!(%hash, "job node prepared a component");
     Ok(Json(json!({ "hash": hash })))
 }
 

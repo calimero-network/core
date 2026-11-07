@@ -79,6 +79,8 @@ WORKFLOWS = {
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
+            "scripts/pack-component.py",
+            "scripts/tests/pack-component-test.py",
         ),
     ),
     "release": (
