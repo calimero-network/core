@@ -101,7 +101,7 @@ tar = "0.4"
 tempfile = "3.10"
 windows-sys = "0.61"
 tdx-quote = "0.0.5"
-tdx_workload_attestation = "0.1.0"
+tdx_workload_attestation = "0.2.0"
 thiserror = "2.0.20"
 tokio = "1.47.1"
 tokio-rustls = { version = "0.26.4", default-features = false }
