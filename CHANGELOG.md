@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.11] - 2026-11-06
+
 ### Added
 
-- **Account proofs**: `POST /auth/account-proof { nonce, audience }` (a
+- **Account proofs** (#4871): `POST /auth/account-proof { nonce, audience }` (a
   passkey session) answers the node's receipt-key signature over
   `{ cluster, node, account, nonce, audience, issuedAt, expiresAt }`
   (`calimero_client::attest::AccountProof`, five minutes), so a third party
@@ -28,7 +30,7 @@
   cluster; without it the node answers `412 CONFIRM_REQUIRED` and the change
   is made in the console. `calimero_client::package_origins_path` names the
   route for a caller that sends it without a passkey.
-- **Custom domains for served frontends**: a package's manager registers an
+- **Custom domains for served frontends** (#4864): a package's manager registers an
   origin with `served: true` (`POST /package-origins/{package} { origin,
   served: true }`, passkey consent over `{ origin, rpId, served: true }`), and
   the node serves the package's frontend from its signed bundle on that host,
@@ -39,10 +41,46 @@
   cluster; adding one needs every node on this release. Certificates, routing
   and the console flow come from mdma and mero-tee; design in
   `docs/specs/custom-domains.md`.
-- **`meroctl app origins add --served`** registers a custom domain (a served
+- **`meroctl app origins add --served`** (#4867) registers a custom domain (a served
   origin, above): the body and the manager's consent carry `served: true`,
   only when the flag is given. `app origins list` shows each origin's
   `served`.
+- **Each app's last write** (#4874): `lastWriteAt` (Unix seconds, `null`
+  before the first write) on `GET /ops/apps`, `GET /auth/apps`,
+  `GET /orgs/{org}/apps` and `GET /apps/{app}/storage`: the entry timestamp of
+  the newest entry that wrote the app's data. A node without a replica of the
+  app asks one (`internal/last-write`, at most 2 s per app; `null` if none
+  answers). Kept in the component head, which reads and writes as before for an
+  app not written since.
+- **Passkeys named by cluster** (#4872): a new passkey is registered as
+  `alice · <cluster>`, or `alice · <app> (<cluster>)` when the sign-up began on
+  a package's frontend, so a password manager tells them apart.
+
+### Changed
+
+- **A passkey from another cluster is answered as such** (#4872): signing in or
+  stepping up with a credential no account here has answers `401
+  PASSKEY_UNKNOWN_HERE` (was `401 UNAUTHENTICATED` "unknown passkey"), naming
+  no cluster or account. mero-js maps it to `PasskeyUnknownHere`.
+- **A young refresh token is kept** (#4873): a refresh token younger than an
+  hour (`REFRESH_ROTATE_AFTER`) is judged on fresh system state and answered
+  with a new session token and the same refresh token, with no system-log
+  write; an older one is exchanged as before. Refreshes write once per session
+  per hour instead of four times. A copied token taken in its first hour now
+  refreshes alongside its owner until it is rotated, then the reuse revokes the
+  session as before.
+
+### Fixed
+
+- **Account recovery revokes the account's API keys** (#4870): finishing a
+  recovery ends the account's API keys as well as its sessions, so keys made
+  with a lost passkey stop working. A finish logged by rc.10 replays as it did.
+- **A member opening an invite no longer spends it** (#4875): a redemption that
+  changes nothing for the account (already a member at that role, in every team
+  it names) returns the organization and leaves the invite for its invitee. A
+  used-up or unknown invite reads "this invite was used up, revoked or never
+  existed"; the codes are unchanged. Redemptions logged by rc.10 replay as they
+  did.
 
 ## [1.0.0-rc.10] - 2026-11-05
 
