@@ -22,6 +22,7 @@ const ALLOWED_IMPORTS: &[&str] = &[
     "calimero:app/files@0.5.1",
     "calimero:app/xcall@0.5.1",
     "calimero:app/action@0.5.1",
+    "calimero:app/runs@0.5.1",
     "calimero:app/rebuild@0.5.1",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
