@@ -633,7 +633,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
- "wasmparser 0.262.0",
+ "wasmparser 0.263.0",
 ]
 
 [[package]]
@@ -670,7 +670,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "wasmparser 0.262.0",
+ "wasmparser 0.263.0",
  "wasmtime",
  "wasmtime-wasi",
  "wat",
@@ -883,7 +883,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "url",
- "wasmparser 0.262.0",
+ "wasmparser 0.263.0",
  "zeroize",
 ]
 
@@ -7501,7 +7501,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.2",
  "semver",
- "serde",
 ]
 
 [[package]]
@@ -7511,8 +7510,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb"
 dependencies = [
  "bitflags 2.13.2",
+ "hashbrown 0.17.1",
  "indexmap 2.14.2",
  "semver",
+ "serde",
 ]
 
 [[package]]
