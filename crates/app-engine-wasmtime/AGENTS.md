@@ -28,6 +28,7 @@ Implements `calimero_app_host::Engine`. One `wasmtime::Engine` per world (fuel, 
 
 The `testing` feature exposes `WasmtimeEngine::with_pool_size` so a test can exhaust the pool.
 
+`runs.publish` maps onto `HostCore::compute_publish`; `tests/guests/files` has `publish` (a call) and `peek` (a view), and `compute_publish` is a compute component that imports it and must be refused at prepare.
 `tests/guests/legacy_050` is built against its own copy of the 0.5.0 `types` and `storage` interfaces (`wit/`), so it imports exactly what an app built before 0.5.1 imports; `tests/guests/files` writes, reads back and hashes a file. `tests/engine.rs` builds the standalone guests under `tests/guests/*` (each its own `[workspace]`, built with `calimero_app_build::build_component` into one shared target dir under `CARGO_TARGET_TMPDIR`). Every manual ABI includes `"abiVersion": 1`.
 
 ## Verify

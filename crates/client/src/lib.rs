@@ -825,6 +825,20 @@ impl Client {
         .await
     }
 
+    /// Revoke the grants made so far for one of the app's published blobs (its owner's or an
+    /// org admin's).
+    pub async fn revoke_blob(&self, app: &str, id: &str) -> Result<Value> {
+        self.post(
+            &format!(
+                "apps/{}/blobs/{}/revoke",
+                path_segment(app),
+                path_segment(id)
+            ),
+            json!({}),
+        )
+        .await
+    }
+
     /// A component app's xcalls: `{ pending, deadLetters: [{ seq, app, method, reason,
     /// atMs }] }` (its owner or an org admin).
     pub async fn app_xcalls(&self, app: &str) -> Result<Value> {

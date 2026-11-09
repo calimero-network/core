@@ -6181,7 +6181,8 @@ async fn blob_upload(
         }
     }
     if q.sealed {
-        let up = node.upload_file(&app, &body).await?;
+        let uploader = p.caller.account().unwrap_or_default();
+        let up = node.upload_file(&app, &body, uploader).await?;
         let sha256 = <[u8; 32]>::try_from(up.mark.sha256.0.as_slice())
             .map_err(|_| ApiError::internal("bad file mark"))?;
         let mut out = file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256);
@@ -6249,32 +6250,38 @@ async fn blob_download(
     let app = node.app(&app_id).await?;
     let raw = parse_blob_id(&id)?;
     let component = app.executor == crate::types::Executor::Component;
-    match q.grant.as_deref() {
-        // A bad or expired grant answers as a missing blob: it proves nothing.
-        Some(grant)
-            if !component
-                || !crate::component::blobs::grant_valid(
-                    &node.blob_grant_key(),
-                    &app.app_id,
-                    &raw,
-                    grant,
-                    node.app_clock().now_ms(),
-                ) =>
-        {
-            return Err(ApiError::not_found("no such blob in this app"));
-        }
-        Some(_) => {}
+    // A bad or expired grant answers as a missing blob: it proves nothing.
+    let granted = match q.grant.as_deref() {
+        Some(grant) => Some(
+            component
+                .then(|| {
+                    crate::component::blobs::grant_epoch(
+                        &node.blob_grant_key(),
+                        &app.app_id,
+                        &raw,
+                        grant,
+                        node.app_clock().now_ms(),
+                    )
+                })
+                .flatten()
+                .ok_or_else(|| ApiError::not_found("no such blob in this app"))?,
+        ),
         None => {
             let _p = gate(&node, &headers, &app, "__blob", false).await?;
+            None
         }
-    }
+    };
     refuse_sealed_file(&node, &app, &raw).await?;
-    // The app's leader decides: a replica that has not applied a delete yet
-    // still holds the mark and the bytes.
-    match node.blob_held_strong(&app, &raw).await {
-        Some(true) => {}
-        Some(false) => return Err(ApiError::not_found("no such blob in this app")),
+    // The app's leader decides: a replica that has not applied a delete or a revoke yet
+    // still serves the blob and its old grants.
+    let (published, epoch) = match node.blob_standing_strong(&app, &raw).await {
+        Some(Some(standing)) => standing,
+        Some(None) => return Err(ApiError::not_found("no such blob in this app")),
         None => return Err(ApiError::unavailable("the app's leader did not answer")),
+    };
+    // A published blob is served only through a grant made since its last revoke.
+    if granted.is_some_and(|made| made != epoch) || (published && granted.is_none()) {
+        return Err(ApiError::not_found("no such blob in this app"));
     }
     let hex_id = hex::encode(raw);
     let bytes = match node
@@ -6395,6 +6402,39 @@ async fn blob_delete(
     Ok(Json(json!({ "index": a.index })))
 }
 
+/// Revoke the grants made so far for one of the app's published blobs: its owner's or an org
+/// admin's. A grant made after this one holds.
+async fn blob_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, id)): Path<(String, String)>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "__blob", true).await?;
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin revokes grants",
+        ));
+    }
+    let raw = parse_blob_id(&id)?;
+    let a = node
+        .call(&CallRequest {
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app_id,
+                "__blob_revoke",
+                json!({ "id": hex::encode(raw) }),
+                p.caller,
+            )
+        })
+        .await?;
+    if a.status != Status::Ok {
+        return Err(ApiError::not_found("no such published blob in this app"));
+    }
+    Ok(Json(json!({ "index": a.index })))
+}
+
 /// A component app's xcalls (D25, D29): messages waiting in its outbox and its dead
 /// letters, newest last. The app's owner's or an org admin's, from a replica.
 async fn app_xcalls(
@@ -6489,6 +6529,49 @@ async fn app_run(
     if answer.result.is_null() {
         return Err(ApiError::not_found("no such run"));
     }
+    Ok(Json(answer.result))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunsQuery {
+    #[serde(default)]
+    limit: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
+}
+
+/// A page of an app's compute runs, newest first, each as `app_run` shows it, with the cursor of
+/// the next page.
+async fn app_runs(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Query(q): Query<RunsQuery>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::not_found("no such run"));
+    }
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let files = node.sys(|s| may_handle_files(s, &app, p.caller.account()));
+    let limit = match q.limit {
+        None => Value::Null,
+        Some(l) => json!(l
+            .parse::<u64>()
+            .map_err(|_| { ApiError::bad_request("BAD_LIMIT", "limit is a whole number") })?),
+    };
+    let answer = node
+        .view(&ViewRequest {
+            app_id,
+            method: crate::node::RUN_VIEW.to_owned(),
+            args: json!({ "limit": limit, "before": q.before, "files": files }),
+            caller: p.caller,
+            strong: true,
+            min_index: 0,
+        })
+        .await?;
     Ok(Json(answer.result))
 }
 
@@ -6712,6 +6795,8 @@ struct LastWriteBody {
 struct FileUploadBody {
     app: String,
     key: String,
+    /// The account the sending node authenticated for the upload.
+    uploader: String,
     bytes: calimero_log::Bytes,
 }
 
@@ -6725,7 +6810,7 @@ async fn internal_file_upload(
     let caller = peer(&node, &headers, key).await?;
     caller_may_hold_app(&node, &caller, &body.app).await?;
     let up = node
-        .upload_here(&body.app, &body.key, &body.bytes.0)
+        .upload_here(&body.app, &body.key, &body.bytes.0, &body.uploader)
         .await?;
     Ok(Json(serde_json::to_value(up).unwrap_or_default()))
 }
@@ -6792,14 +6877,17 @@ async fn internal_blob_held(
             m.holds_blob(&raw)
         }
     };
-    let held = if body.strong {
-        g.read_strong(|m, _| asks(m))
+    let (held, standing) = if body.strong {
+        g.read_strong(|m, _| (asks(m), m.blob_standing(&raw)))
             .await
             .map_err(|e| ApiError::unavailable(&e.to_string()))?
     } else {
-        g.read_local(|m, _| asks(m))
+        g.read_local(|m, _| (asks(m), m.blob_standing(&raw)))
     };
-    Ok(Json(json!({ "held": held })))
+    let (published, epoch) = standing.unwrap_or_default();
+    Ok(Json(
+        json!({ "held": held, "published": published, "epoch": epoch }),
+    ))
 }
 
 /// The system leader's applied index, once it confirmed it leads.
@@ -9379,6 +9467,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/usage", get(app_usage))
         .route("/apps/{app}/abi", get(app_abi))
+        .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
         .route("/apps/{app}/presence/stream", get(presence_stream))
@@ -9392,6 +9481,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))
+        .route("/apps/{app}/blobs/{id}/revoke", post(blob_revoke))
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))

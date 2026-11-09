@@ -400,6 +400,32 @@ impl AppMachine {
             .collect()
     }
 
+    /// Up to `limit` records older than `before` `(start_ts_ms, run)`, newest first, and the key to
+    /// continue from. Reads every kept record: at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT`.
+    #[must_use]
+    pub fn runs_page(
+        &self,
+        limit: usize,
+        before: Option<&(u64, String)>,
+    ) -> (Vec<RunRecord>, Option<(u64, String)>) {
+        let head = &self.state.component.head;
+        let mut all: Vec<RunRecord> = head
+            .active_runs
+            .iter()
+            .chain(&head.finished_runs)
+            .filter_map(|run| self.run_record(run))
+            .filter(|r| before.is_none_or(|(ts, run)| (r.start_ts_ms, &r.run) < (*ts, run)))
+            .collect();
+        all.sort_by(|a, b| (b.start_ts_ms, &b.run).cmp(&(a.start_ts_ms, &a.run)));
+        let more = all.len() > limit;
+        all.truncate(limit);
+        let next = all
+            .last()
+            .filter(|_| more)
+            .map(|r| (r.start_ts_ms, r.run.clone()));
+        (all, next)
+    }
+
     /// The ids of the active runs, in order.
     #[must_use]
     pub fn active_runs(&self) -> Vec<String> {
@@ -575,8 +601,12 @@ impl AppMachine {
         self.finish_run(tx, &entry.run);
         self.pin_inputs(tx, &record.inputs, -1, entry.ts_ms);
         // Registered before the result method's diff, so a `BlobRef` it stores is counted.
+        // Only a signed done report carries outputs (`check_final`), so these are a done run's.
         for output in &entry.outputs {
-            self.state.component.blobs.add_file(tx, output, entry.ts_ms);
+            self.state
+                .component
+                .blobs
+                .add_output(tx, output, entry.ts_ms);
         }
         self.apply_component_outcome(
             tx,

@@ -1159,6 +1159,39 @@ fn blobs_answer_from_the_nodes_record_and_grants_expire_from_the_run_clock() {
     }
 }
 
+/// [`OneBlob`], published: its grants are minted only where the log records the caller.
+struct PublishedBlob;
+
+impl BlobHost for PublishedBlob {
+    fn info(&self, id: &[u8; 32]) -> Option<BlobInfo> {
+        OneBlob.info(id)
+    }
+    fn grant(&self, id: &[u8; 32], expires_ms: u64) -> String {
+        OneBlob.grant(id, expires_ms)
+    }
+    fn published(&self, _id: &[u8; 32]) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_published_blob_is_granted_only_in_logged_writes() {
+    let state = base(&[]);
+    let id = "09".repeat(32);
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::Init,
+        InvocationKind::XcallDeliver,
+    ] {
+        let mut host = core_for(&state, &inv(kind)).with_blobs(Arc::new(PublishedBlob));
+        assert!(host.blobs_grant(&id, 60).is_ok(), "{kind:?}");
+    }
+    for kind in [InvocationKind::View, InvocationKind::Action] {
+        let mut host = core_for(&state, &inv(kind)).with_blobs(Arc::new(PublishedBlob));
+        assert!(host.blobs_grant(&id, 60).is_err(), "{kind:?}");
+    }
+}
+
 #[test]
 fn a_value_may_refer_only_to_the_apps_own_blobs() {
     let state = base(&[]);

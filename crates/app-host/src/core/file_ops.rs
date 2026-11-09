@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use super::HostCore;
 use crate::files::{
-    FileError, FileInfo, FileRead, FileWrite, NewFile, ReadError, FILE_CORRUPT, FILE_FAILED,
-    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE,
-    MAX_COMPUTE_FILE_BYTES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES, MAX_READ_CHUNK,
-    MAX_RUN_FILE_BYTES, RUN_WROTE_TOO_MUCH,
+    FileError, FileInfo, FileRead, FileWrite, NewFile, PublishedFile, ReadError, FILE_CORRUPT,
+    FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN,
+    FILE_UNAVAILABLE, MAX_COMPUTE_FILE_BYTES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
+    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
+    RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
 use crate::types::{HostDenied, InvocationKind};
 
@@ -49,6 +50,7 @@ pub(crate) struct FileTable {
     next: u32,
     written: u64,
     created: Vec<NewFile>,
+    published: Vec<PublishedFile>,
     /// A logged run lost a file to node load: it ends as a timeout, not logged.
     unavailable: bool,
 }
@@ -58,8 +60,13 @@ impl FileTable {
         self.unavailable
     }
 
-    pub(crate) fn into_created(self) -> Vec<NewFile> {
-        self.created
+    pub(crate) fn into_outputs(self) -> (Vec<NewFile>, Vec<PublishedFile>) {
+        (self.created, self.published)
+    }
+
+    /// Whether this run published the blob `id` (hex).
+    pub(super) fn published(&self, id: &str) -> bool {
+        self.published.iter().any(|p| p.id == id)
     }
 
     fn open_count(&self) -> usize {
@@ -184,6 +191,34 @@ impl HostCore {
         }
     }
 
+    /// Turns a done compute run's output into a plain blob; the file reaches the outcome only
+    /// if the run ends `Ok`. Logged writes only.
+    pub fn compute_publish(&mut self, id: &str) -> Result<Result<String, String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("runs.publish"));
+        }
+        if let Some(done) = self.files.published.iter().find(|p| p.source == id) {
+            return Ok(Ok(done.id.clone()));
+        }
+        if self.files.published.len() >= MAX_PUBLISHED_PER_RUN {
+            return Ok(Err(FILE_TOO_MANY_NEW.to_owned()));
+        }
+        let held: u64 = self.files.published.iter().map(|p| p.size).sum();
+        let size = self.provider.info(id).map_or(0, |f| f.size);
+        if held.saturating_add(size) > MAX_PUBLISHED_BYTES {
+            return Ok(Err(RUN_PUBLISHED_TOO_MUCH.to_owned()));
+        }
+        match self.provider.publish(id) {
+            Ok(file) => {
+                let blob = file.id.clone();
+                self.files.published.push(file);
+                Ok(Ok(blob))
+            }
+            Err(FileError::Failed(reason)) => Ok(Err(reason)),
+            Err(FileError::Unavailable) => Err(self.unavailable()),
+        }
+    }
+
     /// Drops a writer (the WIT resource's destructor); an unfinished one leaves no file.
     pub fn writer_close(&mut self, id: WriterId) {
         let _ = self.files.writers.remove(&id.0);
@@ -277,6 +312,16 @@ impl HostCore {
     pub fn files_info(&self, id: &str) -> Result<Option<FileInfo>, HostDenied> {
         self.may_read_files("files.info", Some(id))?;
         Ok(self.file_info(id))
+    }
+
+    /// Who uploaded the sealed file `id`: none for a file a run made or one the app does not
+    /// hold. App world only: a compute run does not see it.
+    pub fn files_uploader(&self, id: &str) -> Result<Option<String>, HostDenied> {
+        if self.is_compute() {
+            return Err(self.denied("runs.uploader"));
+        }
+        self.may_read_files("runs.uploader", None)?;
+        Ok(self.provider.uploader(id))
     }
 
     /// A sealed file's metadata: one the provider holds or this run finished.

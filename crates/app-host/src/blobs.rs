@@ -32,6 +32,10 @@ pub trait BlobHost: Send + Sync {
     /// A download grant for the blob, valid until `expires_ms` (the run's wall clock plus
     /// the TTL). Only called for a blob `info` knows.
     fn grant(&self, id: &[u8; 32], expires_ms: u64) -> String;
+    /// Whether the blob is a published compute output, whose grants only logged writes mint.
+    fn published(&self, _id: &[u8; 32]) -> bool {
+        false
+    }
 }
 
 /// The host of an app with no blob store (and the default of every run): no blobs.

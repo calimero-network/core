@@ -38,6 +38,8 @@ pub const JOB_POLL: Duration = Duration::from_secs(2);
 pub const JOB_LOST_AFTER: Duration = Duration::from_secs(20);
 /// How long a cancel keeps trying to stop the job before the run ends cancelled anyway: well past `CANCEL_WAIT`.
 pub const CANCEL_DEADLINE: Duration = Duration::from_secs(20);
+/// How many times a final that conflicted is rebuilt and proposed again within one round.
+const FINAL_CONFLICT_TRIES: usize = 5;
 /// Unconfirmed finals remembered per run.
 const MAX_PROPOSED_KEPT: usize = 8;
 /// How long a granted run may wait for a job node that can take it before it ends refused.
@@ -46,6 +48,12 @@ const QUEUED_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const WALL_FALLBACK_FACTOR: u32 = 10;
 /// The reserved view that answers a run's record: the node's own, never an app's method.
 pub const RUN_VIEW: &str = "__run";
+/// How many runs a list answers when the caller names no limit.
+const DEFAULT_RUNS_PAGE: usize = 20;
+/// The most runs a list page holds.
+const MAX_RUNS_PAGE: usize = 100;
+/// The longest `before` cursor a list accepts.
+const MAX_RUNS_CURSOR_BYTES: usize = 256; // a real cursor is a timestamp and a run id
 
 /// The waits that end a run the leader cannot get an answer for; tests shorten them.
 #[derive(Clone, Copy, Debug)]
@@ -375,6 +383,8 @@ enum Landed {
     Committed,
     /// Nothing was decided: try again next round.
     Retry,
+    /// The entry was built on state that moved: nothing applied, a rebuilt one may land.
+    Conflict,
     /// The run moved on without this entry (another final, another attempt).
     Superseded,
     /// The entry was refused for good.
@@ -471,6 +481,7 @@ fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Val
         "state": rec.state,
         "cancelRequested": rec.cancel_requested,
         "startTsMs": rec.start_ts_ms,
+        "caps": rec.caps,
         "inputs": inputs,
         "attempts": rec.attempts.iter().map(|a| json!({
             "attempt": a.attempt,
@@ -647,20 +658,78 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
+        let files = req.args["files"].as_bool().unwrap_or(false);
+        if req.args.get("run").is_none() {
+            return self.runs_view(g, req, files);
+        }
         let run = req.args["run"]
             .as_str()
             .ok_or_else(|| ApiError::bad_request("BAD_RUN", "name the run"))?;
-        let files = req.args["files"].as_bool().unwrap_or(false);
         let (record, applied) = g.read_local(|m, applied| (m.run_record(run), applied));
         let status = g.status();
-        let progress = status
-            .is_leader
-            .then(|| self.compute.progress(&req.app_id, run, status.term))
-            .flatten();
+        let progress = record
+            .as_ref()
+            .filter(|r| status.is_leader && r.state.is_active())
+            .and_then(|_| self.compute.progress(&req.app_id, run, status.term));
         Ok(ViewAnswer {
             index: applied,
             status: Status::Ok,
             result: record.map_or(Value::Null, |r| run_json(&r, progress, files)),
+            error: Value::Null,
+            timeout: false,
+        })
+    }
+
+    /// A page of the run records, each as the single-run view shows it.
+    fn runs_view(
+        &self,
+        g: &Group<AppMachine>,
+        req: &ViewRequest,
+        files: bool,
+    ) -> Result<ViewAnswer, ApiError> {
+        let limit = match req.args.get("limit").filter(|l| !l.is_null()) {
+            None => DEFAULT_RUNS_PAGE,
+            Some(l) => l
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=MAX_RUNS_PAGE).contains(n))
+                .ok_or_else(|| {
+                    ApiError::bad_request("BAD_LIMIT", &format!("limit is 1 to {MAX_RUNS_PAGE}"))
+                })?,
+        };
+        let before = match req.args["before"].as_str() {
+            None => None,
+            Some(c) => Some(
+                Some(c)
+                    .filter(|c| c.len() <= MAX_RUNS_CURSOR_BYTES)
+                    .and_then(|c| c.split_once(':'))
+                    .and_then(|(ts, run)| Some((ts.parse().ok()?, run.to_owned())))
+                    .ok_or_else(|| {
+                        ApiError::bad_request("BAD_CURSOR", "not a cursor of this list")
+                    })?,
+            ),
+        };
+        let (page, next, applied) = g.read_local(|m, applied| {
+            let (page, next) = m.runs_page(limit, before.as_ref());
+            (page, next, applied)
+        });
+        let status = g.status();
+        let runs: Vec<Value> = page
+            .iter()
+            .map(|r| {
+                let progress = (status.is_leader && r.state.is_active())
+                    .then(|| self.compute.progress(&req.app_id, &r.run, status.term))
+                    .flatten();
+                run_json(r, progress, files)
+            })
+            .collect();
+        Ok(ViewAnswer {
+            index: applied,
+            status: Status::Ok,
+            result: json!({
+                "runs": runs,
+                "next": next.map(|(ts, run)| format!("{ts}:{run}")),
+            }),
             error: Value::Null,
             timeout: false,
         })
@@ -886,12 +955,12 @@ impl Drive<'_> {
             return;
         };
         if self.past_ceiling(attempt) {
-            self.end_timeout(attempt, watch).await;
+            self.end_timeout(watch).await;
             return;
         }
         if self.timed_out(attempt, watch) {
             if !self.rescue(attempt, watch).await {
-                self.end_timeout(attempt, watch).await;
+                self.end_timeout(watch).await;
             }
             return;
         }
@@ -1007,8 +1076,7 @@ impl Drive<'_> {
         passed > wall + limits.deadline_grace + limits.outage_credit
     }
 
-    async fn end_timeout(&self, attempt: &Attempt, watch: &mut Watch) {
-        let _answer = self.delete_job_run(attempt).await;
+    async fn end_timeout(&self, watch: &mut Watch) {
         let plan = FinalPlan::failed(self.rec, FailedReason::Timeout);
         self.end(&plan, watch).await;
     }
@@ -1053,13 +1121,17 @@ impl Drive<'_> {
     /// The job node does not say it stopped: the run ends as the report held for the attempt
     /// says, else cancelled with no usage. The job run is deleted once the final stands.
     async fn force_cancel(&self, attempt: &Attempt, watch: &mut Watch) {
+        if self.past_ceiling(attempt) {
+            self.end_cancelled(watch).await;
+            return;
+        }
         if let Some((report, signature)) = watch.held_for(attempt.attempt) {
             let _job_side = self.finish(attempt, report, signature, watch).await;
             if watch.finished || watch.attempt != attempt.attempt {
                 return;
             }
             // Only the leader's own writes keep the held report from ending the run.
-            if watch.leader_wait && !self.past_ceiling(attempt) {
+            if watch.leader_wait {
                 return;
             }
         }
@@ -1088,13 +1160,12 @@ impl Drive<'_> {
         }
         match landed {
             Landed::Committed => self.after_final(plan, watch).await,
-            Landed::Retry if plan.report.is_some() => {
+            Landed::Retry | Landed::Conflict if plan.report.is_some() => {
                 watch.leader_wait = true;
                 watch.saw();
             }
-            Landed::Retry => {}
+            Landed::Retry | Landed::Conflict => {}
             Landed::Superseded => {
-                watch.proposed.clear();
                 self.discard_staged(watch);
             }
             Landed::Refused => {
@@ -1150,6 +1221,16 @@ impl Drive<'_> {
     /// Proposes the end of the run: the result method runs inside the entry, on the state it is
     /// built on, and its effects apply with the final or not at all.
     async fn commit_final(&self, plan: &FinalPlan, built: &mut Option<(u64, u64)>) -> Landed {
+        for _ in 0..FINAL_CONFLICT_TRIES {
+            match self.propose_final(plan, built).await {
+                Landed::Conflict => {}
+                landed => return landed,
+            }
+        }
+        Landed::Retry
+    }
+
+    async fn propose_final(&self, plan: &FinalPlan, built: &mut Option<(u64, u64)>) -> Landed {
         let (node, rec) = (self.node, self.rec);
         let app_id = &self.app.app_id;
         let Some(bundle) = self.g.read_local(|m, _| m.component_bundle()) else {
@@ -1288,7 +1369,7 @@ impl Drive<'_> {
         if answer.conflict {
             let _prev = node.conflicts.fetch_add(1, Ordering::Relaxed);
             node.discard(app_id, persisted);
-            return Landed::Retry;
+            return Landed::Conflict;
         }
         let ended = self
             .g

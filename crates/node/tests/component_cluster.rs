@@ -2052,6 +2052,7 @@ async fn upgrades_through_intents_are_refused_for_everyone() {
             "__upgrade",
             "__blob",
             "__blob_forget",
+            "__blob_revoke",
             "__calimero_anything",
         ] {
             let e = cl

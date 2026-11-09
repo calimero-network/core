@@ -163,6 +163,12 @@ impl Files {
         }))
     }
 
+    /// Who uploaded the file `id`.
+    #[app::view]
+    pub fn uploader_of(&self, id: BlobRef) -> app::Result<Option<String>> {
+        Ok(calimero_sdk::files::uploader(&id))
+    }
+
     /// Asks for a download grant of the id; a sealed file is refused.
     #[app::view]
     pub fn share_file(&self, id: BlobRef) -> app::Result<String> {

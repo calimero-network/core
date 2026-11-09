@@ -395,12 +395,14 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
-// Starting and cancelling compute runs: logged writes only (call, timer, init, xcall delivery).
-// The compute world does not import it: a run cannot start runs.
+// Starting and cancelling compute runs, and publishing a done run's output: logged writes only (call, timer, init, xcall delivery).
+// The compute world does not import it: a run cannot start runs. `uploader` is a read, for every kind but a migration.
 interface runs {
   use types.{blob-id, action-id};
   start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
   cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+  uploader: func(id: blob-id) -> option<string>;       // the account that uploaded the sealed file; none for a file a call or a run made, and for an unknown id
+  publish: func(id: blob-id) -> result<blob-id, string>; // a done run's output as a plain blob: its id is the SHA-256 of the plaintext; an id that is no output of this app's done runs answers NOT_A_RUN_OUTPUT
 }
 
 // What a compute component sees of its run; only the compute world imports it.
@@ -497,6 +499,7 @@ A file is a sealed blob: it shares the blob id namespace and the `blob-id` and `
 Retention is R8: the host counts the `BlobRef`s in state, a file no state refers to is collected, and a call that finishes a file without storing its id leaves nothing behind.
 There is no `delete`: dropping the reference is the delete, as for blobs.
 `blobs.info` answers for a file id with the plaintext size and SHA-256 and an empty `mime`, and so does `files.info`.
+`runs.uploader(id)` answers the account that uploaded the sealed file, recorded by the node from the authenticated upload, or none for a file a call or a run made and for an unknown id; the compute world does not import it.
 `blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one.
 So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 A `BlobRef` to a file the app holds, or finished earlier in the same run, may be stored.
@@ -506,6 +509,15 @@ Every refusal that is not a policy violation is a fixed soft error string: `no s
 A write refused for either size cap, or failed inside the provider, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
 A storage failure inside the provider is passed through as an opaque soft error.
 An unknown handle, or running out of handle ids, traps `HostDenied`.
+`runs.publish` is the one way a file's bytes leave the cluster: it turns the output of one of the app's `done` compute runs into a plain blob that `GET /apps/{app}/blobs/{id}` serves only through a grant.
+`blobs.grant` of a published blob traps `HostDenied` outside invocations that become log entries, so the log records who shared it.
+The app's owner or an org admin can revoke the blob's grants (`POST /apps/{app}/blobs/{id}/revoke`) or delete the blob, which forgets it and releases its charge.
+It works only in invocations that become log entries and traps `HostDenied` in a view and an action; it is in `runs`, which the compute world does not import, so a run cannot publish its own output.
+An id that is not an output of a done run of this app (an uploaded file, a file a call made, another app's output, an unknown id) answers the soft error `NOT_A_RUN_OUTPUT` and records nothing.
+The platform enforces only that rule: each app decides who may publish, in the method that calls `publish`.
+The answer is the plain blob's id, the SHA-256 of the plaintext, which the app stores as a `BlobRef` to keep it (R8, like any blob).
+A result method cannot publish an output of the run that is ending, because the entry that registers it is the one the method runs in: it stores the `BlobRef` and a later call publishes.
+A run publishes at most 16 outputs, each at most 47 MiB and 64 MiB together (`run published too much`), and the output stays publishable while the app holds it.
 A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
 
 ### Compute methods
@@ -519,6 +531,10 @@ The node never lets a client reach either: `/intents` and `/views` answer `Wrong
 A release ships the compute component as `compute` in the signed manifest (`services[].compute` in a multi-service bundle), so the signature and the artifact digest cover it like every artifact, and an older node ignores it.
 At install the node prepares it on the compute world only, never on the replica engine, and refuses the release unless its ABI is the compute world's and lists exactly the app ABI's compute methods with the same caps (`COMPUTE_ABI_MISMATCH`).
 A release without a compute component installs and its app runs calls, but cannot run compute.
+An author builds both from one crate with `mero-app-build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
+`scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
+The leader sends a job node only the run's compute component (`RunRecord.compute_bundle`, named by the assignment's `bundle`), and a job node prepares everything it is given on the compute world, so an app component is refused (`BAD_BUNDLE`) even when the cluster signed it.
+Usage is billed to the app component that started the run, and the result method runs on the replicas' app component.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
 A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `job.inputs`, which are blob ids.
 It may create files, 2 GiB in all and 47 MiB each; this cap replaces the 64 MiB per-run cap of a logged run.

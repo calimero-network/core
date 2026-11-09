@@ -30,6 +30,7 @@ const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 const READ_PIECE: usize = 64 * 1024; // what the fixture reads and keys at a time
 const WAIT: Duration = Duration::from_secs(180);
 const PAST_IDLE_MS: i64 = 3_700_000; // past the idle time of an unreferenced blob
+const UPLOAD_TRIES: usize = 5; // FILES_UNAVAILABLE is retryable on an overloaded runner
 
 struct Rig {
     c: Cluster,
@@ -90,12 +91,17 @@ impl Rig {
     }
 
     async fn upload(&self, plain: &[u8]) -> String {
-        let up = self
-            .alice
-            .upload_file(&self.app, plain.to_vec())
-            .await
-            .unwrap();
-        up["id"].as_str().unwrap().to_owned()
+        let mut tries = 1;
+        loop {
+            match self.alice.upload_file(&self.app, plain.to_vec()).await {
+                Ok(up) => return up["id"].as_str().unwrap().to_owned(),
+                Err(e) if e.code() == Some("FILES_UNAVAILABLE") && tries < UPLOAD_TRIES => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("upload failed: {e}"),
+            }
+        }
     }
 
     async fn begin(&self, method: &str, args: Value) -> String {
@@ -575,6 +581,104 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
         shown["final"]["outputs"][0].get("size").is_none(),
         "{shown}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let file = rig.upload(&input()).await;
+    let first = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let _ = rig.outcome(&first).await;
+    let second = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let path = format!("apps/{}/runs", rig.app);
+
+    let all = rig.alice.get(&path).await.unwrap();
+    let runs = all["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{all}");
+    assert_eq!(all["next"], Value::Null);
+    assert_eq!(runs[0]["run"], json!(second), "newest first");
+    assert_eq!(runs[1]["state"], "done");
+    assert!(runs[1]["caps"]["wallSecs"].is_u64(), "{all}");
+    assert!(runs[1]["caps"]["memoryMib"].is_u64() && runs[1]["caps"]["fuel"].is_u64());
+    assert!(runs[1]["inputs"][0]["sha256"].is_string(), "{all}");
+    let single = rig.alice.get(&format!("{path}/{first}")).await.unwrap();
+    assert_eq!(runs[1], single, "the same object as the single run");
+
+    let page = rig.alice.get(&format!("{path}?limit=1")).await.unwrap();
+    assert_eq!(page["runs"].as_array().unwrap().len(), 1);
+    let next = page["next"].as_str().unwrap().to_owned();
+    let rest = rig
+        .alice
+        .get(&format!("{path}?limit=1&before={next}"))
+        .await
+        .unwrap();
+    assert_eq!(rest["runs"][0]["run"], json!(first), "{rest}");
+    assert_eq!(rest["next"], Value::Null);
+
+    for query in ["limit=0", "limit=101", "limit=x", "limit=-1"] {
+        let e = rig.alice.get(&format!("{path}?{query}")).await.unwrap_err();
+        assert_eq!(e.code(), Some("BAD_LIMIT"), "{query}");
+    }
+    let e = rig
+        .alice
+        .get(&format!("{path}?before=zz"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"));
+    let e = rig.alice.get(&format!("{path}?before=")).await.unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"), "an empty cursor");
+    let long = format!("1:{}", "a".repeat(255));
+    let e = rig
+        .alice
+        .get(&format!("{path}?before={long}"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"), "a cursor over the byte bound");
+    let colon = rig
+        .alice
+        .get(&format!("{path}?before=99999999999999:x:y"))
+        .await
+        .unwrap();
+    assert_eq!(colon["runs"].as_array().unwrap().len(), 2, "{colon}");
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&path).await.unwrap();
+    assert_eq!(shown["runs"][1]["state"], "done", "{shown}");
+    assert!(
+        shown["runs"][1]["inputs"][0].get("sha256").is_none(),
+        "{shown}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_lists_runs_without_file_sizes_hashes_or_keys() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let file = rig.upload(&input()).await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let _ = rig.outcome(&run).await;
+    let path = format!("apps/{}/runs", rig.app);
+    let owner = rig.alice.get(&path).await.unwrap();
+    assert!(
+        owner["runs"][0]["inputs"][0]["sha256"].is_string(),
+        "{owner}"
+    );
+    assert!(
+        owner["runs"][0]["final"]["outputs"][0]["size"].is_u64(),
+        "{owner}"
+    );
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&path).await.unwrap();
+    let listed = &shown["runs"][0];
+    assert_eq!(listed["state"], "done", "{shown}");
+    for file in [&listed["inputs"][0], &listed["final"]["outputs"][0]] {
+        assert!(file["id"].is_string(), "{shown}");
+        assert_eq!(file.as_object().unwrap().len(), 1, "only the id: {shown}");
+    }
+    let text = shown.to_string();
+    for word in ["wrapped", "key", "args"] {
+        assert!(!text.contains(word), "{word} in {text}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1381,4 +1485,332 @@ async fn a_job_node_that_never_answers_its_load_does_not_serialize_assignments()
     }
     let took = started.elapsed();
     assert!(took < JOB_CONTROL_TIMEOUT * 2, "placed after {took:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails() {
+    let rig = Rig::start(&[JOB_A]).await;
+    rig.limits(ComputeLimits {
+        deadline_grace: Duration::from_secs(1),
+        outage_credit: Duration::from_secs(3),
+        cancel_deadline: Duration::from_secs(3),
+        ..ComputeLimits::default()
+    });
+    let file = rig.upload(&input()).await;
+    let leader = rig.c.app_leader(&rig.app).unwrap();
+    for i in (0..3).filter(|i| *i != leader) {
+        let node = &rig.c.nodes[i].as_ref().unwrap().node;
+        node.set_peer_blobs(PeerBlobs::Refuse);
+    }
+    let pushes = rig.leader().file_pushes();
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    rig.until("the leader tried to push the output", || {
+        rig.leader().file_pushes() > pushes
+    })
+    .await;
+    rig.jobs[0].running.freeze();
+    let _ok = rig
+        .alice
+        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .await
+        .unwrap();
+    // The digest method's wall cap is 60 s: the ceiling is that plus the grace and the credit.
+    let rec = until_ended(&rig, &run, 90).await;
+    assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_files() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let run = rig.begin("startRun", json!({ "method": "big" })).await;
+    let _ = rig.outcome(&run).await;
+    let single = format!("apps/{}/runs/{run}", rig.app);
+    let list = format!("apps/{}/runs", rig.app);
+
+    let owner = rig.alice.get(&single).await.unwrap();
+    let message = owner["final"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("too large"), "{owner}");
+    let listed = rig.alice.get(&list).await.unwrap();
+    assert_eq!(
+        listed["runs"][0]["final"]["message"],
+        owner["final"]["message"]
+    );
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&single).await.unwrap();
+    assert!(shown["final"]["message"].is_null(), "{shown}");
+    assert!(shown["progress"].is_null(), "{shown}");
+    let listed = bob.get(&list).await.unwrap();
+    assert!(listed["runs"][0]["final"]["message"].is_null(), "{listed}");
+    assert!(listed["runs"][0]["progress"].is_null(), "{listed}");
+}
+
+impl Rig {
+    /// A finished `digest` run over a 100 kB input: its output id and the plaintext it wrote.
+    async fn finished_output(&self) -> (String, Vec<u8>) {
+        let plain = input()[..100_000].to_vec();
+        let file = self.upload(&plain).await;
+        let run = self.begin("startDigest", json!({ "inputs": [file] })).await;
+        let outcome = self.outcome(&run).await;
+        assert_eq!(outcome["status"], "done", "{outcome}");
+        let output = self.record(&run).final_.unwrap().outputs[0].id.clone();
+        let seed = noise_seed(&self.leader().app_file_key(&self.app), &run);
+        (output, expected_output(&plain, seed))
+    }
+
+    async fn publish(&self, id: &str) -> String {
+        let r = self
+            .alice
+            .call(&self.app, "publish", json!({ "output": id }), None)
+            .await
+            .unwrap();
+        r.result.as_str().unwrap().to_owned()
+    }
+
+    async fn grant(&self, id: &str) -> String {
+        let r = self
+            .alice
+            .call(&self.app, "share", json!({ "id": id, "ttl": 600 }), None)
+            .await
+            .unwrap();
+        r.result.as_str().unwrap().to_owned()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+
+    let refused = rig
+        .alice
+        .download_blob(&rig.app, &output)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("NOT_SUPPORTED"), "{refused}");
+
+    let blob = rig.publish(&output).await;
+    assert_eq!(blob, sha256_hex(&expected));
+    let record = rig.blob(&blob).expect("the app holds the plain blob");
+    assert!(record.file.is_none() && record.charged && record.refs == 1);
+    assert_eq!(rig.charged().await, charged + expected.len() as u64);
+
+    let grant = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap();
+    assert_eq!(bytes, expected);
+    let again = rig.publish(&output).await;
+    assert_eq!(again, blob, "publishing twice answers the same blob");
+    assert_eq!(rig.charged().await, charged + expected.len() as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_blob_downloads_only_through_a_grant_a_logged_call_made() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+
+    let e = rig.alice.download_blob(&rig.app, &blob).await.unwrap_err();
+    assert_eq!(
+        e.code(),
+        Some("NOT_FOUND"),
+        "the owner needs a grant too: {e}"
+    );
+    let peeked = rig
+        .alice
+        .view(
+            &rig.app,
+            "shareView",
+            json!({ "id": blob, "ttl": 600 }),
+            Consistency::Strong,
+        )
+        .await;
+    assert!(peeked.is_err(), "a view mints no grant for it");
+
+    let grant = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let old = rig.grant(&blob).await;
+
+    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    for i in 0..3 {
+        let e = rig
+            .c
+            .client(i)
+            .download_blob_granted(&rig.app, &blob, &old)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "node {i}: {e}");
+    }
+    let fresh = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &fresh)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+
+    let was = rig.c.app_leader(&rig.app).unwrap();
+    rig.c.stop(was).await;
+    rig.until("another node leads", || {
+        rig.c.app_leader(&rig.app).is_some()
+    })
+    .await;
+    let new = rig.c.client(usize::from(was == 0));
+    let e = new
+        .download_blob_granted(&rig.app, &blob, &old)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let bytes = new.download_blob_granted(&rig.app, &blob, &fresh).await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_grant_stays_revoked_after_the_blob_is_deleted_and_published_again() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let revoked = rig.grant(&blob).await;
+    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    let live = rig.grant(&blob).await;
+
+    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    assert_eq!(rig.publish(&output).await, blob);
+    for (name, old) in [("revoked", &revoked), ("deleted", &live)] {
+        let e = rig
+            .alice
+            .download_blob_granted(&rig.app, &blob, old)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "{name} grant: {e}");
+    }
+    let fresh = rig.grant(&blob).await;
+    let bytes = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &fresh)
+        .await;
+    assert_eq!(bytes.unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_owner_takes_a_published_blob_down_and_its_charge_is_released() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, _expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+    let blob = rig.publish(&output).await;
+    let grant = rig.grant(&blob).await;
+    assert!(rig.charged().await > charged);
+
+    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    assert!(rig.blob(&blob).is_none());
+    let e = rig
+        .alice
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    rig.until("the bytes are collected and the quota released", || {
+        let now = tokio::runtime::Handle::current();
+        !rig.holds_bytes(&blob)
+            && tokio::task::block_in_place(|| now.block_on(rig.charged())) == charged
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publish_apply_refuses_keeps_no_charge_and_no_bytes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let charged = rig.charged().await;
+    let blob = sha256_hex(&expected);
+
+    rig.leader().forge_next_publish();
+    let e = rig
+        .alice
+        .call(&rig.app, "publish", json!({ "output": output }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e:?}");
+    assert!(rig.blob(&blob).is_none());
+    rig.until("the bytes are discarded and the charge refunded", || {
+        let now = tokio::runtime::Handle::current();
+        !rig.holds_bytes(&blob)
+            && tokio::task::block_in_place(|| now.block_on(rig.charged())) == charged
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_an_output_of_this_apps_done_runs_publishes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, _expected) = rig.finished_output().await;
+    let uploaded = rig.upload(&input()[..1000]).await;
+    let other = rig
+        .alice
+        .create_app_from_package(
+            "compute2",
+            "com.test.compute",
+            Some("1.0.0"),
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+    for (what, app, id) in [
+        ("an uploaded file", rig.app.as_str(), uploaded.as_str()),
+        ("an unknown id", rig.app.as_str(), &"ab".repeat(32)),
+        ("another app's output", other.as_str(), output.as_str()),
+    ] {
+        let e = rig
+            .alice
+            .call(app, "publish", json!({ "output": id }), None)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{e:?}").contains("NOT_A_RUN_OUTPUT"),
+            "{what}: {e:?}"
+        );
+    }
+    assert!(rig.blob(&uploaded).is_some_and(|r| r.file.is_some()));
+    let e = rig
+        .alice
+        .download_blob(&rig.app, &uploaded)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_blob_survives_a_leader_change() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    let grant = rig.grant(&blob).await;
+    let old = rig.c.app_leader(&rig.app).unwrap();
+    rig.c.stop(old).await;
+    let client = usize::from(old == 0);
+    rig.until("another node leads", || {
+        rig.c.app_leader(&rig.app).is_some()
+    })
+    .await;
+    let new = rig.c.client(client);
+    let bytes = new
+        .download_blob_granted(&rig.app, &blob, &grant)
+        .await
+        .unwrap();
+    assert_eq!(bytes, expected);
 }

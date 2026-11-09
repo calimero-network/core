@@ -40,6 +40,12 @@ pub enum BlobCmd {
         #[arg(long, short)]
         context: String,
     },
+    /// Invalidate the download grants made so far for a published blob (its owner or an org admin).
+    Revoke {
+        id: String,
+        #[arg(long, short)]
+        context: String,
+    },
 }
 
 pub async fn run(cmd: BlobCmd, env: &Env) -> eyre::Result<Value> {
@@ -71,6 +77,9 @@ pub async fn run(cmd: BlobCmd, env: &Env) -> eyre::Result<Value> {
         BlobCmd::Info { id, context } => client.blob_info(&env.app(&context).await?, &id).await?,
         BlobCmd::Delete { id, context } => {
             client.delete_blob(&env.app(&context).await?, &id).await?
+        }
+        BlobCmd::Revoke { id, context } => {
+            client.revoke_blob(&env.app(&context).await?, &id).await?
         }
     })
 }
