@@ -476,7 +476,7 @@ is its command line.
   The first valid final of the run's latest attempt (0 before any) wins and any later one is a no-op.
   A job outcome (`done`, or `failed` with `fuel | memory | trap | app-error | integrity | cancelled`) needs a report and signature that `verify_report` accepts under the latest attempt's `jobKey` and `assignmentDigest`, for this app, run and attempt, with the same status and reason, and `outputs` and `usage` exactly the report's.
   A `cancelled` final (or `failed cancelled`) needs `cancelRequested`, and is either the leader's (no report, zero usage) or carries the job node's report (status failed, reason cancelled) that verifies like any other, with its usage.
-  Other leader outcomes carry no report, no outputs and zero usage: `failed lost` needs every attempt used, `failed timeout` a run that was assigned, `failed refused` (an acquire refused for good) a run with no attempt.
+  Other leader outcomes carry no report, no outputs and zero usage: `failed lost` needs every attempt used, `failed quota` (the outputs would pass the payer's file quota) no further state, `failed timeout` a run that was assigned, `failed refused` (an acquire refused for good) a run with no attempt.
   Outputs are bounded (`MAX_NEW_FILES`, `MAX_FILE_BYTES` each, `MAX_COMPUTE_FILE_BYTES` together), and a job's usage cannot pass its caps (fuel; CPU micros and memory-GiB-micros at most the wall cap plus `DEADLINE_GRACE`, 60 s).
   An output id that is not a blob id, is already a blob of the app or is listed twice is refused.
   A final registers each output as a sealed file of the app in the same entry and before `result` applies (`BlobTable::add_file`, the path a run's own files take, with the plaintext hash and wrapped key), so a `BlobRef` the result method stores is counted.
@@ -484,12 +484,13 @@ is its command line.
   `AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave, so `storage_put` accepts those references.
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
+  The cluster tests' fixture (`apps/v2-fixtures/compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
   Every permanent refusal changes nothing and answers `AppError` with the reason as `error`; only a stale `baseIndex` answers `conflict` (retry on the current state) and leaves the run active.
   `init` starts runs on its own bundle.
   The result method runs with `runs_provider(Some(run))`, which leaves out the run that is ending, so its own start of the same job is a new run.
-  `new_file_bytes` counts a final's outputs and its result's new files for the one charge gate, and `None` on overflow refuses the entry.
-  A final over the log's cap loses only its result method's outcome, and its outputs are still charged and stored.
-  A final over the cap even without it is not built (`FINAL_TOO_LARGE`), and the leader ends the run `Failed{timeout}`.
+  `new_file_bytes` counts only the new files of a final's result method for the one charge gate, and `None` on overflow refuses the entry: the leader charged and stored the outputs before it took the proposal lock.
+  A final over the log's cap loses only its result method's outcome, and its outputs stay registered.
+  A final over the cap even without it is not built (`FINAL_TOO_LARGE`), and the leader ends the run `Failed{tooLarge}`, its own reason, not a timeout.
   A run record that cannot be read makes the host deny start and cancel (`RUN_RECORDS_UNREADABLE`).
   A run being cancelled is not the answer to a start of the same job.
   Applying a final records it, releases the inputs, registers the outputs, then applies `result` as a call's outcome (only if its status is `Ok`; its own starts and cancels included).
@@ -504,6 +505,61 @@ is its command line.
   It refuses a run id released before (`released_runs`, the last 256 per app), past `MAX_ACTIVE_RUNS` runs queued for the app, and a run whose fuel alone exceeds `computeFuelPerOrg`.
   `AcquireRun` and `ReleaseRun` are proposed only once a job node is registered, which already requires every system node to be on this release.
   `computeStarts` and `computeCancels` follow the rule files do: a node never moves to a new release in place (its storage key is per release), so an older replica that would miss run records is retired with its release, and an older node cannot prepare a bundle with compute methods (unknown kind, forbidden import).
+- **Driving compute runs** (`node/component/compute.rs`, `compute/{job_io,finish}.rs`; tests `compute_runs.rs`):
+  `lib.rs` calls `Node::drive_runs` every `JOB_POLL` (2 s) and when a call commits (`runs_kick`).
+  For each component app this node leads, one task per app frees stray slots and starts a step task for each active run not already being stepped.
+  One step runs per run at a time, so a run stuck in a long transfer never delays another run's step or cancel.
+  A step that finds this node no longer leads its term does nothing.
+  A step works from the replicated record and the system state, so a new leader resumes where the last stopped.
+  What the leader keeps in memory (`Watch`, per run and leadership term) is one healthy-time accumulator, when a job node last answered in that time, the valid report a job node gave, whether this leader sent the attempt, the last progress and the outputs staged for a final.
+  The healthy-time accumulator counts the time in rounds whose system read succeeded; the lost clock, the run deadline and `QUEUED_RUN_TIMEOUT` count only it, so a system-group outage burns none of them.
+  A new leader starts the lost clock at takeover.
+  The held report is kept per attempt, so the leader's own failing charge, push or propose never counts as silence; a job node that will not hand its outputs over still does.
+  Outage credit is capped at `QUEUED_RUN_TIMEOUT`, and the lost and cancel clocks also end at 10 times their limit in wall time.
+  A running run ends by timeout at an absolute ceiling of wall cap + `DEADLINE_GRACE` + `QUEUED_RUN_TIMEOUT` on the app clock from the attempt's `tsMs`, which survives leader changes.
+  The unplaced and cancel clocks start when the current leader first sees the run in that state and restart with each term: unplaced `QUEUED_RUN_TIMEOUT` of healthy time, cancel `CANCEL_DEADLINE` (20 s) of healthy time.
+  A loss the job node announces (`lost`, a new key, `UNKNOWN_RUN` after sending) first finishes from a held report (`lost_unless_held`).
+  A queued run takes `AcquireRun` first (only when a job node is registered; the payer comes from fresh system state; a permanent refusal ends the run `Failed{refused}`, a retryable one waits).
+  Once granted, `Node::survey_jobs` attests each job node and asks its load outside the assignment lock, then `pick_job` under it picks the fewest runs, then the lowest id; a node that lost an attempt is picked only if no other is free.
+  The assignment is built and delivered (component, assignment, inputs) to that node first, and only then is the attempt committed with the job key and the digest, so a busy or unreachable node (503 is not a failed channel) spends no attempt and the next candidate is tried.
+  A delivered run whose attempt did not commit is deleted.
+  Choosing and reserving a place is serialized (`assigning`, `reserved`), the transfers are not.
+  A granted run that no job node takes for `QUEUED_RUN_TIMEOUT` (10 min) ends `Failed{refused}`, and one the queue grants no place in that time (no job node, or every place held) ends `Failed{notGranted}`; `NotGranted` and `Refused` need a run with no attempt.
+  A run whose pinned compute component is no longer installed (a fresh system read confirms it) ends `Failed{refused}` at once.
+  A wall clock that ran out on a job node is a lost attempt, so such a run is retried and ends `Failed{lost}` after `MAX_ATTEMPTS`.
+  A new term keeps the outputs staged for the same attempt (`ComputeState::take`) so they are charged once, and a charge that failed is refunded only if it may have committed (`charge_may_have_landed`).
+  The run's record and the `GET /apps/{app}/runs/{run}` answer show progress and the failure text (`final.message`, the job's signed `Report::message`) only to those who may list the app's files.
+  The leader assigns and pushes only the run's compute component (`RunRecord.compute_bundle`, named by `Assignment.bundle`, fetched by `push_bundle` through `bundle_wasm` and signed with `sign_bundle`), never the app component.
+  A queued run recorded without one (only a record from before compute components existed) ends `Failed{refused}` at once, before a slot is taken or a job node contacted.
+  Usage is billed to the run's `bundle`, the app component that started it, and the result method runs on the replicas' app component.
+  The assignment is a pure function of the record, the app's blob records (each input's `FileSeal` wrapped key) and the job node's keys (`build_assignment`).
+  The assignment is signed by the cluster identity, and `wrap_for_job_derived` derives each wrap's ephemeral key and nonce from the app file key, so a new leader rebuilds the very bytes the digest names; a digest or job key that differs means the attempt is lost.
+  The run token is `HMAC(file key, run | attempt)`.
+  A run polls `GET /job/runs/{app}/{run}/{attempt}`, and `running` is the heartbeat.
+  `404 UNKNOWN_RUN` or `awaiting` makes the leader send (component on `NEED_BUNDLE`, assignment, inputs) unless it already sent in this leadership, in which case the attempt is lost.
+  No answer for `JOB_LOST_AFTER` (20 s) loses the attempt, after the leader looks at the record, a held report and one fresh poll (`rescue`).
+  A `lost` answer, or a report that does not hold up, loses the attempt too.
+  A report holds up when its app, run, attempt, signature (under the recorded job key and assignment digest) and usage (within the caps) are right, and a cancel was asked for if it says cancelled.
+  The next attempt goes to another job node, and at `MAX_ATTEMPTS` the run ends `Failed{lost}`.
+  A done report is checked, then its outputs are charged to the payer before any is fetched (`QUOTA_EXCEEDED` ends the run `Failed{quota}`).
+  The outputs are fetched one at a time, each capped at its sealed size, and checked against the signed id (SHA-256 of the ciphertext), size and plaintext hash by opening it under the fetched key; otherwise the attempt is lost.
+  Each output is then stored as a run-created file is: its data key wrapped under the app file key into the `FileMark` (a `FileSeal` once registered) and the ciphertext pushed to a majority of the group's voters through `push_files`.
+  The final entry registers them (see **Compute runs**), and the result method runs inside it (`blob_view_with_outputs` lets it store their `BlobRef`s).
+  The final is built by `logged_entry` inside `propose_led`; a final answered `conflict` is run again, and one the record shows still active after commit is refused for good (a reported one makes the attempt lost and its staged outputs are discarded).
+  Staged outputs are undone (refund, delete bytes) on every exit but the commit of the final that holds them.
+  The bytes are deleted only after a barrier and a strong read show the app holds no blob of that id (`delete_unmarked_outputs`), since another leader's final may register the same content, and a replica refuses to delete bytes an app holds.
+  A sweep (`sweep_watches`) undoes the staged outputs of ended runs the app holds no blob for, and counts a final whose proposal's answer was lost; a final the state refused for good is not proposed again until the record changes.
+  After a final commits the leader releases the slot, deletes the job run and adds the usage to `calimero_app_compute_*` and `calimero_app_calls_total{kind="compute"}`; slots whose run is no longer active are released each round.
+  Retention releases the quota of an output the result method did not store, as for any file.
+  A cancel first takes a report the job already has (a `done` run keeps its outputs), else deletes the job run and ends the run `Cancelled` with the usage in the job node's signed cancelled report, or with none if it does not answer.
+  A run that did not stop is deleted again next round, but `CANCEL_DEADLINE` of healthy time from the first sight of the cancel ends it, from the held report if any, else `Cancelled` with no usage; later reports are refused and the first final wins.
+  No final report by the attempt's `tsMs` + `wallSecs` + `DEADLINE_GRACE`, less this leader's outages, ends it `Failed{timeout}`.
+  Every job-channel failure goes through `forget_job`.
+  `job_call` runs every control request (status poll, delete, load, output key) in its own pool (`MAX_INFLIGHT_JOB_CONTROL`) within `JOB_CONTROL_TIMEOUT` (5 s), and a wait of that long for a place is `BusyHere`: it is this node's queue, not the job node's silence, so the poll is `Deferred` and nothing is forgotten.
+  The attestation fetch has `JOB_ATTEST_TIMEOUT` (10 s), so a frozen job node cannot stall a round or starve control calls.
+  `job_transfer` (assignment, component, inputs, output bodies) has its own pool (`MAX_INFLIGHT_JOB_OPS`) and 300 s.
+  A cancel whose poll gets no answer ends from the held report if any (while that report only waits on the leader's own writes the run stays open, up to the run ceiling), else cancelled with no usage, without a delete.
+  `GET /apps/{app}/runs/{run}` is the reserved view `__run` answered by the leader (`Node::run_view`); it shows plaintext sizes and hashes of files only to those who may list the files.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is

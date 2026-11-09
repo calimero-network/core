@@ -244,6 +244,22 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // Compute runs of the component apps this node leads.
+    let weak = Arc::downgrade(&node);
+    let kick = Arc::clone(&node.runs_kick);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::JOB_POLL) => {}
+                () = kick.notified() => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.drive_runs();
+        }
+    }));
+
     // What the peers' replicas used today, for the fuel cap (D76, D78), every
     // `USAGE_REFRESH` while a cap is set: the cap never asks a peer during a call.
     let weak = Arc::downgrade(&node);

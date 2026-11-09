@@ -24,8 +24,8 @@
 //! Labels are opaque ids only: `app`, its payer `org` ([`payer`]), the
 //! `developer` billed for it ([`developer`]), and `kind`. `org` and
 //! `developer` are functions of `app` (one value each per app at a time), so
-//! they add no series: a node exports at most 8 series per app it hosts (3
-//! call kinds, CPU, memory, outbound, state, blobs), and an app that changes
+//! they add no series: a node exports at most 12 series per app it hosts (4
+//! call kinds, CPU, memory, 3 compute, outbound, state, blobs), and an app that changes
 //! payer or developer starts over under the new values ([`Usage::entry`]).
 //! An app's series go once it leaves this node (deleted, or its replica moved).
 //! Counters start at zero when the process starts.
@@ -36,6 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::job_wire::ReportUsage;
 use crate::types::AppRecord;
 
 /// How often a node samples the state and blob bytes of the apps it hosts.
@@ -57,16 +58,19 @@ pub enum Kind {
     /// A run the node made for the app: an event handler, a timer, an xcall
     /// (counted on the app it called).
     FollowUp,
+    /// A compute run on a job node that ended with its signed report.
+    Compute,
 }
 
 impl Kind {
-    const ALL: [Self; 3] = [Self::Mutation, Self::View, Self::FollowUp];
+    const ALL: [Self; 4] = [Self::Mutation, Self::View, Self::FollowUp, Self::Compute];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Mutation => "mutation",
             Self::View => "view",
             Self::FollowUp => "followup",
+            Self::Compute => "compute",
         }
     }
 }
@@ -208,6 +212,8 @@ struct AppUsage {
     outbound: Arc<AtomicU64>,
     /// The last sample: (state bytes, blob bytes).
     stored: Option<(u64, u64)>,
+    /// What the compute runs this node ended for the app measured.
+    compute: ReportUsage,
 }
 
 /// Every app's usage on this node, in memory.
@@ -272,6 +278,20 @@ impl Usage {
         *n = n.saturating_add(1);
     }
 
+    /// Add what a compute run this node ended measured; a run that ended with a job's signed
+    /// report also counts as a compute call.
+    pub fn computed(&self, meter: &Meter, usage: &ReportUsage, reported: bool) {
+        let mut apps = lock(&self.apps);
+        let app = Self::entry(&mut apps, &meter.app, &meter.billed);
+        app.compute.cpu_micros = app.compute.cpu_micros.saturating_add(usage.cpu_micros);
+        app.compute.gib_micros = app.compute.gib_micros.saturating_add(usage.gib_micros);
+        app.compute.fuel = app.compute.fuel.saturating_add(usage.fuel);
+        if reported {
+            let n = &mut app.calls[Kind::Compute as usize];
+            *n = n.saturating_add(1);
+        }
+    }
+
     /// The counter of `app`'s outbound requests, for its run's client.
     #[must_use]
     pub fn outbound(&self, app: &str, billed: &Billed) -> Arc<AtomicU64> {
@@ -319,7 +339,7 @@ impl Usage {
         family(
             "calimero_app_calls_total",
             "counter",
-            "WASM calls this node ran for an app whose answer stood, by kind (mutation, view, followup).",
+            "WASM calls this node ran for an app whose answer stood, by kind (mutation, view, followup, compute).",
             rows.iter()
                 .flat_map(|(app, u)| {
                     Kind::ALL.iter().filter_map(move |k| {
@@ -350,6 +370,38 @@ impl Usage {
             rows.iter()
                 .filter(|(_, u)| u.memory > 0)
                 .map(|(app, u)| (labels(app, u), (u.memory as f64 / 1e9).to_string()))
+                .collect(),
+        );
+        family(
+            "calimero_app_compute_cpu_seconds_total",
+            "counter",
+            "Seconds of CPU the compute runs this node ended for an app took on job nodes.",
+            rows.iter()
+                .filter(|(_, u)| u.compute.cpu_micros > 0)
+                .map(|(app, u)| {
+                    (
+                        labels(app, u),
+                        (u.compute.cpu_micros as f64 / 1e6).to_string(),
+                    )
+                })
+                .collect(),
+        );
+        family(
+            "calimero_app_compute_gib_seconds_total",
+            "counter",
+            "GiB-seconds of memory (peak times wall time) the compute runs this node ended for an app held on job nodes.",
+            rows.iter()
+                .filter(|(_, u)| u.compute.gib_micros > 0)
+                .map(|(app, u)| (labels(app, u), (u.compute.gib_micros as f64 / 1e6).to_string()))
+                .collect(),
+        );
+        family(
+            "calimero_app_compute_fuel_total",
+            "counter",
+            "Fuel the compute runs this node ended for an app used on job nodes.",
+            rows.iter()
+                .filter(|(_, u)| u.compute.fuel > 0)
+                .map(|(app, u)| (labels(app, u), u.compute.fuel.to_string()))
                 .collect(),
         );
         family(
@@ -492,6 +544,28 @@ mod tests {
             !text.contains("calimero_app_state_bytes{"),
             "not sampled yet"
         );
+    }
+
+    #[test]
+    fn compute_runs_render_their_usage_and_count_as_calls_only_with_a_report() {
+        let u = Usage::default();
+        let m = meter("app1", "org1");
+        let usage = ReportUsage {
+            cpu_micros: 1_500_000,
+            gib_micros: 2_000_000,
+            fuel: 7,
+        };
+        u.computed(&m, &usage, true);
+        u.computed(&m, &ReportUsage::default(), false);
+        let text = rendered(&u);
+        for line in [
+            "calimero_app_calls_total{app=\"app1\",org=\"org1\",developer=\"org1\",kind=\"compute\"} 1",
+            "calimero_app_compute_cpu_seconds_total{app=\"app1\",org=\"org1\",developer=\"org1\"} 1.5",
+            "calimero_app_compute_gib_seconds_total{app=\"app1\",org=\"org1\",developer=\"org1\"} 2",
+            "calimero_app_compute_fuel_total{app=\"app1\",org=\"org1\",developer=\"org1\"} 7",
+        ] {
+            assert!(text.lines().any(|l| l == line), "no `{line}` in\n{text}");
+        }
     }
 
     #[test]
