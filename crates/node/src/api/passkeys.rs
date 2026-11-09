@@ -61,6 +61,9 @@ pub(super) fn passkey_user_name(
 /// the cluster's life and the same on every node; a cluster begun again under
 /// the same name has another cluster key, so another tag. Public in
 /// `GET /sign-up` (`passkeyTag`), so a sign-in can say which passkey to pick.
+/// Two bytes tell a recreated cluster from the old one; they are not an
+/// identifier, and clusters on one storage key (every in-process test
+/// cluster runs on `[42; 32]`) share a tag.
 pub(super) fn cluster_tag(node: &Node) -> String {
     hex::encode(&node.cluster_identity()[..2])
 }
