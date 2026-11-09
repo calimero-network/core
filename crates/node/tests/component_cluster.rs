@@ -4584,7 +4584,8 @@ async fn a_delivered_xcall_into_an_over_cap_developers_app_is_refused() {
         }),
         ..CallRequest::new(
             target.clone(),
-            "set".into(),
+            // `allow(app = "*")`: the target would take it from the source.
+            "setFromApp".into(),
             json!({ "key": "k", "value": "x" }),
             Caller::App {
                 app: source.clone(),
