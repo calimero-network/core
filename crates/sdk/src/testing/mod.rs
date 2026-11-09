@@ -163,6 +163,8 @@ pub struct TestApp {
     last_tick: BTreeMap<String, u64>,
     events: Vec<Logged>,
     usage: Usage,
+    /// The log lines of the last invocation.
+    logs: Vec<String>,
     blobs: BTreeMap<[u8; 32], BlobInfo>,
     outbox: Vec<SentXcall>,
     /// Actions logged runs started, with their caller (D17), not run yet.
@@ -372,6 +374,7 @@ impl TestApp {
             last_tick: BTreeMap::new(),
             events: Vec::new(),
             usage: Usage::default(),
+            logs: Vec::new(),
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
             started: Vec::new(),
@@ -664,6 +667,7 @@ impl TestApp {
         };
         *self = take_back(lent);
         self.usage = out.usage;
+        self.logs.clone_from(&out.logs);
         self.finish(true, None, out)
     }
 
@@ -707,6 +711,7 @@ impl TestApp {
             last_tick: BTreeMap::new(),
             events: Vec::new(),
             usage: Usage::default(),
+            logs: Vec::new(),
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
             started: Vec::new(),
@@ -716,6 +721,12 @@ impl TestApp {
             in_action: false,
             files: MemoryFiles::default(),
         }
+    }
+
+    /// The log lines (`env::log`, stdout and stderr) of the last invocation.
+    #[must_use]
+    pub fn last_logs(&self) -> &[String] {
+        &self.logs
     }
 
     /// The usage of the last invocation.
@@ -847,6 +858,7 @@ impl TestApp {
         };
         let out = self.engine.invoke(&self.prepared, host, budget);
         self.usage = out.usage;
+        self.logs.clone_from(&out.logs);
         if matches!(
             out.status,
             Status::Trap {

@@ -47,6 +47,8 @@ fn checked(parts: &[KeyPart]) -> Result<Vec<u8>, CollError> {
     within(encode_key(parts))
 }
 
+/// Refuses a key over [`MAX_COLLECTION_KEY_BYTES`]. The SDK reads this exact message back
+/// as its `KeyTooLong { len, max }` (`calimero_sdk` `host_collections::key_too_long`).
 fn within(key: Vec<u8>) -> Result<Vec<u8>, CollError> {
     if key.len() > MAX_COLLECTION_KEY_BYTES {
         return Err(CollError::BadRecord(format!(

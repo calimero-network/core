@@ -50,8 +50,12 @@ fn imports_collections(component: &[u8]) -> bool {
         .any(|i| i.starts_with(COLLECTIONS))
 }
 
-/// One step: its label, its answer and the fuel it took.
-type Step = (String, Result<Value, Failure>, u64);
+/// The start of the log line the SDK writes when the host does not serve a collection and
+/// the guest path takes over (`calimero_sdk` `host_collections::GUEST_PATH_LOG`).
+const GUEST_PATH_LOG: &str = "host-collections: guest path for ";
+
+/// One step: its label, its answer, the fuel it took and its guest-path log lines.
+type Step = (String, Result<Value, Failure>, u64, Vec<String>);
 
 struct Run<'a> {
     t: &'a mut TestApp,
@@ -71,7 +75,14 @@ impl Run<'_> {
 
     fn log(&mut self, label: String, res: Result<Value, Failure>) -> Result<Value, Failure> {
         let fuel = self.t.last_usage().fuel;
-        self.steps.push((label, res.clone(), fuel));
+        let fallbacks = self
+            .t
+            .last_logs()
+            .iter()
+            .filter(|l| l.starts_with(GUEST_PATH_LOG))
+            .cloned()
+            .collect();
+        self.steps.push((label, res.clone(), fuel, fallbacks));
         res
     }
 
@@ -139,6 +150,12 @@ fn writes(r: &mut Run<'_>) {
     let _ = r.call("setId", json!({"itemId": "8", "newId": "9"}));
     let _ = r.call("remove", json!({"itemId": "10"}));
     let _ = r.call("remove", json!({"itemId": "10"}));
+    // Over-long keys: an index entry, a map key.
+    let _ = r.call(
+        "insert",
+        json!({"itemId": "60", "ownerName": LONG, "email": null, "note": "x"}),
+    );
+    let _ = r.call("noteSet", json!({"who": LONG, "n": "1", "text": "t"}));
 
     for n in 1..=12u64 {
         let _ = r.call(
@@ -171,6 +188,8 @@ fn reads(r: &mut Run<'_>) {
         let _ = r.view("contains", json!({"itemId": id}));
     }
     let find = |owner: Option<&str>, limit: Option<u32>, reverse: bool| json!({"index": "byOwner", "ownerName": owner, "cursor": null, "limit": limit, "reverse": reverse});
+    let _ = r.view("noteGet", json!({"who": LONG, "n": "1"}));
+    let _ = r.view("find", find(Some(LONG), None, false));
     r.pages("find", find(Some("ann"), Some(4), false));
     r.pages("find", find(Some("bob_two"), Some(3), true));
     r.pages("find", find(None, Some(7), false));
@@ -229,6 +248,49 @@ fn reads(r: &mut Run<'_>) {
     }
 }
 
+/// A string part long enough to take any key past the 1,023 bytes the SDK allows.
+const LONG: &str = concat!(
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+);
+
+/// No step of either build fell back to the guest path: every declared collection was
+/// served by the host (with `HostCore::with_collections` missing, every routed call would
+/// log the fallback).
+fn assert_served_by_host(title: &str, off: &[Step], on: &[Step]) {
+    for (label, _, _, fallbacks) in off.iter().chain(on) {
+        assert!(fallbacks.is_empty(), "{title}: {label}: {fallbacks:?}");
+    }
+}
+
+/// The feature build's step `label` took less fuel: the host did the work (a fallback
+/// costs the guest path plus a refused host call, so it can only cost more).
+fn assert_on_cheaper(off: &[Step], on: &[Step], label: &str) {
+    let fuel = |steps: &[Step]| {
+        steps
+            .iter()
+            .find(|(l, _, _, _)| l.starts_with(label))
+            .map(|(_, _, f, _)| *f)
+            .unwrap_or_else(|| panic!("no step {label}"))
+    };
+    assert!(
+        fuel(on) < fuel(off),
+        "{label}: {} >= {}",
+        fuel(on),
+        fuel(off)
+    );
+}
+
 fn steps(t: &mut TestApp, scenario: impl FnOnce(&mut Run<'_>)) -> Vec<Step> {
     let mut r = Run {
         t,
@@ -242,11 +304,11 @@ fn steps(t: &mut TestApp, scenario: impl FnOnce(&mut Run<'_>)) -> Vec<Step> {
 fn assert_same(title: &str, off: &[Step], on: &[Step]) {
     assert_eq!(off.len(), on.len(), "{title}: step counts");
     eprintln!("{title}: fuel per step, feature off -> on");
-    for ((label, a, fa), (_, b, fb)) in off.iter().zip(on) {
+    for ((label, a, fa, _), (_, b, fb, _)) in off.iter().zip(on) {
         eprintln!("  {fa:>9} -> {fb:>9}  {label}");
         assert_eq!(a, b, "{title}: {label}");
     }
-    let total = |s: &[Step]| s.iter().map(|(_, _, f)| f).sum::<u64>();
+    let total = |s: &[Step]| s.iter().map(|(_, _, f, _)| f).sum::<u64>();
     eprintln!("  total {} -> {}", total(off), total(on));
 }
 
@@ -274,11 +336,14 @@ fn same_state_with_and_without_host_collections() {
     let a = steps(&mut off, scenario);
     let b = steps(&mut on, scenario);
     assert_same("host_table", &a, &b);
+    assert_served_by_host("host_table", &a, &b);
+    assert_on_cheaper(&a, &b, "call setNote {\"itemId\":\"5\"");
+    assert_on_cheaper(&a, &b, "call upsert {\"email\":\"new2@x\"");
     // Sanity: the scenario does reach the refusals it means to compare.
     let answer = |label: &str| {
         a.iter()
-            .find(|(l, _, _)| l.contains(label))
-            .map(|(_, r, _)| r.clone())
+            .find(|(l, _, _, _)| l.contains(label))
+            .map(|(_, r, _, _)| r.clone())
             .unwrap()
     };
     assert!(
@@ -287,6 +352,20 @@ fn same_state_with_and_without_host_collections() {
     assert!(
         matches!(answer("\"itemId\":\"3\",\"note\":\"x\""), Err(Failure::App { code, fields }) if code == "Duplicate" && fields["index"] == "key")
     );
+    // An over-long key is the same `KeyTooLong` on both paths.
+    for label in [
+        "call insert {\"email\":null,\"itemId\":\"60\"",
+        "call noteSet {\"n\":\"1\",\"text\":\"t\",\"who\":\"lll",
+        "view noteGet {\"n\":\"1\",\"who\":\"lll",
+        "view find {\"cursor\":null,\"index\":\"byOwner\",\"limit\":null,\"ownerName\":\"lll",
+    ] {
+        assert!(
+            matches!(answer(label), Err(Failure::App { code, fields })
+                if code == "Storage" && fields["message"].as_str().unwrap().ends_with("over the 1023 byte limit")),
+            "{label}: {:?}",
+            answer(label)
+        );
+    }
     assert_eq!(off.export_state(), on.export_state(), "the same state");
 
     let mut off = TestApp::new(kv_store(false), Org::new(), T0);
@@ -314,6 +393,7 @@ fn same_state_with_and_without_host_collections() {
     let a = steps(&mut off, kv);
     let b = steps(&mut on, kv);
     assert_same("kv-store", &a, &b);
+    assert_served_by_host("kv-store", &a, &b);
     assert_eq!(off.export_state(), on.export_state(), "the same state");
 }
 
@@ -346,6 +426,7 @@ fn guest_written_state_reads_back_through_host_collections() {
     let on = &mut off;
     let got = steps(on, reads);
     assert_same("read back", &want, &got);
+    assert_served_by_host("read back", &want, &got);
     // A cursor the guest path handed out continues on the host.
     let cont = on
         .as_("owner")
@@ -379,5 +460,54 @@ fn guest_written_state_reads_back_through_host_collections() {
     on.replace_component(host_table(true));
     let got = steps(on, more);
     assert_same("host writes on guest state", &want, &got);
+    assert_served_by_host("host writes on guest state", &want, &got);
     assert_eq!(on.export_state(), guest.export_state());
+}
+
+#[test]
+fn undeclared_collections_fall_back_to_the_guest_path() {
+    let mut off = TestApp::new(host_table(false), Org::new(), T0);
+    let mut on = TestApp::new(host_table(true), Org::new(), T0);
+    let scenario = |r: &mut Run<'_>| {
+        let _ = r.call("scratchWrite", json!({"itemId": "1", "ownerName": "ann"}));
+        let _ = r.view("scratchRead", json!({"ownerName": "ann"}));
+        // A declared collection in the same build is still the host's.
+        let _ = r.call("vote", json!({"choice": "yes", "delta": "1"}));
+        let _ = r.call("scratchWrite", json!({"itemId": "5", "ownerName": "bob"}));
+        let _ = r.view("scratchRead", json!({"ownerName": "bob"}));
+    };
+    let a = steps(&mut off, scenario);
+    let b = steps(&mut on, scenario);
+    assert_same("undeclared", &a, &b);
+    assert_eq!(off.export_state(), on.export_state(), "the same state");
+    let written = a[0].1.clone().unwrap();
+    assert_eq!(written["count"], "2");
+    assert_eq!(written["tally"], "5");
+    assert_eq!(written["mapGet"], "v");
+    assert_eq!(a[1].1, a[0].1, "read back in a later invocation");
+
+    // The guest path served the undeclared ones, each logged once per invocation however
+    // many calls it made (the host is asked once per name, then remembered).
+    let names = [
+        "`scratchItems`".to_owned(),
+        "`scratchMap`".to_owned(),
+        "`scratchTally`".to_owned(),
+    ];
+    let logged = |step: &Step| -> Vec<String> {
+        let mut names: Vec<String> = step
+            .3
+            .iter()
+            .map(|l| l.trim_start_matches(GUEST_PATH_LOG).to_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    for i in [0, 1, 3, 4] {
+        assert_eq!(logged(&b[i]), names, "{}", b[i].0);
+        assert!(
+            a[i].3.is_empty(),
+            "the feature-off build never asks the host"
+        );
+    }
+    assert!(b[2].3.is_empty(), "the declared tally is the host's");
 }

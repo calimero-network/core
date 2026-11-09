@@ -250,4 +250,60 @@ impl HostTable {
     pub fn votes(&self, choice: String) -> app::Result<i64> {
         Ok(self.vote_tally.get(&choice)?)
     }
+
+    // --- collections the state does not declare: the guest path serves them ---------
+
+    /// Writes to a table, a map and a tally built by hand, several calls each, and reads
+    /// them back in the same invocation.
+    pub fn scratch_write(&mut self, item_id: u64, owner_name: String) -> app::Result<Value> {
+        let mut table: Table<Item> = Table::new("scratchItems");
+        let mut map: UnorderedMap<String, String> = UnorderedMap::new("scratchMap");
+        let mut tally: Tally<String> = Tally::new("scratchTally");
+        table.insert(Item {
+            item_id,
+            owner_name: owner_name.clone(),
+            email: None,
+            note: "s".into(),
+        })?;
+        table.upsert(Item {
+            item_id: item_id + 1,
+            owner_name: owner_name.clone(),
+            email: Some(format!("{owner_name}@scratch")),
+            note: "t".into(),
+        })?;
+        let _old = map.insert(&owner_name, &"v".to_owned())?;
+        let _old = map.insert(&format!("{owner_name}2"), &"w".to_owned())?;
+        tally.add(&owner_name, 2)?;
+        tally.add(&owner_name, 3)?;
+        Self::scratch(&table, &map, &tally, &owner_name)
+    }
+
+    #[app::view]
+    pub fn scratch_read(&self, owner_name: String) -> app::Result<Value> {
+        let table: Table<Item> = Table::new("scratchItems");
+        let map: UnorderedMap<String, String> = UnorderedMap::new("scratchMap");
+        let tally: Tally<String> = Tally::new("scratchTally");
+        Self::scratch(&table, &map, &tally, &owner_name)
+    }
+
+    fn scratch(
+        table: &Table<Item>,
+        map: &UnorderedMap<String, String>,
+        tally: &Tally<String>,
+        owner_name: &str,
+    ) -> app::Result<Value> {
+        let prefix = [owner_name.to_key_part()];
+        Ok(json!({
+            "found": items(table.find("byOwner", &prefix, FindOpts::default())?),
+            "scan": items(table.scan(FindOpts::default().limit(1))?),
+            "count": table.count("perOwner", &prefix)?.to_string(),
+            "map": notes_of(map.page(FindOpts::default())?),
+            "mapGet": map.get(&owner_name.to_owned())?,
+            "tally": tally.get(&owner_name.to_owned())?.to_string(),
+        }))
+    }
+}
+
+fn notes_of(page: Page<(String, String)>) -> Value {
+    json!({ "items": page.items, "next": page.next })
 }
