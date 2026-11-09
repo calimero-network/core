@@ -1422,7 +1422,7 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let out = action.finish(Status::Ok, Vec::new(), Usage::default());
     assert!(out.http.is_empty());
 
-    // A call has no action context; it sends HTTP (D76) and records the exchange for its
+    // A call has no action context; it sends HTTP (D82) and records the exchange for its
     // entry, whatever its status. Views and `init` send none (S9).
     let mut call = core_for(&state, &inv(InvocationKind::Call))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)

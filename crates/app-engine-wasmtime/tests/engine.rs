@@ -541,7 +541,7 @@ fn outgoing_http_traps_in_views_and_is_recorded_in_calls() {
         "{:?}",
         out.status
     );
-    // A call may send (D76); with no gate the request is refused (the guest's response
+    // A call may send (D82); with no gate the request is refused (the guest's response
     // future holds the error), and the entry records the attempt.
     let out = fx.engine.invoke(
         &app,

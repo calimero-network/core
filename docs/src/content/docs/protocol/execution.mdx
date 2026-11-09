@@ -107,7 +107,7 @@ A component sends HTTPS from an action, or as one recorded request of a call
 ## Actions (component apps)
 
 A `calimero:app` component calls out from an **action** (spec
-`app-runtime-v0.14` D12, S9): an `#[app::action]` method that runs outside the
+`app-runtime` D12, S9): an `#[app::action]` method that runs outside the
 log, on the app's leader. A call can also make one recorded request itself
 (below), never a view.
 
@@ -137,7 +137,7 @@ log, on the app's leader. A call can also make one recorded request itself
 ## Outbound HTTP from component calls
 
 A component's call, timer or xcall delivery may send one request itself
-(`env::fetch`; spec D76), for a check that belongs in the same request as the
+(`env::fetch`; spec D82), for a check that belongs in the same request as the
 write it guards, such as a captcha service verifying a Turnstile token:
 
 - **The same gate as actions.** A URL the signed release declares under

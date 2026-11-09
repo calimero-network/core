@@ -1,6 +1,6 @@
 # Rooms
 
-The first reference app on the v2 app SDK (spec `docs/specs/app-runtime-v0.14.md`, section 12). Members of an org book meeting rooms in 15-minute slots.
+The first reference app on the v2 app SDK (spec `docs/specs/app-runtime.md`, section 12). Members of an org book meeting rooms in 15-minute slots.
 
 - No double bookings: each held slot is one `Slot` record keyed (room, start); a clash fails the whole call with `Taken`.
 - A timer (`releaseNoShows`, every minute) releases bookings still unchecked 15 minutes after their start (at most 500 per tick).

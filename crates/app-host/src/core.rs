@@ -132,7 +132,7 @@ pub struct HostCore {
     occurrences: BTreeMap<(String, Vec<u8>), u32>,
     subcalls: u32,
     http_requests: u32,
-    /// A logged run's outbound exchanges, for its entry (D76).
+    /// A logged run's outbound exchanges, for its entry (D82).
     http_log: Vec<HttpExchange>,
     overlay: Overlay,
     writes: u32,
@@ -955,7 +955,7 @@ impl HostCore {
         Ok(host.call(method, args, &key))
     }
 
-    /// Sends a run's outgoing HTTP request through the node's gate (S9, D76): actions,
+    /// Sends a run's outgoing HTTP request through the node's gate (S9, D82): actions,
     /// calls, timers and deliveries; views, `init` and migrations trap `HostDenied`. Past
     /// [`MAX_HTTP_REQUESTS`] or a body over [`MAX_HTTP_BODY_BYTES`] the request is not sent
     /// and the guest gets the error. A logged run records the exchange for its entry

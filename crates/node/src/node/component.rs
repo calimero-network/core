@@ -668,7 +668,7 @@ impl Node {
 
     /// [`Self::run_component`], with the app's search index for a view (spec section 7).
     /// `extras` says what else the run reaches: other apps synchronously through
-    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (D76).
+    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (D82).
     #[allow(clippy::too_many_arguments)]
     fn run_with(
         &self,
@@ -2294,7 +2294,7 @@ struct RunExtras {
     /// The run's own key (a call's caller and idempotency key, a tick's slot, a view's
     /// placeholder): with one, the run reaches other apps synchronously ([`NodeXcall`]).
     key: Option<String>,
-    /// The app's outbound gate (D76): calls (but a read-only member's), timers and
+    /// The app's outbound gate (D82): calls (but a read-only member's), timers and
     /// deliveries; never views or `init`.
     outbound: bool,
     /// The app's active runs: with them, a logged run starts and cancels compute runs.
@@ -2303,7 +2303,7 @@ struct RunExtras {
     compute_component: bool,
 }
 
-/// How long a call, timer or delivery waits for one outbound response (D76): within the
+/// How long a call, timer or delivery waits for one outbound response (D82): within the
 /// 2 s call budget (`calimero_app_host::Budget::call`), so a slow host costs the run an
 /// error it handles, not the log a stalled entry.
 pub const CALL_FETCH_TIMEOUT: Duration = Duration::from_millis(1_500);

@@ -77,7 +77,7 @@ pub struct Outcome {
     /// The actions the run started (D17); empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionOut>,
-    /// The run's outbound requests and what came back (D76), kept whatever the status:
+    /// The run's outbound requests and what came back (D82), kept whatever the status:
     /// the entry is their record, so followers and replays never fetch again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub http: Vec<HttpRecord>,
@@ -96,7 +96,7 @@ pub struct Outcome {
     pub compute_cancels: Vec<String>,
 }
 
-/// One outbound request of a logged run and its response (D76), as the entry records it:
+/// One outbound request of a logged run and its response (D82), as the entry records it:
 /// the request as the app made it (secret placeholders, never secrets), the response as
 /// the outbound gate handed it back (secrets redacted); bodies cut to
 /// `calimero_app_host::MAX_RECORDED_BODY_BYTES`, with their full lengths.
@@ -1475,7 +1475,7 @@ mod tests {
         assert!(host::MAX_FILE_BYTES <= crate::node::MAX_BLOB_BYTES as u64);
     }
 
-    /// D76: a logged run's outbound exchange is part of the outcome its entry carries,
+    /// D82: a logged run's outbound exchange is part of the outcome its entry carries,
     /// whatever the status, and reads back from the entry's bytes as it was recorded.
     #[test]
     fn a_runs_outbound_exchange_is_recorded_in_its_entry() {

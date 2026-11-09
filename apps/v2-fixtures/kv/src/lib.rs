@@ -166,7 +166,7 @@ impl Kv {
 
     /// Sets `key` as `set` does, once the captcha service `captcha` accepted Cloudflare
     /// Turnstile token `token`: the service checks it with Turnstile from its own call
-    /// (D76), all inside this one.
+    /// (D82), all inside this one.
     pub fn set_human_turnstile(
         &mut self,
         key: String,
