@@ -156,6 +156,16 @@ pub struct AppRecord {
     /// out, so such a record writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<String>,
+    /// The package release this instance runs, set at create (the release
+    /// named, or the one its deployment offered) and at every upgrade, one
+    /// to a release with the same WASM included: releases may share a WASM
+    /// and differ in their frontend, which works with its own release only,
+    /// so `bundle` alone does not say which one it runs. Absent (a record
+    /// from before, or a raw upload): the release is inferred from `bundle`
+    /// (`report::release_of_bundle`), and it is left out, so such a record
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<crate::system::PackageRef>,
 }
 
 /// Which executor runs an app's code.
@@ -211,6 +221,13 @@ pub struct UpgradeRecord {
     /// The upgrade key (its id) that made it, in place of a passkey.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// The release the app ran before (`AppRecord::release`), and the one it
+    /// was moved to: `from` and `to` alone do not tell apart releases that
+    /// share a WASM. Absent on a record from before, or for a raw upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_release: Option<crate::system::PackageRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_release: Option<crate::system::PackageRef>,
 }
 
 /// An upgrade of many apps at once, with cascade: every

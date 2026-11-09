@@ -89,6 +89,9 @@ const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never
 /// The refusal when an app names a compute component its bundle's release does not ship.
 const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
 
+/// The refusal when an app names a release that does not ship its bundle.
+const RELEASE_NOT_SHIPPED: &str = "that release does not ship the app's bundle";
+
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
@@ -1015,6 +1018,20 @@ impl SystemState {
             .is_some_and(|at| at.compute)
     }
 
+    /// Whether `r` names an installed release whose service `r.service` is
+    /// `bundle`: what an app recorded as running `r` must run.
+    #[must_use]
+    pub fn release_ships(&self, r: &PackageRef, bundle: &str) -> bool {
+        let service = r.service.as_deref().unwrap_or_default();
+        !r.compute
+            && self
+                .packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version))
+                .and_then(|v| v.services.get(service))
+                .is_some_and(|h| h == bundle)
+    }
+
     /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
     /// whose app component is `bundle`. Releases may share an app component and differ in
     /// compute, so the caller names the compute hash and this checks the pair.
@@ -1910,6 +1927,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             by_operator,
             actor,
             run: Some(run),
+            release: target,
             ..
         } => {
             // One consent covers the run (`StartUpgradeRun`); each app's
@@ -1935,6 +1953,9 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                 || r.finished
                 || !r.apps.contains(app_id)
                 || !release.is_some_and(|v| v.services.values().any(|h| h == bundle))
+                || target
+                    .as_ref()
+                    .is_some_and(|t| t.package != r.package || t.version != r.version)
             {
                 return Err("the upgrade is not one its run names");
             }
@@ -2922,6 +2943,11 @@ pub enum SystemCmd {
         /// The owner's passkey assertion over this upgrade.
         #[serde(default)]
         consent: Value,
+        /// The release the app moves to (`AppRecord::release`), which must
+        /// ship `bundle`; it may be one with the app's own bundle (a
+        /// frontend-only release). `None` for a raw upload.
+        #[serde(default)]
+        release: Option<PackageRef>,
     },
     TransferApp {
         app_id: AppId,
@@ -3420,6 +3446,9 @@ pub enum SystemCmd {
         error: Value,
         #[serde(default)]
         run: Option<String>,
+        /// The release the upgrade was to, when it named one.
+        #[serde(default)]
+        release: Option<PackageRef>,
     },
     StartUpgradeRun {
         org: OrgId,
@@ -3951,6 +3980,13 @@ impl SystemMachine {
                 if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
                     return Err(COMPUTE_NOT_SHIPPED);
                 }
+                if app
+                    .release
+                    .as_ref()
+                    .is_some_and(|r| !s.release_ships(r, &app.bundle))
+                {
+                    return Err(RELEASE_NOT_SHIPPED);
+                }
                 let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
                 if owned >= s.quotas.max_apps_per_account as usize {
                     return Err("quota exceeded: apps");
@@ -3960,7 +3996,12 @@ impl SystemMachine {
                 }
                 if let Some(id) = &app.deployment {
                     let d = s.deployments.get(id).ok_or("no such deployment")?;
-                    if !s.offers_bundle(d, &app.bundle) {
+                    let offers_release = app.release.as_ref().is_none_or(|r| {
+                        d.apps
+                            .values()
+                            .any(|o| o.package == r.package && o.version == r.version)
+                    });
+                    if !s.offers_bundle(d, &app.bundle) || !offers_release {
                         return Err("the deployment does not offer the release this app would run");
                     }
                 }
@@ -4003,6 +4044,7 @@ impl SystemMachine {
                 at,
                 run,
                 consent,
+                release,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
@@ -4012,6 +4054,12 @@ impl SystemMachine {
                 }
                 if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
                     return Err(COMPUTE_NOT_SHIPPED);
+                }
+                if release
+                    .as_ref()
+                    .is_some_and(|r| !s.release_ships(r, &bundle))
+                {
+                    return Err(RELEASE_NOT_SHIPPED);
                 }
                 let operator = s.governance().app_upgrades == Authority::Operator;
                 let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
@@ -4056,9 +4104,12 @@ impl SystemMachine {
                         api_key: crate::proof::key_proof_id(&consent)
                             .filter(|_| !by_operator)
                             .map(str::to_owned),
+                        from_release: a.release.clone(),
+                        to_release: release.clone(),
                     });
                     a.bundle = bundle;
                     a.compute_bundle = compute_bundle;
+                    a.release = release;
                 }
                 s.note_run(run.as_deref(), &app_id, None);
                 Ok(Value::Null)
@@ -4070,9 +4121,12 @@ impl SystemMachine {
                 at,
                 error,
                 run,
+                release,
             } => {
                 let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 a.last_upgrade = Some(crate::types::UpgradeRecord {
+                    from_release: a.release.clone(),
+                    to_release: release,
                     from: a.bundle.clone(),
                     to: bundle,
                     at,
@@ -6165,6 +6219,7 @@ mod tests {
             at: 0,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         for (app, actor, may) in [
             ("in-org", "bob", true),
@@ -6269,6 +6324,7 @@ mod tests {
             at: 0,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
         let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
@@ -6521,6 +6577,7 @@ mod tests {
             at: 0,
             run: None,
             consent: Value::Null,
+            release: None,
         };
         let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
         assert!(e.contains("compute component"), "{e}");
@@ -6780,6 +6837,7 @@ mod tests {
             at: 0,
             run: run.map(str::to_owned),
             consent,
+            release: None,
         };
         assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
         let c = consent(
@@ -8394,6 +8452,7 @@ mod tests {
             at,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
             package: "p".into(),
@@ -8764,6 +8823,7 @@ mod tests {
                 at,
                 run: None,
                 consent: json!(crate::proof::sign_key_upgrade(secret, "k1", statement)),
+                release: None,
             }
         };
         let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
@@ -8861,6 +8921,7 @@ mod tests {
             at: 0,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         assert!(
             m.run_unproven(upgrade("cora", "b2")).is_err(),

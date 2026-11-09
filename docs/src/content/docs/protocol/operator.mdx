@@ -94,7 +94,8 @@ measurement policy for peers.
 and **scope** (`{ kind: "org", org }`, or `{ kind: "account" }` for an
 account's own app, never the account), the **bundle digest** it runs, its publisher (the package's pinned signer,
 with the package), who holds
-app upgrades, its **last upgrade** (`from` and `to` digests, when, whether it
+app upgrades, its **last upgrade** (`from` and `to` digests, with each end's
+release where the operator may see it, when, whether it
 succeeded, and the **actor kind**: `owner`, `member` or `operator`), the
 mero-tee releases approved to hold its data, and each replica's node, release,
 and whether that release is approved for the app. `GET /ops/orgs` gives each
