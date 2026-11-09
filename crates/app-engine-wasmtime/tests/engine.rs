@@ -250,7 +250,8 @@ fn unlisted_import_is_refused_at_prepare() {
 }
 
 /// `wasi:sockets` is a D44 stub (componentize-py's default build imports it): the
-/// component installs, and no socket can be created.
+/// component installs, and no socket can be created: TCP bind and connect, UDP socket
+/// creation and a name lookup are each refused.
 #[test]
 fn a_component_importing_wasi_sockets_loads_and_cannot_use_them() {
     let fx = fixture();
@@ -272,6 +273,26 @@ fn a_component_importing_wasi_sockets_loads_and_cannot_use_them() {
     match &out.status {
         Status::AppError { code, .. } => assert_eq!(code, "Bind"),
         other => panic!("binding a socket must fail, got {other:?}"),
+    }
+    // The host's own refusal each time (`allow_tcp`/`allow_udp`/`allow_ip_name_lookup`
+    // false), not a guest-side "unsupported".
+    for (method, code, why) in [
+        ("connect", "Connect", "Permission denied"),
+        ("udp", "Udp", "access-denied"),
+        ("lookup", "Lookup", "permanent-resolver-failure"),
+    ] {
+        let out = fx.engine.invoke(
+            &app,
+            host(InvocationKind::Call, method, b""),
+            Budget::call(),
+        );
+        match &out.status {
+            Status::AppError { code: got, message } => {
+                assert_eq!(got, code, "{method}: {message}");
+                assert!(message.contains(why), "{method}: {message}");
+            }
+            other => panic!("{method} must be refused, got {other:?}"),
+        }
     }
 }
 
@@ -1439,6 +1460,20 @@ fn a_trapped_call_drops_host_collection_writes() {
     let out = coll_run(&fx, &app, "insertThenTrap", "", Budget::call());
     assert_eq!(trap_kind(&out), Some(TrapKind::Fault), "{:?}", out.status);
     assert!(out.diff.is_empty());
+}
+
+/// A tally's `storage.add` goes with a trapped run like any other write.
+#[test]
+fn a_trapped_call_drops_tally_writes() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let out = coll_run(&fx, &app, "tallyThenTrap", "", Budget::call());
+    assert_eq!(trap_kind(&out), Some(TrapKind::Fault), "{:?}", out.status);
+    assert!(out.diff.is_empty());
+    // The same add without the trap is written: the test above is not vacuous.
+    let out = coll_run(&fx, &app, "tallyOnce", "", Budget::call());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_eq!(out.diff.len(), 1);
 }
 
 #[test]

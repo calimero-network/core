@@ -109,6 +109,18 @@ impl Coll {
         std::process::abort()
     }
 
+    /// A host `tally-add`, then a trap.
+    pub fn tally_then_trap(&mut self) -> app::Result<()> {
+        coll::tally_add("hits", &[coll::KeyPart::Text("a".to_owned())], 1).map_err(soft)?;
+        std::process::abort()
+    }
+
+    /// One host `tally-add`.
+    pub fn tally_once(&mut self) -> app::Result<()> {
+        coll::tally_add("hits", &[coll::KeyPart::Text("a".to_owned())], 1).map_err(soft)?;
+        Ok(())
+    }
+
     /// Keys above `i64::MAX` come back as `uint`, the rest as `int`: a record keyed
     /// `u64::MAX` and one keyed 7 through `table-find`, map keys `uint(u64::MAX)`,
     /// `uint(7)` and `int(-5)` through `map-page`.
