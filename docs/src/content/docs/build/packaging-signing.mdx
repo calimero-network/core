@@ -76,6 +76,12 @@ detail.
    # omit --key to sign with the development key
    ```
 
+   An app with compute methods also builds a compute component
+   (`mero-app-build <crate> --out app.wasm --compute-out compute.wasm`). Pass it
+   with `--compute compute.wasm`: the manifest then declares it as `compute`, and
+   the `.mpk` carries it as `compute.wasm`. Without it a release cannot run
+   compute, and neither can a raw `.wasm` upload.
+
 4. **Install with `meroctl`.**
 
    ```bash

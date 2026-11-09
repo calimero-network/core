@@ -519,6 +519,10 @@ The node never lets a client reach either: `/intents` and `/views` answer `Wrong
 A release ships the compute component as `compute` in the signed manifest (`services[].compute` in a multi-service bundle), so the signature and the artifact digest cover it like every artifact, and an older node ignores it.
 At install the node prepares it on the compute world only, never on the replica engine, and refuses the release unless its ABI is the compute world's and lists exactly the app ABI's compute methods with the same caps (`COMPUTE_ABI_MISMATCH`).
 A release without a compute component installs and its app runs calls, but cannot run compute.
+An author builds both from one crate with `mero-app-build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
+`scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
+The leader sends a job node only the run's compute component (`RunRecord.compute_bundle`, named by the assignment's `bundle`), and a job node prepares everything it is given on the compute world, so an app component is refused (`BAD_BUNDLE`) even when the cluster signed it.
+Usage is billed to the app component that started the run, and the result method runs on the replicas' app component.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
 A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `job.inputs`, which are blob ids.
 It may create files, 2 GiB in all and 47 MiB each; this cap replaces the 64 MiB per-run cap of a logged run.
