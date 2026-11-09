@@ -4674,6 +4674,8 @@ async fn the_fuel_cap_is_a_decimal_string() {
         .unwrap();
     let quotas = ops.get("ops/quotas").await.unwrap();
     assert_eq!(quotas["maxFuelPerDeveloperPerDay"], json!(big), "{quotas}");
+    // `/auth/usage` reads the replica of the node it reaches: wait until it applied.
+    fuel_limit_everywhere(&c, 9_007_199_254_740_993).await;
     let me = alice.usage().await.unwrap();
     assert_eq!(
         me["quotas"]["maxFuelPerDeveloperPerDay"],
