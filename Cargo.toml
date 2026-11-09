@@ -121,7 +121,7 @@ wasmtime-wasi = { version = "50.0.0", default-features = false }
 wasmparser = "0.263"
 wat = "1.243.0"
 wit-bindgen = "0.63.0"
-wit-parser = "0.262.0"
+wit-parser = "0.263.0"
 zeroize = "1.8"
 
 
