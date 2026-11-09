@@ -907,3 +907,43 @@ fn every_call_charges_collection_fuel() {
     );
     let _ = GENERATION;
 }
+
+#[test]
+fn an_integer_key_part_outside_s64_and_u64_is_refused() {
+    // A CBOR negative below `i64::MIN` (-2^64) as the record's `id`: no WIT key part holds
+    // it, so storing it would poison every later find or page that returns its key.
+    let full = cbor(&member("o1", 1, "ann", None));
+    let Value::Map(entries) = ciborium::from_reader::<Value, _>(full.as_slice()).unwrap() else {
+        panic!("a record is a map");
+    };
+    let below = ciborium::value::Integer::try_from(-(1i128 << 64)).unwrap();
+    let changed: Vec<_> = entries
+        .iter()
+        .map(|(k, v)| {
+            if k.as_text() == Some("id") {
+                (k.clone(), Value::Integer(below))
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect();
+    let mut record = Vec::new();
+    ciborium::into_writer(&Value::Map(changed), &mut record).unwrap();
+    refused_as_bad_record(&record);
+
+    let mut host = call();
+    for out_of_range in [i128::from(i64::MIN) - 1, i128::from(u64::MAX) + 1] {
+        let key = [KeyPart::Int(out_of_range)];
+        let bad = |a: &Result<Result<_, CollError>, HostDenied>| {
+            matches!(a, Ok(Err(CollError::BadRecord(_))))
+        };
+        assert!(bad(&host
+            .map_insert(MAP, &key, &text("v"))
+            .map(|r| r.map(|_| ()))));
+        assert!(bad(&host.tally_add(TALLY, &key, 1)));
+    }
+    // The edges themselves fit.
+    ok(host.tally_add(TALLY, &[KeyPart::Int(i64::MIN.into())], 1));
+    ok(host.tally_add(TALLY, &[KeyPart::Int(u64::MAX.into())], 1));
+    assert_eq!(host.write_count(), 2, "only the two edge adds were written");
+}

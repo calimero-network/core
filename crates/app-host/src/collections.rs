@@ -317,9 +317,27 @@ pub(crate) fn field_part(record: &[(Value, Value)], field: &str) -> Result<KeyPa
     Ok(match value {
         Value::Null => KeyPart::None,
         Value::Bool(b) => KeyPart::Bool(*b),
-        Value::Integer(i) => KeyPart::Int(i128::from(*i)),
+        Value::Integer(i) if fits_wit(i128::from(*i)) => KeyPart::Int(i128::from(*i)),
+        Value::Integer(_) => return Err(format!("field `{field}` is outside s64 and u64")),
         Value::Text(t) => KeyPart::Str(t.clone()),
         Value::Bytes(b) => KeyPart::Bytes(b.clone()),
         _ => return Err(format!("field `{field}` cannot be a key part")),
     })
+}
+
+/// Whether an integer key part has a WIT form (`int(s64)` or `uint(u64)`). One without
+/// is never stored: a find or page returning its key could not answer it.
+pub(crate) fn fits_wit(i: i128) -> bool {
+    i64::try_from(i).is_ok() || u64::try_from(i).is_ok()
+}
+
+/// Refuse a key with an integer part [`fits_wit`] does not accept.
+pub(crate) fn check_wit_key(parts: &[KeyPart]) -> Result<(), String> {
+    if parts
+        .iter()
+        .any(|p| matches!(p, KeyPart::Int(i) if !fits_wit(*i)))
+    {
+        return Err("a key integer outside s64 and u64".into());
+    }
+    Ok(())
 }

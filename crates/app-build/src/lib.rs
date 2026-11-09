@@ -58,13 +58,29 @@ pub struct BuiltApp {
 
 /// Builds the crate at `crate_dir` into `target_dir` and returns the component.
 pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
-    build(crate_dir, target_dir, false)
+    build(crate_dir, target_dir, false, &[])
+}
+
+/// Builds the crate at `crate_dir` like [`build_component`], with these cargo features of
+/// the crate on (`--features`). Give a feature build its own `target_dir`: one directory
+/// shared with the default build would relink the component on every switch.
+pub fn build_component_with_features(
+    crate_dir: &Path,
+    target_dir: &Path,
+    features: &[&str],
+) -> EyreResult<Built> {
+    build(crate_dir, target_dir, false, features)
 }
 
 /// Builds the compute component of the crate at `crate_dir`: the same crate with
 /// `--cfg calimero_compute`, into `target_dir/compute`.
 pub fn build_compute_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
-    build(crate_dir, &target_dir.join(COMPUTE_TARGET_SUBDIR), true)
+    build(
+        crate_dir,
+        &target_dir.join(COMPUTE_TARGET_SUBDIR),
+        true,
+        &[],
+    )
 }
 
 /// Builds the crate's app component and, when its ABI declares compute methods, its compute
@@ -97,7 +113,12 @@ fn compute_rustflags() -> String {
     flags.join("\x1f")
 }
 
-fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
+fn build(
+    crate_dir: &Path,
+    target_dir: &Path,
+    compute: bool,
+    features: &[&str],
+) -> EyreResult<Built> {
     // Builds into one target dir race on its artifacts across threads and processes.
     std::fs::create_dir_all(target_dir)?;
     let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
@@ -109,6 +130,9 @@ fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built
         .arg(target_dir)
         .current_dir(crate_dir)
         .stdin(Stdio::null());
+    if !features.is_empty() {
+        let _ = cargo.arg("--features").arg(features.join(","));
+    }
     if compute {
         let _ = cargo.env("CARGO_ENCODED_RUSTFLAGS", compute_rustflags());
     }

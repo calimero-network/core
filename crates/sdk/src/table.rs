@@ -259,6 +259,10 @@ impl<T: Record, S: Store> Table<T, S> {
 
     /// Insert a record, refusing an existing key (`Duplicate { index: "key" }`) or a unique clash.
     pub fn insert(&mut self, record: T) -> Result<(), TableError> {
+        via_host!(S, {
+            let bytes = value::to_vec(&record)?;
+            crate::host_collections::table_put(&self.name, &bytes, false)
+        });
         let new = self.entries(&record)?;
         let bytes = value::to_vec(&record)?;
         if self.store.get(&new.record).is_some() {
@@ -274,6 +278,10 @@ impl<T: Record, S: Store> Table<T, S> {
 
     /// Insert or replace a record; unique constraints still apply.
     pub fn upsert(&mut self, record: T) -> Result<(), TableError> {
+        via_host!(S, {
+            let bytes = value::to_vec(&record)?;
+            crate::host_collections::table_put(&self.name, &bytes, true)
+        });
         let new = self.entries(&record)?;
         let bytes = value::to_vec(&record)?;
         self.check_unique(&new)?;
@@ -288,6 +296,11 @@ impl<T: Record, S: Store> Table<T, S> {
 
     /// The record with this key.
     pub fn get<K: ToKey + ?Sized>(&self, key: &K) -> Result<Option<T>, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::table_get(&self.name, &key.to_key())
+                .map(|found| { found?.map(|bytes| value::from_slice(&bytes)).transpose() })
+        );
         self.read(&self.record_key(&key.to_key())?)
     }
 
@@ -328,6 +341,11 @@ impl<T: Record, S: Store> Table<T, S> {
 
     /// Whether a record with this key exists.
     pub fn contains<K: ToKey + ?Sized>(&self, key: &K) -> Result<bool, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::table_get(&self.name, &key.to_key())
+                .map(|found| Ok(found?.is_some()))
+        );
         Ok(self.store.get(&self.record_key(&key.to_key())?).is_some())
     }
 
@@ -337,6 +355,16 @@ impl<T: Record, S: Store> Table<T, S> {
         key: &K,
         change: impl FnOnce(&mut T),
     ) -> Result<bool, TableError> {
+        #[cfg(all(
+            feature = "host-collections",
+            target_arch = "wasm32",
+            not(calimero_compute)
+        ))]
+        if S::HOST_COLLECTIONS {
+            if let Some(found) = crate::host_collections::table_get(&self.name, &key.to_key()) {
+                return self.host_update(found?, change);
+            }
+        }
         let record_key = self.record_key(&key.to_key())?;
         let Some(mut record) = self.read(&record_key)? else {
             return Ok(false);
@@ -356,6 +384,10 @@ impl<T: Record, S: Store> Table<T, S> {
 
     /// Remove the record with this key and its index, unique and count entries.
     pub fn remove<K: ToKey + ?Sized>(&mut self, key: &K) -> Result<bool, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::table_remove(&self.name, &key.to_key())
+        );
         let record_key = self.record_key(&key.to_key())?;
         let Some(record) = self.read(&record_key)? else {
             return Ok(false);
@@ -364,6 +396,49 @@ impl<T: Record, S: Store> Table<T, S> {
         self.store.delete(&old.record);
         self.reindex(Some(&old), None);
         Ok(true)
+    }
+
+    /// `update` through the host: the record read by `table_get`, changed, then upserted;
+    /// a changed key is refused before the write.
+    #[cfg(all(
+        feature = "host-collections",
+        target_arch = "wasm32",
+        not(calimero_compute)
+    ))]
+    fn host_update(
+        &mut self,
+        found: Option<Vec<u8>>,
+        change: impl FnOnce(&mut T),
+    ) -> Result<bool, TableError> {
+        let Some(bytes) = found else {
+            return Ok(false);
+        };
+        let mut record: T = value::from_slice(&bytes)?;
+        let key = record.key_parts(T::KEY);
+        change(&mut record);
+        if record.key_parts(T::KEY) != key {
+            return Err(StorageError::KeyChanged.into());
+        }
+        let bytes = value::to_vec(&record)?;
+        crate::host_collections::table_put(&self.name, &bytes, true)
+            .unwrap_or_else(|| Err(StorageError::UnknownName(self.name.clone()).into()))?;
+        Ok(true)
+    }
+
+    /// A host page of record bytes as records.
+    #[cfg(all(
+        feature = "host-collections",
+        target_arch = "wasm32",
+        not(calimero_compute)
+    ))]
+    fn host_page(
+        (entries, next): crate::host_collections::HostPage,
+    ) -> Result<Page<T>, StorageError> {
+        let items = entries
+            .iter()
+            .map(|(_, bytes)| value::from_slice(bytes))
+            .collect::<Result<_, _>>()?;
+        Ok(Page { items, next })
     }
 
     /// Records whose index fields start with `prefix`, in index order, one page at a time.
@@ -382,6 +457,11 @@ impl<T: Record, S: Store> Table<T, S> {
                 max: fields.len(),
             });
         }
+        via_host!(
+            S,
+            crate::host_collections::table_find(&self.name, Some(index), prefix, &opts)
+                .map(|found| Self::host_page(found?))
+        );
         let base = self.prefix("i", &[index], prefix);
         let (entries, next) = read_page(&self.store, &self.encode(&base)?, &opts)?;
         let mut items = Vec::with_capacity(entries.len());
@@ -394,6 +474,11 @@ impl<T: Record, S: Store> Table<T, S> {
 
     /// All records in key order, one page at a time.
     pub fn scan(&self, opts: FindOpts) -> Result<Page<T>, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::table_find(&self.name, None, &[], &opts)
+                .map(|found| Self::host_page(found?))
+        );
         let base = self.prefix("r", &[], &[]);
         let (entries, next) = read_page(&self.store, &self.encode(&base)?, &opts)?;
         let items = entries
@@ -416,6 +501,10 @@ impl<T: Record, S: Store> Table<T, S> {
                 max: fields.len(),
             });
         }
+        via_host!(
+            S,
+            crate::host_collections::table_count(&self.name, name, prefix)
+        );
         let base = self.prefix("c", &[name], prefix);
         let sum: i128 = if prefix.len() == fields.len() {
             match self.store.get(&self.encode(&base)?) {

@@ -388,6 +388,21 @@ impl TestApp {
         app
     }
 
+    /// Runs later invocations on `component`, keeping the state, the org, the clock and
+    /// the logged events: the same app rebuilt (no migration runs, and `init` does not run
+    /// again).
+    ///
+    /// # Panics
+    ///
+    /// When the component is invalid: the test cannot go on.
+    pub fn replace_component(&mut self, component: &[u8]) {
+        self.prepared = self
+            .engine
+            // SAFETY: an unusable component fails the test.
+            .prepare("test-component", component)
+            .unwrap_or_else(|e| panic!("harness: component not usable: {e}"));
+    }
+
     /// Calls as a signed-in account.
     pub fn as_(&mut self, account: &str) -> As<'_> {
         self.caller(HostCaller::Account(account.to_owned()))

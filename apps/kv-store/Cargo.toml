@@ -8,6 +8,10 @@ description = "A string key-value store: the component SDK's basic example"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# PoC: the map is served by the host's `calimero:app/collections`.
+host-collections = ["calimero-sdk/host-collections"]
+
 [dependencies]
 calimero-sdk = { path = "../../crates/sdk" }
 

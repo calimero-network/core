@@ -9,8 +9,8 @@ use ciborium::Value;
 
 use super::{HostCore, MAX_RANGE_BATCH};
 use crate::collections::{
-    camel, canonical, canonical_value, collection_fuel, decode_key, encode_key, field_part,
-    read_value, write_value, CollEntry, CollError, CollPage, CollectionSchema, KeyPart,
+    camel, canonical, canonical_value, check_wit_key, collection_fuel, decode_key, encode_key,
+    field_part, read_value, write_value, CollEntry, CollError, CollPage, CollectionSchema, KeyPart,
     TableSchema, MAX_COLLECTION_KEY_BYTES, MAX_COLLECTION_LIMIT,
 };
 use crate::state::{stored_key, KeyValue, GENERATION};
@@ -300,6 +300,7 @@ impl HostCore {
     ) -> Answer<Option<Vec<u8>>> {
         self.metered(true, |host| {
             soft!(host.expect_kind(map, &CollectionSchema::Map));
+            soft!(check_wit_key(key).map_err(CollError::BadRecord));
             let k = soft!(collection_key(map, "m", key));
             let count = soft!(collection_key(map, "n", &[]));
             let value = soft!(canonical_value(value).map_err(CollError::BadRecord));
@@ -355,6 +356,7 @@ impl HostCore {
     pub fn tally_add(&mut self, tally: &str, key: &[KeyPart], delta: i64) -> Answer<()> {
         self.metered(true, |host| {
             soft!(host.expect_kind(tally, &CollectionSchema::Tally));
+            soft!(check_wit_key(key).map_err(CollError::BadRecord));
             let k = soft!(collection_key(tally, "t", key));
             host.coll_add(&k, delta)?;
             Ok(Ok(()))

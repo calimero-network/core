@@ -18,6 +18,25 @@ extern crate self as calimero_sdk;
 #[doc(hidden)]
 pub mod bindings;
 
+/// Returns the host's answer when the store `$store` routes collections to the host
+/// (`Store::HOST_COLLECTIONS`, feature `host-collections`, app components only); `$host` is
+/// an `Option` of the method's result, `None` falling through to the guest path. Compiled
+/// out everywhere else.
+macro_rules! via_host {
+    ($store:ty, $host:expr) => {
+        #[cfg(all(
+            feature = "host-collections",
+            target_arch = "wasm32",
+            not(calimero_compute)
+        ))]
+        if <$store as $crate::store::Store>::HOST_COLLECTIONS {
+            if let Some(answer) = $host {
+                return answer;
+            }
+        }
+    };
+}
+
 pub mod action;
 pub mod app;
 pub mod blob;
@@ -29,6 +48,12 @@ pub mod env;
 pub mod error;
 pub mod files;
 pub mod guards;
+#[cfg(all(
+    feature = "host-collections",
+    target_arch = "wasm32",
+    not(calimero_compute)
+))]
+mod host_collections;
 pub mod json;
 pub mod search;
 pub mod store;

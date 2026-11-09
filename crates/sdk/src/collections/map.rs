@@ -58,6 +58,11 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 
     /// The value at `k`.
     pub fn get(&self, k: &K) -> Result<Option<V>, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::map_get(&self.name, &k.to_key())
+                .map(|found| { found?.map(|bytes| value::from_slice(&bytes)).transpose() })
+        );
         self.store
             .get(&self.storage_key(k)?)
             .map(|bytes| value::from_slice(&bytes))
@@ -66,11 +71,21 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 
     /// Whether `k` has a value.
     pub fn contains(&self, k: &K) -> Result<bool, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::map_get(&self.name, &k.to_key())
+                .map(|found| Ok(found?.is_some()))
+        );
         Ok(self.store.get(&self.storage_key(k)?).is_some())
     }
 
     /// Set the value at `k`, returning the value it replaces.
     pub fn insert(&mut self, k: &K, v: &V) -> Result<Option<V>, StorageError> {
+        via_host!(S, {
+            let bytes = value::to_vec(v)?;
+            crate::host_collections::map_insert(&self.name, &k.to_key(), &bytes)
+                .map(|old| old?.map(|bytes| value::from_slice(&bytes)).transpose())
+        });
         let key = self.storage_key(k)?;
         let bytes = value::to_vec(v)?;
         let old = self
@@ -87,6 +102,11 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 
     /// Remove `k`, returning the value it held.
     pub fn remove(&mut self, k: &K) -> Result<Option<V>, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::map_remove(&self.name, &k.to_key())
+                .map(|old| { old?.map(|bytes| value::from_slice(&bytes)).transpose() })
+        );
         let key = self.storage_key(k)?;
         let Some(bytes) = self.store.get(&key) else {
             return Ok(None);
@@ -118,6 +138,26 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 }
 
 impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> {
+    /// A host page of keys and value bytes as entries.
+    #[cfg(all(
+        feature = "host-collections",
+        target_arch = "wasm32",
+        not(calimero_compute)
+    ))]
+    fn host_page(
+        (entries, next): crate::host_collections::HostPage,
+    ) -> Result<Page<(K, V)>, StorageError> {
+        let items = entries
+            .into_iter()
+            .map(|(parts, v)| {
+                let key = K::from_key(&parts)
+                    .ok_or_else(|| StorageError::Decode("a key of another type".into()))?;
+                Ok((key, value::from_slice(&v)?))
+            })
+            .collect::<Result<_, StorageError>>()?;
+        Ok(Page { items, next })
+    }
+
     fn page_under(&self, base: &[u8], opts: &FindOpts) -> Result<Page<(K, V)>, StorageError> {
         let map_base = self.base()?;
         let (entries, next) = read_page(&self.store, base, opts)?;
@@ -136,6 +176,11 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
     /// Entries in key order (largest key first with `reverse`), one page of at most 1,000;
     /// `from` and `to` bound the keys (inclusive, exclusive) as key parts.
     pub fn page(&self, opts: FindOpts) -> Result<Page<(K, V)>, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::map_page(&self.name, &[], &opts)
+                .map(|found| Self::host_page(found?))
+        );
         self.page_under(&self.base()?, &opts)
     }
 
@@ -148,6 +193,11 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
     /// at a time: with `(account, key)` keys, `prefix(&["alice".to_key_part()], ..)` is
     /// alice's entries. `from` and `to` are further parts after the prefix.
     pub fn prefix(&self, prefix: &[KeyPart], opts: FindOpts) -> Result<Page<(K, V)>, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::map_page(&self.name, prefix, &opts)
+                .map(|found| Self::host_page(found?))
+        );
         let base = [self.base()?, key::encode(prefix)].concat();
         check_key(&base)?;
         self.page_under(&base, &opts)

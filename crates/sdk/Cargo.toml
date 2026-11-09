@@ -19,6 +19,10 @@ testing = [
     "dep:tempfile",
 ]
 
+# PoC: `Table`, `UnorderedMap` and `Tally` on the default store call the host's
+# `calimero:app/collections` (wasm32 app components only; the API is unchanged).
+host-collections = []
+
 [dependencies]
 base64.workspace = true
 calimero-app-wit.workspace = true

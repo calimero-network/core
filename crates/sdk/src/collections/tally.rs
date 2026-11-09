@@ -50,6 +50,10 @@ impl<K: ToKey, S: Store> Tally<K, S> {
 
     /// Add `delta` to the counter at `key` without reading it (`storage.add`).
     pub fn add(&mut self, key: &K, delta: i64) -> Result<(), StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::tally_add(&self.name, &key.to_key(), delta)
+        );
         let k = self.storage_key(key)?;
         self.store.add(&k, delta);
         Ok(())
@@ -57,6 +61,10 @@ impl<K: ToKey, S: Store> Tally<K, S> {
 
     /// The counter at `key`; 0 when nothing was ever added.
     pub fn get(&self, key: &K) -> Result<i64, StorageError> {
+        via_host!(
+            S,
+            crate::host_collections::tally_get(&self.name, &key.to_key())
+        );
         match self.store.get(&self.storage_key(key)?) {
             Some(bytes) => {
                 let n = value::int_from_slice(&bytes)?;

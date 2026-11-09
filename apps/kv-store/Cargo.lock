@@ -126,6 +126,7 @@ dependencies = [
 name = "calimero-app-host"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "calimero-app-wit",
  "ciborium",
  "hex",
