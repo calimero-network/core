@@ -300,6 +300,54 @@ fn the_abi_lists_the_collections() {
     }
 }
 
+/// Two set names of one table that camelCase alike would share their storage keys.
+#[test]
+fn set_names_that_camelcase_alike_are_a_bad_abi() {
+    for set in ["indexes", "unique", "counts"] {
+        let abi = json!({
+            "abiVersion": 1, "methods": {},
+            "state": { "collections": { "t": {
+                "kind": "table", "key": ["id"],
+                set: { "by_owner": ["owner"], "byOwner": ["owner"] },
+            } } },
+        });
+        let err = Abi::from_json(&abi).expect_err(set).to_string();
+        assert!(err.contains("byOwner"), "{set}: {err}");
+    }
+    // Across kinds the keys differ (`i`, `u`, `c`), so one name may serve each.
+    let abi = json!({
+        "abiVersion": 1, "methods": {},
+        "state": { "collections": { "t": {
+            "kind": "table", "key": ["id"],
+            "indexes": { "by_owner": ["owner"] }, "counts": { "byOwner": ["owner"] },
+        } } },
+    });
+    assert!(Abi::from_json(&abi).is_ok());
+}
+
+/// A count over a partial prefix is summed batch by batch, each entry read charged.
+#[test]
+fn table_count_over_a_partial_prefix_charges_per_entry() {
+    let mut host = call();
+    for (id, owner) in [(1, "ann"), (2, "bob"), (3, "cy"), (4, "ann")] {
+        ok(host.table_insert(TABLE, &cbor(&member("o1", id, owner, None))));
+    }
+    let before = host.host_fuel();
+    assert_eq!(ok(host.table_count(TABLE, "per_owner", &[])), 4);
+    let empty_prefix = host.host_fuel() - before;
+    let before = host.host_fuel();
+    assert_eq!(
+        ok(host.table_count(TABLE, "per_owner", &[KeyPart::Str("ann".into())])),
+        2
+    );
+    let one_entry = host.host_fuel() - before;
+    // Three count entries read against one.
+    assert!(
+        empty_prefix >= one_entry + 2 * super::COLLECTION_ENTRY_FUEL,
+        "{empty_prefix} vs {one_entry}"
+    );
+}
+
 #[test]
 fn table_insert_writes_the_sdk_layout() {
     let store = MemStore::new();

@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.1` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces, and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.1` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces, and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces plus the seven `wasi:sockets` ones, accepted at install). Anything in neither list is refused.
 
 ## The compute world
 
@@ -26,7 +26,7 @@ The compute world imports no state, xcall, context, events, blobs, search, actio
 
 - A patch bump is additive only: no existing type or function changes, so a component built against an older 0.5.z still links (the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's).
 - Change the WIT only together with the spec (or name the gap, as below); keep `allowed_imports()` in step with the world.
-- `wit/deps/sockets` is vendored only because `wasi:cli` and `wasi:http` reference it; it is not imported by the world.
+- `wit/deps/sockets` is vendored because `wasi:cli` and `wasi:http` reference it; it is not imported by the world. Its seven interfaces are stubs (PoC, approved by Xabi 2026-11-09): componentize-py 0.25.1's default build imports them all, and the engine refuses every socket and lookup.
 
 ## Verify
 

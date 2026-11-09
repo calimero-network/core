@@ -12,8 +12,12 @@
 //!   requests sent only from actions (D12, S9). wasmtime-wasi-http is not linked: its body
 //!   streams can block a node thread past the epoch deadline.
 //!
-//! `wasi:sockets` and `wasi:random/insecure` are never linked, and `prepare` refuses any
-//! component importing them.
+//! - wasmtime-wasi: `sockets/*` (stubs, so componentize-py's default build installs) with
+//!   TCP, UDP and name lookup all disallowed and every address refused: creating a socket
+//!   fails `access-denied` and a lookup `permanent-resolver-failure` before any system call,
+//!   so no socket ever exists; `instance-network` hands out an inert handle.
+//!
+//! `wasi:random/insecure` is never linked, and `prepare` refuses any component importing it.
 
 use std::io;
 use std::pin::Pin;
@@ -44,11 +48,13 @@ use wasmtime_wasi::p2::bindings::clocks::monotonic_clock;
 use wasmtime_wasi::p2::bindings::clocks::wall_clock;
 use wasmtime_wasi::p2::bindings::random::{insecure_seed, random};
 use wasmtime_wasi::p2::bindings::sync as wasi_sync;
-use wasmtime_wasi::p2::bindings::{cli, filesystem};
+use wasmtime_wasi::p2::bindings::{cli, filesystem, sockets};
 use wasmtime_wasi::p2::DynPollable;
 use wasmtime_wasi::p2::OutputStream;
 use wasmtime_wasi::p2::Pollable;
 use wasmtime_wasi::p2::StreamResult;
+use wasmtime_wasi::sockets::WasiSockets;
+use wasmtime_wasi::sockets::WasiSocketsView;
 
 use crate::errors::denied;
 use crate::StoreData;
@@ -88,6 +94,21 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
         StoreData::filesystem,
     )?;
     filesystem::preopens::add_to_linker::<StoreData, WasiFilesystem>(l, StoreData::filesystem)?;
+
+    let network = sockets::network::LinkOptions::default();
+    sockets::network::add_to_linker::<StoreData, WasiSockets>(l, &network, StoreData::sockets)?;
+    sockets::instance_network::add_to_linker::<StoreData, WasiSockets>(l, StoreData::sockets)?;
+    sockets::tcp_create_socket::add_to_linker::<StoreData, WasiSockets>(l, StoreData::sockets)?;
+    wasi_sync::sockets::tcp::add_to_linker::<StoreData, WasiSockets>(l, StoreData::sockets)?;
+    wasi_sync::sockets::udp_create_socket::add_to_linker::<StoreData, WasiSockets>(
+        l,
+        StoreData::sockets,
+    )?;
+    wasi_sync::sockets::udp::add_to_linker::<StoreData, WasiSockets>(l, StoreData::sockets)?;
+    wasi_sync::sockets::ip_name_lookup::add_to_linker::<StoreData, WasiSockets>(
+        l,
+        StoreData::sockets,
+    )?;
 
     Ok(())
 }

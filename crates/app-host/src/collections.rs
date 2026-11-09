@@ -29,12 +29,22 @@ pub const MAX_COLLECTION_LIMIT: u32 = 1_000;
 /// from it (`last ‖ 0x00`, `prefix ‖ 0xFF`) still fit (the SDK's `MAX_SDK_KEY_BYTES`).
 pub const MAX_COLLECTION_KEY_BYTES: usize = MAX_KEY_BYTES - 1;
 
-/// Fuel of every collection call. Provisional: Task 4 calibrates the three constants.
-pub const COLLECTION_BASE_FUEL: u64 = 1_000;
-/// Fuel per byte of key or value read or written.
-pub const COLLECTION_BYTE_FUEL: u64 = 1;
-/// Fuel per stored entry read or written.
-pub const COLLECTION_ENTRY_FUEL: u64 = 100;
+/// Fuel of every collection call.
+///
+/// Calibrated against the guest code a host call replaces (PoC, measured 2026-11-09 by the
+/// engine test `a_host_table_insert_costs_between_half_and_all_of_the_sdk_path`, release
+/// `wasm32-wasip2` guest, wasmtime 50): `Table::insert` through the SDK of a 3-field record
+/// (`id: u64`, `owner`, `note`) with one index and one count costs 28,077 guest fuel over an
+/// empty method. The same insert through `table-insert` reads or writes 4 entries (record
+/// lookup, record, index, count) and 199 bytes of keys and values, so it is charged
+/// 5,000 + 199 x 10 + 4 x 3,500 = 20,990 host fuel, 0.75x the SDK path (the target is
+/// 0.5x-1x). The guest still pays its own side of the call (encoding the record and the
+/// canonical ABI copy): 12,250 fuel in that measurement.
+pub const COLLECTION_BASE_FUEL: u64 = 5_000;
+/// Fuel per byte of key or value read or written (see [`COLLECTION_BASE_FUEL`]).
+pub const COLLECTION_BYTE_FUEL: u64 = 10;
+/// Fuel per stored entry read or written (see [`COLLECTION_BASE_FUEL`]).
+pub const COLLECTION_ENTRY_FUEL: u64 = 3_500;
 
 /// The fuel of one collection call that read or wrote `bytes` of keys and values over
 /// `entries` stored entries. Saturates.

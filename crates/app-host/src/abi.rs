@@ -6,7 +6,7 @@ use std::time::Duration;
 use calimero_app_wit::COMPUTE_WORLD;
 use serde_json::{Map, Value};
 
-use crate::collections::{CollectionSchema, TableSchema};
+use crate::collections::{camel, CollectionSchema, TableSchema};
 use crate::engine::PrepareError;
 
 /// ABI versions this host reads. A bundle declares its own in `abiVersion`.
@@ -223,15 +223,27 @@ fn collection_schemas(json: &Value) -> Result<BTreeMap<String, CollectionSchema>
                 }
                 let sets = |name: &str| -> Result<BTreeMap<String, Vec<String>>, PrepareError> {
                     let what = format!("{what}: {name}");
-                    match schema.get(name) {
-                        None | Some(Value::Null) => Ok(BTreeMap::new()),
+                    let sets: BTreeMap<String, Vec<String>> = match schema.get(name) {
+                        None | Some(Value::Null) => BTreeMap::new(),
                         Some(sets) => object(sets, &what)?
                             .iter()
                             .map(|(set, fields)| {
                                 Ok((set.clone(), names(Some(fields), &format!("{what}.{set}"))?))
                             })
-                            .collect(),
+                            .collect::<Result<_, PrepareError>>()?,
+                    };
+                    // Keys carry the camelCase name, so two names that camelCase alike
+                    // would share entries.
+                    let mut seen = BTreeMap::new();
+                    for set in sets.keys() {
+                        if let Some(other) = seen.insert(camel(set), set) {
+                            return Err(bad(format!(
+                                "{what}: {other} and {set} are both {}",
+                                camel(set)
+                            )));
+                        }
                     }
+                    Ok(sets)
                 };
                 CollectionSchema::Table(TableSchema {
                     key,

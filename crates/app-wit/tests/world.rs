@@ -113,10 +113,22 @@ fn app_world_does_not_import_job() {
 }
 
 #[test]
-fn stubbed_imports_are_nine_disjoint_and_not_sockets() {
+fn stubbed_imports_are_disjoint_and_include_every_sockets_interface() {
     let stubbed = stubbed_imports();
-    assert_eq!(stubbed.len(), 9);
-    assert!(stubbed.iter().all(|s| !s.starts_with("wasi:sockets/")));
+    assert_eq!(stubbed.len(), 16);
+    // componentize-py 0.25.1's default build imports all seven (Xabi, 2026-11-09).
+    for interface in [
+        "instance-network",
+        "ip-name-lookup",
+        "network",
+        "tcp-create-socket",
+        "tcp",
+        "udp-create-socket",
+        "udp",
+    ] {
+        let import = format!("wasi:sockets/{interface}@0.2.12");
+        assert!(stubbed.contains(&import.as_str()), "{import}");
+    }
     assert!(stubbed.iter().all(|s| s.ends_with("@0.2.12")));
     let allowed: BTreeSet<_> = allowed_imports().iter().collect();
     assert!(stubbed.iter().all(|s| !allowed.contains(s)));

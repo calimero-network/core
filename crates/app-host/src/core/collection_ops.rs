@@ -274,11 +274,7 @@ impl HostCore {
                 }
             } else {
                 let end = [base.as_slice(), &[0xFF]].concat();
-                let mut sum = 0i128;
-                for (_, bytes) in host.coll_range(&base, &end, false, usize::MAX)? {
-                    sum += soft!(integer(&bytes));
-                }
-                sum
+                soft!(host.coll_sum(&base, &end)?)
             };
             Ok(u64::try_from(sum)
                 .map_err(|_| CollError::BadRecord(format!("count {name} is negative"))))
@@ -565,6 +561,39 @@ impl HostCore {
             .map_or(0, |v| v.len());
         self.measure(key.len() + written, 1);
         Ok(())
+    }
+
+    /// The sum of the stored integers in `[start, end)`, read through one cursor a batch of
+    /// [`MAX_RANGE_BATCH`] at a time (never more held), each entry metered as it is read.
+    fn coll_sum(&mut self, start: &[u8], end: &[u8]) -> Answer<i128> {
+        let cursor = self.range_open(start, end, false)?;
+        let mut sum = 0i128;
+        let read = loop {
+            let batch = match self.range_next(cursor, MAX_RANGE_BATCH) {
+                Ok(batch) => batch,
+                Err(denied) => break Err(denied),
+            };
+            if batch.is_empty() {
+                break Ok(Ok(sum));
+            }
+            let bytes = batch.iter().map(|(k, v)| k.len() + v.len()).sum();
+            self.measure(bytes, batch.len());
+            let mut bad = None;
+            for (_, value) in &batch {
+                match integer(value) {
+                    Ok(n) => sum = sum.saturating_add(n),
+                    Err(error) => {
+                        bad = Some(error);
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = bad {
+                break Ok(Err(error));
+            }
+        };
+        self.range_close(cursor);
+        read
     }
 
     /// Up to `want` entries of `[start, end)` through one cursor, closed before returning.

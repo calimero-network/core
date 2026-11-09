@@ -638,7 +638,8 @@ impl TestApp {
                 &prepared,
                 host.with_action(runner)
                     .with_http(http)
-                    .with_xcall_host(apps),
+                    .with_xcall_host(apps)
+                    .with_collections(&prepared.abi),
                 Budget::action(),
             ),
             Err(e) => {
@@ -820,7 +821,10 @@ impl TestApp {
         .with_search(search)
         .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())))
         .with_http(Arc::new(HarnessHttp(self.http.clone())))
-        .with_files(Arc::new(self.files.clone()));
+        .with_files(Arc::new(self.files.clone()))
+        // The ABI `prepare` read from the component (`abi_of` + `Abi::from_json`) names the
+        // state's collections, which the host serves as on a node.
+        .with_collections(&self.prepared.abi);
         let budget = if is_view {
             Budget::view()
         } else {

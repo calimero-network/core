@@ -65,6 +65,15 @@ const STUBBED_IMPORTS: &[&str] = &[
     "wasi:cli/terminal-stderr@0.2.12",
     "wasi:filesystem/types@0.2.12",
     "wasi:filesystem/preopens@0.2.12",
+    // componentize-py 0.25.1's default build imports every sockets interface (approved by
+    // Xabi, 2026-11-09): accepted at install, no socket can be created or name resolved.
+    "wasi:sockets/instance-network@0.2.12",
+    "wasi:sockets/ip-name-lookup@0.2.12",
+    "wasi:sockets/network@0.2.12",
+    "wasi:sockets/tcp-create-socket@0.2.12",
+    "wasi:sockets/tcp@0.2.12",
+    "wasi:sockets/udp-create-socket@0.2.12",
+    "wasi:sockets/udp@0.2.12",
 ];
 
 /// Interfaces the world imports; the host implements all of them.
@@ -79,7 +88,8 @@ pub fn compute_allowed_imports() -> &'static [&'static str] {
     COMPUTE_ALLOWED_IMPORTS
 }
 
-/// Interfaces accepted at install but stubbed by the host (D44); not part of the world.
+/// Interfaces accepted at install but stubbed by the host (D44, plus `wasi:sockets`); not
+/// part of the world.
 /// Any import in neither list is refused.
 #[must_use]
 pub fn stubbed_imports() -> &'static [&'static str] {

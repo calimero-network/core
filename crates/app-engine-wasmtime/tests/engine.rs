@@ -11,7 +11,8 @@ use calimero_app_engine_wasmtime::{
 };
 use calimero_app_host::{
     Budget, Caller, ComputeCtx, Directory, Engine, HostCore, Invocation, InvocationKind,
-    MemoryFiles, OrgRole, Outcome, PrepareError, Prepared, Status, TrapKind, FILES_DISABLED,
+    MemoryFiles, OrgRole, Outcome, PrepareError, Prepared, Status, TrapKind, COLLECTION_BASE_FUEL,
+    FILES_DISABLED,
 };
 use sha2::{Digest, Sha256};
 
@@ -236,12 +237,41 @@ fn view_writes_trap_host_denied() {
 #[test]
 fn unlisted_import_is_refused_at_prepare() {
     let fx = fixture();
-    match fx.engine.prepare("fs-hash", &guest("fs_importer")) {
+    match fx
+        .engine
+        .prepare("insecure-hash", &guest("insecure_importer"))
+    {
         Err(PrepareError::ForbiddenImport(name)) => {
-            assert!(name.starts_with("wasi:sockets/"), "{name}");
+            assert!(name.starts_with("wasi:random/insecure@"), "{name}");
         }
         Err(other) => panic!("expected ForbiddenImport, got {other}"),
         Ok(_) => panic!("expected ForbiddenImport, got a prepared app"),
+    }
+}
+
+/// `wasi:sockets` is a D44 stub (componentize-py's default build imports it): the
+/// component installs, and no socket can be created.
+#[test]
+fn a_component_importing_wasi_sockets_loads_and_cannot_use_them() {
+    let fx = fixture();
+    let component = guest("fs_importer");
+    let imports = calimero_app_build::imports_of(&component).unwrap();
+    assert!(
+        imports.iter().any(|i| i.starts_with("wasi:sockets/")),
+        "{imports:?}"
+    );
+    let app = fx
+        .engine
+        .prepare("fs-hash", &component)
+        .unwrap_or_else(|e| panic!("prepare: {e}"));
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "bind", b""),
+        Budget::call(),
+    );
+    match &out.status {
+        Status::AppError { code, .. } => assert_eq!(code, "Bind"),
+        other => panic!("binding a socket must fail, got {other:?}"),
     }
 }
 
@@ -1313,4 +1343,194 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
         .err()
         .expect("an app component whose ABI names the compute world");
     assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
+}
+
+// --- host collections (PoC) ------------------------------------------------------------
+
+/// A host for the collections guest, serving the collections its ABI declares.
+fn coll_host(app: &Prepared, kind: InvocationKind, method: &str, args: &str) -> HostCore {
+    host(kind, method, args.as_bytes()).with_collections(&app.abi)
+}
+
+fn coll_run(fx: &Fixture, app: &Prepared, method: &str, args: &str, budget: Budget) -> Outcome {
+    fx.engine.invoke(
+        app,
+        coll_host(app, InvocationKind::Call, method, args),
+        budget,
+    )
+}
+
+/// Every app-world guest that never imports `calimero:app/collections` still prepares and
+/// runs on an engine that links it.
+#[test]
+fn an_app_without_the_import_still_loads() {
+    let fx = fixture();
+    for (name, method) in [
+        ("clock_reader", "wall"),
+        ("files", "make"),
+        ("global_counter", "bump"),
+        ("legacy_050", "bump"),
+        ("probe", "hashmap"),
+        ("stubs", "env"),
+        ("view_writer", "put"),
+    ] {
+        let component = guest(name);
+        let imports = calimero_app_build::imports_of(&component).unwrap();
+        assert!(
+            !imports
+                .iter()
+                .any(|i| i.starts_with("calimero:app/collections")),
+            "{name}: {imports:?}"
+        );
+        let app = fx
+            .engine
+            .prepare(&format!("{name}-hash"), &component)
+            .unwrap_or_else(|e| panic!("prepare {name}: {e}"));
+        let out = fx
+            .engine
+            .invoke(&app, host(InvocationKind::Call, method, b""), heavy());
+        assert!(
+            matches!(out.status, Status::Ok | Status::AppError { .. }),
+            "{name}: {:?}",
+            out.status
+        );
+    }
+}
+
+#[test]
+fn host_collection_calls_consume_fuel() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let none = coll_run(&fx, &app, "mapInserts", r#"{"n":0}"#, heavy());
+    assert_eq!(none.status, Status::Ok, "{:?}", none.status);
+    let many = coll_run(&fx, &app, "mapInserts", r#"{"n":1000}"#, heavy());
+    assert_eq!(many.status, Status::Ok, "{:?}", many.status);
+    assert_eq!(many.diff.len(), 1_001, "1,000 values and the count");
+    let extra = many.usage.fuel - none.usage.fuel;
+    assert!(
+        extra >= 1_000 * COLLECTION_BASE_FUEL,
+        "{extra} < 1,000 x {COLLECTION_BASE_FUEL}"
+    );
+}
+
+#[test]
+fn a_guest_of_only_host_ops_runs_out_of_fuel() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let budget = Budget {
+        fuel: 1_000_000,
+        ..Budget::call()
+    };
+    let out = coll_run(&fx, &app, "tallyForever", "", budget);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}",
+        out.status
+    );
+    assert!(out.diff.is_empty());
+    assert!(out.usage.fuel > 1_000_000, "{}", out.usage.fuel);
+}
+
+#[test]
+fn a_trapped_call_drops_host_collection_writes() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let out = coll_run(&fx, &app, "insertThenTrap", "", Budget::call());
+    assert_eq!(trap_kind(&out), Some(TrapKind::Fault), "{:?}", out.status);
+    assert!(out.diff.is_empty());
+}
+
+#[test]
+fn host_writes_count_toward_max_writes() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let out = coll_run(&fx, &app, "mapInserts", r#"{"n":10001}"#, heavy());
+    match &out.status {
+        Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail,
+        } => assert!(detail.contains("10,000 writes"), "{detail}"),
+        other => panic!("expected the write cap, got {other:?}"),
+    }
+    assert!(out.diff.is_empty());
+}
+
+/// Guest plus host fuel over the budget fails the run, even when neither alone is.
+#[test]
+fn guest_and_host_fuel_together_are_held_to_the_budget() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let ok = coll_run(&fx, &app, "mapInserts", r#"{"n":100}"#, heavy());
+    assert_eq!(ok.status, Status::Ok, "{:?}", ok.status);
+    let budget = Budget {
+        fuel: ok.usage.fuel - 1,
+        ..Budget::call()
+    };
+    let out = coll_run(&fx, &app, "mapInserts", r#"{"n":100}"#, budget);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}",
+        out.status
+    );
+    assert!(out.diff.is_empty());
+    assert!(out.result.is_empty());
+}
+
+#[test]
+fn key_parts_above_i64_max_come_back_as_uint() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let out = coll_run(&fx, &app, "bigKeys", "", heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let keys: Vec<String> = serde_json::from_slice(&out.result).unwrap();
+    assert_eq!(
+        keys,
+        [
+            "int:7",
+            "uint:18446744073709551615",
+            "int:-5",
+            "int:7",
+            "uint:18446744073709551615",
+        ]
+    );
+}
+
+/// The fuel calibration: the same 3-field insert with one index and one count, through the
+/// SDK's `Table` and through `table-insert`. Prints the numbers the constants' doc cites.
+#[test]
+fn a_host_table_insert_costs_between_half_and_all_of_the_sdk_path() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let fuel = |method: &str, args: &str| {
+        let out = coll_run(&fx, &app, method, args, heavy());
+        assert_eq!(out.status, Status::Ok, "{method}: {:?}", out.status);
+        out.usage.fuel
+    };
+    let noop = fuel("noop", "");
+    let sdk = fuel("sdkInsert", r#"{"id":7}"#) - noop;
+    let host_total = fuel("hostInsert", r#"{"id":7}"#) - noop;
+    let out = coll_run(&fx, &app, "hostInsert", r#"{"id":7}"#, heavy());
+    let mut probe = coll_host(&app, InvocationKind::Call, "hostInsert", r#"{"id":7}"#);
+    let record = {
+        // The record the guest sends: {id, note, owner} in canonical CBOR.
+        let mut out = vec![0xA3, 0x62, b'i', b'd', 0x07];
+        out.extend([0x64, b'n', b'o', b't', b'e', 0x65]);
+        out.extend(b"hello");
+        out.extend([0x65, b'o', b'w', b'n', b'e', b'r', 0x65]);
+        out.extend(b"alice");
+        out
+    };
+    probe.table_insert("mirror", &record).unwrap().unwrap();
+    let charge = probe.host_fuel();
+    println!(
+        "noop {noop}; sdk insert {sdk}; host insert {host_total} (host charge {charge}, guest {})",
+        host_total - charge
+    );
+    assert_eq!(out.diff.len(), 3, "record, index and count");
+    assert!(
+        charge * 2 >= sdk && charge <= sdk,
+        "host charge {charge} outside 0.5x..1x of the SDK path's {sdk}"
+    );
 }
