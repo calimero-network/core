@@ -19,6 +19,8 @@ impl RangeCursor for HostCursor {
 impl Store for HostStore {
     type Range = HostCursor;
 
+    const HOST_COLLECTIONS: bool = cfg!(feature = "host-collections");
+
     fn get(&self, k: &[u8]) -> Option<Vec<u8>> {
         storage::get(k)
     }

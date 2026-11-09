@@ -9,6 +9,7 @@ mod map;
 mod per_user;
 mod rich_text;
 mod set;
+mod tally;
 mod text;
 mod vector;
 
@@ -19,5 +20,6 @@ pub use map::UnorderedMap;
 pub use per_user::PerUser;
 pub use rich_text::{Mark, RichText, Span};
 pub use set::Set;
+pub use tally::Tally;
 pub use text::Text;
 pub use vector::Vector;

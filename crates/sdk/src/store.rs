@@ -39,6 +39,12 @@ pub trait Store {
     /// The cursor type [`Store::range`] opens.
     type Range: RangeCursor;
 
+    /// Whether `Table`, `UnorderedMap` and `Tally` on this store call the host's
+    /// `calimero:app/collections` instead (PoC): only the guest's host store, in a build
+    /// with the feature `host-collections`.
+    #[doc(hidden)]
+    const HOST_COLLECTIONS: bool = false;
+
     /// The value at `k`.
     fn get(&self, k: &[u8]) -> Option<Vec<u8>>;
     /// Set `k` to `v`.

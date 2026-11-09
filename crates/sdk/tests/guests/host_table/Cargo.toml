@@ -1,0 +1,18 @@
+[package]
+name = "host-table-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# The same app with `Table`, `UnorderedMap` and `Tally` served by the host (PoC).
+host-collections = ["calimero-sdk/host-collections"]
+
+[dependencies]
+calimero-sdk = { path = "../../.." }
+serde_json = "1"
+
+[workspace]

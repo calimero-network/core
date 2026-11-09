@@ -30,7 +30,11 @@ fn the_state_abi_lists_each_field_kind_in_key_order() {
     assert_eq!(
         <Every as AppState>::ABI,
         concat!(
-            r#"{"fields":{"blobs":"frozen","body":"text","count":"counter","doc":"richText","#,
+            r#"{"collections":{"blobs":{"kind":"frozen"},"body":{"kind":"text"},"count":{"kind":"counter"},"#,
+            r#""doc":{"kind":"richText"},"items":{"kind":"vector"},"prefs":{"kind":"perUser"},"#,
+            r#""rows":{"counts":{},"indexes":{},"key":["id"],"kind":"table","unique":{}},"#,
+            r#""tags":{"kind":"set"},"title":{"kind":"cell"},"zetaMap":{"kind":"unorderedMap"}},"#,
+            r#""fields":{"blobs":"frozen","body":"text","count":"counter","doc":"richText","#,
             r#""items":"vector","prefs":"perUser","rows":"table","tags":"set","title":"cell","#,
             r#""zetaMap":"unorderedMap"},"search":{"blobs":[],"body":[],"count":[],"doc":[],"#,
             r#""items":[],"prefs":[],"rows":[],"tags":[],"title":[],"zetaMap":[]},"version":2}"#
@@ -58,6 +62,53 @@ pub struct Searchable {
 fn a_searchable_table_lists_its_fields_in_camel_case() {
     assert_eq!(
         <Searchable as AppState>::ABI,
-        r#"{"fields":{"notes":"table","rows":"table"},"search":{"notes":["title","bodyText"],"rows":[]},"version":1}"#
+        r#"{"collections":{"notes":{"counts":{},"indexes":{},"key":["id"],"kind":"table","unique":{}},"rows":{"counts":{},"indexes":{},"key":["id"],"kind":"table","unique":{}}},"fields":{"notes":"table","rows":"table"},"search":{"notes":["title","bodyText"],"rows":[]},"version":1}"#
+    );
+}
+
+#[derive(Record)]
+#[table(key = ["poll_id", "voter"], count(per_poll = ["poll_id"]))]
+pub struct Vote {
+    pub poll_id: String,
+    pub voter: String,
+}
+
+#[allow(dead_code, reason = "a fixture: only its ABI is under test")]
+#[app::state(version = 1)]
+pub struct Polls {
+    rows: Table<Vote>,
+}
+
+#[test]
+fn state_abi_lists_collection_schemas() {
+    let abi: serde_json::Value = serde_json::from_str(<Polls as AppState>::ABI).unwrap();
+    assert_eq!(
+        abi["collections"],
+        serde_json::json!({"rows": {
+            "kind": "table",
+            "key": ["pollId", "voter"],
+            "indexes": {},
+            "unique": {},
+            "counts": {"per_poll": ["pollId"]}
+        }})
+    );
+    // Keys are written sorted, like the rest of the state ABI.
+    assert!(<Polls as AppState>::ABI.contains(
+        r#""rows":{"counts":{"per_poll":["pollId"]},"indexes":{},"key":["pollId","voter"],"kind":"table","unique":{}}"#
+    ));
+}
+
+#[allow(dead_code, reason = "a fixture: only its ABI is under test")]
+#[app::state(version = 1)]
+pub struct Tallies {
+    votes: Tally<String>,
+}
+
+#[test]
+fn a_tally_is_listed_with_its_kind_only() {
+    let abi = <Tallies as AppState>::ABI;
+    assert!(
+        abi.contains(r#""collections":{"votes":{"kind":"tally"}}"#),
+        "{abi}"
     );
 }

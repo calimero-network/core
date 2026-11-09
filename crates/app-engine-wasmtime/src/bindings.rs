@@ -36,7 +36,8 @@ wasmtime::component::bindgen!({
 });
 
 use self::calimero::app::{
-    action, blobs, context, events, files, rebuild, runs, search, storage, types, xcall,
+    action, blobs, collections, context, events, files, rebuild, runs, search, storage, types,
+    xcall,
 };
 
 /// Links the `calimero:app` interfaces of the app world and `wasi:http` onto `StoreData`.
@@ -53,6 +54,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     runs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    collections::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     let options = wasi::http::types::LinkOptions::default();
     wasi::http::types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, &options, |d| d)?;
     wasi::http::outgoing_handler::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -453,5 +455,178 @@ impl action::Host for StoreData {
         args: Vec<u8>,
     ) -> Result<std::result::Result<Vec<u8>, String>> {
         self.host.action_call(&method, &args).map_err(denied)
+    }
+}
+
+// --- collections (PoC) -------------------------------------------------------------------
+
+fn key_part(part: collections::KeyPart) -> host::KeyPart {
+    match part {
+        collections::KeyPart::None => host::KeyPart::None,
+        collections::KeyPart::Boolean(b) => host::KeyPart::Bool(b),
+        collections::KeyPart::Int(i) => host::KeyPart::Int(i.into()),
+        collections::KeyPart::Uint(u) => host::KeyPart::Int(u.into()),
+        collections::KeyPart::Text(s) => host::KeyPart::Str(s),
+        collections::KeyPart::Bytes(b) => host::KeyPart::Bytes(b),
+    }
+}
+
+fn key(key: collections::Key) -> Vec<host::KeyPart> {
+    key.into_iter().map(key_part).collect()
+}
+
+/// A host key part as the WIT carries it: an integer is `int` when it fits an `s64`, else
+/// `uint`; one outside both (a CBOR negative below `i64::MIN`, or a 128-bit SDK key) has no
+/// WIT form.
+fn wit_part(part: host::KeyPart) -> Result<collections::KeyPart, collections::CollError> {
+    Ok(match part {
+        host::KeyPart::None => collections::KeyPart::None,
+        host::KeyPart::Bool(b) => collections::KeyPart::Boolean(b),
+        host::KeyPart::Int(i) => match (i64::try_from(i), u64::try_from(i)) {
+            (Ok(i), _) => collections::KeyPart::Int(i),
+            (_, Ok(u)) => collections::KeyPart::Uint(u),
+            _ => {
+                return Err(collections::CollError::BadRecord(
+                    "a key integer outside s64 and u64".into(),
+                ))
+            }
+        },
+        host::KeyPart::Str(s) => collections::KeyPart::Text(s),
+        host::KeyPart::Bytes(b) => collections::KeyPart::Bytes(b),
+    })
+}
+
+fn page(page: host::CollPage) -> std::result::Result<collections::Page, collections::CollError> {
+    let mut items = Vec::with_capacity(page.items.len());
+    for entry in page.items {
+        items.push(collections::Entry {
+            key: entry
+                .key
+                .into_iter()
+                .map(wit_part)
+                .collect::<std::result::Result<_, _>>()?,
+            value: entry.value,
+        });
+    }
+    Ok(collections::Page {
+        items,
+        next: page.next,
+    })
+}
+
+fn coll_error(error: host::CollError) -> collections::CollError {
+    match error {
+        host::CollError::Duplicate(name) => collections::CollError::Duplicate(name),
+        host::CollError::BadRecord(why) => collections::CollError::BadRecord(why),
+        host::CollError::BadCursor => collections::CollError::BadCursor,
+        host::CollError::UnknownCollection(name) => collections::CollError::UnknownCollection(name),
+        host::CollError::UnknownSet(name) => collections::CollError::UnknownSet(name),
+        host::CollError::WrongKind(kind) => collections::CollError::WrongKind(kind),
+    }
+}
+
+/// A collection call's WIT answer.
+type CollAnswer<T> = Result<std::result::Result<T, collections::CollError>>;
+
+impl StoreData {
+    /// Runs one collection call on the host core. Its fuel is the host core's
+    /// (`host_fuel`), metered apart from the guest's: a call that takes it past the run's
+    /// budget traps `OutOfFuel` at once (its writes go with the run's diff).
+    fn collection<T>(
+        &mut self,
+        call: impl FnOnce(&mut host::HostCore) -> Result<Result<T, host::CollError>, host::HostDenied>,
+    ) -> CollAnswer<T> {
+        let answer = call(&mut self.host);
+        if self.host.host_fuel() > self.fuel_budget {
+            return Err(wasmtime::Error::new(wasmtime::Trap::OutOfFuel));
+        }
+        Ok(answer.map_err(denied)?.map_err(coll_error))
+    }
+}
+
+impl collections::Host for StoreData {
+    fn table_insert(&mut self, table: String, record: Vec<u8>) -> CollAnswer<()> {
+        self.collection(|h| h.table_insert(&table, &record))
+    }
+
+    fn table_upsert(&mut self, table: String, record: Vec<u8>) -> CollAnswer<()> {
+        self.collection(|h| h.table_upsert(&table, &record))
+    }
+
+    fn table_get(&mut self, table: String, k: collections::Key) -> CollAnswer<Option<Vec<u8>>> {
+        self.collection(|h| h.table_get(&table, &key(k)))
+    }
+
+    fn table_remove(&mut self, table: String, k: collections::Key) -> CollAnswer<bool> {
+        self.collection(|h| h.table_remove(&table, &key(k)))
+    }
+
+    fn table_find(
+        &mut self,
+        table: String,
+        index: Option<String>,
+        prefix: collections::Key,
+        cursor: Option<String>,
+        limit: u32,
+        reverse: bool,
+    ) -> CollAnswer<collections::Page> {
+        let found = self.collection(|h| {
+            h.table_find(
+                &table,
+                index.as_deref(),
+                &key(prefix),
+                cursor.as_deref(),
+                limit,
+                reverse,
+            )
+        })?;
+        Ok(found.and_then(page))
+    }
+
+    fn table_count(
+        &mut self,
+        table: String,
+        count: String,
+        prefix: collections::Key,
+    ) -> CollAnswer<u64> {
+        self.collection(|h| h.table_count(&table, &count, &key(prefix)))
+    }
+
+    fn map_get(&mut self, map: String, k: collections::Key) -> CollAnswer<Option<Vec<u8>>> {
+        self.collection(|h| h.map_get(&map, &key(k)))
+    }
+
+    fn map_insert(
+        &mut self,
+        map: String,
+        k: collections::Key,
+        value: Vec<u8>,
+    ) -> CollAnswer<Option<Vec<u8>>> {
+        self.collection(|h| h.map_insert(&map, &key(k), &value))
+    }
+
+    fn map_remove(&mut self, map: String, k: collections::Key) -> CollAnswer<Option<Vec<u8>>> {
+        self.collection(|h| h.map_remove(&map, &key(k)))
+    }
+
+    fn map_page(
+        &mut self,
+        map: String,
+        prefix: collections::Key,
+        cursor: Option<String>,
+        limit: u32,
+        reverse: bool,
+    ) -> CollAnswer<collections::Page> {
+        let found =
+            self.collection(|h| h.map_page(&map, &key(prefix), cursor.as_deref(), limit, reverse))?;
+        Ok(found.and_then(page))
+    }
+
+    fn tally_add(&mut self, tally: String, k: collections::Key, delta: i64) -> CollAnswer<()> {
+        self.collection(|h| h.tally_add(&tally, &key(k), delta))
+    }
+
+    fn tally_get(&mut self, tally: String, k: collections::Key) -> CollAnswer<i64> {
+        self.collection(|h| h.tally_get(&tally, &key(k)))
     }
 }

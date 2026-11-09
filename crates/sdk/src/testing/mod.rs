@@ -163,6 +163,8 @@ pub struct TestApp {
     last_tick: BTreeMap<String, u64>,
     events: Vec<Logged>,
     usage: Usage,
+    /// The log lines of the last invocation.
+    logs: Vec<String>,
     blobs: BTreeMap<[u8; 32], BlobInfo>,
     outbox: Vec<SentXcall>,
     /// Actions logged runs started, with their caller (D17), not run yet.
@@ -372,6 +374,7 @@ impl TestApp {
             last_tick: BTreeMap::new(),
             events: Vec::new(),
             usage: Usage::default(),
+            logs: Vec::new(),
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
             started: Vec::new(),
@@ -386,6 +389,21 @@ impl TestApp {
         // SAFETY: a failing `init` fails the test at setup.
         res.unwrap_or_else(|f| panic!("harness: init failed: {f:?}"));
         app
+    }
+
+    /// Runs later invocations on `component`, keeping the state, the org, the clock and
+    /// the logged events: the same app rebuilt (no migration runs, and `init` does not run
+    /// again).
+    ///
+    /// # Panics
+    ///
+    /// When the component is invalid: the test cannot go on.
+    pub fn replace_component(&mut self, component: &[u8]) {
+        self.prepared = self
+            .engine
+            // SAFETY: an unusable component fails the test.
+            .prepare("test-component", component)
+            .unwrap_or_else(|e| panic!("harness: component not usable: {e}"));
     }
 
     /// Calls as a signed-in account.
@@ -561,6 +579,7 @@ impl TestApp {
     pub fn deliver(&mut self, from: &str, method: &str, args: Value) -> Result<Value, Failure> {
         let caller = HostCaller::App(from.to_owned());
         let args = args_bytes(&args);
+        self.logs.clear();
         if let Some(f) = self.gate(method, &caller, false, Some(&args)) {
             return Err(f);
         }
@@ -638,7 +657,8 @@ impl TestApp {
                 &prepared,
                 host.with_action(runner)
                     .with_http(http)
-                    .with_xcall_host(apps),
+                    .with_xcall_host(apps)
+                    .with_collections(&prepared.abi),
                 Budget::action(),
             ),
             Err(e) => {
@@ -648,6 +668,7 @@ impl TestApp {
         };
         *self = take_back(lent);
         self.usage = out.usage;
+        self.logs.clone_from(&out.logs);
         self.finish(true, None, out)
     }
 
@@ -691,6 +712,7 @@ impl TestApp {
             last_tick: BTreeMap::new(),
             events: Vec::new(),
             usage: Usage::default(),
+            logs: Vec::new(),
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
             started: Vec::new(),
@@ -700,6 +722,13 @@ impl TestApp {
             in_action: false,
             files: MemoryFiles::default(),
         }
+    }
+
+    /// The log lines (`env::log`, stdout and stderr) of the last invocation: empty when the
+    /// last request was refused before the app ran, or only started an action.
+    #[must_use]
+    pub fn last_logs(&self) -> &[String] {
+        &self.logs
     }
 
     /// The usage of the last invocation.
@@ -835,7 +864,10 @@ impl TestApp {
         .with_search(search)
         .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())))
         .with_http(Arc::new(HarnessHttp(self.http.clone())))
-        .with_files(Arc::new(self.files.clone()));
+        .with_files(Arc::new(self.files.clone()))
+        // The ABI `prepare` read from the component (`abi_of` + `Abi::from_json`) names the
+        // state's collections, which the host serves as on a node.
+        .with_collections(&self.prepared.abi);
         let budget = if is_view {
             Budget::view()
         } else {
@@ -843,6 +875,7 @@ impl TestApp {
         };
         let out = self.engine.invoke(&self.prepared, host, budget);
         self.usage = out.usage;
+        self.logs.clone_from(&out.logs);
         if matches!(
             out.status,
             Status::Trap {
@@ -1044,6 +1077,7 @@ impl As<'_> {
     /// The call's `Failure`.
     pub fn call(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
         let args = args_bytes(&args);
+        self.app.logs.clear();
         if let Some(f) = self
             .app
             .gate(method, &self.caller, self.confirmed, Some(&args))
@@ -1071,6 +1105,7 @@ impl As<'_> {
     /// The node's refusals before it starts, or the action's `Failure`.
     pub fn action(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
         let args = args_bytes(&args);
+        self.app.logs.clear();
         if let Some(f) = self.app.gate(method, &self.caller, false, Some(&args)) {
             return Err(f);
         }
@@ -1091,6 +1126,7 @@ impl As<'_> {
     ///
     /// The view's `Failure`.
     pub fn view(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
+        self.app.logs.clear();
         if let Some(f) = self.app.gate(method, &self.caller, self.confirmed, None) {
             return Err(f);
         }

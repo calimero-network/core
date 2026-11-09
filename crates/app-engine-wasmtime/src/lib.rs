@@ -390,12 +390,16 @@ impl WasmtimeEngine {
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
         });
+        // Fuel is the guest's plus the host core's collection calls'; each meter is held
+        // to the budget during the run, their sum after it.
+        let guest_fuel = budget.fuel.saturating_sub(store.get_fuel().unwrap_or(0));
         let usage = Usage {
-            fuel: budget.fuel.saturating_sub(store.get_fuel().unwrap_or(0)),
+            fuel: guest_fuel.saturating_add(store.data().host.host_fuel()),
             cpu: started.elapsed(),
             writes: 0,
             peak_memory: store.data().limits.peak as u64,
         };
+        let over_budget = usage.fuel > budget.fuel;
 
         let mut data = store.into_data();
         let lines = log.lock().unwrap_or_else(PoisonError::into_inner).drain();
@@ -403,6 +407,10 @@ impl WasmtimeEngine {
             data.host.log(line);
         }
         let (status, result) = match ran {
+            Ok(_) if over_budget => (
+                trap(TrapKind::OutOfFuel, &Trap::OutOfFuel.to_string()),
+                Vec::new(),
+            ),
             Ok(Ok(result)) => (Status::Ok, result),
             Ok(Err(error)) => (
                 Status::AppError {
@@ -490,6 +498,8 @@ fn patch_of(interface: &str, version: &str) -> Option<u32> {
 /// A store's data: the host core plus what wasmtime-wasi needs. One per invocation.
 pub(crate) struct StoreData {
     pub(crate) host: HostCore,
+    /// The run's fuel budget, which the host core's own fuel (`host_fuel`) may not pass.
+    pub(crate) fuel_budget: u64,
     table: ResourceTable,
     wasi: WasiCtx,
     limits: Limits,
@@ -500,14 +510,20 @@ impl StoreData {
         let memory_bytes = (budget.memory_pages as usize)
             .saturating_mul(WASM_PAGE_BYTES)
             .min(max_memory_bytes);
+        // No network: the `wasi:sockets` stubs refuse every socket and lookup (and the
+        // default address check refuses every address).
         let wasi = WasiCtxBuilder::new()
             .stdout(LogPipe::stdout(log))
             .stderr(LogPipe::stderr(log))
+            .allow_tcp(false)
+            .allow_udp(false)
+            .allow_ip_name_lookup(false)
             .build();
         let mut table = ResourceTable::new();
         table.set_max_capacity(MAX_RESOURCES);
         Self {
             host,
+            fuel_budget: budget.fuel,
             table,
             wasi,
             limits: Limits {
@@ -646,8 +662,9 @@ mod tests {
         assert!(import_allowed(World::App, "wasi:http/types@0.2.10"));
         assert!(!import_allowed(World::App, "wasi:cli/stdin@0.2.13"));
         assert!(!import_allowed(World::App, "wasi:cli/stdin@0.3.0"));
-        assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.12"));
-        assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.9"));
+        assert!(import_allowed(World::App, "wasi:sockets/tcp@0.2.12"));
+        assert!(import_allowed(World::App, "wasi:sockets/network@0.2.9"));
+        assert!(!import_allowed(World::App, "wasi:sockets/tcp@0.2.13"));
         assert!(import_allowed(
             World::App,
             "wasi:random/insecure-seed@0.2.9"

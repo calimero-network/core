@@ -18,6 +18,42 @@ extern crate self as calimero_sdk;
 #[doc(hidden)]
 pub mod bindings;
 
+/// Returns the host's answer when the store `$store` routes collections to the host
+/// (`Store::HOST_COLLECTIONS`, feature `host-collections`, app components only); `$host` is
+/// an `Option` of the method's result, `None` falling through to the guest path. Compiled
+/// out everywhere else.
+macro_rules! via_host {
+    ($store:ty, $host:expr) => {
+        #[cfg(all(
+            feature = "host-collections",
+            target_arch = "wasm32",
+            not(calimero_compute)
+        ))]
+        if <$store as $crate::store::Store>::HOST_COLLECTIONS {
+            if let Some(answer) = $host {
+                return answer;
+            }
+        }
+    };
+}
+
+/// Logs, when the store `$store` routes collections to the host, that the collection `$name`
+/// is read or written by the guest path for `$why` (an operation the host does not serve),
+/// so a host build's fallbacks are all observable (`host_collections::guest_only`).
+/// Compiled out everywhere else.
+macro_rules! guest_only {
+    ($store:ty, $name:expr, $why:expr) => {
+        #[cfg(all(
+            feature = "host-collections",
+            target_arch = "wasm32",
+            not(calimero_compute)
+        ))]
+        if <$store as $crate::store::Store>::HOST_COLLECTIONS {
+            $crate::host_collections::guest_only($name, $why);
+        }
+    };
+}
+
 pub mod action;
 pub mod app;
 pub mod blob;
@@ -29,6 +65,12 @@ pub mod env;
 pub mod error;
 pub mod files;
 pub mod guards;
+#[cfg(all(
+    feature = "host-collections",
+    target_arch = "wasm32",
+    not(calimero_compute)
+))]
+mod host_collections;
 pub mod json;
 pub mod search;
 pub mod store;
@@ -75,8 +117,8 @@ macro_rules! __calimero_compute_only {
 pub use action::{ActionCtx, Request, Response};
 pub use blob::{BlobInfo, BlobRef};
 pub use collections::{
-    CborSha256, Cell, ContentHash, Counter, Frozen, Mark, PerUser, RichText, Set, Span, Text,
-    UnorderedMap, Vector,
+    CborSha256, Cell, ContentHash, Counter, Frozen, Mark, PerUser, RichText, Set, Span, Tally,
+    Text, UnorderedMap, Vector,
 };
 pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
 pub use env::{Audience, Caller, OrgRole};
@@ -96,6 +138,7 @@ pub mod prelude {
     pub use crate::{
         env, guards, ActionCtx, AppError, Audience, BlobRef, Caller, Cell, ContentHash, Counter,
         FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText,
-        SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap, Vector,
+        SearchMode, SearchOpts, Set, Span, Table, Tally, Text, ToKey, ToKeyPart, UnorderedMap,
+        Vector,
     };
 }
