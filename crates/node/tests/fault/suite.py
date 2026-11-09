@@ -42,6 +42,9 @@ from rv2 import ORIGIN, ROOT, CliError, Cluster, HttpError, PackageRegistry  # n
 
 HERE = Path(__file__).resolve().parent
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
+FORWARD_TIMEOUT_S = 5  # node.rs FORWARD_TIMEOUT: a call forwarded to a frozen leader is retried after this
+ELECTION_MAX_S = 2.4  # calimero-log Config election_max_ms
+FROZEN_LEADER_BUDGET_S = 2 * FORWARD_TIMEOUT_S + ELECTION_MAX_S + 2  # two stale forwards, one election, 2 s slack
 
 
 class Failed(AssertionError):
@@ -235,7 +238,7 @@ def kv_failover(ctx, cl):
 
 @test("frozen-leader", 7625, "workflow-examples/cloud-v2/frozen-leader.yml", smoke=True)
 def frozen_leader(ctx, cl):
-    """The app's leader stops answering (SIGSTOP); a write through a follower lands within 10 s."""
+    """The app's leader stops answering (SIGSTOP); a write through a follower lands within the budget."""
     alice = ctx.accounts(cl, "alice")[0]
     app = alice.deploy(ctx.kv_wasm)
     alice.call(app, "set", {"key": "a", "value": "1"})
@@ -245,7 +248,7 @@ def frozen_leader(ctx, cl):
     alice.call(app, "set", {"key": "b", "value": "2"}, node=follower)
     took = time.monotonic() - t0
     ctx.note(f"write through node {follower} with leader {leader} frozen: {took:.2f}s")
-    check(took <= 10, f"the write waited {took:.1f}s, over the 10 s budget")
+    check(took <= FROZEN_LEADER_BUDGET_S, f"the write waited {took:.1f}s, over the {FROZEN_LEADER_BUDGET_S:.1f} s budget")
     cl.resume(leader)
     alice.wait_for(app, "get", {"key": "b"}, "2", node=leader)
 

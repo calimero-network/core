@@ -395,12 +395,20 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
+// Starting and cancelling compute runs: logged writes only (call, timer, init, xcall delivery).
+// The compute world does not import it: a run cannot start runs.
+interface runs {
+  use types.{blob-id, action-id};
+  start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
+  cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+}
+
 // What a compute component sees of its run; only the compute world imports it.
 interface job {
   use types.{blob-id, action-id};
   run-id: func() -> option<action-id>;
   inputs: func() -> list<blob-id>;
-  progress: func(percent: u8, step: string);   // compute runs only; step is cut at 128 bytes; the last value wins, never logged
+  progress: func(percent: u8, step: string);   // step is cut at 128 bytes; the last value wins, never logged
 }
 
 interface xcall {
@@ -428,6 +436,7 @@ world app {
   import files;
   import xcall;
   import action;
+  import runs;
 
   // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship (D43); implemented by the host (section 4 table).
   // The nine stubbed interfaces of D44 are accepted at install but are not part of the world.
@@ -482,13 +491,14 @@ Rules the host enforces, whatever the guest says:
 The `files` interface, added in 0.5.1, gives an app encrypted byte streams that the node stores on the app's replicas.
 A file is a sealed blob: it shares the blob id namespace and the `blob-id` and `blob-info` types, and the host records which ids are sealed files.
 `create`, `writer.write` and `writer.finish` work only in invocations that become log entries (call, timer, init, xcall delivery); anywhere else they trap `HostDenied`.
-`open`, `reader.read` and `info` work in every kind except migrate, so an action may read a file but never write one.
-An action may send a file it read out over outbound HTTP (D76).
+`info` works in every kind except migrate.
+`open` and `reader.read` work only in a compute run (below): anywhere else `open` traps `HostDenied`, so a call, view, timer or action can create a file and see its size and hash but never read its bytes.
 `finish` returns the file's blob id, which the app stores as a typed `BlobRef` in state.
 Retention is R8: the host counts the `BlobRef`s in state, a file no state refers to is collected, and a call that finishes a file without storing its id leaves nothing behind.
 There is no `delete`: dropping the reference is the delete, as for blobs.
 `blobs.info` answers for a file id with the plaintext size and SHA-256 and an empty `mime`, and so does `files.info`.
-`blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one, so a file is readable only by the app's code.
+`blobs.grant` traps `HostDenied` for a sealed file, and `GET /apps/{app}/blobs/{id}` refuses one.
+So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 A `BlobRef` to a file the app holds, or finished earlier in the same run, may be stored.
 A file exists only once the run that finished it commits.
 A run holds at most 16 open readers and writers, writes at most 47 MiB to a file and 64 MiB in all, and reads at most 1 MiB per `read`.
@@ -509,14 +519,35 @@ The node never lets a client reach either: `/intents` and `/views` answer `Wrong
 A release ships the compute component as `compute` in the signed manifest (`services[].compute` in a multi-service bundle), so the signature and the artifact digest cover it like every artifact, and an older node ignores it.
 At install the node prepares it on the compute world only, never on the replica engine, and refuses the release unless its ABI is the compute world's and lists exactly the app ABI's compute methods with the same caps (`COMPUTE_ABI_MISMATCH`).
 A release without a compute component installs and its app runs calls, but cannot run compute.
+An author builds both from one crate with `mero-app-build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
+`scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
+The leader sends a job node only the run's compute component (`RunRecord.compute_bundle`, named by the assignment's `bundle`), and a job node prepares everything it is given on the compute world, so an app component is refused (`BAD_BUNDLE`) even when the cluster signed it.
+Usage is billed to the app component that started the run, and the result method runs on the replicas' app component.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
-A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `compute.inputs`, which are blob ids.
+A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `job.inputs`, which are blob ids.
 It may create files, 2 GiB in all and 47 MiB each; this cap replaces the 64 MiB per-run cap of a logged run.
 There is no delete: a file is a sealed blob, and dropping the reference is the delete.
 The outputs of a run are sealed blobs, and the run's result method, which receives one typed outcome carrying the output ids, keeps them with R8: a `BlobRef` to an output that the result method stores is retained, and an output it does not store is collected.
 `storage_put` in the result method accepts a `BlobRef` to a blob the app holds or to an output of the run, and refuses any other id.
 Its clock is fixed at the start entry's timestamp and its randomness is ChaCha20 from the run's seed, so a run repeats exactly.
 Its result is at most 64 KiB; a larger one ends the run `Trap(HostDenied, "result too large")`.
+
+A logged run starts a compute run with `runs.start(method, args, inputs)` and asks for one to end with `runs.cancel(run)`.
+Any other kind (a view, a compute run, a migration) gets `HostDenied`.
+`start` answers `no compute component` first when the app's running release ships none (a raw upload, or a release without a compute component), and records nothing.
+The run pins the release's compute component when it starts: a later upgrade does not change a run already started.
+`start` answers the other soft errors in this order.
+`not a compute method` means the method is not a compute method of the running bundle's ABI.
+`arguments too large` is over 64 KiB, `too many inputs` over 64 and `input named twice` a repeated id.
+`input is not a file of this app` means an input must be one of the app's own sealed files: a plain blob, an unknown id and a file this run just made are refused.
+`inputs too large` is declared plaintext over 2 GiB.
+An active run, or one this invocation already started, with the same method, SHA-256 of the arguments and inputs in order answers its id and records nothing.
+Otherwise `too many runs started` (16 per run) and `too many active runs` (64 per app) apply, and the new run's id is `unique-id`.
+A run's inputs are held while it is active: the node counts them as references of the app until the run is final, so retention keeps them even when no state refers to them, and forgets them after the idle time once it is.
+`cancel` needs an active run (`no such active run`; a run started in the same invocation is not active yet).
+A start or cancel reaches the log only if the run ends `Ok`, in its outcome (`computeStarts`, `computeCancels`), and takes effect when that entry applies.
+A start whose input the app no longer holds when the entry applies is dropped.
+The run's end is the node's `computeFinal` entry: it registers each output as a sealed file of the app before the result method's outcome applies, and the result method receives one argument shaped like `ComputeOutcome` (`run`, `method`, `attempt`, `status`, `reason`, `result`, `outputs` of `{ id, size, sha256 }`, `usage`), where an output `id` is a blob id.
 The engine runs it in a store with on-demand allocation, NaN canonicalization, memory up to 4 GiB, and an interrupt flag checked at every epoch tick (a cancelled run is `Trap(Cancelled, "cancelled")`); `Usage` carries the fuel, CPU time and peak memory the run took.
 
 ### WASI, implemented by the host

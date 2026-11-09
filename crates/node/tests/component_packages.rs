@@ -11,70 +11,12 @@ use std::collections::BTreeMap;
 use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::Executor;
-use common::{signed_up, Cluster};
+use common::{mpk_with, signed_up, Cluster, PUBLISHER};
 use serde_json::{json, Value};
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     mpk_with(package, version, wasm, None, key)
-}
-
-/// [`mpk`] shipping `compute` as the service's compute component.
-fn mpk_with(
-    package: &str,
-    version: &str,
-    wasm: &[u8],
-    compute: Option<&[u8]>,
-    key: &ed25519_dalek::SigningKey,
-) -> Vec<u8> {
-    use sha2::Digest;
-    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
-        path: path.to_owned(),
-        hash: hex::encode(sha2::Sha256::digest(bytes)),
-        size: bytes.len() as u64,
-    };
-    let manifest = calimero_bundle::BundleManifest {
-        version: "1.0".to_owned(),
-        package: package.to_owned(),
-        app_version: version.to_owned(),
-        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
-            key.verifying_key().as_bytes(),
-        )),
-        min_runtime_version: "0.1.0".to_owned(),
-        metadata: None,
-        handlers: None,
-        build_info: None,
-        interfaces: None,
-        wasm: Some(artifact("app.wasm", wasm)),
-        abi: None,
-        compute: compute.map(|c| artifact("compute.wasm", c)),
-        links: None,
-        frontend: None,
-        frontend_aliases: Vec::new(),
-        upgrades: None,
-        outbound: Vec::new(),
-        services: None,
-        signature: None,
-    };
-    let mut manifest = serde_json::to_value(&manifest).unwrap();
-    calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
-    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
-        Vec::new(),
-        flate2::Compression::default(),
-    ));
-    let mut entries = vec![
-        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
-        ("app.wasm", wasm.to_vec()),
-    ];
-    entries.extend(compute.map(|c| ("compute.wasm", c.to_vec())));
-    for (name, bytes) in entries {
-        let mut header = tar::Header::new_gnu();
-        header.set_path(name).unwrap();
-        header.set_size(bytes.len() as u64);
-        header.set_cksum();
-        tar.append(&header, bytes.as_slice()).unwrap();
-    }
-    tar.into_inner().unwrap().finish().unwrap()
 }
 
 /// A registry serving `{base}/artifacts/{package}/{version}/{file}`.
@@ -220,8 +162,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(bytes))
 }
-
-const PUBLISHER: [u8; 32] = [9; 32];
 
 async fn compute_cluster() -> (Cluster, Client, SoftAuthenticator) {
     let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
@@ -385,15 +325,79 @@ async fn the_running_releases_compute_hash_follows_an_upgrade() {
     let app = create(&owner, "1.0.0").await;
     let node = &c.nodes[0].as_ref().unwrap().node;
     let running = || async { node.app(&app).await.unwrap().compute_bundle };
+    // What the app's group runs, which a run pins: set with the bundle by the same entry.
+    let in_group = || {
+        node.hosted(&app)
+            .unwrap()
+            .read_local(|m, _| m.state.component.head.compute_bundle.clone())
+    };
     assert_eq!(running().await, Some(sha256_hex(&job)));
+    assert_eq!(in_group(), Some(sha256_hex(&job)));
     for (version, expect) in [("1.0.1", Some(sha256_hex(&job2))), ("1.0.2", None)] {
         let up = owner
             .upgrade_app(&app, json!({ "version": version }), &mut pk)
             .await
             .unwrap();
         assert_eq!(up["status"], "ok", "{up}");
+        assert_eq!(up["compute"], json!(expect.is_some()), "{up}");
         assert_eq!(running().await, expect, "{version}");
+        assert_eq!(in_group(), expect, "{version}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_created_or_upgraded_by_bundle_hash_takes_that_releases_compute_component() {
+    let (c, owner, mut pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let main2 = patched(&both.app, |a| a["build"] = json!(2));
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    let main3 = patched(&both.app, |a| a["build"] = json!(3));
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    install(&owner, "1.0.1", &main2, Some(&job2)).await;
+    install(&owner, "1.0.2", &main3, None).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let by_hash = |wasm: &[u8]| json!({ "name": "compute", "bundle": sha256_hex(wasm) });
+
+    let created = owner.post("apps", by_hash(&both.app)).await.unwrap();
+    assert_eq!(created["compute"], json!(true), "{created}");
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let running = || async { node.app(&app).await.unwrap().compute_bundle };
+    assert_eq!(running().await, Some(sha256_hex(&job)));
+
+    let up = owner
+        .upgrade_app(&app, json!({ "bundle": sha256_hex(&main2) }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["compute"], json!(true), "{up}");
+    assert_eq!(running().await, Some(sha256_hex(&job2)));
+
+    let up = owner
+        .upgrade_app(&app, json!({ "bundle": sha256_hex(&main3) }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["compute"], json!(false), "{up}");
+    assert_eq!(running().await, None);
+    let plain = owner.post("apps", by_hash(&main3)).await.unwrap();
+    assert_eq!(plain["compute"], json!(false), "{plain}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_bundle_hash_shared_by_releases_with_different_compute_is_ambiguous() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    install(&owner, "1.0.1", &both.app, Some(&job2)).await;
+    let e = owner
+        .post(
+            "apps",
+            json!({ "name": "compute", "bundle": sha256_hex(&both.app) }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("AMBIGUOUS_COMPUTE"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

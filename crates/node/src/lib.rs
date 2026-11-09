@@ -25,6 +25,7 @@ pub mod files;
 pub mod idempotency;
 pub mod inspect;
 pub mod job_node;
+pub mod job_wire;
 pub mod kms;
 pub mod local;
 pub mod membership;
@@ -240,6 +241,22 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.tick_timers();
+        }
+    }));
+
+    // Compute runs of the component apps this node leads.
+    let weak = Arc::downgrade(&node);
+    let kick = Arc::clone(&node.runs_kick);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::JOB_POLL) => {}
+                () = kick.notified() => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.drive_runs();
         }
     }));
 

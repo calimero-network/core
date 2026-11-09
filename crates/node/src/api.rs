@@ -57,6 +57,8 @@ const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 /// session then writes once per this, not once per [`SESSION_TTL`].
 pub const REFRESH_ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const CHALLENGE_TTL: u64 = 5 * 60;
+/// The code of a create or upgrade by bundle hash whose releases ship different compute components.
+const AMBIGUOUS_COMPUTE: &str = "AMBIGUOUS_COMPUTE";
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
@@ -837,6 +839,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         governance: receipts.then_some(governance),
         kms,
         job_key: None,
+        cluster_identity: None,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -2846,7 +2849,12 @@ async fn bundle_named(
 ) -> Result<(String, Option<String>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release.
-        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok((b, None)),
+        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => {
+            let compute = node
+                .sys(|s| s.compute_of(&b, actor))
+                .map_err(|why| ApiError::bad_request(AMBIGUOUS_COMPUTE, why))?;
+            Ok((b, compute))
+        }
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
             node.resolve_release_parts(p, version, service, actor, frontend)
@@ -3053,6 +3061,7 @@ async fn app_create(
         ));
     }
     let app_id = typed_id::<16>();
+    let has_compute = compute_bundle.is_some();
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org
     } else {
@@ -3103,6 +3112,7 @@ async fn app_create(
         "contextId": hex::encode(sha256(app_id.as_bytes())),
         "group": out["group"],
         "replicas": out["replicas"],
+        "compute": has_compute,
     })))
 }
 
@@ -4208,6 +4218,7 @@ async fn run_upgrade(
     // so `apply` judges the deadline at the same moment and never refuses
     // the record of an upgrade the app's group already ran.
     let begun = now_secs();
+    let has_compute = compute_bundle.is_some();
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
@@ -4235,7 +4246,7 @@ async fn run_upgrade(
         .call(&CallRequest::host(
             app_id.clone(),
             "__upgrade",
-            json!({ "bundle": bundle, "migrate": migrate }),
+            json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate }),
             who.caller.clone(),
         ))
         .await
@@ -4272,9 +4283,12 @@ async fn run_upgrade(
             consent: who.consent,
         })
         .await?;
-    Ok(Json(
-        json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
-    ))
+    Ok(Json(json!({
+        "index": applied.index,
+        "status": applied.status,
+        "error": applied.error,
+        "compute": has_compute,
+    })))
 }
 
 /// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
@@ -5726,8 +5740,8 @@ async fn recovery_finish(
 // ---------------------------------------------------------------- internal (peers)
 
 /// Compare secrets without leaking where they differ.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    bool::from(subtle::ConstantTimeEq::ct_eq(a, b))
 }
 
 pub(crate) fn peer_only(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
@@ -6448,6 +6462,36 @@ async fn app_abi(
     Ok(Json(json!({ "bundle": bundle, "abi": abi })))
 }
 
+/// A compute run's record without its arguments or keys: whoever reaches the app may read it, but
+/// file sizes, hashes, progress and the failure text only those who may list its files.
+async fn app_run(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, run)): Path<(String, String)>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::not_found("no such run"));
+    }
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let files = node.sys(|s| may_handle_files(s, &app, p.caller.account()));
+    let answer = node
+        .view(&ViewRequest {
+            app_id,
+            method: crate::node::RUN_VIEW.to_owned(),
+            args: json!({ "run": run, "files": files }),
+            caller: p.caller,
+            strong: true,
+            min_index: 0,
+        })
+        .await?;
+    if answer.result.is_null() {
+        return Err(ApiError::not_found("no such run"));
+    }
+    Ok(Json(answer.result))
+}
+
 /// What the caller's account uses, against the cluster's quotas.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
@@ -6903,6 +6947,15 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
         out,
     )
         .into_response()
+}
+
+/// `GET /ops/cluster`: the cluster's name and identity key, which a job node is started with.
+async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(json!({
+        "cluster": node.config.cluster,
+        "identity": hex::encode(node.cluster_identity()),
+    })))
 }
 
 async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -9048,7 +9101,12 @@ async fn ops_upgrade(
     let app = node.app(&app_id).await?;
     let current = node.release_of(&app.bundle);
     let (bundle, compute_bundle) = match (body.bundle, body.version) {
-        (Some(b), _) => (b, None),
+        (Some(b), _) => {
+            let compute = node
+                .sys(|s| s.compute_of(&b, crate::system::OPERATOR))
+                .map_err(|why| ApiError::bad_request(AMBIGUOUS_COMPUTE, why))?;
+            (b, compute)
+        }
         (None, Some(version)) => {
             let package = body
                 .package
@@ -9169,6 +9227,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/abi", get(app_abi))
+        .route("/apps/{app}/runs/{run}", get(app_run))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
         .route("/apps/{app}/presence/stream", get(presence_stream))
         .route("/apps/{app}/intents", post(intents))
@@ -9238,6 +9297,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))
         .route("/ops/status", get(ops_status))
+        .route("/ops/cluster", get(ops_cluster))
         .route("/ops/metrics", get(ops_metrics))
         .route("/ops/placement", get(ops_placement))
         .route("/ops/apps", get(ops_apps))

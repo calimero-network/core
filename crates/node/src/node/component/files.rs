@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
 use tracing::warn;
 use zeroize::Zeroizing;
 
@@ -110,6 +111,9 @@ pub(super) struct Stored {
     pub ids: Vec<String>,
     /// Plaintext bytes charged for them.
     pub charged: u64,
+    /// The ids are a compute run's outputs, which another leader may have registered under the
+    /// same ids: deleted only once the blob records are known ([`Node::delete_unmarked_outputs`]).
+    pub outputs: bool,
 }
 
 /// What an upload answers.
@@ -124,12 +128,19 @@ pub(crate) struct Uploaded {
 pub(crate) struct Probes {
     pub peer_blobs: std::sync::Mutex<crate::node::PeerBlobs>,
     pub file_pushes: std::sync::atomic::AtomicU64,
+    pub run_kicks: std::sync::atomic::AtomicU64,
     pub blob_puts_seen: std::sync::atomic::AtomicU64,
     pub conflict_next_call: std::sync::atomic::AtomicBool,
+    /// While set, every run final this node logs conflicts.
+    pub conflict_finals: std::sync::atomic::AtomicBool,
     pub run_open_cap: std::sync::atomic::AtomicUsize,
     /// Fails the next mark commit: 1 before it is proposed, 2 after it applied, 3 after
     /// another upload committed under the same key.
     pub commit_fault: std::sync::atomic::AtomicU8,
+    /// The waits of the leader's run driving, shortened by tests.
+    pub limits: std::sync::Mutex<crate::node::ComputeLimits>,
+    /// While set, this node's system reads fail.
+    pub system_outage: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "testing")]
@@ -138,10 +149,14 @@ impl Default for Probes {
         Self {
             peer_blobs: std::sync::Mutex::new(crate::node::PeerBlobs::Accept),
             file_pushes: std::sync::atomic::AtomicU64::new(0),
+            run_kicks: std::sync::atomic::AtomicU64::new(0),
             blob_puts_seen: std::sync::atomic::AtomicU64::new(0),
             conflict_next_call: std::sync::atomic::AtomicBool::new(false),
+            conflict_finals: std::sync::atomic::AtomicBool::new(false),
             run_open_cap: std::sync::atomic::AtomicUsize::new(MAX_RUN_OPEN_BYTES),
             commit_fault: std::sync::atomic::AtomicU8::new(0),
+            limits: std::sync::Mutex::new(crate::node::ComputeLimits::default()),
+            system_outage: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -454,6 +469,30 @@ impl FileRead for SealedReader {
     }
 }
 
+/// The `members` that pass `check`, asked all at once; one that has not answered by `deadline`
+/// is refused.
+async fn allowed_by<F, Fut>(
+    members: Vec<(NodeId, String)>,
+    deadline: Instant,
+    check: F,
+) -> HashMap<NodeId, String>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let answers = futures_util::future::join_all(members.into_iter().map(|(id, addr)| {
+        let asked = check(addr.clone());
+        async move {
+            let ok = tokio::time::timeout_at(deadline, asked)
+                .await
+                .unwrap_or(false);
+            ok.then_some((id, addr))
+        }
+    }))
+    .await;
+    answers.into_iter().flatten().collect()
+}
+
 impl Node {
     /// Stores a run's new files here and on the app's replicas; `503 FILES_UNAVAILABLE` unless
     /// a majority of the voters hold every one, and then what was stored is removed.
@@ -464,20 +503,27 @@ impl Node {
         let Ok(runtime) = Handle::try_current() else {
             return Err(files_unavailable());
         };
-        off_workers(|| block_on(&runtime, self.push_files(app_id, blobs)))
+        off_workers(|| block_on(&runtime, self.push_files(app_id, blobs, false)))
             .unwrap_or_else(|| Err(files_unavailable()))
     }
 
-    async fn push_files(&self, app_id: &str, blobs: &[Blob]) -> Result<(), ApiError> {
+    pub(super) async fn push_files(
+        &self,
+        app_id: &str,
+        blobs: &[Blob],
+        outputs: bool,
+    ) -> Result<(), ApiError> {
         #[cfg(feature = "testing")]
         let _n = self
             .probes
             .file_pushes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let targets = (self.push_targets(app_id).await).ok_or_else(files_unavailable)?;
+        let deadline = Instant::now() + PUSH_WAIT;
         let held: usize = blobs.iter().map(|(_, bytes)| bytes.len()).sum();
         let held = u32::try_from(held).map_err(|_| files_unavailable())?;
         let push = async {
+            let targets =
+                (self.push_targets(app_id, deadline).await).ok_or_else(files_unavailable)?;
             let _budget = Arc::clone(&self.push_bytes)
                 .acquire_many_owned(held)
                 .await
@@ -490,19 +536,24 @@ impl Node {
             .await;
             pushed.into_iter().collect::<Result<Vec<()>, ApiError>>()
         };
-        match tokio::time::timeout(PUSH_WAIT, push).await {
+        match tokio::time::timeout_at(deadline, push).await {
             Ok(Ok(_)) => Ok(()),
             _ => {
-                // No mark names these files, so no other run can need them.
-                self.delete_files_later(app_id, blobs.iter().map(|(id, _)| id.clone()).collect());
+                // No entry registers these files, so no other run can need them.
+                self.discard_bytes(
+                    app_id,
+                    blobs.iter().map(|(id, _)| id.clone()).collect(),
+                    outputs,
+                );
                 Err(files_unavailable())
             }
         }
     }
 
     /// The app group's other voters and learners, as its own Raft membership names them, but
-    /// none whose release may not hold the app's data ([`Node::may_send`]).
-    async fn push_targets(&self, app_id: &str) -> Option<Targets> {
+    /// none whose release may not hold the app's data ([`Node::may_send`]); one whose release
+    /// is not learnt by `deadline` is left out.
+    async fn push_targets(&self, app_id: &str, deadline: Instant) -> Option<Targets> {
         let status = self.hosted(app_id)?.status();
         let group = self.sys(|s| s.apps.get(app_id).map(|a| a.group))?;
         let members: Vec<(NodeId, String)> = self.sys(|s| {
@@ -510,12 +561,10 @@ impl Node {
                 .filter_map(|id| s.replica_node(id).map(|n| (*id, n.addr.clone())))
                 .collect()
         });
-        let mut allowed = HashMap::new();
-        for (id, addr) in members {
-            if self.may_send(&addr, group).await {
-                let _prev = allowed.insert(id, addr);
-            }
-        }
+        let allowed = allowed_by(members, deadline, |addr| async move {
+            self.may_send(&addr, group).await
+        })
+        .await;
         Some(Targets::of(
             self.config.node_id,
             &status.voters,
@@ -554,6 +603,53 @@ impl Node {
         }
     }
 
+    /// [`Self::delete_files_later`] for ids no entry registers; a compute run's outputs only after
+    /// the app's blob records were read through its leader.
+    fn discard_bytes(&self, app_id: &str, ids: Vec<String>, outputs: bool) {
+        if !outputs {
+            self.delete_files_later(app_id, ids);
+            return;
+        }
+        let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let app_id = app_id.to_owned();
+        drop(tokio::spawn(async move {
+            node.delete_unmarked_outputs(&app_id, ids).await;
+        }));
+    }
+
+    /// Deletes compute outputs the app holds no blob for, judged after a leader barrier and a strong
+    /// read. Without the barrier the bytes stay: orphaned bytes, never a record without its bytes.
+    pub(super) async fn delete_unmarked_outputs(&self, app_id: &str, ids: Vec<String>) {
+        let Some(g) = self.hosted(app_id) else {
+            return;
+        };
+        let barrier = serde_json::to_vec(&ComponentCmd::Barrier).unwrap_or_default();
+        if g.write(barrier).await.is_err() {
+            return;
+        }
+        let unmarked = g
+            .read_strong(|m, _| {
+                ids.iter()
+                    .filter(|id| !holds_file(m, id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        if let Ok(unmarked) = unmarked {
+            self.delete_files(app_id, &unmarked).await;
+        }
+    }
+
+    /// Whether a component app hosted here holds `id` as one of its blobs.
+    pub(crate) fn holds_file(&self, id: &str) -> bool {
+        self.apps.read().is_ok_and(|apps| {
+            apps.values()
+                .any(|g| g.read_local(|m, _| holds_file(m, id)))
+        })
+    }
+
     /// Removes the bytes of `ids` on this node and the app's other replicas, in a task of
     /// its own: nobody waits for it. A replica that misses it keeps unreachable bytes.
     pub(super) fn delete_files_later(&self, app_id: &str, ids: Vec<String>) {
@@ -572,7 +668,7 @@ impl Node {
     async fn delete_files(&self, app_id: &str, ids: &[String]) {
         // The nodes a push went to: the group's voters and learners.
         let peers: Vec<String> = self
-            .push_targets(app_id)
+            .push_targets(app_id, Instant::now() + PUSH_WAIT)
             .await
             .map(|t| [t.voters, t.learners].concat())
             .unwrap_or_default();
@@ -584,7 +680,7 @@ impl Node {
     }
 
     async fn delete_file(&self, id: &str, peers: &[String]) {
-        if self.is_code_blob(id) {
+        if self.is_code_blob(id) || self.holds_file(id) {
             return;
         }
         if let Err(e) = self.engine.delete_blob(id) {
@@ -601,9 +697,9 @@ impl Node {
 }
 
 impl Node {
-    /// Counts `delta` plaintext bytes of files (negative: a release) against the app's payer in
-    /// the system log; `429 QUOTA_EXCEEDED` when a charge would pass the quota.
-    async fn count_file_bytes(&self, app_id: &str, delta: i64) -> Result<(), ApiError> {
+    /// Counts `delta` plaintext bytes of files (negative: a release) against the app's payer in the
+    /// system log; `429 QUOTA_EXCEEDED` when a charge would pass the quota.
+    pub(super) async fn count_file_bytes(&self, app_id: &str, delta: i64) -> Result<(), ApiError> {
         let cmd = SystemCmd::ChargeFileBytes {
             app_id: app_id.to_owned(),
             delta,
@@ -674,7 +770,7 @@ impl Node {
     /// Undoes what a logged entry that did not commit stored and counted.
     pub(super) fn discard(&self, app_id: &str, stored: Stored) {
         if !stored.ids.is_empty() {
-            self.delete_files_later(app_id, stored.ids);
+            self.discard_bytes(app_id, stored.ids, stored.outputs);
         }
         if stored.charged > 0 {
             self.refund_files_later(app_id, stored.charged);
@@ -830,7 +926,7 @@ impl Node {
             .await
             .map_err(Upload::Refused)?;
         let blob = (file.id.clone(), std::mem::take(&mut file.ciphertext));
-        if let Err(e) = self.push_files(app_id, &[blob]).await {
+        if let Err(e) = self.push_files(app_id, &[blob], false).await {
             self.refund_files(app_id, size).await;
             return Err(Upload::Refused(e));
         }
@@ -958,6 +1054,14 @@ impl Node {
     }
 }
 
+/// Whether the app holds the blob with hex id `id`: a file registered by a final or an upload.
+pub(super) fn holds_file(m: &AppMachine, id: &str) -> bool {
+    hex::decode(id)
+        .ok()
+        .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+        .is_some_and(|raw| m.holds_blob(&raw))
+}
+
 /// Why an upload did not finish on this node.
 enum Upload {
     Refused(ApiError),
@@ -973,10 +1077,72 @@ fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
     })
 }
 
+/// Reads a sealed file through the provider a compute run reads with, the only reader a guest
+/// has. Opens it `open` times at once and reads the first. Tests only.
+#[cfg(feature = "testing")]
+impl Node {
+    pub fn read_sealed_file(&self, app_id: &str, id: &str, open: usize) -> Result<Vec<u8>, String> {
+        let blobs = self
+            .hosted(app_id)
+            .map(|g| g.read_local(|m, _| Arc::clone(&m.state.component.blobs.records)))
+            .unwrap_or_default();
+        off_workers(|| {
+            let files = NodeFiles::new(self, app_id, blobs, InvocationKind::Action);
+            let open_one = || {
+                files.open(id).map_err(|e| match e {
+                    FileError::Failed(reason) => reason,
+                    FileError::Unavailable => calimero_app_host::FILE_UNAVAILABLE.to_owned(),
+                })
+            };
+            let mut readers = (0..open.max(1))
+                .map(|_| open_one())
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = readers[0].read(1 << 20).map_err(|e| match e {
+                    ReadError::Failed(reason) => reason,
+                    ReadError::Corrupt => calimero_app_host::FILE_CORRUPT.to_owned(),
+                })?;
+                if chunk.is_empty() {
+                    return Ok(bytes);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+        })
+    }
+}
+
+impl Node {
+    /// Runs the cleanup of compute outputs `ids` as a losing leader would. Tests only.
+    #[cfg(feature = "testing")]
+    pub async fn clean_up_outputs(&self, app_id: &str, ids: Vec<String>) {
+        self.delete_unmarked_outputs(app_id, ids).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::component::FileMark;
+
+    #[tokio::test]
+    async fn a_member_that_does_not_answer_by_the_deadline_is_refused() {
+        let members = vec![
+            (1, "a".to_owned()),
+            (2, "b".to_owned()),
+            (3, "c".to_owned()),
+        ];
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        let allowed = allowed_by(members, deadline, |addr| async move {
+            if addr == "b" {
+                std::future::pending::<()>().await;
+            }
+            addr != "c"
+        })
+        .await;
+        assert_eq!(allowed.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert!(tokio::time::Instant::now() < deadline + Duration::from_millis(500));
+    }
 
     fn addr(id: NodeId) -> Option<String> {
         (id != 9).then(|| format!("http://node{id}/"))

@@ -338,6 +338,94 @@ expect_exit 3 "a package nobody declares is 'not applicable'" \
   bash "$BUMP" --surface npm --pkg @calimero-network/nothing=1.0.0 --dir "$D" --no-lock
 
 # ─────────────────────────────────────────────────────────────────────────────
+echo "named pnpm catalogs (calimero-network/apps: a v1 line and a component line)"
+# ─────────────────────────────────────────────────────────────────────────────
+# apps keeps two mero-js lines: the default `catalog:` is the v1 line, and
+# `catalogs.component` is the 1.0 line its component apps and packages/connect
+# use. mero-js 29.7.0 then opened apps#765: only the default catalog was read
+# (26.11.0, so 29.7.0 was "a major" and skipped), the component catalog was
+# never moved, and `catalog:component` in connect was rewritten to the peer
+# range ">=29.7.0" - off the catalog. The right bump was apps#766: one line in
+# catalogs.component and the lockfile.
+D=$(mkfixture named-catalogs); mkdir -p "$D/apps/v1/app" "$D/packages/connect"
+cat > "$D/pnpm-workspace.yaml" <<'EOF'
+packages:
+  - "apps/*/app"
+  - "packages/*"
+
+catalog:
+  # v1 line
+  "@calimero-network/mero-js": 26.11.0
+  typescript: ^5.6.0
+
+catalogs:
+  component:
+    # 1.0 line
+    "@calimero-network/mero-js": 29.6.0
+EOF
+cat > "$D/apps/v1/app/package.json" <<'EOF'
+{
+  "name": "v1",
+  "dependencies": {
+    "@calimero-network/mero-js": "catalog:"
+  }
+}
+EOF
+cat > "$D/packages/connect/package.json" <<'EOF'
+{
+  "name": "@calimero-apps/connect",
+  "peerDependencies": {
+    "@calimero-network/mero-js": ">=29.3.0"
+  },
+  "devDependencies": {
+    "@calimero-network/mero-js": "catalog:component"
+  }
+}
+EOF
+touch "$D/pnpm-lock.yaml"
+commit "$D"
+
+OUT="$ROOT/named-catalogs.out"
+CH="$ROOT/named-catalogs.changed"
+CHANGED_FILES_OUT="$CH" bash "$BUMP" --surface npm --pkg @calimero-network/mero-js=29.7.0 \
+  --dir "$D" --no-lock > "$OUT" 2>&1
+expect_exit 0 "a release on the component line moves the component catalog" sh -c "exit $?"
+expect_file "$D/pnpm-workspace.yaml" '"@calimero-network/mero-js": 29.7.0' "  catalogs.component moved to 29.7.0"
+expect_file "$D/pnpm-workspace.yaml" '"@calimero-network/mero-js": 26.11.0' "  the default (v1) catalog is NOT moved"
+expect_absent "$D/pnpm-workspace.yaml" '29.6.0' "  no stale component pin left"
+expect_file "$OUT" '(catalog:): @calimero-network/mero-js 26.11.0 crosses a major' "  the skip names the default catalog it judged"
+expect_absent "$OUT" '(catalog:component): @calimero-network/mero-js 29.6.0 crosses' "  ...and not the component catalog"
+P="$D/packages/connect/package.json"
+expect_file "$P" '"@calimero-network/mero-js": "catalog:component"' "  catalog:component specifier left alone"
+expect_file "$P" '"@calimero-network/mero-js": ">=29.3.0"' "  peer range left alone"
+expect_absent "$P" '29.7.0' "  connect's package.json carries no 29.7.0"
+expect_file "$D/apps/v1/app/package.json" '"@calimero-network/mero-js": "catalog:"' "  v1 app's catalog: specifier left alone"
+expect_file "$CH" 'pnpm-workspace.yaml' "  the workspace file is staged"
+expect_absent "$CH" 'package.json' "  ...and no package.json is"
+expect_exit 4 "second run is a no-op" \
+  bash "$BUMP" --surface npm --pkg @calimero-network/mero-js=29.7.0 --dir "$D" --no-lock
+
+# Peer ranges are floors, not pins: a manifest that pins the package literally
+# moves, and its peer range beside it does not.
+D=$(mkfixture peer-range); mkdir -p "$D/lib"
+cat > "$D/lib/package.json" <<'EOF'
+{
+  "name": "lib",
+  "peerDependencies": {
+    "@calimero-network/mero-js": ">=29.3.0"
+  },
+  "devDependencies": {
+    "@calimero-network/mero-js": "^29.6.0"
+  }
+}
+EOF
+commit "$D"
+expect_exit 0 "a literal pin beside a peer range moves" \
+  bash "$BUMP" --surface npm --pkg @calimero-network/mero-js=29.7.0 --dir "$D" --no-lock
+expect_file "$D/lib/package.json" '"@calimero-network/mero-js": "^29.7.0"' "  devDependency moved, ^ kept"
+expect_file "$D/lib/package.json" '"@calimero-network/mero-js": ">=29.3.0"' "  peer range left alone"
+
+# ─────────────────────────────────────────────────────────────────────────────
 echo "nested workspace roots (calimero-studio: neither known path)"
 # ─────────────────────────────────────────────────────────────────────────────
 # Two workspace roots deep in the tree, each with its own lockfile, plus the

@@ -36,7 +36,7 @@ wasmtime::component::bindgen!({
 });
 
 use self::calimero::app::{
-    action, blobs, context, events, files, rebuild, search, storage, types, xcall,
+    action, blobs, context, events, files, rebuild, runs, search, storage, types, xcall,
 };
 
 /// Links the `calimero:app` interfaces of the app world and `wasi:http` onto `StoreData`.
@@ -52,6 +52,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     files::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    runs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     let options = wasi::http::types::LinkOptions::default();
     wasi::http::types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, &options, |d| d)?;
     wasi::http::outgoing_handler::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -376,6 +377,23 @@ impl files::HostReader for StoreData {
     fn drop(&mut self, this: Resource<files::Reader>) -> Result<()> {
         self.host.reader_close(ReaderId(this.rep()));
         Ok(())
+    }
+}
+
+impl runs::Host for StoreData {
+    fn start(
+        &mut self,
+        method: String,
+        args: Vec<u8>,
+        inputs: Vec<String>,
+    ) -> Result<std::result::Result<String, String>> {
+        self.host
+            .compute_start(&method, &args, &inputs)
+            .map_err(denied)
+    }
+
+    fn cancel(&mut self, run: String) -> Result<std::result::Result<(), String>> {
+        self.host.compute_cancel(&run).map_err(denied)
     }
 }
 

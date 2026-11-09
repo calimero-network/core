@@ -4,7 +4,7 @@
 //! someone carries that `actor`, and `apply` checks their authority against
 //! the state the command applies to, so the log alone decides every outcome.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use calimero_bundle::UpgradeAuthority;
 use calimero_identity::Credential;
@@ -12,6 +12,7 @@ use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
     Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
     NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
@@ -31,6 +32,11 @@ pub struct Quotas {
     pub max_accounts: u32,
     /// Plaintext bytes of the files an organization's (or a personal account's) apps hold.
     pub max_file_bytes_per_org: u64,
+    /// Compute runs an organization (a personal account's, for an app outside one) may have
+    /// granted to job nodes at once; the rest wait their turn.
+    pub max_concurrent_runs_per_org: u32,
+    /// The declared fuel of an organization's granted runs, summed.
+    pub compute_fuel_per_org: u64,
 }
 
 impl Default for Quotas {
@@ -42,8 +48,36 @@ impl Default for Quotas {
             max_orgs_per_account: 20,
             max_accounts: 100_000,
             max_file_bytes_per_org: 50_000_000_000,
+            max_concurrent_runs_per_org: 4,
+            compute_fuel_per_org: 10 * calimero_app_host::MAX_COMPUTE_FUEL,
         }
     }
+}
+
+/// The codes `AcquireRun` answers with when it refuses; a leader matches these, never text.
+pub const RUN_NO_SUCH_APP: &str = "NO_SUCH_APP";
+pub const RUN_NOT_PAYER: &str = "NOT_PAYER";
+pub const RUN_FUEL_OVER_MAX: &str = "FUEL_OVER_RUN_MAX";
+pub const RUN_FUEL_OVER_QUOTA: &str = "FUEL_OVER_QUOTA";
+pub const RUN_RELEASED: &str = "RELEASED";
+pub const RUN_APP_QUEUE_FULL: &str = "APP_QUEUE_FULL";
+/// Released run ids kept per app, so a late `AcquireRun` for one is refused.
+pub const RELEASED_RUNS_KEPT: usize = 256;
+
+/// A compute run waiting for, or holding, a place on a job node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSlot {
+    pub payer: String,
+    /// The fuel the run declares, reserved while it is granted.
+    pub fuel: u64,
+    /// Arrival order across the cluster; the longest-waiting organization is served first.
+    pub seq: u64,
+    pub granted: bool,
+    /// The payer's fuel quota fell below the run's fuel: it will never be granted, and the
+    /// leader ends it.
+    #[serde(default)]
+    pub refused: bool,
 }
 
 /// The prefix of every apply error that is a quota refusal.
@@ -123,6 +157,10 @@ pub struct PackageVersion {
     /// Never a service: no app runs it, and only job nodes do.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub compute: BTreeMap<String, String>,
+    /// Each part's WASM size by bundle hash, which is what it counts against the bundle quota.
+    /// Absent in releases from before: every part then counts the whole `.mpk`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub part_sizes: BTreeMap<String, u64>,
     /// The manifest's display metadata (name, description, icon, ...).
     #[serde(default)]
     pub metadata: Value,
@@ -162,6 +200,11 @@ impl PackageVersion {
             .iter()
             .map(move |(s, h)| (h.as_str(), at(s, true)));
         services.chain(computes)
+    }
+
+    /// What the part `hash` counts against the bundle quota.
+    fn part_size(&self, hash: &str) -> u64 {
+        self.part_sizes.get(hash).copied().unwrap_or(self.mpk_size)
     }
 
     /// Whether `who` installed this release, first or again.
@@ -345,6 +388,26 @@ pub struct SystemState {
     /// state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sign_up_invites: BTreeMap<String, SignUpInvite>,
+    /// The compute runs queued or granted, by app and run id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub compute: BTreeMap<AppId, BTreeMap<String, RunSlot>>,
+    /// The `seq` the next queued run gets.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_run_seq: u64,
+    /// When each payer last got a place, as a count of grants: free places go to the payer
+    /// served longest ago. Only payers that still have runs are kept.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub run_served: BTreeMap<String, u64>,
+    /// Places granted so far, the clock of `run_served`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub run_grants: u64,
+    /// The last run ids released per app, oldest first.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub released_runs: BTreeMap<AppId, VecDeque<String>>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A cluster sign-up invite: issued by the operator (its signature) or the
@@ -739,10 +802,102 @@ impl SystemState {
         }
     }
 
-    /// Removes an app and the file bytes counted against its payer.
+    /// Removes an app, the file bytes counted against its payer and the compute runs it held.
     fn remove_app(&mut self, app_id: &str) {
         self.set_app_file_bytes(app_id, 0);
         let _gone = self.apps.remove(app_id);
+        let _ring = self.released_runs.remove(app_id);
+        if self.compute.remove(app_id).is_some() {
+            self.grant_runs();
+        }
+    }
+
+    /// The slot of `run` of `app`.
+    #[must_use]
+    pub fn run_slot(&self, app: &str, run: &str) -> Option<&RunSlot> {
+        self.compute.get(app)?.get(run)
+    }
+
+    /// Grants waiting runs up to the job nodes' places, to the payers in turn (longest served
+    /// first); a payer at a quota is passed over for the pass. Granted runs stay.
+    fn grant_runs(&mut self) {
+        let quota = self.quotas.compute_fuel_per_org;
+        for slot in self.compute.values_mut().flat_map(BTreeMap::values_mut) {
+            slot.refused |= !slot.granted && slot.fuel > quota;
+        }
+        let capacity = self.job_nodes().count() * RUNS_PER_JOB_NODE;
+        let mut granted_total = 0usize;
+        let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+        let mut waiting: BTreeMap<String, Vec<(u64, String, String, u64)>> = BTreeMap::new();
+        for (app, runs) in &self.compute {
+            for (run, slot) in runs {
+                if slot.refused {
+                    continue;
+                }
+                if slot.granted {
+                    granted_total += 1;
+                    let held = load.entry(slot.payer.clone()).or_default();
+                    held.0 += 1;
+                    held.1 = held.1.saturating_add(slot.fuel);
+                } else {
+                    waiting.entry(slot.payer.clone()).or_default().push((
+                        slot.seq,
+                        app.clone(),
+                        run.clone(),
+                        slot.fuel,
+                    ));
+                }
+            }
+        }
+        let mut waiting: BTreeMap<String, VecDeque<_>> = waiting
+            .into_iter()
+            .map(|(payer, mut runs)| {
+                runs.sort();
+                (payer, runs.into())
+            })
+            .collect();
+        let mut grants = Vec::new();
+        let mut passed = BTreeSet::new();
+        while granted_total < capacity {
+            let next = waiting
+                .iter()
+                .filter(|(payer, _)| !passed.contains(*payer))
+                .filter_map(|(payer, queue)| {
+                    let served = self.run_served.get(payer).copied().unwrap_or(0);
+                    Some((served, queue.front()?.0, payer.clone()))
+                })
+                .min();
+            let Some((_, _, payer)) = next else { break };
+            let Some((_, app, run, fuel)) = waiting.get_mut(&payer).and_then(VecDeque::pop_front)
+            else {
+                break;
+            };
+            let held = load.entry(payer.clone()).or_default();
+            if held.0 < self.quotas.max_concurrent_runs_per_org
+                && held.1.saturating_add(fuel) <= self.quotas.compute_fuel_per_org
+            {
+                held.0 += 1;
+                held.1 += fuel;
+                granted_total += 1;
+                self.run_grants += 1;
+                let _prev = self.run_served.insert(payer, self.run_grants);
+                grants.push((app, run));
+            } else {
+                let _new = passed.insert(payer);
+            }
+        }
+        for (app, run) in grants {
+            if let Some(slot) = self.compute.get_mut(&app).and_then(|r| r.get_mut(&run)) {
+                slot.granted = true;
+            }
+        }
+        let payers: BTreeSet<&String> = self
+            .compute
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(|slot| &slot.payer)
+            .collect();
+        self.run_served.retain(|payer, _| payers.contains(payer));
     }
 
     /// The file bytes held by the apps `payer` ([`crate::usage::payer`]) is billed for.
@@ -876,6 +1031,27 @@ impl SystemState {
                     main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
                 })
             })
+    }
+
+    /// The compute component `bundle` alone names: the one every release `who` sees ships with it,
+    /// none if none does, an error if they differ.
+    pub fn compute_of(&self, bundle: &str, who: &str) -> Result<Option<String>, &'static str> {
+        let shipped: BTreeSet<Option<&String>> = self
+            .packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .filter(|v| self.sees_release(v, who))
+            .flat_map(|v| {
+                v.services
+                    .iter()
+                    .filter(|(_, main)| *main == bundle)
+                    .map(|(service, _)| v.compute.get(service))
+            })
+            .collect();
+        match shipped.len() {
+            0 | 1 => Ok(shipped.into_iter().next().flatten().cloned()),
+            _ => Err("releases that share this bundle ship different compute components; name the package and version"),
+        }
     }
 
     /// Whether `who` may name the bundle `hash` for an app: it must be
@@ -2765,6 +2941,19 @@ pub enum SystemCmd {
         app_id: AppId,
         delta: i64,
     },
+    /// Queues a compute run of `app` and grants what the job nodes and quotas allow; a queued run
+    /// answers its state. `payer` is the app's ([`crate::usage::payer`]).
+    AcquireRun {
+        app: AppId,
+        run: String,
+        payer: String,
+        fuel: u64,
+    },
+    /// Frees a run's place (finished, or never to run) and grants the next waiting runs.
+    ReleaseRun {
+        app: AppId,
+        run: String,
+    },
     /// The operator moves an app (`<app> / __set_replicas / { replicas }`,
     /// the sorted target): one signature covers the move's two writes
     /// ([`authorize`]).
@@ -3458,6 +3647,11 @@ pub fn output(bytes: &[u8]) -> Result<Value, String> {
     Ok(v.get("ok").cloned().unwrap_or(Value::Null))
 }
 
+/// What `AcquireRun` answers when it refuses; `retryable` says a later acquire may succeed.
+fn acquire_refused(code: &str, retryable: bool) -> Value {
+    json!({ "state": "refused", "code": code, "retryable": retryable })
+}
+
 impl SystemMachine {
     fn org_mut(&mut self, org: &str) -> Result<&mut Org, &'static str> {
         self.state.orgs.get_mut(org).ok_or("no such organization")
@@ -3539,6 +3733,7 @@ impl SystemMachine {
                 *s.node_epoch.entry(node.id).or_default() += 1;
                 let _was = s.removed_nodes.remove(&node.id);
                 let _prev = s.nodes.insert(node.id, node);
+                s.grant_runs();
                 Ok(Value::Null)
             }
             SystemCmd::RemoveNode { id, .. } => {
@@ -3548,6 +3743,7 @@ impl SystemMachine {
                 let _gone = s.nodes.remove(&id).ok_or("no such node")?;
                 *s.node_epoch.entry(id).or_default() += 1;
                 let _new = s.removed_nodes.insert(id);
+                s.grant_runs();
                 Ok(Value::Null)
             }
             SystemCmd::PutBundle {
@@ -3633,14 +3829,23 @@ impl SystemMachine {
                     .filter(|b| b.uploaded_by == actor)
                     .map(|b| b.size)
                     .sum();
+                let added = if release.part_sizes.is_empty() {
+                    release.mpk_size
+                } else {
+                    release
+                        .parts(&package)
+                        .filter(|(hash, _)| !s.bundles.contains_key(*hash))
+                        .map(|(hash, _)| release.part_size(hash))
+                        .sum()
+                };
                 // The operator's installs count against no account's quota.
-                if !by_operator && used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
+                if !by_operator && used + added > s.quotas.max_bundle_bytes_per_account {
                     return Err("quota exceeded: bundle storage");
                 }
                 for (hash, at) in release.parts(&package) {
                     let b = s.bundles.entry(hash.to_owned()).or_insert(BundleRecord {
                         hash: hash.to_owned(),
-                        size: release.mpk_size,
+                        size: release.part_size(hash),
                         uploaded_by: actor.clone(),
                         package: None,
                     });
@@ -3967,6 +4172,13 @@ impl SystemMachine {
                     app.owner = to;
                 }
                 s.set_app_file_bytes(&app_id, held);
+                let payer = s.apps.get(&app_id).map(crate::usage::payer);
+                if let (Some(payer), Some(runs)) = (payer, s.compute.get_mut(&app_id)) {
+                    for slot in runs.values_mut() {
+                        slot.payer.clone_from(&payer);
+                    }
+                    s.grant_runs();
+                }
                 Ok(Value::Null)
             }
             SystemCmd::DeleteApp { app_id, actor } => {
@@ -3998,6 +4210,82 @@ impl SystemMachine {
                 };
                 s.set_app_file_bytes(&app_id, now);
                 Ok(json!({ "fileBytes": now }))
+            }
+            SystemCmd::AcquireRun {
+                app,
+                run,
+                payer,
+                fuel,
+            } => {
+                let Some(record) = s.apps.get(&app) else {
+                    return Ok(acquire_refused(RUN_NO_SUCH_APP, false));
+                };
+                if s.run_slot(&app, &run).is_none() {
+                    let refusal = if payer != crate::usage::payer(record) {
+                        Some((RUN_NOT_PAYER, true))
+                    } else if fuel > calimero_app_host::MAX_COMPUTE_FUEL {
+                        Some((RUN_FUEL_OVER_MAX, false))
+                    } else if fuel > s.quotas.compute_fuel_per_org {
+                        Some((RUN_FUEL_OVER_QUOTA, false))
+                    } else if s.released_runs.get(&app).is_some_and(|r| r.contains(&run)) {
+                        Some((RUN_RELEASED, false))
+                    } else if s.compute.get(&app).map_or(0, BTreeMap::len)
+                        >= calimero_app_host::MAX_ACTIVE_RUNS
+                    {
+                        Some((RUN_APP_QUEUE_FULL, true))
+                    } else {
+                        None
+                    };
+                    if let Some((code, retryable)) = refusal {
+                        return Ok(acquire_refused(code, retryable));
+                    }
+                    let seq = s.next_run_seq;
+                    s.next_run_seq += 1;
+                    let _prev = s.compute.entry(app.clone()).or_default().insert(
+                        run.clone(),
+                        RunSlot {
+                            payer,
+                            fuel,
+                            seq,
+                            granted: false,
+                            refused: false,
+                        },
+                    );
+                    s.grant_runs();
+                }
+                let slot = s.run_slot(&app, &run);
+                if slot.is_some_and(|r| r.refused) {
+                    return Ok(acquire_refused(RUN_FUEL_OVER_QUOTA, false));
+                }
+                let granted = slot.is_some_and(|r| r.granted);
+                Ok(json!({
+                    "state": if granted { "granted" } else { "queued" },
+                    "code": null,
+                    "retryable": false,
+                }))
+            }
+            SystemCmd::ReleaseRun { app, run } => {
+                if !s.apps.contains_key(&app) {
+                    return Ok(json!({ "released": false }));
+                }
+                let released = s
+                    .compute
+                    .get_mut(&app)
+                    .is_some_and(|r| r.remove(&run).is_some());
+                let ring = s.released_runs.entry(app.clone()).or_default();
+                if !ring.contains(&run) {
+                    ring.push_back(run.clone());
+                }
+                while ring.len() > RELEASED_RUNS_KEPT {
+                    let _old = ring.pop_front();
+                }
+                if released {
+                    if s.compute.get(&app).is_some_and(BTreeMap::is_empty) {
+                        let _gone = s.compute.remove(&app);
+                    }
+                    s.grant_runs();
+                }
+                Ok(json!({ "released": released }))
             }
             SystemCmd::SetReplicas {
                 app_id, replicas, ..
@@ -4375,6 +4663,7 @@ impl SystemMachine {
             }
             SystemCmd::SetQuotas { quotas, .. } => {
                 s.quotas = quotas;
+                s.grant_runs();
                 Ok(Value::Null)
             }
             SystemCmd::CreateOrg {
@@ -5509,6 +5798,9 @@ impl Machine for SystemMachine {
 }
 
 #[cfg(test)]
+mod queue_tests;
+
+#[cfg(test)]
 mod tests {
 
     use serde_json::{json, Value};
@@ -6181,6 +6473,7 @@ mod tests {
                 compute: job
                     .map(|j| BTreeMap::from([(String::new(), j.to_owned())]))
                     .unwrap_or_default(),
+                part_sizes: BTreeMap::new(),
                 metadata: Value::Null,
                 outbound: Vec::new(),
                 installed_by: "alice".into(),
@@ -6244,6 +6537,99 @@ mod tests {
         };
         let _ok = m.run_unproven(uninstall("1.0.0")).unwrap();
         assert!(!m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j1"));
+    }
+
+    /// A release with a compute component counts each part's own size against the bundle
+    /// quota, not the whole `.mpk` once per part.
+    #[test]
+    fn a_compute_release_is_charged_each_parts_own_size() {
+        use super::{BundleSource, PackageVersion};
+        use calimero_bundle::UpgradeAuthority;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        m.state.quotas.max_bundle_bytes_per_account = 37;
+        let release = |version: &str, main: &str, job: &str| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                version: version.into(),
+                mpk: format!("mpk{version}"),
+                mpk_size: 40,
+                source: BundleSource::Upload,
+                services: BTreeMap::from([(String::new(), main.to_owned())]),
+                compute: BTreeMap::from([(String::new(), job.to_owned())]),
+                part_sizes: BTreeMap::from([(main.to_owned(), 30), (job.to_owned(), 7)]),
+                metadata: Value::Null,
+                outbound: Vec::new(),
+                installed_by: "alice".into(),
+                installed_at: 0,
+                installers: BTreeSet::new(),
+                upgrades: UpgradeAuthority::Owner,
+            },
+        };
+        let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
+        assert_eq!(m.state.bundles["m1"].size, 30);
+        assert_eq!(m.state.bundles["j1"].size, 7);
+        let e = m.run_authorized(release("1.1.0", "m2", "j2")).unwrap_err();
+        assert!(e.contains("quota exceeded"), "{e}");
+    }
+
+    /// An uninstall that would remove a compute component an app still runs is refused, like
+    /// one that would remove its main component.
+    #[test]
+    fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
+        use super::{BundleSource, PackageVersion};
+        use calimero_bundle::UpgradeAuthority;
+        use serde_json::Value;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        let install = |version: &str, main: &str, job: &str| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                version: version.into(),
+                mpk: format!("mpk{version}"),
+                mpk_size: 1,
+                source: BundleSource::Upload,
+                services: BTreeMap::from([(String::new(), main.to_owned())]),
+                compute: BTreeMap::from([(String::new(), job.to_owned())]),
+                part_sizes: BTreeMap::new(),
+                metadata: Value::Null,
+                outbound: Vec::new(),
+                installed_by: "alice".into(),
+                installed_at: 0,
+                installers: BTreeSet::new(),
+                upgrades: UpgradeAuthority::Owner,
+            },
+        };
+        let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
+        let _ok = m.run_authorized(install("1.1.0", "m1", "j2")).unwrap();
+        // The app runs the main component both releases share, and the first one's compute.
+        let app = SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": "app", "name": "app", "group": 0, "bundle": "m1", "owner": "alice",
+                    "replicas": [1], "createdAt": 10, "computeBundle": "j1",
+                }))
+                .unwrap(),
+            ),
+        };
+        let _ok = m.run_unproven(app).unwrap();
+        let uninstall = |version: &str| SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some(version.into()),
+            actor: "alice".into(),
+        };
+        let e = m.run_unproven(uninstall("1.0.0")).unwrap_err();
+        assert!(e.contains("still runs"), "{e}");
+        assert!(m.state.bundles.contains_key("j1"));
+        let _ok = m.run_unproven(uninstall("1.1.0")).unwrap();
+        assert!(m.state.bundles.contains_key("m1") && !m.state.bundles.contains_key("j2"));
     }
 
     /// An account `id` holding the passkey `pk`.
@@ -9792,6 +10178,16 @@ mod tests {
             .unwrap()
             .get("origin")
             .is_none());
+    }
+
+    #[test]
+    fn state_with_no_compute_use_writes_no_compute_keys() {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        let before = serde_json::to_value(&m.state).unwrap();
+        for key in ["compute", "nextRunSeq", "runGrants", "releasedRuns"] {
+            assert!(before.get(key).is_none(), "{key} in {before}");
+        }
     }
 
     // ------------------------------------------------------------ recovery

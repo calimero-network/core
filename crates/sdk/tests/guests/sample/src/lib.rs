@@ -209,7 +209,7 @@ impl Rooms {
         Ok(writer.finish()?)
     }
 
-    /// Bytes in the file `id`, read to the end.
+    /// Bytes in the file `id`, read to the end: only a compute run may, so a view traps.
     #[app::view]
     pub fn file_len(&self, id: BlobRef) -> app::Result<u64> {
         let mut bytes = Vec::new();

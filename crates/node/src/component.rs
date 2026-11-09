@@ -21,10 +21,11 @@
 
 pub mod action;
 pub mod blobs;
+mod runs;
 pub mod search;
 pub mod xcall;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Weak};
 
 use calimero_app_host as host;
@@ -39,6 +40,11 @@ use crate::component::xcall::{XcallFrom, XcallHead, XcallOut};
 use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
+
+pub use runs::{
+    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome, RunCaps,
+    RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT, MAX_ATTEMPTS,
+};
 
 /// An event a run emitted, with its audience (R9).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +84,12 @@ pub struct Outcome {
     /// The files the run finished: their marks only, the ciphertext never enters the log.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileMark>,
+    /// The compute runs the run started; empty unless `Ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compute_starts: Vec<ComputeStart>,
+    /// The active runs the run asked to cancel; empty unless `Ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compute_cancels: Vec<String>,
 }
 
 /// One outbound request of a logged run and its response (D76), as the entry records it:
@@ -177,6 +189,7 @@ impl Outcome {
         let logs = out.logs;
         let http = out.http.into_iter().map(HttpRecord::from).collect();
         let files = out.new_files;
+        let (starts, cancels) = (out.compute_starts, out.compute_cancels);
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls, out.actions),
             host::Status::AppError { code, message } => Self {
@@ -193,6 +206,8 @@ impl Outcome {
         outcome.http = http;
         if outcome.status == Status::Ok {
             outcome.files = files.into_iter().map(FileMark::from).collect();
+            outcome.compute_starts = starts.into_iter().map(ComputeStart::from).collect();
+            outcome.compute_cancels = cancels;
         }
         outcome
     }
@@ -272,6 +287,8 @@ impl Outcome {
             actions: started,
             http: Vec::new(),
             files: Vec::new(),
+            compute_starts: Vec::new(),
+            compute_cancels: Vec::new(),
         }
     }
 
@@ -353,6 +370,9 @@ pub enum ComponentCmd {
     #[serde(rename = "componentInit")]
     Init {
         bundle: String,
+        /// The compute component shipped with `bundle`, if any.
+        #[serde(default)]
+        compute_bundle: Option<String>,
         base_index: u64,
         ts_ms: u64,
         /// The ids `init` ran with (D52), as for a call.
@@ -372,7 +392,13 @@ pub enum ComponentCmd {
     /// this milestone). The bundle is a component too: an upgrade across
     /// executors is refused before it is proposed.
     #[serde(rename = "componentUpgrade")]
-    Upgrade { bundle: String, base_index: u64 },
+    Upgrade {
+        bundle: String,
+        /// The compute component shipped with `bundle`, if any.
+        #[serde(default)]
+        compute_bundle: Option<String>,
+        base_index: u64,
+    },
     /// A blob uploaded for the app (R8; its bytes are in the blob store already): the
     /// app holds it, idle until a value refers to it ([`blobs`]).
     #[serde(rename = "componentBlob")]
@@ -425,6 +451,13 @@ pub enum ComponentCmd {
     /// they leave the queue.
     #[serde(rename = "componentBlobsCollected")]
     BlobsCollected { ids: Vec<String> },
+    /// The leader assigned a run to a job node. Applies to an active run whatever else was
+    /// logged since (see [`AttemptEntry`]).
+    #[serde(rename = "computeAttempt")]
+    ComputeAttempt(Box<AttemptEntry>),
+    /// A run's end, with the outcome of its result method. The first valid one wins.
+    #[serde(rename = "computeFinal")]
+    ComputeFinal(Box<FinalEntry>),
 }
 
 impl ComponentCmd {
@@ -553,6 +586,10 @@ pub struct ComponentHead {
     /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
     #[serde(default)]
     pub install_ts_ms: u64,
+    /// The compute component of the release the group's bundle ships in, set with `bundle` by
+    /// the same entry, so the pair never mixes releases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_bundle: Option<String>,
     /// Each timer's last applied slot (D34).
     #[serde(default)]
     pub timers: BTreeMap<String, u64>,
@@ -574,6 +611,12 @@ pub struct ComponentHead {
     /// The actions started and not ended (D17).
     #[serde(default)]
     pub actions: ActionsHead,
+    /// The ids of the runs that are queued or running (at most `MAX_ACTIVE_RUNS`).
+    #[serde(default)]
+    pub active_runs: BTreeSet<String>,
+    /// The last finished runs, oldest first; their records are kept until they leave it.
+    #[serde(default)]
+    pub finished_runs: VecDeque<String>,
 }
 
 impl ComponentHead {
@@ -815,6 +858,7 @@ impl AppMachine {
                 deltas.retain(|_, d| *d != 0);
                 c.blobs.count(tx, &deltas, ts_ms);
             }
+            self.apply_run_changes(tx, ts_ms, starter, outcome);
             self.note_touched(index, touched);
             if !outcome.xcalls.is_empty() {
                 self.state
@@ -984,6 +1028,7 @@ impl AppMachine {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
+            Ok(ComponentCmd::ComputeFinal(done)) => Some(done.ts_ms),
             Ok(
                 ComponentCmd::Blob { ts_ms, .. }
                 | ComponentCmd::File { ts_ms, .. }
@@ -994,6 +1039,7 @@ impl AppMachine {
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
                 | ComponentCmd::BlobsCollected { .. }
+                | ComponentCmd::ComputeAttempt(_)
                 | ComponentCmd::Barrier,
             )
             | Err(_) => None,
@@ -1004,11 +1050,13 @@ impl AppMachine {
             }) => self.note_id(*id_term, *id_seq),
             Ok(ComponentCmd::Call(call)) => self.note_id(call.id_term, call.id_seq),
             Ok(ComponentCmd::Tick(tick)) => self.note_id(tick.id_term, tick.id_seq),
+            Ok(ComponentCmd::ComputeFinal(done)) => self.note_id(done.id_term, done.id_seq),
             _ => {}
         }
         let applied = match cmd {
             Ok(ComponentCmd::Init {
                 bundle,
+                compute_bundle,
                 base_index,
                 ts_ms,
                 outcome,
@@ -1020,6 +1068,12 @@ impl AppMachine {
                 if self.state.initialized || self.state.init_error.is_some() {
                     Applied::conflict(index, "already initialized")
                 } else {
+                    // The runs init starts name its bundle and compute component.
+                    let before = self.state.bundle.replace(bundle.clone());
+                    let before_compute = std::mem::replace(
+                        &mut self.state.component.head.compute_bundle,
+                        compute_bundle.clone(),
+                    );
                     let a = self.apply_component_outcome(
                         tx,
                         index,
@@ -1028,7 +1082,10 @@ impl AppMachine {
                         &outcome,
                         &Caller::System,
                     );
-                    if !a.conflict {
+                    if a.conflict {
+                        self.state.bundle = before;
+                        self.state.component.head.compute_bundle = before_compute;
+                    } else {
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
                         self.state.component.head.install_ts_ms = ts_ms;
@@ -1043,7 +1100,11 @@ impl AppMachine {
                     a
                 }
             }
-            Ok(ComponentCmd::Upgrade { bundle, base_index }) => {
+            Ok(ComponentCmd::Upgrade {
+                bundle,
+                compute_bundle,
+                base_index,
+            }) => {
                 let a = self.apply_component_outcome(
                     tx,
                     index,
@@ -1056,6 +1117,7 @@ impl AppMachine {
                     // Taken before `init` applied: the entry names the executor.
                     self.state.executor = Some(crate::types::Executor::Component);
                     self.state.bundle = Some(bundle);
+                    self.state.component.head.compute_bundle = compute_bundle;
                 }
                 a
             }
@@ -1115,6 +1177,10 @@ impl AppMachine {
                 a
             }
             Ok(ComponentCmd::Barrier) => host_answer(index, true, ""),
+            Ok(ComponentCmd::ComputeAttempt(attempt)) => {
+                self.apply_compute_attempt(tx, index, &attempt)
+            }
+            Ok(ComponentCmd::ComputeFinal(done)) => self.apply_compute_final(tx, index, &done),
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
                 let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget_blob(tx, &raw));
@@ -1191,7 +1257,7 @@ fn parse_hex32(id: &str) -> Option<[u8; 32]> {
 
 /// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
 /// `AppError` with `why`.
-fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
+pub(crate) fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
     Applied {
         index,
         status: if ok { Status::Ok } else { Status::AppError },
@@ -1324,6 +1390,8 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
 
     #[test]
@@ -1359,6 +1427,8 @@ mod tests {
             logs: Vec::new(),
             http: vec![host::HttpExchange::record(&request, &response)],
             new_files: Vec::new(),
+            compute_starts: Vec::new(),
+            compute_cancels: Vec::new(),
             usage: host::Usage::default(),
         });
         let entry: Outcome = serde_json::from_slice(&serde_json::to_vec(&out).unwrap()).unwrap();
@@ -1384,6 +1454,8 @@ mod tests {
             actions: Vec::new(),
             logs: Vec::new(),
             http: Vec::new(),
+            compute_starts: Vec::new(),
+            compute_cancels: Vec::new(),
             new_files: vec![host::NewFile {
                 id: fid(1),
                 size: 5,
@@ -1488,6 +1560,7 @@ mod tests {
     fn init(base: u64) -> Vec<u8> {
         serde_json::to_vec(&ComponentCmd::Init {
             bundle: "b".into(),
+            compute_bundle: None,
             base_index: base,
             ts_ms: 1,
             id_term: 1,
@@ -2294,6 +2367,43 @@ mod tests {
                 "k"
             )
             .is_some());
+    }
+
+    #[test]
+    fn the_compute_component_changes_with_the_bundle_in_one_entry() {
+        let upgrade = |bundle: &str, compute: Option<&str>, base: u64| {
+            serde_json::to_vec(&ComponentCmd::Upgrade {
+                bundle: bundle.into(),
+                compute_bundle: compute.map(str::to_owned),
+                base_index: base,
+            })
+            .unwrap()
+        };
+        let mut rig = Rig::new();
+        let init = serde_json::to_vec(&ComponentCmd::Init {
+            bundle: "b1".into(),
+            compute_bundle: Some("c1".into()),
+            base_index: 0,
+            ts_ms: 1,
+            id_term: 1,
+            id_seq: 1,
+            outcome: Box::default(),
+        })
+        .unwrap();
+        let _ = rig.apply(1, &init);
+        let pair = |rig: &Rig| {
+            let s = &rig.machine.state;
+            (s.bundle.clone(), s.component.head.compute_bundle.clone())
+        };
+        assert_eq!(pair(&rig), (Some("b1".into()), Some("c1".into())));
+        let _ = rig.apply(2, &upgrade("b2", None, 1));
+        assert_eq!(pair(&rig), (Some("b2".into()), None));
+        let _ = rig.apply(3, &upgrade("b3", Some("c3"), 2));
+        assert_eq!(pair(&rig), (Some("b3".into()), Some("c3".into())));
+        // An entry logged before the field existed names no compute component.
+        let old = json!({ "op": "componentUpgrade", "bundle": "b4", "base_index": 3 });
+        let _ = rig.apply(4, &serde_json::to_vec(&old).unwrap());
+        assert_eq!(pair(&rig), (Some("b4".into()), None));
     }
 
     #[test]

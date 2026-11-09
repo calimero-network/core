@@ -9,7 +9,9 @@ minRuntimeVersion and the `app.wasm` artifact), signs it with `mero-sign sign
 --dev` (the development key, which a public registry refuses; pass `--key` for
 another), and writes manifest.json and app.wasm as a tar.gz. Build the component
 first with `cargo run -p calimero-app-build --bin mero-app-build -- <crate-dir>
---out <file>`.
+--out <file>`. An app with compute methods also has a compute component
+(`--compute-out <file>` of the same build); `--compute <file>` packs it as
+compute.wasm, the only component a job node is ever given.
 
 `--mero-sign` (default MERO_SIGN, else `cargo run -q -p mero-sign --`) names the
 signer.
@@ -35,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--wasm", required=True, help="the component to pack")
+    ap.add_argument("--compute", help="the compute component of the same build, packed as compute.wasm")
     ap.add_argument("--package", required=True, help="the package id, e.g. com.calimero.kv-store")
     ap.add_argument("--app-version", required=True, help="the release's version, e.g. 1.0.0")
     ap.add_argument("--min-runtime-version", default="0.1.0")
@@ -44,15 +47,19 @@ def main(argv: list[str]) -> int:
                     help="the mero-sign binary (default: cargo run -q -p mero-sign --)")
     args = ap.parse_args(argv)
 
-    wasm = Path(args.wasm).read_bytes()
-    if wasm[:8] != b"\0asm\x0d\0\x01\0":
-        sys.exit(f"{args.wasm}: not a WASM component (an SDK 0.12 core module is refused by the node)")
+    parts = {"wasm": ("app.wasm", Path(args.wasm).read_bytes())}
+    if args.compute:
+        parts["compute"] = ("compute.wasm", Path(args.compute).read_bytes())
+    for key, (_, data) in parts.items():
+        if data[:8] != b"\0asm\x0d\0\x01\0":
+            sys.exit(f"{getattr(args, key)}: not a WASM component (an SDK 0.12 core module is refused by the node)")
     manifest = {
         "version": "1.0",
         "package": args.package,
         "appVersion": args.app_version,
         "minRuntimeVersion": args.min_runtime_version,
-        "wasm": {"path": "app.wasm", "hash": hashlib.sha256(wasm).hexdigest(), "size": len(wasm)},
+        **{key: {"path": name, "hash": hashlib.sha256(data).hexdigest(), "size": len(data)}
+           for key, (name, data) in parts.items()},
     }
     signer = shlex.split(args.mero_sign) if args.mero_sign else ["cargo", "run", "-q", "-p", "mero-sign", "--"]
     with tempfile.TemporaryDirectory() as tmp:
@@ -65,7 +72,7 @@ def main(argv: list[str]) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(out, "w:gz") as tar:
-        for name, data in (("manifest.json", signed), ("app.wasm", wasm)):
+        for name, data in [("manifest.json", signed), *parts.values()]:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))

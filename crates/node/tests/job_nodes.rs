@@ -235,6 +235,47 @@ async fn a_job_node_whose_quote_binds_another_job_key_is_refused() {
     server.abort();
 }
 
+/// A job node that takes work from another cluster is not attested, whatever its quote says.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_started_for_another_cluster_is_not_attested() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let app = create(&alice, "kv").await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let record = node.sys(|s| s.apps[&app].clone());
+    let theirs = calimero_node::backup::cluster_identity_key(&[9; 32]);
+    let job = c
+        .start_job_node(JOB + 3, |cfg| {
+            cfg.cluster_identity = theirs.verifying_key().to_bytes();
+        })
+        .await;
+    c.register_job_node(JOB + 3, &job.url).await;
+    let e = node.attest_job(JOB + 3, &record).await.unwrap_err();
+    assert!(e.to_string().contains("another cluster"), "{e}");
+    // One that takes this cluster's work is.
+    let ours = c.start_job_node(JOB + 4, |_| {}).await;
+    c.register_job_node(JOB + 4, &ours.url).await;
+    assert!(node.attest_job(JOB + 4, &record).await.is_ok());
+}
+
+/// What a job node answers is read only up to a cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_nodes_answer_past_the_cap_is_refused() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let app = create(&alice, "kv").await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let record = node.sys(|s| s.apps[&app].clone());
+    let flood = axum::Router::new().route("/attestation", get(|| async { "a".repeat(1 << 20) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, flood).await });
+    c.register_job_node(JOB + 2, &addr).await;
+    let e = node.attest_job(JOB + 2, &record).await.unwrap_err();
+    assert!(e.to_string().contains("larger than"), "{e}");
+    server.abort();
+}
+
 fn nonce_query(purpose: Option<&str>) -> String {
     let purpose = purpose.map(|p| format!("&purpose={p}")).unwrap_or_default();
     format!("attestation?nonce={}{purpose}", hex::encode([5_u8; 32]))
@@ -692,4 +733,35 @@ async fn a_sealed_file_is_never_sent_to_a_job_node() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(hits.load(Ordering::SeqCst), 0, "the job node was contacted");
     server.abort();
+}
+
+/// A job node on a release past an operator's deadline takes no work, as a replica takes no new app.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_on_a_retired_release_is_not_attested() {
+    let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = create(&alice, "kv").await;
+    let _ok = alice.approve_release(None, "2.0.0", &mut pk).await.unwrap();
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let record = node.sys(|s| s.apps[&app].clone());
+    let old = c
+        .start_job_node(JOB, |cfg| cfg.tee_release = Some("1.0.0".into()))
+        .await;
+    let new = c
+        .start_job_node(JOB + 1, |cfg| cfg.tee_release = Some("2.0.0".into()))
+        .await;
+    c.register_job_node(JOB, &old.url).await;
+    c.register_job_node(JOB + 1, &new.url).await;
+    assert!(node.attest_job(JOB, &record).await.is_ok());
+
+    let _ok = common::ops_signed(
+        &ops(&c).await,
+        "ops/releases/2.0.0/deadline",
+        json!({ "after": "2001-01-01T00:00:00Z" }),
+    )
+    .await
+    .unwrap();
+    let e = node.attest_job(JOB, &record).await.unwrap_err();
+    assert!(e.to_string().contains("retired"), "{e}");
+    assert!(node.attest_job(JOB + 1, &record).await.is_ok());
 }

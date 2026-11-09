@@ -100,8 +100,20 @@ fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_stat
     let abi = compute.abi.expect("a compute ABI");
     assert_eq!(abi["world"], COMPUTE_WORLD);
     let methods = abi["methods"].as_object().expect("methods");
-    assert_eq!(methods.keys().collect::<Vec<_>>(), ["digest"]);
-    assert_eq!(methods["digest"]["kind"], "compute");
+    assert_eq!(
+        methods.keys().collect::<Vec<_>>(),
+        [
+            "big",
+            "burn",
+            "digest",
+            "digestThen",
+            "digestUnkept",
+            "hog",
+            "peek",
+            "spin"
+        ]
+    );
+    assert!(methods.values().all(|m| m["kind"] == "compute"));
 
     let app = built.app;
     assert_ne!(app.component, compute.component);

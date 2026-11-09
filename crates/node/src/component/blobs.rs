@@ -60,6 +60,26 @@ pub struct BlobRecord {
     pub file: Option<FileSeal>,
 }
 
+impl BlobRecord {
+    /// The record of the sealed file `mark` names, unreferenced and idle from `ts_ms`, and its
+    /// id; none when the mark's id is not a blob id.
+    #[must_use]
+    pub fn sealed(mark: &FileMark, ts_ms: u64) -> Option<([u8; 32], Self)> {
+        let id = <[u8; 32]>::try_from(hex::decode(&mark.id).ok()?).ok()?;
+        let record = Self {
+            size: mark.size,
+            mime: String::new(),
+            refs: 0,
+            idle_since_ms: ts_ms,
+            file: Some(FileSeal {
+                sha256: mark.sha256.clone(),
+                wrapped_key: mark.wrapped_key.clone(),
+            }),
+        };
+        Some((id, record))
+    }
+}
+
 /// What the record of a sealed file adds to a blob's: the plaintext hash and the data key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,21 +165,8 @@ impl BlobTable {
     /// a value stored by the same entry or a later one refers to it. Not bounded by
     /// [`MAX_COMPONENT_BLOBS`]: the guest was already told it exists.
     pub fn add_file(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
-        let Some(id) = hex::decode(&mark.id)
-            .ok()
-            .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
-        else {
+        let Some((id, record)) = BlobRecord::sealed(mark, ts_ms) else {
             return;
-        };
-        let record = BlobRecord {
-            size: mark.size,
-            mime: String::new(),
-            refs: 0,
-            idle_since_ms: ts_ms,
-            file: Some(FileSeal {
-                sha256: mark.sha256.clone(),
-                wrapped_key: mark.wrapped_key.clone(),
-            }),
         };
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);

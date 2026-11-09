@@ -50,6 +50,13 @@ cargo test -p calimero-tee-attestation --features mock-attestation
 cargo test --workspace                            # everything
 ```
 
+The real-process fault tests start `merod` processes on ports 7600-7699 and need release `merod` and `meroctl` (`cargo build --release -p merod -p meroctl`):
+
+```bash
+python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1   # Rooms under leader kills
+python3 -I crates/node/tests/fault/compute_e2e.py                              # compute actions: 3 replicas, 2 job nodes
+```
+
 [cargo-nextest](https://nexte.st/) runs the workspace faster
 (`cargo nextest run --workspace`, then `cargo test --workspace --doc` for the
 doctests it skips).
@@ -412,6 +419,13 @@ gates; latency gates nothing.
   soak's latency and throughput ([below](#soak-latency-and-throughput)) go in
   the job summary; the artifact `process-suite` holds the results, the soak
   report and failed tests' node logs;
+- job `compute actions, real processes` (`compute-e2e`):
+  `crates/node/tests/fault/compute_e2e.py` starts three replicas and two
+  `merod run --job-node` processes of a release build, installs a signed `.mpk`
+  that carries the fixture's app and compute components, and drives compute runs
+  through a job node's loss, a cancel, the caps and the collection of files no
+  state references; it also checks that the job nodes were given only the compute
+  component (logs are the artifact `compute-e2e-logs` on failure);
 - job `clients against merod` (`clients`): mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
