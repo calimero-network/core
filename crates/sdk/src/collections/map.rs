@@ -119,6 +119,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 
     /// How many keys hold a value: one read of the stored count, never a scan.
     pub fn len(&self) -> Result<u64, StorageError> {
+        guest_only!(S, &self.name, "len");
         read_count(&self.store, &self.count_key()?, &self.name)
     }
 
@@ -129,6 +130,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 
     /// Remove every entry, a batch at a time; returns how many there were.
     pub fn clear(&mut self) -> Result<u64, StorageError> {
+        guest_only!(S, &self.name, "clear");
         let base = self.base()?;
         let count = self.count_key()?;
         let removed = clear_prefix(&mut self.store, &base);
@@ -212,6 +214,7 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
         prefix: &[KeyPart],
         opts: FindOpts,
     ) -> Result<Page<(K, V)>, StorageError> {
+        guest_only!(S, &self.name, "starts_with");
         let base = [self.base()?, key::encode_prefix(prefix)].concat();
         check_key(&base)?;
         let opts = FindOpts {

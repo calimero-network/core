@@ -9,6 +9,13 @@
 //! ([`GUEST_PATH_LOG`]) and remembered, so the rest of the invocation goes straight to the
 //! guest path without asking the host again: an invocation runs in a fresh instance, so
 //! the memory lasts exactly one invocation.
+//!
+//! An operation the host does not serve on a collection it does serve (a page bounded by
+//! `from`/`to`, a map's `len`, `clear` or `starts_with`, a table's `search`) also takes the
+//! guest path, logged once per collection and reason ([`guest_only`]:
+//! `` host-collections: guest path for `<name>` (<reason>) ``) without moving the
+//! collection's other calls off the host. Every guest-path access of a host build is
+//! therefore in the invocation's log.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -25,6 +32,8 @@ pub(crate) const GUEST_PATH_LOG: &str = "host-collections: guest path for ";
 thread_local! {
     /// The collections the host answered `unknown-collection` for in this invocation.
     static GUEST_PATH: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+    /// `(collection, reason)` already logged by [`guest_only`] in this invocation.
+    static GUEST_ONLY: RefCell<BTreeSet<(String, String)>> = const { RefCell::new(BTreeSet::new()) };
 }
 
 /// Whether `name` is already known to be served by the guest path.
@@ -37,6 +46,20 @@ fn guest_path(name: &str) {
     let first = GUEST_PATH.with(|names| names.borrow_mut().insert(name.to_owned()));
     if first {
         crate::env::log(&format!("{GUEST_PATH_LOG}`{name}`"));
+    }
+}
+
+/// Log (once per collection and reason in this invocation) that `name`, a collection the
+/// host may serve, is accessed by the guest path for `why`: an operation the host lacks.
+/// Unlike [`guest_path`] it does not route the collection's later calls away from the host.
+/// A collection already on the guest path was logged when it went there.
+pub(crate) fn guest_only(name: &str, why: &str) {
+    if on_guest_path(name) {
+        return;
+    }
+    let first = GUEST_ONLY.with(|seen| seen.borrow_mut().insert((name.to_owned(), why.to_owned())));
+    if first {
+        crate::env::log(&format!("{GUEST_PATH_LOG}`{name}` ({why})"));
     }
 }
 
@@ -157,9 +180,11 @@ macro_rules! key {
     };
 }
 
-/// The page options the host takes; `None` (guest path) for `from`/`to`, which it lacks.
-fn page_opts(opts: &FindOpts) -> Option<(Option<&str>, u32, bool)> {
+/// The page options the host takes; `None` (guest path, logged) for `from`/`to`, which it
+/// lacks.
+fn page_opts<'o>(name: &str, opts: &'o FindOpts) -> Option<(Option<&'o str>, u32, bool)> {
     if opts.from.is_some() || opts.to.is_some() {
+        guest_only(name, "from/to");
         return None;
     }
     // The host reads `limit` 0 as an empty page, so the SDK's default is given here.
@@ -211,7 +236,7 @@ pub(crate) fn table_find(
     opts: &FindOpts,
 ) -> Host<HostPage> {
     served_by_host!(table);
-    let (cursor, limit, reverse) = page_opts(opts)?;
+    let (cursor, limit, reverse) = page_opts(table, opts)?;
     let prefix = key!(prefix);
     storage(
         table,
@@ -250,7 +275,7 @@ pub(crate) fn map_remove(map: &str, key: &[KeyPart]) -> Host<Option<Vec<u8>>> {
 /// A page of entries whose key starts with the whole parts `prefix`; `None` for `from`/`to`.
 pub(crate) fn map_page(map: &str, prefix: &[KeyPart], opts: &FindOpts) -> Host<HostPage> {
     served_by_host!(map);
-    let (cursor, limit, reverse) = page_opts(opts)?;
+    let (cursor, limit, reverse) = page_opts(map, opts)?;
     let prefix = key!(prefix);
     storage(
         map,

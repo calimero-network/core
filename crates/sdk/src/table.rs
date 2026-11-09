@@ -318,6 +318,7 @@ impl<T: Record, S: Store> Table<T, S> {
         text: &str,
         opts: crate::SearchOpts,
     ) -> Result<crate::SearchResults<T>, StorageError> {
+        guest_only!(S, &self.name, "search");
         let limit = opts.limit.unwrap_or(crate::search::DEFAULT_SEARCH_LIMIT);
         let page =
             crate::env::search_query(&self.name, text, opts.mode, opts.cursor.unwrap_or(0), limit)
@@ -472,14 +473,35 @@ impl<T: Record, S: Store> Table<T, S> {
         Ok(Page { items, next })
     }
 
-    /// All records in key order, one page at a time.
+    /// All records in key order, one page at a time: [`Self::scan_prefix`] with no prefix.
     pub fn scan(&self, opts: FindOpts) -> Result<Page<T>, StorageError> {
+        self.scan_prefix(&[], opts)
+    }
+
+    /// Records whose key starts with the whole parts `prefix` (the leading fields of
+    /// `T::KEY`), in key order, one page at a time: with key `["poll", "voter"]`,
+    /// `scan_prefix(&[poll.to_key_part()], ..)` is one poll's records. The cursor is the
+    /// one `find` and `scan` hand out, the same on the guest path and the host's
+    /// (`table-find` with no index). `from` and `to` are further key parts after the prefix;
+    /// the host does not take them, so they are served (and logged) by the guest path.
+    ///
+    /// # Errors
+    ///
+    /// `PrefixTooLong` when `prefix` has more parts than the key; `BadCursor` for a cursor
+    /// of another prefix; decoding errors as for `get`.
+    pub fn scan_prefix(&self, prefix: &[KeyPart], opts: FindOpts) -> Result<Page<T>, StorageError> {
+        if prefix.len() > T::KEY.len() {
+            return Err(StorageError::PrefixTooLong {
+                given: prefix.len(),
+                max: T::KEY.len(),
+            });
+        }
         via_host!(
             S,
-            crate::host_collections::table_find(&self.name, None, &[], &opts)
+            crate::host_collections::table_find(&self.name, None, prefix, &opts)
                 .map(|found| Self::host_page(found?))
         );
-        let base = self.prefix("r", &[], &[]);
+        let base = self.prefix("r", &[], prefix);
         let (entries, next) = read_page(&self.store, &self.encode(&base)?, &opts)?;
         let items = entries
             .iter()

@@ -19,9 +19,19 @@ pub struct Item {
     pub note: String,
 }
 
+/// A two-part key, for prefix pages: one group's members are a prefix of the key.
+#[derive(Record)]
+#[table(key = ["group_name", "member"])]
+pub struct Membership {
+    pub group_name: String,
+    pub member: String,
+    pub since: u64,
+}
+
 #[app::state(version = 1)]
 pub struct HostTable {
     shop_items: Table<Item>,
+    group_members: Table<Membership>,
     user_notes: UnorderedMap<(String, u64), String>,
     vote_tally: Tally<String>,
 }
@@ -168,6 +178,48 @@ impl HostTable {
     pub fn scan_from(&self, item_id: u64) -> app::Result<Value> {
         let opts = FindOpts::default().from(vec![item_id.to_key_part()]);
         Ok(items(self.shop_items.scan(opts)?))
+    }
+
+    pub fn join(&mut self, group_name: String, member: String, since: u64) -> app::Result<()> {
+        self.group_members.upsert(Membership {
+            group_name,
+            member,
+            since,
+        })?;
+        Ok(())
+    }
+
+    /// One group's members (`scan_prefix`), or every membership with no group.
+    #[app::view]
+    pub fn members(
+        &self,
+        group_name: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u32>,
+        reverse: bool,
+    ) -> app::Result<Value> {
+        let prefix: Vec<KeyPart> = group_name.iter().map(|g| g.to_key_part()).collect();
+        let page = self
+            .group_members
+            .scan_prefix(&prefix, opts(cursor, limit, reverse))?;
+        Ok(json!({
+            "items": page
+                .items
+                .iter()
+                .map(|m| json!([m.group_name, m.member, m.since.to_string()]))
+                .collect::<Vec<_>>(),
+            "next": page.next,
+        }))
+    }
+
+    /// A prefix of the whole key and one more part: refused (`PrefixTooLong`).
+    #[app::view]
+    pub fn members_too_long(&self) -> app::Result<Value> {
+        let prefix = ["g".to_key_part(), "m".to_key_part(), "x".to_key_part()];
+        let page = self
+            .group_members
+            .scan_prefix(&prefix, FindOpts::default())?;
+        Ok(json!(page.items.len()))
     }
 
     #[app::view]

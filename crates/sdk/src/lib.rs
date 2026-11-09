@@ -37,6 +37,23 @@ macro_rules! via_host {
     };
 }
 
+/// Logs, when the store `$store` routes collections to the host, that the collection `$name`
+/// is read or written by the guest path for `$why` (an operation the host does not serve),
+/// so a host build's fallbacks are all observable (`host_collections::guest_only`).
+/// Compiled out everywhere else.
+macro_rules! guest_only {
+    ($store:ty, $name:expr, $why:expr) => {
+        #[cfg(all(
+            feature = "host-collections",
+            target_arch = "wasm32",
+            not(calimero_compute)
+        ))]
+        if <$store as $crate::store::Store>::HOST_COLLECTIONS {
+            $crate::host_collections::guest_only($name, $why);
+        }
+    };
+}
+
 pub mod action;
 pub mod app;
 pub mod blob;

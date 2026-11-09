@@ -173,6 +173,25 @@ fn writes(r: &mut Run<'_>) {
     let _ = r.call("noteRemove", json!({"who": "bob", "n": "2"}));
     let _ = r.call("noteRemove", json!({"who": "bob", "n": "2"}));
 
+    for (group, member, since) in [
+        ("g1", "m5", 5u64),
+        ("g0", "m1", 1),
+        ("g1", "m2", 2),
+        ("g2", "m1", 1),
+        ("g1", "m7", 7),
+        ("g1", "m1", 1),
+        ("g1", "m3", 3),
+        ("g0", "m9", 9),
+        ("g1", "m6", 6),
+        ("g1", "m4", 4),
+        ("g1", "m2", 20),
+    ] {
+        let _ = r.call(
+            "join",
+            json!({"groupName": group, "member": member, "since": since.to_string()}),
+        );
+    }
+
     for (choice, delta) in [("yes", 2), ("yes", 3), ("no", -1), ("no", -4)] {
         let _ = r.call(
             "vote",
@@ -223,6 +242,8 @@ fn reads(r: &mut Run<'_>) {
     }
     let _ = r.view("count", json!({"name": "nope", "ownerName": null}));
 
+    prefix_reads(r);
+
     for (who, n) in [("ann", "3"), ("bob", "2"), ("zed", "18446744073709551615")] {
         let _ = r.view("noteGet", json!({"who": who, "n": n}));
         let _ = r.view("noteHas", json!({"who": who, "n": n}));
@@ -248,6 +269,26 @@ fn reads(r: &mut Run<'_>) {
     }
 }
 
+/// `scan_prefix` page walks: one group forward and back, two pages and more, every
+/// membership, an empty group, a cursor of another prefix and a prefix longer than the key.
+fn prefix_reads(r: &mut Run<'_>) {
+    let members = |group: Option<&str>, limit: Option<u32>, reverse: bool| json!({"groupName": group, "cursor": null, "limit": limit, "reverse": reverse});
+    r.pages("members", members(Some("g1"), Some(2), false));
+    r.pages("members", members(Some("g1"), Some(3), true));
+    r.pages("members", members(None, Some(4), false));
+    r.pages("members", members(Some("g0"), None, false));
+    let _ = r.view("members", members(Some("nobody"), Some(2), false));
+    let other = r
+        .view("members", members(Some("g0"), Some(1), false))
+        .ok()
+        .and_then(|p| p["next"].as_str().map(str::to_owned));
+    let _ = r.view(
+        "members",
+        json!({"groupName": "g1", "cursor": other, "limit": 2, "reverse": false}),
+    );
+    let _ = r.view("membersTooLong", json!({}));
+}
+
 /// A string part long enough to take any key past the 1,023 bytes the SDK allows.
 const LONG: &str = concat!(
     "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
@@ -264,12 +305,32 @@ const LONG: &str = concat!(
     "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
 );
 
-/// No step of either build fell back to the guest path: every declared collection was
-/// served by the host (with `HostCore::with_collections` missing, every routed call would
-/// log the fallback).
+/// The guest-path log lines a host build's step must show: the operations the host does
+/// not serve on a declared collection (`from`/`to` pages, a map's `len`, `clear` and
+/// `starts_with`), each logged with its reason; every other step none.
+fn guest_only_lines(label: &str) -> Vec<String> {
+    let why = match label.split(' ').nth(1).unwrap_or_default() {
+        "scanFrom" => "`shopItems` (from/to)",
+        "notesStarting" => "`userNotes` (starts_with)",
+        "notesLen" => "`userNotes` (len)",
+        "notesClear" => "`userNotes` (clear)",
+        "len" => "`entries` (len)",
+        "clear" => "`entries` (clear)",
+        _ => return Vec::new(),
+    };
+    vec![format!("{GUEST_PATH_LOG}{why}")]
+}
+
+/// The feature-off build never logs a fallback; the feature build logs exactly the
+/// operations the host does not serve (`guest_only_lines`): every declared collection was
+/// otherwise served by the host (with `HostCore::with_collections` missing, every routed
+/// call would log the fallback).
 fn assert_served_by_host(title: &str, off: &[Step], on: &[Step]) {
-    for (label, _, _, fallbacks) in off.iter().chain(on) {
-        assert!(fallbacks.is_empty(), "{title}: {label}: {fallbacks:?}");
+    for (label, _, _, fallbacks) in off {
+        assert!(fallbacks.is_empty(), "{title}: off: {label}: {fallbacks:?}");
+    }
+    for (label, _, _, fallbacks) in on {
+        assert_eq!(*fallbacks, guest_only_lines(label), "{title}: on: {label}");
     }
 }
 
@@ -510,4 +571,76 @@ fn undeclared_collections_fall_back_to_the_guest_path() {
         );
     }
     assert!(b[2].3.is_empty(), "the declared tally is the host's");
+}
+
+#[test]
+fn prefix_pages_are_the_hosts_and_the_same_on_both_builds() {
+    let mut off = TestApp::new(host_table(false), Org::new(), T0);
+    let mut on = TestApp::new(host_table(true), Org::new(), T0);
+    let scenario = |r: &mut Run<'_>| {
+        writes(r);
+        prefix_reads(r);
+    };
+    let a = steps(&mut off, scenario);
+    let b = steps(&mut on, scenario);
+    assert_same("prefix pages", &a, &b);
+    assert_served_by_host("prefix pages", &a, &b);
+    assert_eq!(off.export_state(), on.export_state(), "the same state");
+
+    // The g1 walk at 2 a page: 7 members over 4 pages, linked by cursors, in key order.
+    let walk: Vec<&Value> = a
+        .iter()
+        .filter(|(l, _, _, _)| {
+            l.starts_with("view members") && l.contains("\"g1\"") && l.contains("\"limit\":2")
+        })
+        .map(|(_, res, _, _)| res.as_ref().unwrap())
+        .take(4)
+        .collect();
+    let members: Vec<&str> = walk
+        .iter()
+        .flat_map(|p| p["items"].as_array().unwrap())
+        .map(|m| m[1].as_str().unwrap())
+        .collect();
+    assert_eq!(members, ["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
+    assert!(walk[..3].iter().all(|p| p["next"].is_string()));
+    assert!(walk[3]["next"].is_null());
+    // A cursor of another prefix and a prefix longer than the key are refused alike.
+    // The last such step of each kind is the refused one (the walks come first).
+    let refused = |label: &str| {
+        a.iter()
+            .rev()
+            .find(|(l, _, _, _)| l.contains(label))
+            .map(|(_, res, _, _)| res.clone())
+            .unwrap()
+    };
+    assert!(matches!(refused("\"cursor\":\""), Err(Failure::App { .. })));
+    assert!(matches!(
+        refused("membersTooLong"),
+        Err(Failure::App { .. })
+    ));
+}
+
+#[test]
+fn from_to_pages_log_the_guest_path_on_the_host_build() {
+    let mut off = TestApp::new(host_table(false), Org::new(), T0);
+    let mut on = TestApp::new(host_table(true), Org::new(), T0);
+    let scenario = |r: &mut Run<'_>| {
+        writes(r);
+        let _ = r.view("scanFrom", json!({"itemId": "20"}));
+        let _ = r.view(
+            "scan",
+            json!({"cursor": null, "limit": 3, "reverse": false}),
+        );
+    };
+    let a = steps(&mut off, scenario);
+    let b = steps(&mut on, scenario);
+    assert_same("from/to", &a, &b);
+    let n = a.len();
+    assert!(a[n - 2].3.is_empty() && a[n - 1].3.is_empty());
+    assert_eq!(
+        b[n - 2].3,
+        [format!("{GUEST_PATH_LOG}`shopItems` (from/to)")],
+        "a from/to page is the guest path's, logged"
+    );
+    assert!(b[n - 1].3.is_empty(), "a plain scan is the host's");
 }
