@@ -579,6 +579,7 @@ impl TestApp {
     pub fn deliver(&mut self, from: &str, method: &str, args: Value) -> Result<Value, Failure> {
         let caller = HostCaller::App(from.to_owned());
         let args = args_bytes(&args);
+        self.logs.clear();
         if let Some(f) = self.gate(method, &caller, false, Some(&args)) {
             return Err(f);
         }
@@ -723,7 +724,8 @@ impl TestApp {
         }
     }
 
-    /// The log lines (`env::log`, stdout and stderr) of the last invocation.
+    /// The log lines (`env::log`, stdout and stderr) of the last invocation: empty when the
+    /// last request was refused before the app ran, or only started an action.
     #[must_use]
     pub fn last_logs(&self) -> &[String] {
         &self.logs
@@ -1057,6 +1059,7 @@ impl As<'_> {
     /// The call's `Failure`.
     pub fn call(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
         let args = args_bytes(&args);
+        self.app.logs.clear();
         if let Some(f) = self
             .app
             .gate(method, &self.caller, self.confirmed, Some(&args))
@@ -1084,6 +1087,7 @@ impl As<'_> {
     /// The node's refusals before it starts, or the action's `Failure`.
     pub fn action(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
         let args = args_bytes(&args);
+        self.app.logs.clear();
         if let Some(f) = self.app.gate(method, &self.caller, false, Some(&args)) {
             return Err(f);
         }
@@ -1104,6 +1108,7 @@ impl As<'_> {
     ///
     /// The view's `Failure`.
     pub fn view(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
+        self.app.logs.clear();
         if let Some(f) = self.app.gate(method, &self.caller, self.confirmed, None) {
             return Err(f);
         }
