@@ -1217,7 +1217,7 @@ API and system group:
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
   A sealed file's record carries a `FileSeal` (`BlobRecord::file`: the plaintext hash and the wrapped key) in the hidden `rows::CBLOB` rows the guest cannot reach, so a snapshot and `restore` carry it.
-  A writer seals into memory (`SegmentWriter`) and wraps the data key; the file id is the hash of its segment list (`FileSeal::segments`, `FileMark::segments`).
+  A writer seals (`SegmentWriter`), stores each segment on this node the moment it is complete and wraps the data key; the file id is the hash of its segment list (`FileSeal::segments`, `FileMark::segments`).
   Each segment is stored in the `blobs` column under `seg.<hex hash>` and, in the same batch, an empty index row `seg/<hash>` in `meta` (`Engine::put_segment`, `list_segments`), so segments are listed without reading a byte of them; no whole-file row exists.
   Segments travel raw (no base64): a push is `PUT /internal/segment/{hash}`, checked on receipt (`SHA-256(body)` is the hash, at most `SEGMENT_BYTES`), a fetch `GET /internal/segment/{hash}`, served only to a node approved for an app hosted here whose files list it (`caller_may_hold`), and a delete `POST /internal/segment/delete`, refused while a hosted app's file lists it.
   A job transfer still sends and receives the joined segments in one request.
@@ -1265,15 +1265,15 @@ API and system group:
   The leader's `componentBlobsCollected` entry answers `freed`, the bytes of the queued files it really took off, and the node releases that many (`collect_component_blobs`), so a repeated entry releases nothing.
   A node that stops hosting an app that is deleted everywhere drops its sealed files' segments (`Node::drop_deleted_files`); plain blobs stay, as they may be another app's.
   A crash between the entry and the release leaves an over-count, never a loss; a queue past `MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
-  Before a call, tick or `init` proposes, `Node::persist_files` stores the new files' segments here and pushes all new files at once to the app group's voters and learners (its own Raft membership, not the directory's replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
+  Before a call, tick or `init` proposes, `Node::persist_files` pushes the new files' segments, read back from this node's store, at most `MAX_PUSHING_BLOBS` (2) at a time and each body shared by every target, to the app group's voters and learners (its own Raft membership, not the directory's replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
   It needs a majority of the voters, this node counted; a voter with no address still counts.
   It runs only after the entry bytes are built, so an entry the log replaces as too large stores nothing.
   When the majority is missing the call is `503 FILES_UNAVAILABLE` (the forward loops pass it on unchanged and do not retry it; the client does, with its key), nothing is logged and the pushed bytes are removed; so are the bytes of an entry that conflicts or whose proposal fails.
-  The ciphertext a run's writers hold until its entry is proposed draws on a node-wide budget (`MAX_PENDING_FILE_BYTES`, `PendingBytes`, kept by `Ran` until the entry is proposed or refused).
+  A run's writers hold only their partial segment in memory, which draws on a node-wide budget (`MAX_PENDING_FILE_BYTES`, `PendingBytes`) and returns as each segment is stored; the segments of a file no entry marks are deleted when the run ends (`NodeFiles::forget_made`).
   A write it cannot hold takes nothing and aborts the logged run as `FileError::Unavailable`, so runs together never hold more than the budget.
   `open` reads the file one segment at a time: a local segment is used only if its SHA-256 is its hash, else it is dropped and fetched from the other replicas (5 s); a segment nobody holds ends the read as unavailable.
   Any opener failure, including at the end of the stream, is `ReadError::Corrupt`, which the host core makes a `HostDenied` trap.
-  Open readers hold their ciphertext bytes against a per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged runs wait 1 s for it).
+  Open readers hold one segment and its plaintext (`OPEN_READER_BYTES`, at most the file) against a per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged runs wait 1 s for it).
   Only a compute run opens a file (the host core refuses `files.open` in every other kind), so a sealed file's contents are readable only inside a compute run of the release the organization approved.
   A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `create`, `write` and `finish`) and ends a compute run `Unavailable`.
   Tests read a file through `Node::read_sealed_file` (feature `testing`), which uses the provider a run reads with.

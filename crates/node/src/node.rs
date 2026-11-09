@@ -994,7 +994,7 @@ impl Node {
         addr: &str,
         method: reqwest::Method,
         path: &str,
-        body: Option<Vec<u8>>,
+        body: Option<axum::body::Bytes>,
     ) -> eyre::Result<reqwest::Response> {
         let peer = self.connected(addr).await?;
         let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
@@ -2252,9 +2252,10 @@ impl Node {
             if !now.insert(hash.clone()) {
                 continue;
             }
-            let bytes = self.segment_from(&hash, &self.other_nodes()).await?;
+            let bytes =
+                axum::body::Bytes::from(self.segment_from(&hash, &self.other_nodes()).await?);
             for (id, addr) in to {
-                if let Err(e) = self.put_segment_on(addr, &hash, &bytes).await {
+                if let Err(e) = self.put_segment_on(addr, &hash, bytes.clone()).await {
                     return Err(ApiError::unavailable(&format!(
                         "node {id} could not take the app's bytes: {e}"
                     )));
@@ -2317,13 +2318,24 @@ impl Node {
                 continue;
             };
             if hex::encode(calimero_identity::sha256(&bytes)) == hash {
-                self.engine
-                    .put_segment(hash, &bytes)
-                    .map_err(|e| ApiError::internal(&e.to_string()))?;
-                return Ok(bytes);
+                return self.keep_segment(hash, bytes).await;
             }
         }
         Err(ApiError::unavailable("no peer holds the segment"))
+    }
+
+    /// Stores segment `hash` on this node, off the async workers: a synced write of up to a segment.
+    pub(crate) async fn keep_segment<B>(&self, hash: &str, bytes: B) -> Result<B, ApiError>
+    where
+        B: AsRef<[u8]> + Send + 'static,
+    {
+        let (engine, hash) = (Arc::clone(&self.engine), hash.to_owned());
+        tokio::task::spawn_blocking(move || {
+            engine.put_segment(&hash, bytes.as_ref()).map(|()| bytes)
+        })
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .map_err(|e| ApiError::internal(&e.to_string()))
     }
 
     /// Store segment `hash` on the node at `addr`, raw.
@@ -2331,11 +2343,11 @@ impl Node {
         &self,
         addr: &str,
         hash: &str,
-        bytes: &[u8],
+        bytes: axum::body::Bytes,
     ) -> eyre::Result<()> {
         let path = format!("internal/segment/{hash}");
         let _ok = self
-            .peer_raw(addr, reqwest::Method::PUT, &path, Some(bytes.to_vec()))
+            .peer_raw(addr, reqwest::Method::PUT, &path, Some(bytes))
             .await?;
         Ok(())
     }

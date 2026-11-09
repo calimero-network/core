@@ -297,6 +297,14 @@ fn marked_segments(cmd: &ComponentCmd) -> Vec<&str> {
     })
 }
 
+/// The blobs of `all` that are not in `kept`.
+fn unmarked(kept: &[Blob], all: &[Blob]) -> Vec<Blob> {
+    (all.iter())
+        .filter(|b| !kept.iter().any(|k| k.segment == b.segment && k.id == b.id))
+        .cloned()
+        .collect()
+}
+
 /// The plaintext bytes `cmd` charges: its new files, and the published blobs among `blobs`
 /// (the app did not hold them yet), once each; none when they overflow a `u64`.
 fn new_file_bytes(cmd: &ComponentCmd, blobs: &[Blob]) -> Option<u64> {
@@ -722,6 +730,7 @@ impl Node {
         let held = Arc::clone(&blobs);
         let files = NodeFiles::new(self, app_id, Arc::clone(&blobs), invocation.kind);
         let pending = files.pending();
+        let files = Arc::new(files);
         let blobs = Arc::new(RunBlobs {
             app_id: app_id.to_owned(),
             records: blobs,
@@ -732,7 +741,7 @@ impl Node {
             .unwrap_or_default();
         match HostCore::new(app_id, state, applied, invocation, directory) {
             Ok(host) => {
-                let host = host.with_blobs(blobs).with_files(Arc::new(files));
+                let host = host.with_blobs(blobs).with_files(files.clone());
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
@@ -763,6 +772,7 @@ impl Node {
                         blobs.push(Blob::plain(p.id.clone(), std::mem::take(&mut p.bytes)));
                     }
                 }
+                files.forget_made(&blobs);
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
                     outcome.name_owner(&owner);
@@ -849,18 +859,23 @@ impl Node {
         let charged = new_file_bytes(&cmd, blobs)
             .ok_or_else(|| ApiError::internal("the sizes of the new files overflow"))?;
         if replaced && charged == 0 {
+            self.forget_local(blobs);
             return Ok((bytes, Stored::default()));
         }
         let kept;
         let blobs = if replaced {
             kept = marked_blobs(&cmd, blobs);
+            self.forget_local(&unmarked(&kept, blobs));
             &kept
         } else {
             blobs
         };
         // Counted first: a refused charge sends no bytes anywhere.
         if charged > 0 {
-            self.charge_files(app_id, charged)?;
+            if let Err(e) = self.charge_files(app_id, charged) {
+                self.forget_local(blobs);
+                return Err(e);
+            }
         }
         if let Err(e) = self.persist_files(app_id, blobs) {
             self.discard(

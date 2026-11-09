@@ -243,7 +243,7 @@ impl Drive<'_> {
         let blobs: Vec<Blob> = (ciphertext.chunks(SEGMENT_BYTES).zip(&out.segments))
             .map(|(bytes, hash)| Blob {
                 id: hash.clone(),
-                bytes: bytes.to_vec(),
+                bytes: axum::body::Bytes::copy_from_slice(bytes),
                 segment: true,
             })
             .collect();

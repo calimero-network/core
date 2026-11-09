@@ -60,6 +60,12 @@ pub struct FileSealer {
 }
 
 impl FileSealer {
+    /// Bytes of the current partial chunk the sealer holds.
+    #[must_use]
+    pub fn buffered(&self) -> usize {
+        self.buffer.len()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::with_data_key(Zeroizing::new(calimero_identity::random::<32>()))
@@ -277,6 +283,12 @@ impl SegmentWriter {
     #[must_use]
     pub fn data_key(&self) -> &[u8; 32] {
         self.sealer.data_key()
+    }
+
+    /// Bytes the writer holds: the partial segment and the sealer's partial chunk.
+    #[must_use]
+    pub fn buffered(&self) -> usize {
+        self.pending.len() + self.sealer.buffered()
     }
 
     /// Take more plaintext; returns every segment it completed.

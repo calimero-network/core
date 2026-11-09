@@ -282,6 +282,27 @@ async fn a_forty_mib_file_is_stored_as_three_segments_and_no_whole_file_row() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_writers_hold_one_segment_each_and_store_the_rest() {
+    use calimero_node::files::{CHUNK_BYTES, SEGMENT_BYTES};
+
+    let f = start().await;
+    let node = f.node(f.leader());
+    let stored_before = node.engine.list_segments().unwrap().len();
+    node.write_test_files(&f.app, 3, 20 * MIB).unwrap();
+    let (peak, bound) = (
+        node.pending_file_bytes_peak(),
+        3 * (SEGMENT_BYTES + 2 * CHUNK_BYTES),
+    );
+    assert!(
+        peak <= bound,
+        "writers held {peak} bytes, more than {bound}"
+    );
+    // Two segments per file, each stored the moment it was complete.
+    let stored = node.engine.list_segments().unwrap().len();
+    assert_eq!(stored - stored_before, 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_stored_bytes_are_ciphertext_that_only_the_marks_key_opens() {
     let f = start().await;
     let (id, sha, index) = f.put(LEN, 11).await;
@@ -641,6 +662,27 @@ async fn a_blob_swapped_for_another_files_ciphertext_is_never_read() {
     }
     let e = f.read_on(2, &a, index_b).await.unwrap_err();
     assert!(e.contains("not available"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_push_of_three_segments_to_two_replicas_holds_two_segments_at_most() {
+    use calimero_node::files::SEGMENT_BYTES;
+
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let _file = f.put(40 * MIB, 63).await;
+    let peak = f.node(f.leader()).push_bytes_peak();
+    assert!(peak > 0, "the push took no budget");
+    assert!(peak <= 2 * SEGMENT_BYTES, "a push held {peak} bytes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reader_holds_one_segment_so_a_larger_file_opens_under_a_small_cap() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, sha, index) = f.put(40 * MIB, 62).await;
+    let leader = f.leader();
+    // A segment and its plaintext fit in 34 MiB, the whole file does not.
+    f.node(leader).limit_run_open_bytes(34 * MIB);
+    assert_eq!(f.read_on(leader, &id, index).await.unwrap()["sha256"], sha);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
