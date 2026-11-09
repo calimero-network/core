@@ -23,3 +23,5 @@ A miss builds under an exclusive cross-process file lock (`std::fs::File::lock`,
 ## Verify
 
 `cargo test -p calimero-app-build`
+
+Put `mero-app-build` on PATH with `scripts/install-mero-app-build.sh`; every doc, script and CI job calls it by that name.

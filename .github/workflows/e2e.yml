@@ -171,13 +171,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
+
       - name: Build merod, meroctl and the fixtures
         env:
           NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
         run: |
           set -euo pipefail
           cargo build --release -p merod -p meroctl
-          cargo run --release -p calimero-app-build --bin mero-app-build -- \
+          mero-app-build \
             apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
           cargo build --release -p mero-sign
           for v in 1.0.0 1.1.0; do
@@ -233,13 +236,16 @@ jobs:
           shared-key: release
           save-if: false
 
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
+
       - name: Build merod and meroctl for profiling, and the kv component
         env:
           RUSTFLAGS: -C force-frame-pointers=yes
         run: |
           set -euo pipefail
           cargo build -p merod -p meroctl --profile profiling
-          RUSTFLAGS= cargo run --release -p calimero-app-build --bin mero-app-build -- \
+          RUSTFLAGS= mero-app-build \
             apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -320,11 +326,14 @@ jobs:
           save-if: false
 
       # Optimized like the product (sealing 47 MiB files in a debug build misses the push deadline), without fat LTO.
-      - name: Build merod, meroctl, the component builder and the signer
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
+
+      - name: Build merod, meroctl and the signer
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo build --release -p merod -p meroctl -p calimero-app-build -p mero-sign
+        run: cargo build --release -p merod -p meroctl -p mero-sign
 
       # Builds app.wasm and compute.wasm, packs and signs them as one .mpk, and installs that.
       - name: Compute scenarios
@@ -574,7 +583,13 @@ jobs:
               (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
             done
           else
-            cargo run --release -p calimero-app-build --bin mero-app-build -- \
+            # A release cut before the install script builds the tool from its own checkout.
+            if [ -x scripts/install-mero-app-build.sh ]; then
+              scripts/install-mero-app-build.sh
+            else
+              cargo install --path crates/app-build --locked --force
+            fi
+            mero-app-build \
               apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
             cargo build --release -p mero-sign
             for v in 1.0.0 1.1.0; do
@@ -675,11 +690,14 @@ jobs:
 
       # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
       # and `clear`, a confirm method it declares itself).
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
+
       - name: Build merod and the kv fixture
         run: |
           set -euo pipefail
           cargo build -p merod
-          cargo run -p calimero-app-build --bin mero-app-build -- \
+          mero-app-build \
             apps/v2-fixtures/kv --out "$CARGO_TARGET_DIR/app-components/kv.wasm"
           echo "MEROD_BINARY=$CARGO_TARGET_DIR/debug/merod" >> "$GITHUB_ENV"
           echo "KV_STORE_WASM=$CARGO_TARGET_DIR/app-components/kv.wasm" >> "$GITHUB_ENV"

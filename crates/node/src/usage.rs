@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::job_wire::ReportUsage;
 use crate::types::AppRecord;
@@ -44,9 +44,6 @@ pub const SAMPLE_EVERY: Duration = Duration::from_secs(300);
 
 /// Bytes in a WebAssembly page, unless a memory declares its own page size.
 const WASM_PAGE_BYTES: u64 = 65_536;
-
-/// Whether [`Run::cpu`] is the thread's CPU time on this platform (else wall time).
-pub const THREAD_CPU: bool = cfg!(unix);
 
 /// What a run was, for `calimero_app_calls_total{kind}`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,48 +105,7 @@ pub fn developer(app: &AppRecord, deployment: Option<&crate::system::Deployment>
     }
 }
 
-/// What one run took.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Run {
-    /// Thread CPU time ([`THREAD_CPU`]), else wall time.
-    pub cpu: Duration,
-    pub wall: Duration,
-}
-
-/// Runs `f` and measures it on the thread it runs on.
-pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Run) {
-    let (cpu_at, wall_at) = (thread_cpu(), Instant::now());
-    let out = f();
-    let wall = wall_at.elapsed();
-    let cpu = match (cpu_at, thread_cpu()) {
-        (Some(at), Some(now)) => now.saturating_sub(at),
-        _ => wall,
-    };
-    (out, Run { cpu, wall })
-}
-
-#[cfg(unix)]
-fn thread_cpu() -> Option<Duration> {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `clock_gettime` writes only the `timespec` it is handed, which
-    // lives on this frame for the whole call.
-    let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut ts) };
-    if rc != 0 {
-        return None;
-    }
-    Some(Duration::new(
-        u64::try_from(ts.tv_sec).ok()?,
-        u32::try_from(ts.tv_nsec).ok()?,
-    ))
-}
-
-#[cfg(not(unix))]
-const fn thread_cpu() -> Option<Duration> {
-    None
-}
+pub use calimero_app_engine_wasmtime::{measure, Measured as Run, THREAD_CPU};
 
 /// The linear memory `wasm` declares at instantiation, in bytes: every memory
 /// of a core module, or of each core module a component nests. 0 for bytes
@@ -449,6 +405,8 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     fn billed(payer: &str, developer: &str) -> Billed {

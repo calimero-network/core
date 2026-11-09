@@ -406,10 +406,13 @@ jobs:
           shared-key: wasm-apps
           save-if: false
 
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
+
       - name: Build the kv bundle
         run: |
           set -euo pipefail
-          cargo run --release -p calimero-app-build --bin mero-app-build -- apps/v2-fixtures/kv --out dist/kv.wasm
+          mero-app-build apps/v2-fixtures/kv --out dist/kv.wasm
           cargo build --release -p mero-sign
           python3 -I scripts/pack-component.py --wasm dist/kv.wasm \
             --mero-sign "${CARGO_TARGET_DIR:-target}/release/mero-sign" \
@@ -551,13 +554,16 @@ jobs:
           shared-key: wasm-apps
           save-if: false
 
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
+
       - name: Build meroctl and the suite's fixtures
         run: |
           set -euo pipefail
           cargo build --release -p meroctl -p mero-sign
           mkdir -p target/image-e2e
           target_dir="${CARGO_TARGET_DIR:-target}"
-          cargo run --release -p calimero-app-build --bin mero-app-build -- \
+          mero-app-build \
             apps/v2-fixtures/kv --out target/image-e2e/kv.wasm
           cp "$target_dir/release/meroctl" target/image-e2e/
           for v in 1.0.0 1.1.0; do

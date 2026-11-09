@@ -533,6 +533,12 @@ At install the node prepares it on the compute world only, never on the replica 
 A release without a compute component installs and its app runs calls, but cannot run compute.
 An author builds both from one crate with `mero-app-build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
 `scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
+`mero-compute run <compute.wasm> --method <name> [--args <json or @file>] [--input <file>]... --out <dir> [--seed <hex>] [--twice]` runs one compute method alone, with no app component, cluster or job node.
+It calls the same run setup as a job node (`WasmtimeEngine::run_compute`) on `WasmtimeEngine::for_compute()`, so the caps come from the compute ABI, the clock is fixed, randomness is seeded from `--seed` (a fixed default) and the failure reasons are the node's (`fuel`, `memory`, `trap`, `app-error`, `cancelled`), and a wall clock that ran out is reported as `lost`, the attempt a job node retries elsewhere.
+Only the files differ: inputs are plain files named by their SHA-256, and outputs are written unsealed to `<dir>/output-<i>` in the order the run finished them.
+It prints progress as the run reports it, then the result, each output and the usage, and exits non-zero with the reason when the run does not end `Ok`.
+`--twice` runs again and fails, naming what differs, if the result or an output differs.
+An app component fails to prepare on the compute engine, and the tool says so.
 The leader sends a job node only the run's compute component (`RunRecord.compute_bundle`, named by the assignment's `bundle`), and a job node prepares everything it is given on the compute world, so an app component is refused (`BAD_BUNDLE`) even when the cluster signed it.
 Usage is billed to the app component that started the run, and the result method runs on the replicas' app component.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
