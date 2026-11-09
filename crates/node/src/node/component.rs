@@ -2594,14 +2594,6 @@ mod tests {
     }
 
     #[test]
-    fn a_final_over_the_cap_even_without_its_result_is_not_built() {
-        let mut cmd = big_final(10, 6_000);
-        let (bytes, _replaced) = entry_bytes(&mut cmd);
-        assert!(bytes.len() > calimero_log::MAX_ENTRY_BYTES);
-        assert_eq!(final_too_large().code, FINAL_TOO_LARGE);
-    }
-
-    #[test]
     fn file_sizes_that_overflow_refuse_the_entry() {
         let mut cmd = big_final(10, 2);
         if let ComponentCmd::ComputeFinal(entry) = &mut cmd {

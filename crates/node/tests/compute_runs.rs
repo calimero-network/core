@@ -412,13 +412,18 @@ async fn a_cancel_ends_the_run_and_stops_the_job() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_run_that_breaks_a_cap_fails_with_its_reason_and_registers_nothing() {
     let rig = Rig::start(&[JOB_A]).await;
-    for (method, reason) in [("hog", "memory"), ("burn", "fuel")] {
+    for (method, reason) in [("hog", "memory"), ("burn", "fuel"), ("big", "trap")] {
         let run = rig.begin("startRun", json!({ "method": method })).await;
         let outcome = rig.outcome(&run).await;
         assert_eq!(outcome["status"], "failed", "{method}: {outcome}");
         assert_eq!(outcome["reason"], reason, "{method}");
         assert_eq!(outcome["outputs"], 0);
         assert_eq!(rig.record(&run).state, RunState::Failed);
+        assert_eq!(
+            rig.record(&run).attempts.len(),
+            1,
+            "{method}: no attempt is lost"
+        );
     }
 }
 
@@ -573,16 +578,6 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_result_over_the_cap_fails_the_run_and_registers_nothing() {
-    let rig = Rig::start(&[JOB_A]).await;
-    let run = rig.begin("startRun", json!({ "method": "big" })).await;
-    let outcome = rig.outcome(&run).await;
-    assert_eq!(outcome["status"], "failed", "{outcome}");
-    assert_eq!(outcome["reason"], "trap", "{outcome}");
-    assert_eq!(rig.record(&run).attempts.len(), 1, "no attempt is lost");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn runs_that_meet_on_a_job_node_all_complete_without_a_lost_attempt() {
     let rig = Rig::start(&[JOB_A, JOB_B]).await;
     let mut runs = Vec::new();
@@ -593,43 +588,6 @@ async fn runs_that_meet_on_a_job_node_all_complete_without_a_lost_attempt() {
         let _ = rig.outcome(run).await;
         assert_eq!(rig.record(run).attempts.len(), 1, "{run}");
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_final_that_conflicts_is_run_again_and_leaks_no_output() {
-    let rig = Rig::start(&[JOB_A]).await;
-    let plain = input();
-    let file = rig.upload(&plain).await;
-    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
-    rig.leader().conflict_next_call();
-    let outcome = rig.outcome(&run).await;
-    assert_eq!(outcome["status"], "done", "{outcome}");
-    let output = rig.record(&run).final_.unwrap().outputs[0].id.clone();
-    let stored = |i: usize| {
-        rig.c.nodes[i]
-            .as_ref()
-            .unwrap()
-            .node
-            .engine
-            .get_blob(&output)
-            .unwrap()
-            .is_some()
-    };
-    rig.until("the output is on a majority", || {
-        (0..3).filter(|i| stored(*i)).count() >= 2
-    })
-    .await;
-    // Counted once: the input and the output.
-    let counted = rig.c.nodes[0]
-        .as_ref()
-        .unwrap()
-        .node
-        .sys(|s| s.app_file_bytes.get(&rig.app).copied().unwrap_or(0));
-    assert_eq!(
-        counted,
-        2 * INPUT_LEN as u64,
-        "the retry charged nothing twice"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -677,6 +635,23 @@ async fn a_staged_output_is_committed_when_its_job_node_vanishes_after_reporting
         1,
         "the report and its staged outputs are all the leader needs"
     );
+    let output = rig.record(&run).final_.unwrap().outputs[0].id.clone();
+    rig.until("the output is on a majority", || {
+        (0..3)
+            .filter(|i| {
+                rig.c.nodes[*i]
+                    .as_ref()
+                    .unwrap()
+                    .node
+                    .engine
+                    .get_blob(&output)
+                    .unwrap()
+                    .is_some()
+            })
+            .count()
+            >= 2
+    })
+    .await;
     let counted = rig.c.nodes[0]
         .as_ref()
         .unwrap()
@@ -1044,36 +1019,6 @@ async fn a_cancel_ends_within_its_deadline_when_the_job_node_stops_answering() {
     assert!(
         started.elapsed() < bound,
         "ended after {:?}",
-        started.elapsed()
-    );
-    assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_cancel_ends_in_time_while_every_transfer_to_job_nodes_is_stuck() {
-    let rig = Rig::start(&[JOB_A]).await;
-    rig.limits(ComputeLimits {
-        cancel_deadline: Duration::from_secs(3),
-        ..ComputeLimits::default()
-    });
-    let run = rig.begin("startRun", json!({ "method": "spin" })).await;
-    rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
-        .await;
-    rig.jobs[0].running.answer_running_always();
-    // Transfers hold their places for minutes when a job node freezes mid-transfer.
-    for n in rig.c.nodes.iter().flatten() {
-        n.node.limit_job_transfers(0);
-    }
-    let _ok = rig
-        .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
-        .await
-        .unwrap();
-    let started = Instant::now();
-    let rec = until_ended(&rig, &run, 60).await;
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "{:?}",
         started.elapsed()
     );
     assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);

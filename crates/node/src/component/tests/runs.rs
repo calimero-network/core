@@ -761,6 +761,20 @@ fn a_job_outcome_without_a_report_and_a_leader_outcome_with_one_are_refused() {
     signed.signature = Some("00".repeat(64));
     assert_eq!(why(&w.finish(signed)), "a leader outcome carries no report");
     assert_eq!(w.state("r1"), RunState::Running);
+    let quota = FinalOutcome::Failed {
+        reason: FailedReason::Quota,
+    };
+    let mut with_report = w.done("r1", &job_key(1));
+    with_report.outcome = quota;
+    assert_eq!(
+        why(&w.finish(with_report)),
+        "a leader outcome carries no report"
+    );
+    let mut entry = leader(&w, "r1", quota);
+    entry.base_index = w.last;
+    assert!(!w.finish(entry).conflict);
+    assert_eq!(w.record("r1").final_.unwrap().outcome, quota);
+    assert!(w.active().is_empty());
 }
 
 #[test]
@@ -890,14 +904,16 @@ fn lost_needs_every_attempt_used_and_timeout_a_run_that_was_assigned() {
     w.start("r1");
     let lost = FailedReason::Lost;
     let timeout = FailedReason::Timeout;
-    let entry = leader(&w, "r1", FinalOutcome::Failed { reason: timeout });
-    assert_eq!(
-        why(&w.finish(FinalEntry {
-            attempt: 0,
-            ..entry
-        })),
-        "the run was never assigned"
-    );
+    for reason in [timeout, FailedReason::TooLarge] {
+        let entry = leader(&w, "r1", FinalOutcome::Failed { reason });
+        assert_eq!(
+            why(&w.finish(FinalEntry {
+                attempt: 0,
+                ..entry
+            })),
+            "the run was never assigned"
+        );
+    }
     for n in 1..=MAX_ATTEMPTS {
         let _a = w.assign("r1", &job_key(n as u8));
         let early = leader(&w, "r1", FinalOutcome::Failed { reason: lost });
@@ -918,12 +934,14 @@ fn lost_needs_every_attempt_used_and_timeout_a_run_that_was_assigned() {
         FinalOutcome::Failed { reason: lost }
     );
 
-    let mut w = World::new();
-    w.start("r1");
-    let _a = w.assign("r1", &job_key(1));
-    let entry = leader(&w, "r1", FinalOutcome::Failed { reason: timeout });
-    assert!(!w.finish(entry).conflict);
-    assert_eq!(w.state("r1"), RunState::Failed);
+    for reason in [timeout, FailedReason::TooLarge] {
+        let mut w = World::new();
+        w.start("r1");
+        let _a = w.assign("r1", &job_key(1));
+        let entry = leader(&w, "r1", FinalOutcome::Failed { reason });
+        assert!(!w.finish(entry).conflict);
+        assert_eq!(w.state("r1"), RunState::Failed);
+    }
 }
 
 #[test]
@@ -1532,41 +1550,6 @@ fn an_unreadable_run_record_makes_the_host_fail_closed() {
 }
 
 #[test]
-fn a_run_the_queue_never_granted_ends_not_granted_only_before_any_attempt() {
-    let unserved = FinalOutcome::Failed {
-        reason: FailedReason::NotGranted,
-    };
-    let mut w = World::new();
-    w.start("r1");
-    let mut entry = leader(&w, "r1", unserved);
-    entry.attempt = 0;
-    entry.base_index = w.last;
-    assert!(!w.finish(entry).conflict);
-    assert_eq!(w.state("r1"), RunState::Failed);
-    w.start("r2");
-    let _a = w.assign("r2", &job_key(1));
-    let mut late = leader(&w, "r2", unserved);
-    late.base_index = w.last;
-    assert_eq!(why(&w.finish(late)), "the run was assigned");
-}
-
-#[test]
-fn a_final_too_large_for_the_log_ends_a_running_run_with_its_own_reason() {
-    let too_large = FinalOutcome::Failed {
-        reason: FailedReason::TooLarge,
-    };
-    let mut w = World::new();
-    w.start("r1");
-    let queued = leader(&w, "r1", too_large);
-    assert_eq!(why(&w.finish(queued)), "the run was never assigned");
-    let _a = w.assign("r1", &job_key(1));
-    let mut entry = leader(&w, "r1", too_large);
-    entry.base_index = w.last;
-    assert!(!w.finish(entry).conflict);
-    assert_eq!(w.state("r1"), RunState::Failed);
-}
-
-#[test]
 fn a_failed_reports_message_is_recorded_with_the_final() {
     let k = job_key(1);
     let mut w = World::new();
@@ -1604,37 +1587,37 @@ fn the_host_is_told_which_runs_are_being_cancelled() {
 
 #[test]
 fn a_run_whose_acquire_was_refused_for_good_can_end_refused_only_before_any_attempt() {
-    let refused = FinalOutcome::Failed {
-        reason: FailedReason::Refused,
-    };
-    let mut w = World::new();
-    w.start("r1");
-    let mut entry = leader(&w, "r1", refused);
-    entry.attempt = 0;
-    let mut charged = entry.clone();
-    charged.usage = usage();
-    assert_eq!(why(&w.finish(charged)), "a leader outcome is not charged");
-    let mut with_outputs = FinalEntry {
-        base_index: w.last,
-        ..entry.clone()
-    };
-    with_outputs.outputs = vec![out(1)];
-    assert_eq!(
-        why(&w.finish(with_outputs)),
-        "a leader outcome has no outputs"
-    );
-    entry.base_index = w.last;
-    assert!(!w.finish(entry).conflict);
-    let rec = w.record("r1");
-    assert_eq!(rec.state, RunState::Failed);
-    assert_eq!(rec.final_.unwrap().outcome, refused);
-    assert!(w.active().is_empty());
+    for reason in [FailedReason::Refused, FailedReason::NotGranted] {
+        let refused = FinalOutcome::Failed { reason };
+        let mut w = World::new();
+        w.start("r1");
+        let mut entry = leader(&w, "r1", refused);
+        entry.attempt = 0;
+        let mut charged = entry.clone();
+        charged.usage = usage();
+        assert_eq!(why(&w.finish(charged)), "a leader outcome is not charged");
+        let mut with_outputs = FinalEntry {
+            base_index: w.last,
+            ..entry.clone()
+        };
+        with_outputs.outputs = vec![out(1)];
+        assert_eq!(
+            why(&w.finish(with_outputs)),
+            "a leader outcome has no outputs"
+        );
+        entry.base_index = w.last;
+        assert!(!w.finish(entry).conflict);
+        let rec = w.record("r1");
+        assert_eq!(rec.state, RunState::Failed);
+        assert_eq!(rec.final_.unwrap().outcome, refused);
+        assert!(w.active().is_empty());
 
-    let mut w = World::new();
-    w.start("r2");
-    let _a = w.assign("r2", &job_key(1));
-    let late = leader(&w, "r2", refused);
-    assert_eq!(why(&w.finish(late)), "the run was assigned");
+        let mut w = World::new();
+        w.start("r2");
+        let _a = w.assign("r2", &job_key(1));
+        let late = leader(&w, "r2", refused);
+        assert_eq!(why(&w.finish(late)), "the run was assigned");
+    }
 }
 
 /// A call at `ts_ms` that writes `write`.
@@ -1766,29 +1749,6 @@ fn the_result_method_sees_the_outputs_as_sealed_files_of_the_app() {
         w.r.machine.blob_view().get(&[1; 32]).is_none(),
         "the view is a copy"
     );
-}
-
-#[test]
-fn a_run_whose_outputs_pass_the_quota_ends_failed_quota_as_a_leader_outcome() {
-    let quota = FinalOutcome::Failed {
-        reason: FailedReason::Quota,
-    };
-    let mut w = World::new();
-    w.start("r1");
-    let _a = w.assign("r1", &job_key(1));
-    let mut with_report = w.done("r1", &job_key(1));
-    with_report.outcome = quota;
-    assert_eq!(
-        why(&w.finish(with_report)),
-        "a leader outcome carries no report"
-    );
-    let mut entry = leader(&w, "r1", quota);
-    entry.base_index = w.last;
-    assert!(!w.finish(entry).conflict);
-    let rec = w.record("r1");
-    assert_eq!(rec.state, RunState::Failed);
-    assert_eq!(rec.final_.unwrap().outcome, quota);
-    assert!(w.active().is_empty());
 }
 
 #[test]

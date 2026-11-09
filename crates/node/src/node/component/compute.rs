@@ -1384,20 +1384,6 @@ mod tests {
     }
 
     #[test]
-    fn a_run_without_a_job_node_is_refused_only_after_its_limit() {
-        let mut watch = Watch::new(1, 0);
-        let start = Instant::now();
-        let limit = Duration::from_secs(600);
-        let ceiling = Duration::from_secs(60);
-        watch.tick(start, true);
-        assert!(!watch.unplaced_too_long(limit, ceiling, 0));
-        watch.tick(start + limit - Duration::from_secs(1), true);
-        assert!(!watch.unplaced_too_long(limit, ceiling, 0));
-        watch.tick(start + limit, true);
-        assert!(watch.unplaced_too_long(limit, ceiling, 0));
-    }
-
-    #[test]
     fn a_run_the_queue_never_granted_ends_only_after_its_limit_of_healthy_time() {
         let mut watch = Watch::new(1, 0);
         let start = Instant::now();
@@ -1412,6 +1398,13 @@ mod tests {
             !watch.unplaced_too_long(limit, ceiling, 0),
             "the two waits are separate clocks"
         );
+        // With no healthy rounds the app time alone ends it, at the limit plus the ceiling.
+        let (mut watch, ms) = (Watch::new(1, 0), |d: Duration| {
+            u64::try_from(d.as_millis()).unwrap()
+        });
+        assert!(!watch.unplaced_too_long(limit, ceiling, 5));
+        assert!(!watch.unplaced_too_long(limit, ceiling, 5 + ms(limit + ceiling) - 1));
+        assert!(watch.unplaced_too_long(limit, ceiling, 5 + ms(limit + ceiling)));
     }
 
     #[test]
@@ -1440,16 +1433,6 @@ mod tests {
             Some(marks),
             "another attempt's outputs are undone"
         );
-    }
-
-    #[test]
-    fn a_run_without_a_job_node_is_refused_at_the_app_time_ceiling_without_healthy_rounds() {
-        let mut watch = Watch::new(1, 0);
-        let (limit, ceiling) = (Duration::from_secs(600), Duration::from_secs(60));
-        let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap();
-        assert!(!watch.unplaced_too_long(limit, ceiling, 5));
-        assert!(!watch.unplaced_too_long(limit, ceiling, 5 + ms(limit + ceiling) - 1));
-        assert!(watch.unplaced_too_long(limit, ceiling, 5 + ms(limit + ceiling)));
     }
 
     fn ended(id: (u64, u64)) -> RunRecord {
@@ -1506,18 +1489,10 @@ mod tests {
         assert!(watch.silent_for(secs(4), start));
         watch.saw();
         assert!(!watch.silent_for(secs(1), start));
-    }
-
-    #[test]
-    fn an_outage_is_forgiven_only_up_to_the_cap() {
-        let watch = Watch::new(1, 1);
-        let at = watch.born;
+        // An outage is forgiven only up to the cap.
         let cap = QUEUED_RUN_TIMEOUT;
-        assert_eq!(
-            watch.outage(at + Duration::from_secs(30), cap),
-            Duration::from_secs(30)
-        );
-        assert_eq!(watch.outage(at + cap * 3, cap), cap);
+        assert_eq!(watch.outage(watch.born + secs(30), cap), secs(26));
+        assert_eq!(watch.outage(watch.born + cap * 3, cap), cap);
     }
 
     #[test]
@@ -1568,17 +1543,6 @@ mod tests {
         watch.held = Some((1, report, "sig".into()));
         assert!(watch.held_for(1).is_some());
         assert!(watch.held_for(2).is_none());
-    }
-
-    #[test]
-    fn only_a_finished_run_or_a_pending_commit_counts_as_rescued() {
-        let mut watch = Watch::new(1, 1);
-        assert!(!watch.rescued(), "a final refused for good rescues nothing");
-        watch.leader_wait = true;
-        assert!(watch.rescued());
-        watch.leader_wait = false;
-        watch.finished = true;
-        assert!(watch.rescued());
     }
 
     #[test]

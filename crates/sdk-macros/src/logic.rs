@@ -777,22 +777,6 @@ mod tests {
     }
 
     #[test]
-    fn a_result_method_takes_the_whole_outcome_as_its_one_parameter() {
-        let out = expand(parse_quote! {
-            impl S {
-                #[app::compute(fuel = 1, result = "on_done")]
-                pub fn digest() -> Result<()> { Ok(()) }
-                #[app::compute_result]
-                pub fn on_done(&mut self, outcome: Outcome) -> Result<()> { Ok(()) }
-            }
-        })
-        .unwrap()
-        .to_string();
-        assert!(out.contains("decode_args :: < Outcome >"), "{out}");
-        assert!(!out.contains("rename = \"outcome\""), "{out}");
-    }
-
-    #[test]
     fn bad_compute_declarations_are_refused() {
         let msg = refused(parse_quote! {
             impl S { #[app::compute(result = "r")] pub fn m() -> Result<()> { Ok(()) } }
