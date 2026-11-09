@@ -1,5 +1,5 @@
 //! The cluster tests' files fixture: writes deterministic files, keeps them by `BlobRef` and
-//! streams them back. Method names and arguments are the ABI's camelCase ones; the content of
+//! tries to stream them back, which only a compute run may do. Method names and arguments are the ABI's camelCase ones; the content of
 //! `putFile(len, seed)` is [`stream`], which the tests recompute.
 
 use std::io::{Read, Write};
@@ -141,23 +141,16 @@ impl Files {
         app::bail!(Error::Failed)
     }
 
-    /// Streams the file back; its size and SHA-256 as the guest computed them.
+    /// Tries to stream the file back in a view; a sealed file opens only inside a compute run.
     #[app::view]
     pub fn read_file(&self, id: BlobRef) -> app::Result<ReadOut> {
         read_all(&id)
     }
 
-    /// `readFile` as a call, which is logged.
+    /// `readFile` as a call, which is logged: refused the same way.
     pub fn touch_file(&mut self, id: BlobRef) -> app::Result<ReadOut> {
         self.puts.add(1)?;
         read_all(&id)
-    }
-
-    /// Holds the file open twice at once, reads one of them.
-    pub fn touch_twice(&mut self, id: BlobRef) -> app::Result<ReadOut> {
-        let first = calimero_sdk::files::open(&id)?;
-        let _second = calimero_sdk::files::open(&id)?;
-        read_reader(first)
     }
 
     /// What `blobs.info` answers for the id: a file answers like any blob, with no content type.

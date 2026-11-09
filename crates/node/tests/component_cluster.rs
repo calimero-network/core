@@ -2097,6 +2097,7 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
             calimero_log::Proposal::Append(
                 serde_json::to_vec(&calimero_node::component::ComponentCmd::Upgrade {
                     bundle: kv.clone(),
+                    compute_bundle: None,
                     base_index: m.state.last_index,
                 })
                 .unwrap(),
@@ -3821,6 +3822,7 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
             calimero_log::Proposal::Append(
                 serde_json::to_vec(&calimero_node::component::ComponentCmd::Upgrade {
                     bundle: kv.clone(),
+                    compute_bundle: None,
                     base_index: m.state.last_index,
                 })
                 .unwrap(),

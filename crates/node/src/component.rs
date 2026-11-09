@@ -353,6 +353,9 @@ pub enum ComponentCmd {
     #[serde(rename = "componentInit")]
     Init {
         bundle: String,
+        /// The compute component shipped with `bundle`, if any.
+        #[serde(default)]
+        compute_bundle: Option<String>,
         base_index: u64,
         ts_ms: u64,
         /// The ids `init` ran with (D52), as for a call.
@@ -372,7 +375,13 @@ pub enum ComponentCmd {
     /// this milestone). The bundle is a component too: an upgrade across
     /// executors is refused before it is proposed.
     #[serde(rename = "componentUpgrade")]
-    Upgrade { bundle: String, base_index: u64 },
+    Upgrade {
+        bundle: String,
+        /// The compute component shipped with `bundle`, if any.
+        #[serde(default)]
+        compute_bundle: Option<String>,
+        base_index: u64,
+    },
     /// A blob uploaded for the app (R8; its bytes are in the blob store already): the
     /// app holds it, idle until a value refers to it ([`blobs`]).
     #[serde(rename = "componentBlob")]
@@ -553,6 +562,10 @@ pub struct ComponentHead {
     /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
     #[serde(default)]
     pub install_ts_ms: u64,
+    /// The compute component of the release the group's bundle ships in, set with `bundle` by
+    /// the same entry, so the pair never mixes releases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_bundle: Option<String>,
     /// Each timer's last applied slot (D34).
     #[serde(default)]
     pub timers: BTreeMap<String, u64>,
@@ -1009,6 +1022,7 @@ impl AppMachine {
         let applied = match cmd {
             Ok(ComponentCmd::Init {
                 bundle,
+                compute_bundle,
                 base_index,
                 ts_ms,
                 outcome,
@@ -1031,6 +1045,7 @@ impl AppMachine {
                     if !a.conflict {
                         self.state.executor = Some(crate::types::Executor::Component);
                         self.state.bundle = Some(bundle);
+                        self.state.component.head.compute_bundle = compute_bundle;
                         self.state.component.head.install_ts_ms = ts_ms;
                         self.state.initialized = outcome.status == Status::Ok;
                         if !self.state.initialized {
@@ -1043,7 +1058,11 @@ impl AppMachine {
                     a
                 }
             }
-            Ok(ComponentCmd::Upgrade { bundle, base_index }) => {
+            Ok(ComponentCmd::Upgrade {
+                bundle,
+                compute_bundle,
+                base_index,
+            }) => {
                 let a = self.apply_component_outcome(
                     tx,
                     index,
@@ -1056,6 +1075,7 @@ impl AppMachine {
                     // Taken before `init` applied: the entry names the executor.
                     self.state.executor = Some(crate::types::Executor::Component);
                     self.state.bundle = Some(bundle);
+                    self.state.component.head.compute_bundle = compute_bundle;
                 }
                 a
             }
@@ -1488,6 +1508,7 @@ mod tests {
     fn init(base: u64) -> Vec<u8> {
         serde_json::to_vec(&ComponentCmd::Init {
             bundle: "b".into(),
+            compute_bundle: None,
             base_index: base,
             ts_ms: 1,
             id_term: 1,
@@ -2294,6 +2315,43 @@ mod tests {
                 "k"
             )
             .is_some());
+    }
+
+    #[test]
+    fn the_compute_component_changes_with_the_bundle_in_one_entry() {
+        let upgrade = |bundle: &str, compute: Option<&str>, base: u64| {
+            serde_json::to_vec(&ComponentCmd::Upgrade {
+                bundle: bundle.into(),
+                compute_bundle: compute.map(str::to_owned),
+                base_index: base,
+            })
+            .unwrap()
+        };
+        let mut rig = Rig::new();
+        let init = serde_json::to_vec(&ComponentCmd::Init {
+            bundle: "b1".into(),
+            compute_bundle: Some("c1".into()),
+            base_index: 0,
+            ts_ms: 1,
+            id_term: 1,
+            id_seq: 1,
+            outcome: Box::default(),
+        })
+        .unwrap();
+        let _ = rig.apply(1, &init);
+        let pair = |rig: &Rig| {
+            let s = &rig.machine.state;
+            (s.bundle.clone(), s.component.head.compute_bundle.clone())
+        };
+        assert_eq!(pair(&rig), (Some("b1".into()), Some("c1".into())));
+        let _ = rig.apply(2, &upgrade("b2", None, 1));
+        assert_eq!(pair(&rig), (Some("b2".into()), None));
+        let _ = rig.apply(3, &upgrade("b3", Some("c3"), 2));
+        assert_eq!(pair(&rig), (Some("b3".into()), Some("c3".into())));
+        // An entry logged before the field existed names no compute component.
+        let old = json!({ "op": "componentUpgrade", "bundle": "b4", "base_index": 3 });
+        let _ = rig.apply(4, &serde_json::to_vec(&old).unwrap());
+        assert_eq!(pair(&rig), (Some("b4".into()), None));
     }
 
     #[test]
