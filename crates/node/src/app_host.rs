@@ -14,8 +14,9 @@
 //!   last segment and an `Accept` naming HTML, the entry (a single-page app's
 //!   routes survive a reload); otherwise the path with leading segments
 //!   dropped (an entry built with a relative base on a deep link); else 404.
-//! - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release
-//!   that instance runs (a release of this package; else 404), so a link
+//! - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the newest
+//!   release of this package shipping the WASM that instance runs (else
+//!   404), so a link
 //!   handed to a customer opens the frontend matching their instance.
 //! - `GET /d/{deployment}/{path}` redirects to
 //!   `/{version}/{path}?deployment={id}`, the release that deployment offers
@@ -25,6 +26,11 @@
 //!   deployments offering it (`id`, `name`, `app`, `version`) and the
 //!   cluster's API URLs, for the page to connect to.
 //! - Nothing else: only `GET` and `HEAD`, never the node's own routes.
+//!
+//! Every redirect keeps the request's query, after the `deployment` it adds
+//! (an invite link, `/?invite=...`, reaches the page with its token); a query
+//! past [`MAX_REDIRECT_QUERY_BYTES`] is refused `414`. The fragment never
+//! reaches the node: the browser keeps it across the redirect itself.
 //!
 //! On a cluster, a package's frontend is also at
 //! `{cluster_label}.{apps_domain}` ([`cluster_label`] of the node's
@@ -88,6 +94,8 @@ fn page_csp(api_origins: &[String]) -> String {
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 const MAX_STRIPPED_SEGMENTS: usize = 16;
+/// The longest query a redirect carries on to the release it names.
+const MAX_REDIRECT_QUERY_BYTES: usize = 4096;
 /// How many releases' frontends a node keeps open in memory.
 const CACHED_FRONTENDS: usize = 32;
 
@@ -517,6 +525,11 @@ async fn serve(node: &Node, site: &Site, req: Request) -> Response {
     };
     match redirect {
         Some(Some(location)) => {
+            let query = req.uri().query().unwrap_or_default();
+            if query.len() > MAX_REDIRECT_QUERY_BYTES {
+                return StatusCode::URI_TOO_LONG.into_response();
+            }
+            let location = with_query(location, query);
             return (StatusCode::FOUND, [(header::LOCATION, location)]).into_response();
         }
         Some(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -575,18 +588,30 @@ async fn pinned(node: &Node, find: impl Fn(&SystemState) -> Option<String>) -> O
     node.sys(&find)
 }
 
-/// `{app}/{tail}`: `/{version}/{tail}` of the release of `package` that
-/// instance runs.
+/// `location` with the request's `query` appended (after a query of its
+/// own); an empty one adds nothing.
+fn with_query(location: String, query: &str) -> String {
+    if query.is_empty() {
+        return location;
+    }
+    let sep = if location.contains('?') { '&' } else { '?' };
+    format!("{location}{sep}{query}")
+}
+
+/// `{app}/{tail}`: `/{version}/{tail}` of the newest release of `package`
+/// shipping the WASM that instance runs (releases may share one).
 fn instance_release(s: &SystemState, node: &Node, package: &str, rest: &str) -> Option<String> {
     let (app, tail) = rest.split_once('/').unwrap_or((rest, ""));
     let a = s.apps.get(&node.canonical_app_id(app))?;
-    let v = s
+    let version = s
         .packages
         .get(package)?
         .versions
         .values()
-        .find(|v| v.services.values().any(|h| *h == a.bundle))?;
-    Some(format!("/{}/{tail}", v.version))
+        .filter(|v| v.services.values().any(|h| *h == a.bundle))
+        .map(|v| v.version.as_str())
+        .max_by(|a, b| compare_versions(a, b))?;
+    Some(format!("/{version}/{tail}"))
 }
 
 /// `{deployment}/{tail}`: `/{version}/{tail}?deployment={id}`, the installed

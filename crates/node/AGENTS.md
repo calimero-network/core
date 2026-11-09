@@ -784,9 +784,13 @@ is its command line.
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
   cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
-  `/app/{app}/` → the release that instance runs, `/d/{deployment}/` →
+  `/app/{app}/` → the newest release (`compare_versions`) shipping the WASM that
+  instance runs, `/d/{deployment}/` →
   `/{version}/?deployment={id}` of the release it offers (looked up again on
-  fresh state when nothing matches),
+  fresh state when nothing matches); every redirect keeps the request's query
+  (after the `deployment` it adds), so `/?invite=...` reaches the page with its
+  token (regressions: `frontend_redirects_keep_the_query`,
+  `an_instance_link_opens_the_newest_release_shipping_its_wasm`),
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
   measurements and Intel's collateral; regression
