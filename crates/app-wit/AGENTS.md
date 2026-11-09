@@ -13,7 +13,7 @@ Holds the `calimero:app@0.5.1` world: the spec's 0.5.0 plus `search`, below, plu
 ## The compute world
 
 `world compute` is the compute methods of an app built as their own component for job nodes: it imports `types`, `files`, `job` (`run-id`, `inputs`, `progress`) and the WASI set a Rust guest needs, and exports `run(method, args)`.
-The app world imports `runs` (`start`, `cancel`: logged writes only) and not `job`, so it has 24 imports (`collections` is a PoC interface, host collections; every call traps `HostDenied` until the host core implements them).
+The app world imports `runs` (`start`, `cancel`: logged writes only) and not `job`, so it has 24 imports (`collections` is a PoC interface, host collections: the host core serves a state's declared tables, maps and tallies at the Rust SDK's keys and bytes, `calimero-app-host` `collection_ops.rs`; `HostDenied` in migrations and actions and for writes outside a logged run, soft `coll-error`s otherwise, with `unknown-set` for an index, unique or count name the table lacks).
 It cannot be named `compute`, which is the world's name; the compute world does not import `runs`, so a run cannot start runs.
 The compute world imports no state, xcall, context, events, blobs, search, action or `wasi:http`, so a compute component cannot even ask for them: the install-time import check is the enforcement.
 

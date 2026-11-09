@@ -133,7 +133,7 @@ interface collections {
   type key = list<key-part>;
   record entry { key: key, value: list<u8> }
   record page { items: list<entry>, next: option<string> }
-  variant coll-error { duplicate(string), bad-record(string), bad-cursor, unknown-collection(string), wrong-kind(string) }
+  variant coll-error { duplicate(string), bad-record(string), bad-cursor, unknown-collection(string), wrong-kind(string), unknown-set(string) }
   table-insert: func(table: string, %record: list<u8>) -> result<_, coll-error>;
   table-upsert: func(table: string, %record: list<u8>) -> result<_, coll-error>;
   table-get: func(table: string, key: key) -> result<option<list<u8>>, coll-error>;

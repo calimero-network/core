@@ -241,6 +241,10 @@ fn reads(r: &mut Run<'_>) {
         let _ = r.view("count", json!({"name": "perOwner", "ownerName": owner}));
     }
     let _ = r.view("count", json!({"name": "nope", "ownerName": null}));
+    // An index or count named like the table itself: the host's `unknown-set` is an error
+    // on the host build, never a fallback (`assert_served_by_host` sees no log line).
+    let _ = r.view("find", json!({"index": "shopItems", "ownerName": null, "cursor": null, "limit": null, "reverse": false}));
+    let _ = r.view("count", json!({"name": "shopItems", "ownerName": null}));
 
     prefix_reads(r);
 

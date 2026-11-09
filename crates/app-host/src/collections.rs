@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
-use crate::core::MAX_KEY_BYTES;
+use crate::core::{MAX_KEY_BYTES, MAX_RUN_BYTES};
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +29,19 @@ pub const MAX_COLLECTION_LIMIT: u32 = 1_000;
 /// from it (`last ‖ 0x00`, `prefix ‖ 0xFF`) still fit (the SDK's `MAX_SDK_KEY_BYTES`).
 pub const MAX_COLLECTION_KEY_BYTES: usize = MAX_KEY_BYTES - 1;
 
+/// The longest cursor a find or page accepts: the base64url (unpadded) of a
+/// [`MAX_COLLECTION_KEY_BYTES`] key. A longer one is refused before it is decoded.
+pub const MAX_CURSOR_CHARS: usize = MAX_COLLECTION_KEY_BYTES.div_ceil(3) * 4;
+/// The deepest nesting of a guest record or map value (arrays, maps, tags), checked on the
+/// raw bytes before they are parsed.
+pub const MAX_CBOR_DEPTH: usize = 64;
+/// The most CBOR items (every array or map element, map key and tag counts) a guest
+/// record or map value may hold, checked on the raw bytes before they are parsed: the
+/// parsed tree costs some 50 bytes of host heap per item, so this caps one call's tree at a
+/// few MiB whatever the input. (The guest path stores any value; the host path refuses a
+/// value with more items as `bad-record`.)
+pub const MAX_CBOR_ITEMS: usize = 65_536;
+
 /// Fuel of every collection call.
 ///
 /// Calibrated against the guest code a host call replaces (PoC, measured 2026-11-09 by the
@@ -38,7 +51,11 @@ pub const MAX_COLLECTION_KEY_BYTES: usize = MAX_KEY_BYTES - 1;
 /// empty method. The same insert through `table-insert` reads or writes 4 entries (record
 /// lookup, record, index, count) and 199 bytes of keys and values, so it is charged
 /// 5,000 + 199 x 10 + 4 x 3,500 = 20,990 host fuel, 0.75x the SDK path (the target is
-/// 0.5x-1x). The guest still pays its own side of the call (encoding the record and the
+/// 0.5x-1x). Every byte the guest hands over (names, records, values, keys, prefixes,
+/// cursors) is charged [`COLLECTION_BYTE_FUEL`] too, whether or not it is then parsed
+/// (final review fix wave): the table name and the 28-byte record add 34 x 10, so the
+/// insert is now charged 21,330, 0.76x the 28,005 the SDK path took in the same rerun.
+/// The guest still pays its own side of the call (encoding the record and the
 /// canonical ABI copy): 12,250 fuel in that measurement.
 pub const COLLECTION_BASE_FUEL: u64 = 5_000;
 /// Fuel per byte of key or value read or written (see [`COLLECTION_BASE_FUEL`]).
@@ -127,8 +144,10 @@ pub enum CollError {
     BadRecord(String),
     /// A cursor not from this collection, index and prefix.
     BadCursor,
-    /// No collection, index or count of this name.
+    /// No collection of this name in the state.
     UnknownCollection(String),
+    /// The table has no index, unique or count of this name (the name in the error).
+    UnknownSet(String),
     /// The collection is of another kind (named in the error).
     WrongKind(String),
 }
@@ -168,6 +187,22 @@ pub(crate) fn encode_key(parts: &[KeyPart]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The length [`encode_key`] gives `parts`, computed without encoding them, so an over-long
+/// key is refused before anything of its size is allocated.
+pub(crate) fn encoded_len(parts: &[KeyPart]) -> usize {
+    let escaped = |b: &[u8]| 1 + b.len() + b.iter().filter(|&&x| x == 0).count() + 2;
+    parts
+        .iter()
+        .map(|part| match part {
+            KeyPart::None => 1,
+            KeyPart::Bool(_) => 2,
+            KeyPart::Int(_) => 17,
+            KeyPart::Str(s) => escaped(s.as_bytes()),
+            KeyPart::Bytes(b) => escaped(b),
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 /// `0x00` becomes `0x00 0xFF`; the payload ends with `0x00 0x00`.
@@ -271,6 +306,133 @@ pub(crate) fn read_value(bytes: &[u8]) -> Result<Value, String> {
     Ok(value)
 }
 
+/// One CBOR item from the guest: refused over [`MAX_RUN_BYTES`] (it could never be stored)
+/// and, on the raw bytes before anything is parsed, past [`MAX_CBOR_DEPTH`] or
+/// [`MAX_CBOR_ITEMS`] or with a length its bytes cannot hold, so a small input never
+/// becomes a large tree.
+pub(crate) fn read_guest_value(bytes: &[u8]) -> Result<Value, String> {
+    if bytes.len() > MAX_RUN_BYTES {
+        return Err(format!(
+            "a value of {} bytes, over {MAX_RUN_BYTES}",
+            bytes.len()
+        ));
+    }
+    Shape {
+        bytes,
+        pos: 0,
+        items: 0,
+    }
+    .top()?;
+    read_value(bytes)
+}
+
+/// A walk over raw CBOR that allocates nothing: depth, item count and declared lengths.
+struct Shape<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    items: usize,
+}
+
+impl Shape<'_> {
+    fn top(&mut self) -> Result<(), String> {
+        if self.item(0)? {
+            return Err("a CBOR break outside an indefinite item".into());
+        }
+        Ok(())
+    }
+
+    fn left(&self) -> usize {
+        self.bytes.len() - self.pos
+    }
+
+    fn byte(&mut self) -> Result<u8, String> {
+        let b = *self.bytes.get(self.pos).ok_or("truncated CBOR")?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn skip(&mut self, n: u64) -> Result<(), String> {
+        let n = usize::try_from(n)
+            .ok()
+            .filter(|&n| n <= self.left())
+            .ok_or("a CBOR length past the end of the value")?;
+        self.pos += n;
+        Ok(())
+    }
+
+    /// The head's argument; `None` for an indefinite length.
+    fn arg(&mut self, info: u8) -> Result<Option<u64>, String> {
+        Ok(Some(match info {
+            0..=23 => u64::from(info),
+            24..=27 => {
+                let mut v = 0u64;
+                for _ in 0..(1u32 << (info - 24)) {
+                    v = (v << 8) | u64::from(self.byte()?);
+                }
+                v
+            }
+            31 => return Ok(None),
+            _ => return Err("malformed CBOR".into()),
+        }))
+    }
+
+    /// One item at `depth`; `true` when it was a break code.
+    fn item(&mut self, depth: usize) -> Result<bool, String> {
+        if depth > MAX_CBOR_DEPTH {
+            return Err(format!("CBOR nested deeper than {MAX_CBOR_DEPTH}"));
+        }
+        let b = self.byte()?;
+        if b == 0xFF {
+            return Ok(true);
+        }
+        self.items += 1;
+        if self.items > MAX_CBOR_ITEMS {
+            return Err(format!("more than {MAX_CBOR_ITEMS} CBOR items"));
+        }
+        let (major, info) = (b >> 5, b & 0x1F);
+        match (major, self.arg(info)?) {
+            (0 | 1 | 7, Some(_)) => {}
+            (2 | 3, Some(n)) => self.skip(n)?,
+            (2 | 3, None) => loop {
+                // Chunks of definite strings of the same type, up to a break.
+                let chunk = self.byte()?;
+                if chunk == 0xFF {
+                    break;
+                }
+                match self.arg(chunk & 0x1F)? {
+                    Some(n) if chunk >> 5 == major => self.skip(n)?,
+                    _ => return Err("malformed CBOR string chunk".into()),
+                }
+            },
+            (4, Some(n)) => self.children(n, 1, depth)?,
+            (5, Some(n)) => self.children(n, 2, depth)?,
+            (4 | 5, None) => while !self.item(depth + 1)? {},
+            (6, Some(_)) => {
+                if self.item(depth + 1)? {
+                    return Err("a CBOR tag around a break".into());
+                }
+            }
+            _ => return Err("malformed CBOR".into()),
+        }
+        Ok(false)
+    }
+
+    /// `n` entries of `per` items each; every item takes at least one byte, so a count the
+    /// remaining bytes cannot hold is refused before any is read.
+    fn children(&mut self, n: u64, per: u64, depth: usize) -> Result<(), String> {
+        let total = n.saturating_mul(per);
+        if total > u64::try_from(self.left()).unwrap_or(u64::MAX) {
+            return Err("a CBOR length past the end of the value".into());
+        }
+        for _ in 0..total {
+            if self.item(depth + 1)? {
+                return Err("a CBOR break inside a definite item".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// `value` in deterministic CBOR: map keys sorted by their encoded bytes, recursively;
 /// NaN and duplicate map keys refused.
 pub(crate) fn canonical(value: Value) -> Result<Value, String> {
@@ -302,9 +464,10 @@ pub(crate) fn write_value(value: &Value) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// `bytes` re-encoded as the SDK's `value::to_vec` writes the value they hold.
+/// `bytes` from the guest ([`read_guest_value`]) re-encoded as the SDK's `value::to_vec`
+/// writes the value they hold.
 pub(crate) fn canonical_value(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    write_value(&canonical(read_value(bytes)?)?)
+    write_value(&canonical(read_guest_value(bytes)?)?)
 }
 
 /// A record field as a key part, by CBOR type, as the SDK's `ToKeyPart` makes it.

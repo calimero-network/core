@@ -112,7 +112,10 @@ fn table_error(name: &str, error: wit::CollError) -> TableError {
             .unwrap_or(StorageError::Encode(message))
             .into(),
         wit::CollError::BadCursor => StorageError::BadCursor.into(),
-        wit::CollError::UnknownCollection(n) => StorageError::UnknownName(n).into(),
+        // An unknown index, unique or count of a served table: an error, never a fallback.
+        wit::CollError::UnknownCollection(n) | wit::CollError::UnknownSet(n) => {
+            StorageError::UnknownName(n).into()
+        }
         wit::CollError::WrongKind(kind) => {
             StorageError::Decode(format!("`{name}` is a {kind} in the state")).into()
         }

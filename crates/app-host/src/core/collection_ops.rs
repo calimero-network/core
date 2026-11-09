@@ -10,8 +10,9 @@ use ciborium::Value;
 use super::{HostCore, MAX_RANGE_BATCH};
 use crate::collections::{
     camel, canonical, canonical_value, check_wit_key, collection_fuel, decode_key, encode_key,
-    field_part, read_value, write_value, CollEntry, CollError, CollPage, CollectionSchema, KeyPart,
-    TableSchema, MAX_COLLECTION_KEY_BYTES, MAX_COLLECTION_LIMIT,
+    encoded_len, field_part, read_guest_value, read_value, write_value, CollEntry, CollError,
+    CollPage, CollectionSchema, KeyPart, TableSchema, MAX_COLLECTION_KEY_BYTES,
+    MAX_COLLECTION_LIMIT, MAX_CURSOR_CHARS,
 };
 use crate::state::{stored_key, KeyValue, GENERATION};
 use crate::types::{HostDenied, InvocationKind};
@@ -42,28 +43,37 @@ fn str_part(s: &str) -> KeyPart {
     KeyPart::Str(s.to_owned())
 }
 
-/// `parts` encoded, refused over [`MAX_COLLECTION_KEY_BYTES`].
-fn checked(parts: &[KeyPart]) -> Result<Vec<u8>, CollError> {
-    within(encode_key(parts))
-}
-
-/// Refuses a key over [`MAX_COLLECTION_KEY_BYTES`]. The SDK reads this exact message back
-/// as its `KeyTooLong { len, max }` (`calimero_sdk` `host_collections::key_too_long`).
-fn within(key: Vec<u8>) -> Result<Vec<u8>, CollError> {
-    if key.len() > MAX_COLLECTION_KEY_BYTES {
+/// Refuses a key of `len` bytes over [`MAX_COLLECTION_KEY_BYTES`]; the length is computed
+/// ([`encoded_len`]) before anything is encoded, so a guest's many or long parts are
+/// refused without allocating their key (every part takes at least one byte, so this caps
+/// the part count too). The SDK reads this exact message back as its `KeyTooLong { len,
+/// max }` (`calimero_sdk` `host_collections::key_too_long`).
+fn within(len: usize) -> Result<(), CollError> {
+    if len > MAX_COLLECTION_KEY_BYTES {
         return Err(CollError::BadRecord(format!(
-            "a key of {} bytes, over {MAX_COLLECTION_KEY_BYTES}",
-            key.len()
+            "a key of {len} bytes, over {MAX_COLLECTION_KEY_BYTES}"
         )));
     }
+    Ok(())
+}
+
+/// `(name, kind, rest..)`, refused over [`MAX_COLLECTION_KEY_BYTES`] before it is encoded.
+fn collection_key(name: &str, kind: &str, rest: &[KeyPart]) -> Result<Vec<u8>, CollError> {
+    let head = [str_part(name), str_part(kind)];
+    within(encoded_len(&head).saturating_add(encoded_len(rest)))?;
+    let mut key = encode_key(&head);
+    key.extend(encode_key(rest));
     Ok(key)
 }
 
-/// `(name, kind, rest..)`, checked.
-fn collection_key(name: &str, kind: &str, rest: &[KeyPart]) -> Result<Vec<u8>, CollError> {
-    let mut parts = vec![str_part(name), str_part(kind)];
-    parts.extend_from_slice(rest);
-    checked(&parts)
+/// The guest-supplied bytes of a call's strings (as their length) and key parts (as their
+/// encoded length), charged before any is used.
+fn input(strs: &[Option<&str>], keys: &[&[KeyPart]]) -> usize {
+    strs.iter()
+        .flatten()
+        .map(|s| s.len())
+        .chain(keys.iter().map(|k| encoded_len(k)))
+        .fold(0usize, usize::saturating_add)
 }
 
 /// The parts of a stored key after `base`.
@@ -93,7 +103,7 @@ fn named_set<'s>(
     sets.iter()
         .find(|(set, _)| *set == name || camel(set) == name)
         .map(|(set, fields)| (camel(set), fields.as_slice()))
-        .ok_or_else(|| CollError::UnknownCollection(name.to_owned()))
+        .ok_or_else(|| CollError::UnknownSet(name.to_owned()))
 }
 
 fn check_prefix(prefix: &[KeyPart], fields: usize) -> Result<(), CollError> {
@@ -109,11 +119,19 @@ fn check_prefix(prefix: &[KeyPart], fields: usize) -> Result<(), CollError> {
 /// A record's fields: its CBOR map entries.
 type Fields = Vec<(Value, Value)>;
 
-/// A record's canonical bytes and its fields; it must be a CBOR map.
+/// A guest record's canonical bytes and its fields; it must be a CBOR map, and is
+/// bounded before it is parsed ([`read_guest_value`]).
 fn parse_record(bytes: &[u8]) -> Result<(Vec<u8>, Fields), CollError> {
-    let value = read_value(bytes)
-        .and_then(canonical)
-        .map_err(CollError::BadRecord)?;
+    parse(read_guest_value(bytes))
+}
+
+/// A stored record's canonical bytes and its fields (the run's own caps bound it).
+fn parse_stored(bytes: &[u8]) -> Result<(Vec<u8>, Fields), CollError> {
+    parse(read_value(bytes))
+}
+
+fn parse(value: Result<Value, String>) -> Result<(Vec<u8>, Fields), CollError> {
+    let value = value.and_then(canonical).map_err(CollError::BadRecord)?;
     let bytes = write_value(&value).map_err(CollError::BadRecord)?;
     match value {
         Value::Map(fields) => Ok((bytes, fields)),
@@ -182,17 +200,19 @@ impl HostCore {
     /// Insert a record (deterministic CBOR map), refusing a taken key (`Duplicate("key")`)
     /// or unique entry (`Duplicate(<camelCase name>)`).
     pub fn table_insert(&mut self, table: &str, record: &[u8]) -> Answer<()> {
-        self.metered(true, |host| host.put_record(table, record, false))
+        let bytes = input(&[Some(table)], &[]).saturating_add(record.len());
+        self.metered(true, bytes, |host| host.put_record(table, record, false))
     }
 
     /// Insert or replace a record; unique entries still apply.
     pub fn table_upsert(&mut self, table: &str, record: &[u8]) -> Answer<()> {
-        self.metered(true, |host| host.put_record(table, record, true))
+        let bytes = input(&[Some(table)], &[]).saturating_add(record.len());
+        self.metered(true, bytes, |host| host.put_record(table, record, true))
     }
 
     /// The record with this key.
     pub fn table_get(&mut self, table: &str, key: &[KeyPart]) -> Answer<Option<Vec<u8>>> {
-        self.metered(false, |host| {
+        self.metered(false, input(&[Some(table)], &[key]), |host| {
             let _schema = soft!(host.table_schema(table));
             let record_key = soft!(collection_key(table, "r", key));
             Ok(Ok(host.coll_get(&record_key)?))
@@ -201,13 +221,13 @@ impl HostCore {
 
     /// Remove the record with this key and its index, unique and count entries.
     pub fn table_remove(&mut self, table: &str, key: &[KeyPart]) -> Answer<bool> {
-        self.metered(true, |host| {
+        self.metered(true, input(&[Some(table)], &[key]), |host| {
             let schema = soft!(host.table_schema(table));
             let record_key = soft!(collection_key(table, "r", key));
             let Some(stored) = host.coll_get(&record_key)? else {
                 return Ok(Ok(false));
             };
-            let (_, fields) = soft!(parse_record(&stored));
+            let (_, fields) = soft!(parse_stored(&stored));
             let old = soft!(entries(table, &schema, &fields));
             host.coll_delete(&old.record)?;
             host.reindex(Some(&old), None)?;
@@ -227,7 +247,8 @@ impl HostCore {
         limit: u32,
         reverse: bool,
     ) -> Answer<CollPage> {
-        self.metered(false, |host| {
+        let bytes = input(&[Some(table), index, cursor], &[prefix]);
+        self.metered(false, bytes, |host| {
             let schema = soft!(host.table_schema(table));
             let record_base = soft!(collection_key(table, "r", &[]));
             let Some(index) = index else {
@@ -249,6 +270,13 @@ impl HostCore {
             let (found, next) = soft!(host.read_page(&base, cursor, limit, reverse)?);
             let mut items = Vec::with_capacity(found.len());
             for (_, record_key) in found {
+                // An index entry holds a record key of this table; anything else is not
+                // looked up.
+                if !record_key.starts_with(&record_base) {
+                    return Ok(Err(CollError::BadRecord(
+                        "an index entry not holding a record key of this table".into(),
+                    )));
+                }
                 let Some(value) = host.coll_get(&record_key)? else {
                     return Ok(Err(CollError::BadRecord("a dangling index entry".into())));
                 };
@@ -262,7 +290,8 @@ impl HostCore {
     /// The maintained count `count` for the records matching `prefix`: one read when the
     /// prefix names every field, else the sum of the counts under it.
     pub fn table_count(&mut self, table: &str, count: &str, prefix: &[KeyPart]) -> Answer<u64> {
-        self.metered(false, |host| {
+        let bytes = input(&[Some(table), Some(count)], &[prefix]);
+        self.metered(false, bytes, |host| {
             let schema = soft!(host.table_schema(table));
             let (name, fields) = soft!(named_set(&schema.counts, count));
             soft!(check_prefix(prefix, fields.len()));
@@ -285,7 +314,7 @@ impl HostCore {
 
     /// The value at `key`.
     pub fn map_get(&mut self, map: &str, key: &[KeyPart]) -> Answer<Option<Vec<u8>>> {
-        self.metered(false, |host| {
+        self.metered(false, input(&[Some(map)], &[key]), |host| {
             soft!(host.expect_kind(map, &CollectionSchema::Map));
             let k = soft!(collection_key(map, "m", key));
             Ok(Ok(host.coll_get(&k)?))
@@ -300,7 +329,8 @@ impl HostCore {
         key: &[KeyPart],
         value: &[u8],
     ) -> Answer<Option<Vec<u8>>> {
-        self.metered(true, |host| {
+        let bytes = input(&[Some(map)], &[key]).saturating_add(value.len());
+        self.metered(true, bytes, |host| {
             soft!(host.expect_kind(map, &CollectionSchema::Map));
             soft!(check_wit_key(key).map_err(CollError::BadRecord));
             let k = soft!(collection_key(map, "m", key));
@@ -317,7 +347,7 @@ impl HostCore {
 
     /// Remove `key`, returning the value it held; one less in the map's count.
     pub fn map_remove(&mut self, map: &str, key: &[KeyPart]) -> Answer<Option<Vec<u8>>> {
-        self.metered(true, |host| {
+        self.metered(true, input(&[Some(map)], &[key]), |host| {
             soft!(host.expect_kind(map, &CollectionSchema::Map));
             let k = soft!(collection_key(map, "m", key));
             let count = soft!(collection_key(map, "n", &[]));
@@ -340,10 +370,12 @@ impl HostCore {
         limit: u32,
         reverse: bool,
     ) -> Answer<CollPage> {
-        self.metered(false, |host| {
+        let bytes = input(&[Some(map), cursor], &[prefix]);
+        self.metered(false, bytes, |host| {
             soft!(host.expect_kind(map, &CollectionSchema::Map));
             let map_base = soft!(collection_key(map, "m", &[]));
-            let base = soft!(within([map_base.as_slice(), &encode_key(prefix)].concat()));
+            soft!(within(map_base.len().saturating_add(encoded_len(prefix))));
+            let base = [map_base.as_slice(), &encode_key(prefix)].concat();
             let (found, next) = soft!(host.read_page(&base, cursor, limit, reverse)?);
             let mut items = Vec::with_capacity(found.len());
             for (k, value) in found {
@@ -356,7 +388,7 @@ impl HostCore {
 
     /// Add `delta` to the counter at `key` with `storage.add` (D47).
     pub fn tally_add(&mut self, tally: &str, key: &[KeyPart], delta: i64) -> Answer<()> {
-        self.metered(true, |host| {
+        self.metered(true, input(&[Some(tally)], &[key]), |host| {
             soft!(host.expect_kind(tally, &CollectionSchema::Tally));
             soft!(check_wit_key(key).map_err(CollError::BadRecord));
             let k = soft!(collection_key(tally, "t", key));
@@ -367,7 +399,7 @@ impl HostCore {
 
     /// The counter at `key`; 0 when nothing was added.
     pub fn tally_get(&mut self, tally: &str, key: &[KeyPart]) -> Answer<i64> {
-        self.metered(false, |host| {
+        self.metered(false, input(&[Some(tally)], &[key]), |host| {
             soft!(host.expect_kind(tally, &CollectionSchema::Tally));
             let k = soft!(collection_key(tally, "t", key));
             let n = match host.coll_get(&k)? {
@@ -381,10 +413,17 @@ impl HostCore {
 
     // --- internals -------------------------------------------------------------------
 
-    /// Runs one collection call: the interface's policy, then `call`, then its fuel
-    /// (the one place a collection call is charged, whatever it answered).
-    fn metered<T>(&mut self, write: bool, call: impl FnOnce(&mut Self) -> Answer<T>) -> Answer<T> {
-        self.meter = (0, 0);
+    /// Runs one collection call: its `input` (every byte the guest handed over) metered
+    /// first, then the interface's policy, then `call`, then its fuel (the one place a
+    /// collection call is charged, whatever it answered, the input included even when it
+    /// is refused before being parsed).
+    fn metered<T>(
+        &mut self,
+        write: bool,
+        input: usize,
+        call: impl FnOnce(&mut Self) -> Answer<T>,
+    ) -> Answer<T> {
+        self.meter = (input, 0);
         let answer = match self.may_use_collections(write) {
             Ok(()) => call(self),
             Err(denied) => Err(denied),
@@ -439,7 +478,7 @@ impl HostCore {
         let old = match self.coll_get(&new.record)? {
             Some(_) if !upsert => return Ok(Err(CollError::Duplicate("key".into()))),
             Some(stored) => {
-                let (_, old_fields) = soft!(parse_record(&stored));
+                let (_, old_fields) = soft!(parse_stored(&stored));
                 Some(soft!(entries(table, &schema, &old_fields)))
             }
             None => None,
@@ -510,6 +549,10 @@ impl HostCore {
         let mut start = base.to_vec();
         let mut end = [base, &[0xFF]].concat();
         if let Some(cursor) = cursor {
+            // Longer than any key's base64url: refused before it is decoded.
+            if cursor.len() > MAX_CURSOR_CHARS {
+                return Ok(Err(CollError::BadCursor));
+            }
             let Ok(last) = URL_SAFE_NO_PAD.decode(cursor) else {
                 return Ok(Err(CollError::BadCursor));
             };

@@ -512,6 +512,7 @@ fn coll_error(error: host::CollError) -> collections::CollError {
         host::CollError::BadRecord(why) => collections::CollError::BadRecord(why),
         host::CollError::BadCursor => collections::CollError::BadCursor,
         host::CollError::UnknownCollection(name) => collections::CollError::UnknownCollection(name),
+        host::CollError::UnknownSet(name) => collections::CollError::UnknownSet(name),
         host::CollError::WrongKind(kind) => collections::CollError::WrongKind(kind),
     }
 }

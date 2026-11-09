@@ -14,11 +14,12 @@ use ciborium::Value;
 use serde_json::json;
 
 use super::{
-    canonical_value, collection_fuel, decode_key, encode_key, CollError, CollectionSchema, KeyPart,
-    TableSchema, MAX_COLLECTION_LIMIT,
+    canonical_value, collection_fuel, decode_key, encode_key, encoded_len, CollError,
+    CollectionSchema, KeyPart, TableSchema, MAX_CBOR_DEPTH, MAX_CBOR_ITEMS, MAX_COLLECTION_LIMIT,
 };
 use crate::abi::Abi;
 use crate::core::HostCore;
+use crate::core::MAX_RUN_BYTES;
 use crate::state::{KeyValue, GENERATION};
 use crate::types::{Caller, Directory, HostDenied, Invocation, InvocationKind, OrgRole};
 
@@ -401,7 +402,7 @@ fn table_insert_writes_the_sdk_layout() {
     }
     assert!(matches!(
         host.table_count(TABLE, "nope", &[]),
-        Ok(Err(CollError::UnknownCollection(_)))
+        Ok(Err(CollError::UnknownSet(ref n))) if n == "nope"
     ));
     assert!(matches!(
         host.table_count(TABLE, "perOwner", &[s("a"), s("b")]),
@@ -510,7 +511,7 @@ fn table_find_pages_like_the_sdk() {
     assert_eq!(as_written.items.len(), 6);
     assert!(matches!(
         host.table_find(TABLE, Some("nope"), &[], None, 2, false),
-        Ok(Err(CollError::UnknownCollection(_)))
+        Ok(Err(CollError::UnknownSet(ref n))) if n == "nope"
     ));
     assert!(matches!(
         host.table_find(
@@ -891,14 +892,16 @@ fn every_call_charges_collection_fuel() {
     assert_eq!(host.host_fuel(), 0);
     ok(host.tally_add(TALLY, &[s("yes")], 1));
     let key = encode_key(&[s(TALLY), s("t"), s("yes")]);
-    // One entry touched: its key and the one-byte integer written.
-    assert_eq!(host.host_fuel(), collection_fuel(key.len() + 1, 1));
+    // The input (name and key parts), then one entry touched: its key and the one-byte
+    // integer written.
+    let input = TALLY.len() + encode_key(&[s("yes")]).len();
+    assert_eq!(host.host_fuel(), collection_fuel(input + key.len() + 1, 1));
     let before = host.host_fuel();
     assert!(matches!(host.map_get("nope", &[]), Ok(Err(_))));
     assert_eq!(
         host.host_fuel(),
-        before + collection_fuel(0, 0),
-        "a refusal costs the base"
+        before + collection_fuel("nope".len(), 0),
+        "a refusal costs the base and its input"
     );
     assert!(collection_fuel(10, 2) > collection_fuel(0, 0));
     assert!(
@@ -946,4 +949,195 @@ fn an_integer_key_part_outside_s64_and_u64_is_refused() {
     ok(host.tally_add(TALLY, &[KeyPart::Int(i64::MIN.into())], 1));
     ok(host.tally_add(TALLY, &[KeyPart::Int(u64::MAX.into())], 1));
     assert_eq!(host.write_count(), 2, "only the two edge adds were written");
+}
+
+/// A record whose bytes alone pass `MAX_RUN_BYTES` could never be stored: refused before
+/// it is parsed (a 2 MiB CBOR array of zeros parses into hundreds of MiB of tree), its
+/// bytes still charged.
+#[test]
+fn an_oversized_record_is_refused_before_parsing() {
+    let len = 2 * 1024 * 1024;
+    let mut record = vec![0x9A];
+    record.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+    record.resize(5 + len, 0);
+    let mut host = call();
+    for answer in [
+        host.table_insert(TABLE, &record),
+        host.table_upsert(TABLE, &record),
+    ] {
+        assert!(
+            matches!(answer, Ok(Err(CollError::BadRecord(ref m))) if m == &format!("a value of {} bytes, over {MAX_RUN_BYTES}", record.len())),
+            "{answer:?}"
+        );
+    }
+    let fuel = collection_fuel(TABLE.len() + record.len(), 0);
+    assert_eq!(host.host_fuel(), 2 * fuel, "every input byte charged");
+    let before = host.host_fuel();
+    let answer = host.map_insert(MAP, &[s("k")], &record);
+    assert!(
+        matches!(answer, Ok(Err(CollError::BadRecord(_)))),
+        "{answer:?}"
+    );
+    let input = MAP.len() + encode_key(&[s("k")]).len() + record.len();
+    assert_eq!(host.host_fuel() - before, collection_fuel(input, 0));
+    assert_eq!(host.write_count(), 0, "nothing written");
+    assert_eq!(dump(&mut host), []);
+}
+
+/// Nesting past `MAX_CBOR_DEPTH`, more than `MAX_CBOR_ITEMS` items, or a length the input
+/// cannot hold is refused on the raw bytes, before a tree is built.
+#[test]
+fn a_deeply_nested_record_is_refused() {
+    let bad = |record: &[u8], why: &str| {
+        let mut host = call();
+        for answer in [
+            host.table_insert(TABLE, record),
+            host.table_upsert(TABLE, record),
+            host.map_insert(MAP, &[s("k")], record)
+                .map(|r| r.map(|_| ())),
+        ] {
+            assert!(
+                matches!(answer, Ok(Err(CollError::BadRecord(ref m))) if m.contains(why)),
+                "{why}: {answer:?}"
+            );
+        }
+        assert_eq!(host.write_count(), 0, "{why}: nothing written");
+    };
+    // A record map whose `tags` field nests arrays one level too deep.
+    let nested = |levels: usize| {
+        let mut value = vec![0x81; levels];
+        value.push(0x00);
+        value
+    };
+    let full = cbor(&member("o1", 1, "ann", None));
+    let Value::Map(mut entries) = ciborium::from_reader::<Value, _>(full.as_slice()).unwrap()
+    else {
+        panic!("a record is a map");
+    };
+    let tags = entries
+        .iter_mut()
+        .find(|(k, _)| k.as_text() == Some("tags"))
+        .unwrap();
+    tags.1 = ciborium::from_reader(nested(MAX_CBOR_DEPTH).as_slice()).unwrap();
+    let mut record = Vec::new();
+    ciborium::into_writer(&Value::Map(entries.clone()), &mut record).unwrap();
+    bad(&record, "deeper");
+    bad(&nested(MAX_CBOR_DEPTH + 1), "deeper");
+    // One level less is a well-formed record (its `tags` is not a key field).
+    tags_at_depth_ok(&mut entries);
+    // More items than the cap, in few bytes each.
+    let mut many = vec![0x9A];
+    many.extend_from_slice(&u32::try_from(MAX_CBOR_ITEMS + 1).unwrap().to_be_bytes());
+    many.resize(5 + MAX_CBOR_ITEMS + 1, 0);
+    bad(&many, "CBOR items");
+    // A declared length its bytes cannot hold: no allocation for it.
+    bad(
+        &[0x9B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00],
+        "past the end",
+    );
+    bad(&[0xBA, 0x00, 0x01, 0x00, 0x00, 0x00], "past the end");
+    bad(&[0x5A, 0x00, 0x10, 0x00, 0x00, 0x01], "past the end");
+}
+
+/// A record whose non-key field nests to `MAX_CBOR_DEPTH` exactly is accepted.
+fn tags_at_depth_ok(entries: &mut [(Value, Value)]) {
+    let mut value = vec![0x81; MAX_CBOR_DEPTH - 1];
+    value.push(0x00);
+    let tags = entries
+        .iter_mut()
+        .find(|(k, _)| k.as_text() == Some("tags"))
+        .unwrap();
+    tags.1 = ciborium::from_reader(value.as_slice()).unwrap();
+    let mut record = Vec::new();
+    ciborium::into_writer(&Value::Map(entries.to_vec()), &mut record).unwrap();
+    let mut host = call();
+    ok(host.table_insert(TABLE, &record));
+}
+
+/// Every guest-supplied byte (names, records, keys, prefixes, cursors) is charged, also
+/// when the call is refused before it is parsed or encoded; an over-long key is refused
+/// from its computed length, never encoded.
+#[test]
+fn input_bytes_are_charged_before_parsing() {
+    let mut host = call();
+    let garbage = vec![0xFF; 4_000];
+    let before = host.host_fuel();
+    assert!(matches!(
+        host.table_insert(TABLE, &garbage),
+        Ok(Err(CollError::BadRecord(_)))
+    ));
+    assert_eq!(
+        host.host_fuel() - before,
+        collection_fuel(TABLE.len() + garbage.len(), 0)
+    );
+    // An unknown collection still pays for the key it was handed.
+    let key = vec![KeyPart::Bytes(vec![1; 5_000]); 3];
+    assert_eq!(encoded_len(&key), encode_key(&key).len());
+    let before = host.host_fuel();
+    assert!(matches!(
+        host.map_get("nope", &key),
+        Ok(Err(CollError::UnknownCollection(_)))
+    ));
+    assert_eq!(
+        host.host_fuel() - before,
+        collection_fuel("nope".len() + encoded_len(&key), 0)
+    );
+    // Too many parts, or too long: refused with the exact length the key would have had.
+    for key in [
+        vec![KeyPart::None; 100_000],
+        vec![s(&"x".repeat(2_000))],
+        vec![KeyPart::Bytes(vec![0; 600])],
+    ] {
+        let full = [vec![s(MAP), s("m")], key.clone()].concat();
+        assert_eq!(encoded_len(&full), encode_key(&full).len());
+        let before = host.host_fuel();
+        let answer = host.map_get(MAP, &key);
+        assert_eq!(
+            answer,
+            Ok(Err(CollError::BadRecord(format!(
+                "a key of {} bytes, over 1023",
+                encoded_len(&full)
+            ))))
+        );
+        assert_eq!(
+            host.host_fuel() - before,
+            collection_fuel(MAP.len() + encoded_len(&key), 0)
+        );
+    }
+    // A cursor longer than any key's is refused before decoding; its bytes are charged.
+    let cursor = "A".repeat(100_000);
+    let before = host.host_fuel();
+    assert_eq!(
+        host.map_page(MAP, &[], Some(&cursor), 10, false),
+        Ok(Err(CollError::BadCursor))
+    );
+    assert_eq!(
+        host.host_fuel() - before,
+        collection_fuel(MAP.len() + cursor.len(), 0)
+    );
+    assert_eq!(host.write_count(), 0);
+}
+
+/// An index entry's value is a record key of the same table, or the find refuses it
+/// rather than reading whatever key it names.
+#[test]
+fn an_index_entry_not_holding_a_record_key_is_refused() {
+    let mut host = call();
+    ok(host.map_insert(MAP, &[s("secret")], &text("v")));
+    let index = encode_key(&[
+        s(TABLE),
+        s("i"),
+        s("byOwner"),
+        s("ann"),
+        s("o1"),
+        KeyPart::Int(1),
+    ]);
+    let elsewhere = encode_key(&[s(MAP), s("m"), s("secret")]);
+    host.storage_put(&index, &elsewhere).unwrap();
+    assert_eq!(
+        host.table_find(TABLE, Some("byOwner"), &[], None, 10, false),
+        Ok(Err(CollError::BadRecord(
+            "an index entry not holding a record key of this table".into()
+        )))
+    );
 }
