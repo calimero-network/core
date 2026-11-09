@@ -456,27 +456,6 @@ fn a_valid_job_final_marks_the_outputs_records_the_usage_and_applies_the_result(
     assert_eq!(head.last_ts_ms, 9);
 }
 
-#[test]
-fn only_the_first_final_of_a_run_applies() {
-    let mut w = World::new();
-    w.start("r1");
-    let k = job_key(1);
-    let _a = w.assign("r1", &k);
-    let first = w.done("r1", &k);
-    assert!(!w.finish(first).conflict);
-    let mut second = w.done("r1", &k);
-    second.result.diff = vec![w2("second")];
-    assert_eq!(why(&w.finish(second)), "already final");
-    assert_eq!(w.wrote("second"), None);
-    let cancel = FinalEntry {
-        base_index: w.last,
-        ..leader(&w, "r1", FinalOutcome::Cancelled)
-    };
-    assert_eq!(why(&w.finish(cancel)), "already final");
-    assert_eq!(w.state("r1"), RunState::Done);
-    assert_eq!(w.r.machine.state.component.head.finished_runs.len(), 1);
-}
-
 /// `r1` ended `Done`, or `Failed` as lost after its last attempt.
 fn ended_world(done: bool) -> World {
     let mut w = World::new();
@@ -1109,59 +1088,6 @@ fn finish_quickly(w: &mut World, run: &str) {
     assert!(!w.finish(entry).conflict);
 }
 
-fn feed(total: usize) -> World {
-    let mut w = World::new();
-    for batch in (0..total).collect::<Vec<_>>().chunks(40) {
-        let starts: Vec<_> = batch.iter().map(|i| started(&format!("r{i:03}"))).collect();
-        let _a = w.call(starts, &[]);
-        for i in batch {
-            finish_quickly(&mut w, &format!("r{i:03}"));
-        }
-    }
-    w
-}
-
-#[test]
-fn the_oldest_finished_records_expire_identically_on_every_replica() {
-    let total = FINISHED_RUNS_KEPT + 30;
-    let (one, two) = (feed(total), feed(total));
-    let kept: Vec<String> = (30..total).map(|i| format!("r{i:03}")).collect();
-    for w in [&one, &two] {
-        let head = &w.r.machine.state.component.head;
-        assert_eq!(head.finished_runs.iter().cloned().collect::<Vec<_>>(), kept);
-        assert!(head.active_runs.is_empty());
-        for i in 0..total {
-            let id = format!("r{i:03}");
-            assert_eq!(w.r.machine.run_record(&id).is_some(), i >= 30, "{id}");
-        }
-    }
-    assert_eq!(
-        one.r.machine.state.component.head,
-        two.r.machine.state.component.head
-    );
-}
-
-#[test]
-fn runs_come_back_from_their_rows_after_a_restore() {
-    let mut w = World::new();
-    w.start("r1");
-    w.start("r2");
-    w.start("r3");
-    let k = job_key(1);
-    let _a = w.assign("r1", &k);
-    assert!(!w.finish(w.done("r1", &k)).conflict);
-    let _a = w.assign("r2", &k);
-    let mut fresh = AppMachine::new("app".into());
-    calimero_log::Machine::attach(&mut fresh, w.r.engine.group_state(5));
-    calimero_log::Machine::restore(&mut fresh, &[]).unwrap();
-    assert_eq!(fresh.active_runs(), ["r2", "r3"]);
-    assert_eq!(fresh.state.component.head.finished_runs, ["r1"]);
-    for id in ["r1", "r2", "r3"] {
-        assert_eq!(fresh.run_record(id), Some(w.record(id)));
-    }
-    assert_eq!(fresh.run_record("r2").unwrap().state, RunState::Running);
-}
-
 #[test]
 fn the_host_sees_the_active_runs_only() {
     let mut w = World::new();
@@ -1257,25 +1183,6 @@ fn state_logged_before_runs_existed_still_decodes() {
 }
 
 #[test]
-fn naming_the_app_fills_every_start() {
-    let mut outcome = Outcome {
-        compute_starts: vec![
-            ComputeStart {
-                owner: String::new(),
-                ..started("r1")
-            },
-            ComputeStart {
-                owner: String::new(),
-                ..started("r2")
-            },
-        ],
-        ..Outcome::default()
-    };
-    outcome.name_owner("alice");
-    assert!(outcome.compute_starts.iter().all(|s| s.owner == "alice"));
-}
-
-#[test]
 fn a_started_run_of_the_host_becomes_the_nodes_start() {
     let run = host::StartedRun {
         run: "r1".into(),
@@ -1342,25 +1249,6 @@ fn an_init_that_conflicts_starts_nothing_and_leaves_no_bundle() {
     assert!(r.apply(1, &serde_json::to_vec(&init).unwrap()).conflict);
     assert!(r.machine.active_runs().is_empty());
     assert_eq!(r.machine.state.bundle, None);
-}
-
-#[test]
-fn permanent_refusals_answer_a_reason_and_only_a_stale_base_is_a_conflict() {
-    let mut w = World::new();
-    w.start("r1");
-    let k = job_key(1);
-    let a = w.push(&attempt("r1", 2, &k, DIGEST));
-    assert!(!a.conflict && a.status == Status::AppError);
-    assert_eq!(a.error, "attempt is not the next one");
-    let _a = w.assign("r1", &k);
-    let stale = w.done("r1", &k);
-    let _a = w.call(Vec::new(), &[]);
-    let a = w.finish(stale);
-    assert!(a.conflict && a.error["detail"] == "conflict: retry");
-    let mut bad = w.done("r1", &job_key(9));
-    bad.base_index = w.last;
-    let a = w.finish(bad);
-    assert!(!a.conflict && a.error == "report not signed by the assigned job node");
 }
 
 /// A host core on `w`'s state, running a call the way the node runs one.

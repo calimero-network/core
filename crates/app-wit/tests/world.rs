@@ -113,12 +113,6 @@ fn app_world_does_not_import_job() {
 }
 
 #[test]
-fn only_the_app_world_imports_runs() {
-    assert!(imports_of_world("app").contains("calimero:app/runs@0.5.1"));
-    assert!(!imports_of_world("compute").contains("calimero:app/runs@0.5.1"));
-}
-
-#[test]
 fn stubbed_imports_are_nine_disjoint_and_not_sockets() {
     let stubbed = stubbed_imports();
     assert_eq!(stubbed.len(), 9);

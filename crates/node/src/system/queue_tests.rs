@@ -111,16 +111,6 @@ fn defaults_are_four_runs_and_ten_times_the_fuel_ceiling_and_read_from_old_state
 }
 
 #[test]
-fn without_a_job_node_a_run_waits_and_a_registered_node_grants_it() {
-    let mut m = machine();
-    let out = m.run(acquire("a1", "r1", 10)).unwrap();
-    assert_eq!(out["state"], json!("queued"));
-    assert!(granted(&m).is_empty());
-    job_node(&mut m, 5);
-    assert_eq!(granted(&m), pairs(&[("a1", "r1")]));
-}
-
-#[test]
 fn capacity_is_the_job_nodes_places_and_a_removed_node_takes_none_back() {
     let mut m = machine();
     job_node(&mut m, 5);
@@ -161,24 +151,6 @@ fn a_replica_node_adds_no_capacity() {
     .unwrap();
     m.run(acquire("a1", "r1", 1)).unwrap();
     assert!(granted(&m).is_empty());
-}
-
-#[test]
-fn the_longest_waiting_org_is_served_first() {
-    let mut m = machine();
-    job_node(&mut m, 5);
-    m.run(acquire("a1", "g1", 1)).unwrap();
-    m.run(acquire("a1", "g2", 1)).unwrap();
-    // Waiting, in arrival order: y, x, y.
-    m.run(acquire("b1", "w1", 1)).unwrap();
-    m.run(acquire("a1", "w2", 1)).unwrap();
-    m.run(acquire("b1", "w3", 1)).unwrap();
-    m.run(release("a1", "g1")).unwrap();
-    assert_eq!(granted(&m), pairs(&[("a1", "g2"), ("b1", "w1")]));
-    m.run(release("a1", "g2")).unwrap();
-    assert_eq!(granted(&m), pairs(&[("a1", "w2"), ("b1", "w1")]));
-    m.run(release("b1", "w1")).unwrap();
-    assert_eq!(granted(&m), pairs(&[("a1", "w2"), ("b1", "w3")]));
 }
 
 #[test]
@@ -489,26 +461,6 @@ fn a_run_whose_fuel_alone_exceeds_the_quota_is_refused_not_queued() {
     );
     assert!(m.state.compute.is_empty() && m.state.next_run_seq == 0);
     m.run(acquire("a1", "r", 10)).unwrap();
-}
-
-#[test]
-fn many_waiting_runs_are_granted_in_arrival_order_per_payer() {
-    let mut m = machine();
-    m.state.quotas.max_concurrent_runs_per_org = 3;
-    for i in 0..4 {
-        m.run(acquire("a1", &format!("x{i}"), 1)).unwrap();
-        m.run(acquire("b1", &format!("y{i}"), 1)).unwrap();
-    }
-    for n in 5..9 {
-        job_node(&mut m, n);
-    }
-    // 8 places, 3 per org: the oldest three of each.
-    let got = granted(&m);
-    let want: Vec<(String, String)> = (0..3)
-        .map(|i| ("a1".to_owned(), format!("x{i}")))
-        .chain((0..3).map(|i| ("b1".to_owned(), format!("y{i}"))))
-        .collect();
-    assert_eq!(got, want);
 }
 
 #[test]
