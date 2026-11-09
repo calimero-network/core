@@ -303,9 +303,11 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
     let home = Cluster::start(1).await;
     let away = Cluster::start(1).await;
     let tag = passkey_tag(&home).await;
-    // Two clusters are two cluster keys, so two tags: a cluster made again
-    // under its old name is told apart from the one before.
-    assert_ne!(tag, passkey_tag(&away).await);
+    // Test clusters share one storage key (`[42; 32]`), so they share a
+    // cluster key and a tag; in production every cluster gets its own KMS
+    // identity, so a cluster made again under its old name gets another tag
+    // (`backup::tests`: another cluster key, another identity key).
+    assert_eq!(tag, passkey_tag(&away).await);
     let shown = format!("alice · {} · {tag}", home.name);
     let begin = home
         .client(0)
