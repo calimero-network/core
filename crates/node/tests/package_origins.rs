@@ -289,9 +289,11 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         )
         .await
         .unwrap();
+    let public = c.client(0).get("sign-up").await.unwrap();
+    let tag = public["passkeyTag"].as_str().unwrap().to_owned();
     assert_eq!(
         begin["options"]["user"]["name"],
-        format!("carol · {NOTES} ({})", c.name),
+        format!("carol · {NOTES} ({} · {tag})", c.name),
         "{begin}"
     );
     let s = carol
