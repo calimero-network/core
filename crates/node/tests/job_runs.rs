@@ -10,7 +10,8 @@ use std::time::Duration;
 use calimero_client::Client;
 use calimero_node::backup::cluster_identity_key;
 use calimero_node::files::{
-    noise_seed, run_token, unwrap_key, wrap_for_job, FileOpener, JobWrap, WrapKind,
+    file_id, noise_seed, run_token, segment_hash, unwrap_key, wrap_for_job, FileOpener, JobWrap,
+    WrapKind, SEGMENT_BYTES,
 };
 use calimero_node::job_node::{MAX_RUN_INPUTS, TOKEN_HEADER};
 use calimero_node::job_wire::{
@@ -200,11 +201,23 @@ fn run_path(a: &Assignment) -> String {
 
 struct Input {
     id: String,
+    segments: Vec<String>,
     size: u64,
     sha256: [u8; 32],
     ciphertext: Vec<u8>,
     key: [u8; 32],
     plain: Vec<u8>,
+}
+
+impl Input {
+    /// Names the ciphertext by its own segments, as the leader would send it.
+    fn rename(&mut self) {
+        let hashes: Vec<[u8; 32]> = (self.ciphertext.chunks(SEGMENT_BYTES))
+            .map(segment_hash)
+            .collect();
+        self.segments = hashes.iter().map(hex::encode).collect();
+        self.id = hex::encode(file_id(&hashes));
+    }
 }
 
 struct Rig {
@@ -329,7 +342,12 @@ impl Rig {
         let plain = stream(INPUT_LEN, seed);
         assert_eq!(hex::encode(&seal.sha256.0), sha256_hex(&plain));
         Input {
-            ciphertext: node.engine.get_blob(&id).unwrap().unwrap(),
+            ciphertext: seal
+                .segments
+                .iter()
+                .flat_map(|hash| node.engine.get_segment(hash).unwrap().unwrap())
+                .collect(),
+            segments: seal.segments.clone(),
             sha256: seal.sha256.0.as_slice().try_into().unwrap(),
             size: record.size,
             key: *key,
@@ -389,6 +407,7 @@ impl Rig {
                     id: input.id.clone(),
                     size: input.size,
                     sha256: hex::encode(input.sha256),
+                    segments: input.segments.clone(),
                     wrapped: wrap_for_job(
                         &job.transport_key,
                         &wrap(WrapKind::FileKey, i as u32),
@@ -529,7 +548,14 @@ async fn a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_t
     let token_a = rig.token(&a);
     let out = &report_a.outputs[0];
     let (ciphertext, key) = job_a.output(&a, &token_a, 0).await;
-    assert_eq!(out.id, sha256_hex(&ciphertext));
+    let hashes: Vec<[u8; 32]> = (ciphertext.chunks(SEGMENT_BYTES))
+        .map(segment_hash)
+        .collect();
+    assert_eq!(out.id, hex::encode(file_id(&hashes)));
+    assert_eq!(
+        out.segments,
+        hashes.iter().map(hex::encode).collect::<Vec<_>>()
+    );
     let plain_a = open(
         &ciphertext,
         &key,
@@ -642,7 +668,7 @@ async fn an_altered_input_fails_the_run_as_integrity_and_a_malformed_one_is_refu
     let middle = tampered.ciphertext.len() / 2;
     tampered.ciphertext[middle] ^= 1;
     // What the leader sent is named by its own hash, so it arrives; it is not what the record says.
-    tampered.id = sha256_hex(&tampered.ciphertext);
+    tampered.rename();
 
     let a = rig.assignment(&job, "tamper", 1, "digest", DIGEST, &[&tampered]);
     let answer = rig.run(&job, &a, &[&tampered]).await;
@@ -817,11 +843,15 @@ async fn a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_
         let mut a = good.clone();
         a.run = format!("many-{}", rand_run());
         a.inputs = (0..n)
-            .map(|i| RunInput {
-                id: sha256_hex(&i.to_be_bytes()),
-                size,
-                sha256: "00".repeat(32),
-                wrapped: Vec::new(),
+            .map(|i| {
+                let segment = calimero_identity::sha256(&i.to_be_bytes());
+                RunInput {
+                    id: hex::encode(file_id(&[segment])),
+                    size,
+                    sha256: "00".repeat(32),
+                    segments: vec![hex::encode(segment)],
+                    wrapped: Vec::new(),
+                }
             })
             .collect();
         resign(&mut a);
@@ -1242,6 +1272,7 @@ async fn an_input_that_is_not_its_record_declares_ends_the_run_at_once_as_integr
         key: good.key,
         plain: good.plain.clone(),
         id: good.id.clone(),
+        segments: good.segments.clone(),
         ..other
     };
     liar.size = good.size;

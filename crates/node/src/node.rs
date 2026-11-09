@@ -988,6 +988,33 @@ impl Node {
         Ok(v)
     }
 
+    /// A raw-body request to a peer's internal route; the refusal a peer answers is the error.
+    async fn peer_raw(
+        &self,
+        addr: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> eyre::Result<reqwest::Response> {
+        let peer = self.connected(addr).await?;
+        let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
+        let mut req = (self.http.request(method, url))
+            .header("x-cluster-auth", &self.cluster_secret)
+            .header(PEER_NODE_HEADER, self.config.node_id.to_string());
+        if let Some(body) = body {
+            req = req.body(body);
+        }
+        let resp = peer.execute(req.build()?).await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        let v: Value = resp.json().await.unwrap_or(Value::Null);
+        let err: ApiError = serde_json::from_value(v)
+            .unwrap_or_else(|_| ApiError::unavailable(&format!("peer answered {status}")));
+        Err(err.into())
+    }
+
     /// [`Self::peer_post`] for a request a peer should answer quickly: a call or
     /// read forwarded to an app's leader. A leader that stopped answering (frozen,
     /// partitioned) is replaced by an election in a few seconds, so the caller
@@ -2148,15 +2175,15 @@ impl Node {
     /// Removes this node's bytes of the sealed files of an app that was deleted. Files are per
     /// app and never shared; plain blobs are content-addressed and may be another app's.
     fn drop_deleted_files(&self, g: &Group<AppMachine>) {
-        let files: Vec<String> = g.read_local(|m, _| {
-            (m.state.component.blobs.records.iter())
-                .filter(|(_, r)| r.file.is_some())
-                .map(|(id, _)| hex::encode(id))
+        let segments: Vec<String> = g.read_local(|m, _| {
+            (m.state.component.blobs.records.values())
+                .filter_map(|r| r.file.as_ref())
+                .flat_map(|f| f.segments.clone())
                 .collect()
         });
-        for id in files.iter().filter(|id| !self.is_code_blob(id)) {
-            if let Err(e) = self.engine.delete_blob(id) {
-                warn!(file = %id, error = %e, "file bytes not deleted");
+        for hash in &segments {
+            if let Err(e) = self.engine.delete_segment(hash) {
+                warn!(segment = %hash, error = %e, "file bytes not deleted");
             }
         }
     }
@@ -2196,17 +2223,16 @@ impl Node {
             let wasm = self.bundle_wasm(&bundle).await?;
             self.hand_to(&bundle, wasm, to).await?;
         }
-        // One blob in memory at a time: an app may hold many large ones.
-        let ids: Vec<String> = g.read_local(|m, _| {
-            let mut ids: Vec<String> = (m.storage_stats().blobs.iter())
+        // One blob or segment in memory at a time: an app may hold many large ones.
+        let (ids, segments): (Vec<String>, Vec<String>) = g.read_local(|m, _| {
+            let ids = (m.storage_stats().blobs.iter())
                 .map(|(id, _)| hex::encode(id))
                 .collect();
-            ids.extend(
-                (m.state.component.blobs.records.iter())
-                    .filter(|(_, r)| r.file.is_some())
-                    .map(|(id, _)| hex::encode(id)),
-            );
-            ids
+            let segments = (m.state.component.blobs.records.values())
+                .filter_map(|r| r.file.as_ref())
+                .flat_map(|f| f.segments.clone())
+                .collect();
+            (ids, segments)
         });
         for id in ids {
             if !now.insert(id.clone()) {
@@ -2221,6 +2247,19 @@ impl Node {
                 None => self.fetch_blob(&id).await?,
             };
             self.hand_to(&id, bytes, to).await?;
+        }
+        for hash in segments {
+            if !now.insert(hash.clone()) {
+                continue;
+            }
+            let bytes = self.segment_from(&hash, &self.other_nodes()).await?;
+            for (id, addr) in to {
+                if let Err(e) = self.put_segment_on(addr, &hash, &bytes).await {
+                    return Err(ApiError::unavailable(&format!(
+                        "node {id} could not take the app's bytes: {e}"
+                    )));
+                }
+            }
         }
         Ok(now)
     }
@@ -2240,6 +2279,64 @@ impl Node {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// The bytes of segment `hash` stored here; one that is not its hash is dropped.
+    pub(crate) fn local_segment(&self, hash: &str) -> Option<Vec<u8>> {
+        match self.engine.get_segment(hash) {
+            Ok(Some(bytes)) if hex::encode(calimero_identity::sha256(&bytes)) == hash => {
+                Some(bytes)
+            }
+            Ok(Some(_)) => {
+                warn!(segment = %hash, "a stored segment is not its hash; dropping it");
+                let _dropped = self.engine.delete_segment(hash);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Segment `hash` from this node, else from `peers`, kept here after.
+    pub(crate) async fn segment_from(
+        &self,
+        hash: &str,
+        peers: &[String],
+    ) -> Result<Vec<u8>, ApiError> {
+        if let Some(bytes) = self.local_segment(hash) {
+            return Ok(bytes);
+        }
+        for addr in peers {
+            let path = format!("internal/segment/{hash}");
+            let Ok(resp) = self.peer_raw(addr, reqwest::Method::GET, &path, None).await else {
+                continue;
+            };
+            let Ok(bytes) =
+                calimero_sealed::client::read_body_capped(resp, crate::files::SEGMENT_BYTES).await
+            else {
+                continue;
+            };
+            if hex::encode(calimero_identity::sha256(&bytes)) == hash {
+                self.engine
+                    .put_segment(hash, &bytes)
+                    .map_err(|e| ApiError::internal(&e.to_string()))?;
+                return Ok(bytes);
+            }
+        }
+        Err(ApiError::unavailable("no peer holds the segment"))
+    }
+
+    /// Store segment `hash` on the node at `addr`, raw.
+    pub(crate) async fn put_segment_on(
+        &self,
+        addr: &str,
+        hash: &str,
+        bytes: &[u8],
+    ) -> eyre::Result<()> {
+        let path = format!("internal/segment/{hash}");
+        let _ok = self
+            .peer_raw(addr, reqwest::Method::PUT, &path, Some(bytes.to_vec()))
+            .await?;
         Ok(())
     }
 
@@ -2359,6 +2456,10 @@ impl Node {
         if let Err(e) = self.engine.delete_blob(&hex_id) {
             warn!(blob = %hex_id, error = %e, "blob not deleted");
         }
+        // The id may name a file segment, which the apps' leaders above never hold as a blob.
+        if let Err(e) = self.engine.delete_segment(&hex_id) {
+            warn!(segment = %hex_id, error = %e, "segment not deleted");
+        }
         let peers: Vec<String> = self.sys(|s| {
             s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
@@ -2366,11 +2467,10 @@ impl Node {
                 .collect()
         });
         let body = json!({ "hash": hex_id });
-        let _r = futures_util::future::join_all(
-            peers
-                .iter()
-                .map(|addr| self.peer_post(addr, "internal/blob/delete", &body)),
-        )
+        let _r = futures_util::future::join_all(peers.iter().map(|addr| async {
+            let _blob = self.peer_post(addr, "internal/blob/delete", &body).await;
+            self.peer_post(addr, "internal/segment/delete", &body).await
+        }))
         .await;
     }
 

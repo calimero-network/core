@@ -12,13 +12,12 @@ use calimero_app_host::{
     ComputeCaps, FileError, FileInfo, FileRead, FileWrite, Files, NewFile, Outcome, Progress,
     ReadError, Status, NO_SUCH_FILE,
 };
-use ring::digest::{Context, SHA256};
 use tracing::warn;
 use zeroize::Zeroizing;
 
 use super::runs::{hash_hex, Finished, Keys, OutputFile, Phase, Run};
 use super::{locked, JobNode};
-use crate::files::{sealed_len, FileOpener, FileSealer, CHUNK_BYTES, TAG_BYTES};
+use crate::files::{sealed_len, FileOpener, SegmentWriter, CHUNK_BYTES, TAG_BYTES};
 use crate::job_wire::{
     sign_report, Assignment, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
     MAX_REPORT_MESSAGE_BYTES,
@@ -59,8 +58,10 @@ pub(super) fn classify(status: &Status) -> Verdict {
 
 /// A sealed file in the scratch directory, an input or an output.
 struct SealedFile {
-    /// Hex SHA-256 of the ciphertext.
+    /// Hex file id: the hash of the segment list.
     id: String,
+    /// Hex SHA-256 of each segment of the ciphertext.
+    segments: Vec<String>,
     size: u64,
     sha256: [u8; 32],
     key: Zeroizing<[u8; 32]>,
@@ -106,9 +107,8 @@ impl Files for JobFiles {
         let part = self.dir.join(format!("w-{n}{PART_SUFFIX}"));
         let file = File::create(&part).map_err(|_| FileError::Unavailable)?;
         Ok(Box::new(OutputWriter {
-            sealer: Some(FileSealer::new()),
+            sealer: Some(SegmentWriter::new()),
             file: BufWriter::new(file),
-            ciphertext: Context::new(&SHA256),
             part,
             dir: self.dir.clone(),
             produced: Arc::clone(&self.produced),
@@ -159,9 +159,8 @@ impl FileRead for InputReader {
 }
 
 struct OutputWriter {
-    sealer: Option<FileSealer>,
+    sealer: Option<SegmentWriter>,
     file: BufWriter<File>,
-    ciphertext: Context,
     part: PathBuf,
     dir: PathBuf,
     produced: Arc<Mutex<Vec<SealedFile>>>,
@@ -169,7 +168,6 @@ struct OutputWriter {
 
 impl OutputWriter {
     fn put(&mut self, ciphertext: &[u8]) -> Result<(), FileError> {
-        self.ciphertext.update(ciphertext);
         self.file.write_all(ciphertext).map_err(failed)
     }
 }
@@ -180,8 +178,10 @@ impl FileWrite for OutputWriter {
             .sealer
             .as_mut()
             .ok_or_else(|| FileError::Failed(FINISHED.to_owned()))?;
-        let sealed = sealer.write(bytes).map_err(failed)?;
-        self.put(&sealed)
+        for segment in sealer.write(bytes).map_err(failed)? {
+            self.put(&segment.bytes)?;
+        }
+        Ok(())
     }
 
     fn finish(mut self: Box<Self>) -> Result<NewFile, FileError> {
@@ -191,16 +191,16 @@ impl FileWrite for OutputWriter {
             .ok_or_else(|| FileError::Failed(FINISHED.to_owned()))?;
         let key = Zeroizing::new(*sealer.data_key());
         let sealed = sealer.finish().map_err(failed)?;
-        self.put(&sealed.tail)?;
+        self.put(&sealed.last.bytes)?;
         self.file.flush().map_err(failed)?;
-        let mut id = [0u8; 32];
-        id.copy_from_slice(self.ciphertext.clone().finish().as_ref());
         let mut produced = locked(&self.produced);
         let path = self.dir.join(format!("{OUTPUT_PREFIX}{}", produced.len()));
         std::fs::rename(&self.part, &path).map_err(failed)?;
-        let id = hex::encode(id);
+        let id = hex::encode(sealed.id);
+        let segments: Vec<String> = sealed.segments.iter().map(hex::encode).collect();
         produced.push(SealedFile {
             id: id.clone(),
+            segments,
             size: sealed.size,
             sha256: sealed.sha256,
             key,
@@ -212,7 +212,7 @@ impl FileWrite for OutputWriter {
             size: sealed.size,
             sha256: sealed.sha256.to_vec(),
             wrapped_key: Vec::new(),
-            ciphertext: Vec::new(),
+            segments: Vec::new(),
         })
     }
 }
@@ -281,6 +281,7 @@ fn input_files(
         .map(|(i, (input, key))| {
             Ok(SealedFile {
                 id: input.id.clone(),
+                segments: input.segments.clone(),
                 size: input.size,
                 sha256: hash_hex(&input.sha256).ok_or_else(|| eyre::eyre!("a bad input hash"))?,
                 key,
@@ -365,6 +366,7 @@ fn ending(
                 id: p.id.clone(),
                 size: p.size,
                 sha256: hex::encode(p.sha256),
+                segments: p.segments.clone(),
             })
             .collect(),
         usage: ReportUsage::measured(
@@ -489,16 +491,19 @@ mod tests {
     /// An input of `len` bytes sealed into `dir/in-0`, and the files that serve it.
     fn files(dir: &Path, len: usize) -> (JobFiles, Vec<u8>, Vec<u8>) {
         let data = plain(len);
-        let mut sealer = FileSealer::new();
-        let mut ciphertext = sealer.write(&data).unwrap();
-        let key = Zeroizing::new(*sealer.data_key());
-        let sealed = sealer.finish().unwrap();
-        ciphertext.extend_from_slice(&sealed.tail);
+        let mut writer = SegmentWriter::new();
+        let mut ciphertext: Vec<u8> = (writer.write(&data).unwrap().into_iter())
+            .flat_map(|s| s.bytes)
+            .collect();
+        let key = Zeroizing::new(*writer.data_key());
+        let sealed = writer.finish().unwrap();
+        ciphertext.extend_from_slice(&sealed.last.bytes);
         std::fs::write(dir.join("in-0"), &ciphertext).unwrap();
         let files = JobFiles {
             dir: dir.to_owned(),
             inputs: vec![SealedFile {
-                id: hex::encode(calimero_identity::sha256(&ciphertext)),
+                id: hex::encode(sealed.id),
+                segments: sealed.segments.iter().map(hex::encode).collect(),
                 size: sealed.size,
                 sha256: sealed.sha256,
                 key,
@@ -736,9 +741,11 @@ mod tests {
         assert_ne!(*produced[0].key, *produced[1].key);
         for (i, (new, data)) in made.iter().enumerate() {
             let stored = std::fs::read(dir.path().join(format!("out-{i}"))).unwrap();
-            assert_eq!(new.id, hex::encode(calimero_identity::sha256(&stored)));
+            let stored_hash = calimero_identity::sha256(&stored);
+            assert_eq!(new.id, hex::encode(crate::files::file_id(&[stored_hash])));
+            assert_eq!(produced[i].segments, [hex::encode(stored_hash)]);
             assert_eq!(
-                (new.size, new.ciphertext.len(), new.wrapped_key.len()),
+                (new.size, new.segments.len(), new.wrapped_key.len()),
                 (data.len() as u64, 0, 0)
             );
             assert_eq!(produced[i].id, new.id);

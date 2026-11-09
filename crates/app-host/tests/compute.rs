@@ -614,7 +614,7 @@ impl FileWrite for SinkWriter {
             size: self.0,
             sha256: Vec::new(),
             wrapped_key: Vec::new(),
-            ciphertext: Vec::new(),
+            segments: Vec::new(),
         })
     }
 }

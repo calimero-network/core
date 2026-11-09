@@ -148,12 +148,7 @@ fn attempt(run: &str, n: u32, signer: &SigningKey, digest: [u8; 32]) -> Componen
 
 /// A file the run wrote: ids and hashes are hashes, as a report spells them.
 fn out(n: u8) -> FileMark {
-    FileMark {
-        id: hex::encode([n; 32]),
-        size: 10 + u64::from(n),
-        sha256: Bytes(vec![n + 1; 32]),
-        wrapped_key: Bytes(vec![2; 60]),
-    }
+    FileMark::fixture(n, 10 + u64::from(n))
 }
 
 fn usage() -> ReportUsage {
@@ -189,6 +184,7 @@ fn report(
                 id: o.id.clone(),
                 size: o.size,
                 sha256: hex::encode(&o.sha256.0),
+                segments: o.segments.clone(),
             })
             .collect(),
         usage: usage(),
@@ -437,7 +433,7 @@ fn a_valid_job_final_marks_the_outputs_records_the_usage_and_applies_the_result(
     let a = w.finish(w.done("r1", &k));
     assert!(!a.conflict && a.status == Status::Ok, "{a:?}");
     assert_eq!(w.files(), [out(1).id]);
-    let record = &w.r.machine.state.component.blobs.records[&[1; 32]];
+    let record = &w.r.machine.state.component.blobs.records[&FileMark::fixture_id(1)];
     let seal = record.file.as_ref().expect("an output is a sealed file");
     assert_eq!(
         (record.size, record.refs, &seal.sha256, &seal.wrapped_key),
@@ -637,7 +633,8 @@ fn outputs_and_usage_must_be_the_reports() {
     let k = job_key(1);
     let edits: [Refusal; 7] = [
         ("id", "outputs differ from the report", |e| {
-            e.outputs[0].id = hex::encode([5; 32])
+            e.outputs[0].id = fid(5);
+            e.outputs[0].segments = vec![hex::encode([5; 32])];
         }),
         ("size", "outputs differ from the report", |e| {
             e.outputs[0].size += 1
@@ -1125,7 +1122,7 @@ fn the_host_sees_the_active_runs_only() {
         seen[0].args_sha256,
         calimero_identity::sha256(b"{\"n\":1}").to_vec()
     );
-    assert_eq!(seen[0].inputs, ["ab".repeat(32)]);
+    assert_eq!(seen[0].inputs, [fid(INPUT)]);
 }
 
 #[test]
@@ -1499,12 +1496,7 @@ fn the_outputs_of_a_run_are_bounded_in_count_each_size_and_total() {
     let k = job_key(1);
     let sized = |n: usize, size: u64| -> Vec<FileMark> {
         (0..n)
-            .map(|i| FileMark {
-                id: hex::encode(calimero_identity::sha256(&i.to_be_bytes())),
-                size,
-                sha256: Bytes(vec![1; 32]),
-                wrapped_key: Bytes(vec![2; 60]),
-            })
+            .map(|i| FileMark::fixture(u8::try_from(i % 250).unwrap(), size))
             .collect()
     };
     let cases = [
@@ -1635,7 +1627,7 @@ fn input_held(w: &World) -> bool {
 }
 
 fn input_refs(w: &World) -> u64 {
-    w.r.machine.state.component.blobs.records[&[INPUT; 32]].refs
+    w.r.machine.state.component.blobs.records[&FileMark::fixture_id(INPUT)].refs
 }
 
 #[test]
@@ -1711,7 +1703,7 @@ fn a_result_method_that_stores_an_output_keeps_it_past_the_idle_time() {
     w.start("r1");
     let entry = final_storing(&mut w, Some("kept"));
     assert!(!w.finish(entry).conflict);
-    let record = &w.r.machine.state.component.blobs.records[&[1; 32]];
+    let record = &w.r.machine.state.component.blobs.records[&FileMark::fixture_id(1)];
     assert!(record.file.is_some());
     assert_eq!(record.refs, 1, "counted in the entry that registered it");
     assert!(!touch(&mut w, 10 + 3 * BLOB_IDLE_MS, store_ref("later", 2)).conflict);
@@ -1741,12 +1733,20 @@ fn an_output_the_result_method_does_not_store_is_forgotten_and_its_quota_release
 fn the_result_method_sees_the_outputs_as_sealed_files_of_the_app() {
     let mut w = World::new();
     w.start("r1");
-    assert!(w.r.machine.blob_view().get(&[1; 32]).is_none());
+    assert!(w
+        .r
+        .machine
+        .blob_view()
+        .get(&FileMark::fixture_id(1))
+        .is_none());
     let view = w.r.machine.blob_view_with_outputs(&[out(1)], 10);
-    let record = &view[&[1; 32]];
+    let record = &view[&FileMark::fixture_id(1)];
     assert_eq!((record.size, record.file.is_some()), (out(1).size, true));
     assert!(
-        w.r.machine.blob_view().get(&[1; 32]).is_none(),
+        w.r.machine
+            .blob_view()
+            .get(&FileMark::fixture_id(1))
+            .is_none(),
         "the view is a copy"
     );
 }
@@ -1849,7 +1849,7 @@ fn plain_record(w: &World, n: u8) -> Option<crate::component::blobs::BlobRecord>
 fn a_done_runs_output_publishes_as_a_charged_plain_blob() {
     let mut w = done_world();
     let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
-    let cmd = publish_call(&w, marks, vec![store_ref("report", 2)]);
+    let cmd = publish_call(&w, marks, vec![store_plain_ref("report", 2)]);
     let a = w.push(&cmd);
     assert!(!a.conflict && a.status == Status::Ok, "{a:?}");
     let record = plain_record(&w, 1).expect("the plain blob is recorded");
@@ -1863,9 +1863,11 @@ fn a_done_runs_output_publishes_as_a_charged_plain_blob() {
         (out(1).size, 1, true, true),
         "counted in the entry that made it"
     );
-    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
-        .file
-        .is_some());
+    assert!(
+        w.r.machine.state.component.blobs.records[&FileMark::fixture_id(1)]
+            .file
+            .is_some()
+    );
 }
 
 #[test]
@@ -1873,7 +1875,7 @@ fn a_collected_published_blob_releases_its_charge() {
     let mut w = done_world();
     let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
     assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
-    assert!(!touch(&mut w, 10 + BLOB_IDLE_MS + 1, store_ref("later", 9)).conflict);
+    assert!(!touch(&mut w, 10 + BLOB_IDLE_MS + 1, store_plain_ref("later", 9)).conflict);
     assert!(plain_record(&w, 1).is_none());
     w.last += 1;
     let freed = w.r.apply(w.last, &collected(&[plain(1)]));
@@ -1900,7 +1902,7 @@ fn publishing_what_is_no_done_runs_output_is_refused_and_changes_nothing() {
 fn a_cancel_of_the_done_run_in_the_publishing_call_leaves_the_publish_and_the_run_as_they_are() {
     let mut w = done_world();
     let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
-    let mut cmd = publish_call(&w, marks, vec![store_ref("report", 2)]);
+    let mut cmd = publish_call(&w, marks, vec![store_plain_ref("report", 2)]);
     if let ComponentCmd::Call(c) = &mut cmd {
         c.outcome.compute_cancels = vec!["r1".into()];
     }
@@ -1911,10 +1913,12 @@ fn a_cancel_of_the_done_run_in_the_publishing_call_leaves_the_publish_and_the_ru
     assert!(plain_record(&w, 1).is_some_and(|r| r.charged && r.refs == 1));
     let _a = w.call(Vec::new(), &["r1"]);
     assert!(!w.record("r1").cancel_requested);
-    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
-        .file
-        .as_ref()
-        .is_some_and(|f| f.output));
+    assert!(
+        w.r.machine.state.component.blobs.records[&FileMark::fixture_id(1)]
+            .file
+            .as_ref()
+            .is_some_and(|f| f.output)
+    );
 }
 
 #[test]
@@ -1958,7 +1962,7 @@ fn a_published_blob_the_app_already_holds_is_not_charged_again() {
     assert!(!w.push(&publish_call(&w, marks.clone(), vec![])).conflict);
     let first = plain_record(&w, 1).unwrap();
     assert!(
-        !w.push(&publish_call(&w, marks, vec![store_ref("k", 2)]))
+        !w.push(&publish_call(&w, marks, vec![store_plain_ref("k", 2)]))
             .conflict
     );
     let second = plain_record(&w, 1).unwrap();
@@ -1997,9 +2001,11 @@ fn a_sealed_file_is_still_not_the_owners_to_delete() {
     let mut w = published_world();
     let forget = ComponentCmd::BlobForget { id: out(1).id };
     assert_eq!(why(&owner_cmd(&mut w, &forget)), "no such blob in this app");
-    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
-        .file
-        .is_some());
+    assert!(
+        w.r.machine.state.component.blobs.records[&FileMark::fixture_id(1)]
+            .file
+            .is_some()
+    );
 }
 
 #[test]
@@ -2070,6 +2076,25 @@ fn a_blob_published_over_a_forgotten_upload_starts_above_the_uploads_epoch() {
     let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
     assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
     assert_eq!(plain_record(&w, 1).unwrap().epoch, 1);
+}
+
+#[test]
+fn a_file_cannot_take_the_id_of_a_plain_blob_the_app_holds() {
+    let mut w = World::new();
+    let mark = FileMark::fixture(5, 15);
+    let upload = ComponentCmd::Blob {
+        id: mark.id.clone(),
+        size: 9,
+        mime: "text/plain".to_owned(),
+        ts_ms: 20,
+    };
+    assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
+    let mut call = call_entry(w.last);
+    call.outcome.files = vec![mark.clone()];
+    w.push(&ComponentCmd::Call(Box::new(call)));
+    let held = &w.r.machine.state.component.blobs.records[&FileMark::fixture_id(5)];
+    assert!(held.file.is_none(), "the plain blob became a file");
+    assert_eq!(held.size, 9);
 }
 
 #[test]

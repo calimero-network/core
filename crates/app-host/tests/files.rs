@@ -53,7 +53,7 @@ impl FileWrite for CountingWriter {
             size: self.0,
             sha256: Vec::new(),
             wrapped_key: Vec::new(),
-            ciphertext: Vec::new(),
+            segments: Vec::new(),
         })
     }
 }
@@ -674,15 +674,19 @@ fn a_corrupt_file_traps_the_run_and_any_other_read_failure_ends_it_unavailable()
     let denied = h.reader_read(r, 10).unwrap_err();
     assert_eq!(denied, HostDenied(FILE_CORRUPT.to_owned()));
 
-    let failing = FailingFiles(ReadError::Failed("flaky".to_owned()));
-    let mut h = run_host(Arc::new(failing), &["f"]);
-    let r = h.files_open("f").unwrap().unwrap();
-    assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
-    assert_eq!(
-        h.reader_read(r, 10).unwrap_err(),
-        HostDenied(FILE_UNAVAILABLE.to_owned())
-    );
-    assert_unavailable(h);
+    for failure in [
+        ReadError::Failed("flaky".to_owned()),
+        ReadError::Unavailable,
+    ] {
+        let mut h = run_host(Arc::new(FailingFiles(failure)), &["f"]);
+        let r = h.files_open("f").unwrap().unwrap();
+        assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
+        assert_eq!(
+            h.reader_read(r, 10).unwrap_err(),
+            HostDenied(FILE_UNAVAILABLE.to_owned())
+        );
+        assert_unavailable(h);
+    }
 }
 
 /// A provider that cannot get the bytes of any file now.

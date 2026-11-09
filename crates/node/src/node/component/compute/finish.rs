@@ -9,10 +9,12 @@ use calimero_log::Bytes;
 use serde_json::{json, Value};
 use tracing::warn;
 
-use super::{stored_of, Drive, FinalPlan, Stored, Watch};
+use super::{stored_of, Blob, Drive, FinalPlan, Stored, Watch};
 use crate::app::AppMachine;
 use crate::component::{Attempt, FailedReason, FileMark, FinalOutcome, RunRecord, RunState};
-use crate::files::{sealed_len, wrap_key, FileOpener, CHUNK_BYTES};
+use crate::files::{
+    file_id, sealed_len, segments_match, wrap_key, FileOpener, CHUNK_BYTES, SEGMENT_BYTES,
+};
 use crate::job_wire::{hash_bytes, FailReason, Report, ReportStatus};
 use crate::node::job::busy_here;
 use crate::node::{JobPeer, QUOTA_EXCEEDED, REJECTED};
@@ -212,11 +214,15 @@ impl Drive<'_> {
                     Staging::Retry
                 }
             })?;
-        let id = out.id.clone();
-        let size = out.size;
+        let (size, id) = (out.size, out.id.clone());
+        let mark_segments = out.segments.clone();
         let opened = tokio::task::spawn_blocking(move || {
+            let hashes: Vec<[u8; 32]> = (mark_segments.iter())
+                .map(|s| hash_bytes(s).ok())
+                .collect::<Option<_>>()?;
             let intact = ciphertext.len() as u64 == len
-                && hex::encode(calimero_identity::sha256(&ciphertext)) == id;
+                && hex::encode(file_id(&hashes)) == id
+                && segments_match(&ciphertext, &hashes);
             if !intact {
                 return None;
             }
@@ -234,8 +240,15 @@ impl Drive<'_> {
         };
         let file_key = crate::backup::file_key(&self.node.cluster_key, &self.app.app_id);
         let wrapped = wrap_key(&file_key, &self.app.app_id, &key).map_err(|_| Staging::Lost)?;
+        let blobs: Vec<Blob> = (ciphertext.chunks(SEGMENT_BYTES).zip(&out.segments))
+            .map(|(bytes, hash)| Blob {
+                id: hash.clone(),
+                bytes: bytes.to_vec(),
+                segment: true,
+            })
+            .collect();
         self.node
-            .push_files(&self.app.app_id, &[(out.id.clone(), ciphertext)], true)
+            .push_files(&self.app.app_id, &blobs, true)
             .await
             .map_err(|_| Staging::Wait)?;
         Ok(FileMark {
@@ -243,6 +256,7 @@ impl Drive<'_> {
             size: out.size,
             sha256: Bytes(plain_hash.to_vec()),
             wrapped_key: Bytes(wrapped),
+            segments: out.segments.clone(),
         })
     }
 }

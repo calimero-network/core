@@ -23,8 +23,8 @@ use zeroize::Zeroizing;
 use super::admission::{admit_assignment, token_matches};
 use super::{exec, locked, JobNode, RUNS_PER_JOB_NODE};
 use crate::error::ApiError;
-use crate::files::{sealed_len, unwrap_for_job, JobWrap, WrapKind};
-use crate::job_wire::{assignment_message, is_hash, Assignment, Report, SHA256_LEN};
+use crate::files::{file_id, sealed_len, segments_match, unwrap_for_job, JobWrap, WrapKind};
+use crate::job_wire::{assignment_message, is_hash, Assignment, Report, RunInput, SHA256_LEN};
 use crate::node::MAX_ARGS_BYTES;
 
 const JOB_RESULT_TTL: Duration = Duration::from_secs(60 * 60); // how long a finished or lost run is kept for its leader to collect
@@ -293,7 +293,16 @@ fn has_room(held: u64, reserved: u64) -> bool {
 }
 
 pub(super) fn hash_hex(field: &str) -> Option<[u8; SHA256_LEN]> {
-    hex::decode(field).ok()?.try_into().ok()
+    let raw: [u8; SHA256_LEN] = hex::decode(field).ok()?.try_into().ok()?;
+    (hex::encode(raw) == field).then_some(raw)
+}
+
+/// The segment hashes of `input`, when the list is not empty and hashes to the input's id.
+fn input_segments(input: &RunInput) -> Option<Vec<[u8; SHA256_LEN]>> {
+    let hashes: Vec<[u8; SHA256_LEN]> = (input.segments.iter())
+        .map(|s| hash_hex(s))
+        .collect::<Option<_>>()?;
+    (!hashes.is_empty() && hex::encode(file_id(&hashes)) == input.id).then_some(hashes)
 }
 
 /// The refusals that need nothing but the assignment itself.
@@ -336,10 +345,13 @@ fn check_shape(a: &Assignment) -> Result<(), ApiError> {
     }
     let mut total = 0u64;
     for input in &a.inputs {
-        if !is_hash(&input.id) || hash_hex(&input.sha256).is_none() {
+        if !is_hash(&input.id)
+            || hash_hex(&input.sha256).is_none()
+            || input_segments(input).is_none()
+        {
             return Err(ApiError::bad_request(
                 "BAD_ASSIGNMENT",
-                "an input is named by the hex SHA-256 of its ciphertext and has a plaintext hash",
+                "an input is named by the hash of its segment list and has a plaintext hash",
             ));
         }
         if a.inputs.iter().filter(|other| other.id == input.id).count() > 1 {
@@ -518,11 +530,10 @@ pub(super) async fn put_input(
             "the ciphertext is not the size the input declares",
         ));
     }
-    let (held, id) = (body.clone(), input.id.clone());
-    let named =
-        tokio::task::spawn_blocking(move || hex::encode(calimero_identity::sha256(&held)) == id)
-            .await
-            .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let (held, segments) = (body.clone(), input_segments(input).unwrap_or_default());
+    let named = tokio::task::spawn_blocking(move || segments_match(&held, &segments))
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !named {
         return Err(ApiError::bad_request(
             "BAD_INPUT_ID",
@@ -686,6 +697,16 @@ mod tests {
 
     use super::*;
     use crate::job_wire::sample_assignment;
+
+    #[test]
+    fn an_input_listing_uppercase_hex_is_not_well_formed() {
+        let mut input = sample_assignment().inputs.remove(0);
+        input.segments = vec![hex::encode([0xabu8; 32])];
+        input.id = hex::encode(file_id(&[[0xabu8; 32]]));
+        assert!(input_segments(&input).is_some());
+        input.segments[0] = input.segments[0].to_uppercase();
+        assert!(input_segments(&input).is_none());
+    }
 
     fn run(name: &str) -> Arc<Run> {
         let mut a = sample_assignment();

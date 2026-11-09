@@ -46,6 +46,8 @@ struct Fixture {
     app: String,
     /// Alice's passkey, which approves her API keys.
     passkey: tokio::sync::Mutex<SoftAuthenticator>,
+    /// The segments of each file a test saw, which outlive the file's record.
+    seen: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
 }
 
 /// Hashing megabytes in the guest costs more fuel than the default call budget.
@@ -87,6 +89,7 @@ async fn start_with(c: Cluster) -> Fixture {
         clients,
         app,
         passkey,
+        seen: std::sync::Mutex::default(),
     }
 }
 
@@ -104,7 +107,37 @@ impl Fixture {
             .await
             .unwrap();
         let id = r.result["id"].as_str().unwrap().to_owned();
+        let _cached = self.segments_of(&id);
         (id, r.result["sha256"].as_str().unwrap().to_owned(), r.index)
+    }
+
+    /// The hashes of file `id`'s segments, from any node's record, or as a test saw them before
+    /// the file was forgotten.
+    fn segments_of(&self, id: &str) -> Vec<String> {
+        self.find_segments(id).expect("a file this test never saw")
+    }
+
+    fn find_segments(&self, id: &str) -> Option<Vec<String>> {
+        let found = (0..self.c.nodes.len())
+            .filter(|i| self.c.nodes[*i].is_some())
+            .find_map(|i| self.mark(i, id))
+            .and_then(|r| r.file)
+            .map(|f| f.segments);
+        let mut seen = self.seen.lock().unwrap();
+        match found {
+            Some(segments) => {
+                let _prev = seen.insert(id.to_owned(), segments.clone());
+                Some(segments)
+            }
+            None => seen.get(id).cloned(),
+        }
+    }
+
+    /// The ciphertext of file `id` as node `i` stores it: its segments, joined.
+    fn stored(&self, i: usize, id: &str) -> Vec<u8> {
+        (self.segments_of(id).iter())
+            .flat_map(|h| self.node(i).engine.get_segment(h).unwrap().unwrap())
+            .collect()
     }
 
     /// The size and SHA-256 of file `id` as node `i` reads it once it applied entry `index`.
@@ -125,10 +158,25 @@ impl Fixture {
         g.read_local(|m, _| m.state.component.blobs.records.get(&raw).cloned())
     }
 
+    /// The nodes that store every segment of file `id`.
     fn holders(&self, id: &str) -> Vec<usize> {
+        let segments = self.segments_of(id);
         (0..self.c.nodes.len())
             .filter(|i| self.c.nodes[*i].is_some())
-            .filter(|i| self.node(*i).engine.get_blob(id).unwrap().is_some())
+            .filter(|i| {
+                (segments.iter()).all(|h| self.node(*i).engine.get_segment(h).unwrap().is_some())
+            })
+            .collect()
+    }
+
+    /// The nodes that store any segment of file `id`.
+    fn holders_of_any(&self, id: &str) -> Vec<usize> {
+        let segments = self.segments_of(id);
+        (0..self.c.nodes.len())
+            .filter(|i| self.c.nodes[*i].is_some())
+            .filter(|i| {
+                (segments.iter()).any(|h| self.node(*i).engine.get_segment(h).unwrap().is_some())
+            })
             .collect()
     }
 
@@ -159,12 +207,15 @@ impl Fixture {
 
     async fn wait_gone(&self, id: &str) {
         for _ in 0..100 {
-            if self.holders(id).is_empty() {
+            if self.holders_of_any(id).is_empty() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("the bytes of {id} are still on {:?}", self.holders(id));
+        panic!(
+            "the bytes of {id} are still on {:?}",
+            self.holders_of_any(id)
+        );
     }
 }
 
@@ -188,6 +239,49 @@ async fn a_large_file_reads_back_identically_on_every_replica() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forty_mib_file_is_stored_as_three_segments_and_no_whole_file_row() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let rows_before = f.blob_counts();
+    let (id, sha, index) = f.put(40 * MIB, 61).await;
+    assert_eq!(sha, sha256_hex(&stream(40 * MIB, 61)));
+    let segments = f.segments_of(&id);
+    assert_eq!(segments.len(), 3, "{segments:?}");
+
+    let holders = f.holders(&id);
+    assert!(holders.len() >= 2, "held by {holders:?}");
+    for i in holders {
+        let node = f.node(i);
+        let mut index_rows = node.engine.list_segments().unwrap();
+        index_rows.sort();
+        let mut want = segments.clone();
+        want.sort();
+        assert_eq!(index_rows, want, "node {i}: one index row per segment");
+        assert_eq!(
+            node.engine.blob_count().unwrap(),
+            rows_before[i] + 3,
+            "node {i}: three segment rows and nothing else"
+        );
+        assert!(node.engine.get_blob(&id).unwrap().is_none(), "node {i}");
+        for hash in &segments {
+            let segment = node.engine.get_segment(hash).unwrap().unwrap();
+            assert_eq!(&sha256_hex(&segment), hash);
+            assert!(segment.len() <= calimero_node::files::SEGMENT_BYTES);
+        }
+    }
+
+    // A replica that lost a segment reads the file by fetching it again.
+    let lost = (f.leader() + 1) % 3;
+    f.node(lost).engine.delete_segment(&segments[1]).unwrap();
+    assert_eq!(f.read_on(lost, &id, index).await.unwrap()["sha256"], sha);
+    assert!(f
+        .node(lost)
+        .engine
+        .get_segment(&segments[1])
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_stored_bytes_are_ciphertext_that_only_the_marks_key_opens() {
     let f = start().await;
     let (id, sha, index) = f.put(LEN, 11).await;
@@ -196,11 +290,16 @@ async fn the_stored_bytes_are_ciphertext_that_only_the_marks_key_opens() {
     f.read_on(2, &id, index).await.unwrap();
 
     for i in f.holders(&id) {
-        let stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
+        let stored = f.stored(i, &id);
+        let segments = f.segments_of(&id);
+        let hashes: Vec<[u8; 32]> = segments
+            .iter()
+            .map(|h| hex::decode(h).unwrap().try_into().unwrap())
+            .collect();
         assert_eq!(
-            sha256_hex(&stored),
             id,
-            "the id is the hash of the ciphertext"
+            hex::encode(calimero_node::files::file_id(&hashes)),
+            "the id is the hash of the segment list"
         );
         assert!(stored.len() > LEN);
         assert!(
@@ -343,10 +442,13 @@ async fn a_replica_that_misses_the_bytes_fetches_them() {
     let f = start().await;
     let (id, sha, index) = f.put(500_000, 5).await;
     f.read_on(2, &id, index).await.unwrap();
-    f.node(2).engine.delete_blob(&id).unwrap();
+    for h in f.segments_of(&id) {
+        f.node(2).engine.delete_segment(&h).unwrap();
+    }
+    assert!(!f.holders(&id).contains(&2));
     let read = f.read_on(2, &id, index).await.unwrap();
     assert_eq!(read["sha256"], sha);
-    assert!(f.node(2).engine.get_blob(&id).unwrap().is_some());
+    assert!(f.holders(&id).contains(&2));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -355,7 +457,9 @@ async fn a_file_no_replica_holds_cannot_be_read() {
     let (id, _sha, index) = f.put(100_000, 5).await;
     f.read_on(0, &id, index).await.unwrap();
     for i in 0..3 {
-        f.node(i).engine.delete_blob(&id).unwrap();
+        for h in f.segments_of(&id) {
+            f.node(i).engine.delete_segment(&h).unwrap();
+        }
     }
     let e = f.read_on(1, &id, index).await.unwrap_err();
     assert!(e.contains("not available"), "{e}");
@@ -385,11 +489,12 @@ async fn a_corrupt_copy_is_dropped_and_healed_from_a_replica() {
     let (id, sha, index) = f.put(LEN, 9).await;
     let leader = f.leader();
     let follower = (leader + 1) % 3;
+    let segments = f.segments_of(&id);
     for i in [follower, leader] {
-        let mut stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
+        let mut stored = f.node(i).engine.get_segment(&segments[0]).unwrap().unwrap();
         let at = stored.len() / 2;
         stored[at] ^= 1;
-        f.node(i).engine.put_blob(&id, &stored).unwrap();
+        f.node(i).engine.put_segment(&segments[0], &stored).unwrap();
     }
     // The follower and the leader each find their copy is not the file, and read it from the
     // replica that still holds it.
@@ -397,8 +502,12 @@ async fn a_corrupt_copy_is_dropped_and_healed_from_a_replica() {
         assert_eq!(f.read_on(i, &id, index).await.unwrap()["sha256"], sha);
     }
     for i in [follower, leader] {
-        let healed = f.node(i).engine.get_blob(&id).unwrap().unwrap();
-        assert_eq!(sha256_hex(&healed), id, "node {i} keeps a corrupt copy");
+        let healed = f.node(i).engine.get_segment(&segments[0]).unwrap().unwrap();
+        assert_eq!(
+            sha256_hex(&healed),
+            segments[0],
+            "node {i} keeps a corrupt copy"
+        );
     }
 }
 
@@ -522,9 +631,13 @@ async fn a_blob_swapped_for_another_files_ciphertext_is_never_read() {
     let (a, _sha, index) = f.put(100_000, 20).await;
     let (b, _sha, index_b) = f.put(100_000, 21).await;
     f.read_on(2, &a, index).await.unwrap();
-    let other = f.node(0).engine.get_blob(&b).unwrap().unwrap();
+    let other = f.stored(0, &b);
+    let a_segments = f.segments_of(&a);
     for i in 0..3 {
-        f.node(i).engine.put_blob(&a, &other).unwrap();
+        f.node(i)
+            .engine
+            .put_segment(&a_segments[0], &other)
+            .unwrap();
     }
     let e = f.read_on(2, &a, index_b).await.unwrap_err();
     assert!(e.contains("not available"), "{e}");
@@ -549,10 +662,9 @@ async fn a_conflicting_entry_removes_the_files_stored_for_it() {
     let before = f.node(leader).engine.blob_count().unwrap();
     f.node(leader).conflict_next_call();
     // The first run conflicts and its file is dropped; the call runs again.
-    let (id, _sha, _index) = f.put(100_000, 40).await;
+    let (_id, _sha, _index) = f.put(100_000, 40).await;
     f.until("the conflicted run left its bytes behind", || {
         (0..3).all(|i| f.node(i).engine.blob_count().unwrap() <= before + 1)
-            && f.node(leader).engine.get_blob(&id).unwrap().is_some()
             && f.node(leader).engine.blob_count().unwrap() == before + 1
     })
     .await;
@@ -667,7 +779,9 @@ async fn a_replica_move_hands_the_files_to_the_joining_node() {
         .await
         .unwrap();
     let joined = f.c.nodes[spare as usize - 1].as_ref().unwrap();
-    assert!(joined.node.engine.get_blob(&id).unwrap().is_some());
+    for h in f.segments_of(&id) {
+        assert!(joined.node.engine.get_segment(&h).unwrap().is_some());
+    }
     // The bundle at upload, then the bundle and the file handed over once: the second
     // hand-over sends nothing the node already holds.
     assert_eq!(joined.node.blob_puts_seen(), 3);
@@ -803,13 +917,19 @@ async fn the_blob_routes_refuse_a_file_id() {
         f.clients[2].download_blob(&f.app, &id).await.unwrap_err(),
         "download",
     );
-    // The ciphertext uploaded as a blob would claim the file's id.
-    let ciphertext = f.node(f.leader()).engine.get_blob(&id).unwrap().unwrap();
+    refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
+    // The preimage of the id, uploaded as a blob, would claim the file's id.
+    let mut preimage = b"calimero.file.segments.v1\0".to_vec();
+    let hashes = f.segments_of(&id);
+    preimage.extend_from_slice(&u32::try_from(hashes.len()).unwrap().to_be_bytes());
+    for h in &hashes {
+        preimage.extend_from_slice(&hex::decode(h).unwrap());
+    }
+    assert_eq!(sha256_hex(&preimage), id);
     refused(
-        alice.upload_blob(&f.app, ciphertext).await.unwrap_err(),
+        alice.upload_blob(&f.app, preimage).await.unwrap_err(),
         "upload",
     );
-    refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
     // The owner sees the file in the listing, as a sealed file and not as a blob.
     let listed = alice.list_blobs(&f.app).await.unwrap();
     assert_eq!(listed["blobs"].as_array().unwrap().len(), 1, "{listed}");
@@ -889,6 +1009,9 @@ impl Fixture {
         let sent = self.clients[via]
             .upload_file(&self.app, stream(len, seed))
             .await;
+        if let Ok(up) = &sent {
+            let _cached = self.find_segments(up["id"].as_str().unwrap());
+        }
         sent.map_err(Box::new)
     }
 
@@ -957,8 +1080,7 @@ async fn an_uploaded_file_is_read_by_the_app_and_stored_sealed() {
     assert!(f.holders(&id).len() >= 2, "held by {:?}", f.holders(&id));
     let window = &plain[LEN / 2..LEN / 2 + 32];
     for i in f.holders(&id) {
-        let stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
-        assert_eq!(sha256_hex(&stored), id);
+        let stored = f.stored(i, &id);
         assert!(
             !stored.windows(window.len()).any(|w| w == window),
             "node {i}"
@@ -1229,7 +1351,8 @@ async fn an_upload_that_meets_a_recorded_answer_for_its_key_returns_it_and_undoe
     f.node(f.leader()).fail_next_mark_commit(3);
     let before: u64 = f.blob_counts().iter().sum();
     let up = f.upload(f.leader(), 20_000, 1).await.unwrap();
-    assert_eq!(up["id"], json!("ab".repeat(32)), "the recorded answer");
+    let recorded = hex::encode(calimero_node::files::file_id(&[[0xab; 32]]));
+    assert_eq!(up["id"], json!(recorded), "the recorded answer");
     f.until_charged(0).await;
     f.until("the new file's bytes are removed", || {
         f.blob_counts().iter().sum::<u64>() == before

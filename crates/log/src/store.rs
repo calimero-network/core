@@ -202,6 +202,11 @@ impl Transaction {
 /// node numbers its groups from 1 upwards, so no group ever takes it.
 pub(crate) const NODE_ROWS: GroupId = GroupId::MAX;
 
+/// Key prefix of a segment's row in the `blobs` column.
+const SEGMENT_BLOB: &str = "seg.";
+/// Key prefix of a segment's empty index row in the `meta` column; no group id starts with it.
+const SEGMENT_INDEX: &[u8] = b"seg/";
+
 const TAG_LOG: u8 = 1;
 const TAG_META: u8 = 2;
 const TAG_STATE: u8 = 3;
@@ -223,6 +228,10 @@ fn log_key(group: GroupId, index: u64) -> Vec<u8> {
     let mut k = group_prefix(group).to_vec();
     k.extend_from_slice(&index.to_be_bytes());
     k
+}
+
+fn segment_index_key(hash: &str) -> Vec<u8> {
+    [SEGMENT_INDEX, hash.as_bytes()].concat()
 }
 
 fn meta_key(group: GroupId, name: &str) -> Vec<u8> {
@@ -529,6 +538,42 @@ impl Db {
         self.write(&tx, true)
     }
 
+    /// Store a file segment under `seg.<hash>` and, in the same batch, its empty index row
+    /// `seg/<hash>` in `meta`, so segments can be listed without reading a byte of them.
+    pub fn put_segment(&self, hash: &str, bytes: &[u8]) -> eyre::Result<()> {
+        let mut tx = Transaction::default();
+        let key = format!("{SEGMENT_BLOB}{hash}").into_bytes();
+        self.sealed_put(&mut tx, Column::Blobs, None, key.clone(), &key, bytes)?;
+        tx.raw_put(Column::Meta, segment_index_key(hash), Vec::new());
+        self.write(&tx, true)
+    }
+
+    /// Delete a segment and its index row; nothing if there is none.
+    pub fn delete_segment(&self, hash: &str) -> eyre::Result<()> {
+        let mut tx = Transaction::default();
+        tx.raw_delete(Column::Blobs, format!("{SEGMENT_BLOB}{hash}").into_bytes());
+        tx.raw_delete(Column::Meta, segment_index_key(hash));
+        self.write(&tx, true)
+    }
+
+    /// Read a segment stored with [`Db::put_segment`].
+    pub fn get_segment(&self, hash: &str) -> eyre::Result<Option<Vec<u8>>> {
+        self.get_blob(&format!("{SEGMENT_BLOB}{hash}"))
+    }
+
+    /// The hash of every segment stored here, from the index rows alone.
+    pub fn list_segments(&self) -> eyre::Result<Vec<String>> {
+        let mut out = Vec::new();
+        self.scan(Column::Meta, SEGMENT_INDEX, |k, _| {
+            let Some(hash) = k.strip_prefix(SEGMENT_INDEX) else {
+                return Ok(false);
+            };
+            out.push(String::from_utf8_lossy(hash).into_owned());
+            Ok(true)
+        })?;
+        Ok(out)
+    }
+
     /// Delete a blob stored with [`Db::put_blob`]; nothing if there is none.
     pub fn delete_blob(&self, name: &str) -> eyre::Result<()> {
         let mut tx = Transaction::default();
@@ -643,6 +688,9 @@ impl Db {
             Ok(true)
         })?;
         self.scan(Column::Meta, &[], |k, _| {
+            if k.starts_with(SEGMENT_INDEX) {
+                return Ok(true);
+            }
             if let Some(g) = group_of(k) {
                 let name = String::from_utf8_lossy(&k[8..]).into_owned();
                 out.groups.entry(g).or_default().meta.push(name);
@@ -1213,5 +1261,45 @@ mod node_rows {
         drop(db);
         let other = Db::open(dir.path(), &[2; 32]).unwrap();
         assert!(other.get_meta::<u64>(NODE_ROWS, "rollback").is_err());
+    }
+}
+
+#[cfg(test)]
+mod segments {
+    use super::*;
+
+    const A: &str = "aa";
+    const B: &str = "bb";
+
+    #[test]
+    fn a_segment_and_its_index_row_are_written_and_deleted_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path(), &[1; 32]).unwrap();
+        db.put_blob("plain", b"blob").unwrap();
+        db.put_segment(B, b"two").unwrap();
+        db.put_segment(A, b"one").unwrap();
+        assert_eq!(db.get_segment(A).unwrap().as_deref(), Some(&b"one"[..]));
+        assert_eq!(db.list_segments().unwrap(), vec![A, B]);
+        assert_eq!(db.summary().unwrap().blobs, 3);
+        assert!(
+            db.summary().unwrap().groups.is_empty(),
+            "no group sees the index"
+        );
+        db.delete_segment(A).unwrap();
+        assert_eq!(db.get_segment(A).unwrap(), None);
+        assert_eq!(db.list_segments().unwrap(), vec![B]);
+        db.delete_segment(A).unwrap();
+        assert_eq!(db.get_blob("plain").unwrap().as_deref(), Some(&b"blob"[..]));
+    }
+
+    #[test]
+    fn the_index_lists_no_node_or_group_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path(), &[1; 32]).unwrap();
+        db.put_meta(NODE_ROWS, "rollback", &7_u64).unwrap();
+        db.put_meta(1, "vote", &1_u64).unwrap();
+        assert!(db.list_segments().unwrap().is_empty());
+        db.put_segment(A, b"x").unwrap();
+        assert_eq!(db.list_segments().unwrap(), vec![A]);
     }
 }

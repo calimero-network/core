@@ -147,7 +147,7 @@ The ciphertext lives on the app's replicas, not on every node.
 Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
 The call proceeds only once a majority of the app's voters hold every new file; otherwise it fails with a retryable `503`, nothing is logged, and its idempotency key is not spent.
 A node holds at most 256 MiB of new files' ciphertext across all runs until their entries are proposed; a call that cannot get its share fails with a retryable `503`, is not logged, and does not spend its idempotency key.
-A replica that misses a file fetches it from the other replicas when a run opens it.
+A file is stored as segments of 256 sealed chunks (16 MiB of plaintext), each under its own hash, and the file's id is the hash of that list; a replica that misses a segment fetches it from the other replicas when a run opens the file.
 If no replica can serve it, a call, tick or `init` is aborted with a retryable `503` and not logged, while a view is told the bytes are not available.
 A run reads a file by decrypting it as it goes, and the end of the stream checks the plaintext size and SHA-256 against the mark.
 A file that was altered or cut short fails the run with a trap, so no app can ignore it.

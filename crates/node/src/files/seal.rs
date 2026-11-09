@@ -248,6 +248,14 @@ fn segment_of(bytes: Vec<u8>) -> Segment {
     }
 }
 
+/// Whether `ciphertext`, cut into segments, is exactly the segments `hashes` name.
+#[must_use]
+pub fn segments_match(ciphertext: &[u8], hashes: &[[u8; 32]]) -> bool {
+    !hashes.is_empty()
+        && ciphertext.chunks(SEGMENT_BYTES).count() == hashes.len()
+        && (ciphertext.chunks(SEGMENT_BYTES).zip(hashes)).all(|(s, h)| segment_hash(s) == *h)
+}
+
 /// Seals plaintext fed in any split and cuts the ciphertext into segments; holds at most one partial segment.
 pub struct SegmentWriter {
     sealer: FileSealer,
@@ -277,12 +285,13 @@ impl SegmentWriter {
         self.pending.extend_from_slice(&sealed);
         let mut done = Vec::new();
         // The sealer withholds the file's last chunk, so a full segment here is never the last.
-        while self.pending.len() >= SEGMENT_BYTES {
-            let rest = self.pending.split_off(SEGMENT_BYTES);
-            let segment = segment_of(std::mem::replace(&mut self.pending, rest));
+        let full = self.pending.len() / SEGMENT_BYTES * SEGMENT_BYTES;
+        for piece in self.pending[..full].chunks(SEGMENT_BYTES) {
+            let segment = segment_of(piece.to_vec());
             self.segments.push(segment.hash);
             done.push(segment);
         }
+        self.pending.drain(..full);
         Ok(done)
     }
 
@@ -686,6 +695,36 @@ mod tests {
         assert_ne!(id, file_id(&[a[0], a[1], [4; 32]]));
         assert_ne!(id, file_id(&[a[0], a[1], a[2], a[2]]));
         assert_ne!(file_id(&a[..1]), a[0]);
+    }
+
+    #[test]
+    fn a_joined_file_matches_its_segment_list_and_nothing_else() {
+        let made = make(&plaintext(SEGMENTED_LEN), 1 << 20);
+        let joined = made.segments.concat();
+        assert!(segments_match(&joined, &made.file.segments));
+        assert!(!segments_match(&joined, &made.file.segments[..2]));
+        assert!(!segments_match(
+            &joined[..joined.len() - 1],
+            &made.file.segments
+        ));
+        let mut flipped = joined.clone();
+        flipped[SEGMENT_BYTES + 5] ^= 1;
+        assert!(!segments_match(&flipped, &made.file.segments));
+    }
+
+    #[test]
+    fn one_write_of_many_segments_makes_the_segments_many_small_writes_do() {
+        let data = plaintext(SEGMENTED_LEN);
+        let small = make(&data, 1 << 20);
+        let whole = make(&data, data.len());
+        let lens = |m: &Made| m.segments.iter().map(Vec::len).collect::<Vec<_>>();
+        assert_eq!(lens(&whole), lens(&small));
+        assert_eq!(join(&whole, &whole.segments).unwrap(), data);
+    }
+
+    #[test]
+    fn an_empty_list_matches_nothing() {
+        assert!(!segments_match(&[], &[]));
     }
 
     #[test]

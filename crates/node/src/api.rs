@@ -19,7 +19,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use calimero_identity::{
     b64url, confirm_challenge, peek_session, random, sha256, verify_assertion, verify_registration,
@@ -5850,6 +5850,17 @@ fn hosted_holders(node: &Node, hash: &str) -> Vec<crate::types::AppRecord> {
         .collect()
 }
 
+/// The apps hosted here whose sealed files list segment `hash`.
+fn hosted_segment_holders(node: &Node, hash: &str) -> Vec<crate::types::AppRecord> {
+    let apps: Vec<crate::types::AppRecord> = node.sys(|s| s.apps.values().cloned().collect());
+    apps.into_iter()
+        .filter(|a| {
+            node.hosted(&a.app_id)
+                .is_some_and(|g| g.read_local(|m, _| m.holds_segment(hash)))
+        })
+        .collect()
+}
+
 /// How many cluster-key requests one node judges at once (each verifies a
 /// quote, which in TDX mode fetches a release); past it, `429`.
 pub const MAX_CONCURRENT_KEY_RELEASES: usize = 4;
@@ -6084,6 +6095,91 @@ async fn internal_blob_get(
         .map_err(|e| ApiError::internal(&e.to_string()))?
         .ok_or_else(|| ApiError::not_found("no such blob here"))?;
     Ok(Json(json!({ "wasm": calimero_log::Bytes(wasm) })))
+}
+
+/// `PUT /internal/segment/{hash}`: a file segment, raw, stored with its index row. Content-addressed
+/// like a blob: a node can store nothing but the bytes of the hash.
+async fn internal_segment_put(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path(hash): Path<String>,
+    body: Body,
+) -> ApiResult {
+    let _caller = peer(&node, &headers, key).await?;
+    if body.len() > crate::files::SEGMENT_BYTES || hex::encode(sha256(&body)) != hash {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "not the segment of that hash",
+        ));
+    }
+    #[cfg(feature = "testing")]
+    node.note_blob_put();
+    #[cfg(feature = "testing")]
+    let mode = node.peer_blobs_mode();
+    #[cfg(feature = "testing")]
+    if mode == crate::node::PeerBlobs::Refuse {
+        return Err(ApiError::unavailable("blob puts are refused"));
+    }
+    node.engine
+        .put_segment(&hash, &body)
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    #[cfg(feature = "testing")]
+    if mode == crate::node::PeerBlobs::StoreThenFail {
+        return Err(ApiError::unavailable("blob put answered late"));
+    }
+    Ok(Json(json!({})))
+}
+
+/// `GET /internal/segment/{hash}`: a segment, raw, only to a node approved for an app hosted here
+/// whose files list it.
+async fn internal_segment_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path(hash): Path<String>,
+) -> Result<Response, ApiError> {
+    let caller = peer(&node, &headers, key).await?;
+    if !crate::job_wire::is_hash(&hash) {
+        return Err(ApiError::bad_request("BAD_REQUEST", "not a segment hash"));
+    }
+    let allowed = hosted_segment_holders(&node, &hash)
+        .iter()
+        .any(|app| caller_may_hold(&node, &caller, app).is_ok());
+    if !allowed {
+        return Err(ApiError::forbidden(
+            "the calling node's release is not approved for an app that holds this segment here",
+        ));
+    }
+    let bytes = node
+        .local_segment(&hash)
+        .ok_or_else(|| ApiError::not_found("no such segment here"))?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Delete a segment here, at the request of the node that no longer needs it; one a file of an
+/// app hosted here lists keeps its bytes, whoever asks.
+async fn internal_segment_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<BlobBody>,
+) -> ApiResult {
+    let _caller = peer(&node, &headers, key).await?;
+    if !crate::job_wire::is_hash(&body.hash) {
+        return Err(ApiError::bad_request("BAD_REQUEST", "not a segment hash"));
+    }
+    if !hosted_segment_holders(&node, &body.hash).is_empty() {
+        return Err(ApiError::forbidden("an app here still holds that segment"));
+    }
+    node.engine
+        .delete_segment(&body.hash)
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(json!({})))
 }
 
 /// A blob id as a client gives it: base58 (what apps print, `BlobId`) or hex.
@@ -9397,6 +9493,11 @@ pub fn router(node: Arc<Node>) -> Router {
             "/internal/consent/result",
             post(crate::consent_page::internal_result),
         )
+        .route(
+            "/internal/segment/{hash}",
+            put(internal_segment_put).get(internal_segment_get),
+        )
+        .route("/internal/segment/delete", post(internal_segment_delete))
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))

@@ -149,7 +149,7 @@ impl From<host::HttpExchange> for HttpRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileMark {
-    /// Hex SHA-256 of the ciphertext: the blob's name.
+    /// Hex file id: the hash of the segment list, the blob's name.
     pub id: String,
     /// Plaintext bytes.
     pub size: u64,
@@ -157,6 +157,41 @@ pub struct FileMark {
     pub sha256: Bytes,
     /// The data key, wrapped under the app's file key.
     pub wrapped_key: Bytes,
+    /// Hex SHA-256 of each segment of the ciphertext, in order; at least one.
+    pub segments: Vec<String>,
+}
+
+impl FileMark {
+    /// The segment hashes, when the list is not empty, is well formed and hashes to `id`.
+    #[must_use]
+    pub fn segment_hashes(&self) -> Option<Vec<[u8; 32]>> {
+        let hashes: Vec<[u8; 32]> = self
+            .segments
+            .iter()
+            .map(|s| parse_hex32(s))
+            .collect::<Option<_>>()?;
+        (!hashes.is_empty() && hex::encode(crate::files::file_id(&hashes)) == self.id)
+            .then_some(hashes)
+    }
+}
+
+#[cfg(test)]
+impl FileMark {
+    /// The id of the file of one segment `[n; 32]`.
+    pub(crate) fn fixture_id(n: u8) -> [u8; 32] {
+        crate::files::file_id(&[[n; 32]])
+    }
+
+    /// A well-formed mark of one segment `[n; 32]`, with its real id.
+    pub(crate) fn fixture(n: u8, size: u64) -> Self {
+        Self {
+            id: hex::encode(Self::fixture_id(n)),
+            size,
+            sha256: Bytes(vec![n + 1; 32]),
+            wrapped_key: Bytes(vec![2; 60]),
+            segments: vec![hex::encode([n; 32])],
+        }
+    }
 }
 
 /// A compute output a run published: applying it records the plain blob, after checking that
@@ -339,6 +374,7 @@ impl From<host::NewFile> for FileMark {
             size: file.size,
             sha256: Bytes(file.sha256),
             wrapped_key: Bytes(file.wrapped_key),
+            segments: file.segments.iter().map(|s| hex::encode(s.hash)).collect(),
         }
     }
 }
@@ -688,18 +724,20 @@ impl ComponentState {
     /// Forget the blobs idle past their time at `now_ms` and queue their bytes for the
     /// leader to collect.
     fn expire_blobs(&mut self, tx: &mut StateTx<'_>, now_ms: u64) {
-        for (id, charged) in self.blobs.expire(tx, now_ms) {
-            self.queue_collect(hex::encode(id), charged);
+        for (id, charged, segments) in self.blobs.expire(tx, now_ms) {
+            self.queue_collect(hex::encode(id), charged, segments);
         }
     }
 
     /// Queue the bytes of the forgotten blob `id` for the leader to collect, with the bytes
-    /// of quota it held (a file or a published blob).
-    fn queue_collect(&mut self, id: String, charged: Option<u64>) {
+    /// of quota it held (a file or a published blob) and the segments of a file, each queued
+    /// as an id of its own.
+    fn queue_collect(&mut self, id: String, charged: Option<u64>, segments: Vec<String>) {
         if let Some(size) = charged {
             let _prev = self.head.collect_files.insert(id.clone(), size);
         }
         self.head.collect.push(id);
+        self.head.collect.extend(segments);
         let over = self.head.collect.len().saturating_sub(MAX_COLLECT_QUEUE);
         for dropped in self.head.collect.drain(..over) {
             let _gone = self.head.collect_files.remove(&dropped);
@@ -1251,7 +1289,7 @@ impl AppMachine {
                 let c = &mut self.state.component;
                 let forgotten = parse_hex32(&id).and_then(|raw| c.blobs.forget_blob(tx, &raw));
                 if let Some(size) = forgotten.filter(|size| *size > 0) {
-                    c.queue_collect(id, Some(size));
+                    c.queue_collect(id, Some(size), Vec::new());
                 }
                 host_answer(index, forgotten.is_some(), "no such blob in this app")
             }
@@ -1326,9 +1364,8 @@ impl AppMachine {
 
 /// A blob id as the host commands carry it (hex).
 fn parse_hex32(id: &str) -> Option<[u8; 32]> {
-    hex::decode(id)
-        .ok()
-        .and_then(|raw| <[u8; 32]>::try_from(raw.as_slice()).ok())
+    let raw = <[u8; 32]>::try_from(hex::decode(id).ok()?).ok()?;
+    (hex::encode(raw) == id).then_some(raw)
 }
 
 /// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
@@ -1471,6 +1508,14 @@ mod tests {
     use crate::component::blobs::BLOB_IDLE_MS;
 
     #[test]
+    fn a_mark_listing_uppercase_hex_is_not_well_formed() {
+        let mut mark = FileMark::fixture(0xab, 10);
+        assert!(mark.segment_hashes().is_some());
+        mark.segments[0] = mark.segments[0].to_uppercase();
+        assert!(mark.segment_hashes().is_none());
+    }
+
+    #[test]
     fn a_file_never_outgrows_the_blob_cap() {
         assert!(host::MAX_FILE_BYTES <= crate::node::MAX_BLOB_BYTES as u64);
     }
@@ -1539,14 +1584,17 @@ mod tests {
                 size: 5,
                 sha256: vec![1; 32],
                 wrapped_key: vec![2; 60],
-                ciphertext: vec![3; 21],
+                segments: vec![calimero_app_host::NewSegment {
+                    hash: [1; 32],
+                    bytes: vec![3; 21],
+                }],
             }],
             usage: host::Usage::default(),
         };
         let ok = Outcome::from_host(run(host::Status::Ok));
         assert_eq!(ok.files, [mark(1)]);
-        // The ciphertext is not in what the log carries.
-        assert!(!serde_json::to_string(&ok).unwrap().contains("ciphertext"));
+        // The segments' bytes are not in what the log carries.
+        assert!(!serde_json::to_string(&ok).unwrap().contains("bytes"));
         let trapped = Outcome::from_host(run(host::Status::Trap {
             kind: host::TrapKind::Fault,
             detail: String::new(),
@@ -1697,25 +1745,23 @@ mod tests {
 
     /// The id of a file in these tests: hex of 32 bytes, all `n`.
     fn fid(n: u8) -> String {
-        hex::encode([n; 32])
+        hex::encode(FileMark::fixture_id(n))
     }
 
     fn mark(n: u8) -> FileMark {
         FileMark {
-            id: fid(n),
-            size: 5,
             sha256: Bytes(vec![1; 32]),
-            wrapped_key: Bytes(vec![2; 60]),
+            ..FileMark::fixture(n, 5)
         }
     }
 
-    /// A stored value that is a `BlobRef` to file `n`.
-    fn blob_ref(n: u8) -> Vec<u8> {
+    /// A stored value that is a `BlobRef` to the blob with id `id`.
+    fn blob_ref(id: [u8; 32]) -> Vec<u8> {
         let mut out = Vec::new();
         ciborium::into_writer(
             &ciborium::Value::Tag(
                 calimero_app_host::BLOB_REF_TAG,
-                Box::new(ciborium::Value::Bytes(vec![n; 32])),
+                Box::new(ciborium::Value::Bytes(id.to_vec())),
             ),
             &mut out,
         )
@@ -1723,10 +1769,20 @@ mod tests {
         out
     }
 
+    /// A write of a `BlobRef` to file `n`.
     fn store_ref(key: &str, n: u8) -> Write {
+        store_blob(key, FileMark::fixture_id(n))
+    }
+
+    /// A write of a `BlobRef` to the plain blob whose id is 32 bytes of `n`.
+    fn store_plain_ref(key: &str, n: u8) -> Write {
+        store_blob(key, [n; 32])
+    }
+
+    fn store_blob(key: &str, id: [u8; 32]) -> Write {
         Write {
             key: Bytes(key.as_bytes().to_vec()),
-            value: Some(Bytes(blob_ref(n))),
+            value: Some(Bytes(blob_ref(id))),
         }
     }
 
@@ -1753,13 +1809,24 @@ mod tests {
         serde_json::to_vec(&cmd).unwrap()
     }
 
+    /// The hex of file `n`'s only segment.
+    fn seg(n: u8) -> String {
+        hex::encode([n; 32])
+    }
+
+    /// `ids` in the order `held` and `queued` answer.
+    fn sorted(mut ids: Vec<String>) -> Vec<String> {
+        ids.sort();
+        ids
+    }
+
     fn held(r: &Rig) -> Vec<String> {
         let records = &r.machine.state.component.blobs.records;
-        records.keys().map(hex::encode).collect()
+        sorted(records.keys().map(hex::encode).collect())
     }
 
     fn queued(r: &Rig) -> Vec<String> {
-        r.machine.state.component.head.collect.clone()
+        sorted(r.machine.state.component.head.collect.clone())
     }
 
     #[test]
@@ -1770,13 +1837,17 @@ mod tests {
             2,
             &file_call(1, 1, Status::Ok, vec![mark(1), mark(2)], vec![]),
         );
-        assert_eq!(held(&r), [fid(1), fid(2)]);
+        assert_eq!(held(&r), sorted(vec![fid(1), fid(2)]));
         let _a = r.apply(3, &file_call(2, 1, Status::AppError, vec![mark(3)], vec![]));
-        assert_eq!(held(&r), [fid(1), fid(2)], "a failed run recorded a file");
+        assert_eq!(
+            held(&r),
+            sorted(vec![fid(1), fid(2)]),
+            "a failed run recorded a file"
+        );
         // Built on a state that is no longer current: nothing applied.
         let stale = file_call(1, 1, Status::Ok, vec![mark(4)], vec![]);
         assert!(r.apply(4, &stale).conflict);
-        assert_eq!(held(&r), [fid(1), fid(2)]);
+        assert_eq!(held(&r), sorted(vec![fid(1), fid(2)]));
     }
 
     #[test]
@@ -1794,12 +1865,13 @@ mod tests {
         let _a = r.apply(2, &made);
         let records = &r.machine.state.component.blobs.records;
         assert_eq!(
-            records[&[1; 32]].refs, 1,
+            records[&FileMark::fixture_id(1)].refs,
+            1,
             "counted in the entry that made it"
         );
         // Just inside the idle time nothing is forgotten.
         let _a = r.apply(3, &file_call(2, BLOB_IDLE_MS, Status::Ok, vec![], vec![]));
-        assert_eq!(held(&r), [fid(1), fid(2)]);
+        assert_eq!(held(&r), sorted(vec![fid(1), fid(2)]));
         assert!(queued(&r).is_empty());
         // Past it the unreferenced file goes and is queued for collection; the stored one stays.
         let _a = r.apply(
@@ -1807,7 +1879,7 @@ mod tests {
             &file_call(3, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
         );
         assert_eq!(held(&r), [fid(1)]);
-        assert_eq!(queued(&r), [fid(2)]);
+        assert_eq!(queued(&r), sorted(vec![fid(2), seg(2)]));
     }
 
     fn file_cmd(n: u8, ts_ms: u64, key: Option<&str>) -> Vec<u8> {
@@ -1832,7 +1904,7 @@ mod tests {
             r.apply(2, &file_by(1, 5, None, Some("bob"))).status,
             Status::Ok
         );
-        let who = |r: &Rig, n: u8| r.machine.file_uploader(&[n; 32]);
+        let who = |r: &Rig, n: u8| r.machine.file_uploader(&FileMark::fixture_id(n));
         assert_eq!(who(&r, 1), Some("bob".to_owned()));
         let again = r.apply(3, &file_by(1, 6, None, Some("cy")));
         assert_eq!(
@@ -1850,10 +1922,16 @@ mod tests {
     }
 
     #[test]
-    fn a_record_stored_before_uploaders_existed_still_loads() {
-        let old = json!({ "sha256": "", "wrappedKey": "" });
-        let seal: blobs::FileSeal = serde_json::from_value(old).unwrap();
-        assert_eq!(seal.uploader, None);
+    fn a_file_record_without_segments_is_refused() {
+        let whole = json!({ "sha256": "", "wrappedKey": "" });
+        assert!(serde_json::from_value::<blobs::FileSeal>(whole).is_err());
+        let listed = json!({ "sha256": "", "wrappedKey": "", "segments": [seg(1)] });
+        assert_eq!(
+            serde_json::from_value::<blobs::FileSeal>(listed)
+                .unwrap()
+                .uploader,
+            None
+        );
     }
 
     fn collected(ids: &[String]) -> Vec<u8> {
@@ -1868,7 +1946,7 @@ mod tests {
         assert_eq!(up.status, Status::Ok);
         assert_eq!(up.result["mark"]["id"], json!(fid(1)));
         assert_eq!(held(&r), [fid(1)]);
-        let record = &r.machine.state.component.blobs.records[&[1; 32]];
+        let record = &r.machine.state.component.blobs.records[&FileMark::fixture_id(1)];
         assert!((record.file.is_some(), record.refs, record.idle_since_ms) == (true, 0, 5));
         // Its answer is what a retry under the key gets back.
         let kept = r
@@ -1893,7 +1971,7 @@ mod tests {
             &file_call(3, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
         );
         let ids = queued(&r);
-        assert_eq!(ids, [fid(1), fid(2)]);
+        assert_eq!(ids, sorted(vec![fid(1), fid(2), seg(1), seg(2)]));
         let freed = |a: Applied| a.result["freed"].as_u64().unwrap();
         assert_eq!(freed(r.apply(5, &collected(&ids))), 10);
         assert!(queued(&r).is_empty());
@@ -1957,7 +2035,7 @@ mod tests {
         let later = t + 1 + BLOB_IDLE_MS + 1;
         let _a = r.apply(7, &file_call(6, later, Status::Ok, vec![], vec![]));
         assert!(held(&r).is_empty());
-        assert_eq!(queued(&r), [fid(1)]);
+        assert_eq!(queued(&r), sorted(vec![fid(1), seg(1)]));
     }
 
     #[test]
@@ -1982,7 +2060,7 @@ mod tests {
             &file_call(1, 1, Status::Ok, vec![mark(1)], vec![store_ref("k", 1)]),
         );
         calimero_log::Machine::restore(&mut r.machine, &[]).unwrap();
-        let record = &r.machine.state.component.blobs.records[&[1; 32]];
+        let record = &r.machine.state.component.blobs.records[&FileMark::fixture_id(1)];
         let seal = record.file.as_ref().expect("the seal is kept");
         assert_eq!(seal.sha256, mark(1).sha256);
         assert_eq!(seal.wrapped_key, mark(1).wrapped_key);
@@ -2012,7 +2090,7 @@ mod tests {
             Status::AppError,
             "an owner delete took a file"
         );
-        let record = &r.machine.state.component.blobs.records[&[1; 32]];
+        let record = &r.machine.state.component.blobs.records[&FileMark::fixture_id(1)];
         assert_eq!((record.size, record.mime.as_str()), (5, ""));
         assert!(record.file.is_some());
     }

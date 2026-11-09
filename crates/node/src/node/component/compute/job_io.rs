@@ -141,6 +141,7 @@ impl Node {
                 id: input.id.clone(),
                 size: input.size,
                 sha256: input.sha256.clone(),
+                segments: seal.segments.clone(),
                 wrapped: wrap_for_job_derived(
                     &file_key,
                     &peer.transport_key,
@@ -182,14 +183,19 @@ impl Node {
         Ok(assignment)
     }
 
-    /// The ciphertext of file `id`: this node's, else the app's other replicas'.
-    async fn input_ciphertext(&self, app: &AppRecord, id: &str) -> eyre::Result<Vec<u8>> {
-        if let Ok(Some(bytes)) = self.engine.get_blob(id) {
-            if hex::encode(calimero_identity::sha256(&bytes)) == id {
-                return Ok(bytes);
-            }
+    /// The ciphertext of a file: its segments, from this node's store or the app's other
+    /// replicas', joined.
+    async fn input_ciphertext(
+        &self,
+        app: &AppRecord,
+        segments: &[String],
+    ) -> eyre::Result<Vec<u8>> {
+        let peers = self.other_replicas(app);
+        let mut joined = Vec::new();
+        for hash in segments {
+            joined.extend(self.segment_from(hash, &peers).await?);
         }
-        Ok(self.fetch_blob_from(id, &self.other_replicas(app)).await?)
+        Ok(joined)
     }
 }
 
@@ -345,7 +351,10 @@ impl Drive<'_> {
         let token = self.token(assignment.attempt);
         for (i, input) in assignment.inputs.iter().enumerate() {
             let _slot = self.node.job_slot().await?;
-            let ciphertext = self.node.input_ciphertext(self.app, &input.id).await?;
+            let ciphertext = self
+                .node
+                .input_ciphertext(self.app, &input.segments)
+                .await?;
             let answer = self
                 .node
                 .job_call_held(

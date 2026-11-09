@@ -42,7 +42,7 @@ use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
-use self::files::{Blob, NodeFiles, PendingBytes, Stored};
+use self::files::{blobs_of, stored_of_blobs, Blob, NodeFiles, PendingBytes, Stored};
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
@@ -288,6 +288,15 @@ fn marked_ids(cmd: &ComponentCmd) -> Vec<&str> {
     })
 }
 
+/// The segment hashes of the files `cmd` marks.
+fn marked_segments(cmd: &ComponentCmd) -> Vec<&str> {
+    stored_outcome(cmd).map_or_else(Vec::new, |o| {
+        (o.files.iter())
+            .flat_map(|f| f.segments.iter().map(String::as_str))
+            .collect()
+    })
+}
+
 /// The plaintext bytes `cmd` charges: its new files, and the published blobs among `blobs`
 /// (the app did not hold them yet), once each; none when they overflow a `u64`.
 fn new_file_bytes(cmd: &ComponentCmd, blobs: &[Blob]) -> Option<u64> {
@@ -298,7 +307,7 @@ fn new_file_bytes(cmd: &ComponentCmd, blobs: &[Blob]) -> Option<u64> {
     let published = outcome
         .published
         .iter()
-        .filter(|p| blobs.iter().any(|(id, _)| *id == p.id) && charged.insert(&p.id))
+        .filter(|p| blobs.iter().any(|b| !b.segment && b.id == p.id) && charged.insert(&p.id))
         .map(|p| p.size);
     (outcome.files.iter().map(|f| f.size).chain(published)).try_fold(0u64, u64::checked_add)
 }
@@ -306,9 +315,16 @@ fn new_file_bytes(cmd: &ComponentCmd, blobs: &[Blob]) -> Option<u64> {
 /// The blobs of `blobs` that `cmd` marks: a replaced entry marks fewer than the run made.
 fn marked_blobs(cmd: &ComponentCmd, blobs: &[Blob]) -> Vec<Blob> {
     let marked = marked_ids(cmd);
+    let segments = marked_segments(cmd);
     blobs
         .iter()
-        .filter(|(id, _)| marked.contains(&id.as_str()))
+        .filter(|b| {
+            if b.segment {
+                segments.contains(&b.id.as_str())
+            } else {
+                marked.contains(&b.id.as_str())
+            }
+        })
         .cloned()
         .collect()
 }
@@ -736,19 +752,15 @@ impl Node {
                     None => host,
                 };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
-                let mut blobs: Vec<Blob> = out
-                    .new_files
-                    .iter_mut()
-                    .map(|f| (f.id.clone(), std::mem::take(&mut f.ciphertext)))
-                    .collect();
+                let mut blobs: Vec<Blob> = out.new_files.iter_mut().flat_map(blobs_of).collect();
                 // A blob the app already holds (or that another publish of this run made) is
                 // neither stored nor charged again.
                 for p in &mut out.published {
                     let known = calimero_app_host::parse_blob_id(&p.id)
                         .is_some_and(|id| held.contains_key(&id))
-                        || blobs.iter().any(|(id, _)| *id == p.id);
+                        || blobs.iter().any(|b| !b.segment && b.id == p.id);
                     if !known {
-                        blobs.push((p.id.clone(), std::mem::take(&mut p.bytes)));
+                        blobs.push(Blob::plain(p.id.clone(), std::mem::take(&mut p.bytes)));
                     }
                 }
                 let mut outcome = Outcome::from_host(out);
@@ -854,17 +866,15 @@ impl Node {
             self.discard(
                 app_id,
                 Stored {
-                    ids: Vec::new(),
                     charged,
-                    outputs: false,
+                    ..Stored::default()
                 },
             );
             return Err(e);
         }
         let stored = Stored {
-            ids: blobs.iter().map(|(id, _)| id.clone()).collect(),
             charged,
-            outputs: false,
+            ..stored_of_blobs(blobs)
         };
         Ok((bytes, stored))
     }
@@ -2565,6 +2575,7 @@ mod tests {
             size,
             sha256: calimero_log::Bytes(vec![1; 32]),
             wrapped_key: calimero_log::Bytes(vec![2; 60]),
+            segments: vec!["cd".repeat(32)],
         };
         let entry = FinalEntry {
             run: "r".into(),
@@ -2600,6 +2611,7 @@ mod tests {
             size: 10,
             sha256: calimero_log::Bytes(vec![1; 32]),
             wrapped_key: calimero_log::Bytes(vec![2; 60]),
+            segments: vec!["cd".repeat(32)],
         };
         ComponentCmd::ComputeFinal(Box::new(FinalEntry {
             run: "r".into(),
@@ -2647,7 +2659,7 @@ mod tests {
             }))
             .unwrap()
         }));
-        let blobs: Vec<Blob> = vec![("aa".into(), vec![1])];
+        let blobs: Vec<Blob> = vec![Blob::plain("aa".into(), vec![1])];
         assert_eq!(new_file_bytes(&cmd, &blobs), Some(7), "bb was already held");
         assert_eq!(marked_blobs(&cmd, &blobs).len(), 1);
     }
@@ -2670,7 +2682,7 @@ mod tests {
         );
         let blobs: Vec<Blob> = [0usize, 9_999]
             .iter()
-            .map(|i| (format!("{i:064x}"), vec![1]))
+            .map(|i| Blob::plain(format!("{i:064x}"), vec![1]))
             .collect();
         assert!(
             marked_blobs(&cmd, &blobs).is_empty(),

@@ -67,12 +67,14 @@ pub struct RunBudget {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunInput {
-    /// The blob id: hex SHA-256 of the ciphertext.
+    /// The file id: the hash of the segment list.
     pub id: String,
     /// Plaintext bytes.
     pub size: u64,
     /// Hex SHA-256 of the plaintext.
     pub sha256: String,
+    /// Hex SHA-256 of each segment of the ciphertext, in order.
+    pub segments: Vec<String>,
     #[serde(with = "b64")]
     pub wrapped: Vec<u8>,
 }
@@ -186,11 +188,21 @@ pub fn assignment_message(a: &Assignment) -> EyreResult<Vec<u8>> {
         push_prefixed(&mut m, input.id.as_bytes())?;
         m.extend_from_slice(&input.size.to_be_bytes());
         push_prefixed(&mut m, input.sha256.as_bytes())?;
+        push_segments(&mut m, &input.segments)?;
         push_prefixed(&mut m, &input.wrapped)?;
     }
     push_prefixed(&mut m, &a.seed)?;
     push_prefixed(&mut m, a.token.as_bytes())?;
     Ok(m)
+}
+
+fn push_segments(m: &mut Vec<u8>, segments: &[String]) -> EyreResult<()> {
+    let count = u32::try_from(segments.len()).map_err(|_| eyre!("too many segments"))?;
+    m.extend_from_slice(&count.to_be_bytes());
+    for segment in segments {
+        m.extend_from_slice(&hash_bytes(segment)?);
+    }
+    Ok(())
 }
 
 /// SHA-256 of [`assignment_message`]: what a report is signed for.
@@ -280,13 +292,15 @@ impl FailReason {
     }
 }
 
-/// A file a run wrote: the hash of its ciphertext, and its plaintext size and hash.
+/// A file a run wrote: its id (the hash of its segment list), the hash of each segment of its
+/// ciphertext, and its plaintext size and hash.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutputRef {
     pub id: String,
     pub size: u64,
     pub sha256: String,
+    pub segments: Vec<String>,
 }
 
 /// What a run cost, in the integers that are signed.
@@ -381,6 +395,7 @@ pub fn report_message(report: &Report, assignment: &[u8; 32]) -> EyreResult<Vec<
         m.extend_from_slice(&hash_bytes(&output.id)?);
         m.extend_from_slice(&output.size.to_be_bytes());
         m.extend_from_slice(&hash_bytes(&output.sha256)?);
+        push_segments(&mut m, &output.segments)?;
     }
     m.extend_from_slice(&report.usage.cpu_micros.to_be_bytes());
     m.extend_from_slice(&report.usage.gib_micros.to_be_bytes());
@@ -427,9 +442,10 @@ pub(crate) fn sample_assignment() -> Assignment {
             wall_secs: 5,
         },
         inputs: vec![RunInput {
-            id: "cd".repeat(32),
+            id: hex::encode(crate::files::file_id(&[[0x12; 32]])),
             size: 7,
             sha256: "ef".repeat(32),
+            segments: vec![hex::encode([0x12; 32])],
             wrapped: vec![1, 2, 3],
         }],
         seed: vec![4, 5, 6],
@@ -465,6 +481,7 @@ mod tests {
                 id: "aa".repeat(32),
                 size: 9,
                 sha256: "bb".repeat(32),
+                segments: vec!["cc".repeat(32)],
             }],
             usage: ReportUsage {
                 cpu_micros: 11,
@@ -554,6 +571,7 @@ mod tests {
             id: "i".into(),
             size: 5,
             sha256: "s".into(),
+            segments: vec!["11".repeat(32)],
             wrapped: vec![7, 7],
         }];
         a.seed = vec![8];
@@ -574,7 +592,9 @@ mod tests {
         want.extend([0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 1]);
         want.extend([0, 0, 0, 1, b'i']);
         want.extend(5u64.to_be_bytes());
-        want.extend([0, 0, 0, 1, b's', 0, 0, 0, 2, 7, 7]);
+        want.extend([0, 0, 0, 1, b's', 0, 0, 0, 1]);
+        want.extend([0x11; 32]);
+        want.extend([0, 0, 0, 2, 7, 7]);
         want.extend([0, 0, 0, 1, 8, 0, 0, 0, 1, b't']);
         assert_eq!(assignment_message(&a).unwrap(), want);
     }
@@ -770,10 +790,12 @@ mod tests {
         done.outputs[0].id = "0a".repeat(32);
         done.outputs[0].sha256 = "07".repeat(32);
         let message = report_message(&done, &FOR).unwrap();
-        let tail = &message[message.len() - 24 - 32 - 8 - 32..];
+        let tail = &message[message.len() - 24 - 36 - 32 - 8 - 32..];
         assert_eq!(&tail[..32], [0x0a; 32]);
         assert_eq!(&tail[32..40], 9u64.to_be_bytes());
         assert_eq!(&tail[40..72], [7; 32]);
+        assert_eq!(&tail[72..76], 1u32.to_be_bytes());
+        assert_eq!(&tail[76..108], [0xcc; 32]);
     }
 
     #[test]

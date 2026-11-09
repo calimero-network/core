@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
-use super::files::{holds_file, Stored};
+use super::files::{holds_file, Blob, Stored};
 use super::{entry_bytes, Node, Ran, RunExtras};
 use crate::app::{AppMachine, Status};
 use crate::component::{
@@ -1410,9 +1410,10 @@ fn attempts_made(rec: &RunRecord) -> u32 {
 /// What a final's staged outputs hold on the replicas and in the quota.
 fn stored_of(marks: &[FileMark]) -> Stored {
     Stored {
-        ids: marks.iter().map(|m| m.id.clone()).collect(),
+        segments: marks.iter().flat_map(|m| m.segments.clone()).collect(),
         charged: marks.iter().map(|m| m.size).sum(),
         outputs: true,
+        ..Stored::default()
     }
 }
 
@@ -1502,6 +1503,7 @@ mod tests {
             size: 3,
             sha256: calimero_log::Bytes(vec![1; 32]),
             wrapped_key: calimero_log::Bytes(vec![2; 8]),
+            segments: vec!["cd".repeat(32)],
         }];
         let mut old = Watch::new(1, 1);
         old.staged = Some(marks.clone());

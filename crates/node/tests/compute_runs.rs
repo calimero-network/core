@@ -40,6 +40,8 @@ struct Rig {
     jobs: Vec<JobNode>,
     /// The hashes of the installed release's app component and compute component.
     hashes: (String, String),
+    /// The segments of each file a test saw, which outlive the file's record.
+    seen: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl Rig {
@@ -80,6 +82,7 @@ impl Rig {
             app,
             jobs,
             hashes: (sha256_hex(&both.app), sha256_hex(&compute)),
+            seen: std::sync::Mutex::default(),
         }
     }
 
@@ -195,10 +198,37 @@ impl Rig {
             .read_local(|m, _| m.state.component.blobs.records.get(&raw).cloned())
     }
 
+    /// The segments of file `id` as the leader records them, or as a test saw them before the
+    /// record was forgotten; none for a plain blob.
+    fn segments(&self, id: &str) -> Vec<String> {
+        let found = self.blob(id).and_then(|r| r.file).map(|f| f.segments);
+        let mut seen = self.seen.lock().unwrap();
+        match found {
+            Some(segments) => {
+                let _prev = seen.insert(id.to_owned(), segments.clone());
+                segments
+            }
+            None => seen.get(id).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// Whether node `i` stores every one of `segments`.
+    fn holds_segments(&self, i: usize, segments: &[String]) -> bool {
+        let node = &self.c.nodes[i].as_ref().unwrap().node;
+        segments
+            .iter()
+            .all(|h| node.engine.get_segment(h).unwrap().is_some())
+    }
+
+    /// Whether any node stores the plain blob `id` or any segment of the file `id`.
     fn holds_bytes(&self, id: &str) -> bool {
+        let segments = self.segments(id);
         (0..3).any(|i| {
             let node = &self.c.nodes[i].as_ref().unwrap().node;
             node.engine.get_blob(id).unwrap().is_some()
+                || segments
+                    .iter()
+                    .any(|h| node.engine.get_segment(h).unwrap().is_some())
         })
     }
 
@@ -739,21 +769,9 @@ async fn a_staged_output_is_committed_when_its_job_node_vanishes_after_reporting
         1,
         "the report and its staged outputs are all the leader needs"
     );
-    let output = rig.record(&run).final_.unwrap().outputs[0].id.clone();
+    let segments = rig.record(&run).final_.unwrap().outputs[0].segments.clone();
     rig.until("the output is on a majority", || {
-        (0..3)
-            .filter(|i| {
-                rig.c.nodes[*i]
-                    .as_ref()
-                    .unwrap()
-                    .node
-                    .engine
-                    .get_blob(&output)
-                    .unwrap()
-                    .is_some()
-            })
-            .count()
-            >= 2
+        (0..3).filter(|i| rig.holds_segments(*i, &segments)).count() >= 2
     })
     .await;
     let counted = rig.c.nodes[0]
@@ -809,17 +827,8 @@ async fn the_bytes_of_a_registered_output_survive_every_cleanup() {
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&run).await;
-    let output = rig.record(&run).final_.unwrap().outputs[0].id.clone();
-    let holds = |i: usize| {
-        rig.c.nodes[i]
-            .as_ref()
-            .unwrap()
-            .node
-            .engine
-            .get_blob(&output)
-            .unwrap()
-            .is_some()
-    };
+    let segments = rig.record(&run).final_.unwrap().outputs[0].segments.clone();
+    let holds = |i: usize| rig.holds_segments(i, &segments);
     rig.until("a majority holds the output", || {
         (0..3).filter(|i| holds(*i)).count() >= 2
     })
@@ -827,19 +836,21 @@ async fn the_bytes_of_a_registered_output_survive_every_cleanup() {
 
     // A losing leader's cleanup of the same id: the barrier and the strong read find the blob record.
     rig.leader()
-        .clean_up_outputs(&rig.app, vec![output.clone()])
+        .clean_up_outputs(&rig.app, segments.clone())
         .await;
     // A peer's delete request: the replica itself refuses an id its app holds.
     let leader = rig.c.app_leader(&rig.app).unwrap();
     for i in (0..3).filter(|i| *i != leader && holds(*i)) {
-        let _ = rig
-            .leader()
-            .peer_post(
-                &rig.c.urls[i],
-                "internal/blob/delete",
-                &json!({ "hash": output }),
-            )
-            .await;
+        for hash in &segments {
+            let _ = rig
+                .leader()
+                .peer_post(
+                    &rig.c.urls[i],
+                    "internal/segment/delete",
+                    &json!({ "hash": hash }),
+                )
+                .await;
+        }
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
@@ -847,6 +858,30 @@ async fn the_bytes_of_a_registered_output_survive_every_cleanup() {
         "the registered output kept its bytes"
     );
     assert!(holds(leader));
+}
+
+/// A little over one segment of plaintext, so the file is two segments.
+const TWO_SEGMENT_LEN: usize = 17 * 1024 * 1024;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_whose_input_lost_a_segment_on_the_leader_refetches_it() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let plain: Vec<u8> = (0..TWO_SEGMENT_LEN).map(|i| (i % 251) as u8).collect();
+    let file = rig.upload(&plain).await;
+    let segments = rig.segments(&file);
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    let leader = rig.c.app_leader(&rig.app).unwrap();
+    let node = &rig.c.nodes[leader].as_ref().unwrap().node;
+    node.engine.delete_segment(&segments[1]).unwrap();
+    assert!(node.engine.get_segment(&segments[1]).unwrap().is_none());
+
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let outcome = rig.outcome(&run).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert!(
+        node.engine.get_segment(&segments[1]).unwrap().is_some(),
+        "the leader fetched the segment from a replica and kept it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

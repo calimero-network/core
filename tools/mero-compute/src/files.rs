@@ -164,7 +164,7 @@ impl FileWrite for Writer {
             size: self.size,
             sha256,
             wrapped_key: Vec::new(),
-            ciphertext: Vec::new(),
+            segments: Vec::new(),
         })
     }
 }

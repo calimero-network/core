@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use sha2::{Digest, Sha256};
 
 use super::{
-    FileError, FileInfo, FileRead, FileWrite, Files, NewFile, PublishedFile, ReadError,
+    FileError, FileInfo, FileRead, FileWrite, Files, NewFile, NewSegment, PublishedFile, ReadError,
     NOT_A_RUN_OUTPUT, NO_SUCH_FILE,
 };
 
@@ -56,7 +56,8 @@ impl MemoryFiles {
     pub fn apply(&self, new_files: &[NewFile]) {
         let mut files = self.lock();
         for file in new_files {
-            let _ = files.insert(file.id.clone(), file.ciphertext.clone());
+            let joined = file.segments.iter().flat_map(|s| s.bytes.clone()).collect();
+            let _ = files.insert(file.id.clone(), joined);
         }
     }
 
@@ -92,9 +93,12 @@ impl FileWrite for Writer {
         Ok(NewFile {
             id: hex::encode(&sha256),
             size: self.0.len() as u64,
-            sha256,
             wrapped_key: Vec::new(),
-            ciphertext: self.0,
+            segments: vec![NewSegment {
+                hash: Sha256::digest(&self.0).into(),
+                bytes: self.0,
+            }],
+            sha256,
         })
     }
 }
