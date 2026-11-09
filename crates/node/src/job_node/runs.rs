@@ -617,6 +617,11 @@ pub(super) async fn output(
     if job.outputs_fail.load(Ordering::Relaxed) {
         return Err(ApiError::internal("outputs are failing"));
     }
+    #[cfg(feature = "testing")]
+    tokio::time::sleep(std::time::Duration::from_millis(
+        job.outputs_delay_ms.load(Ordering::Relaxed),
+    ))
+    .await;
     let path = output_of(&run, i, |o| o.path.clone())?;
     let bytes = tokio::fs::read(path)
         .await

@@ -91,6 +91,9 @@ struct JobNode {
     /// While set, every output route answers an error (feature `testing`).
     #[cfg(feature = "testing")]
     outputs_fail: AtomicBool,
+    /// Milliseconds every output route waits before it answers (feature `testing`).
+    #[cfg(feature = "testing")]
+    outputs_delay_ms: AtomicU64,
 }
 
 impl JobNode {
@@ -142,6 +145,13 @@ impl RunningJob {
     #[cfg(feature = "testing")]
     pub fn fail_outputs(&self) {
         self.job.outputs_fail.store(true, Ordering::Relaxed);
+    }
+
+    /// Makes every output route wait `delay` before it answers, as a slow link would. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn delay_outputs(&self, delay: std::time::Duration) {
+        let ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+        self.job.outputs_delay_ms.store(ms, Ordering::Relaxed);
     }
 
     /// The hashes of the components this node holds. Tests only.
@@ -206,6 +216,8 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         frozen: AtomicBool::new(false),
         #[cfg(feature = "testing")]
         outputs_fail: AtomicBool::new(false),
+        #[cfg(feature = "testing")]
+        outputs_delay_ms: AtomicU64::new(0),
     });
     let router = Router::new()
         .route("/health", get(health))

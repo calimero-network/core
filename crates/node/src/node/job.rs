@@ -263,7 +263,8 @@ impl Node {
             release: doc.release.version,
             channel: Arc::new(SealedTransport::with_key(
                 url.parse()?,
-                self.http.clone(),
+                // No total timeout: `within` bounds every job call.
+                reqwest::Client::new(),
                 transport_key,
             )),
         })
