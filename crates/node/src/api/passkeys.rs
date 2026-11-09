@@ -33,15 +33,36 @@ pub(super) fn unknown_here() -> ApiError {
 }
 
 /// The `user.name` and `user.displayName` of a passkey made here: `alice ·
-/// eu-shared-1`, or `alice · kv-store (eu-shared-1)` when it is made on the
-/// frontend of the app named `app`.
-pub(super) fn passkey_user_name(person: &str, cluster: &str, app: Option<&str>) -> String {
+/// eu-shared-1 · 3f2a`, or `alice · kv-store (eu-shared-1 · 3f2a)` when it is
+/// made on the frontend of the app named `app`. `tag` is [`cluster_tag`]: a
+/// cluster made again under the same name (a new cluster key) gets another,
+/// so a password manager still holding the old cluster's passkeys lists them
+/// apart from this one's. An empty `tag` is left out.
+pub(super) fn passkey_user_name(
+    person: &str,
+    cluster: &str,
+    tag: &str,
+    app: Option<&str>,
+) -> String {
     let person = clip(person);
-    let cluster = clip(cluster);
+    let cluster = if tag.is_empty() {
+        clip(cluster)
+    } else {
+        format!("{} · {tag}", clip(cluster))
+    };
     match app {
         Some(app) => format!("{person} · {} ({cluster})", clip(app)),
         None => format!("{person} · {cluster}"),
     }
+}
+
+/// This cluster's tag in a passkey's name: the first 2 bytes of its identity
+/// key (`Node::cluster_identity`, from K_c), as 4 hex characters. Stable for
+/// the cluster's life and the same on every node; a cluster begun again under
+/// the same name has another cluster key, so another tag. Public in
+/// `GET /sign-up` (`passkeyTag`), so a sign-in can say which passkey to pick.
+pub(super) fn cluster_tag(node: &Node) -> String {
+    hex::encode(&node.cluster_identity()[..2])
 }
 
 /// The name of `package` a person recognizes: its newest release's display
@@ -78,21 +99,25 @@ mod tests {
     #[test]
     fn a_passkey_is_named_by_its_cluster_and_app() {
         assert_eq!(
-            passkey_user_name("alice", "eu-shared-1", None),
-            "alice · eu-shared-1"
+            passkey_user_name("alice", "eu-shared-1", "3f2a", None),
+            "alice · eu-shared-1 · 3f2a"
         );
         assert_eq!(
-            passkey_user_name("alice", "eu-shared-1", Some("kv-store")),
-            "alice · kv-store (eu-shared-1)"
+            passkey_user_name("alice", "eu-shared-1", "3f2a", Some("kv-store")),
+            "alice · kv-store (eu-shared-1 · 3f2a)"
+        );
+        assert_eq!(
+            passkey_user_name("alice", "eu-shared-1", "", None),
+            "alice · eu-shared-1"
         );
     }
 
     #[test]
     fn each_part_of_a_passkey_name_is_bounded() {
         let long = "x".repeat(500);
-        let name = passkey_user_name(&long, &long, Some(&long));
+        let name = passkey_user_name(&long, &long, "3f2a", Some(&long));
         assert!(
-            name.chars().count() <= 3 * MAX_PASSKEY_NAME_PART_CHARS + 6,
+            name.chars().count() <= 3 * MAX_PASSKEY_NAME_PART_CHARS + 13,
             "{name}"
         );
         assert!(name.contains('…'), "{name}");

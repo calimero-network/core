@@ -749,8 +749,11 @@ is its command line.
 - **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
   "Passkeys are each cluster's own"): clusters share an rp-id, so a
   registration's `user.name`/`displayName` is `passkey_user_name` (person ·
-  `config.cluster`, plus the app's name for a sign-up begun on a package
-  origin), and an assertion with a credential no account has answers `401
+  `config.cluster` · `cluster_tag`, the first 2 bytes of the cluster identity
+  key, public in `GET /sign-up` as `passkeyTag`; plus the app's name for a
+  sign-up begun on a package origin), every registration's user handle is
+  random (a shared one makes a password manager replace the earlier passkey;
+  `each_added_passkey_gets_a_user_handle_of_its_own`), and an assertion with a credential no account has answers `401
   PASSKEY_UNKNOWN_HERE` (`unknown_here`, from `check_assertion_for`), naming no
   other cluster or account. Regressions:
   `a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here`,

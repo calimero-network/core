@@ -294,7 +294,11 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
     // take `localhost` as their rp-id.
     let home = Cluster::start(1).await;
     let away = Cluster::start(1).await;
-    let shown = format!("alice · {}", home.name);
+    let tag = passkey_tag(&home).await;
+    // Two clusters are two cluster keys, so two tags: a cluster made again
+    // under its old name is told apart from the one before.
+    assert_ne!(tag, passkey_tag(&away).await);
+    let shown = format!("alice · {} · {tag}", home.name);
     let begin = home
         .client(0)
         .post("auth/passkey/register/begin", json!({ "name": "alice" }))
@@ -327,4 +331,37 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
         "{e}"
     );
     assert!(details.is_null(), "{e}");
+}
+
+/// The tag this cluster's passkeys are named with (`GET /sign-up`, public).
+async fn passkey_tag(c: &Cluster) -> String {
+    let public = c.client(0).get("sign-up").await.unwrap();
+    let tag = public["passkeyTag"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(tag.len(), 4, "{public}");
+    assert_eq!(public["cluster"], c.name.as_str(), "{public}");
+    tag
+}
+
+/// A passkey added to an account (and one a recovery makes) gets a user
+/// handle of its own, as a sign-up's does. A password manager keeps one
+/// passkey per site and handle: with the account's handle every time, a
+/// second passkey added in the same iCloud Keychain or Google Password
+/// Manager silently replaced the first, which the account still listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn each_added_passkey_gets_a_user_handle_of_its_own() {
+    let c = Cluster::start(1).await;
+    let tag = passkey_tag(&c).await;
+    let (alice, _pk) = sign_up(&c, 0, "alice", None).await.unwrap();
+    let first = alice
+        .post("auth/passkeys/add/begin", json!({}))
+        .await
+        .unwrap();
+    let second = alice
+        .post("auth/passkeys/add/begin", json!({}))
+        .await
+        .unwrap();
+    let (a, b) = (&first["options"]["user"], &second["options"]["user"]);
+    assert!(a["id"].as_str().is_some_and(|id| !id.is_empty()), "{first}");
+    assert_ne!(a["id"], b["id"], "{first} {second}");
+    assert_eq!(a["name"], format!("alice · {} · {tag}", c.name), "{first}");
 }
