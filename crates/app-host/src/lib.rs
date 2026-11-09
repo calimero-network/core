@@ -6,6 +6,7 @@
 mod abi;
 mod action;
 mod blobs;
+mod collections;
 mod core;
 mod engine;
 mod files;
@@ -27,6 +28,11 @@ pub use action::{
     MAX_STARTED_ACTIONS,
 };
 pub use blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
+pub use collections::{
+    collection_fuel, CollEntry, CollError, CollPage, CollectionSchema, KeyPart, TableSchema,
+    COLLECTION_BASE_FUEL, COLLECTION_BYTE_FUEL, COLLECTION_ENTRY_FUEL, MAX_COLLECTION_KEY_BYTES,
+    MAX_COLLECTION_LIMIT,
+};
 pub use core::{
     CursorId, HostCore, Progress, ReaderId, WriterId, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE,
     EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG, EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM,

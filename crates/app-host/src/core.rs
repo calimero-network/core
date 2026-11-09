@@ -16,6 +16,7 @@ use crate::action::{
     NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
 };
 use crate::blobs::{blob_id_hex, blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
+use crate::collections::CollectionSchema;
 use crate::files::{Files, NoFiles, FILE_UNAVAILABLE};
 use crate::overlay::{Cursor, Overlay};
 use crate::runs::{
@@ -35,6 +36,7 @@ use crate::types::{
     InvocationKind, OrgRole, Outcome, Status, TrapKind, Usage, Xcall,
 };
 
+mod collection_ops;
 mod file_ops;
 
 pub use file_ops::{ReaderId, WriterId};
@@ -158,6 +160,12 @@ pub struct HostCore {
     active: Option<Vec<ActiveRun>>,
     starts: Vec<StartedRun>,
     cancels: Vec<String>,
+    /// The state's collections from the ABI (`with_collections`); none by default.
+    collections: Arc<BTreeMap<String, CollectionSchema>>,
+    /// Fuel the run's collection calls cost so far ([`crate::collections::collection_fuel`]).
+    host_fuel: u64,
+    /// Bytes and entries the current collection call has read or written.
+    meter: (usize, usize),
 }
 
 impl HostCore {
@@ -219,6 +227,9 @@ impl HostCore {
             active: None,
             starts: Vec::new(),
             cancels: Vec::new(),
+            collections: Arc::new(BTreeMap::new()),
+            host_fuel: 0,
+            meter: (0, 0),
         })
     }
 
@@ -279,6 +290,14 @@ impl HostCore {
     pub fn with_compute(mut self, abi: Abi, runs: Arc<dyn Runs>) -> Self {
         self.abi = abi;
         self.runs = runs;
+        self
+    }
+
+    /// Serves `calimero:app/collections` from the state's collections in `abi`
+    /// (`state.collections`); without it every collection is unknown.
+    #[must_use]
+    pub fn with_collections(mut self, abi: &Abi) -> Self {
+        self.collections = Arc::new(abi.collections.clone());
         self
     }
 

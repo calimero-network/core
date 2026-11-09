@@ -13,6 +13,7 @@ publish = false
 testing = ["dep:hex"]
 
 [dependencies]
+base64.workspace = true
 calimero-app-wit.workspace = true
 ciborium.workspace = true
 hex = { workspace = true, optional = true }
@@ -24,3 +25,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 calimero-app-host = { path = ".", features = ["testing"] }
+# The byte-identity tests of `collections` compare against the real SDK on its `MemStore`.
+# Without `testing` the SDK does not depend on this crate, so there is no cycle.
+calimero-sdk.workspace = true

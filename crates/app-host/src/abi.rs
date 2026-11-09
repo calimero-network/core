@@ -6,6 +6,7 @@ use std::time::Duration;
 use calimero_app_wit::COMPUTE_WORLD;
 use serde_json::{Map, Value};
 
+use crate::collections::{CollectionSchema, TableSchema};
 use crate::engine::PrepareError;
 
 /// ABI versions this host reads. A bundle declares its own in `abiVersion`.
@@ -78,6 +79,9 @@ pub struct Abi {
     /// table (state field, camelCase) to its text fields, from `state.search`. Tables with
     /// no fields are left out.
     pub search: BTreeMap<String, Vec<String>>,
+    /// The state's collections (state field, camelCase) and their schemas, from
+    /// `state.collections`; the host serves `calimero:app/collections` from them.
+    pub collections: BTreeMap<String, CollectionSchema>,
 }
 
 impl Abi {
@@ -113,7 +117,15 @@ impl Abi {
             None | Some(Value::Null) => BTreeMap::new(),
             Some(search) => search_fields(search)?,
         };
-        Ok(Self { methods, search })
+        let collections = match top.get("state").and_then(|s| s.get("collections")) {
+            None | Some(Value::Null) => BTreeMap::new(),
+            Some(collections) => collection_schemas(collections)?,
+        };
+        Ok(Self {
+            methods,
+            search,
+            collections,
+        })
     }
 }
 
@@ -194,6 +206,62 @@ fn search_fields(json: &Value) -> Result<BTreeMap<String, Vec<String>>, PrepareE
         }
     }
     Ok(out)
+}
+
+/// `state.collections`: `{ field: { "kind": .., .. } }`; a table also declares `key` (a
+/// non-empty field list) and `indexes`, `unique` and `counts` (name to field list).
+fn collection_schemas(json: &Value) -> Result<BTreeMap<String, CollectionSchema>, PrepareError> {
+    let mut out = BTreeMap::new();
+    for (field, schema) in object(json, "state.collections")? {
+        let what = format!("collection {field}");
+        let schema = object(schema, &what)?;
+        let schema = match schema.get("kind").and_then(Value::as_str) {
+            Some("table") => {
+                let key = names(schema.get("key"), &format!("{what}: key"))?;
+                if key.is_empty() {
+                    return Err(bad(format!("{what}: a table has a key")));
+                }
+                let sets = |name: &str| -> Result<BTreeMap<String, Vec<String>>, PrepareError> {
+                    let what = format!("{what}: {name}");
+                    match schema.get(name) {
+                        None | Some(Value::Null) => Ok(BTreeMap::new()),
+                        Some(sets) => object(sets, &what)?
+                            .iter()
+                            .map(|(set, fields)| {
+                                Ok((set.clone(), names(Some(fields), &format!("{what}.{set}"))?))
+                            })
+                            .collect(),
+                    }
+                };
+                CollectionSchema::Table(TableSchema {
+                    key,
+                    indexes: sets("indexes")?,
+                    unique: sets("unique")?,
+                    counts: sets("counts")?,
+                })
+            }
+            Some("unorderedMap") => CollectionSchema::Map,
+            Some("tally") => CollectionSchema::Tally,
+            Some(other) => CollectionSchema::Other(other.to_owned()),
+            None => return Err(bad(format!("{what} has no kind"))),
+        };
+        let _prev = out.insert(field.clone(), schema);
+    }
+    Ok(out)
+}
+
+/// A list of non-empty strings.
+fn names(json: Option<&Value>, what: &str) -> Result<Vec<String>, PrepareError> {
+    let Some(Value::Array(items)) = json else {
+        return Err(bad(format!("{what} is not a list")));
+    };
+    items
+        .iter()
+        .map(|f| match f.as_str() {
+            Some(f) if !f.is_empty() => Ok(f.to_owned()),
+            _ => Err(bad(format!("{what}: {f} is not a field name"))),
+        })
+        .collect()
 }
 
 /// The `compute` object of a compute method; fuel is required, memory and wall default to the maxima.
