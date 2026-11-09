@@ -505,3 +505,30 @@ fn count_keys_are_only_ever_added() {
     assert_eq!(store.op_counts(&key("lead")), (0, 2));
     assert_eq!(store.op_counts(&key("won")), (0, 2));
 }
+
+#[derive(Clone, Debug, PartialEq, calimero_sdk::Record)]
+#[table(key = "id", index(by_tag = ["tag"]))]
+struct Poll {
+    id: String,
+    options: Vec<String>,
+    tag: Option<String>,
+}
+
+#[test]
+fn a_record_may_hold_a_list_field() {
+    let poll = Poll {
+        id: "p1".into(),
+        options: vec!["yes".into(), "no".into()],
+        tag: Some("x".into()),
+    };
+    let cbor = value::to_vec(&poll).unwrap();
+    assert_eq!(value::from_slice::<Poll>(&cbor).unwrap(), poll);
+    let json = serde_json::to_value(&poll).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"id": "p1", "options": ["yes", "no"], "tag": "x"})
+    );
+    let mut table: Table<Poll, MemStore> = Table::with_store("polls", MemStore::new());
+    table.insert(poll.clone()).unwrap();
+    assert_eq!(table.get("p1").unwrap(), Some(poll));
+}

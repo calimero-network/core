@@ -36,6 +36,9 @@ pub trait Record: Serialize + DeserializeOwned {
     const SEARCH: &'static [&'static str] = &[];
     /// [`Self::SEARCH`] as a JSON list, for the state ABI.
     const SEARCH_JSON: &'static str = "[]";
+    /// The table's schema as JSON, for the state ABI's `"collections"`: counts, indexes, key,
+    /// kind and unique constraints, keys sorted, with camelCase field names and the declared set names.
+    const SCHEMA_JSON: &'static str = r#"{"kind":"table"}"#;
 
     /// The key parts of the named fields, in order.
     ///
@@ -128,6 +131,7 @@ pub struct Table<T: Record, S: Store = DefaultStore> {
 impl<T: Record, S: Store> StateField for Table<T, S> {
     const KIND: &'static str = "table";
     const SEARCH: &'static str = T::SEARCH_JSON;
+    const SCHEMA: &'static str = T::SCHEMA_JSON;
 }
 
 impl<T: Record, S: Store + Default> Table<T, S> {

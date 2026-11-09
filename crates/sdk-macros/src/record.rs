@@ -16,6 +16,8 @@ use crate::types::{camel, check_wire, wire, Wire};
 /// A named set of fields, as written: `by_owner = ["owner", "name_key"]`.
 struct FieldSet {
     name: String,
+    /// The name as written, for the state ABI's schema (`name` is camelCased for the trait).
+    raw_name: String,
     fields: Vec<LitStr>,
 }
 
@@ -52,6 +54,7 @@ fn field_sets(meta: &ParseNestedMeta<'_>, into: &mut Vec<FieldSet>) -> syn::Resu
         }
         into.push(FieldSet {
             name: camel(&ident.to_string()),
+            raw_name: ident.to_string(),
             fields,
         });
         Ok(())
@@ -166,15 +169,65 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             .collect::<Vec<_>>()
             .join(",")
     );
+    // The schema as JSON, for the state ABI's `collections`: set names as written in
+    // `#[table(..)]`, field lists in camelCase.
+    let list_json = |fields: &[String]| -> String {
+        format!(
+            "[{}]",
+            fields
+                .iter()
+                .map(|f| format!("\"{f}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    let sets_json = |sets: &[FieldSet]| -> syn::Result<String> {
+        let mut out = Vec::new();
+        for set in sets {
+            let list = set
+                .fields
+                .iter()
+                .map(resolve)
+                .collect::<syn::Result<Vec<_>>>()?;
+            out.push(format!("\"{}\":{}", set.raw_name, list_json(&list)));
+        }
+        Ok(format!("{{{}}}", out.join(",")))
+    };
+    // Keys sorted, like the rest of the state ABI (see `types::canonical`).
+    let schema_json = format!(
+        "{{\"counts\":{},\"indexes\":{},\"key\":{},\"kind\":\"table\",\"unique\":{}}}",
+        sets_json(&table.count)?,
+        sets_json(&table.index)?,
+        list_json(&key),
+        sets_json(&table.unique)?,
+    );
     let unique = sets(&table.unique)?;
     let index = sets(&table.index)?;
     let count = sets(&table.count)?;
 
     let name = &input.ident;
-    let arms = fields.iter().map(|(ident, _)| {
-        let key = camel(&ident.to_string());
-        quote! { #key => #sdk::ToKeyPart::to_key_part(&self.#ident) }
-    });
+    // Only fields named in the key, an index, a unique entry or a count are key parts, so
+    // the others (a `Vec<String>`, say) need no `ToKeyPart`; `key_parts` panics on them.
+    let keyed: std::collections::BTreeSet<String> = table
+        .key
+        .iter()
+        .chain(
+            table
+                .unique
+                .iter()
+                .chain(&table.index)
+                .chain(&table.count)
+                .flat_map(|s| &s.fields),
+        )
+        .map(LitStr::value)
+        .collect();
+    let arms = fields
+        .iter()
+        .filter(|(ident, _)| keyed.iter().any(|k| ident == k))
+        .map(|(ident, _)| {
+            let key = camel(&ident.to_string());
+            quote! { #key => #sdk::ToKeyPart::to_key_part(&self.#ident) }
+        });
 
     let ser_fields = fields.iter().map(|(ident, ty)| {
         let rename = camel(&ident.to_string());
@@ -230,6 +283,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             const COUNTS: &'static [#sdk::table::FieldSet] = #count;
             const SEARCH: &'static [&'static str] = &[#(#search),*];
             const SEARCH_JSON: &'static str = #search_json;
+            const SCHEMA_JSON: &'static str = #schema_json;
 
             fn key_parts(&self, fields: &[&str]) -> ::std::vec::Vec<#sdk::KeyPart> {
                 fields

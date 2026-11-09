@@ -48,6 +48,10 @@ pub trait StateField {
     /// The fields the host indexes for full-text search, as a JSON list: a table's
     /// `#[table(search = [..])]`, empty for everything else.
     const SEARCH: &'static str = "[]";
+    /// The field's schema as a JSON object under `"collections"` in the ABI's `"state"`, for
+    /// the host to keep its keys in step with the SDK's. Empty means `{"kind":"<KIND>"}`;
+    /// a table says its key, indexes, unique constraints and counts.
+    const SCHEMA: &'static str = "";
 }
 
 /// An event enum. Implemented by `#[app::event]`.

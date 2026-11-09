@@ -53,7 +53,7 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
         let storage = camel(&ident.to_string());
         quote! { #ident: <#ty>::new(#storage) }
     });
-    // `{"fields":{"<name>":"<kind>",..},"version":N}`, keys sorted (see `types::canonical`);
+    // `{"collections":{..},"fields":{"<name>":"<kind>",..},"search":{..},"version":N}`, keys sorted (see `types::canonical`);
     // each kind is the field type's `StateField::KIND`, joined at compile time.
     let mut kinds: Vec<(String, &syn::Type)> = fields
         .named
@@ -65,7 +65,25 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
         })
         .collect();
     kinds.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut parts = vec![quote! { "{\"fields\":{" }];
+    // `"collections":{"<name>":<schema>,..}`: every field's `StateField::SCHEMA`, or
+    // `{"kind":"<KIND>"}` when it has none; the host keeps its keys in step with these.
+    let mut parts = vec![quote! { "{\"collections\":{" }];
+    for (i, (field, ty)) in kinds.iter().enumerate() {
+        let open = format!("{}\"{field}\":", if i == 0 { "" } else { "," });
+        parts.push(quote! { #open });
+        parts.push(quote! {
+            if <#ty as #sdk::app::StateField>::SCHEMA.is_empty() { "{\"kind\":\"" }
+            else { <#ty as #sdk::app::StateField>::SCHEMA }
+        });
+        parts.push(quote! {
+            if <#ty as #sdk::app::StateField>::SCHEMA.is_empty() { <#ty as #sdk::app::StateField>::KIND }
+            else { "" }
+        });
+        parts.push(quote! {
+            if <#ty as #sdk::app::StateField>::SCHEMA.is_empty() { "\"}" } else { "" }
+        });
+    }
+    parts.push(quote! { "},\"fields\":{" });
     for (i, (field, ty)) in kinds.iter().enumerate() {
         let open = format!("{}\"{field}\":\"", if i == 0 { "" } else { "," });
         parts.push(quote! { #open });
