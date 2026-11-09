@@ -15,8 +15,16 @@
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
 
+mod compute;
 mod files;
 
+#[cfg(feature = "testing")]
+pub use self::compute::ComputeLimits;
+#[cfg(not(feature = "testing"))]
+pub(super) use self::compute::ComputeLimits;
+pub(super) use self::compute::ComputeState;
+pub use self::compute::JOB_POLL;
+pub(crate) use self::compute::RUN_VIEW;
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
@@ -217,7 +225,7 @@ fn abi_check(
 /// The code of a final entry that is over the log's cap even without its result method's outcome.
 pub const FINAL_TOO_LARGE: &str = "FINAL_TOO_LARGE";
 
-/// `FINAL_TOO_LARGE`: nothing can be logged for the run's end; the leader ends it `Failed{timeout}`.
+/// `FINAL_TOO_LARGE`: nothing can be logged for the run's end; the leader ends it `Failed{tooLarge}`.
 #[must_use]
 pub fn final_too_large() -> ApiError {
     ApiError::new(
@@ -253,12 +261,11 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
     (serde_json::to_vec(&*cmd).unwrap_or_default(), true)
 }
 
-/// The files `cmd` marks.
+/// The files `cmd` marks that its entry stores and charges: a final's outputs were stored and
+/// charged by the leader before it took the proposal lock, so only its result method's count.
 fn marked_files(cmd: &ComponentCmd) -> Vec<&FileMark> {
     match cmd {
-        ComponentCmd::ComputeFinal(entry) => {
-            entry.outputs.iter().chain(&entry.result.files).collect()
-        }
+        ComponentCmd::ComputeFinal(entry) => entry.result.files.iter().collect(),
         ComponentCmd::Call(entry) => entry.outcome.files.iter().collect(),
         ComponentCmd::Tick(entry) => entry.outcome.files.iter().collect(),
         ComponentCmd::Init { outcome, .. } => outcome.files.iter().collect(),
@@ -289,8 +296,12 @@ fn writes(outcome: &Outcome) -> bool {
     !outcome.diff.is_empty()
         || !outcome.events.is_empty()
         || !outcome.files.is_empty()
-        || !outcome.compute_starts.is_empty()
-        || !outcome.compute_cancels.is_empty()
+        || moves_runs(outcome)
+}
+
+/// Whether a call's outcome starts or cancels a compute run.
+fn moves_runs(outcome: &Outcome) -> bool {
+    !outcome.compute_starts.is_empty() || !outcome.compute_cancels.is_empty()
 }
 
 /// A finished run: its outcome, and the ciphertext of the files it made, which stays
@@ -307,6 +318,20 @@ impl Node {
     #[must_use]
     pub fn app_clock(&self) -> Clock {
         self.clock.clone()
+    }
+
+    /// Wakes the compute driver: a logged call started or cancelled a run.
+    fn kick_runs(&self) {
+        #[cfg(feature = "testing")]
+        let _n = self.probes.run_kicks.fetch_add(1, Ordering::Relaxed);
+        self.runs_kick.notify_one();
+    }
+
+    /// How many times a logged call woke the compute driver. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn run_kicks(&self) -> u64 {
+        self.probes.run_kicks.load(Ordering::Relaxed)
     }
 
     /// Moves this node's app time by `ms` (negative: back). Tests only.
@@ -368,12 +393,32 @@ impl Node {
         self.probes.blob_puts_seen.load(Ordering::Relaxed)
     }
 
-    /// Makes the next call this node logs conflict with the state it was built on. Tests only.
+    /// Makes the next call or run final this node logs conflict with the state it was built on. Tests only.
     #[cfg(feature = "testing")]
     pub fn conflict_next_call(&self) {
         self.probes
             .conflict_next_call
             .store(true, Ordering::Relaxed);
+    }
+
+    /// Leaves only `leave` places for transfers to job nodes, node-wide. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_job_transfers(&self, leave: usize) {
+        let held = self.job_ops.available_permits().saturating_sub(leave);
+        let _forgotten = self.job_ops.forget_permits(held);
+    }
+
+    /// Leaves only `leave` places for control requests to job nodes, node-wide. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_job_control(&self, leave: usize) {
+        let held = self.job_control.available_permits().saturating_sub(leave);
+        let _forgotten = self.job_control.forget_permits(held);
+    }
+
+    /// Makes every run final this node logs conflict while `on`. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn conflict_finals(&self, on: bool) {
+        self.probes.conflict_finals.store(on, Ordering::Relaxed);
     }
 
     /// Leaves only `leave` bytes for open file readers to take, node-wide. Tests only.
@@ -411,6 +456,34 @@ impl Node {
     #[cfg(feature = "testing")]
     pub fn limit_run_open_bytes(&self, cap: usize) {
         self.probes.run_open_cap.store(cap, Ordering::Relaxed);
+    }
+
+    /// Replaces the waits that end a run the leader gets no answer for. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_compute_limits(&self, limits: ComputeLimits) {
+        *self
+            .probes
+            .limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = limits;
+    }
+
+    /// Makes this node's system reads fail as if the system group had no leader. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_system_outage(&self, on: bool) {
+        self.probes.system_outage.store(on, Ordering::Relaxed);
+    }
+
+    /// The waits that end a run the leader gets no answer for.
+    pub(super) fn limits(&self) -> ComputeLimits {
+        #[cfg(feature = "testing")]
+        return *self
+            .probes
+            .limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(not(feature = "testing"))]
+        ComputeLimits::default()
     }
 
     /// The bytes the readers of one run may hold.
@@ -674,8 +747,7 @@ impl Node {
     }
 
     /// The entry that logs `cmd`, once the files it marks are on a majority of the voters and
-    /// counted against the quota, and what was stored for it. A replaced call marks none; a
-    /// replaced final keeps its outputs.
+    /// counted against the quota, and what was stored for it. A replaced entry marks none.
     fn logged_entry(
         &self,
         app_id: &str,
@@ -683,13 +755,22 @@ impl Node {
         blobs: &[Blob],
     ) -> Result<(Vec<u8>, Stored), ApiError> {
         #[cfg(feature = "testing")]
-        if let ComponentCmd::Call(call) = &mut cmd {
-            if self
+        if matches!(cmd, ComponentCmd::Call(_) | ComponentCmd::ComputeFinal(_))
+            && self
                 .probes
                 .conflict_next_call
                 .swap(false, Ordering::Relaxed)
-            {
-                call.base_index += 1;
+        {
+            match &mut cmd {
+                ComponentCmd::Call(call) => call.base_index += 1,
+                ComponentCmd::ComputeFinal(entry) => entry.base_index += 1,
+                _ => {}
+            }
+        }
+        #[cfg(feature = "testing")]
+        if let ComponentCmd::ComputeFinal(entry) = &mut cmd {
+            if self.probes.conflict_finals.load(Ordering::Relaxed) {
+                entry.base_index += 1;
             }
         }
         let (bytes, replaced) = entry_bytes(&mut cmd);
@@ -720,6 +801,7 @@ impl Node {
                 Stored {
                     ids: Vec::new(),
                     charged,
+                    outputs: false,
                 },
             );
             return Err(e);
@@ -727,6 +809,7 @@ impl Node {
         let stored = Stored {
             ids: blobs.iter().map(|(id, _)| id.clone()).collect(),
             charged,
+            outputs: false,
         };
         Ok((bytes, stored))
     }
@@ -907,19 +990,7 @@ impl Node {
     /// app group this node leads, a task proposes the due ticks, unless the
     /// previous round for that app is still running.
     pub fn tick_timers(self: &Arc<Self>) {
-        let led: Vec<(GroupId, Arc<Group<AppMachine>>)> = self
-            .apps
-            .read()
-            .map(|a| {
-                a.iter()
-                    .filter(|(_, g)| g.status().is_leader)
-                    .filter(|(_, g)| {
-                        g.read_local(|m, _| m.state.executor() == Some(Executor::Component))
-                    })
-                    .map(|(id, g)| (*id, Arc::clone(g)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let led = self.led_component_groups();
         for (group, g) in led {
             let Ok(mut ticking) = self.ticking.lock() else {
                 return;
@@ -936,6 +1007,22 @@ impl Node {
                 }
             }));
         }
+    }
+
+    /// The component app groups this node leads.
+    pub(super) fn led_component_groups(&self) -> Vec<(GroupId, Arc<Group<AppMachine>>)> {
+        self.apps
+            .read()
+            .map(|a| {
+                a.iter()
+                    .filter(|(_, g)| g.status().is_leader)
+                    .filter(|(_, g)| {
+                        g.read_local(|m, _| m.state.executor() == Some(Executor::Component))
+                    })
+                    .map(|(id, g)| (*id, Arc::clone(g)))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Propose the latest due slot of each of the app's timers not yet applied
@@ -1143,10 +1230,12 @@ impl Node {
         // call's two phases (`calimero_call_phase_duration_seconds`).
         let mut ran_for = None;
         let mut proposed_at = None;
+        let mut moved_runs = false;
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
                 answered = false;
+                moved_runs = false;
                 ran_for = None;
                 proposed_at = None;
                 // A retry of a call that committed is its recorded answer, whatever
@@ -1259,6 +1348,7 @@ impl Node {
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
                 answered = true;
+                moved_runs = moves_runs(&outcome);
                 // Events are logged side effects too (Ruling 41): an emit-only call
                 // is refused like one that writes keys.
                 if read_only && writes(&outcome) {
@@ -1315,6 +1405,9 @@ impl Node {
         }
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))?;
+        if p.appended && moved_runs {
+            self.kick_runs();
+        }
         if p.appended && a.conflict {
             let _prev = self
                 .conflicts
@@ -1481,6 +1574,9 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
+        if req.method == RUN_VIEW {
+            return self.run_view(g, req);
+        }
         let bundle = g
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
@@ -2405,6 +2501,108 @@ mod tests {
             ..Outcome::default()
         };
         assert!(writes(&cancel));
+    }
+
+    #[test]
+    fn a_final_is_charged_for_its_result_methods_files_only() {
+        use crate::component::{FileMark, FinalEntry, FinalOutcome};
+        use crate::job_wire::ReportUsage;
+        let file = |size| FileMark {
+            id: "ab".repeat(32),
+            size,
+            sha256: calimero_log::Bytes(vec![1; 32]),
+            wrapped_key: calimero_log::Bytes(vec![2; 60]),
+        };
+        let entry = FinalEntry {
+            run: "r".into(),
+            attempt: 1,
+            outcome: FinalOutcome::Done,
+            report: None,
+            signature: None,
+            outputs: vec![file(10), file(20)],
+            usage: ReportUsage::default(),
+            result: Outcome {
+                files: vec![file(4)],
+                ..Outcome::default()
+            },
+            base_index: 0,
+            ts_ms: 0,
+            id_term: 0,
+            id_seq: 0,
+        };
+        assert_eq!(
+            new_file_bytes(&ComponentCmd::ComputeFinal(Box::new(entry))),
+            Some(4),
+            "the outputs were charged before the entry"
+        );
+        let attempt = ComponentCmd::Barrier;
+        assert_eq!(new_file_bytes(&attempt), Some(0));
+    }
+
+    fn big_final(result_bytes: usize, outputs: usize) -> ComponentCmd {
+        use crate::component::{FileMark, FinalEntry, FinalOutcome};
+        use crate::job_wire::ReportUsage;
+        let file = |i: usize| FileMark {
+            id: format!("{i:064x}"),
+            size: 10,
+            sha256: calimero_log::Bytes(vec![1; 32]),
+            wrapped_key: calimero_log::Bytes(vec![2; 60]),
+        };
+        ComponentCmd::ComputeFinal(Box::new(FinalEntry {
+            run: "r".into(),
+            attempt: 1,
+            outcome: FinalOutcome::Done,
+            report: None,
+            signature: None,
+            outputs: (0..outputs).map(file).collect(),
+            usage: ReportUsage::default(),
+            result: Outcome {
+                diff: vec![crate::app::Write {
+                    key: calimero_log::Bytes(b"k".to_vec()),
+                    value: Some(calimero_log::Bytes(vec![0; result_bytes])),
+                }],
+                files: vec![file(9_999)],
+                ..Outcome::default()
+            },
+            base_index: 0,
+            ts_ms: 0,
+            id_term: 0,
+            id_seq: 0,
+        }))
+    }
+
+    #[test]
+    fn an_oversized_final_loses_only_its_result_methods_outcome() {
+        let mut cmd = big_final(2 * calimero_log::MAX_ENTRY_BYTES, 3);
+        assert_eq!(new_file_bytes(&cmd), Some(10), "the result's file");
+        let (bytes, replaced) = entry_bytes(&mut cmd);
+        assert!(replaced && bytes.len() <= calimero_log::MAX_ENTRY_BYTES);
+        let ComponentCmd::ComputeFinal(entry) = &cmd else {
+            panic!("not a final");
+        };
+        assert_eq!(entry.outputs.len(), 3, "the outputs stay");
+        assert!(entry.result.diff.is_empty() && entry.result.files.is_empty());
+        assert_eq!(new_file_bytes(&cmd), Some(0), "nothing is left to charge");
+        let blobs: Vec<Blob> = [0usize, 9_999]
+            .iter()
+            .map(|i| (format!("{i:064x}"), vec![1]))
+            .collect();
+        assert!(
+            marked_blobs(&cmd, &blobs).is_empty(),
+            "no blob is left to store"
+        );
+    }
+
+    #[test]
+    fn file_sizes_that_overflow_refuse_the_entry() {
+        let mut cmd = big_final(10, 2);
+        if let ComponentCmd::ComputeFinal(entry) = &mut cmd {
+            let mut second = entry.result.files[0].clone();
+            entry.result.files[0].size = u64::MAX;
+            second.size = 1;
+            entry.result.files.push(second);
+        }
+        assert_eq!(new_file_bytes(&cmd), None);
     }
 
     #[test]

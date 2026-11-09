@@ -102,7 +102,16 @@ fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_stat
     let methods = abi["methods"].as_object().expect("methods");
     assert_eq!(
         methods.keys().collect::<Vec<_>>(),
-        ["burn", "digest", "hog", "peek", "spin"]
+        [
+            "big",
+            "burn",
+            "digest",
+            "digestThen",
+            "digestUnkept",
+            "hog",
+            "peek",
+            "spin"
+        ]
     );
     assert!(methods.values().all(|m| m["kind"] == "compute"));
 

@@ -42,6 +42,12 @@ impl Bundles {
         Some(prepared)
     }
 
+    /// The hashes held. Tests only.
+    #[cfg(feature = "testing")]
+    pub(super) fn hashes(&self) -> Vec<String> {
+        locked(&self.kept).iter().map(|p| p.hash.clone()).collect()
+    }
+
     fn insert(&self, prepared: Arc<Prepared>) {
         let mut kept = locked(&self.kept);
         kept.retain(|p| p.hash != prepared.hash);
