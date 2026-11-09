@@ -974,6 +974,45 @@ async fn an_uploaded_file_is_read_by_the_app_and_stored_sealed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uploaded_file_answers_its_uploader_through_every_node_and_a_made_file_none() {
+    let f = start().await;
+    let alice = f.account().await;
+    let who = |id: String| {
+        let f = &f;
+        async move {
+            let r = f.clients[0]
+                .view(
+                    &f.app,
+                    "uploaderOf",
+                    json!({ "id": id }),
+                    Consistency::Strong,
+                )
+                .await
+                .unwrap();
+            r.result
+        }
+    };
+    let mut ids = Vec::new();
+    for via in 0..3 {
+        let up = f.upload(via, 5_000, 1).await.unwrap();
+        ids.push(up["id"].as_str().unwrap().to_owned());
+    }
+    ids.sort();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        3,
+        "each upload is sealed under a key of its own: three files"
+    );
+    for id in ids {
+        assert_eq!(who(id).await, json!(alice));
+    }
+    let (made, ..) = f.put(5_000, 2).await;
+    assert_eq!(who(made).await, Value::Null);
+    assert_eq!(who("ab".repeat(32)).await, Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_is_not_downloadable() {
     let f = start().await;
     let up = f.upload(0, 1000, 1).await.unwrap();

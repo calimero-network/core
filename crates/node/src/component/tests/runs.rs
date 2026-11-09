@@ -1803,3 +1803,306 @@ fn runs_page_newest_first_by_start_then_id_with_a_cursor_to_continue() {
         "a page that holds all has no cursor"
     );
 }
+
+/// The plain blob `out(n)` publishes as: its plaintext's hash.
+fn plain(n: u8) -> String {
+    hex::encode(vec![n + 1; 32])
+}
+
+fn published(source: &str, id: &str, size: u64) -> PublishedMark {
+    PublishedMark {
+        source: source.to_owned(),
+        id: id.to_owned(),
+        size,
+    }
+}
+
+/// A call that publishes `marks` and stores a reference to the first one's blob.
+fn publish_call(w: &World, marks: Vec<PublishedMark>, diff: Vec<Write>) -> ComponentCmd {
+    let mut call = call_entry(w.last);
+    call.outcome.published = marks;
+    call.outcome.diff = diff;
+    ComponentCmd::Call(Box::new(call))
+}
+
+/// `r1` done with `out(1)`, then a publish of it.
+fn done_world() -> World {
+    let mut w = World::new();
+    w.start("r1");
+    let k = job_key(1);
+    let _a = w.assign("r1", &k);
+    assert!(!w.finish(w.done("r1", &k)).conflict);
+    w
+}
+
+fn plain_record(w: &World, n: u8) -> Option<crate::component::blobs::BlobRecord> {
+    w.r.machine
+        .state
+        .component
+        .blobs
+        .records
+        .get(&[n + 1; 32])
+        .cloned()
+}
+
+#[test]
+fn a_done_runs_output_publishes_as_a_charged_plain_blob() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    let cmd = publish_call(&w, marks, vec![store_ref("report", 2)]);
+    let a = w.push(&cmd);
+    assert!(!a.conflict && a.status == Status::Ok, "{a:?}");
+    let record = plain_record(&w, 1).expect("the plain blob is recorded");
+    assert_eq!(
+        (
+            record.size,
+            record.refs,
+            record.file.is_none(),
+            record.charged
+        ),
+        (out(1).size, 1, true, true),
+        "counted in the entry that made it"
+    );
+    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
+        .file
+        .is_some());
+}
+
+#[test]
+fn a_collected_published_blob_releases_its_charge() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    assert!(!touch(&mut w, 10 + BLOB_IDLE_MS + 1, store_ref("later", 9)).conflict);
+    assert!(plain_record(&w, 1).is_none());
+    w.last += 1;
+    let freed = w.r.apply(w.last, &collected(&[plain(1)]));
+    assert_eq!(freed.result["freed"], json!(out(1).size));
+}
+
+#[test]
+fn publishing_what_is_no_done_runs_output_is_refused_and_changes_nothing() {
+    let mut w = done_world();
+    // An uploaded file, a file a call made, an unknown id, a plain blob.
+    let _f = w.push(
+        &serde_json::from_slice(&file_call(w.last, 1, Status::Ok, vec![mark(7)], vec![])).unwrap(),
+    );
+    for source in [fid(INPUT), fid(7), fid(99)] {
+        let marks = vec![published(&source, &plain(1), out(1).size)];
+        let a = w.push(&publish_call(&w, marks, vec![w2("leaked")]));
+        assert_eq!(why(&a), "NOT_A_RUN_OUTPUT", "{source}");
+    }
+    assert!(plain_record(&w, 1).is_none());
+    assert_eq!(w.wrote("leaked"), None, "a refused entry applied its diff");
+}
+
+#[test]
+fn a_cancel_of_the_done_run_in_the_publishing_call_leaves_the_publish_and_the_run_as_they_are() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    let mut cmd = publish_call(&w, marks, vec![store_ref("report", 2)]);
+    if let ComponentCmd::Call(c) = &mut cmd {
+        c.outcome.compute_cancels = vec!["r1".into()];
+    }
+    let a = w.push(&cmd);
+    assert!(!a.conflict && a.status == Status::Ok, "{a:?}");
+    assert_eq!(w.state("r1"), RunState::Done);
+    assert!(!w.record("r1").cancel_requested);
+    assert!(plain_record(&w, 1).is_some_and(|r| r.charged && r.refs == 1));
+    let _a = w.call(Vec::new(), &["r1"]);
+    assert!(!w.record("r1").cancel_requested);
+    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
+        .file
+        .as_ref()
+        .is_some_and(|f| f.output));
+}
+
+#[test]
+fn a_run_that_did_not_finish_done_leaves_nothing_to_publish() {
+    let mut w = World::new();
+    w.start("r1");
+    let refused = FinalOutcome::Failed {
+        reason: FailedReason::Refused,
+    };
+    assert!(!w.finish(leader(&w, "r1", refused)).conflict);
+    assert_eq!(w.state("r1"), RunState::Failed);
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert_eq!(
+        why(&w.push(&publish_call(&w, marks, vec![]))),
+        "NOT_A_RUN_OUTPUT"
+    );
+}
+
+#[test]
+fn a_leader_cannot_name_another_plaintext_or_size_for_an_output() {
+    let mut w = done_world();
+    // The uploaded input's hash, a made-up one, a wrong size.
+    for (id, size) in [
+        (hex::encode([INPUT + 1; 32]), out(1).size),
+        (hex::encode([0x77; 32]), out(1).size),
+        (plain(1), out(1).size + 1),
+    ] {
+        let marks = vec![published(&out(1).id, &id, size)];
+        assert_eq!(
+            why(&w.push(&publish_call(&w, marks, vec![]))),
+            "NOT_A_RUN_OUTPUT"
+        );
+    }
+    assert!(plain_record(&w, 1).is_none());
+}
+
+#[test]
+fn a_published_blob_the_app_already_holds_is_not_charged_again() {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks.clone(), vec![])).conflict);
+    let first = plain_record(&w, 1).unwrap();
+    assert!(
+        !w.push(&publish_call(&w, marks, vec![store_ref("k", 2)]))
+            .conflict
+    );
+    let second = plain_record(&w, 1).unwrap();
+    assert_eq!((second.charged, second.refs), (true, 1));
+    assert_eq!(second.idle_since_ms, first.idle_since_ms);
+}
+
+fn published_world() -> World {
+    let mut w = done_world();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    w
+}
+
+fn owner_cmd(w: &mut World, cmd: &ComponentCmd) -> Applied {
+    w.last += 1;
+    w.r.apply(w.last, &serde_json::to_vec(cmd).unwrap())
+}
+
+#[test]
+fn the_owner_takes_a_published_blob_down_and_its_charge_is_queued_for_release() {
+    let mut w = published_world();
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    assert!(plain_record(&w, 1).is_none());
+    let head = &w.r.machine.state.component.head;
+    assert_eq!(head.collect, [plain(1)]);
+    assert_eq!(head.collect_files[&plain(1)], out(1).size);
+    let freed = w.r.apply(w.last + 1, &collected(&[plain(1)]));
+    assert_eq!(freed.result["freed"], json!(out(1).size));
+    assert_eq!(why(&owner_cmd(&mut w, &forget)), "no such blob in this app");
+}
+
+#[test]
+fn a_sealed_file_is_still_not_the_owners_to_delete() {
+    let mut w = published_world();
+    let forget = ComponentCmd::BlobForget { id: out(1).id };
+    assert_eq!(why(&owner_cmd(&mut w, &forget)), "no such blob in this app");
+    assert!(w.r.machine.state.component.blobs.records[&[1; 32]]
+        .file
+        .is_some());
+}
+
+#[test]
+fn a_revoke_counts_up_only_for_a_published_blob() {
+    let mut w = published_world();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, 2);
+    for id in [out(1).id, hex::encode([0x77; 32])] {
+        let other = ComponentCmd::BlobRevoke { id };
+        assert_eq!(why(&owner_cmd(&mut w, &other)), "no such published blob");
+    }
+}
+
+#[test]
+fn an_upload_of_a_published_blobs_bytes_keeps_its_revocations() {
+    let mut w = published_world();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    let upload = ComponentCmd::Blob {
+        id: plain(1),
+        size: out(1).size,
+        mime: "text/plain".to_owned(),
+        ts_ms: 20,
+    };
+    assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
+    let record = plain_record(&w, 1).unwrap();
+    assert_eq!((record.epoch, record.charged), (1, true));
+}
+
+#[test]
+fn a_blob_published_again_after_a_restart_starts_at_the_persisted_epoch_floor() {
+    let mut w = published_world();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &revoke).status, Status::Ok);
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+
+    calimero_log::Machine::restore(&mut w.r.machine, &[]).unwrap();
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, 2);
+}
+
+#[test]
+fn an_unreadable_epoch_floor_fails_the_load_instead_of_resetting_to_zero() {
+    let mut w = published_world();
+    let state = w.r.engine.group_state(5);
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(rows::CBLOB, blobs::FLOOR_KEY, b"not json");
+    tx.commit().unwrap();
+    assert!(calimero_log::Machine::restore(&mut w.r.machine, &[]).is_err());
+}
+
+#[test]
+fn a_blob_published_over_a_forgotten_upload_starts_above_the_uploads_epoch() {
+    let mut w = done_world();
+    let upload = ComponentCmd::Blob {
+        id: plain(1),
+        size: out(1).size,
+        mime: "text/plain".to_owned(),
+        ts_ms: 20,
+    };
+    assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    let marks = vec![published(&out(1).id, &plain(1), out(1).size)];
+    assert!(!w.push(&publish_call(&w, marks, vec![])).conflict);
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, 1);
+}
+
+#[test]
+fn an_unreadable_blob_record_fails_the_load_instead_of_losing_its_epoch() {
+    let mut w = published_world();
+    let state = w.r.engine.group_state(5);
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(rows::CBLOB, &[2; 32], b"not json");
+    tx.commit().unwrap();
+    assert!(calimero_log::Machine::restore(&mut w.r.machine, &[]).is_err());
+}
+
+#[test]
+fn a_revoke_at_the_last_epoch_is_refused_and_changes_nothing() {
+    let mut w = published_world();
+    let mut record = plain_record(&w, 1).unwrap();
+    record.epoch = u32::MAX;
+    let state = w.r.engine.group_state(5);
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(rows::CBLOB, &[2; 32], &serde_json::to_vec(&record).unwrap());
+    tx.commit().unwrap();
+    calimero_log::Machine::restore(&mut w.r.machine, &[]).unwrap();
+    let revoke = ComponentCmd::BlobRevoke { id: plain(1) };
+    assert_eq!(why(&owner_cmd(&mut w, &revoke)), "no revocation left");
+    assert_eq!(plain_record(&w, 1).unwrap().epoch, u32::MAX);
+}
+
+#[test]
+fn an_entry_publishing_more_than_the_cap_is_refused_even_if_every_mark_is_valid() {
+    let mut w = done_world();
+    let mark = published(&out(1).id, &plain(1), out(1).size);
+    let marks = vec![mark; host::MAX_PUBLISHED_PER_RUN + 1];
+    let a = w.push(&publish_call(&w, marks, vec![]));
+    assert_eq!(why(&a), "NOT_A_RUN_OUTPUT");
+    assert!(plain_record(&w, 1).is_none());
+}

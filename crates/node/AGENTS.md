@@ -158,7 +158,7 @@ is its command line.
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
-  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
+  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`, `__blob_revoke`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
@@ -482,6 +482,7 @@ is its command line.
   A final registers each output as a sealed file of the app in the same entry and before `result` applies (`BlobTable::add_file`, the path a run's own files take, with the plaintext hash and wrapped key), so a `BlobRef` the result method stores is counted.
   An output the result method does not store is forgotten `BLOB_IDLE_MS` later, and the org's file quota is released when the leader collects it.
   `AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave, so `storage_put` accepts those references.
+  A final marks each output `FileSeal.output`, the flag that makes it publishable (only a signed done report carries outputs).
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
   The cluster tests' fixture (`apps/v2-fixtures/compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
@@ -1212,6 +1213,21 @@ API and system group:
   A file is then held while a stored `BlobRef` names it, `BLOB_IDLE_MS` after its entry or after the last reference went, and forgotten by `expire_blobs` in the same entry on every replica.
   The leader then collects its bytes through the same `collect_blob` and `componentBlobsCollected` as any blob; a replica that is down then keeps unreachable bytes, as for a blob.
   `BlobTable::upload` and `forget_blob` refuse a file id, so a blob upload or an owner delete cannot take one.
+  **Publishing** (`runs.publish`): `NodeFiles::publish` answers only a sealed file whose `FileSeal.output` is set, which `apply_compute_final` sets on a done run's outputs and nothing else sets.
+  It opens and proves the whole file, holds the plaintext against the pending budget (`plaintext`), and answers a `PublishedFile` (a file over `MAX_FILE_BYTES` is a soft `file too large`).
+  The outcome and entry carry `Outcome::published` (`PublishedMark { source, id, size }`, never bytes; a serde default).
+  `run_with` adds the plaintext of each published blob the app does not hold to the run's blobs, so `logged_entry` charges it (`new_file_bytes`, once per id) and `persist_files` pushes it to a majority before the entry is proposed.
+  `apply_component_outcome` checks every mark first (`publishes_only_outputs`): the source must be an output record, its plaintext hash must be the mark's id and its size the mark's, and at most `MAX_PUBLISHED_PER_RUN` marks.
+  A failing mark makes the whole entry a no-op that answers `NOT_A_RUN_OUTPUT`, on every replica, so a leader cannot publish an uploaded file, a file a call made, another app's output or a different plaintext.
+  Any entry that applies as a no-op (a conflict or a refusal) has the bytes it stored discarded and its charge refunded (`recorded_nothing`).
+  Then `BlobTable::add_published` records the plain blob (`BlobRecord::charged`, `application/octet-stream`) before the diff, unless the app already holds that id; `expire` and `BlobsCollected` release the charge of a file or a charged blob.
+  A published blob is served only through a grant (`blob_download` judges it on the leader's record, `Node::blob_standing_strong`), and `blobs.grant` is refused for it outside a logged write.
+  `BlobRecord::epoch` counts the owner's revokes (`ComponentCmd::BlobRevoke`, `POST /apps/{app}/blobs/{id}/revoke`, `__blob_revoke`); a grant above zero carries its epoch (`grant_token`), and a download whose grant names another epoch than the record's answers `404`.
+  The app also keeps an epoch floor (`BlobTable::floor`, the hidden `rows::CBLOB` row `floor`): forgetting any blob but a sealed file raises it above that blob's epoch, and a record made again (`add_published`, `upload`) starts there, so a grant of a forgotten blob never holds for its successor.
+  `load` fails on an unreadable floor or record instead of defaulting, and `revoke` refuses at `u32::MAX` (`no revocation left`).
+  The owner's delete (`forget_blob`) forgets a published blob too, queuing its bytes and charge in `collect` and `collect_files` like `expire` does; it still refuses a sealed file.
+  A result method sees its own run's outputs without the flag (`blob_view_with_outputs`), so it cannot publish them; it stores the `BlobRef` and a later call publishes.
+  Tests: `component/tests/runs.rs` (the apply rule) and `compute_runs.rs` (`a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote`, `only_an_output_of_this_apps_done_runs_publishes`, `a_published_blob_survives_a_leader_change`).
   `RunBlobs::info` answers a file with its plaintext size and hash and an empty mime, as `files.info` does; the host core refuses `blobs.grant` for it.
   `GET`, `POST` and `DELETE` on `/apps/{app}/blobs` refuse a file id with `409 NOT_SUPPORTED` (`refuse_sealed_file`, judged by the app's leader through `file_held_strong`).
   `/apps/{app}/storage` counts their sealed bytes in `blobBytes` (a tag per chunk).
@@ -1222,6 +1238,8 @@ API and system group:
   `StorageStats::files` carries each file's id, size and SHA-256 for these routes, and `internal/storage` sends it to a peer.
   A node that does not lead the app seals and stores nothing: it passes the body to the leader (`internal/file-upload`, one hop; a follower answers `421 NOT_LEADER` with `details.leaderUrl` and the receiver follows it).
   The leader (`Node::upload_local`) seals through `NodeFiles::create`, holding the node-wide pending budget, charges the quota, pushes to its group's voters and commits `ComponentCmd::File` under a key made per HTTP request.
+  The command carries the uploader (`uploader`, a serde default), the account the API's `principal` derived, which `internal/file-upload` passes along and refuses unless it is an account id (`valid_uploader`); `BlobTable::add_uploaded` stores it as `FileSeal::uploader`, and files made by calls and runs have none.
+  `NodeFiles::uploader` answers it to `runs.uploader`; an id already held is refused (`file exists`), so a second upload never replaces the first uploader.
   Only a forward retried inside that request replays the first answer; a recorded answer for another file wins and the new file is undone.
   `apply` records the file as an unreferenced blob stamped with the entry's `ts_ms`, as `Node::component_blob_cmd` stamps an upload, so a client has the idle time to attach it.
   If the commit fails, a `componentBarrier` entry (applies as nothing) is committed through the leader, so the failed entry has either committed or never will.

@@ -84,6 +84,10 @@ pub struct Outcome {
     /// The files the run finished: their marks only, the ciphertext never enters the log.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileMark>,
+    /// The compute outputs the run published as plain blobs: marks only, the plaintext never
+    /// enters the log; empty unless `Ok`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published: Vec<PublishedMark>,
     /// The compute runs the run started; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compute_starts: Vec<ComputeStart>,
@@ -155,6 +159,18 @@ pub struct FileMark {
     pub wrapped_key: Bytes,
 }
 
+/// A compute output a run published: applying it records the plain blob, after checking that
+/// `source` is a done run's output of this app and `id` and `size` are its plaintext's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedMark {
+    /// Hex id of the sealed output.
+    pub source: String,
+    /// Hex SHA-256 of the plaintext: the plain blob's id.
+    pub id: String,
+    pub size: u64,
+}
+
 /// The name a trap kind has on the wire (the spec's names).
 #[must_use]
 pub fn trap_name(kind: host::TrapKind) -> &'static str {
@@ -189,6 +205,7 @@ impl Outcome {
         let logs = out.logs;
         let http = out.http.into_iter().map(HttpRecord::from).collect();
         let files = out.new_files;
+        let published = out.published;
         let (starts, cancels) = (out.compute_starts, out.compute_cancels);
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls, out.actions),
@@ -206,6 +223,7 @@ impl Outcome {
         outcome.http = http;
         if outcome.status == Status::Ok {
             outcome.files = files.into_iter().map(FileMark::from).collect();
+            outcome.published = published.into_iter().map(PublishedMark::from).collect();
             outcome.compute_starts = starts.into_iter().map(ComputeStart::from).collect();
             outcome.compute_cancels = cancels;
         }
@@ -287,6 +305,7 @@ impl Outcome {
             actions: started,
             http: Vec::new(),
             files: Vec::new(),
+            published: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
         }
@@ -300,6 +319,16 @@ impl Outcome {
             && [host::TrapKind::Timeout, host::TrapKind::Unavailable]
                 .into_iter()
                 .any(|kind| self.error["kind"] == trap_name(kind))
+    }
+}
+
+impl From<host::PublishedFile> for PublishedMark {
+    fn from(file: host::PublishedFile) -> Self {
+        Self {
+            source: file.source,
+            id: file.id,
+            size: file.size,
+        }
     }
 }
 
@@ -413,6 +442,9 @@ pub enum ComponentCmd {
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
     #[serde(rename = "componentBlobForget")]
     BlobForget { id: String },
+    /// The app's owner revoked the download grants of a published blob.
+    #[serde(rename = "componentBlobRevoke")]
+    BlobRevoke { id: String },
     /// An uploaded file (its ciphertext is on the replicas already): the app holds it, idle
     /// until a value refers to it ([`blobs`]). The node's own command, built by the upload route.
     #[serde(rename = "componentFile")]
@@ -423,6 +455,9 @@ pub enum ComponentCmd {
         /// The request's idempotency key: a retry of a committed command replays its answer.
         #[serde(default)]
         key: Option<String>,
+        /// The authenticated account that uploaded it.
+        #[serde(default)]
+        uploader: Option<String>,
     },
     /// Applies as nothing: committed through the leader to settle which earlier entries stand.
     #[serde(rename = "componentBarrier")]
@@ -653,13 +688,18 @@ impl ComponentState {
     /// Forget the blobs idle past their time at `now_ms` and queue their bytes for the
     /// leader to collect.
     fn expire_blobs(&mut self, tx: &mut StateTx<'_>, now_ms: u64) {
-        for (id, file_size) in self.blobs.expire(tx, now_ms) {
-            let id = hex::encode(id);
-            if let Some(size) = file_size {
-                let _prev = self.head.collect_files.insert(id.clone(), size);
-            }
-            self.head.collect.push(id);
+        for (id, charged) in self.blobs.expire(tx, now_ms) {
+            self.queue_collect(hex::encode(id), charged);
         }
+    }
+
+    /// Queue the bytes of the forgotten blob `id` for the leader to collect, with the bytes
+    /// of quota it held (a file or a published blob).
+    fn queue_collect(&mut self, id: String, charged: Option<u64>) {
+        if let Some(size) = charged {
+            let _prev = self.head.collect_files.insert(id.clone(), size);
+        }
+        self.head.collect.push(id);
         let over = self.head.collect.len().saturating_sub(MAX_COLLECT_QUEUE);
         for dropped in self.head.collect.drain(..over) {
             let _gone = self.head.collect_files.remove(&dropped);
@@ -812,6 +852,17 @@ impl AppMachine {
             .is_some_and(|last| *last >= slot)
     }
 
+    /// Whether every published mark names a done run's output the app holds, with that output's
+    /// own plaintext hash and size: judged on the records, so no leader can publish more.
+    fn publishes_only_outputs(&self, marks: &[PublishedMark]) -> bool {
+        let blobs = &self.state.component.blobs;
+        marks.len() <= host::MAX_PUBLISHED_PER_RUN
+            && marks.iter().all(|m| {
+                let ids = (parse_hex32(&m.source), parse_hex32(&m.id));
+                matches!(ids, (Some(source), Some(id)) if blobs.is_output_of(&source, &id, m.size))
+            })
+    }
+
     fn apply_component_outcome(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -825,13 +876,22 @@ impl AppMachine {
         if base_index != self.state.last_index {
             return Applied::conflict(index, "conflict: retry");
         }
+        if outcome.status == Status::Ok && !self.publishes_only_outputs(&outcome.published) {
+            return host_answer(index, false, host::NOT_A_RUN_OUTPUT);
+        }
         let mut touched = Vec::new();
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         if outcome.status == Status::Ok {
-            // Files first, so the references this entry's diff stores to them are counted.
+            // Files and published blobs first, so the references this entry's diff stores to
+            // them are counted.
             for mark in &outcome.files {
                 c.blobs.add_file(tx, mark, ts_ms);
+            }
+            for mark in &outcome.published {
+                if let Some(id) = parse_hex32(&mark.id) {
+                    c.blobs.add_published(tx, id, mark.size, ts_ms);
+                }
             }
             if !outcome.diff.is_empty() {
                 // References to blobs move with the values that hold them (R8).
@@ -1038,6 +1098,7 @@ impl AppMachine {
             Ok(
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
+                | ComponentCmd::BlobRevoke { .. }
                 | ComponentCmd::BlobsCollected { .. }
                 | ComponentCmd::ComputeAttempt(_)
                 | ComponentCmd::Barrier,
@@ -1159,12 +1220,17 @@ impl AppMachine {
                 }
                 host_answer(index, held, "the app holds too many blobs")
             }
-            Ok(ComponentCmd::File { mark, ts_ms, key }) => {
+            Ok(ComponentCmd::File {
+                mark,
+                ts_ms,
+                key,
+                uploader,
+            }) => {
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
                 let raw = parse_hex32(&mark.id).filter(|id| !c.blobs.records.contains_key(id));
                 let a = if raw.is_some() {
-                    c.blobs.add_file(tx, &mark, ts_ms);
+                    c.blobs.add_uploaded(tx, &mark, ts_ms, uploader);
                     c.head.note_write(ts_ms);
                     Applied {
                         result: json!({ "mark": mark }),
@@ -1183,8 +1249,18 @@ impl AppMachine {
             Ok(ComponentCmd::ComputeFinal(done)) => self.apply_compute_final(tx, index, &done),
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
-                let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget_blob(tx, &raw));
-                host_answer(index, held, "no such blob in this app")
+                let forgotten = parse_hex32(&id).and_then(|raw| c.blobs.forget_blob(tx, &raw));
+                if let Some(size) = forgotten.filter(|size| *size > 0) {
+                    c.queue_collect(id, Some(size));
+                }
+                host_answer(index, forgotten.is_some(), "no such blob in this app")
+            }
+            Ok(ComponentCmd::BlobRevoke { id }) => {
+                let c = &mut self.state.component;
+                let revoked = parse_hex32(&id)
+                    .ok_or("no such published blob")
+                    .and_then(|raw| c.blobs.revoke(tx, &raw));
+                host_answer(index, revoked.is_ok(), revoked.err().unwrap_or_default())
             }
             Ok(ComponentCmd::ActionEnd {
                 id,
@@ -1427,6 +1503,7 @@ mod tests {
             logs: Vec::new(),
             http: vec![host::HttpExchange::record(&request, &response)],
             new_files: Vec::new(),
+            published: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             usage: host::Usage::default(),
@@ -1456,6 +1533,7 @@ mod tests {
             http: Vec::new(),
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
+            published: Vec::new(),
             new_files: vec![host::NewFile {
                 id: fid(1),
                 size: 5,
@@ -1733,12 +1811,49 @@ mod tests {
     }
 
     fn file_cmd(n: u8, ts_ms: u64, key: Option<&str>) -> Vec<u8> {
+        file_by(n, ts_ms, key, None)
+    }
+
+    fn file_by(n: u8, ts_ms: u64, key: Option<&str>, uploader: Option<&str>) -> Vec<u8> {
         serde_json::to_vec(&ComponentCmd::File {
             mark: mark(n),
             ts_ms,
             key: key.map(str::to_owned),
+            uploader: uploader.map(str::to_owned),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn an_uploaded_file_records_who_uploaded_it_and_no_later_upload_replaces_that() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        assert_eq!(
+            r.apply(2, &file_by(1, 5, None, Some("bob"))).status,
+            Status::Ok
+        );
+        let who = |r: &Rig, n: u8| r.machine.file_uploader(&[n; 32]);
+        assert_eq!(who(&r, 1), Some("bob".to_owned()));
+        let again = r.apply(3, &file_by(1, 6, None, Some("cy")));
+        assert_eq!(
+            again.status,
+            Status::AppError,
+            "the same id is the same file"
+        );
+        assert_eq!(who(&r, 1), Some("bob".to_owned()));
+        let _a = r.apply(4, &file_by(2, 7, None, None));
+        assert_eq!(who(&r, 2), None);
+        let made = r.apply(5, &file_call(4, 8, Status::Ok, vec![mark(3)], vec![]));
+        assert_eq!(made.status, Status::Ok);
+        assert_eq!(who(&r, 3), None, "a file a call made has no uploader");
+        assert_eq!(who(&r, 9), None, "an unknown id");
+    }
+
+    #[test]
+    fn a_record_stored_before_uploaders_existed_still_loads() {
+        let old = json!({ "sha256": "", "wrappedKey": "" });
+        let seal: blobs::FileSeal = serde_json::from_value(old).unwrap();
+        assert_eq!(seal.uploader, None);
     }
 
     fn collected(ids: &[String]) -> Vec<u8> {

@@ -274,7 +274,7 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 3] = ["__upgrade", "__blob", "__blob_forget"];
+pub const HOST_METHODS: [&str; 4] = ["__upgrade", "__blob", "__blob_forget", "__blob_revoke"];
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -2387,18 +2387,58 @@ impl Node {
         self.blob_asked_strong(app, id, true).await
     }
 
+    /// `id` as `app`'s leader holds it: `None` if no replica answered as leader, `Some(None)` if
+    /// not held, else whether it is published and its revocation count.
+    pub async fn blob_standing_strong(
+        &self,
+        app: &AppRecord,
+        id: &[u8; 32],
+    ) -> Option<Option<(bool, u32)>> {
+        let body = json!({ "app": app.app_id, "id": hex::encode(id), "strong": true });
+        self.ask_leader(
+            app,
+            body,
+            |m| m.blob_standing(id),
+            |v| {
+                let held = v["held"].as_bool()?;
+                let epoch = u32::try_from(v["epoch"].as_u64()?).ok()?;
+                Some(held.then_some((v["published"].as_bool()?, epoch)))
+            },
+        )
+        .await
+    }
+
     /// The leader's answer to whether `id` is held (`file`: held as a sealed file).
     async fn blob_asked_strong(&self, app: &AppRecord, id: &[u8; 32], file: bool) -> Option<bool> {
-        let asks = |m: &AppMachine| {
-            if file {
-                m.is_sealed_file(id)
-            } else {
-                m.holds_blob(id)
-            }
-        };
+        let body =
+            json!({ "app": app.app_id, "id": hex::encode(id), "strong": true, "file": file });
+        self.ask_leader(
+            app,
+            body,
+            |m| {
+                if file {
+                    m.is_sealed_file(id)
+                } else {
+                    m.holds_blob(id)
+                }
+            },
+            |v| v["held"].as_bool(),
+        )
+        .await
+    }
+
+    /// A linearizable read of `app`'s state: here if this node leads it, else the first
+    /// replica that answers `body` as leader.
+    async fn ask_leader<T>(
+        &self,
+        app: &AppRecord,
+        body: Value,
+        ask: impl Fn(&AppMachine) -> T,
+        parse: impl Fn(&Value) -> Option<T>,
+    ) -> Option<T> {
         if let Some(g) = self.replica_group(app) {
-            if let Ok(held) = g.read_strong(|m, _| asks(m)).await {
-                return Some(held);
+            if let Ok(answer) = g.read_strong(|m, _| ask(m)).await {
+                return Some(answer);
             }
         }
         let others: Vec<String> = self.sys(|s| {
@@ -2408,12 +2448,10 @@ impl Node {
                 .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
                 .collect()
         });
-        let body =
-            json!({ "app": app.app_id, "id": hex::encode(id), "strong": true, "file": file });
         for addr in others {
             if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
-                if let Some(held) = v["held"].as_bool() {
-                    return Some(held);
+                if let Some(answer) = parse(&v) {
+                    return Some(answer);
                 }
             }
         }
@@ -2554,7 +2592,10 @@ impl Node {
         let executor = g.read_local(|m, _| m.state.executor());
         if executor == Some(Kind::Component)
             && req.host
-            && matches!(req.method.as_str(), "__blob" | "__blob_forget")
+            && matches!(
+                req.method.as_str(),
+                "__blob" | "__blob_forget" | "__blob_revoke"
+            )
         {
             return self.component_blob_cmd(g, req).await;
         }

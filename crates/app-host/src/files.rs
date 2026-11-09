@@ -21,6 +21,10 @@ pub const MAX_COMPUTE_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_READ_CHUNK: u32 = 1024 * 1024;
 /// Files one run may finish.
 pub const MAX_NEW_FILES: usize = 1_000;
+/// Compute outputs one logged run may publish; the node holds their plaintext in memory.
+pub const MAX_PUBLISHED_PER_RUN: usize = 16;
+/// Plaintext bytes one logged run may publish across all its outputs (held in memory like new files).
+pub const MAX_PUBLISHED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The soft errors of the `files` interface (the WIT `result<_, string>`), fixed so every
 /// engine and SDK returns and matches the same strings.
@@ -29,9 +33,12 @@ pub const FILES_DISABLED: &str = "files are not enabled";
 pub const FILE_TOO_MANY_OPEN: &str = "too many open files";
 pub const FILE_TOO_LARGE: &str = "file too large";
 pub const RUN_WROTE_TOO_MUCH: &str = "run wrote too much";
+pub const RUN_PUBLISHED_TOO_MUCH: &str = "run published too much";
 pub const FILE_FINISHED: &str = "file already finished";
 pub const FILE_FAILED: &str = "file write failed";
 pub const FILE_TOO_MANY_NEW: &str = "too many new files";
+/// `runs.publish` of an id that is no output of one of this app's done runs.
+pub const NOT_A_RUN_OUTPUT: &str = "NOT_A_RUN_OUTPUT";
 /// The bytes of a file cannot be had now (a view's soft error; a logged run is aborted).
 pub const FILE_UNAVAILABLE: &str = "file bytes are not available";
 /// The reason of the trap a corrupt or truncated file ends the run with; never a soft error.
@@ -53,6 +60,17 @@ pub struct NewFile {
     pub sha256: Vec<u8>,
     pub wrapped_key: Vec<u8>,
     pub ciphertext: Vec<u8>,
+}
+
+/// A compute output a logged run published: the plaintext, to be stored as a plain blob.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedFile {
+    /// The sealed output it comes from.
+    pub source: String,
+    /// The plain blob's id: the hex SHA-256 of the plaintext.
+    pub id: String,
+    pub size: u64,
+    pub bytes: Vec<u8>,
 }
 
 /// Why a file could not be opened or created.
@@ -93,6 +111,15 @@ pub trait Files: Send + Sync {
     fn open(&self, id: &str) -> Result<Box<dyn FileRead>, FileError>;
     fn info(&self, id: &str) -> Option<FileInfo>;
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError>;
+    /// The account that uploaded the sealed file `id`; none for a file a run made or an unknown id.
+    fn uploader(&self, _id: &str) -> Option<String> {
+        None
+    }
+    /// The plaintext of `id` if it is an output of one of this app's done compute runs,
+    /// else `NOT_A_RUN_OUTPUT`.
+    fn publish(&self, _id: &str) -> Result<PublishedFile, FileError> {
+        Err(FileError::Failed(NOT_A_RUN_OUTPUT.to_owned()))
+    }
 }
 
 /// The provider of a node that has no file store: nothing exists and nothing can be made.
