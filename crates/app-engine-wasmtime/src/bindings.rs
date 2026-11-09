@@ -36,7 +36,8 @@ wasmtime::component::bindgen!({
 });
 
 use self::calimero::app::{
-    action, blobs, context, events, files, rebuild, runs, search, storage, types, xcall,
+    action, blobs, collections, context, events, files, rebuild, runs, search, storage, types,
+    xcall,
 };
 
 /// Links the `calimero:app` interfaces of the app world and `wasi:http` onto `StoreData`.
@@ -53,6 +54,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     xcall::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     action::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     runs::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    collections::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     let options = wasi::http::types::LinkOptions::default();
     wasi::http::types::add_to_linker::<StoreData, HasSelf<StoreData>>(l, &options, |d| d)?;
     wasi::http::outgoing_handler::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
@@ -445,5 +447,120 @@ impl action::Host for StoreData {
         args: Vec<u8>,
     ) -> Result<std::result::Result<Vec<u8>, String>> {
         self.host.action_call(&method, &args).map_err(denied)
+    }
+}
+
+/// PoC stub: every collections call is refused until the host core implements them.
+fn collections_denied<T>() -> Result<T> {
+    Err(denied(host::HostDenied(
+        "collections are not implemented".into(),
+    )))
+}
+
+impl collections::Host for StoreData {
+    fn table_insert(
+        &mut self,
+        _table: String,
+        _record: Vec<u8>,
+    ) -> Result<std::result::Result<(), collections::CollError>> {
+        collections_denied()
+    }
+
+    fn table_upsert(
+        &mut self,
+        _table: String,
+        _record: Vec<u8>,
+    ) -> Result<std::result::Result<(), collections::CollError>> {
+        collections_denied()
+    }
+
+    fn table_get(
+        &mut self,
+        _table: String,
+        _key: collections::Key,
+    ) -> Result<std::result::Result<Option<Vec<u8>>, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn table_remove(
+        &mut self,
+        _table: String,
+        _key: collections::Key,
+    ) -> Result<std::result::Result<bool, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn table_find(
+        &mut self,
+        _table: String,
+        _index: Option<String>,
+        _prefix: collections::Key,
+        _cursor: Option<String>,
+        _limit: u32,
+        _reverse: bool,
+    ) -> Result<std::result::Result<collections::Page, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn table_count(
+        &mut self,
+        _table: String,
+        _count: String,
+        _prefix: collections::Key,
+    ) -> Result<std::result::Result<u64, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn map_get(
+        &mut self,
+        _map: String,
+        _key: collections::Key,
+    ) -> Result<std::result::Result<Option<Vec<u8>>, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn map_insert(
+        &mut self,
+        _map: String,
+        _key: collections::Key,
+        _value: Vec<u8>,
+    ) -> Result<std::result::Result<Option<Vec<u8>>, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn map_remove(
+        &mut self,
+        _map: String,
+        _key: collections::Key,
+    ) -> Result<std::result::Result<Option<Vec<u8>>, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn map_page(
+        &mut self,
+        _map: String,
+        _prefix: collections::Key,
+        _cursor: Option<String>,
+        _limit: u32,
+        _reverse: bool,
+    ) -> Result<std::result::Result<collections::Page, collections::CollError>> {
+        collections_denied()
+    }
+
+    fn tally_add(
+        &mut self,
+        _tally: String,
+        _key: collections::Key,
+        _delta: i64,
+    ) -> Result<std::result::Result<(), collections::CollError>> {
+        collections_denied()
+    }
+
+    fn tally_get(
+        &mut self,
+        _tally: String,
+        _key: collections::Key,
+    ) -> Result<std::result::Result<i64, collections::CollError>> {
+        collections_denied()
     }
 }
