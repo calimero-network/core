@@ -30,8 +30,7 @@ use crate::node::MAX_ARGS_BYTES;
 const JOB_RESULT_TTL: Duration = Duration::from_secs(60 * 60); // how long a finished or lost run is kept for its leader to collect
 const AWAITING_INPUTS_TTL: Duration = Duration::from_secs(10 * 60); // how long a run may wait for its inputs before it is dropped
 pub const CANCEL_WAIT: Duration = Duration::from_secs(5); // how long a cancel waits for the run to stop before answering that it still runs
-pub const MAX_RUN_INPUTS: usize = 64; // inputs one run may name
-const MAX_RUN_INPUT_BYTES: u64 = MAX_COMPUTE_FILE_BYTES; // declared plaintext bytes of all of one run's inputs
+pub use calimero_app_host::{MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES};
 const MAX_ID_BYTES: usize = 256; // longest app, run, method or file id an assignment may carry
 const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for finished runs plus those active and new runs may still hold, past which work is refused
 pub const MAX_ASSIGNMENT_BYTES: usize = 1024 * 1024; // the most a request to assign a run may weigh
