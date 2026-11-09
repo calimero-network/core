@@ -584,6 +584,104 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let file = rig.upload(&input()).await;
+    let first = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let _ = rig.outcome(&first).await;
+    let second = rig.begin("startRun", json!({ "method": "spin" })).await;
+    let path = format!("apps/{}/runs", rig.app);
+
+    let all = rig.alice.get(&path).await.unwrap();
+    let runs = all["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{all}");
+    assert_eq!(all["next"], Value::Null);
+    assert_eq!(runs[0]["run"], json!(second), "newest first");
+    assert_eq!(runs[1]["state"], "done");
+    assert!(runs[1]["caps"]["wallSecs"].is_u64(), "{all}");
+    assert!(runs[1]["caps"]["memoryMib"].is_u64() && runs[1]["caps"]["fuel"].is_u64());
+    assert!(runs[1]["inputs"][0]["sha256"].is_string(), "{all}");
+    let single = rig.alice.get(&format!("{path}/{first}")).await.unwrap();
+    assert_eq!(runs[1], single, "the same object as the single run");
+
+    let page = rig.alice.get(&format!("{path}?limit=1")).await.unwrap();
+    assert_eq!(page["runs"].as_array().unwrap().len(), 1);
+    let next = page["next"].as_str().unwrap().to_owned();
+    let rest = rig
+        .alice
+        .get(&format!("{path}?limit=1&before={next}"))
+        .await
+        .unwrap();
+    assert_eq!(rest["runs"][0]["run"], json!(first), "{rest}");
+    assert_eq!(rest["next"], Value::Null);
+
+    for query in ["limit=0", "limit=101", "limit=x", "limit=-1"] {
+        let e = rig.alice.get(&format!("{path}?{query}")).await.unwrap_err();
+        assert_eq!(e.code(), Some("BAD_LIMIT"), "{query}");
+    }
+    let e = rig
+        .alice
+        .get(&format!("{path}?before=zz"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"));
+    let e = rig.alice.get(&format!("{path}?before=")).await.unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"), "an empty cursor");
+    let long = format!("1:{}", "a".repeat(255));
+    let e = rig
+        .alice
+        .get(&format!("{path}?before={long}"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_CURSOR"), "a cursor over the byte bound");
+    let colon = rig
+        .alice
+        .get(&format!("{path}?before=99999999999999:x:y"))
+        .await
+        .unwrap();
+    assert_eq!(colon["runs"].as_array().unwrap().len(), 2, "{colon}");
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&path).await.unwrap();
+    assert_eq!(shown["runs"][1]["state"], "done", "{shown}");
+    assert!(
+        shown["runs"][1]["inputs"][0].get("sha256").is_none(),
+        "{shown}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_lists_runs_without_file_sizes_hashes_or_keys() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let file = rig.upload(&input()).await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let _ = rig.outcome(&run).await;
+    let path = format!("apps/{}/runs", rig.app);
+    let owner = rig.alice.get(&path).await.unwrap();
+    assert!(
+        owner["runs"][0]["inputs"][0]["sha256"].is_string(),
+        "{owner}"
+    );
+    assert!(
+        owner["runs"][0]["final"]["outputs"][0]["size"].is_u64(),
+        "{owner}"
+    );
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&path).await.unwrap();
+    let listed = &shown["runs"][0];
+    assert_eq!(listed["state"], "done", "{shown}");
+    for file in [&listed["inputs"][0], &listed["final"]["outputs"][0]] {
+        assert!(file["id"].is_string(), "{shown}");
+        assert_eq!(file.as_object().unwrap().len(), 1, "only the id: {shown}");
+    }
+    let text = shown.to_string();
+    for word in ["wrapped", "key", "args"] {
+        assert!(!text.contains(word), "{word} in {text}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn runs_that_meet_on_a_job_node_all_complete_without_a_lost_attempt() {
     let rig = Rig::start(&[JOB_A, JOB_B]).await;
     let mut runs = Vec::new();
@@ -1419,4 +1517,30 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
     // The digest method's wall cap is 60 s: the ceiling is that plus the grace and the credit.
     let rec = until_ended(&rig, &run, 90).await;
     assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_files() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let run = rig.begin("startRun", json!({ "method": "big" })).await;
+    let _ = rig.outcome(&run).await;
+    let single = format!("apps/{}/runs/{run}", rig.app);
+    let list = format!("apps/{}/runs", rig.app);
+
+    let owner = rig.alice.get(&single).await.unwrap();
+    let message = owner["final"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("too large"), "{owner}");
+    let listed = rig.alice.get(&list).await.unwrap();
+    assert_eq!(
+        listed["runs"][0]["final"]["message"],
+        owner["final"]["message"]
+    );
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let shown = bob.get(&single).await.unwrap();
+    assert!(shown["final"]["message"].is_null(), "{shown}");
+    assert!(shown["progress"].is_null(), "{shown}");
+    let listed = bob.get(&list).await.unwrap();
+    assert!(listed["runs"][0]["final"]["message"].is_null(), "{listed}");
+    assert!(listed["runs"][0]["progress"].is_null(), "{listed}");
 }

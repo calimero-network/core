@@ -205,10 +205,18 @@ Neither `/intents` nor `/views` reaches a result method, for any caller, and the
 A compromised leader can still forge a run's final, because the final is the leader's entry.
 It gains nothing a leader does not hold already: it has the cluster key and the plaintext of every file it serves.
 The signed report protects against a job node and against a replica applying a job outcome nobody signed, not against the leader.
+A compromised leader can still forge a run's final, because the final is the leader's entry.
+It gains nothing a leader does not hold already: it has the cluster key and the plaintext of every file it serves.
+The signed report protects against a job node and against a replica applying a job outcome nobody signed, not against the leader.
 
-`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason.
-Plaintext sizes and SHA-256 hashes of inputs and outputs, `progress` while it runs and the failure text of a failed run (the method's app error or the trap's detail, at most 512 bytes, signed by the job node) are shown only to callers who may list the app's files; others get ids.
+`GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, its `caps` (`fuel`, `memoryMib`, `wallSecs`), and `progress` while it runs.
+Plaintext sizes and SHA-256 hashes of inputs and outputs are shown only to callers who may list the app's files; others get ids.
 It never returns arguments or keys.
+`GET /apps/{app}/runs?limit=<n>&before=<cursor>` answers `{ runs, next }` with the same objects, newest start first (ties by run id, descending), `limit` 1 to 100 (default 20) and `next` an opaque cursor for `before`, `null` on the last page.
+Active runs carry `progress`, and an app that is not a component app answers `404 NOT_FOUND`.
+Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are kept, so the list reaches no further back and a page reads at most `MAX_ACTIVE_RUNS` plus 256 records.
+A bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
+The sizes and hashes follow the same rule as the single run.
 
 ## Restarts, cancel and caps
 
