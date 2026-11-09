@@ -208,6 +208,27 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
 
+      - name: Install mero-app-build and mero-compute
+        if: ${{ !cancelled() }}
+        run: |
+          scripts/install-mero-app-build.sh
+          scripts/install-mero-compute.sh
+
+      # The tool a developer tests a compute method with, run end to end on the fixture: a
+      # digest of 300 KB must write one output of the same size, identically twice.
+      - name: mero-compute on the compute fixture
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          out=target/mero-compute-check
+          rm -rf "$out" && mkdir -p "$out"
+          mero-app-build \
+            apps/v2-fixtures/compute --target-dir "$out/build" --out "$out/app.wasm"
+          head -c 300000 /dev/urandom > "$out/input.bin"
+          mero-compute run "$out/compute.component.wasm" --method digest \
+            --input "$out/input.bin" --out "$out/out" --twice
+          test "$(wc -c < "$out/out/output-0")" -eq 300000
+
       - name: Cargo test (standalone v2 apps)
         if: ${{ !cancelled() }}
         # Apps on the component SDK are workspaces of their own, so the workspace run above

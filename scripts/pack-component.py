@@ -8,8 +8,7 @@ Builds the manifest the node reads (crates/bundle: version, package, appVersion,
 minRuntimeVersion and the `app.wasm` artifact), signs it with `mero-sign sign
 --dev` (the development key, which a public registry refuses; pass `--key` for
 another), and writes manifest.json and app.wasm as a tar.gz. Build the component
-first with `cargo run -p calimero-app-build --bin mero-app-build -- <crate-dir>
---out <file>`. An app with compute methods also has a compute component
+first with `mero-app-build <crate-dir> --out <file>`. An app with compute methods also has a compute component
 (`--compute-out <file>` of the same build); `--compute <file>` packs it as
 compute.wasm, the only component a job node is ever given.
 

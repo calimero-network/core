@@ -36,7 +36,8 @@ component SDK has no counterpart for; the node's idempotency keys cover retries.
 
 ```bash
 cargo test                                                       # here: harness + scenarios
-cargo run -p calimero-app-build -- apps/kv-store --out kv_store.wasm   # from the repo root
+scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
+mero-app-build apps/kv-store --out kv_store.wasm   # from the repo root
 ```
 
 `cargo test` builds the component for `wasm32-wasip2` and runs it on the real engine
