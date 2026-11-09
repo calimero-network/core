@@ -120,11 +120,19 @@ async fn an_invite_only_cluster_takes_invited_people() {
     let c = Cluster::start_with(3, |cfg| cfg.governance.sign_up = SignUp::Invite).await;
     let ops = ops(&c).await;
     let info = c.client(1).get("sign-up").await.unwrap();
-    assert_eq!(
-        info,
-        json!({
-            "policy": "invite", "orgInvites": true, "signUpInvites": true, "inviteRequired": true,
-        })
+    for (key, want) in [
+        ("policy", json!("invite")),
+        ("orgInvites", json!(true)),
+        ("signUpInvites", json!(true)),
+        ("inviteRequired", json!(true)),
+    ] {
+        assert_eq!(info[key], want, "{key} in {info}");
+    }
+    // The cluster's name and the tag its passkeys' names carry.
+    assert!(info["cluster"].is_string(), "{info}");
+    assert!(
+        info["passkeyTag"].as_str().is_some_and(|t| t.len() == 4),
+        "{info}"
     );
     // Refused at begin: the passkey is never asked.
     let e = c
