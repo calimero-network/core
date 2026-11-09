@@ -114,6 +114,7 @@ export default defineConfig({
                 'build/guides/blobs',
                 'build/guides/search',
                 'build/guides/outbound',
+                'build/guides/compute-actions',
                 'build/guides/access-control',
                 'build/packaging-signing',
                 'build/examples',
