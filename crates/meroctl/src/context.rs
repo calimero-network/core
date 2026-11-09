@@ -40,9 +40,6 @@ pub enum ContextCmd {
         /// Reached by this team's members (a group of `--namespace`).
         #[arg(long, requires = "namespace")]
         group: Option<String>,
-        /// Methods that need a passkey confirmation per call.
-        #[arg(long = "confirm")]
-        confirm_methods: Vec<String>,
         /// Also name it with this alias.
         #[arg(long)]
         alias: Option<String>,
@@ -190,7 +187,6 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             params,
             namespace,
             group,
-            confirm_methods,
             alias,
         } => {
             let (package, version, bundle) = match path {
@@ -217,7 +213,6 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
                 "service": service,
                 "bundle": bundle,
                 "org": namespace,
-                "confirmMethods": confirm_methods,
             });
             if let Some(p) = params {
                 body["initArgs"] = json_arg(&p)?;

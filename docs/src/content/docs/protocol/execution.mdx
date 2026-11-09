@@ -1,26 +1,25 @@
 ---
 title: Application execution
-description: How the leader runs one WASM call — the overlay it runs over, what the host hands the run, what comes out, and what the node refuses.
+description: How the leader runs one call of a calimero:app component — the state it runs over, what the host hands the run, what comes out, and what the node refuses.
 sidebar:
   order: 5
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
-import AbiBoundary from '../../../components/diagrams/AbiBoundary.astro';
 
-An **application** is a WASM module that defines a state machine: its data
-types and the methods that change them. An **execution** (a *run*) is one call
-of one method. On a cluster, only the app group's **leader** runs calls; the
-other replicas apply what the run produced ([Replication](/protocol/replication/)).
+An **application** is a `calimero:app` component: a WASM component, built with
+`calimero-sdk`, that defines a state machine: its data types and the methods
+that change them. An **execution** (a *run*) is one call of one method. On a
+cluster, only the app group's **leader** runs calls; the other replicas apply
+what the run produced ([Replication](/protocol/replication/)).
 
-An app runs on one of two runtimes, decided once from the WASM its bundle names
-(`AppRecord::executor`): a core module built with `calimero-sdk` runs on
-`calimero-runtime` (wasmer); a
-`calimero:app` component built with `calimero-app-sdk` runs on
-`calimero-app-engine-wasmtime` through the host core `calimero-app-host`. For a
-core module the node calls `Module::run_cloud` (`crates/node/src/app.rs`,
-`Executor`), compiling each bundle once and caching the module by its hash;
-components go through `crates/node/src/component.rs`.
+The node runs components on `calimero-app-engine-wasmtime` through the host core
+`calimero-app-host` (`crates/node/src/node/component.rs`,
+`crates/node/src/component.rs`), preparing each bundle once and caching the
+compiled artifact by its hash. A WASM core module (an SDK 0.12 app, which ran on
+wasmer) is refused at upload (`400 UNSUPPORTED_BUNDLE`); an app of that kind
+that a data directory still holds is listed and can be deleted, and anything
+else on it answers `410 UNSUPPORTED_ENGINE`.
 
 ## One run
 
@@ -29,102 +28,71 @@ components go through `crates/node/src/component.rs`.
   title="One call on the leader"
   lanes={[
     { label: 'Node', color: '#3fb950' },
-    { label: 'Runtime', color: '#58a6ff' },
-    { label: 'Overlay', color: '#39d0d8' },
+    { label: 'Engine', color: '#58a6ff' },
+    { label: 'Host core', color: '#39d0d8' },
     { label: 'App state', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'read the caller\'s standing (fresh system state)' },
-    { from: 0, to: 1, label: 'run_cloud(context, account, method, input, overlay, private, env)' },
-    { from: 1, to: 2, label: 'storage_read(k)' },
-    { from: 2, to: 3, label: 'miss → read applied state', dashed: true },
-    { from: 1, to: 2, label: 'storage_write(k, v) — kept in the overlay', color: '#f0883e' },
-    { from: 1, to: 0, label: 'Outcome { returns, logs, events, xcalls, artifact, blobs, … }', dashed: true },
-    { from: 0, to: 0, label: 'host rules: reserved keys, writer rotations, read-only rows' },
-    { from: 0, to: 0, label: 'diff = overlay writes in order → propose the entry' },
+    { from: 0, to: 0, label: 'read the caller\'s standing (fresh system state); the ABI gate' },
+    { from: 0, to: 1, label: 'run(method, args, caller) on the prepared component' },
+    { from: 1, to: 2, label: 'storage.get / range(k)' },
+    { from: 2, to: 3, label: 'read the state version the run was handed', dashed: true },
+    { from: 1, to: 2, label: 'storage.put(k, v) — kept in the run', color: '#f0883e' },
+    { from: 1, to: 0, label: 'Outcome { result, diff, events, xcalls, http, … }', dashed: true },
+    { from: 0, to: 0, label: 'read-only members, entry size, conflicts' },
+    { from: 0, to: 0, label: 'propose the entry' },
   ]}
 />
 
-The run reads the app's applied state through a copy-on-write **overlay**
-(`Overlay`): a read checks the run's own writes first, then the state; a write
-or delete stays in the overlay. Nothing touches the app's state during the run.
-When it ends, the overlay's writes, in the order they last happened, become the
-outcome's **diff**. If the run trapped or the app returned an error, the diff is
-empty.
-
-The guest commits its storage changes through the SDK,
-and the runtime returns the commit **artifact** (a borsh `StorageDelta`).
-The node does not replicate the artifact: it reads it only to list the storage
-entities the run touched, which is what [search](/protocol/reads/#search)
-re-indexes.
-
-## The host ABI boundary
-
-The guest and the host share a block of linear memory and a set of numbered
-registers. Arguments cross as `(pointer, length)` descriptors; the host
-bounds-checks every access and hands larger results back through registers.
-Exported methods take no arguments and return nothing: input arrives through
-`input()`, the result leaves through `value_return`.
-
-<AbiBoundary />
+A run reads the app's state as an ordered, immutable version (`StateView`);
+its writes stay in the run. When it ends, they become the outcome's **diff**,
+which every replica applies. If the run trapped or the app returned an error,
+the diff is empty and the entry is still logged with its status
+(`422 APP_ERROR` with `details.{code, fields}`, `422 TRAP` with
+`details.{kind, detail}`).
 
 ## What the host offers a cloud run
 
-| Family | What it does on a cluster |
+The `calimero:app` world (`crates/app-wit/wit/calimero-app.wit`):
+
+| Interface | What it does on a cluster |
 | --- | --- |
-| `context_id`, `account_id`, `executor_id`, `device_id` | The app's context id (`SHA-256(app_id)`), and the caller's account. `executor_id` is the account too: there are no per-device keys ([Who a run acts as](/protocol/authorship/)) |
-| `caller_org` | The caller's role and teams in the app's organization, or nothing |
-| `input`, `value_return`, `log_utf8`, `emit`, `emit_with_handler` | Arguments in; result, logs and events out. An event may name a handler to run after the entry commits ([Event handlers](/protocol/xcall/)) |
-| `storage_read` / `storage_write` / `storage_remove` | The app's replicated state, through the overlay |
-| `private_storage_*` | The caller's own space in the app's state (below) |
-| `storage_index_*` | The ordered index. The node keeps none: index writes report "not persisted", and the SDK falls back to its unindexed path |
-| `time_now`, `random_bytes` | The leader's wall clock and randomness, read once: followers apply the result |
-| `xcall`, `xcall_origin` | Queue a call into another app; read which app called this one |
-| `blob_*` | The cluster's [blob store](/protocol/blobs/), for the app's own blobs |
-| `search_query` | The app's own full-text indexes, in views only |
-| Sealing functions (`tee_sealing_key`, …) | `TeeOnly` / `TeeSecret` state, with keys the node derives per app |
-| `http_request` | One outbound HTTPS request, under the gates below |
-| `ed25519_verify` | Signature checks inside app logic |
+| `storage` | The app's replicated state: `get`, `put`, `delete`, the commutative `add`, ordered `range` |
+| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there, the applied index, unique ids, and starting an [action](#actions-component-apps) |
+| `events` | Emit an event to an audience; a removed member stops receiving at once |
+| `blobs`, `files` | The app's [blobs](/protocol/blobs/) and sealed files |
+| `search` | The app's own full-text indexes, in views |
+| `xcall` | Send a call into another app (outbox), or call or view one synchronously |
+| `action` | Inside an action: its key, and views and calls of the app |
+| `wasi:clocks`, `wasi:random` | The leader's wall clock and randomness, read once: followers apply the result |
+| `wasi:http` | Outbound HTTPS, from actions and as one recorded request of a call (below) |
 
 ## Three storage spaces in one state
 
-| Space | Where it lives | Who reads it |
-| --- | --- | --- |
-| **Shared** | The app's state, keys as the app writes them | Every run |
-| **Private** (`env::private_storage_*`) | The app's state, under `\0calimero.private\0 ‖ account ‖ 0` | Only runs whose caller is that account |
-| **Host** (`\0calimero.*`) | The app's state: private spaces, shared-cell writer sets, blob marks | Only the node |
-
-The caller's private space is part of the app's
-replicated state, sealed on disk like the rest, and the host hands a run only
-its caller's space: app code cannot address another account's.
-
-The host's key space is reserved. App code's overlay answers nothing under
-`\0calimero.` and a run that reads or writes there is refused outright
-(`the run addressed the host's key space`), so an app can neither forge a
-writer set or a blob mark nor read someone's private space by raw key. The node
-writes there itself (`Overlay::set_host`) as part of the same entry.
+A component has one space: its own keys, which the node keeps as hidden rows of
+the app's group, sealed on disk. Per-caller data is rows keyed by
+`env::caller()`, and writer sets are rows the app checks before it writes
+(`apps/kv-store-with-shared-storage`); the host keeps no space of its own inside
+an app's keys. (SDK 0.12 apps had a private and a host space beside the shared
+one; they are gone with that SDK.)
 
 ## What the node checks after the run
 
 Before a run's outcome becomes an entry, the node applies these host-side
 rules:
 
-- **Shared-cell writer rotations** (`SharedStorage`): each rotation must step
-  from the set in effect (the state's, or at genesis the prior set the cell id
-  commits to), and the run's account must hold `ADMIN` in it. A TEE run, an
-  app's own run (handler or xcall) or a public call may not rotate. The new set
-  is written beside the cell, in the same entry.
-- **Blobs the run wrote** are kept by the leader, marked as the app's in the
-  diff, and spread to the other nodes after the entry commits.
 - **Read-only team members**: a member whose row in the app's team is read-only
-  reaches a component app's views only: a call to any other method is refused with
-  `403` before it runs. On a wasmer app the call still runs, but if it would write
-  anything (a diff or a blob) the node answers `403` instead of appending it.
+  reaches the app's views only: a call to any other method is refused with `403`
+  before it runs, so no run burns the developer's fuel uncounted.
+- **Entry size**: an entry over the log's cap is logged trapped (`HostDenied`),
+  and arguments over 512 KiB are `413 ARGS_TOO_LARGE`.
+- **Conflicts**: a run built on a state another entry has since moved past, or
+  on a bundle an upgrade replaced, commits as a no-op and runs again.
 
 ## Outbound HTTPS
 
-`http_request` (`calimero-outbound`) makes one request per run, and only when
-every gate holds:
+A component sends HTTPS from an action, or as one recorded request of a call
+(both below). Either way the request leaves only when every gate holds:
 
 1. the operator turned outbound on and allows the host (`[outbound]` in the
    node's configuration);
@@ -132,25 +100,78 @@ every gate holds:
    covering the request;
 3. that prefix was approved for the publisher by whoever the cluster's
    [governance](/protocol/governance/) gives outbound approvals;
-4. the run writes: a call, a follow-up or a timer, never a view, `init`, a
-   migration, or a read-only member's call;
+4. never from a view, `init`, a migration, or a read-only member's call;
 5. `https` on port 443 to a name that resolves only to public addresses, within
    the size limits, no redirects.
 
-The request is made while the leader holds the group's propose lock, on its own
-thread. A run repeated after a leader race sends it again.
+## Actions (component apps)
+
+A `calimero:app` component calls out from an **action** (spec
+`app-runtime-v0.14` D12, S9): an `#[app::action]` method that runs outside the
+log, on the app's leader. A call can also make one recorded request itself
+(below), never a view.
+
+- **Start** (D17). A client calls the action's method through `/intents`, or a
+  call or timer runs `env::start_action(method, &args)`. Either way an entry
+  logs that it started, under a key (`a.<term>.<seq>.<n>`), and the answer is
+  `{ "actionId" }`.
+- **Run**. The leader runs pending actions in a bounded pool, with a 10 s
+  budget and the starter as caller (D13). An action has no storage. It reads
+  with `ctx.view`, writes with `ctx.call`, and sends HTTP with `ctx.fetch`
+  over `wasi:http`. Each `ctx.call` is its own log entry under a key derived
+  from the action's key, the method, the arguments' hash and an occurrence
+  count (D27), so a retried action's calls replay. A method marked
+  `#[app::allow(action)]` is reachable only from the app's own actions.
+- **Outbound** (S9, R14). A request leaves only through the same gate as
+  above. The URL must sit under a prefix the signed release's manifest
+  declares, the owner must have approved it, the operator's hosts apply, and
+  there is one request per run. `{{secret:NAME}}` is filled in by the node and
+  redacted from the response. Bodies are bounded in-memory buffers, so a guest
+  cannot block a node thread.
+- **End** (D22). Success, or an app error, a fault or out-of-fuel, ends the
+  action at once. A timeout is retried with backoff, 5 attempts in all. The
+  end is logged. A failure sends an `ActionFailed { actionId, method, reason }`
+  event to the starter and runs the app's `onActionFailed` as the starter. A
+  new leader resumes every action that has not ended, with the same key.
+
+## Outbound HTTP from component calls
+
+A component's call, timer or xcall delivery may send one request itself
+(`env::fetch`; spec D76), for a check that belongs in the same request as the
+write it guards, such as a captcha service verifying a Turnstile token:
+
+- **The same gate as actions.** A URL the signed release declares under
+  `outbound`, the owner approved and the operator allows; `{{secret:NAME}}` is
+  filled in by the node and redacted from the response. Views, `init` and
+  migrations cannot send (`HostDenied`), nor can a read-only member's call.
+- **Once, recorded.** The leader sends it while it runs the call, before
+  proposing. The call's log entry records the exchange (`Outcome::http`: the
+  request as the app made it, with placeholders, and the response the gate
+  returned; bodies cut to 64 KiB), whatever the call's status. Followers apply
+  the diff and never fetch, and a retry with the same idempotency key replays
+  the recorded answer. A run the log never commits (a leader race, a timeout)
+  recorded nothing and sends again when it re-runs.
+- **Bounded.** The node waits at most 1.5 s for the response, inside the
+  call's 2 s budget; a timeout, a refusal or an unreachable host is an error
+  the app's `fetch` returns.
+- **Trust.** The leader sees the response before it is logged. Attestation
+  covers the code that made the request and its TLS connection, not the remote
+  server's answer: the same trust as an action's request.
+
+`apps/v2-fixtures/captcha`'s `verifyTurnstile` is the example; the kv
+fixture's `setHumanTurnstile` reaches it with a synchronous xcall, so the
+token is checked and the form written in one request.
 
 ## Determinism is not what converges
 
-Only the leader runs, so `time_now`, `random_bytes`, outbound responses and search
+Only the leader runs, so the clock, randomness, outbound responses and search
 answers cannot make replicas disagree. Runs are still bounded and
 transactional: resources are capped ([Limits](/protocol/limits/#execution-limits)),
 and a trap or an app error leaves an empty diff.
 
-## Views and migrations
+## Views and upgrades
 
 A **view** runs the same way against a replica's applied state, with search
-available, and its writes are discarded ([Reads](/protocol/reads/)). A
-**migration** runs the target bundle's `#[app::migrate]` export over the old
-state, writes the returned root state and checks it with the app's
-`__calimero_migration_check` ([Upgrades](/protocol/upgrades/)).
+available, and its writes are discarded ([Reads](/protocol/reads/)). An
+**upgrade** swaps the bundle; a named migration is refused
+`MigrationsNotSupported` ([Upgrades](/protocol/upgrades/)).

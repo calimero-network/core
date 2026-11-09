@@ -61,9 +61,10 @@ code, and app code beyond what its owner approved.
 - **Exfiltration over the network** — outbound HTTPS only to hosts the operator
   allows, under prefixes the app's signed manifest declares and its approver
   approved, from writing runs only.
-- **A stolen session** — 15-minute tokens, single-use refresh tokens whose reuse
-  revokes the session, revocation that holds on every node before the next
-  request.
+- **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
+  are an hour old whose reuse after that revokes the session (a copy taken
+  within the hour refreshes beside its owner until then), revocation that
+  holds on every node before the next request and the next refresh.
 - **A lagging replica granting stale access** — credentials and access judged
   on fresh system state (a read index).
 - **A node on an unapproved release** — every internal route judges the

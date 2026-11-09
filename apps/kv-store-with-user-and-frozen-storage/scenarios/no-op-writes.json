@@ -1,0 +1,10 @@
+[
+  { "as": "owner", "op": "call", "method": "set", "args": { "key": "a", "value": "1" } },
+  { "as": "owner", "op": "call", "method": "remove", "args": { "key": "missing" }, "expect": { "ok": null },
+    "events": { "bob": ["Inserted"] } },
+  { "as": "owner", "op": "call", "method": "remove", "args": { "key": "a" }, "expect": { "ok": "1" },
+    "events": { "bob": ["Inserted", "Removed"] } },
+  { "as": "owner", "op": "call", "method": "addFrozen", "args": { "value": "x" }, "save": "h" },
+  { "as": "owner", "op": "call", "method": "addFrozen", "args": { "value": "x" }, "expect": { "ok": "$h" },
+    "events": { "bob": ["Inserted", "Removed", "FrozenAdded"] } }
+]

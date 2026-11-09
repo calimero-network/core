@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
-use calimero_app_sdk::testing::{run_scenario, Failure, Org, TestApp};
+use calimero_sdk::testing::{run_scenario, Failure, Org, TestApp};
 use serde_json::json;
 
 /// A slot boundary (a multiple of 15 minutes), so the scenario's `start` values are valid.

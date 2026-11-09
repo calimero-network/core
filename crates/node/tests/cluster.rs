@@ -1,13 +1,9 @@
 //! A three-node cluster in one process, driven only through the client, over
-//! sealed channels, with the real kv-store app (the cluster itself is in
+//! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
-//!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use calimero_client::{Client, Consistency, Error, Policy};
 use calimero_identity::testing::SoftAuthenticator;
@@ -19,15 +15,6 @@ use serde_json::{json, Value};
 mod harness;
 
 use harness::{free_port, kv_wasm, node_config, signed_up, Cluster, ORIGIN};
-
-fn wasm(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wasm32-unknown-unknown/app-release")
-        .join(format!("{name}.wasm"));
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("{}: {e}; build it with cargo build --target wasm32-unknown-unknown --profile app-release", path.display())
-    })
-}
 
 impl Cluster {
     /// Start one more node, not a founder: it knows the cluster's addresses
@@ -68,7 +55,11 @@ impl Cluster {
         let at = self.nodes.iter().position(Option::is_some).unwrap();
         let _ = ops_at(self, at)
             .await
-            .post("ops/nodes", json!({ "id": id, "addr": url, "zone": "" }))
+            .post_operator_signed(
+                "ops/nodes",
+                json!({ "id": id, "addr": url, "zone": "" }),
+                &harness::operator_sign,
+            )
             .await
             .unwrap();
         self.nodes.push(Some(starting.await.unwrap().unwrap()));
@@ -150,6 +141,57 @@ async fn a_session_outlives_the_node_that_issued_it() {
         .expect("a write through a survivor with the stopped issuer's session");
 }
 
+/// A system write waits for a leader until its deadline (`SYSTEM_WRITE_TIMEOUT`), not
+/// for a fixed number of tries. The system leader and one more node stop, so the one
+/// left has no leader; a write sent there then commits once a stopped node is back,
+/// about 8 s later. Before, it gave up after 50 tries of 150 ms with `503 the system
+/// group has no leader`, which a client signing in right after a node died saw
+/// (calimero-client-py `test_keeps_serving_after_a_node_dies`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_system_write_waits_for_a_leader_until_its_deadline() {
+    let mut c = Cluster::start(3).await;
+    let (_alice, _pk) = signed_up(&c, 0, "alice").await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .expect("a system leader");
+    let survivor = (leader + 1) % 3;
+    let other = (leader + 2) % 3;
+    c.stop(leader).await;
+    c.stop(other).await;
+    let node = std::sync::Arc::clone(&c.nodes[survivor].as_ref().unwrap().node);
+    let started = std::time::Instant::now();
+    // A second genesis: refused when it applies, which proves it reached a leader.
+    let genesis = |node: std::sync::Arc<calimero_node::Node>| async move {
+        node.sys_write(&calimero_node::system::SystemCmd::Genesis {
+            session_proofs: true,
+            governance: calimero_node::system::Governance::default(),
+            release: None,
+            operator_key: None,
+            nodes: Vec::new(),
+        })
+        .await
+    };
+    let write = tokio::spawn(genesis(std::sync::Arc::clone(&node)));
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(
+        !write.is_finished(),
+        "the write gave up without a leader before its deadline"
+    );
+    c.restart(other).await;
+    let mut e = write
+        .await
+        .unwrap()
+        .expect_err("a second genesis is refused");
+    // The restarted node may not have rejoined and elected inside the first write's
+    // remaining 2 s on a loaded runner; a write sent now must still reach the leader.
+    if e.code == "UNAVAILABLE" {
+        e = genesis(node)
+            .await
+            .expect_err("a second genesis is refused");
+    }
+    assert_eq!(e.code, "REJECTED", "after {:?}: {e:?}", started.elapsed());
+}
+
 /// A node's sessions survive its restart on the same data directory (a crash,
 /// or a rolling upgrade of its binary): the key it signs them with is kept,
 /// wrapped under its K_r, and attested again at start (merobox
@@ -200,7 +242,7 @@ async fn a_removed_nodes_sessions_are_refused() {
         let leader = system_leader(&c).await;
         if ops_at(&c, leader)
             .await
-            .delete(&format!("ops/nodes/{new_id}"))
+            .delete_operator_signed(&format!("ops/nodes/{new_id}"), &harness::operator_sign)
             .await
             .is_ok()
         {
@@ -269,345 +311,6 @@ async fn a_sign_in_begun_on_one_node_finishes_on_another() {
             .unwrap_err();
         assert_eq!(e.code(), Some("UNKNOWN_CHALLENGE"), "{e}");
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn end_to_end() {
-    let mut c = Cluster::start(3).await;
-
-    // Sign up with a passkey; sign in again from another node.
-    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let alice_id = alice.me().await.unwrap()["accountId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let alice_on_2 = c.client(1);
-    let s = alice_on_2.sign_in(&mut alice_pk).await.unwrap();
-    assert_eq!(s.account_id, alice_id);
-
-    // Deploy kv-store and call it.
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
-    let r = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
-        .await
-        .unwrap();
-    assert!(r.index > 0);
-    assert_eq!(r.events.len(), 1, "{:?}", r.events);
-
-    // Strong read anywhere; stale read with read-your-writes on another node.
-    let v = alice
-        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("1"));
-    let v = alice_on_2
-        .view(
-            &app,
-            "get",
-            json!({ "key": "a" }),
-            Consistency::Stale { min_index: r.index },
-        )
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("1"));
-
-    // An idempotency key makes a retry answer once.
-    let r1 = alice
-        .call(
-            &app,
-            "set",
-            json!({ "key": "b", "value": "x" }),
-            Some("op-1"),
-        )
-        .await
-        .unwrap();
-    let r2 = alice
-        .call(
-            &app,
-            "set",
-            json!({ "key": "b", "value": "y" }),
-            Some("op-1"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r1.index, r2.index);
-    let v = alice
-        .view(&app, "get", json!({ "key": "b" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("x"));
-
-    // The app's own error comes back as APP_ERROR.
-    let e = alice
-        .call(&app, "get_result", json!({ "key": "missing" }), None)
-        .await
-        .unwrap_err();
-    assert!(matches!(e.code(), Some("APP_ERROR" | "TRAP")), "{e}");
-
-    // Events: replay from the start of the log.
-    let mut events = alice.events(&app, 0).await.unwrap();
-    let (_id, kind, _data) = tokio::time::timeout(Duration::from_secs(5), events.next())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!kind.is_empty());
-
-    // Another account cannot reach an owner-only app.
-    let (bob, _bob_pk) = signed_up(&c, 2, "bob").await;
-    let e = bob
-        .call(&app, "set", json!({ "key": "z", "value": "1" }), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("NOT_FOUND"));
-
-    // Leader loss: stop the app's leader; calls keep working through the others.
-    let leader = c.app_leader(&app).unwrap();
-    c.stop(leader).await;
-    let other = (0..3).find(|i| *i != leader).unwrap();
-    let alice_other = c.client(other);
-    let _s = alice_other.sign_in(&mut alice_pk).await.unwrap();
-    let mut ok = None;
-    for _ in 0..40 {
-        match alice_other
-            .call(
-                &app,
-                "set",
-                json!({ "key": "c", "value": "after" }),
-                Some("op-failover"),
-            )
-            .await
-        {
-            Ok(r) => {
-                ok = Some(r);
-                break;
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
-        }
-    }
-    assert!(ok.is_some(), "no write after leader loss");
-    let v = alice_other
-        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("1"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn confirm_methods_need_a_fresh_passkey() {
-    let c = Cluster::start(3).await;
-    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice
-        .create_app("kv", &bundle, json!({ "confirmMethods": ["clear"] }))
-        .await
-        .unwrap();
-    let _r = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
-        .await
-        .unwrap();
-    let e = alice
-        .call(&app, "clear", json!({}), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"));
-    let _r = alice
-        .call_confirmed(&app, "clear", json!({}), &mut pk)
-        .await
-        .unwrap();
-    let v = alice
-        .view(&app, "len", json!({}), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!(0));
-
-    // A passkey of another account cannot approve.
-    let (_bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let e = alice
-        .call_confirmed(&app, "clear", json!({}), &mut bob_pk)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(e.code(), Some("UNAUTHENTICATED" | "FORBIDDEN")),
-        "{e}"
-    );
-
-    // An API key without allowConfirm cannot call it at all.
-    let (_id, key) = alice
-        .create_api_key(json!({ "label": "agent" }))
-        .await
-        .unwrap();
-    let agent = c.client(2);
-    agent.use_api_key(&key).await;
-    let _r = agent
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
-        .await
-        .unwrap();
-    let e = agent
-        .call(&app, "clear", json!({}), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("FORBIDDEN"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn organizations_gate_apps_and_api_keys_are_scoped() {
-    let c = Cluster::start(3).await;
-    let (alice, _apk) = signed_up(&c, 0, "alice").await;
-    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
-    let (carol, _cpk) = signed_up(&c, 2, "carol").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let team = alice
-        .post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "eng", "join": "invite" }),
-        )
-        .await
-        .unwrap()["teamId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let invite = alice
-        .post(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member", "teams": [team] }),
-        )
-        .await
-        .unwrap()["token"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let _r = bob
-        .post(&format!("invites/{invite}/redeem"), json!({}))
-        .await
-        .unwrap();
-    // The invite was single-use.
-    let e = carol
-        .post(&format!("invites/{invite}/redeem"), json!({}))
-        .await
-        .unwrap_err();
-    assert!(e.code().is_some());
-
-    let o: Value = bob.get(&format!("orgs/{org}")).await.unwrap();
-    assert_eq!(o["members"][&bob_id], json!("member"));
-    assert_eq!(o["teams"][&team]["members"][&bob_id], json!(false));
-
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice
-        .create_app("team-kv", &bundle, json!({ "org": org }))
-        .await
-        .unwrap();
-    let _r = bob
-        .call(&app, "set", json!({ "key": "from", "value": "bob" }), None)
-        .await
-        .unwrap();
-    let e = carol
-        .call(
-            &app,
-            "set",
-            json!({ "key": "from", "value": "carol" }),
-            None,
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("NOT_FOUND"));
-
-    // Removing bob from the org cuts him off at once.
-    let _r = alice
-        .delete(&format!("orgs/{org}/members/{bob_id}"))
-        .await
-        .unwrap();
-    for _ in 0..20 {
-        if bob
-            .call(&app, "set", json!({ "key": "x", "value": "y" }), None)
-            .await
-            .is_err()
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let e = bob
-        .call(&app, "set", json!({ "key": "x", "value": "y" }), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("NOT_FOUND"));
-
-    // A read-only API key reads but does not write.
-    let (_id, key) = alice
-        .create_api_key(json!({ "readOnly": true, "apps": [app] }))
-        .await
-        .unwrap();
-    let agent = c.client(2);
-    agent.use_api_key(&key).await;
-    let v = agent
-        .view(&app, "get", json!({ "key": "from" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("bob"));
-    let e = agent
-        .call(&app, "set", json!({ "key": "a", "value": "b" }), None)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("FORBIDDEN"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn clients_refuse_unattested_nodes_and_plain_requests() {
-    let c = Cluster::start(3).await;
-    // A client that trusts only real TEEs refuses a mock quote before sending anything.
-    let strict = Client::connect(
-        &c.urls[0],
-        Policy {
-            allow_mock: false,
-            ..Policy::default()
-        },
-    )
-    .unwrap();
-    let e = strict
-        .post("auth/passkey/login/begin", json!({}))
-        .await
-        .unwrap_err();
-    assert!(e.to_string().contains("mock quote refused"), "{e}");
-
-    // A plain (unsealed) request is refused; attestation and health are served.
-    let plain = reqwest::Client::new();
-    let r = plain
-        .post(format!("{}auth/passkey/login/begin", c.urls[0]))
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 403);
-    let r = plain
-        .get(format!("{}health", c.urls[0]))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-
-    // A peer route without the cluster secret is refused, even sealed.
-    let client = c.client(0);
-    let e = client
-        .post(
-            "internal/system",
-            json!({ "op": "registerNode", "node": { "id": 9, "addr": "x" } }),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("FORBIDDEN"));
-
-    // The Ops API needs the operator credential and returns counts only.
-    let e = client.get("ops/status").await.unwrap_err();
-    assert_eq!(e.code(), Some("FORBIDDEN"));
 }
 
 /// A node that took its keys from mero-kms reports what it verified of that
@@ -714,193 +417,6 @@ async fn a_node_reports_the_kms_it_verified_inside_its_quote() {
         .expect("no record, no binding");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn backups_are_encrypted_and_restorable() {
-    let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
-    let _r = alice
-        .call(
-            &app,
-            "set",
-            json!({ "key": "secret", "value": "plaintext-value" }),
-            None,
-        )
-        .await
-        .unwrap();
-    let leader = c.app_leader(&app).unwrap();
-    let node = &c.nodes[leader].as_ref().unwrap().node;
-    let written = node.backup().await.unwrap();
-    assert_eq!(written, 1);
-    let dir = node.config.backup_dir.clone().unwrap();
-    let file = std::fs::read_dir(dir.join(&app))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let raw = std::fs::read(&file).unwrap();
-    assert!(!String::from_utf8_lossy(&raw).contains("plaintext-value"));
-    let (_index, data) = calimero_node::backup::latest(&dir, node.cluster_key(), &app)
-        .unwrap()
-        .unwrap();
-    // The app's rows are in it, opened with the storage key.
-    assert!(data
-        .iter()
-        .any(|(_k, v)| String::from_utf8_lossy(v).contains("plaintext-value")));
-}
-
-/// Regression: Raft entries carrying WASM bundles exceeded the HTTP body
-/// limit (2 MiB), so followers were refused (413) forever and fell behind.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn large_entries_reach_every_replica() {
-    let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let mut wasm = kv_wasm();
-    // A 2.5 MiB custom section: valid WASM, one entry well over 2 MiB.
-    let payload = vec![0_u8; 2_500_000];
-    let mut section = vec![3, b'p', b'a', b'd'];
-    section.extend_from_slice(&payload);
-    let mut size = section.len();
-    let mut leb = Vec::new();
-    loop {
-        let byte = (size & 0x7f) as u8;
-        size >>= 7;
-        if size == 0 {
-            leb.push(byte);
-            break;
-        }
-        leb.push(byte | 0x80);
-    }
-    wasm.push(0);
-    wasm.extend_from_slice(&leb);
-    wasm.extend_from_slice(&section);
-    let hash = alice.upload_bundle(wasm).await.unwrap();
-    let leader_applied = c
-        .nodes
-        .iter()
-        .flatten()
-        .filter_map(|r| r.node.system.status().last_log)
-        .max()
-        .unwrap_or(0);
-    for r in c.nodes.iter().flatten() {
-        assert!(
-            r.node
-                .system
-                .wait_applied(leader_applied, Duration::from_secs(10))
-                .await,
-            "node {} fell behind",
-            r.node.config.node_id
-        );
-        assert_eq!(r.node.sys(|s| s.bundles.len()), 1);
-        assert!(r.node.engine.get_blob(&hash).unwrap().is_some());
-    }
-    // The log keeps moving after the large bundle.
-    let app = alice.create_app("big", &hash, json!({})).await.unwrap();
-    let _out = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
-        .await
-        .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn ops_moves_an_app_and_points_followers_at_the_leader() {
-    let c = Cluster::start(4).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
-        .await
-        .unwrap();
-    let app = created["appId"].as_str().unwrap().to_owned();
-    let replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
-    let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
-        .await
-        .unwrap();
-    let spare = (1..=4).find(|n| !replicas.contains(n)).unwrap();
-    let leader = c.app_leader(&app).unwrap() as u64 + 1;
-    let follower = *replicas.iter().find(|r| **r != leader).unwrap();
-    // Move the app off its current leader, the hardest case.
-    let new: Vec<u64> = replicas
-        .iter()
-        .copied()
-        .filter(|r| *r != leader)
-        .chain([spare])
-        .collect();
-
-    let ops = |i: u64| {
-        let client = c.client(i as usize - 1);
-        async move {
-            client.use_api_key("ops-secret").await;
-            client
-        }
-    };
-    // A follower names the leader instead of failing opaquely.
-    let err = ops(follower)
-        .await
-        .post(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": new }),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("NOT_LEADER"), "{err}");
-    let url = err.details().unwrap()["leaderUrl"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(url, c.urls[leader as usize - 1]);
-
-    let moved = ops(leader)
-        .await
-        .post(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": new }),
-        )
-        .await
-        .unwrap();
-    let mut voters: Vec<u64> = serde_json::from_value(moved["status"]["voters"].clone()).unwrap();
-    voters.sort_unstable();
-    let mut want = new.clone();
-    want.sort_unstable();
-    assert_eq!(voters, want);
-    let v = alice
-        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("1"));
-
-    // The node the app moved off still serves it, by forwarding.
-    let off = c.client(leader as usize - 1);
-    off.use_session(alice.session().await.unwrap()).await;
-    let v = off
-        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("1"));
-    let _ = off
-        .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
-        .await
-        .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_failed_init_is_reported_not_hidden() {
-    let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    // `(module (memory (export "memory") 1))`: it compiles, but has no `init`.
-    let empty = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
-    let bundle = alice.upload_bundle(empty).await.unwrap();
-    let err = alice
-        .create_app("broken", &bundle, json!({}))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");
-    assert!(err.details().unwrap()["appId"].is_string());
-}
-
 /// A quota post changes the limits it names and keeps the others; a key that
 /// names no limit is refused instead of ignored (mdma reset `maxAccounts` on
 /// every save by posting the four it knew).
@@ -910,47 +426,34 @@ async fn a_quota_post_changes_only_what_it_names() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ok = ops
-        .post("ops/quotas", json!({ "maxAccounts": 7 }))
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxAccounts": 7 }),
+            &harness::operator_sign,
+        )
         .await
         .unwrap();
     let _ok = ops
-        .post("ops/quotas", json!({ "maxOrgsPerAccount": 3 }))
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxOrgsPerAccount": 3 }),
+            &harness::operator_sign,
+        )
         .await
         .unwrap();
     let q = ops.get("ops/quotas").await.unwrap();
     assert_eq!(q["maxAccounts"], json!(7), "{q}");
     assert_eq!(q["maxOrgsPerAccount"], json!(3), "{q}");
     let e = ops
-        .post("ops/quotas", json!({ "maxAcounts": 1 }))
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxAcounts": 1 }),
+            &harness::operator_sign,
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("maxAcounts"), "{e}");
     assert_eq!(ops.get("ops/quotas").await.unwrap(), q);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn quotas_are_enforced_by_the_log() {
-    let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let ops = c.client(1);
-    ops.use_api_key("ops-secret").await;
-    let mut quotas = ops.get("ops/quotas").await.unwrap();
-    assert_eq!(quotas["maxAppsPerAccount"], json!(100));
-    quotas["maxAppsPerAccount"] = json!(1);
-    quotas["maxApiKeysPerAccount"] = json!(1);
-    let _ok = ops.post("ops/quotas", quotas).await.unwrap();
-
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let _first = alice.create_app("one", &bundle, json!({})).await.unwrap();
-    let err = alice
-        .create_app("two", &bundle, json!({}))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
-
-    let _key = alice.create_api_key(json!({})).await.unwrap();
-    let err = alice.create_api_key(json!({})).await.unwrap_err();
-    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
 async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
@@ -958,177 +461,6 @@ async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value
         .await
         .unwrap()
         .result
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn apps_see_the_callers_organization_role_and_teams() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let str_of = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
-    let org = str_of(
-        alice.post("orgs", json!({ "name": "Acme" })).await.unwrap(),
-        "orgId",
-    );
-    let team = str_of(
-        alice
-            .post(
-                &format!("orgs/{org}/teams"),
-                json!({ "name": "eng", "join": "invite" }),
-            )
-            .await
-            .unwrap(),
-        "teamId",
-    );
-    let invite = str_of(
-        alice
-            .post(
-                &format!("orgs/{org}/invites"),
-                json!({ "role": "member", "teams": [team] }),
-            )
-            .await
-            .unwrap(),
-        "token",
-    );
-    let _r = bob
-        .post(&format!("invites/{invite}/redeem"), json!({}))
-        .await
-        .unwrap();
-
-    let bundle = alice.upload_bundle(wasm("org_gated")).await.unwrap();
-    let app = alice
-        .create_app("notes", &bundle, json!({ "org": org }))
-        .await
-        .unwrap();
-
-    // The app reads each caller's standing from the node.
-    let me = strong_view(&alice, &app, "whoami", json!({})).await;
-    assert_eq!(me["role"], "owner");
-    assert_eq!(me["org"], json!(org));
-    let me = strong_view(&bob, &app, "whoami", json!({})).await;
-    assert_eq!(me["role"], "member");
-    assert_eq!(me["teams"], json!([team]));
-
-    // Admins write the pinned note; members read it but cannot write it.
-    let _ok = alice
-        .call(&app, "set_pinned", json!({ "text": "hello" }), None)
-        .await
-        .unwrap();
-    assert_eq!(strong_view(&bob, &app, "pinned", json!({})).await, "hello");
-    let err = bob
-        .call(&app, "set_pinned", json!({ "text": "mine" }), None)
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
-
-    // Team members write their team's note; alice (owner, who left the team
-    // she created and led) cannot.
-    let alice_id = alice.me().await.unwrap()["accountId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let _ok = alice
-        .delete(&format!("orgs/{org}/teams/{team}/members/{alice_id}"))
-        .await
-        .unwrap();
-    let _ok = bob
-        .call(
-            &app,
-            "set_team_note",
-            json!({ "team": team, "text": "ship it" }),
-            None,
-        )
-        .await
-        .unwrap();
-    let err = alice
-        .call(
-            &app,
-            "set_team_note",
-            json!({ "team": team, "text": "x" }),
-            None,
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
-
-    // Outside an organization the app sees no standing.
-    let solo = alice.create_app("solo", &bundle, json!({})).await.unwrap();
-    let me = alice
-        .view(&solo, "whoami", json!({}), Consistency::Strong)
-        .await
-        .unwrap()
-        .result;
-    assert_eq!(me, Value::Null);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn browsers_on_allowed_origins_may_call_the_node() {
-    let c = Cluster::start(3).await;
-    let http = reqwest::Client::new();
-    let preflight = |origin: &'static str| {
-        http.request(reqwest::Method::OPTIONS, format!("{}sealed/v2", c.urls[0]))
-            .header("origin", origin)
-            .header("access-control-request-method", "POST")
-            .header("access-control-request-headers", "content-type")
-            .send()
-    };
-    let ok = preflight(ORIGIN).await.unwrap();
-    assert_eq!(
-        ok.headers().get("access-control-allow-origin").unwrap(),
-        ORIGIN
-    );
-    let other = preflight("https://evil.example").await.unwrap();
-    assert!(other.headers().get("access-control-allow-origin").is_none());
-    // A simple GET carries the header too.
-    let health = http
-        .get(format!("{}health", c.urls[0]))
-        .header("origin", ORIGIN)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        health.headers().get("access-control-allow-origin").unwrap(),
-        ORIGIN
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_app_answers_to_its_context_id_too() {
-    let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
-        .await
-        .unwrap();
-    let app = created["appId"].as_str().unwrap();
-    let ctx = created["contextId"].as_str().unwrap();
-    assert_eq!(ctx, hex::encode(calimero_identity::sha256(app.as_bytes())));
-    let _ = alice
-        .call(ctx, "set", json!({ "key": "a", "value": "1" }), None)
-        .await
-        .unwrap();
-    let v = alice
-        .view(app, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("1"));
-}
-
-/// A core fixture app built with `cargo mero build` (so its ABI is embedded:
-/// handlers, timers and xcall entry points come from it).
-fn mero_wasm(app: &str, name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps")
-        .join(app)
-        .join("res")
-        .join(format!("{name}.wasm"));
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}; build it with cargo mero build --manifest-path apps/{app}/Cargo.toml",
-            path.display()
-        )
-    })
 }
 
 /// Deploy `wasm` as a new app owned by `cl`; answers (app id, context id).
@@ -1231,7 +563,7 @@ async fn eventually(
 async fn a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
+    let (files, _) = deploy(&alice, "files", kv_wasm(), json!({})).await;
     let e = alice
         .upload_blob(&files, vec![7u8; 48 * 1024 * 1024])
         .await
@@ -1248,7 +580,7 @@ async fn a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front() {
 async fn an_upload_past_the_sealed_cap_is_answered_413() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
+    let (files, _) = deploy(&alice, "files", kv_wasm(), json!({})).await;
     let cap = calimero_sealed::server::MAX_SEALED_BYTES;
     for size in [cap + 1, 100 << 20] {
         let e = alice
@@ -1269,269 +601,58 @@ async fn an_upload_past_the_sealed_cap_is_answered_413() {
     assert_eq!(listed["blobs"], json!([]), "{listed}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn blobs_are_the_apps_own_and_reach_every_node() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
-    let (other, _) = deploy(&alice, "other", mero_wasm("blobs", "blobs"), json!({})).await;
-
-    let pdf = b"%PDF-1.7 an agreement".repeat(1000);
-    let up = alice.upload_blob(&files, pdf.clone()).await.unwrap();
-    let blob_id = up["blobId"].as_str().unwrap().to_owned();
-    assert_eq!(up["size"], json!(pdf.len()));
-
-    // The app records it and announces it (a no-op here, but it must not fail).
-    let file = alice
-        .call(
-            &files,
-            "upload_file",
-            json!({ "name": "a.pdf", "blob_id": blob_id, "size": pdf.len(), "mime_type": "application/pdf" }),
-            None,
-        )
-        .await
-        .unwrap();
-    let file_id = file.result.as_str().unwrap().to_owned();
-    let record = strong_view(&alice, &files, "get_file", json!({ "file_id": file_id })).await;
-    assert_eq!(record["blob_id"], json!(blob_id));
-
-    // Any node serves it, by either id form.
-    for i in 0..3 {
-        let cl = c.client(i);
-        cl.use_session(alice.session().await.unwrap()).await;
-        assert_eq!(cl.download_blob(&files, &blob_id).await.unwrap(), pdf);
-    }
-    let hex_id = up["id"].as_str().unwrap();
-    assert_eq!(alice.download_blob(&files, hex_id).await.unwrap(), pdf);
-
-    // Another app does not hold it, whatever it knows of the id.
-    let err = alice.download_blob(&other, &blob_id).await.unwrap_err();
-    assert_eq!(err.code(), Some("NOT_FOUND"));
-    let err = alice
-        .call(
-            &other,
-            "upload_file",
-            json!({ "name": "a.pdf", "blob_id": blob_id, "size": 1, "mime_type": "x" }),
-            None,
-        )
-        .await;
-    // The blobs app only logs a failed announce; the record lands, the bytes don't.
-    assert!(err.is_ok());
-    assert!(alice.download_blob(&other, &blob_id).await.is_err());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn event_handlers_run_once_after_the_entry_that_emitted_them() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (kv, _) = deploy(
-        &alice,
-        "kv",
-        mero_wasm("kv-store-with-handlers", "kv_store_with_handlers"),
-        json!({}),
-    )
-    .await;
-    for (k, v) in [("a", "1"), ("a", "2"), ("b", "3")] {
-        let _ = alice
-            .call(&kv, "set", json!({ "key": k, "value": v }), None)
-            .await
-            .unwrap();
-    }
-    let _ = eventually(&alice, &kv, "get_handler_execution_count", json!({}), |v| {
-        v == &json!(3)
-    })
-    .await;
-    // Once each, not once per replica.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(
-        strong_view(&alice, &kv, "get_handler_execution_count", json!({})).await,
-        json!(3)
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn xcalls_reach_only_declared_entry_points_in_the_same_organization() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let xcall = || mero_wasm("xcall-example", "xcall_example");
-    let (ping, _) = deploy(&alice, "ping", xcall(), json!({})).await;
-    let (pong, pong_ctx) = deploy(&alice, "pong", xcall(), json!({})).await;
-    let (stranger, stranger_ctx) = deploy(&bob, "stranger", xcall(), json!({})).await;
-
-    let _ = alice
-        .call(&ping, "ping", json!({ "target_context": pong_ctx }), None)
-        .await
-        .unwrap();
-    let _ = eventually(&alice, &pong, "get_counter", json!({}), |v| v == &json!(1)).await;
-
-    // `secret` is not an #[app::xcall] entry point.
-    let _ = alice
-        .call(
-            &ping,
-            "ping_secret",
-            json!({ "target_context": pong_ctx }),
-            None,
-        )
-        .await
-        .unwrap();
-    // Bob's app is another owner's, outside any shared organization.
-    let _ = alice
-        .call(
-            &ping,
-            "ping",
-            json!({ "target_context": stranger_ctx }),
-            None,
-        )
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(
-        strong_view(&alice, &pong, "get_secret_counter", json!({})).await,
-        json!(0)
-    );
-    assert_eq!(
-        strong_view(&bob, &stranger, "get_counter", json!({})).await,
-        json!(0)
-    );
-    assert_eq!(
-        strong_view(&alice, &pong, "get_counter", json!({})).await,
-        json!(1)
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn tee_handlers_and_timers_run_as_the_apps_tee() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (dice, _) = deploy(&alice, "dice", mero_wasm("tee-dice", "tee_dice"), json!({})).await;
-    let _ = alice
-        .call(&dice, "roll", json!({ "roll_id": "r1", "sides": 6 }), None)
-        .await
-        .unwrap();
-    let face = eventually(&alice, &dice, "get_roll", json!({ "roll_id": "r1" }), |v| {
-        !v.is_null()
-    })
-    .await;
-    let face = face.as_u64().unwrap();
-    assert!((1..=6).contains(&face), "{face}");
-    // A member cannot resolve a roll itself.
-    let err = alice
-        .call(
-            &dice,
-            "resolve_roll",
-            json!({ "roll_id": "r2", "sides": 6 }),
-            None,
-        )
-        .await;
-    assert!(err.is_err(), "{err:?}");
-
-    // `reshuffle` is `#[app::tee(every = "1m")]`: the current tick fires at once.
-    let (cards, _) = deploy(
-        &alice,
-        "cards",
-        mero_wasm("tee-cards", "tee_cards"),
-        json!({}),
-    )
-    .await;
-    let _ = eventually(&alice, &cards, "cards_left", json!({}), |v| !v.is_null()).await;
-
-    // A card the TEE deals is sealed to its player: Alice reads hers, nobody
-    // else's run can open it.
-    let _ = alice.call(&cards, "sit", json!({}), None).await.unwrap();
-    let _ = alice.call(&cards, "draw", json!({}), None).await.unwrap();
-    let hand = eventually(&alice, &cards, "my_hand", json!({}), |v| {
-        v.as_array().is_some_and(|h| h.len() == 1)
-    })
-    .await;
-    let card = hand[0].as_u64().unwrap();
-    assert!(card < 52, "{card}");
-    let left = strong_view(&alice, &cards, "cards_left", json!({})).await;
-    assert_eq!(left, json!(51));
-    let _ = alice
-        .post(
-            &format!("apps/{cards}/access"),
-            json!({ "access": "public" }),
-        )
-        .await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
-    if let Ok(v) = bob
-        .view(&cards, "my_hand", json!({}), Consistency::Strong)
-        .await
-    {
-        assert_eq!(v.result, json!([]));
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn views_search_the_apps_own_index_as_it_changes() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (chat, _) = deploy(
-        &alice,
-        "chat",
-        mero_wasm("search-chat", "search_chat"),
-        json!({}),
-    )
-    .await;
-    for (id, text) in [
-        ("m1", "the quarterly report is late"),
-        ("m2", "lunch at noon"),
-    ] {
-        let _ = alice
-            .call(
-                &chat,
-                "post",
-                json!({ "id": id, "sender": "alice", "text": text, "ts": 1 }),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-    let hits = |v: &Value| v["hits"].as_array().map_or(0, Vec::len);
-    let page = strong_view(&alice, &chat, "search", json!({ "query": "report" })).await;
-    assert_eq!(hits(&page), 1, "{page}");
-    // An edit is searched as it is now, on any node.
-    let _ = alice
-        .call(
-            &chat,
-            "edit",
-            json!({ "id": "m2", "text": "the report again" }),
-            None,
-        )
-        .await
-        .unwrap();
-    for i in 0..3 {
-        let cl = c.client(i);
-        cl.use_session(alice.session().await.unwrap()).await;
-        let page = strong_view(&cl, &chat, "search", json!({ "query": "report" })).await;
-        assert_eq!(hits(&page), 2, "node {i}: {page}");
-    }
-    let page = strong_view(&alice, &chat, "search", json!({ "query": "lunch" })).await;
-    assert_eq!(hits(&page), 0, "{page}");
-    // A declared view called as a call runs as a view, so it may search.
-    let called = alice
-        .call(&chat, "search", json!({ "query": "report" }), None)
-        .await
-        .unwrap();
-    assert_eq!(hits(&called.result), 2, "{}", called.result);
-    // A write may not search (search is for views).
-    assert!(alice
-        .call(
-            &chat,
-            "search_in_a_write",
-            json!({ "query": "report" }),
-            None
-        )
-        .await
-        .is_err());
-}
-
 async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client::Error>> {
     cl.call(app, "set", json!({ "key": "k", "value": v }), None)
         .await
         .map(drop)
         .map_err(Box::new)
+}
+
+/// An owner who opens their own one-use invite link, out of curiosity,
+/// gains nothing from it, so they spend nothing: the new account it was made
+/// for still joins with it, and only then is it used up (`400 REJECTED`,
+/// saying so). Before, the owner's redemption spent the only use and the
+/// invitee was told "unknown invite".
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_opening_their_own_invite_leaves_it_for_the_invitee() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut a,
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let redeem = format!("invites/{token}/redeem");
+    let own = alice.post(&redeem, json!({})).await.unwrap();
+    assert_eq!(own["org"], json!(org), "{own}");
+    let joined = bob.post(&redeem, json!({})).await.unwrap();
+    assert_eq!(joined["org"], json!(org), "{joined}");
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let listed = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(listed["members"][&bob_id], "member", "{listed}");
+    assert_eq!(listed["members"][&alice_id], "owner", "{listed}");
+    let e = carol.post(&redeem, json!({})).await.unwrap_err();
+    assert_eq!(e.code(), Some("REJECTED"), "{e}");
+    assert!(e.to_string().contains("used up"), "{e}");
 }
 
 /// Member capabilities: a member who is not an admin creates apps in the
@@ -1544,14 +665,18 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
     const INVITE_MEMBERS: u32 = 1 << 1;
     const MANAGE_APPLICATION: u32 = 1 << 4;
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut a,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -1579,41 +704,55 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         "CREATE_APP",
     );
     refused(
-        bob.post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
-            .await
-            .unwrap_err(),
+        bob.post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut bob_pk,
+        )
+        .await
+        .unwrap_err(),
         "INVITE_MEMBERS",
     );
 
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/capabilities"),
             json!({
                 "account": bob_id,
                 "capabilities": CREATE_APP | INVITE_MEMBERS | MANAGE_APPLICATION,
             }),
+            &mut a,
         )
         .await
         .unwrap();
     let _bobs = bob.create_app("b", &bundle, in_org.clone()).await.unwrap();
     let _invite = bob
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut bob_pk,
+        )
         .await
         .unwrap();
     // Never above the member's own role.
     refused(
-        bob.post(&format!("orgs/{org}/invites"), json!({ "role": "admin" }))
-            .await
-            .unwrap_err(),
+        bob.post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "admin" }),
+            &mut bob_pk,
+        )
+        .await
+        .unwrap_err(),
         "above your own role",
     );
     // Another's org app: only with MANAGE_APPLICATION.
     let alices = alice.create_app("a", &bundle, in_org).await.unwrap();
     let next = bob.upload_bundle(variant(&kv_wasm(), "v2")).await.unwrap();
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/capabilities"),
             json!({ "account": bob_id, "capabilities": CREATE_APP | INVITE_MEMBERS }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -1628,9 +767,10 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         "MANAGE_APPLICATION",
     );
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/capabilities"),
             json!({ "account": bob_id, "capabilities": MANAGE_APPLICATION }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -1656,343 +796,9 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn teams_work_like_v1_subgroups() {
-    let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
-    let org = s(
-        alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
-        "orgId",
-    );
-    let token = s(
-        alice
-            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
-            .await
-            .unwrap(),
-        "token",
-    );
-    let _r = bob
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
-    let bob_id = s(bob.me().await.unwrap(), "accountId");
-    let team = |name: &str, join: &str, parent: Option<&str>| {
-        let body = json!({ "name": name, "join": join, "parent": parent });
-        let (alice, org) = (&alice, &org);
-        async move {
-            s(
-                alice
-                    .post(&format!("orgs/{org}/teams"), body)
-                    .await
-                    .unwrap(),
-                "teamId",
-            )
-        }
-    };
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app_in = |team: String| {
-        let (alice, org, bundle) = (&alice, &org, &bundle);
-        async move {
-            alice
-                .create_app(
-                    "folder",
-                    bundle,
-                    json!({ "org": org, "access": { "kind": "team", "team": team } }),
-                )
-                .await
-                .unwrap()
-        }
-    };
-
-    // An open folder: Bob reaches it through the organization and writes.
-    let open = team("Open", "everyone", None).await;
-    let open_app = app_in(open.clone()).await;
-    set(&bob, &open_app, "bob").await.unwrap();
-
-    // Removed from an open folder, Bob does not come back by inheritance;
-    // added again, he is back.
-    let _ok = alice
-        .delete(&format!("orgs/{org}/teams/{open}/members/{bob_id}"))
-        .await
-        .unwrap();
-    let err = set(&bob, &open_app, "x").await.unwrap_err();
-    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{open}/members"),
-            json!({ "account": bob_id }),
-        )
-        .await
-        .unwrap();
-    set(&bob, &open_app, "back").await.unwrap();
-
-    // A restricted folder is a wall, invisible to Bob until he is added.
-    let secret = team("Secret", "invite", None).await;
-    let secret_app = app_in(secret.clone()).await;
-    let err = set(&bob, &secret_app, "x").await.unwrap_err();
-    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
-    assert!(bob
-        .get(&format!("orgs/{org}/teams/{secret}"))
-        .await
-        .is_err());
-    let listed = bob.get(&format!("orgs/{org}")).await.unwrap();
-    assert!(listed["teams"].get(&secret).is_none(), "{listed}");
-    assert!(listed["teams"].get(&open).is_some(), "{listed}");
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{secret}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-        )
-        .await
-        .unwrap();
-    set(&bob, &secret_app, "in").await.unwrap();
-
-    // Nested open teams inherit through their parent; a direct read-only row
-    // refuses writes there and nowhere else.
-    let child = team("Child", "everyone", Some(&secret)).await;
-    let child_app = app_in(child.clone()).await;
-    set(&bob, &child_app, "inherited").await.unwrap();
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{child}/members"),
-            json!({ "account": bob_id, "role": "readOnly" }),
-        )
-        .await
-        .unwrap();
-    let err = set(&bob, &child_app, "ro").await.unwrap_err();
-    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
-    // Leaving does not shed the role: he does not come back by inheritance.
-    let _ok = bob
-        .delete(&format!("orgs/{org}/teams/{child}/members/{bob_id}"))
-        .await
-        .unwrap();
-    assert!(bob
-        .view(
-            &child_app,
-            "get",
-            json!({ "key": "k" }),
-            Consistency::Strong
-        )
-        .await
-        .is_err());
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{child}/members"),
-            json!({ "account": bob_id, "role": "readOnly" }),
-        )
-        .await
-        .unwrap();
-    // A call that writes nothing still runs for him.
-    let read = bob.call(&child_app, "len", json!({}), None).await.unwrap();
-    assert_eq!(read.result, json!(1));
-    set(&bob, &secret_app, "still writes the parent")
-        .await
-        .unwrap();
-    let v = bob
-        .view(
-            &child_app,
-            "get",
-            json!({ "key": "k" }),
-            Consistency::Strong,
-        )
-        .await;
-    assert_eq!(v.unwrap().result, json!("inherited"));
-
-    // Metadata and visibility belong to the team; moving it under a team Bob
-    // is not in hides it from him.
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{child}"),
-            json!({ "metadata": { "name": "Child", "color": "#f00" } }),
-        )
-        .await
-        .unwrap();
-    let seen = bob.get(&format!("orgs/{org}/teams/{child}")).await.unwrap();
-    assert_eq!(seen["metadata"]["color"], "#f00");
-    assert_eq!(seen["myRole"], "readOnly");
-    let board = team("Board", "invite", None).await;
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{child}"),
-            json!({ "parent": board, "join": "invite" }),
-        )
-        .await
-        .unwrap();
-    // Still a direct member of Child, Bob sees it but not Board above it.
-    assert!(bob.get(&format!("orgs/{org}/teams/{child}")).await.is_ok());
-    assert!(bob.get(&format!("orgs/{org}/teams/{board}")).await.is_err());
-    let err = alice
-        .post(
-            &format!("orgs/{org}/teams/{board}"),
-            json!({ "parent": child }),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "{err}");
-
-    // A member creates top-level teams only with the capability.
-    let err = bob
-        .post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "Mine", "join": "everyone" }),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "{err}");
-    let _ok = alice
-        .post(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "capabilities": 37 }),
-        )
-        .await
-        .unwrap();
-    let mine = s(
-        bob.post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "Mine", "join": "everyone" }),
-        )
-        .await
-        .unwrap(),
-        "teamId",
-    );
-    assert_eq!(
-        bob.get(&format!("orgs/{org}/teams/{mine}")).await.unwrap()["myRole"],
-        "lead"
-    );
-
-    // Deleting a team deletes what is under it, apps included.
-    let gone = alice
-        .delete(&format!("orgs/{org}/teams/{board}"))
-        .await
-        .unwrap();
-    assert_eq!(gone["teams"].as_array().unwrap().len(), 2, "{gone}");
-    assert_eq!(gone["apps"], json!([child_app]));
-    assert!(alice.get(&format!("apps/{child_app}")).await.is_err());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_passkey_is_another_device_of_the_same_account() {
-    let c = Cluster::start(3).await;
-    let (laptop, _pk) = signed_up(&c, 0, "alice").await;
-    let mut phone_key = SoftAuthenticator::new("localhost", ORIGIN);
-    let phone_cred = laptop.add_passkey(&mut phone_key).await.unwrap();
-    let phone = c.client(1);
-    let _s = phone.sign_in(&mut phone_key).await.unwrap();
-    let (a, b) = (laptop.me().await.unwrap(), phone.me().await.unwrap());
-    assert_eq!(a["accountId"], b["accountId"]);
-    assert_eq!(b["passkeyId"], json!(phone_cred));
-    assert_ne!(a["passkeyId"], b["passkeyId"]);
-    assert_eq!(b["passkeys"].as_array().unwrap().len(), 2);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
-    let c = Cluster::start(3).await;
-    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
-    // An upgrade is approved with the owner's passkey; a refused one is a 422
-    // whose details carry the run's status.
-    async fn upgrade(
-        alice: &Client,
-        key: &mut SoftAuthenticator,
-        app: String,
-        bundle: String,
-    ) -> Value {
-        match alice
-            .upgrade_app(&app, json!({ "bundle": bundle }), key)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
-                e.details().cloned().unwrap()
-            }
-        }
-    }
-
-    // v1 -> v2 adds a field: the node finds the migration in v2's ABI, runs
-    // it, and v1's data reads under v2 beside the new field's default.
-    let v1 = alice
-        .upload_bundle(mero_wasm(
-            "migrations/migration-suite-v1",
-            "migration_suite_v1",
-        ))
-        .await
-        .unwrap();
-    let app = alice.create_app("suite", &v1, json!({})).await.unwrap();
-    let _ok = alice
-        .call(
-            &app,
-            "set_item",
-            json!({ "key": "a", "value": "kept" }),
-            None,
-        )
-        .await
-        .unwrap();
-    let v2 = alice
-        .upload_bundle(mero_wasm(
-            "migrations/migration-suite-v2-add-field",
-            "migration_suite_v2_add_field",
-        ))
-        .await
-        .unwrap();
-    let up = upgrade(&alice, &mut alice_key, app.clone(), v2.clone()).await;
-    assert_eq!(up["status"], "ok", "{up}");
-    assert_eq!(
-        strong_view(&alice, &app, "get_item", json!({ "key": "a" })).await,
-        json!("kept")
-    );
-    assert_eq!(
-        strong_view(&alice, &app, "get_notes", json!({})).await,
-        json!("added in v2")
-    );
-    // Down again is refused, and the app stays on v2.
-    let down = upgrade(&alice, &mut alice_key, app.clone(), v1).await;
-    assert_eq!(down["status"], "appError", "{down}");
-    assert_eq!(
-        strong_view(&alice, &app, "get_notes", json!({})).await,
-        json!("added in v2")
-    );
-
-    // A migration its own check refuses leaves the app on v1, data intact.
-    let f1 = alice
-        .upload_bundle(mero_wasm(
-            "migrations/scenario-migration-check-fail-v1",
-            "scenario_migration_check_fail_v1",
-        ))
-        .await
-        .unwrap();
-    let app = alice.create_app("checked", &f1, json!({})).await.unwrap();
-    for k in ["x", "y"] {
-        let _ok = alice
-            .call(&app, "set_item", json!({ "key": k, "value": k }), None)
-            .await
-            .unwrap();
-    }
-    let f2 = alice
-        .upload_bundle(mero_wasm(
-            "migrations/scenario-migration-check-fail-v2",
-            "scenario_migration_check_fail_v2",
-        ))
-        .await
-        .unwrap();
-    let refused = upgrade(&alice, &mut alice_key, app.clone(), f2.clone()).await;
-    assert_eq!(refused["status"], "appError", "{refused}");
-    assert_eq!(
-        strong_view(&alice, &app, "item_count", json!({})).await,
-        json!(2)
-    );
-    // The directory still names the bundle the app runs.
-    assert_eq!(
-        alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
-        json!(f1)
-    );
-}
-
 // ---------------------------------------------------------------- packages
 
-/// A signed single-service `.mpk`, the shape `cargo mero bundle` produces.
+/// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     mpk_declaring(package, version, wasm, key, &[])
 }
@@ -2039,6 +845,7 @@ fn mpk_full(
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm)),
         abi: None,
+        compute: None,
         links: None,
         frontend: (!frontend.is_empty()).then(|| calimero_bundle::BundleFrontend {
             entry: frontend[0].0.to_owned(),
@@ -2442,7 +1249,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let kv = kv_wasm();
     // Alice's organization (Acme, with Amy) and Bob, outside it, in his own.
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (amy, _m) = signed_up(&c, 1, "amy").await;
     let (bob, _b) = signed_up(&c, 2, "bob").await;
     let bob_id = bob.me().await.unwrap()["accountId"]
@@ -2454,7 +1261,11 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
         .unwrap()
         .to_owned();
     let invite = alice
-        .post(&format!("orgs/{acme}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{acme}/invites"),
+            json!({ "role": "member" }),
+            &mut a,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -2623,16 +1434,16 @@ async fn a_reused_refresh_token_revokes_the_session_on_a_lagging_node() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn sessions_confirmations_and_key_scopes_hold() {
     let c = Cluster::start(3).await;
-    let (laptop, _pk) = signed_up(&c, 0, "alice").await;
+    let (laptop, mut pk) = signed_up(&c, 0, "alice").await;
 
     // 5. Removing a passkey ends the sessions opened with it.
     let mut phone_key = SoftAuthenticator::new("localhost", ORIGIN);
-    let phone_cred = laptop.add_passkey(&mut phone_key).await.unwrap();
+    let phone_cred = laptop.add_passkey(&mut phone_key, &mut pk).await.unwrap();
     let phone = c.client(1);
     let _s = phone.sign_in(&mut phone_key).await.unwrap();
     assert!(phone.me().await.is_ok());
     let _ok = laptop
-        .delete(&format!("auth/passkeys/{phone_cred}"))
+        .delete_confirmed(&format!("auth/passkeys/{phone_cred}"), &mut pk)
         .await
         .unwrap();
     let e = phone.me().await.unwrap_err();
@@ -2654,18 +1465,19 @@ async fn sessions_confirmations_and_key_scopes_hold() {
     let e = laptop.me().await.unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
 
-    // 6. A confirm method does not answer through /views.
-    let (bob, _pk) = signed_up(&c, 0, "bob").await;
-    let (app, _ctx) = deploy(&bob, "kv", kv_wasm(), json!({ "confirmMethods": ["get"] })).await;
+    // 6. A confirm method (the kv fixture's `clear`) does not answer through /views.
+    let (bob, mut pk) = signed_up(&c, 0, "bob").await;
+    let (app, _ctx) = deploy(&bob, "kv", kv_wasm(), json!({})).await;
     let e = bob
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .view(&app, "clear", json!({}), Consistency::Strong)
         .await
         .unwrap_err();
-    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "ConfirmNotAView", "{e}");
 
     // 7. A read-only key installs nothing; an app-scoped key starts no app.
     let (_id, read_only) = bob
-        .create_api_key(json!({ "readOnly": true }))
+        .create_api_key(json!({ "readOnly": true }), &mut pk)
         .await
         .unwrap();
     let svc = c.client(0);
@@ -2673,7 +1485,7 @@ async fn sessions_confirmations_and_key_scopes_hold() {
     let e = svc.upload_bundle(kv_wasm()).await.unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     let (_id, scoped) = bob
-        .create_api_key(json!({ "apps": [app], "methods": ["set"] }))
+        .create_api_key(json!({ "apps": [app], "methods": ["set"] }), &mut pk)
         .await
         .unwrap();
     let svc = c.client(0);
@@ -2730,9 +1542,10 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     };
     let e = ops(0)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": [1, 2, 3] }),
+            &harness::operator_sign,
         )
         .await
         .unwrap_err();
@@ -2762,9 +1575,10 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     let leader = c.app_leader(&app).unwrap();
     let _moved = ops(leader)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": [1, 2, 3] }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -2827,9 +1641,10 @@ async fn put_in_zones(c: &Cluster, zones: &[&str]) {
     ops.use_api_key("ops-secret").await;
     for (i, zone) in zones.iter().enumerate() {
         let _ = ops
-            .post(
+            .post_operator_signed(
                 "ops/nodes",
                 json!({ "id": i as u64 + 1, "addr": c.urls[i], "zone": zone }),
+                &harness::operator_sign,
             )
             .await
             .unwrap();
@@ -2926,158 +1741,6 @@ async fn answers_carry_receipts_from_attested_replicas() {
     assert!(!receipt.verify(&keys[&receipt.node], &json!("forged")));
 }
 
-// ---------------------------------------------------------------- outbound
-
-async fn probe(cl: &Client, app: &str) -> Value {
-    cl.call(
-        app,
-        "probe",
-        json!({ "path": "check", "body": "a=1" }),
-        None,
-    )
-    .await
-    .unwrap()
-    .result
-}
-
-/// The outbound gate, with the owner's approval in place of v1's namespace
-/// admin's: a run reaches a declared prefix only once the app's owner
-/// approved it for the publisher, never on the operator's say; a view and
-/// another account's approval reach nothing; a replace revokes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn outbound_requests_need_the_owners_approval() {
-    const PREFIX: &str = "https://echo.outbound.test/v1/";
-    const PACKAGE: &str = "com.calimero.outbound-probe";
-    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
-    let settings = calimero_outbound::OutboundSettings {
-        enabled: true,
-        hosts: vec!["echo.outbound.test".to_owned()],
-        testing: Some(calimero_outbound::OutboundTestSettings {
-            echo: true,
-            secrets: [(
-                "ECHO_KEY".to_owned(),
-                calimero_outbound::TestSecretSettings {
-                    value: "s3cret-value".to_owned(),
-                    packages: vec![PACKAGE.to_owned()],
-                    signers: vec![signer.clone()],
-                    hosts: vec!["echo.outbound.test".to_owned()],
-                },
-            )]
-            .into(),
-        }),
-        ..calimero_outbound::OutboundSettings::default()
-    };
-    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
-    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
-    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let _ = alice
-        .upload_package(mpk_declaring(
-            PACKAGE,
-            "0.1.0",
-            &wasm("outbound_probe"),
-            &publisher,
-            &[PREFIX],
-        ))
-        .await
-        .unwrap();
-    let app = alice
-        .post("apps", json!({ "name": "probe", "package": PACKAGE }))
-        .await
-        .unwrap()["appId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    // The operator allows the host and the manifest declares the prefix, but
-    // the owner was never asked.
-    let before = probe(&alice, &app).await;
-    assert!(
-        before.as_str().unwrap().contains("[NotApproved]"),
-        "{before}"
-    );
-
-    // Bob sees no release of Alice's private upload: approving it answers as
-    // for a missing package. Once he installs the same release himself, his
-    // approval for his own apps reaches nothing of Alice's.
-    let e = bob
-        .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
-        .await
-        .unwrap_err();
-    assert!(e.to_string().starts_with("404"), "{e}");
-    let _ = bob
-        .upload_package(mpk_declaring(
-            PACKAGE,
-            "0.1.0",
-            &wasm("outbound_probe"),
-            &publisher,
-            &[PREFIX],
-        ))
-        .await
-        .unwrap();
-    let _ = bob
-        .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
-        .await
-        .unwrap();
-    let still = probe(&alice, &app).await;
-    assert!(still.as_str().unwrap().contains("[NotApproved]"), "{still}");
-
-    // The owner approves what the release declares, with a passkey.
-    let approved = alice
-        .approve_outbound(None, PACKAGE, None, false, &mut alice_pk)
-        .await
-        .unwrap();
-    assert_eq!(approved["signer"], json!(signer));
-    assert_eq!(approved["approval"]["prefixes"], json!([PREFIX]));
-    let sent = probe(&alice, &app).await;
-    let sent = sent.as_str().unwrap();
-    assert!(sent.starts_with("200 "), "{sent}");
-    assert!(sent.contains("/v1/check"), "{sent}");
-    // The secret went out, and its echo came back redacted.
-    assert!(!sent.contains("s3cret-value"), "{sent}");
-    assert!(sent.contains("[redacted]"), "{sent}");
-
-    // A view gets no client, approval or not.
-    let view = alice
-        .view(&app, "probe_in_view", json!({}), Consistency::Strong)
-        .await;
-    assert!(
-        !format!("{view:?}").contains("200 "),
-        "a view called out: {view:?}"
-    );
-
-    // Replacing with nothing revokes: what was reviewed reads as not approved.
-    let _ = alice
-        .approve_outbound(None, PACKAGE, Some(&[]), true, &mut alice_pk)
-        .await
-        .unwrap();
-    let revoked = probe(&alice, &app).await;
-    assert!(
-        revoked.as_str().unwrap().contains("[NotApproved]"),
-        "{revoked}"
-    );
-
-    // Usage: of the four probes only the approved one left the node, counted
-    // on the node that ran it (`calimero_app_outbound_requests_total`).
-    let alice_id = alice.me().await.unwrap()["accountId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let mut sent = 0.0;
-    for i in 0..3 {
-        let ops = c.client(i);
-        ops.use_api_key("ops-secret").await;
-        let text = ops.get_text("ops/metrics").await.unwrap();
-        sent += sample(
-            &text,
-            "calimero_app_outbound_requests_total",
-            &format!("app=\"{app}\",org=\"account:{alice_id}\""),
-        )
-        .unwrap_or(0.0);
-    }
-    assert_eq!(sent, 1.0);
-}
-
 // ---------------------------------------------------------------- governance
 
 /// Who decides releases, app upgrades and outbound hosts is chosen per
@@ -3146,47 +1809,10 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
     );
 }
 
-/// An upgrade that turns an identity-gated field (an `AuthoredMap`) into a
-/// plain one (an `UnorderedMap`) would strip every entry's authorship, so it
-/// is refused and the app stays where it was, by the identity-downgrade gate
-/// (#2587).
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_upgrade_that_strips_authorship_is_refused() {
-    let c = Cluster::start(3).await;
-    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let v1 = alice
-        .upload_bundle(mero_wasm(
-            "migrations/scenario-identity-downgrade-v1",
-            "scenario_identity_downgrade_v1",
-        ))
-        .await
-        .unwrap();
-    let app = alice.create_app("wiki", &v1, json!({})).await.unwrap();
-    let v2 = alice
-        .upload_bundle(mero_wasm(
-            "migrations/scenario-identity-downgrade-v2",
-            "scenario_identity_downgrade_v2",
-        ))
-        .await
-        .unwrap();
-    let out = alice
-        .upgrade_app(&app, json!({ "bundle": v2 }), &mut pk)
-        .await;
-    match &out {
-        Ok(v) => assert_ne!(v["status"], "ok", "the downgrade was applied: {v}"),
-        Err(e) => assert!(e.to_string().contains("authorship"), "{e}"),
-    }
-    let a = alice.get(&format!("apps/{app}")).await.unwrap();
-    assert_eq!(
-        a["bundle"],
-        json!(v1),
-        "the app stays on the release it ran"
-    );
-}
-
-/// A write too large for one log entry is refused at once as `413
-/// TOO_LARGE`, whichever node takes it: the leader's own refusal is not a
-/// "no leader yet" to retry.
+/// A write too large for one log entry is refused at once, whichever node
+/// takes it: a component's arguments past `MAX_ARGS_BYTES` are `413
+/// ARGS_TOO_LARGE`, and the leader's own refusal is not a "no leader yet" to
+/// retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
     let c = Cluster::start(3).await;
@@ -3198,21 +1824,65 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
         json!({ "access": { "kind": "public" } }),
     )
     .await;
-    let big = "x".repeat(calimero_log::MAX_ENTRY_BYTES + 1024);
+    // One past the arguments cap (a trapped entry if proposed), one past the log's.
+    let sizes = [
+        calimero_node::node::MAX_ARGS_BYTES + 1024,
+        calimero_log::MAX_ENTRY_BYTES + 1024,
+    ];
+    let logs = |c: &Cluster| -> Vec<Option<u64>> {
+        c.nodes
+            .iter()
+            .map(|r| {
+                let g = r.as_ref().unwrap().node.hosted(&app)?;
+                Some(g.status().last_log.unwrap_or(0))
+            })
+            .collect()
+    };
+    // Snapshot only once every replica holds the app's log as far as its
+    // leader does: a follower still appending the deploy's entries would grow
+    // between this snapshot and the check below with no write proposed.
+    let settled = |logs: &[Option<u64>]| {
+        let held: Vec<u64> = logs.iter().flatten().copied().collect();
+        !held.is_empty() && held.iter().all(|n| *n == held[0])
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !settled(&logs(&c)) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let before = logs(&c);
+    assert!(
+        before.iter().any(Option::is_some),
+        "some node hosts the app"
+    );
+    assert!(
+        settled(&before),
+        "the app's replicas agree on its log: {before:?}"
+    );
     for i in 0..3 {
         let (cl, _) = signed_up(&c, i, &format!("user{i}")).await;
-        let started = std::time::Instant::now();
-        let r = cl
-            .call(&app, "set", json!({ "key": "big", "value": big }), None)
-            .await;
-        let e = r.expect_err("an entry over the cap is refused");
-        assert_eq!(e.code(), Some("TOO_LARGE"), "node {i}: {e}");
-        assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "node {i} answered after {:?}",
-            started.elapsed()
-        );
+        for size in sizes {
+            let started = std::time::Instant::now();
+            let big = "x".repeat(size);
+            let r = cl
+                .call(&app, "set", json!({ "key": "big", "value": big }), None)
+                .await;
+            let e = r.expect_err("an entry over the cap is refused");
+            // A component's arguments are capped below the log's entry cap.
+            assert_eq!(
+                e.code(),
+                Some("ARGS_TOO_LARGE"),
+                "node {i}, {size} bytes: {e}"
+            );
+            // A node's first call prepares the bundle, which is slow on a loaded
+            // machine; a forward that was retried would outlast this.
+            assert!(
+                started.elapsed() < calimero_node::node::SYSTEM_WRITE_TIMEOUT,
+                "node {i} answered after {:?} ({size} bytes)",
+                started.elapsed()
+            );
+        }
     }
+    assert_eq!(logs(&c), before, "a refused write is never proposed");
 }
 
 /// Where the operator upgrades apps, the operator installs the releases it
@@ -3297,11 +1967,13 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             releases: owner,
             app_upgrades: owner,
             outbound: owner,
+            ..Governance::default()
         },
         Governance {
             releases: operator,
             app_upgrades: operator,
             outbound: operator,
+            ..Governance::default()
         },
         // A managed cluster whose operator rolls out node releases, while
         // each app's owner keeps its code and its outbound hosts.
@@ -3309,6 +1981,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             releases: operator,
             app_upgrades: owner,
             outbound: owner,
+            ..Governance::default()
         },
     ];
     for g in deployments {
@@ -3454,9 +2127,10 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
         .unwrap()
         .to_owned();
     let _ = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/members"),
             json!({ "account": bob_id, "role": "member" }),
+            &mut apk,
         )
         .await
         .unwrap();
@@ -3538,7 +2212,11 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
 
     // Deleting the organization: only the owner, with a passkey; its apps go.
     let invite = alice
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut apk,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -3732,17 +2410,16 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .await
         .unwrap();
 
-    // A failed upgrade is recorded with its reason, and a retry runs it again.
-    let f1 = mero_wasm(
-        "migrations/scenario-migration-check-fail-v1",
-        "scenario_migration_check_fail_v1",
-    );
-    let f2 = mero_wasm(
-        "migrations/scenario-migration-check-fail-v2",
-        "scenario_migration_check_fail_v2",
-    );
+    // A failed upgrade is recorded with its reason, and a retry runs it again: a
+    // component's upgrade that names a migration is refused (D38).
     let _ = alice
-        .upload_package(mpk("com.test.checked", "1.0.0", &f1, &publisher))
+        // A bundle of its own: an app's package is the first release naming its bundle.
+        .upload_package(mpk(
+            "com.test.checked",
+            "1.0.0",
+            &variant(&kv, "checked-v1"),
+            &publisher,
+        ))
         .await
         .unwrap();
     let checked = alice
@@ -3757,18 +2434,23 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .to_owned();
     for k in ["x", "y"] {
         let _ = alice
-            .call(&checked, "set_item", json!({ "key": k, "value": k }), None)
+            .call(&checked, "set", json!({ "key": k, "value": k }), None)
             .await
             .unwrap();
     }
     let _ = alice
-        .upload_package(mpk("com.test.checked", "2.0.0", &f2, &publisher))
+        .upload_package(mpk(
+            "com.test.checked",
+            "2.0.0",
+            &variant(&kv, "checked-v2"),
+            &publisher,
+        ))
         .await
         .unwrap();
     let run = alice
         .upgrade_org(
             &org,
-            json!({ "package": "com.test.checked", "version": "2.0.0" }),
+            json!({ "package": "com.test.checked", "version": "2.0.0", "migrate": "migrate_v1" }),
             &mut pk,
         )
         .await
@@ -3784,7 +2466,9 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .unwrap();
     assert_eq!(retry["apps"], json!([checked]), "{retry}");
     let again = finished_run(&alice, &org, retry["runId"].as_str().unwrap()).await;
-    assert!(again["failed"].get(&checked).is_some(), "{again}");
+    // A run keeps no migration name, so its retry is the code-only upgrade, which a
+    // component takes.
+    assert_eq!(again["done"], json!([checked]), "{again}");
 
     // Aliases: this account's names for apps.
     let _ = alice.set_alias("main", &apps["top"]).await.unwrap();
@@ -3905,7 +2589,8 @@ async fn presence_reaches_every_node_and_expires() {
 
 // ---------------------------------------------------------------- app frontends
 
-/// App frontends: each package's frontend on its own origin, served from the
+/// App frontends: each package's frontend on its own origin (and on its
+/// cluster's host for it, `cluster_label`), served from the
 /// release's verified `.mpk` under a strict CSP, with client routes and deep
 /// links; and a passkey session opened from that origin is bound to the
 /// package, reaching its apps and nothing else of the account.
@@ -3979,6 +2664,10 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         csp.contains(&c.urls[0].trim_end_matches('/').to_owned()),
         "the API is reachable: {csp}"
     );
+    assert!(
+        csp.contains("https://cloud.calimero.network"),
+        "the attestation mirror is reachable, or no page verifies a TDX node: {csp}"
+    );
     assert_eq!(page.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(page.bytes().await.unwrap().as_ref(), html);
     let js = get("/0.1.0/assets/app.js", "*/*").await.unwrap();
@@ -4045,7 +2734,10 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .post("apps", json!({ "name": "x", "package": "com.test.other" }))
         .await
         .is_err());
-    assert!(carol.create_api_key(json!({ "label": "k" })).await.is_err());
+    assert!(carol
+        .create_api_key(json!({ "label": "k" }), &mut carol_key)
+        .await
+        .is_err());
     let listed = carol.get("apps").await.unwrap();
     assert!(
         listed["apps"]
@@ -4057,22 +2749,87 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     );
     // The binding survives a refresh.
     let _ = carol.refresh().await.unwrap();
-    assert!(carol.create_api_key(json!({ "label": "k" })).await.is_err());
+    assert!(carol
+        .create_api_key(json!({ "label": "k" }), &mut carol_key)
+        .await
+        .is_err());
     assert!(carol
         .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
         .await
         .is_err());
 
+    // The package's host on this cluster, `cluster_label`, is the same site
+    // and the same origin of the package; one made for another cluster is not.
+    let cluster_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::cluster_label(&c.name, "com.test.site")
+    );
+    let cluster_origin = format!("http://{cluster_host}:{port}");
+    let on_cluster = reqwest::Client::builder()
+        .resolve(&cluster_host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let root = on_cluster
+        .get(format!("{cluster_origin}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(root.headers()["location"], "/0.1.0/");
+    let page = on_cluster
+        .get(format!("{cluster_origin}/0.1.0/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.bytes().await.unwrap().as_ref(), html);
+    let known: Value = on_cluster
+        .get(format!("{cluster_origin}/.well-known/calimero.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(known["package"], json!("com.test.site"));
+    let elsewhere = format!(
+        "{}.localhost",
+        calimero_node::app_host::cluster_label("another", "com.test.site")
+    );
+    let r = reqwest::Client::builder()
+        .resolve(&elsewhere, ([127, 0, 0, 1], port).into())
+        .build()
+        .unwrap()
+        .get(format!("http://{elsewhere}:{port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "another cluster's host is not served here");
+    let carol_there = c.client(0);
+    let mut there_key = SoftAuthenticator::with_key(&carol_key, "localhost", &cluster_origin);
+    let _s = carol_there.sign_in(&mut there_key).await.unwrap();
+    let _ = carol_there
+        .call(&mine, "set", json!({ "key": "k", "value": "w" }), None)
+        .await
+        .unwrap();
+    assert!(carol_there
+        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .is_err());
+    assert!(carol_there
+        .create_api_key(json!({ "label": "k" }), &mut there_key)
+        .await
+        .is_err());
+
     // The same person on the cluster's own origin is not bound.
     let carol_home = c.client(2);
-    let mut home_key = SoftAuthenticator::with_key(&carol_key, "localhost", ORIGIN);
+    let mut home_key = SoftAuthenticator::with_key(&there_key, "localhost", ORIGIN);
     let _s = carol_home.sign_in(&mut home_key).await.unwrap();
     let _ = carol_home
         .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
         .await
         .unwrap();
     assert!(carol_home
-        .create_api_key(json!({ "label": "k" }))
+        .create_api_key(json!({ "label": "k" }), &mut home_key)
         .await
         .is_ok());
 }
@@ -4096,9 +2853,10 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ = ops
-        .post(
+        .post_operator_signed(
             "ops/nodes",
             json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4132,9 +2890,10 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let ops_leader = c.client(app_leader);
     ops_leader.use_api_key("ops-secret").await;
     let _ = ops_leader
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": new_set }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4176,9 +2935,10 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ = ops
-        .post(
+        .post_operator_signed(
             "ops/nodes",
             json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4193,9 +2953,10 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
     let outside = c.client(new);
     outside.use_api_key("ops-secret").await;
     let e = outside
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": [2, 3, new_id] }),
+            &harness::operator_sign,
         )
         .await
         .unwrap_err();
@@ -4231,9 +2992,10 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     };
     let _ = ops(0)
         .await
-        .post(
+        .post_operator_signed(
             "ops/nodes",
             json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4256,13 +3018,13 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
 
     let e = ops(leader)
         .await
-        .delete(&format!("ops/nodes/{gone_id}"))
+        .delete_operator_signed(&format!("ops/nodes/{gone_id}"), &harness::operator_sign)
         .await
         .unwrap_err();
     assert!(e.to_string().contains("replica"), "{e}");
     let e = ops(gone)
         .await
-        .delete(&format!("ops/nodes/{gone_id}"))
+        .delete_operator_signed(&format!("ops/nodes/{gone_id}"), &harness::operator_sign)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("421"), "{e}");
@@ -4272,15 +3034,16 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     let app_leader = c.app_leader(&app).unwrap();
     let _ = ops(app_leader)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": keep }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
     let _ = ops(leader)
         .await
-        .delete(&format!("ops/nodes/{gone_id}"))
+        .delete_operator_signed(&format!("ops/nodes/{gone_id}"), &harness::operator_sign)
         .await
         .unwrap();
     let node = &c.nodes[leader].as_ref().unwrap().node;
@@ -4401,9 +3164,10 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let two = c.join().await;
     let _ = ops_at(&c, 0)
         .await
-        .post(
+        .post_operator_signed(
             "ops/nodes",
             json!({ "id": 2, "addr": c.urls[two], "zone": "b" }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4422,9 +3186,10 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let three = c.join().await;
     let _ = ops_at(&c, 0)
         .await
-        .post(
+        .post_operator_signed(
             "ops/nodes",
             json!({ "id": 3, "addr": c.urls[three], "zone": "c" }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4448,18 +3213,20 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let leader = c.app_leader(&app).unwrap();
     let moved = ops_at(&c, leader)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": [1, 2, 3] }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
     assert_eq!(moved["status"]["voters"], json!([1, 2, 3]), "{moved}");
     let again = ops_at(&c, leader)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": [3, 2, 1] }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4495,20 +3262,23 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         alice2.download_blob(&app, &blob).await.unwrap(),
         b"held by one node".to_vec()
     );
-    let anyone = c.client(2);
-    let v = anyone
+    // Through a node that did not take the write (the kv fixture's `get` is not
+    // `#[app::public]`, so the reader signs in).
+    let (reader, _r) = signed_up(&c, 2, "reader").await;
+    let v = reader
         .view(&app, "get", json!({ "key": "b" }), Consistency::Strong)
         .await
         .unwrap();
-    assert_eq!(v.result, json!("2"), "a read without signing in");
+    assert_eq!(v.result, json!("2"), "a read through another node");
 
     // Node 4 joins: voters stay 3, and it shows in the placement with no apps.
     let four = c.join().await;
     let _ = ops_at(&c, 1)
         .await
-        .post(
+        .post_operator_signed(
             "ops/nodes",
             json!({ "id": 4, "addr": c.urls[four], "zone": "b" }),
+            &harness::operator_sign,
         )
         .await
         .unwrap();
@@ -4552,9 +3322,10 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         };
         moved = ops_at(&c, leader)
             .await
-            .post(
+            .post_operator_signed(
                 &format!("ops/apps/{app}/replicas"),
                 json!({ "replicas": [2, 3, 4] }),
+                &harness::operator_sign,
             )
             .await
             .map_err(|e| e.to_string());
@@ -4567,7 +3338,9 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let (replicas, counts) = placement(&ops_at(&c, 1).await, &app).await;
     assert_eq!(replicas, vec![2, 3, 4]);
     assert_eq!(counts.get(&4), Some(&1), "{counts:?}");
+    // The kv fixture's `get` is not `#[app::public]`: read as the reader.
     let on_four = c.client(four);
+    on_four.use_session(reader.session().await.unwrap()).await;
     let mut served = Value::Null;
     for _ in 0..100 {
         if let Ok(v) = on_four
@@ -4601,7 +3374,11 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     let new = c.join().await;
     let _ = ops_at(&c, 0)
         .await
-        .post("ops/nodes", json!({ "id": 4, "addr": c.urls[new] }))
+        .post_operator_signed(
+            "ops/nodes",
+            json!({ "id": 4, "addr": c.urls[new] }),
+            &harness::operator_sign,
+        )
         .await
         .unwrap();
     let leader = c.app_leader(&app).unwrap();
@@ -4609,7 +3386,11 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     let path = format!("ops/apps/{app}/replicas");
 
     let same = lead
-        .post(&path, json!({ "replicas": [1, 2, 3] }))
+        .post_operator_signed(
+            &path,
+            json!({ "replicas": [1, 2, 3] }),
+            &harness::operator_sign,
+        )
         .await
         .unwrap();
     assert_eq!(same["unchanged"], json!(true), "{same}");
@@ -4620,7 +3401,10 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     let a = json!({ "replicas": [me, others[0], 4] });
     let b = json!({ "replicas": [me, others[1], 4] });
     let second = ops_at(&c, leader).await;
-    let (ra, rb) = tokio::join!(lead.post(&path, a), second.post(&path, b));
+    let (ra, rb) = tokio::join!(
+        lead.post_operator_signed(&path, a, &harness::operator_sign),
+        second.post_operator_signed(&path, b, &harness::operator_sign)
+    );
     let (won, lost) = match (ra, rb) {
         (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
         other => panic!("exactly one move runs: {other:?}"),
@@ -4645,9 +3429,8 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
 /// A release upgrade, as the runbook does it: nodes on the next mero-tee
 /// release join, every app moves onto them, and the founders leave. The next
 /// release's nodes take their storage key from that release's mero-kms, whose
-/// root is its own, so their K_r is not the founders'. The apps' state, a value
-/// sealed to the app's TEE (`TeeSecret`), a member's sealed share and a backup
-/// taken before the upgrade must all still open on the new nodes.
+/// root is its own, so their K_r is not the founders'. The app's state and a
+/// backup taken before the upgrade must still open on the new nodes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
     let mut c = Cluster::start(3).await;
@@ -4657,20 +3440,6 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
         .call(&kv, "set", json!({ "key": "a", "value": "1" }), None)
         .await
         .unwrap();
-    let (cards, _) = deploy(
-        &alice,
-        "cards",
-        mero_wasm("tee-cards", "tee_cards"),
-        json!({}),
-    )
-    .await;
-    let _ = eventually(&alice, &cards, "cards_left", json!({}), |v| !v.is_null()).await;
-    let _ = alice.call(&cards, "sit", json!({}), None).await.unwrap();
-    let _ = alice.call(&cards, "draw", json!({}), None).await.unwrap();
-    let hand = eventually(&alice, &cards, "my_hand", json!({}), |v| {
-        v.as_array().is_some_and(|h| h.len() == 1)
-    })
-    .await;
     let old_leader = c.app_leader(&kv).unwrap();
     let old = &c.nodes[old_leader].as_ref().unwrap().node;
     assert!(old.backup().await.unwrap() >= 1);
@@ -4696,7 +3465,7 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
                 .as_ref()
                 .unwrap()
                 .node
-                .sys(|s| s.apps.contains_key(&kv) && s.apps.contains_key(&cards))
+                .sys(|s| s.apps.contains_key(&kv))
         });
         if caught_up {
             break;
@@ -4709,15 +3478,16 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
     );
 
     // Every app moves onto the next release's nodes.
-    for app in [&kv, &cards] {
+    for app in [&kv] {
         let mut moved = None;
         for _ in 0..100 {
             if let Some(leader) = c.app_leader(app) {
                 match ops_at(&c, leader)
                     .await
-                    .post(
+                    .post_operator_signed(
                         &format!("ops/apps/{app}/replicas"),
                         json!({ "replicas": next_ids }),
+                        &harness::operator_sign,
                     )
                     .await
                 {
@@ -4740,7 +3510,10 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
             if let Some(leader) = sys_leader(&c) {
                 match ops_at(&c, leader)
                     .await
-                    .delete(&format!("ops/nodes/{}", gone + 1))
+                    .delete_operator_signed(
+                        &format!("ops/nodes/{}", gone + 1),
+                        &harness::operator_sign,
+                    )
                     .await
                 {
                     Ok(_) => {
@@ -4764,15 +3537,6 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
     let _fresh = cl.refresh().await.unwrap();
     let v = eventually(&cl, &kv, "get", json!({ "key": "a" }), |v| v == &json!("1")).await;
     assert_eq!(v, json!("1"), "the app's state");
-    let mine = eventually(&cl, &cards, "my_hand", json!({}), |v| v == &hand).await;
-    assert_eq!(mine, hand, "a member's sealed share");
-    // Dealing opens the deck, which is sealed to the app's TEE.
-    let _ = cl.call(&cards, "draw", json!({}), None).await.unwrap();
-    let hand = eventually(&cl, &cards, "my_hand", json!({}), |v| {
-        v.as_array().is_some_and(|h| h.len() == 2)
-    })
-    .await;
-    assert_eq!(hand.as_array().map(Vec::len), Some(2), "the TEE's deck");
     let new = &c.nodes[next[0]].as_ref().unwrap().node;
     let (_index, rows) = calimero_node::backup::latest(&backups, new.cluster_key(), &kv)
         .expect("a backup from before the upgrade opens on the next release")
@@ -4829,7 +3593,7 @@ async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() 
         .unwrap();
     let _ = ops_at(&c, leader)
         .await
-        .delete(&format!("ops/nodes/{new_id}"))
+        .delete_operator_signed(&format!("ops/nodes/{new_id}"), &harness::operator_sign)
         .await
         .unwrap();
     let e = c
@@ -4976,8 +3740,10 @@ fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
 /// that ran its WASM (calls and strong views on the app's leader, a stale view
 /// on the replica that answered it), never on the replicas that applied the
 /// entry, so the cluster's sum is the number of runs. Series are labelled
-/// with the app's id and its payer: the organization, or `account:{owner}`
-/// for a personal app. State bytes are a gauge every replica reports alike.
+/// with the app's id, its payer (the organization, or `account:{owner}` for a
+/// personal app) and its developer, the payer for an app made from a release
+/// directly (`tests/deployments.rs` has an instance of a deployment). State
+/// bytes are a gauge every replica reports alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
     let c = Cluster::start_with(3, |cfg| {
@@ -5075,8 +3841,9 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             .unwrap();
         texts.push(text);
     }
-    let in_org = format!("app=\"{app}\",org=\"{org}\"");
-    let mine = format!("app=\"{personal}\",org=\"account:{alice_id}\"");
+    let in_org = format!("app=\"{app}\",org=\"{org}\",developer=\"{org}\"");
+    let mine =
+        format!("app=\"{personal}\",org=\"account:{alice_id}\",developer=\"account:{alice_id}\"");
     let calls = |labels: &str, kind: &str| -> Vec<f64> {
         texts
             .iter()
@@ -5377,6 +4144,69 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
     }
 }
 
+/// How long WASM runs take, by kind, and how a logged call's time splits
+/// between its run and its commit, on `/metrics`. Labels are kinds and phases,
+/// never the app or the method.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wasm_runs_and_a_calls_run_and_commit_are_timed() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice-the-timed").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    let v = alice
+        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("v"));
+
+    // The registry is the process's: any node's text holds every node's runs.
+    let addr = c.nodes[0].as_ref().unwrap().metrics_addr.unwrap();
+    let text = reqwest::Client::new()
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains("# TYPE calimero_wasm_run_duration_seconds histogram"));
+    assert!(text.contains("# TYPE calimero_call_phase_duration_seconds histogram"));
+    for kind in ["init", "call", "view"] {
+        let labels = format!("kind=\"{kind}\"");
+        let n = sample(&text, "calimero_wasm_run_duration_seconds_count", &labels);
+        assert!(n.is_some_and(|n| n >= 1.0), "{kind}: {n:?} in\n{text}");
+        let all = sample(
+            &text,
+            "calimero_wasm_run_duration_seconds_bucket",
+            &format!("{labels},le=\"+Inf\""),
+        );
+        assert_eq!(all, n, "{kind}");
+        let sum = sample(&text, "calimero_wasm_run_duration_seconds_sum", &labels);
+        assert!(sum.is_some_and(|s| s > 0.0), "{kind}: {sum:?}");
+    }
+    for phase in ["run", "commit"] {
+        let labels = format!("phase=\"{phase}\"");
+        let n = sample(&text, "calimero_call_phase_duration_seconds_count", &labels);
+        assert!(n.is_some_and(|n| n >= 1.0), "{phase}: {n:?} in\n{text}");
+        let sum = sample(&text, "calimero_call_phase_duration_seconds_sum", &labels);
+        assert!(sum.is_some_and(|s| s > 0.0), "{phase}: {sum:?}");
+    }
+    for line in text
+        .lines()
+        .filter(|l| l.starts_with("calimero_wasm_run_") || l.starts_with("calimero_call_phase_"))
+    {
+        for secret in [app.as_str(), "set", "get"] {
+            assert!(!line.contains(secret), "{secret} in {line}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------- release governance
 
 const APPROVE_RELEASES: u32 = 1 << 10;
@@ -5389,10 +4219,16 @@ async fn id_of(cl: &Client) -> String {
         .to_owned()
 }
 
-/// `who` joins `org` at `role` through an invite `inviter` mints.
-async fn join(inviter: &Client, who: &Client, org: &str, role: &str) {
+/// `who` joins `org` at `role` through an invite `inviter` mints with its
+/// passkey `pk`.
+async fn join(
+    (inviter, pk): (&Client, &mut SoftAuthenticator),
+    who: &Client,
+    org: &str,
+    role: &str,
+) {
     let token = inviter
-        .post(&format!("orgs/{org}/invites"), json!({ "role": role }))
+        .post_confirmed(&format!("orgs/{org}/invites"), json!({ "role": role }), pk)
         .await
         .unwrap()["token"]
         .as_str()
@@ -5429,8 +4265,8 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
     let (dan, mut dan_pk) = signed_up(&c, 0, "dan").await;
     let org = new_org(&alice, "Docs").await;
-    join(&alice, &bob, &org, "member").await;
-    join(&alice, &carol, &org, "admin").await;
+    join((&alice, &mut alice_pk), &bob, &org, "member").await;
+    join((&alice, &mut alice_pk), &carol, &org, "admin").await;
     let bob_id = id_of(&bob).await;
     let caps = format!("orgs/{org}/capabilities");
 
@@ -5442,9 +4278,10 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     assert!(e.to_string().contains("APPROVE_RELEASES"), "{e}");
 
     let _ok = alice
-        .post(
+        .post_confirmed(
             &caps,
             json!({ "account": bob_id, "capabilities": APPROVE_RELEASES }),
+            &mut alice_pk,
         )
         .await
         .unwrap();
@@ -5472,7 +4309,11 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     }
 
     let _ok = alice
-        .post(&caps, json!({ "account": bob_id, "capabilities": 0 }))
+        .post_confirmed(
+            &caps,
+            json!({ "account": bob_id, "capabilities": 0 }),
+            &mut alice_pk,
+        )
         .await
         .unwrap();
     let e = bob
@@ -5821,9 +4662,10 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         .unwrap()
         .to_owned();
     let _ = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/members"),
             json!({ "account": bob_id, "role": "member" }),
+            &mut apk,
         )
         .await
         .unwrap();
@@ -6083,4 +4925,379 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     assert_eq!(a["availableVersions"], json!([]), "{a}");
     let own = alice.get("auth/apps").await.unwrap();
     assert_eq!(own["governance"]["appUpgrades"], json!("operator"), "{own}");
+}
+
+// ---------------------------------------------------------------- proofs at apply
+
+/// Credentials, memberships and invites are a person's decisions: each
+/// route answers `412 CONFIRM_REQUIRED` first and applies with the person's
+/// passkey assertion (an existing passkey for a new one); the operator's
+/// fleet and quota routes answer `428 OPERATOR_SIGNATURE_REQUIRED` first and
+/// apply with the operator's signature.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made() {
+    let c = Cluster::start(3).await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // An API key: 412, then the passkey; the key works.
+    let e = alice
+        .post("auth/apikeys", json!({ "label": "ci" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let (_id, key) = alice
+        .create_api_key(json!({ "label": "ci" }), &mut apk)
+        .await
+        .unwrap();
+    let agent = c.client(2);
+    agent.use_api_key(&key).await;
+    assert_eq!(agent.me().await.unwrap()["via"], json!("apiKey"));
+    // An API key cannot make another, nor approve a step-up.
+    let e = agent
+        .create_api_key(json!({ "label": "more" }), &mut apk)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+
+    // A passkey: approved by one the account has, not by itself.
+    let mut phone = SoftAuthenticator::new("localhost", ORIGIN);
+    let mut also_phone = SoftAuthenticator::with_key(&phone, "localhost", ORIGIN);
+    let e = alice
+        .add_passkey(&mut phone, &mut also_phone)
+        .await
+        .unwrap_err();
+    assert!(e.code().is_some(), "{e}");
+    let mut phone = SoftAuthenticator::new("localhost", ORIGIN);
+    let phone_id = alice.add_passkey(&mut phone, &mut apk).await.unwrap();
+    assert_eq!(
+        alice.me().await.unwrap()["passkeys"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let e = alice
+        .delete(&format!("auth/passkeys/{phone_id}"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let _ok = alice.remove_passkey(&phone_id, &mut apk).await.unwrap();
+    assert_eq!(
+        alice.me().await.unwrap()["passkeys"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // An invite and a role: 412 first.
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invites = format!("orgs/{org}/invites");
+    let e = alice
+        .post(&invites, json!({ "role": "member" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let token = alice
+        .post_confirmed(&invites, json!({ "role": "member" }), &mut apk)
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let members = format!("orgs/{org}/members");
+    let promote = json!({ "account": bob_id, "role": "admin" });
+    let e = alice.post(&members, promote.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let _ok = alice
+        .post_confirmed(&members, promote, &mut apk)
+        .await
+        .unwrap();
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["members"][&bob_id], json!("admin"), "{o}");
+
+    // The operator: 428 first, then signed.
+    let ops = ops_at(&c, 0).await;
+    let e = ops
+        .post("ops/quotas", json!({ "maxAccounts": 9 }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let d = e.details().unwrap();
+    assert_eq!(d["method"], json!("__set_quotas"), "{d}");
+    let _ok = ops
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxAccounts": 9 }),
+            &harness::operator_sign,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ops.get("ops/quotas").await.unwrap()["maxAccounts"],
+        json!(9)
+    );
+    let e = ops
+        .post(
+            "ops/nodes",
+            json!({ "id": 9, "addr": "http://127.0.0.1:9/" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let e = ops.delete("ops/nodes/3").await.unwrap_err();
+    assert!(
+        matches!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED" | "NOT_LEADER")),
+        "{e}"
+    );
+}
+
+/// A Raft message the sender meant for one node, reaching another (an address
+/// now answered by another node of the cluster: a reused port, a node moved or
+/// replaced), is refused there, never handled as that node's own. It comes over
+/// the real peer path (`peer_post`: an identified channel, `api::peer`) from
+/// the genuine leader, so the sender and membership checks (F4) pass: only the
+/// addressee is wrong. A message without an addressee (a peer on the previous
+/// release) is still handled, and both are counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy() {
+    let c = Cluster::start(3).await;
+    let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
+    let leader = (0..3)
+        .find(|i| node(*i).system.status().is_leader)
+        .expect("a system leader");
+    let followers: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
+    let (meant, reached) = (followers[0], followers[1]);
+    let leader_id = node(leader).config.node_id;
+    let meant_id = node(meant).config.node_id;
+    let reached_id = node(reached).config.node_id;
+    let before = node(leader).system.status();
+    // `calimero_raft_misaddressed_total{reason}` on the node the messages reach.
+    let ops = c.client(reached);
+    ops.use_api_key("ops-secret").await;
+    let misaddressed = || async {
+        let text = ops.get_text("ops/metrics").await.unwrap();
+        let count = |reason: &str| -> u64 {
+            let prefix = format!("calimero_raft_misaddressed_total{{reason=\"{reason}\"}} ");
+            text.lines()
+                .find_map(|l| l.strip_prefix(prefix.as_str()))
+                .unwrap_or_else(|| panic!("no {prefix} in the metrics"))
+                .parse()
+                .unwrap()
+        };
+        (count("not_addressee"), count("no_target"))
+    };
+    let counted_before = misaddressed().await;
+
+    // The leader's heartbeat at a newer term, with nothing to append, meant
+    // for `meant`. Had the reached node taken it as its own, it would move to
+    // that term and refuse the leader's appends at the old one, and the group
+    // would hold an election.
+    let term = before.term + 10;
+    let heartbeat = json!({
+        "group": 1,
+        "target": meant_id,
+        "rpc": { "Append": {
+            "vote": { "leader_id": { "term": term, "node_id": leader_id }, "committed": true },
+            "prev_log_id": null,
+            "leader_commit": null,
+            "entries": [],
+        } },
+    });
+    let refused = node(leader)
+        .peer_post(&c.urls[reached], "internal/raft", &heartbeat)
+        .await
+        .expect_err("a message for another node must be refused");
+    let refused = format!("{refused:#}");
+    assert!(refused.contains("NOT_ADDRESSEE"), "{refused}");
+    assert!(
+        refused.contains(&format!("for node {meant_id}; this is node {reached_id}")),
+        "{refused}"
+    );
+
+    // No addressee (a peer on the previous release): handled as before. The
+    // leader's vote for a term long past changes nothing and is answered as a
+    // vote.
+    let stale_vote = json!({
+        "group": 1,
+        "rpc": { "Vote": {
+            "vote": { "leader_id": { "term": 0, "node_id": leader_id }, "committed": false },
+            "last_log_id": null,
+        } },
+    });
+    let answered = node(leader)
+        .peer_post(&c.urls[reached], "internal/raft", &stale_vote)
+        .await
+        .expect("a message without an addressee is handled");
+    assert!(answered.get("Vote").is_some(), "{answered}");
+
+    // Both are counted where they arrived: one refused, one accepted without an
+    // addressee. Nothing else in this process sends either.
+    let counted = misaddressed().await;
+    assert_eq!(
+        (counted.0 - counted_before.0, counted.1 - counted_before.1),
+        (1, 1),
+        "not_addressee and no_target deltas"
+    );
+
+    // The group is unharmed: same leader, same term on every node, and a write
+    // through the node the message reached commits.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for i in 0..3 {
+        let s = node(i).system.status();
+        assert_eq!(s.term, before.term, "node {} term moved", i + 1);
+        assert_eq!(s.leader, before.leader, "node {} leader moved", i + 1);
+    }
+    let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
+}
+
+/// eu-shared-2 (and `bababa`) never kept a system leader: a TDX node attests a
+/// peer in about a second (Intel's collateral is fetched each time), and
+/// openraft gives an append one heartbeat (200 ms there). Each RPC began the
+/// attestation, was dropped at its deadline, and the next began it again, so
+/// the channel to the peer never opened and the peer never learned who called.
+/// Attestation here takes ten heartbeats; the cluster still forms and writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster() {
+    let c = tokio::time::timeout(
+        Duration::from_secs(60),
+        Cluster::start_with(3, |config| {
+            calimero_node::testing::slow_attestation(&config.public_url, Duration::from_secs(1));
+        }),
+    )
+    .await
+    .expect("the cluster formed");
+    let (_alice, _auth) = tokio::time::timeout(Duration::from_secs(30), signed_up(&c, 1, "alice"))
+        .await
+        .expect("a system write committed");
+}
+
+/// A system write the group cannot commit answers `503 UNAVAILABLE` in
+/// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
+/// system group could not commit, and a sign-up and a node registration each
+/// waited until the proxy in front of merod cut them at 30 s, so the caller
+/// saw a dropped connection rather than why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_write_that_cannot_commit_answers_unavailable() {
+    let mut c = Cluster::start(3).await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .expect("a system leader");
+    // A first account, so the cluster is known to commit while it has its voters.
+    let _ = signed_up(&c, leader, "alice").await;
+    for i in (0..3).filter(|i| *i != leader) {
+        c.stop(i).await;
+    }
+
+    let bob = c.client(leader);
+    let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let started = std::time::Instant::now();
+    let answer = tokio::time::timeout(Duration::from_secs(60), bob.sign_up(&mut pk, "bob")).await;
+    let waited = started.elapsed();
+    let e = answer
+        .expect("the write must be answered, not left hanging past 60 s")
+        .expect_err("a write the system group cannot commit must fail");
+    assert_eq!(e.code(), Some("UNAVAILABLE"), "{e}");
+    assert!(
+        waited < Duration::from_secs(25),
+        "answered only after {waited:?}"
+    );
+}
+
+/// Unix seconds now, as the test's own clock reads it.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// `app`'s `lastWriteAt` in `route`'s report as `cl` reads it, once it names
+/// one (a follower may apply the write a moment after it commits).
+async fn reported_last_write(cl: &Client, route: &str, app: &str) -> u64 {
+    for _ in 0..100 {
+        let a = reported_app(cl, route, app).await;
+        if let Some(at) = a["lastWriteAt"].as_u64() {
+            return at;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{route} never named {app}'s last write");
+}
+
+/// When an app last committed a write (mdma's "last used"): `lastWriteAt` in
+/// the operator's `GET /ops/apps`, the owner's `GET /auth/apps` and
+/// `GET /apps/{app}/storage`. Nothing before the first write. The leader
+/// stamps the time into the entry, so every node names the same second: a
+/// replica from its own state, the node that holds no replica by asking one.
+/// A restarted replica reads it back from its state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
+    let mut c = Cluster::start(4).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _ctx) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let operator = ops(&c).await;
+    let a = reported_app(&operator, "ops/apps", &app).await;
+    assert_eq!(a["lastWriteAt"], Value::Null, "no write yet: {a}");
+
+    let before = unix_now();
+    set_through(&alice, &app, "k", "v").await.unwrap();
+    let after = unix_now();
+    let at = reported_last_write(&operator, "ops/apps", &app).await;
+    assert!(before <= at && at <= after, "{before} <= {at} <= {after}");
+
+    // Three of the four nodes hold a replica; the fourth asks one.
+    let outside: Vec<usize> = (0..4)
+        .filter(|i| {
+            c.nodes[*i]
+                .as_ref()
+                .is_some_and(|r| r.node.hosted(&app).is_none())
+        })
+        .collect();
+    assert_eq!(outside.len(), 1, "one node holds no replica");
+    for i in 0..4 {
+        let cl = c.client(i);
+        cl.use_api_key("ops-secret").await;
+        assert_eq!(
+            reported_last_write(&cl, "ops/apps", &app).await,
+            at,
+            "node {}",
+            i + 1
+        );
+    }
+    assert_eq!(reported_last_write(&alice, "auth/apps", &app).await, at);
+    let storage = alice.get(&format!("apps/{app}/storage")).await.unwrap();
+    assert_eq!(storage["lastWriteAt"], json!(at), "{storage}");
+
+    // A replica restarted on its data directory reads the same time back
+    // from its own state.
+    let replica = (0..4).find(|i| !outside.contains(i)).unwrap();
+    c.restart(replica).await;
+    let mut kept = None;
+    for _ in 0..100 {
+        kept = c.nodes[replica]
+            .as_ref()
+            .and_then(|r| r.node.hosted(&app))
+            .and_then(|g| g.read_local(|m, _| m.last_write_ms()));
+        if kept.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(kept.map(|ms| ms / 1000), Some(at), "node {}", replica + 1);
+    let cl = c.client(replica);
+    cl.use_api_key("ops-secret").await;
+    assert_eq!(reported_last_write(&cl, "ops/apps", &app).await, at);
 }

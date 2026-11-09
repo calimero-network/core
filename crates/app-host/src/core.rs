@@ -9,13 +9,28 @@ use ciborium::Value;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
+use crate::action::{
+    subcall_key, ActionHost, ActionStart, HttpExchange, HttpHost, HttpRequest, HttpResponse,
+    NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
+};
+use crate::blobs::{blob_id_hex, blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
+use crate::files::{Files, NoFiles, FILE_UNAVAILABLE};
 use crate::overlay::{Cursor, Overlay};
+use crate::search::{
+    NoSearch, SearchHost, SearchPage, SearchQuery, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_BYTES,
+};
 use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
-    InvocationKind, OrgRole, Outcome, Status, Usage,
+    InvocationKind, OrgRole, Outcome, Status, TrapKind, Usage, Xcall,
 };
+
+mod file_ops;
+
+pub use file_ops::{ReaderId, WriterId};
+
+use file_ops::FileTable;
 
 /// Bytes of an app key (before the generation prefix). Values have no separate cap:
 /// [`MAX_RUN_BYTES`] bounds them as they are written.
@@ -38,6 +53,13 @@ pub const MAX_OPEN_CURSORS: usize = 1_024;
 /// Bytes of app log one run keeps; later lines are dropped after one marker line.
 pub const MAX_LOG_BYTES: usize = 64 * 1024;
 
+/// Bytes of a compute run's result; it travels in a log entry.
+pub const MAX_COMPUTE_RESULT_BYTES: usize = 64 * 1024;
+/// Bytes of a progress step label; longer ones are cut.
+pub const MAX_PROGRESS_STEP_BYTES: usize = 128;
+const RESULT_TOO_LARGE: &str = "result too large";
+const NOT_A_COMPUTE_RUN: &str = "progress is only for compute runs";
+
 /// Events one run may emit (Rooms emits up to 500 per timer tick).
 pub const MAX_EVENTS: usize = 1_000;
 /// Bytes of an event name.
@@ -57,10 +79,19 @@ pub const EMIT_UNKNOWN_TEAM: &str = "unknown team";
 pub const EMIT_FOREIGN_ORG: &str = "audience names another org";
 pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
-const ACTIONS_DISABLED: &str = "actions are not enabled";
-const XCALL_DISABLED: &str = "xcall is not enabled";
-const BLOBS_DISABLED: &str = "blobs are not enabled";
+/// The refusal of an `action.*` call outside an action, or without the node's runner.
+const NOT_AN_ACTION: &str = "only an action has an action context";
+/// xcalls one run may send (D25).
+pub const MAX_XCALLS: usize = 100;
+/// Bytes of an xcall's target app id or method name.
+pub const MAX_XCALL_NAME_BYTES: usize = 128;
+/// `xcall.send`'s soft errors (the WIT `result<_, string>`).
+pub const XCALL_TOO_MANY: &str = "too many xcalls";
+pub const XCALL_BAD_TARGET: &str = "malformed xcall target";
 const LOG_TRUNCATED: &str = "[log truncated]";
+
+/// Where a compute run's progress goes: percent (0-100) and a step label.
+pub type Progress = Arc<dyn Fn(u8, &str) + Send + Sync>;
 
 /// A range cursor handed to the guest; the WIT `cursor` resource maps onto it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,11 +107,30 @@ pub struct HostCore {
     applied_index: u64,
     inv: Invocation,
     dir: Arc<dyn Directory>,
+    blobs: Arc<dyn BlobHost>,
+    search: Arc<dyn SearchHost>,
+    action: Option<Arc<dyn ActionHost>>,
+    http: Arc<dyn HttpHost>,
+    /// Other apps this run may reach synchronously; `None`: it reaches none.
+    xcall_host: Option<Arc<dyn crate::xcall::XcallHost>>,
+    /// Synchronous xcalls made so far ([`crate::MAX_SYNC_XCALLS`]).
+    sync_xcalls: u32,
+    /// Per (app, method, args hash), the synchronous calls made so far.
+    sync_occurrences: BTreeMap<(String, String, Vec<u8>), u32>,
+    /// Actions this run started (D17).
+    started: Vec<ActionStart>,
+    /// Per (method, args hash), the calls this action made so far (D27).
+    occurrences: BTreeMap<(String, Vec<u8>), u32>,
+    subcalls: u32,
+    http_requests: u32,
+    /// A logged run's outbound exchanges, for its entry (D76).
+    http_log: Vec<HttpExchange>,
     overlay: Overlay,
     writes: u32,
     /// Bytes written so far ([`MAX_RUN_BYTES`]).
     run_bytes: usize,
     events: Vec<Event>,
+    xcalls: Vec<Xcall>,
     logs: Vec<String>,
     log_bytes: usize,
     unique_ids: u64,
@@ -88,6 +138,9 @@ pub struct HostCore {
     cursors: BTreeMap<u32, Cursor>,
     next_cursor: u32,
     peak_buffered: usize,
+    provider: Arc<dyn Files>,
+    files: FileTable,
+    progress: Option<Progress>,
 }
 
 impl HostCore {
@@ -106,6 +159,9 @@ impl HostCore {
             (false, true) => return Err(InvalidInvocation::SlotOutsideTimer),
             _ => {}
         }
+        if inv.kind != InvocationKind::Action && inv.compute.is_some() {
+            return Err(InvalidInvocation::RunOutsideAction);
+        }
         let rng = time::entropy(&inv);
         Ok(Self {
             app_id: app_id.to_owned(),
@@ -113,10 +169,23 @@ impl HostCore {
             applied_index,
             inv,
             dir,
+            blobs: Arc::new(NoBlobs),
+            search: Arc::new(NoSearch),
+            action: None,
+            http: Arc::new(NoHttp),
+            xcall_host: None,
+            sync_xcalls: 0,
+            sync_occurrences: BTreeMap::new(),
+            started: Vec::new(),
+            occurrences: BTreeMap::new(),
+            subcalls: 0,
+            http_requests: 0,
+            http_log: Vec::new(),
             overlay: Overlay::default(),
             writes: 0,
             run_bytes: 0,
             events: Vec::new(),
+            xcalls: Vec::new(),
             logs: Vec::new(),
             log_bytes: 0,
             unique_ids: 0,
@@ -124,7 +193,61 @@ impl HostCore {
             cursors: BTreeMap::new(),
             next_cursor: 0,
             peak_buffered: 0,
+            provider: Arc::new(NoFiles),
+            files: FileTable::default(),
+            progress: None,
         })
+    }
+
+    /// The app's blobs as the node records them (R8); without it the app has none.
+    #[must_use]
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobHost>) -> Self {
+        self.blobs = blobs;
+        self
+    }
+
+    /// The node's search index of the app (spec section 7); without it no table is
+    /// searchable.
+    #[must_use]
+    pub fn with_search(mut self, search: Arc<dyn SearchHost>) -> Self {
+        self.search = search;
+        self
+    }
+
+    /// The node's runner for an action (D12, D17): its key, views and calls.
+    #[must_use]
+    pub fn with_action(mut self, action: Arc<dyn ActionHost>) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    /// The other apps this run may reach synchronously (`xcall.call`, `xcall.view`);
+    /// without it every one is refused with [`crate::XCALL_SYNC_UNAVAILABLE`].
+    #[must_use]
+    pub fn with_xcall_host(mut self, host: Arc<dyn crate::xcall::XcallHost>) -> Self {
+        self.xcall_host = Some(host);
+        self
+    }
+
+    /// The node's outbound gate for an action's HTTP (S9); without it nothing is sent.
+    #[must_use]
+    pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
+        self.http = http;
+        self
+    }
+
+    /// Receives a compute run's `progress` calls; without it they are dropped.
+    #[must_use]
+    pub fn with_progress(mut self, progress: Progress) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// Serves `files` from the node's file store; the default is [`NoFiles`].
+    #[must_use]
+    pub fn with_files(mut self, files: Arc<dyn Files>) -> Self {
+        self.provider = files;
+        self
     }
 
     /// The invocation being run; the engine reads kind, method and args from it.
@@ -144,6 +267,7 @@ impl HostCore {
     pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
         check_key(key)?;
+        self.check_blob_refs(value)?;
         self.charge(key.len().saturating_add(value.len()))?;
         self.overlay
             .put(stored_key(GENERATION, key), value.to_vec());
@@ -276,16 +400,25 @@ impl HostCore {
 
     #[must_use]
     pub fn app_owner(&self) -> String {
-        self.dir.app_owner()
+        match &self.inv.compute {
+            Some(run) => run.owner.clone(),
+            None => self.dir.app_owner(),
+        }
     }
 
     #[must_use]
     pub fn org(&self) -> Option<String> {
+        if self.is_compute() {
+            return None;
+        }
         self.dir.org()
     }
 
     #[must_use]
     pub fn org_role(&self, account: &str) -> Option<OrgRole> {
+        if self.is_compute() {
+            return None;
+        }
         self.dir.org_role(account)
     }
 
@@ -295,21 +428,28 @@ impl HostCore {
         if self.inv.kind == InvocationKind::Migrate {
             return Err(HostDenied::new("org_role_strict is not allowed in migrate"));
         }
-        Ok(self.dir.org_role(account))
+        Ok(self.org_role(account))
     }
 
     #[must_use]
     pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
+        if self.is_compute() {
+            return Vec::new();
+        }
         self.dir.orgs_of(account)
     }
 
     #[must_use]
     pub fn in_team(&self, account: &str, team: &str) -> bool {
-        self.dir.in_team(account, team)
+        !self.is_compute() && self.dir.in_team(account, team)
     }
 
+    /// The log index the run reads at; a compute run has no log to read, so 0.
     #[must_use]
     pub fn applied_index(&self) -> u64 {
+        if self.is_compute() {
+            return 0;
+        }
         self.applied_index
     }
 
@@ -328,17 +468,62 @@ impl HostCore {
         Ok(id)
     }
 
-    /// Starts a durable action (D17): allowed in calls and timers; not enabled in this
-    /// milestone, so the guest gets the WIT `result` error.
+    /// Starts a durable action (D17): calls and timers only. The action is queued on the
+    /// outcome, logged as started with the entry only if the run ends `Ok`, and run by the
+    /// leader's runner after. Its key (`a.<term>.<seq>.<n>`, from the run's unique ids) is
+    /// returned. More than [`MAX_STARTED_ACTIONS`] is the WIT result's error.
     pub fn start_action(
         &mut self,
-        _method: &str,
-        _args: &[u8],
+        method: &str,
+        args: &[u8],
     ) -> Result<Result<String, String>, HostDenied> {
         if !matches!(self.inv.kind, InvocationKind::Call | InvocationKind::Timer) {
             return Err(self.denied("start_action"));
         }
-        Ok(Err(ACTIONS_DISABLED.to_owned()))
+        if self.started.len() >= MAX_STARTED_ACTIONS {
+            return Ok(Err("too many actions started".to_owned()));
+        }
+        if method.is_empty() || method.starts_with("__") {
+            return Ok(Err("not an action".to_owned()));
+        }
+        self.charge(method.len().saturating_add(args.len()))?;
+        let id = format!("a.{}", self.unique_id()?);
+        self.started.push(ActionStart {
+            id: id.clone(),
+            method: method.to_owned(),
+            args: args.to_vec(),
+        });
+        Ok(Ok(id))
+    }
+
+    // --- compute -----------------------------------------------------------------------
+
+    /// The run's id; none outside a compute run.
+    #[must_use]
+    pub fn compute_run_id(&self) -> Option<String> {
+        self.inv.compute.as_ref().map(|run| run.run_id.clone())
+    }
+
+    /// The files the run may read; empty outside a compute run.
+    #[must_use]
+    pub fn compute_inputs(&self) -> Vec<String> {
+        self.inv
+            .compute
+            .as_ref()
+            .map_or_else(Vec::new, |run| run.inputs.clone())
+    }
+
+    /// Reports progress: `percent` is capped at 100 and `step` cut to
+    /// `MAX_PROGRESS_STEP_BYTES` on a character boundary. Compute runs only; never logged.
+    pub fn compute_progress(&mut self, percent: u8, step: &str) -> Result<(), HostDenied> {
+        if !self.is_compute() {
+            return Err(HostDenied::new(NOT_A_COMPUTE_RUN));
+        }
+        let end = step.floor_char_boundary(MAX_PROGRESS_STEP_BYTES);
+        if let Some(progress) = &self.progress {
+            progress(percent.min(100), &step[..end]);
+        }
+        Ok(())
     }
 
     // --- events, xcall, blobs, action ------------------------------------------------
@@ -414,41 +599,263 @@ impl HostCore {
         }
     }
 
+    /// Queues an xcall in the run's outbox (D25): calls, timers, `init` and xcall
+    /// deliveries only, delivered after the entry commits and only if the run ends `Ok`.
+    /// A malformed target (empty, over [`MAX_XCALL_NAME_BYTES`], a reserved `__` method)
+    /// or more than [`MAX_XCALLS`] is the WIT result's error; the arguments count toward
+    /// [`MAX_RUN_BYTES`].
     pub fn xcall_send(
         &mut self,
-        _app: &str,
-        _method: &str,
-        _args: &[u8],
-    ) -> Result<(), HostDenied> {
-        Err(HostDenied::new(XCALL_DISABLED))
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<(), String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("xcall"));
+        }
+        if self.xcalls.len() >= MAX_XCALLS {
+            return Ok(Err(XCALL_TOO_MANY.to_owned()));
+        }
+        let bad = |s: &str| s.is_empty() || s.len() > MAX_XCALL_NAME_BYTES;
+        if bad(app) || bad(method) || method.starts_with("__") {
+            return Ok(Err(XCALL_BAD_TARGET.to_owned()));
+        }
+        self.charge(
+            app.len()
+                .saturating_add(method.len())
+                .saturating_add(args.len()),
+        )?;
+        self.xcalls.push(Xcall {
+            app: app.to_owned(),
+            method: method.to_owned(),
+            args: args.to_vec(),
+        });
+        Ok(Ok(()))
     }
 
-    pub fn blobs_info(&self, _id: &str) -> Result<Option<BlobInfo>, HostDenied> {
-        Err(HostDenied::new(BLOBS_DISABLED))
+    /// Runs `method` of `app` synchronously, as one logged call of that app under a key
+    /// derived from this run's (see [`crate::sync_xcall_key`]), and hands back its JSON
+    /// result. Calls, timers and actions (`HostDenied` elsewhere: a delivered xcall makes
+    /// none, so chains are one hop). A malformed target, the app itself, more than
+    /// [`crate::MAX_SYNC_XCALLS`], arguments over [`crate::MAX_SYNC_XCALL_ARGS_BYTES`], an
+    /// answer over [`crate::MAX_SYNC_XCALL_RESULT_BYTES`] or the target's failure is the
+    /// WIT result's error.
+    pub fn xcall_call(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
+        if self.is_compute()
+            || !matches!(
+                self.inv.kind,
+                InvocationKind::Call | InvocationKind::Timer | InvocationKind::Action
+            )
+        {
+            return Err(self.denied("xcall.call"));
+        }
+        let host = match self.sync_target(app, method, args) {
+            Ok(host) => host,
+            Err(e) => return Ok(Err(e)),
+        };
+        let n = self
+            .sync_occurrences
+            .entry((app.to_owned(), method.to_owned(), sha_args(args)))
+            .or_insert(0);
+        let key = crate::xcall::sync_xcall_key(&host.key(), app, method, args, *n);
+        *n += 1;
+        Ok(bounded(host.call(app, method, args, &key)))
     }
 
-    pub fn blobs_grant(&mut self, _id: &str, _ttl_seconds: u32) -> Result<String, HostDenied> {
-        Err(HostDenied::new(BLOBS_DISABLED))
+    /// Runs view `method` of `app` on its latest committed state and hands back its JSON
+    /// result. Calls, timers, views and actions (`HostDenied` elsewhere); refusals as for
+    /// [`Self::xcall_call`].
+    pub fn xcall_view(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
+        if self.is_compute()
+            || !matches!(
+                self.inv.kind,
+                InvocationKind::Call
+                    | InvocationKind::Timer
+                    | InvocationKind::Action
+                    | InvocationKind::View
+            )
+        {
+            return Err(self.denied("xcall.view"));
+        }
+        let host = match self.sync_target(app, method, args) {
+            Ok(host) => host,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(bounded(host.view(app, method, args)))
     }
 
+    /// The checks every synchronous xcall makes before it reaches the node, and its count.
+    fn sync_target(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Arc<dyn crate::xcall::XcallHost>, String> {
+        let bad = |s: &str| s.is_empty() || s.len() > MAX_XCALL_NAME_BYTES;
+        if bad(app) || bad(method) || method.starts_with("__") {
+            return Err(XCALL_BAD_TARGET.to_owned());
+        }
+        if app == self.app_id {
+            return Err(crate::xcall::XCALL_SYNC_SELF.to_owned());
+        }
+        if args.len() > crate::xcall::MAX_SYNC_XCALL_ARGS_BYTES {
+            return Err("xcall arguments too large".to_owned());
+        }
+        let Some(host) = self.xcall_host.clone() else {
+            return Err(crate::xcall::XCALL_SYNC_UNAVAILABLE.to_owned());
+        };
+        if self.sync_xcalls >= crate::xcall::MAX_SYNC_XCALLS {
+            return Err(crate::xcall::XCALL_SYNC_TOO_MANY.to_owned());
+        }
+        self.sync_xcalls += 1;
+        Ok(host)
+    }
+
+    /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
+    /// Every kind but actions (which read through views) and migrations.
+    pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
+        self.may_use_blobs("blobs.info")?;
+        let blob = parse_blob_id(id).and_then(|id| self.blobs.info(&id));
+        Ok(blob.or_else(|| {
+            self.file_info(id).map(|f| BlobInfo {
+                size: f.size,
+                sha256: f.sha256,
+                mime: String::new(),
+            })
+        }))
+    }
+
+    /// A download grant for one of the app's blobs, valid for `ttl_seconds` (1 to
+    /// [`MAX_GRANT_TTL_SECS`]) from the run's wall clock. An unknown blob or a TTL out of
+    /// range, or a sealed file (only the app's code reads those), is refused: the WIT result
+    /// has no error case.
+    pub fn blobs_grant(&mut self, id: &str, ttl_seconds: u32) -> Result<String, HostDenied> {
+        self.may_use_blobs("blobs.grant")?;
+        if ttl_seconds == 0 || ttl_seconds > MAX_GRANT_TTL_SECS {
+            return Err(HostDenied::new("grant ttl out of range"));
+        }
+        if self.file_info(id).is_some() {
+            return Err(HostDenied::new("a sealed file cannot be granted"));
+        }
+        let Some(id) = parse_blob_id(id).filter(|id| self.blobs.info(id).is_some()) else {
+            return Err(HostDenied::new("unknown blob"));
+        };
+        let expires_ms = self
+            .wall_ms()
+            .saturating_add(u64::from(ttl_seconds).saturating_mul(1_000));
+        Ok(self.blobs.grant(&id, expires_ms))
+    }
+
+    /// Queries a table's full-text index (spec section 7): views only, the index brought
+    /// up to the state the view reads. A limit of 0 or past [`MAX_SEARCH_LIMIT`], and a
+    /// query over [`MAX_SEARCH_QUERY_BYTES`], are the WIT result's error.
+    pub fn search_query(
+        &self,
+        query: &SearchQuery,
+    ) -> Result<Result<SearchPage, String>, HostDenied> {
+        if self.inv.kind != InvocationKind::View {
+            return Err(self.denied("search"));
+        }
+        if query.limit == 0 || query.limit > MAX_SEARCH_LIMIT {
+            return Ok(Err(format!("limit must be 1 to {MAX_SEARCH_LIMIT}")));
+        }
+        if query.text.len() > MAX_SEARCH_QUERY_BYTES {
+            return Ok(Err(format!(
+                "a query is at most {MAX_SEARCH_QUERY_BYTES} bytes"
+            )));
+        }
+        Ok(self.search.query(query))
+    }
+
+    /// This action run's key (D17): actions only.
     pub fn action_key(&self) -> Result<String, HostDenied> {
-        Err(HostDenied::new(ACTIONS_DISABLED))
+        Ok(self.action_host()?.key())
     }
 
+    /// Runs view `method` for the action (D12).
     pub fn action_view(
         &mut self,
-        _method: &str,
-        _args: &[u8],
+        method: &str,
+        args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        Err(HostDenied::new(ACTIONS_DISABLED))
+        self.count_subcall()?;
+        Ok(self.action_host()?.view(method, args))
     }
 
+    /// Runs `method` as one logged call for the action, under the D27 key of this
+    /// (method, args) pair's next occurrence in the run.
     pub fn action_call(
         &mut self,
-        _method: &str,
-        _args: &[u8],
+        method: &str,
+        args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        Err(HostDenied::new(ACTIONS_DISABLED))
+        self.count_subcall()?;
+        let host = self.action_host()?;
+        let hash = sha_args(args);
+        let n = self
+            .occurrences
+            .entry((method.to_owned(), hash))
+            .or_insert(0);
+        let key = subcall_key(&host.key(), method, args, *n);
+        *n += 1;
+        Ok(host.call(method, args, &key))
+    }
+
+    /// Sends a run's outgoing HTTP request through the node's gate (S9, D76): actions,
+    /// calls, timers and deliveries; views, `init` and migrations trap `HostDenied`. Past
+    /// [`MAX_HTTP_REQUESTS`] or a body over [`MAX_HTTP_BODY_BYTES`] the request is not sent
+    /// and the guest gets the error. A logged run records the exchange for its entry
+    /// ([`HttpExchange`]), so followers and replays read it and never fetch again.
+    pub fn http_send(
+        &mut self,
+        request: &HttpRequest,
+    ) -> Result<Result<HttpResponse, String>, HostDenied> {
+        let logged = matches!(
+            self.inv.kind,
+            InvocationKind::Call | InvocationKind::Timer | InvocationKind::XcallDeliver
+        );
+        if self.is_compute() || (!logged && self.inv.kind != InvocationKind::Action) {
+            return Err(HostDenied::new(
+                "outgoing http is not allowed in views, init or migrations",
+            ));
+        }
+        if self.http_requests >= MAX_HTTP_REQUESTS {
+            return Ok(Err("too many requests in one run".to_owned()));
+        }
+        if request.body.len() > MAX_HTTP_BODY_BYTES {
+            return Ok(Err("request body too large".to_owned()));
+        }
+        self.http_requests += 1;
+        let response = self.http.send(request);
+        if logged {
+            self.http_log.push(HttpExchange::record(request, &response));
+        }
+        Ok(response)
+    }
+
+    fn action_host(&self) -> Result<Arc<dyn ActionHost>, HostDenied> {
+        match (&self.action, self.inv.kind) {
+            (Some(host), InvocationKind::Action) if !self.is_compute() => Ok(Arc::clone(host)),
+            _ => Err(HostDenied::new(NOT_AN_ACTION)),
+        }
+    }
+
+    fn count_subcall(&mut self) -> Result<(), HostDenied> {
+        if self.subcalls >= MAX_ACTION_SUBCALLS {
+            return Err(HostDenied::new("too many calls in one action run"));
+        }
+        self.subcalls += 1;
+        Ok(())
     }
 
     // --- WASI served by the host (D19) -----------------------------------------------
@@ -486,7 +893,35 @@ impl HostCore {
     /// result and the app log are kept. `usage.writes` is the core's own count.
     #[must_use]
     pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+        let reported = match &status {
+            Status::Ok => result.len(),
+            Status::AppError { code, message } => code.len().saturating_add(message.len()),
+            Status::Trap { .. } => 0,
+        };
+        let too_large = self.is_compute() && reported > MAX_COMPUTE_RESULT_BYTES;
+        let (status, result) = if too_large {
+            let denied = Status::Trap {
+                kind: TrapKind::HostDenied,
+                detail: RESULT_TOO_LARGE.to_owned(),
+            };
+            (denied, Vec::new())
+        } else {
+            (status, result)
+        };
+        let status = if self.files.unavailable() {
+            Status::Trap {
+                kind: TrapKind::Unavailable,
+                detail: FILE_UNAVAILABLE.to_owned(),
+            }
+        } else {
+            status
+        };
         let ok = status == Status::Ok;
+        let new_files = if ok {
+            self.files.into_created()
+        } else {
+            Vec::new()
+        };
         Outcome {
             status,
             result,
@@ -496,7 +931,11 @@ impl HostCore {
                 Vec::new()
             },
             events: if ok { self.events } else { Vec::new() },
+            xcalls: if ok { self.xcalls } else { Vec::new() },
+            actions: if ok { self.started } else { Vec::new() },
             logs: self.logs,
+            http: self.http_log,
+            new_files,
             usage: Usage {
                 writes: self.writes,
                 ..usage
@@ -513,6 +952,10 @@ impl HostCore {
 
     // --- policy ----------------------------------------------------------------------
 
+    pub(crate) fn is_compute(&self) -> bool {
+        self.inv.compute.is_some()
+    }
+
     /// Invocations that become log entries and may change state (spec, env API).
     fn is_logged_write(&self) -> bool {
         matches!(
@@ -528,6 +971,29 @@ impl HostCore {
     fn may_read(&self) -> Result<(), HostDenied> {
         if self.inv.kind == InvocationKind::Action {
             return Err(self.denied("storage"));
+        }
+        Ok(())
+    }
+
+    /// Blobs are read by every kind but actions and migrations.
+    fn may_use_blobs(&self, what: &str) -> Result<(), HostDenied> {
+        if matches!(
+            self.inv.kind,
+            InvocationKind::Action | InvocationKind::Migrate
+        ) {
+            return Err(self.denied(what));
+        }
+        Ok(())
+    }
+
+    /// A value may refer only to the app's own blobs (R8): retention follows the
+    /// references, so one to a blob the app does not hold would keep nothing alive.
+    fn check_blob_refs(&self, value: &[u8]) -> Result<(), HostDenied> {
+        if blob_refs(value)
+            .iter()
+            .any(|id| self.blobs.info(id).is_none() && self.file_info(&blob_id_hex(id)).is_none())
+        {
+            return Err(HostDenied::new("unknown blob"));
         }
         Ok(())
     }
@@ -574,6 +1040,22 @@ impl HostCore {
             HostDenied::new("rebuild is only available while migrating")
         }
     }
+}
+
+/// A synchronous xcall's answer, refused past [`crate::MAX_SYNC_XCALL_RESULT_BYTES`].
+fn bounded(answer: Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
+    match answer {
+        Ok(out) if out.len() > crate::xcall::MAX_SYNC_XCALL_RESULT_BYTES => {
+            Err("xcall answer too large".to_owned())
+        }
+        other => other,
+    }
+}
+
+/// The SHA-256 of an action call's arguments, the D27 occurrence counter's key.
+fn sha_args(args: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(args).to_vec()
 }
 
 /// Refuses an app key over `MAX_KEY_BYTES`.

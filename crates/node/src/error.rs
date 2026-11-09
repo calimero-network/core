@@ -77,7 +77,24 @@ impl ApiError {
     pub fn internal(message: &str) -> Self {
         Self::new(500, "INTERNAL", message)
     }
+
+    /// `410 UNSUPPORTED_ENGINE`: the app is an SDK 0.12 (wasmer) app, which this
+    /// node no longer runs. It can be listed and deleted, nothing else.
+    #[must_use]
+    pub fn unsupported_engine() -> Self {
+        Self::new(410, "UNSUPPORTED_ENGINE", crate::app::WASMER_GONE)
+    }
+
+    /// `400 UNSUPPORTED_BUNDLE`: the bundle's WASM is a core module (SDK 0.12, for
+    /// wasmer), not a `calimero:app` component, so no app can run it here.
+    #[must_use]
+    pub fn unsupported_bundle() -> Self {
+        Self::bad_request("UNSUPPORTED_BUNDLE", UNSUPPORTED_BUNDLE)
+    }
 }
+
+/// Why a core-module bundle is refused ([`ApiError::unsupported_bundle`]).
+pub const UNSUPPORTED_BUNDLE: &str = "this bundle is a WASM core module (an SDK 0.12 app, for wasmer), which this node no longer runs; rebuild it with calimero-sdk into a calimero:app component";
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {

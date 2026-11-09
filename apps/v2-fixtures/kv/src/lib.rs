@@ -1,13 +1,23 @@
 //! The cluster tests' key-value fixture on the v2 SDK (v1's `apps/kv-store`, cut to what the
 //! cluster tests call). Method names and arguments are the ABI's camelCase ones.
 
-use calimero_app_sdk::prelude::*;
+use calimero_sdk::prelude::*;
+use calimero_sdk::Request;
 
 #[derive(Record)]
 #[table(key = "key")]
 pub struct Entry {
     pub key: String,
     pub value: String,
+}
+
+/// A note, full-text searchable by title and body (spec section 7).
+#[derive(Record)]
+#[table(key = "id", search = ["title", "body"])]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub body: String,
 }
 
 /// One tick of `beat`, in the order the ticks were applied.
@@ -39,12 +49,65 @@ pub struct Kv {
     beat_count: Counter,
     /// `failUntil` and `stallUntil`, app times in ms as decimal strings.
     beat_faults: UnorderedMap<String, String>,
+    /// Uploaded blobs by name (R8): a typed reference keeps the blob alive.
+    files: UnorderedMap<String, BlobRef>,
+    notes: Table<Note>,
+    /// What `onXcallFailed` was told, by method: `"<app>|<reason>"`.
+    xcall_failures: UnorderedMap<String, String>,
+    /// What the `enrich` action brought back, by key.
+    enrichments: UnorderedMap<String, String>,
+    /// What `onActionFailed` was told, by method.
+    action_failures: UnorderedMap<String, String>,
+}
+
+/// `{ key }`, as an action passes it on.
+#[derive(serde::Serialize)]
+struct KeyArg<'a> {
+    key: &'a str,
+}
+
+/// `setFromApp`'s arguments, as an xcall sends them.
+#[derive(serde::Serialize)]
+struct SetArgs<'a> {
+    key: &'a str,
+    value: &'a str,
+}
+
+/// A file as `file` lists it (D20: the size as a decimal string).
+#[derive(serde::Serialize)]
+pub struct FileOut {
+    pub id: String,
+    pub size: String,
+    pub mime: String,
 }
 
 #[app::error]
 pub enum Error {
-    NotFound { key: String },
+    NotFound {
+        key: String,
+    },
     BeatFailed,
+    /// The captcha service did not accept the answer.
+    CaptchaFailed,
+}
+
+/// `{ token }`.
+#[derive(serde::Serialize)]
+struct TokenArg<'a> {
+    token: &'a str,
+}
+
+/// `{ id }`.
+#[derive(serde::Serialize)]
+struct IdArg<'a> {
+    id: &'a str,
+}
+
+/// `verify`'s arguments in the captcha service (`apps/v2-fixtures/captcha`).
+#[derive(serde::Serialize)]
+struct Verify<'a> {
+    id: &'a str,
+    answer: &'a str,
 }
 
 #[app::event]
@@ -74,6 +137,56 @@ impl Kv {
         let event = self.upsert(&key, &value)?;
         env::emit(event, Audience::All)?;
         Ok(())
+    }
+
+    /// Sets `key` as `set` does, once the captcha service `captcha` (another app of the
+    /// organization) accepted `answer` to its challenge `challenge`: a synchronous xcall,
+    /// in this same call, before anything is written.
+    pub fn set_human(
+        &mut self,
+        key: String,
+        value: String,
+        captcha: String,
+        challenge: String,
+        answer: String,
+    ) -> app::Result<()> {
+        let solved: bool = env::xcall_call(
+            &captcha,
+            "verify",
+            &Verify {
+                id: &challenge,
+                answer: &answer,
+            },
+        )?;
+        if !solved {
+            app::bail!(Error::CaptchaFailed);
+        }
+        self.set(key, value)
+    }
+
+    /// Sets `key` as `set` does, once the captcha service `captcha` accepted Cloudflare
+    /// Turnstile token `token`: the service checks it with Turnstile from its own call
+    /// (D76), all inside this one.
+    pub fn set_human_turnstile(
+        &mut self,
+        key: String,
+        value: String,
+        captcha: String,
+        token: String,
+    ) -> app::Result<()> {
+        let solved: bool =
+            env::xcall_call(&captcha, "verifyTurnstile", &TokenArg { token: &token })?;
+        if !solved {
+            app::bail!(Error::CaptchaFailed);
+        }
+        self.set(key, value)
+    }
+
+    /// The state of challenge `challenge` in the captcha service `captcha`, read through
+    /// a synchronous `xcall.view`.
+    #[app::view]
+    pub fn captcha_status(&self, captcha: String, challenge: String) -> app::Result<String> {
+        env::xcall_view(&captcha, "status", &IdArg { id: &challenge })
     }
 
     /// Sets `key` without an event (for values over the 16 KiB event limit).
@@ -174,6 +287,178 @@ impl Kv {
         self.beat_faults
             .insert(&"stallUntil".to_owned(), &until.to_string())?;
         Ok(until)
+    }
+
+    /// Names an uploaded blob `name`: state refers to it from now on.
+    pub fn attach(&mut self, name: String, blob: BlobRef) -> app::Result<()> {
+        self.files.insert(&name, &blob)?;
+        Ok(())
+    }
+
+    /// Drops the name; the blob goes once nothing refers to it.
+    pub fn detach(&mut self, name: String) -> app::Result<bool> {
+        Ok(self.files.remove(&name)?.is_some())
+    }
+
+    /// The blob named `name`, with what the node recorded of it; `null` if the name is
+    /// unknown or the blob was deleted.
+    #[app::view]
+    pub fn file(&self, name: String) -> app::Result<Option<FileOut>> {
+        let Some(blob) = self.files.get(&name)? else {
+            return Ok(None);
+        };
+        Ok(blob.info().map(|i| FileOut {
+            id: blob.id(),
+            size: i.size.to_string(),
+            mime: i.mime,
+        }))
+    }
+
+    /// A download grant for the blob named `name`, valid `ttl` seconds.
+    #[app::view]
+    pub fn share(&self, name: String, ttl: u32) -> app::Result<Option<String>> {
+        Ok(self.files.get(&name)?.map(|b| b.grant(ttl)))
+    }
+
+    /// Sends `setFromApp { key, value }` to app `app` (D25).
+    pub fn relay(&mut self, app: String, key: String, value: String) -> app::Result<()> {
+        env::xcall(
+            &app,
+            "setFromApp",
+            &SetArgs {
+                key: &key,
+                value: &value,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Sends `set { key, value }` to app `app`, which takes no xcalls.
+    pub fn relay_to_set(&mut self, app: String, key: String, value: String) -> app::Result<()> {
+        env::xcall(
+            &app,
+            "set",
+            &SetArgs {
+                key: &key,
+                value: &value,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Sets `key` from another app's xcall.
+    #[app::allow(app = "*")]
+    pub fn set_from_app(&mut self, key: String, value: String) -> app::Result<()> {
+        let _event = self.upsert(&key, &value)?;
+        Ok(())
+    }
+
+    /// The platform's report of an xcall it dead-lettered (D29).
+    #[app::allow(system)]
+    pub fn on_xcall_failed(
+        &mut self,
+        app: String,
+        method: String,
+        reason: String,
+    ) -> app::Result<()> {
+        self.xcall_failures
+            .insert(&method, &format!("{app}|{reason}"))?;
+        Ok(())
+    }
+
+    /// What `onXcallFailed` was told, by method.
+    #[app::view]
+    pub fn xcall_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self
+            .xcall_failures
+            .page(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page.items.into_iter().collect())
+    }
+
+    /// Starts the `enrich` action for `key` (D17); returns its key.
+    pub fn start_enrich(&mut self, key: String) -> app::Result<String> {
+        env::start_action("enrich", &KeyArg { key: &key })
+    }
+
+    /// An action (D12): reads `key` through a view, sends it to the echo host with the
+    /// action's key and a secret, and writes what came back through `applyEnrichment`.
+    #[app::action]
+    pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
+        let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
+        let request = Request::get(format!(
+            "https://echo.outbound.test/v1/enrich?v={}",
+            value.unwrap_or_default()
+        ))
+        .header("Idempotency-Key", &ctx.key())
+        .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
+        let response = ctx.fetch(&request)?;
+        let summary = format!("{} {}", response.status, response.text());
+        ctx.call::<(), _>(
+            "applyEnrichment",
+            &SetArgs {
+                key: &key,
+                value: &summary,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// An action that fails at once with an app error (D22).
+    #[app::action]
+    pub fn explode(_ctx: &mut ActionCtx) -> app::Result<()> {
+        app::bail!(Error::BeatFailed)
+    }
+
+    /// Only the app's own actions write here (`allow(action)`).
+    #[app::allow(action)]
+    pub fn apply_enrichment(&mut self, key: String, value: String) -> app::Result<()> {
+        self.enrichments.insert(&key, &value)?;
+        Ok(())
+    }
+
+    /// What `enrich` wrote for `key`.
+    #[app::view]
+    pub fn enrichment(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.enrichments.get(&key)?)
+    }
+
+    /// The platform's report of an action that failed for good (D22).
+    pub fn on_action_failed(
+        &mut self,
+        action_id: String,
+        method: String,
+        reason: String,
+    ) -> app::Result<()> {
+        self.action_failures
+            .insert(&method, &format!("{action_id}|{reason}"))?;
+        Ok(())
+    }
+
+    /// What `onActionFailed` was told, by method.
+    #[app::view]
+    pub fn action_failures(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self
+            .action_failures
+            .page(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page.items.into_iter().collect())
+    }
+
+    /// Writes note `id`.
+    pub fn note(&mut self, id: String, title: String, body: String) -> app::Result<()> {
+        self.notes.upsert(Note { id, title, body })?;
+        Ok(())
+    }
+
+    /// Removes note `id`.
+    pub fn drop_note(&mut self, id: String) -> app::Result<bool> {
+        Ok(self.notes.remove(&id)?)
+    }
+
+    /// The ids of the notes matching `text`, best first.
+    #[app::view]
+    pub fn find_notes(&self, text: String) -> app::Result<Vec<String>> {
+        let found = self.notes.search(&text, SearchOpts::default().limit(50))?;
+        Ok(found.items.into_iter().map(|f| f.record.id).collect())
     }
 
     /// The value of `key`, or `null`.

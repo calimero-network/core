@@ -1,0 +1,15 @@
+[
+  { "as": "owner", "op": "call", "method": "setUserSimple", "args": { "value": "SomeSimpleUserString" } },
+  { "as": "owner", "op": "view", "method": "getUserSimple", "expect": { "ok": "SomeSimpleUserString" } },
+  { "as": "owner", "op": "call", "method": "setUserNested", "args": { "key": "UserNestedKey1", "value": "UserNestedValue1" } },
+  { "as": "owner", "op": "view", "method": "getUserNested", "args": { "key": "UserNestedKey1" }, "expect": { "ok": "UserNestedValue1" } },
+  { "as": "bob", "op": "view", "method": "getUserNested", "args": { "key": "UserNestedKey1" }, "expect": { "ok": null } },
+  { "as": "owner", "op": "view", "method": "myAccount", "expect": { "ok": "@owner" }, "save": "owner_account" },
+  { "as": "bob", "op": "view", "method": "getUserSimpleFor", "args": { "userKey": "$owner_account" }, "expect": { "ok": "SomeSimpleUserString" } },
+  { "as": "bob", "op": "view", "method": "getUserSimple", "expect": { "ok": null } },
+  { "as": "bob", "op": "call", "method": "setUserSimple", "args": { "value": "SimpleUserStringFromNode2" } },
+  { "as": "bob", "op": "view", "method": "getUserSimple", "expect": { "ok": "SimpleUserStringFromNode2" } },
+  { "as": "bob", "op": "view", "method": "myAccount", "expect": { "ok": "@bob" }, "save": "bob_account" },
+  { "as": "owner", "op": "view", "method": "getUserSimpleFor", "args": { "userKey": "$bob_account" }, "expect": { "ok": "SimpleUserStringFromNode2" } },
+  { "as": "owner", "op": "view", "method": "getUserSimple", "expect": { "ok": "SomeSimpleUserString" } }
+]

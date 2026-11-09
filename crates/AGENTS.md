@@ -13,7 +13,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 
 ## The node
 
-- [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
+- [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, blobs, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
 - [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration.
 - [sealed](sealed/AGENTS.md) (`calimero-sealed`) - the sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js.
 - [identity](identity/AGENTS.md) (`calimero-identity`) - WebAuthn passkeys, session tokens, API keys, confirm challenges.
@@ -32,40 +32,25 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [bundle](bundle/AGENTS.md) (`calimero-bundle`) - the `.mpk` manifest, JCS canonicalization, Ed25519 signatures.
 - [app-downloader](app-downloader/AGENTS.md) (`calimero-app-downloader`) - fetching signed releases from a package registry.
 
-## SDK and runtimes (SDK 0.12 apps on wasmer, `calimero:app` components on wasmtime)
+## The app engine (`calimero:app` components on wasmtime)
 
-- [sdk](sdk/AGENTS.md) (`calimero-sdk`, with `sdk/macros`, `calimero-sdk-macros`) - the app SDK and `TestHost`.
-- [storage](storage/AGENTS.md) (`calimero-storage`) - CRDT collections and the storage interface; `converge` harness.
-- [storage-macros](storage-macros/AGENTS.md) (`calimero-storage-macros`) - derive macros for storage entities.
-- [sys](sys/AGENTS.md) (`calimero-sys`) - the WASM host ABI.
-- [wasm-abi](wasm-abi/AGENTS.md) (`calimero-wasm-abi`) - the `wasm-abi/1` schema and the embedded section the node reads.
-- [prelude](prelude/AGENTS.md) (`calimero-prelude`) - root storage key derivation shared by SDK and storage.
-- [runtime](runtime/AGENTS.md) (`calimero-runtime`) - the wasmer runtime, metering and host functions.
 - [app-wit](app-wit/AGENTS.md) (`calimero-app-wit`) - the `calimero:app` WIT world.
 - [app-host](app-host/AGENTS.md) (`calimero-app-host`) - the host core of `calimero:app`.
 - [app-engine-wasmtime](app-engine-wasmtime/AGENTS.md) (`calimero-app-engine-wasmtime`) - the wasmtime engine for `calimero:app`.
-- [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the Rust app SDK runtime for components.
-- [app-sdk-macros](app-sdk-macros/AGENTS.md) (`calimero-app-sdk-macros`) - the `app` attributes.
-- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component.
+- [sdk](sdk/AGENTS.md) (`calimero-sdk`) - the Rust app SDK runtime for components.
+- [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the SDK's old name: a re-export of `calimero-sdk`, kept while apps move over.
+- [sdk-macros](sdk-macros/AGENTS.md) (`calimero-sdk-macros`) - the `app` attributes.
+- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; `mero-app-build <crate-dir> --out <file>`.
+
+SDK 0.12 (the 0.x `calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer, and
+its `wasm-abi/1` schema, `calimero-wasm-abi`) is gone, and its crate name now belongs to
+the component SDK above; the
+node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left behind
+([node](node/AGENTS.md), "SDK 0.12 apps").
 
 ## Shared types
 
 - [primitives](primitives/AGENTS.md) (`calimero-primitives`) - ids, keys, hashes, wire types.
-- [account](account/AGENTS.md) (`calimero-account`) - `AccountId` (plus device ids and credentials only the runtime-linked crates use).
-
-## Runtime-only crates
-
-Kept only because `calimero-runtime` still links them; nothing in the
-node uses them directly. Do not build on them.
-
-- `node/primitives` (`calimero-node-primitives`) - the runtime's `NodeClient`; brings in the crates below.
-- `context/config` (`calimero-context-config`) - types the runtime and `governance-types` name.
-- `network/primitives` (`calimero-network-primitives`) - through `node-primitives`.
-- [governance-types](governance-types/AGENTS.md) (`calimero-governance-types`) - through `node-primitives`.
-- [store](store/AGENTS.md) (`calimero-store`, with `store/impl/rocksdb`, `calimero-store-rocksdb`) - through `node-primitives` and the runtime's tests.
-- `store/blobs` (`calimero-blobstore`) - through `node-primitives`.
-- [utils](utils/AGENTS.md) (`utils/actix`, `calimero-utils-actix`) - through `node-primitives`.
-- [crypto](crypto/AGENTS.md) (`calimero-crypto`) - the runtime's sealing of values to keys.
 
 ## Build and development
 
@@ -73,8 +58,7 @@ node uses them directly. Do not build on them.
 - [git-hooks](git-hooks/AGENTS.md) (`calimero-git-hooks`) - installs `.githooks/pre-commit` on any build.
 - `utils/fs` (`calimero-utils-fs`) - writing an owner-only secret file on Unix and Windows; used by `tools/mero-sign`.
 
-Tools (`cargo-mero`, `mero-abi`, `mero-sign`, `storage-cost`, `storage-compare`,
-`state-disk-cost`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
+Tools (`mero-sign`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
 
 ## Removed crates
 
@@ -89,6 +73,6 @@ cargo test -p <package>                  # e.g. calimero-node, meroctl, calimero
 cargo clippy -p <package> --all-targets -- -D warnings
 ```
 
-The node's cluster and CLI tests need compiled app fixtures; see
+The node's cluster and CLI tests build their app components on first use; see
 [Testing strategy](../docs/src/content/docs/contribute/testing.mdx#fixtures).
 Benchmarks and cost gates: [`docs/benchmarking.md`](../docs/benchmarking.md).

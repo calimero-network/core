@@ -8,26 +8,31 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use calimero_app_build::build_component_cached;
+use calimero_app_build::{build_components_cached, CachedApp};
 use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
-use calimero_node::{run, Config, Running};
+use calimero_node::{run, run_job, Config, JobConfig, Running, RunningJob};
 
 /// The fixture `name` ("kv" or "org-gated") as a component, built on first use and cached
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
 /// app-build's post-processing are hashed; see `calimero_app_build::cache_key`).
 pub fn component(name: &str) -> Vec<u8> {
+    components(name).app
+}
+
+/// The fixture `name`'s app component and, when it declares compute methods, its compute component.
+pub fn components(name: &str) -> CachedApp {
     build(&Path::new("apps/v2-fixtures").join(name))
 }
 
 /// The Rooms reference app (`apps/rooms`) as a component, cached like [`component`].
 pub fn rooms() -> Vec<u8> {
-    build(Path::new("apps/rooms"))
+    build(Path::new("apps/rooms")).app
 }
 
 /// Builds the guest crate at `dir` (relative to the repository root), cached by source hash.
-fn build(dir: &Path) -> Vec<u8> {
+fn build(dir: &Path) -> CachedApp {
     // Tests run in parallel threads of one process; two builds of the same crate into
     // one target directory race, so builds are serialized.
     static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -35,11 +40,12 @@ fn build(dir: &Path) -> Vec<u8> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sdk = root.join("crates/app-sdk");
-    let macros = root.join("crates/app-sdk-macros");
+    let sdk = root.join("crates/sdk");
+    let macros = root.join("crates/sdk-macros");
+    let alias = root.join("crates/app-sdk");
     let wit = root.join("crates/app-wit");
     let cache: PathBuf = root.join("target/app-components");
-    build_component_cached(&root.join(dir), &[&sdk, &macros, &wit], &cache)
+    build_components_cached(&root.join(dir), &[&sdk, &macros, &alias, &wit], &cache)
         .unwrap_or_else(|e| panic!("build {}: {e}", dir.display()))
 }
 
@@ -67,26 +73,32 @@ pub fn operator_public() -> String {
 pub async fn ops_signed(
     client: &Client,
     path: &str,
-    mut body: serde_json::Value,
+    body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    client
+        .post_operator_signed(path, body, &operator_sign)
+        .await
+}
+
+/// DELETE an operator decision (removing a node), signed as [`ops_signed`].
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error type, as its `delete` returns it"
+)]
+pub async fn ops_signed_delete(
+    client: &Client,
+    path: &str,
+) -> Result<serde_json::Value, calimero_client::Error> {
+    client.delete_operator_signed(path, &operator_sign).await
+}
+
+/// The operator key's signature over `message`.
+pub fn operator_sign(message: &[u8]) -> Vec<u8> {
     use ed25519_dalek::Signer;
-    match client.post(path, body.clone()).await {
-        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
-            let d = e.details().cloned().unwrap_or_default();
-            let message = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                d["message"].as_str().unwrap_or_default(),
-            )
-            .unwrap_or_default();
-            let signature = ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED).sign(&message);
-            body["operatorProof"] = serde_json::json!({
-                "nonce": d["nonce"],
-                "signature": hex::encode(signature.to_bytes()),
-            });
-            client.post(path, body).await
-        }
-        other => other,
-    }
+    ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED)
+        .sign(message)
+        .to_bytes()
+        .to_vec()
 }
 
 pub fn free_port() -> u16 {
@@ -169,11 +181,14 @@ impl Cluster {
                         snapshot_every: 200,
                     },
                     read_wait: Duration::from_secs(2),
+                    refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
                     tee_release: None,
                     tee_profile: None,
                     peer_measurements: calimero_client::Measurements::None,
                     clock_offset_ms: 0,
                     kms_keys: Default::default(),
+                    rollback: None,
+                    accept_rollback: false,
                     budget: None,
                     registry: None,
                     // The component fixtures are raw uploads (`POST /bundles`), development only.
@@ -298,5 +313,64 @@ impl Cluster {
             .hosted(app)
             .unwrap()
             .applied()
+    }
+}
+
+/// A job node started next to a cluster ([`Cluster::start_job_node`]).
+pub struct JobNode {
+    pub running: RunningJob,
+    pub id: u64,
+    pub url: String,
+    _dir: tempfile::TempDir,
+}
+
+impl Cluster {
+    /// Starts job node `id` with the cluster's settings, `configure` applied
+    /// last. It is not in the directory until [`Cluster::register_job_node`].
+    pub async fn start_job_node(&self, id: u64, configure: impl Fn(&mut JobConfig)) -> JobNode {
+        let dir = tempfile::tempdir().unwrap();
+        let from = &self.configs[0];
+        let mut config = JobConfig {
+            node_id: id,
+            listen: format!("127.0.0.1:{}", free_port()).parse().unwrap(),
+            data_dir: dir.path().to_owned(),
+            cluster: from.cluster.clone(),
+            attestation: from.attestation,
+            sealed_required: from.sealed_required,
+            release: from.release.clone(),
+            tee_release: from.tee_release.clone(),
+            tee_profile: from.tee_profile.clone(),
+            cluster_identity: self.nodes[0].as_ref().unwrap().node.cluster_identity(),
+        };
+        configure(&mut config);
+        let url = format!("http://127.0.0.1:{}/", config.listen.port());
+        JobNode {
+            running: run_job(config).await.unwrap(),
+            id,
+            url,
+            _dir: dir,
+        }
+    }
+
+    /// Registers `addr` as job node `id` through `/ops/nodes` and waits until
+    /// the first node's directory shows it.
+    pub async fn register_job_node(&self, id: u64, addr: &str) {
+        let ops = self.client(0);
+        ops.use_api_key("ops-secret").await;
+        let _ = ops_signed(
+            &ops,
+            "ops/nodes",
+            serde_json::json!({ "id": id, "addr": addr, "role": "job" }),
+        )
+        .await
+        .unwrap();
+        let node = &self.nodes[0].as_ref().unwrap().node;
+        for _ in 0..100 {
+            if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("node 1 never applied job node {id}");
     }
 }

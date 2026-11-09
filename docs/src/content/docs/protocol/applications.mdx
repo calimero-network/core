@@ -9,8 +9,9 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 An app instance runs one **bundle**: a WASM module named by
 `hex(SHA-256(wasm))`. In production a bundle always comes out of a **package
-release**: a signed `.mpk` (`calimero-bundle`) built with `cargo mero build`
-and signed by its publisher with `mero-sign`. See
+release**: a signed `.mpk` (`calimero-bundle`) holding a `calimero:app`
+component built with `calimero-app-build`, its manifest signed by its publisher
+with `mero-sign`. See
 [Packaging & signing](/build/packaging-signing/) for building one.
 
 ## What a release carries
@@ -35,7 +36,7 @@ the archive is listed with its digest.
     { label: 'Replica', color: '#58a6ff' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'cargo mero build; mero-sign the manifest' },
+    { from: 0, to: 0, label: 'mero-app-build; mero-sign the manifest' },
     { from: 0, to: 1, label: 'publish package@version (.mpk)' },
     { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
     { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
@@ -111,13 +112,16 @@ to: `(package, signer)`.
 - `POST /apps { package, version?, service?, … }` creates an instance from a
   release; without a version, the newest installed one. If the release is not
   installed yet, it is installed from the registry first. A package with
-  several services needs `service`.
+  several services needs `service`. With `deployment`, the instance runs the
+  release that [deployment](/protocol/governance/#deployments) offers for
+  `package`, and records it.
 - `POST /apps/{app}/upgrade { version }` moves an instance to another release
   of its package ([Upgrades](/protocol/upgrades/)).
 - `DELETE /packages/{p}[/{v}]` removes a release, or all of them, and is
   refused while any app still runs one of its bundles. A bundle another
   release also ships stays, recorded under that release. Only whoever installed
-  the package's first release (an account, or the operator) may uninstall.
+  the package's first release (an account, or the operator) may uninstall, and
+  never a release a deployment offers.
 
 ## Who sees a release
 
@@ -179,12 +183,10 @@ prefixes, and have no pinned signer.
 
 ## ABI facts
 
-The node reads a bundle's embedded ABI (`services::BundleFacts`) for what it
-acts on: which methods are `#[app::view]`, `#[app::handler]` and
-`#[app::xcall]` entry points (and whom an entry point admits), which
-`#[app::tee(every)]` timers to fire, and the state version and migrations an
-upgrade plans from. Bundles built without `cargo mero build` embed no ABI and
-get none of these.
+The node reads the ABI a component embeds (its `calimero:abi` section) for what
+it acts on: which methods are views and confirm methods, whom each method admits
+(accounts, API keys, other apps, the system), its timers, and the tables search
+indexes. A method the ABI does not name is refused (default-deny).
 
 ## Frontends
 
@@ -197,10 +199,84 @@ uses `localhost`.
   verified against the publisher's signature before a byte is served.
 - `GET /` redirects to the newest release's entry; `/{version}/{path}` serves a
   file, falling back to the entry for client-side routes. `/.well-known/calimero.json`
-  names the package, its releases and the cluster's API URLs.
+  names the package, its releases, the deployments offering it (`id`, `name`,
+  `app`, `version`) and the cluster's API URLs.
+- `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release that
+  instance runs, so a link handed to a customer opens the frontend matching
+  their instance after a newer release is installed. `GET /d/{deployment}/{path}`
+  redirects to `/{version}/{path}?deployment={id}`, the release that deployment
+  offers for this package (the newest, if it offers several), so the page
+  knows which deployment to create instances from. Neither names anything
+  but a version; an instance of another package, or a deployment that does
+  not offer this one, is a `404`.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
   node route. Responses carry a fixed content security policy with the cluster's
-  API origins added to `connect-src`.
+  API origins and the attestation mirror (`https://cloud.calimero.network`, where
+  the page's client gets the release's signed measurements and Intel's
+  collateral; both are signed, so the mirror is trusted with nothing) added to
+  `connect-src`.
+
+### Cluster hosts
+
+A package may be deployed on several clusters while each customer's account and
+organization live on one, and a front that routes by hostname alone (Calimero
+Cloud's resolver) cannot tell them apart by the package's host. So on each
+cluster the package also has the host `{cluster_label}.D`, where the label is 52
+lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
+`SHA-256("calimero.app-host.cluster.v1\0" ‖ cluster ‖ "\0" ‖ package)`,
+`cluster` being the node's `--cluster` (`app_host::cluster_label`). For example,
+`com.calimero.kv` on cluster `eu-shared-1` is at
+`zqcnu7vlgoxqnu6ar6awxsbcclqru6ry4ygt3bou7tqpimvx25va.D`.
+
+On its cluster the host is the package's site exactly as `{label}.D` is (every
+path above, `/d/{deployment}/` included), and an origin of the package: CORS
+admits it, and a passkey ceremony from it opens a session bound to the package.
+A cluster label made for another cluster answers `404`.
+
+### Deployment hosts
+
+The front does not route these yet; cluster hosts are what it routes.
+
+Every deployment has a host of its own too, `{dlabel}.D`, where the dlabel is
+52 lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
+`SHA-256("calimero.app-host.deployment.v1\0" ‖ id)` and `id` is the
+deployment's id (32 lowercase hex characters; `app_host::deployment_label`).
+For example, deployment `0123456789abcdef0123456789abcdef` is served at
+`lprfchrsznkwfwiu7gfovvcywyujxdza3rentyjkivnw6cxescca.D`. Its own prefix keeps a
+dlabel apart from every package label.
+
+The deployment's host names the deployment, and with it the cluster that holds
+it.
+
+- It serves the frontend of the one package the deployment offers, exactly as
+  `/d/{deployment}/` does on the package's host: `GET /` redirects to
+  `/{version}/?deployment={id}` of the release it offers; files, client routes
+  and `/app/{app}/` as above; `/d/{deployment}/` only for its own deployment.
+- `/.well-known/calimero.json` carries `"deployment": id` and lists that
+  deployment first (`null` on the package's host).
+- A deployment that offers nothing yet, or apps of several packages, has no
+  frontend: its host answers `404`.
+- It is an origin of its own, of the same package: CORS admits it, and a
+  passkey ceremony from it opens a session bound to that package, like one from
+  the package's host.
+- `POST /deployments` answers the new deployment's `host` beside its `id`, and
+  `GET /deployments` and `GET /deployments/{id}` carry it (`null` without
+  `--apps-domain`).
+
+### Custom domains
+
+A package's manager may have the cluster serve its frontend on a domain of
+their own (`https://kv.example.com`) by registering it as a **served origin**
+(`POST /package-origins/{package} { origin, served: true }`, with their
+passkey; [Registered origins](/protocol/identities/#registered-origins)). A
+request whose `Host` is that name gets the package's site exactly as `{label}.D`
+serves it (every path above, the same content security policy, `/.well-known/calimero.json`),
+before any node route. Unlike the package's host, it is a registered origin: a
+passkey ceremony there runs under the domain's own rp-id, never the
+cluster's, and opens a session bound to the package that names the origin;
+removing it ends the site and those sessions together. TLS for the name ends
+inside the TD with a certificate Calimero Cloud orders for the node's attested
+key; the end-to-end design is `docs/specs/custom-domains.md`.
 
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its

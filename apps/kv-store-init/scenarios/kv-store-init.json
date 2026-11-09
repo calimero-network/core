@@ -1,0 +1,265 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "init_key_1"
+  },
+  "expect": {
+   "ok": "Initial value 1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "init_key_2"
+  },
+  "expect": {
+   "ok": "Initial value 2"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "welcome"
+  },
+  "expect": {
+   "ok": "Welcome to KvStoreInit!"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "3"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "entries",
+  "args": {},
+  "expect": {
+   "ok": {
+    "init_key_1": "Initial value 1",
+    "init_key_2": "Initial value 2",
+    "welcome": "Welcome to KvStoreInit!"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "greeting",
+   "value": "hello-world"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "greeting"
+  },
+  "expect": {
+   "ok": "hello-world"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "init_key_1",
+   "value": "Updated value 1"
+  },
+  "events": {
+   "owner": [
+    "Inserted",
+    "Updated"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "init_key_1"
+  },
+  "expect": {
+   "ok": "Updated value 1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "4"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "getResult",
+  "args": {
+   "key": "welcome"
+  },
+  "expect": {
+   "ok": "Welcome to KvStoreInit!"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "getResult",
+  "args": {
+   "key": "non_existent"
+  },
+  "expect": {
+   "error": "NotFound",
+   "fields": {
+    "key": "non_existent"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "non_existent"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "remove",
+  "args": {
+   "key": "init_key_2"
+  },
+  "expect": {
+   "ok": "Initial value 2"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "init_key_2"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "3"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "clear",
+  "args": {}
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "0"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "entries",
+  "args": {},
+  "expect": {
+   "ok": {}
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "sync_test",
+   "value": "value_from_node1"
+  }
+ },
+ {
+  "as": "node2",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "sync_test"
+  },
+  "expect": {
+   "ok": "value_from_node1"
+  }
+ },
+ {
+  "as": "node2",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "node2_key",
+   "value": "value_from_node2"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "node2_key"
+  },
+  "expect": {
+   "ok": "value_from_node2"
+  }
+ },
+ {
+  "as": "node2",
+  "op": "call",
+  "method": "entries",
+  "args": {},
+  "expect": {
+   "ok": {
+    "node2_key": "value_from_node2",
+    "sync_test": "value_from_node1"
+   }
+  },
+  "events": {
+   "node2": [
+    "Inserted",
+    "Updated",
+    "Removed",
+    "Cleared",
+    "Inserted",
+    "Inserted"
+   ]
+  }
+ }
+]

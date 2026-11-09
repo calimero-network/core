@@ -1,0 +1,20 @@
+[
+  { "as": "owner", "op": "view", "method": "role", "expect": { "ok": "owner" } },
+  { "as": "owner", "op": "view", "method": "whoami", "args": { "candidates": ["writers"] } },
+  { "as": "bob", "op": "view", "method": "role", "expect": { "ok": "member" } },
+  { "as": "carol", "op": "view", "method": "role", "expect": { "ok": "admin" } },
+  { "as": "dave", "op": "view", "method": "role", "expect": { "ok": "guest" } },
+  { "as": "owner", "op": "call", "method": "setPinned", "args": { "text": "welcome" } },
+  { "as": "bob", "op": "view", "method": "pinned", "expect": { "ok": "welcome" } },
+  { "as": "bob", "op": "call", "method": "setPinned", "args": { "text": "bob was here" }, "expect": { "error": "AdminsOnly" } },
+  { "as": "carol", "op": "call", "method": "setPinned", "args": { "text": "pinned by carol" } },
+  { "as": "bob", "op": "view", "method": "pinned", "expect": { "ok": "pinned by carol" } },
+  { "as": "dave", "op": "view", "method": "pinned", "expect": { "error": "MembersOnly" } },
+  { "as": "bob", "op": "call", "method": "setTeamNote", "args": { "team": "writers", "text": "draft one" } },
+  { "as": "carol", "op": "call", "method": "setTeamNote", "args": { "team": "writers", "text": "carol's edit" }, "expect": { "error": "TeamOnly" } },
+  { "as": "carol", "op": "view", "method": "teamNote", "args": { "team": "writers" }, "expect": { "ok": "draft one" } },
+  { "as": "bob", "op": "call", "method": "announce", "args": { "text": "hi" }, "events": { "carol": ["Announced"], "dave": [] } },
+  { "op": "removeMember", "args": "bob" },
+  { "as": "bob", "op": "call", "method": "setTeamNote", "args": { "team": "writers", "text": "after leaving" }, "expect": { "refused": "NOT_FOUND" } },
+  { "as": "owner", "op": "view", "method": "teamNote", "args": { "team": "writers" }, "expect": { "ok": "draft one" } }
+]

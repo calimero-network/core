@@ -15,6 +15,14 @@ turns a configuration into `calimero_node::Config` and calls `run`.
   `[outbound]` table is the outbound policy (`--settings FILE` replaces it).
   Defaults are applied in `start`, not in the struct, so a file never records
   a default as if chosen.
+- `merod run --job-node` (`calimero_node::run_job`): a node that runs compute for the
+  cluster and holds no app, store, vote or key. `NodeArgs::job_node_conflicts` refuses
+  the flags that would give it one (`--bootstrap`, `--public-url`, storage key and KMS flags,
+  ops token, governance, registry, ...; a boolean given `false` asks for nothing); it keeps
+  `--node-id`, `--listen`, `--cluster`, `--dev` and the TEE flags, and requires
+  `--cluster-identity HEX` (`meroctl ops cluster`: the Ed25519 key derived from K_c whose
+  signature the job node demands on every assignment and component), which become a
+  `calimero_node::JobConfig` (no storage key exists in it; `--peers` and the peer-policy flags are refused). Its data dir holds only `scratch/`.
 - `merod local` (a development cluster in process), `merod inspect` (a stopped
   node's store, `calimero_node::inspect`), `merod kms disk-key` (for a
   TEE boot script, `calimero-kms-client`).

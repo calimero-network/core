@@ -1,0 +1,27 @@
+[
+  { "as": "owner", "op": "call", "method": "post", "args": { "topic": "news", "seq": "1", "text": "from node one" }, "save": "k1" },
+  { "as": "bob", "op": "view", "method": "readTopic", "args": { "topic": "news" },
+    "expect": { "ok": [ { "key": "$k1", "author": "@owner", "text": "from node one", "keyMatchesOwner": true } ] } },
+  { "as": "bob", "op": "view", "method": "verifiedNotes", "args": { "topic": "news" }, "expect": { "ok": 1 } },
+  { "as": "bob", "op": "view", "method": "ownerOf", "args": { "key": "$k1" }, "expect": { "ok": "@owner" } },
+  { "as": "bob", "op": "call", "method": "edit", "args": { "key": "$k1", "text": "node two was here" },
+    "expect": { "error": "NotFound", "fields": { "key": "$k1" } } },
+  { "as": "bob", "op": "call", "method": "retract", "args": { "key": "$k1" },
+    "expect": { "error": "NotFound", "fields": { "key": "$k1" } } },
+  { "as": "owner", "op": "view", "method": "get", "args": { "key": "$k1" }, "expect": { "ok": "from node one" } },
+  { "as": "bob", "op": "call", "method": "post", "args": { "topic": "news", "seq": "1", "text": "from node two" }, "save": "k2" },
+  { "as": "owner", "op": "view", "method": "readTopic", "args": { "topic": "news" },
+    "expect": { "ok": [
+      { "key": "$k1", "author": "@owner", "text": "from node one", "keyMatchesOwner": true },
+      { "key": "$k2", "author": "@bob", "text": "from node two", "keyMatchesOwner": true } ] } },
+  { "as": "bob", "op": "call", "method": "flood", "args": { "topic": "spam", "from": "0", "n": "150" }, "expect": { "ok": 152 } },
+  { "as": "owner", "op": "view", "method": "countAll", "expect": { "ok": 152 } },
+  { "as": "owner", "op": "view", "method": "readTopic", "args": { "topic": "news" },
+    "expect": { "ok": [
+      { "key": "$k1", "author": "@owner", "text": "from node one", "keyMatchesOwner": true },
+      { "key": "$k2", "author": "@bob", "text": "from node two", "keyMatchesOwner": true } ] } },
+  { "as": "owner", "op": "view", "method": "myNotes", "args": { "topic": "news" }, "expect": { "ok": ["$k1"] } },
+  { "as": "owner", "op": "call", "method": "edit", "args": { "key": "$k1", "text": "edited" } },
+  { "as": "owner", "op": "call", "method": "retract", "args": { "key": "$k1" }, "expect": { "ok": "edited" } },
+  { "as": "owner", "op": "view", "method": "myNotes", "args": { "topic": "news" }, "expect": { "ok": [] } }
+]

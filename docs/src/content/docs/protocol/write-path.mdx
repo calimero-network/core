@@ -47,8 +47,8 @@ one of three ways, and all three end up in the same handlers:
     { from: 2, to: 1, label: 'applied index n', dashed: true },
     { from: 1, to: 1, label: 'apply to n; credential → principal' },
     { from: 1, to: 1, label: 'gate: access rule, API-key scope, confirm' },
-    { from: 1, to: 3, label: 'internal/call (5 s bound, retried)' },
-    { from: 3, to: 3, label: 'fresh org standing; idempotency; run WASM' },
+    { from: 1, to: 3, label: 'internal/call { sysIndex: n } (5 s bound, retried)' },
+    { from: 3, to: 3, label: 'apply to n: org standing; idempotency; run WASM' },
     { from: 3, to: 4, label: 'append { call, outcome }', color: '#a5ff11' },
     { from: 4, to: 3, label: 'majority acknowledges', dashed: true },
     { from: 3, to: 1, label: 'Applied { index, result, events }', dashed: true },
@@ -94,7 +94,11 @@ can later prove which node answered what at which log index.
 8. **Run and append** on the leader ([Application execution](/protocol/execution/),
    [Replication](/protocol/replication/#proposing-the-leader-runs-everyone-applies)).
    For a client's call the leader reads the caller's organization standing on
-   fresh system state first.
+   fresh system state first: it waits until its own system replica has applied
+   the index the entry node's round named (`CallRequest::sys_index`), which
+   covers every system write committed before the request arrived, so the call
+   costs one read-index round, not two ([One round per
+   request](/protocol/system-group/#one-round-per-request)).
 9. **Answer.** The node that took the request returns the result with a
    [receipt](/protocol/tee-attestation/#receipts) signed by its attested receipt key.
 
@@ -148,9 +152,10 @@ but its answer would have been handed back unconfirmed.
 | The app returned | `200 { index, result, events, receipt }` |
 | The app returned an error | `422 APP_ERROR` with `details.error` |
 | The run trapped (panic, out of gas, unknown method) | `422 TRAP` |
-| A read-only team member calls a method that is not a view (component apps), or a call that would write (wasmer apps) | `403` |
+| A read-only team member calls a method that is not a view | `403` |
 | The call kept racing leader changes | `503`; retry with the same idempotency key |
 | No leader could be reached | `503 UNAVAILABLE` |
+| A system write (account, passkey, org, node) did not commit in 10 s | `503 UNAVAILABLE` naming the system group's leader, voters, learners and lagging members; it may still apply |
 | The caller does not reach the app | `404` (or `401` without a credential) |
 
 The `index` is the entry's log index. A client that then reads from a replica

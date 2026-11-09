@@ -14,9 +14,48 @@
 //!   last segment and an `Accept` naming HTML, the entry (a single-page app's
 //!   routes survive a reload); otherwise the path with leading segments
 //!   dropped (an entry built with a relative base on a deep link); else 404.
-//! - `GET /.well-known/calimero.json`: the package, its releases and the
+//! - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release
+//!   that instance runs (a release of this package; else 404), so a link
+//!   handed to a customer opens the frontend matching their instance.
+//! - `GET /d/{deployment}/{path}` redirects to
+//!   `/{version}/{path}?deployment={id}`, the release that deployment offers
+//!   for this package (the newest, if it offers several), so the page knows
+//!   which deployment to create instances from.
+//! - `GET /.well-known/calimero.json`: the package, its releases, the
+//!   deployments offering it (`id`, `name`, `app`, `version`) and the
 //!   cluster's API URLs, for the page to connect to.
 //! - Nothing else: only `GET` and `HEAD`, never the node's own routes.
+//!
+//! On a cluster, a package's frontend is also at
+//! `{cluster_label}.{apps_domain}` ([`cluster_label`] of the node's
+//! `--cluster` and the package): the same site and the same package origin as
+//! `{label}`, under a name a hostname-routing front (Calimero Cloud's
+//! resolver) can send to this cluster when the package is on several. A
+//! cluster label made for another cluster is a 404 here.
+//!
+//! Every deployment has a host of its own too, `{dlabel}.{apps_domain}`
+//! ([`deployment_label`] of its id), serving the frontend of the package it
+//! offers (none while it offers nothing or apps of several packages). A
+//! package may be deployed on several clusters while each customer lives on
+//! one, and the resolver in front routes by hostname alone, so the host names
+//! the deployment and with it the cluster. It serves what `/d/{deployment}/`
+//! does on the package's host: `GET /` redirects to
+//! `/{version}/?deployment={id}`, the files and `/app/{app}/` as above,
+//! `/d/{deployment}/` for its own deployment only, and the well-known file
+//! with `deployment` set and that deployment listed first. It is an origin of
+//! its own, of the same package: CORS admits it and a passkey ceremony from it
+//! opens a session bound to that package, as from the package's host
+//! (`Node::app_origin_package` answers for both).
+//!
+//! A package's manager may also have the cluster serve its frontend on a
+//! domain of their own (a custom domain, `kv.example.com`): an origin they
+//! registered with `served: true` (`crate::origins`). The node serves the
+//! same site there as on the package's host ([`Node::served_site`]); unlike
+//! the package's host it is a registered origin, under its own rp-id, so
+//! ceremonies, CORS and session binding go as they do for any registered
+//! origin. TLS for it ends where it does for the apps domain, inside the TD
+//! in front of merod, with a certificate mdma orders over the node's quote;
+//! design and rollout in `docs/specs/custom-domains.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -29,11 +68,23 @@ use axum::response::{IntoResponse, Response};
 use calimero_bundle::{mime_type, FRONTEND_ROOT};
 
 use crate::node::Node;
-use crate::system::compare_versions;
+use crate::system::{compare_versions, Deployment, SystemState};
 
-/// v1's content security policy, with the cluster's API origins added to
-/// `connect-src` (the page talks to the cluster, not to its own origin).
+/// v1's content security policy; [`page_csp`] completes its `connect-src`.
 const CSP_HEAD: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'; connect-src 'self'";
+/// Where a page's client gets what it verifies a node's quote against: the
+/// release's signed measurements (`/api/tee/node-releases/{version}`) and
+/// Intel's collateral (`/api/tee/pcs`), mero-js's `DEFAULT_RELEASE_MIRROR`
+/// and `DEFAULT_COLLATERAL_MIRROR`. Both are signed (Sigstore over the
+/// measurements, Intel over the collateral) and checked by the client, so the
+/// mirror is trusted with nothing; without it no page can verify a TDX node.
+const ATTESTATION_MIRROR: &str = "https://cloud.calimero.network";
+
+/// A served page's content security policy: it talks to its own origin, the
+/// attestation mirror and the cluster's nodes (`api_origins`), and nothing else.
+fn page_csp(api_origins: &[String]) -> String {
+    format!("{CSP_HEAD} {ATTESTATION_MIRROR} {}", api_origins.join(" "))
+}
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 const MAX_STRIPPED_SEGMENTS: usize = 16;
@@ -44,10 +95,42 @@ const CACHED_FRONTENDS: usize = 32;
 /// unpadded lowercase base32 (52 characters, as v1's).
 #[must_use]
 pub fn label(package: &str) -> String {
-    let digest = calimero_identity::sha256(format!("calimero.app-host.v1\0{package}").as_bytes());
-    let mut out = String::with_capacity(52);
+    base32(&calimero_identity::sha256(
+        format!("calimero.app-host.v1\0{package}").as_bytes(),
+    ))
+}
+
+/// The DNS label of `package`'s origin on cluster `cluster` (merod's
+/// `--cluster`): SHA-256 of `calimero.app-host.cluster.v1`, a zero byte,
+/// the cluster, a zero byte and the package, unpadded lowercase base32 (52
+/// characters, shaped like [`label`]). A package deployed on several clusters
+/// has one such host on each, so a front that routes by hostname alone (mdma's
+/// resolver, which computes the same) sends it to the right cluster; on its
+/// cluster it is the package's origin, as `{label}` is.
+#[must_use]
+pub fn cluster_label(cluster: &str, package: &str) -> String {
+    base32(&calimero_identity::sha256(
+        format!("calimero.app-host.cluster.v1\0{cluster}\0{package}").as_bytes(),
+    ))
+}
+
+/// The DNS label of deployment `id`'s host (`system::deployment_id`, 32
+/// lowercase hex characters): SHA-256 of `calimero.app-host.deployment.v1`,
+/// a zero byte and the id, unpadded lowercase base32 (52 characters, shaped
+/// like a package's [`label`]; its own prefix keeps the two apart). mdma
+/// computes the same to route the host to the deployment's cluster.
+#[must_use]
+pub fn deployment_label(id: &str) -> String {
+    base32(&calimero_identity::sha256(
+        format!("calimero.app-host.deployment.v1\0{id}").as_bytes(),
+    ))
+}
+
+/// Unpadded lowercase RFC 4648 base32.
+fn base32(digest: &[u8]) -> String {
+    let mut out = String::with_capacity(digest.len().div_ceil(5) * 8);
     let (mut acc, mut bits) = (0u16, 0u8);
-    for byte in digest {
+    for &byte in digest {
         acc = (acc << 8) | u16::from(byte);
         bits += 8;
         while bits >= 5 {
@@ -59,6 +142,24 @@ pub fn label(package: &str) -> String {
         out.push(char::from(BASE32[usize::from((acc << (5 - bits)) & 31)]));
     }
     out
+}
+
+/// The package a deployment's host serves: the one its offers name; `None`
+/// while it offers nothing, or apps of several packages (no one origin).
+#[must_use]
+pub fn deployment_package(d: &Deployment) -> Option<&str> {
+    let mut packages = d.apps.values().map(|o| o.package.as_str());
+    let first = packages.next()?;
+    packages.all(|p| p == first).then_some(first)
+}
+
+/// What an app host serves: a package's frontend, on the package's own host
+/// or on one of its deployments' hosts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Site {
+    pub package: String,
+    /// The deployment whose host this is; `None` on the package's host.
+    pub deployment: Option<String>,
 }
 
 /// One release's frontend, verified.
@@ -111,24 +212,86 @@ impl FrontendCache {
 }
 
 impl Node {
-    /// The package whose origin a `Host` header (`name[:port]`) names.
+    /// The package whose origin a `Host` header (`name[:port]`) names: a
+    /// package's host or a deployment's.
     #[must_use]
     pub fn app_host_package(&self, host: &str) -> Option<String> {
+        self.app_host_site(host).map(|s| s.package)
+    }
+
+    /// What a `Host` header (`name[:port]`) under the apps domain serves.
+    #[must_use]
+    pub fn app_host_site(&self, host: &str) -> Option<Site> {
         let domain = self.config.apps_domain.as_deref()?;
-        let name = host.rsplit_once(':').map_or(host, |(h, port)| {
-            if port.chars().all(|c| c.is_ascii_digit()) {
-                h
-            } else {
-                host
-            }
-        });
-        let name = name.to_ascii_lowercase();
-        let name = name.strip_suffix('.').unwrap_or(&name);
+        let (name, _port) = host_parts(host);
         let label = name.strip_suffix(domain)?.strip_suffix('.')?;
         if label.len() != 52 || label.contains('.') {
             return None;
         }
-        self.sys(|s| s.packages.keys().find(|p| self::label(p) == label).cloned())
+        self.sys(|s| {
+            let cluster = self.config.cluster.as_str();
+            if let Some(p) = s
+                .packages
+                .keys()
+                .find(|p| self::label(p) == label || cluster_label(cluster, p) == label)
+            {
+                return Some(Site {
+                    package: p.clone(),
+                    deployment: None,
+                });
+            }
+            let d = s
+                .deployments
+                .values()
+                .find(|d| deployment_label(&d.id) == label)?;
+            Some(Site {
+                package: deployment_package(d)?.to_owned(),
+                deployment: Some(d.id.clone()),
+            })
+        })
+    }
+
+    /// What a `Host` header names when it is a custom domain: the package
+    /// whose manager registered its origin served ([`served_origin_of`]).
+    /// Never a name under the apps domain (those are [`Self::app_host_site`]'s)
+    /// nor a node's own API host, and only on a node that serves frontends.
+    #[must_use]
+    pub fn served_site(&self, host: &str) -> Option<Site> {
+        let domain = self.config.apps_domain.as_deref()?;
+        let (name, _port) = host_parts(host);
+        if crate::origins::within(&name, domain) {
+            return None;
+        }
+        let origin = served_origin_of(host)?;
+        // The state first: the node's own API requests pass here too, and
+        // almost never name a served origin.
+        let package = self.sys(|s| s.served_origin(&origin).map(|o| o.package.clone()))?;
+        if self.is_api_host(&name) {
+            return None;
+        }
+        Some(Site {
+            package,
+            deployment: None,
+        })
+    }
+
+    /// Whether `name` is the host of a node's API URL (this one's or a
+    /// replica's): never a frontend's.
+    pub(crate) fn is_api_host(&self, name: &str) -> bool {
+        self.api_origins().iter().any(|o| {
+            url::Url::parse(o)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+                .is_some_and(|h| h == name)
+        })
+    }
+
+    /// Deployment `id`'s host, `{deployment_label}.{apps_domain}`, where the
+    /// node serves frontends.
+    #[must_use]
+    pub fn deployment_host(&self, id: &str) -> Option<String> {
+        let domain = self.config.apps_domain.as_deref()?;
+        Some(format!("{}.{domain}", deployment_label(id)))
     }
 
     /// The package whose frontend origin `origin` (`scheme://host[:port]`) is:
@@ -183,8 +346,7 @@ impl Node {
     /// Every node's API origin, for the page's `connect-src`.
     pub(crate) fn api_origins(&self) -> Vec<String> {
         let mut out: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter_map(|n| origin_of(&n.addr))
                 .collect()
         });
@@ -192,6 +354,41 @@ impl Node {
         out.sort();
         out.dedup();
         out
+    }
+}
+
+/// A `Host` header's name, lowercase without a trailing dot, and its port
+/// when it has a numeric one.
+fn host_parts(host: &str) -> (String, Option<&str>) {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((h, port)) if port.bytes().all(|c| c.is_ascii_digit()) => {
+            (h, Some(port).filter(|p| !p.is_empty()))
+        }
+        _ => (host, None),
+    };
+    let mut name = name.to_ascii_lowercase();
+    if name.ends_with('.') {
+        let _dot = name.pop();
+    }
+    (name, port)
+}
+
+/// The origin a browser names on a page whose `Host` header is `host`, when
+/// the cluster may serve a custom domain there: `https://{name}` (TLS ended in
+/// front of merod, on 443), or `http://{name}:{port}` for a `localhost` name
+/// (`merod local`). Anything else (another port, a bracketed address) names
+/// none.
+#[must_use]
+pub fn served_origin_of(host: &str) -> Option<String> {
+    let (name, port) = host_parts(host);
+    if name.is_empty() || name.contains(['[', ']', '/', '@']) {
+        return None;
+    }
+    let local = name == "localhost" || name.ends_with(".localhost");
+    match (local, port) {
+        (true, Some(port)) => Some(format!("http://{name}:{port}")),
+        (false, None | Some("443")) => Some(format!("https://{name}")),
+        _ => None,
     }
 }
 
@@ -215,8 +412,11 @@ pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> R
     if node.config.apps_domain.is_none() {
         return next.run(req).await;
     }
-    match node.app_host_package(&host) {
-        Some(package) => serve(&node, &package, req).await,
+    let site = node
+        .app_host_site(&host)
+        .or_else(|| node.served_site(&host));
+    match site {
+        Some(site) => serve(&node, &site, req).await,
         None if looks_like_app_host(&node, &host) => StatusCode::NOT_FOUND.into_response(),
         None => next.run(req).await,
     }
@@ -238,7 +438,9 @@ fn looks_like_app_host(node: &Node, host: &str) -> bool {
         .is_some_and(|rest| rest.ends_with('.'))
 }
 
-async fn serve(node: &Node, package: &str, req: Request) -> Response {
+async fn serve(node: &Node, site: &Site, req: Request) -> Response {
+    let package = site.package.as_str();
+    let own = site.deployment.as_deref();
     if req.method() != Method::GET && req.method() != Method::HEAD {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -258,9 +460,28 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
         v
     });
     if path == "/.well-known/calimero.json" {
+        let mut deployments: Vec<serde_json::Value> = node.sys(|s| {
+            s.deployments
+                .values()
+                .flat_map(|d| {
+                    d.apps
+                        .iter()
+                        .filter(|(_, o)| o.package == package)
+                        .map(move |(app, o)| {
+                            serde_json::json!({
+                                "id": d.id, "name": d.name, "app": app, "version": o.version,
+                            })
+                        })
+                })
+                .collect()
+        });
+        // A deployment's host names its own deployment first.
+        deployments.sort_by_key(|d| own.is_none_or(|own| d["id"] != own));
         let body = serde_json::json!({
             "package": package,
+            "deployment": own,
             "versions": versions,
+            "deployments": deployments,
             "api": node.api_origins(),
         });
         return (
@@ -276,12 +497,30 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     let rest = path.trim_start_matches('/');
-    if rest.is_empty() {
-        return (
-            StatusCode::FOUND,
-            [(header::LOCATION, format!("/{latest}/"))],
-        )
-            .into_response();
+    let redirect = if let (Some(id), "") = (own, rest) {
+        // A deployment's host opens where `/d/{deployment}/` does.
+        Some(pinned(node, |s| offered_release(s, package, &format!("{id}/"))).await)
+    } else if rest.is_empty() {
+        Some(Some(format!("/{latest}/")))
+    } else if let Some(tail) = rest.strip_prefix("app/") {
+        Some(pinned(node, |s| instance_release(s, node, package, tail)).await)
+    } else if let Some(tail) = rest.strip_prefix("d/") {
+        // A deployment's host knows its own deployment only.
+        let mine = own.is_none_or(|id| tail.split('/').next() == Some(id));
+        if mine {
+            Some(pinned(node, |s| offered_release(s, package, tail)).await)
+        } else {
+            Some(None)
+        }
+    } else {
+        None
+    };
+    match redirect {
+        Some(Some(location)) => {
+            return (StatusCode::FOUND, [(header::LOCATION, location)]).into_response();
+        }
+        Some(None) => return StatusCode::NOT_FOUND.into_response(),
+        None => {}
     }
     let (version, file) = rest.split_once('/').unwrap_or((rest, ""));
     if !versions.iter().any(|v| v == version) {
@@ -301,7 +540,7 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
     let Some(mime) = mime_type(&name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let csp = format!("{CSP_HEAD} {}", node.api_origins().join(" "));
+    let csp = page_csp(&node.api_origins());
     let mut resp = if req.method() == Method::HEAD {
         Response::new(Body::empty())
     } else {
@@ -324,6 +563,44 @@ async fn serve(node: &Node, package: &str, req: Request) -> Response {
         set(h, header::CACHE_CONTROL, IMMUTABLE);
     }
     resp
+}
+
+/// Where a pinned path (`/app/...`, `/d/...`) redirects, from this node's
+/// state, or, when that names nothing, from state caught up with the log.
+async fn pinned(node: &Node, find: impl Fn(&SystemState) -> Option<String>) -> Option<String> {
+    if let Some(found) = node.sys(&find) {
+        return Some(found);
+    }
+    let _caught_up = node.sys_fresh().await;
+    node.sys(&find)
+}
+
+/// `{app}/{tail}`: `/{version}/{tail}` of the release of `package` that
+/// instance runs.
+fn instance_release(s: &SystemState, node: &Node, package: &str, rest: &str) -> Option<String> {
+    let (app, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let a = s.apps.get(&node.canonical_app_id(app))?;
+    let v = s
+        .packages
+        .get(package)?
+        .versions
+        .values()
+        .find(|v| v.services.values().any(|h| *h == a.bundle))?;
+    Some(format!("/{}/{tail}", v.version))
+}
+
+/// `{deployment}/{tail}`: `/{version}/{tail}?deployment={id}`, the installed
+/// release of `package` the deployment offers (the newest of several).
+fn offered_release(s: &SystemState, package: &str, rest: &str) -> Option<String> {
+    let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let d = s.deployments.get(id)?;
+    let version = d
+        .apps
+        .values()
+        .filter(|o| o.package == package && s.offered_release(o).is_some())
+        .map(|o| o.version.as_str())
+        .max_by(|a, b| compare_versions(a, b))?;
+    Some(format!("/{version}/{tail}?deployment={}", d.id))
 }
 
 /// Which file `file` (the path after `/{version}/`) answers with, and
@@ -365,6 +642,38 @@ mod tests {
         }
     }
 
+    /// A served page verifies the node before it signs anyone in, and on a TDX
+    /// node that means fetching the release's signed measurements and Intel's
+    /// collateral from the attestation mirror. Without the mirror in
+    /// `connect-src` the browser blocks both and no one can sign in (Safari:
+    /// "Load failed"); `merod local`'s mock quotes never fetch, so no e2e test
+    /// saw it.
+    #[test]
+    fn a_served_page_may_reach_the_cluster_and_the_attestation_mirror() {
+        let origins = vec![
+            "https://n1.example.com".to_owned(),
+            "https://n2.example.com".to_owned(),
+        ];
+        let csp = page_csp(&origins);
+        let connect = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("connect-src "))
+            .expect("a connect-src directive");
+        let sources: Vec<&str> = connect.split_whitespace().skip(1).collect();
+        assert_eq!(
+            sources,
+            [
+                "'self'",
+                ATTESTATION_MIRROR,
+                "https://n1.example.com",
+                "https://n2.example.com"
+            ],
+            "{csp}"
+        );
+        assert!(csp.starts_with("default-src 'self';"), "{csp}");
+    }
+
     #[test]
     fn files_client_routes_and_relative_tails_resolve_like_v1() {
         let f = site();
@@ -397,5 +706,55 @@ mod tests {
         assert_eq!(a.len(), 52);
         assert!(a.bytes().all(|c| BASE32.contains(&c)));
         assert_ne!(a, label("com.calimero.chat"));
+        assert_eq!(a, "7pysax5oylhat255idekdoknnceibzxygvjbceej2umvlmpwx2aa");
+    }
+
+    /// A custom domain's `Host` maps to the one origin a browser on it names:
+    /// `https` on 443 (the port is never sent there), `http` with its port on
+    /// a `localhost` name; anything else to none, so a request on another
+    /// port never reaches a custom domain's site.
+    #[test]
+    fn a_custom_domains_host_names_one_origin() {
+        for (host, origin) in [
+            ("kv.example.com", Some("https://kv.example.com")),
+            ("KV.Example.com.", Some("https://kv.example.com")),
+            ("kv.example.com:443", Some("https://kv.example.com")),
+            ("kv.example.com:8443", None),
+            ("kv.localhost:2501", Some("http://kv.localhost:2501")),
+            ("kv.localhost", None),
+            ("[::1]:443", None),
+            ("", None),
+        ] {
+            assert_eq!(served_origin_of(host).as_deref(), origin, "{host}");
+        }
+        assert_eq!(
+            host_parts("Kv.Example.com.:2501"),
+            ("kv.example.com".to_owned(), Some("2501"))
+        );
+        assert_eq!(
+            host_parts("kv.example.com:"),
+            ("kv.example.com".to_owned(), None)
+        );
+    }
+
+    /// The value mdma's resolver pins too, computed once with Python's
+    /// `hashlib` and `base64`.
+    #[test]
+    fn cluster_labels_match_the_resolvers_vector() {
+        let c = cluster_label("eu-shared-1", "com.calimero.kv");
+        assert_eq!(c, "zqcnu7vlgoxqnu6ar6awxsbcclqru6ry4ygt3bou7tqpimvx25va");
+        assert_ne!(c, cluster_label("eu-shared-2", "com.calimero.kv"));
+        assert_ne!(c, label("com.calimero.kv"));
+    }
+
+    /// The value mdma computes too (its resolver routes the host).
+    #[test]
+    fn deployment_labels_are_shaped_like_package_labels_and_apart_from_them() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let d = deployment_label(id);
+        assert_eq!(d, "lprfchrsznkwfwiu7gfovvcywyujxdza3rentyjkivnw6cxescca");
+        assert_eq!(d.len(), 52);
+        assert_ne!(d, label(id), "domain-separated from a package of that name");
+        assert_ne!(d, deployment_label("fedcba9876543210fedcba9876543210"));
     }
 }

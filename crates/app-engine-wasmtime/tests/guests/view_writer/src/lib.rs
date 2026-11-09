@@ -8,7 +8,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"put":{"kind":"call"},"write_n":{"kind":"call"},"big":{"kind":"call"},"overwrite":{"kind":"call"},"shout":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"put":{"kind":"call"},"write_n":{"kind":"call"},"big":{"kind":"call"},"overwrite":{"kind":"call"},"shout":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

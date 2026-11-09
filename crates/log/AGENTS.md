@@ -27,7 +27,12 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `testing::hold_apply(dir, group)` / `release_apply` hold every apply of a group
   on the node opened at `dir` (from its next start), so a test decides when a
   restarted leader catches up. Used by the node's
-  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`.
+  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`;
+  `testing::slow_close(dir, delay)` makes closing that node's store wait first,
+  as a stalled last holder would (`tests/store_close.rs`).
+- `Engine::store_watch` reports the store open until RocksDB has closed and
+  released its lock (`Db::closed`, the last field), not merely until the last
+  `Arc<Db>` starts dropping.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
   `tuning`'s column and table options (one bounded block cache,
   `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
@@ -48,6 +53,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   chunks. Every node of a cluster shares K_r, so a follower opens a leader's file.
   Installing writes the next state generation (`group ‖ generation ‖ key`) and
   switches in one batch: a crash mid-install keeps the old state.
+- Node rows: `Engine::put_node_meta`/`get_node_meta` keep rows of the node's own in
+  `meta` under group id `NODE_ROWS` (`u64::MAX`, which no group takes), sealed and
+  synced like a vote: the node's rollback counter lives in the same store as the
+  data, so a copy of the store carries the counter it had.
 - Migration (`legacy.rs`): a data dir holding the previous redb file (`log.redb`) is
   migrated on `Engine::open` (entries, vote, commit and purge marks, blobs; the old
   whole-state snapshot is imported by the group's machine via `Machine::import`) and
@@ -69,5 +78,8 @@ the redb migration (`migration_tests.rs`).
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group
 over the in-memory transport, 1 and 64 in flight (64 only queue behind the
-propose lock; an append takes no leadership round); and one RocksDB write synced and unsynced on the same disk, the
+propose lock; an append takes no leadership round); 64 `Group::write`s in flight
+(the system group's path, straight to openraft: openraft 0.9 appends each
+`client_write` as its own synced RocksDB write on the leader's core task, so
+these too commit no faster than one sync each); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.

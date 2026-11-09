@@ -554,16 +554,16 @@ impl<M: Machine> RpcTarget for Group<M> {
 
 type GroupFactory = Arc<dyn Fn(GroupId) -> BoxFuture<bool> + Send + Sync>;
 
-/// All groups hosted by one node.
 /// See [`Engine::store_watch`].
-pub struct StoreWatch(std::sync::Weak<Db>);
+pub struct StoreWatch(Arc<std::sync::atomic::AtomicBool>);
 
 impl StoreWatch {
     pub fn is_open(&self) -> bool {
-        self.0.strong_count() > 0
+        !self.0.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
+/// All groups hosted by one node.
 pub struct Engine {
     node: NodeId,
     db: Arc<Db>,
@@ -640,9 +640,30 @@ impl Engine {
         self.db.delete_blob(name)
     }
 
+    /// How many blobs this node stores (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub fn blob_count(&self) -> eyre::Result<u64> {
+        Ok(self.db.summary()?.blobs)
+    }
+
     /// Read a blob stored on this node.
     pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
         self.db.get_blob(name)
+    }
+
+    /// Write a row of this node's own (not of any group), synced: it lives in
+    /// the same store as the groups' rows, so a copy of the store carries the
+    /// value it had when the copy was taken (the node's rollback counter).
+    pub fn put_node_meta<T: serde::Serialize>(&self, name: &str, value: &T) -> eyre::Result<()> {
+        self.db.put_meta(store::NODE_ROWS, name, value)
+    }
+
+    /// Read a row written with [`Engine::put_node_meta`].
+    pub fn get_node_meta<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> eyre::Result<Option<T>> {
+        self.db.get_meta(store::NODE_ROWS, name)
     }
 
     #[must_use]
@@ -739,9 +760,10 @@ impl Engine {
     }
 
     /// Whether the store is still open: it closes, releasing its lock, once
-    /// the engine and every group task holding it are gone.
+    /// the engine and every group task holding it are gone and RocksDB has
+    /// finished closing.
     pub fn store_watch(&self) -> StoreWatch {
-        StoreWatch(Arc::downgrade(&self.db))
+        StoreWatch(Arc::clone(&self.db.closed.0))
     }
 
     /// Stop every group (for shutdown or tests).

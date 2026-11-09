@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use calimero_app_downloader::source::http::HttpRegistry;
 use calimero_app_downloader::{AppRequest, AppSource};
+use calimero_app_host::{Abi, MethodKind};
 use calimero_bundle::VerifiedBundle;
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -53,14 +54,24 @@ pub struct Verified {
     pub package: String,
     pub signer_id: String,
     pub release: PackageVersion,
+    /// Every WASM of the release (services and compute components) by its bundle hash.
     pub wasm: BTreeMap<String, Vec<u8>>,
 }
 
-/// Each service's WASM (`""` for a single-service bundle), digest-checked.
-pub type ServiceWasm = Vec<(String, Vec<u8>)>;
+/// One service of a release, digest-checked.
+pub struct Service {
+    /// `""` for a single-service bundle.
+    pub name: String,
+    pub wasm: Vec<u8>,
+    /// Its compute component, when the release ships one.
+    pub compute: Option<Vec<u8>>,
+}
+
+/// The refusal when a compute component's methods or caps differ from the main ABI's.
+pub const COMPUTE_ABI_MISMATCH: &str = "COMPUTE_ABI_MISMATCH";
 
 /// Verify a `.mpk`: signature, digests, runtime version, and that it has WASM.
-pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, ServiceWasm), ApiError> {
+pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
     if mpk.len() > MAX_MPK_BYTES {
         return Err(ApiError::new(
             413,
@@ -82,9 +93,35 @@ pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, ServiceWasm), ApiError>
     let wasm = contents
         .wasm
         .into_iter()
-        .map(|w| (w.name.unwrap_or_default(), w.bytes.to_vec()))
+        .map(|w| Service {
+            name: w.name.unwrap_or_default(),
+            wasm: w.bytes.to_vec(),
+            compute: w.compute.map(|c| c.to_vec()),
+        })
         .collect();
     Ok((bundle, wasm))
+}
+
+/// A service's compute component must run exactly the compute methods its main ABI declares:
+/// the same names, each with the same kind and caps (fuel, memory, wall time, result method).
+fn compute_abi_agrees(main: &Abi, compute: &Abi) -> Result<(), String> {
+    let declared = |abi: &Abi| -> BTreeMap<String, MethodKind> {
+        abi.methods
+            .iter()
+            .filter(|(_, m)| matches!(m.kind, MethodKind::Compute(_)))
+            .map(|(name, m)| (name.clone(), m.kind.clone()))
+            .collect()
+    };
+    let (main, compute) = (declared(main), declared(compute));
+    if main == compute {
+        return Ok(());
+    }
+    let names = |m: &BTreeMap<String, MethodKind>| m.keys().cloned().collect::<Vec<_>>();
+    Err(format!(
+        "the compute component's methods {:?} do not match the main ABI's compute methods {:?}, or differ in their caps",
+        names(&compute),
+        names(&main),
+    ))
 }
 
 impl Node {
@@ -132,6 +169,7 @@ impl Node {
         version: &str,
         actor: &str,
     ) -> Result<Value, ApiError> {
+        self.refuse_undeployable(actor).await?;
         // Before the fetch, judged by the key the package is pinned to (none
         // yet: unbound); `record_release` judges the verified key again.
         let pinned = self
@@ -163,8 +201,26 @@ impl Node {
         }
     }
 
+    /// Refused `403 DEPLOY_NOT_GRANTED` before any fetch, verification or
+    /// store when `actor` may not install apps here
+    /// ([`crate::system::SystemState::may_deploy`]), judged on fresh state
+    /// before it refuses; `InstallPackage` and `PutBundle` ask again at
+    /// apply, at their own time.
+    pub async fn refuse_undeployable(&self, actor: &str) -> Result<(), ApiError> {
+        let may = || self.sys(|s| s.may_deploy(actor, now_secs()));
+        if may() {
+            return Ok(());
+        }
+        let _caught_up = self.sys_fresh().await;
+        if may() {
+            return Ok(());
+        }
+        Err(crate::node::not_a_deployer())
+    }
+
     /// Install an uploaded `.mpk`.
     pub async fn install_upload(&self, mpk: Arc<[u8]>, actor: &str) -> Result<Value, ApiError> {
+        self.refuse_undeployable(actor).await?;
         let verified = self.verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)?;
         self.record_release(verified, Some(mpk)).await
     }
@@ -202,28 +258,53 @@ impl Node {
             ));
         }
         let mut services = BTreeMap::new();
-        let mut wasm_by_service = BTreeMap::new();
-        for (service, bytes) in wasm {
+        let mut compute = BTreeMap::new();
+        let mut wasm_by_hash = BTreeMap::new();
+        let mut part_sizes = BTreeMap::new();
+        for Service {
+            name: service,
+            wasm: bytes,
+            compute: job,
+        } in wasm
+        {
             let hash = hex::encode(calimero_identity::sha256(&bytes));
-            // Refuse what its executor does not take before anything is recorded:
-            // a core module must compile on wasmer, a component must pass the
-            // engine's prepare.
-            match crate::types::Executor::of(&bytes) {
-                crate::types::Executor::Wasmer => {
-                    let _module = self
-                        .executor
-                        .module(&hash, &bytes)
-                        .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
-                }
-                crate::types::Executor::Component => {
-                    use calimero_app_host::Engine as _;
-                    let _prepared = self.app_engine().prepare(&hash, &bytes).map_err(|e| {
-                        ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string())
-                    })?;
-                }
+            // Refuse what no app could run before anything is recorded: a core
+            // module (an SDK 0.12 service) is `400 UNSUPPORTED_BUNDLE`, a component
+            // must pass the engine's prepare.
+            if crate::types::Executor::of(&bytes) != crate::types::Executor::Component {
+                return Err(ApiError::unsupported_bundle()
+                    .with_details(serde_json::json!({ "service": service })));
             }
-            let _prev = services.insert(service.clone(), hash);
-            let _prev = wasm_by_service.insert(service, bytes);
+            let main = {
+                use calimero_app_host::Engine as _;
+                self.app_engine()
+                    .prepare(&hash, &bytes)
+                    .map_err(|e| ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string()))?
+            };
+            if let Some(job) = job {
+                let job_hash = hex::encode(calimero_identity::sha256(&job));
+                let prepared = {
+                    use calimero_app_host::Engine as _;
+                    self.compute_engine()
+                        .prepare(&job_hash, &job)
+                        .map_err(|e| {
+                            ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string())
+                                .with_details(
+                                    serde_json::json!({ "service": service, "compute": true }),
+                                )
+                        })?
+                };
+                compute_abi_agrees(&main.abi, &prepared.abi).map_err(|why| {
+                    ApiError::bad_request(COMPUTE_ABI_MISMATCH, &why)
+                        .with_details(serde_json::json!({ "service": service }))
+                })?;
+                let _prev = compute.insert(service.clone(), job_hash.clone());
+                let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
+                let _prev = wasm_by_hash.insert(job_hash, job);
+            }
+            let _prev = services.insert(service, hash.clone());
+            let _prev = part_sizes.insert(hash.clone(), bytes.len() as u64);
+            let _prev = wasm_by_hash.insert(hash, bytes);
         }
         let metadata = manifest
             .metadata
@@ -239,6 +320,8 @@ impl Node {
                 mpk_size,
                 source,
                 services,
+                compute,
+                part_sizes,
                 metadata,
                 outbound: manifest.outbound.clone(),
                 installed_by: actor.to_owned(),
@@ -246,7 +329,7 @@ impl Node {
                 installers: BTreeSet::new(),
                 upgrades,
             },
-            wasm: wasm_by_service,
+            wasm: wasm_by_hash,
         })
     }
 
@@ -258,8 +341,7 @@ impl Node {
         upload: Option<Arc<[u8]>>,
     ) -> Result<Value, ApiError> {
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
-        for (service, bytes) in &v.wasm {
-            let hash = &v.release.services[service];
+        for (hash, bytes) in &v.wasm {
             self.engine
                 .put_blob(hash, bytes)
                 .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -313,8 +395,14 @@ impl Node {
         let service = r.at.service.clone().unwrap_or_default();
         let bytes = wasm
             .into_iter()
-            .find(|(name, _)| *name == service)
-            .map(|(_, b)| b)
+            .find(|s| s.name == service)
+            .and_then(|s| {
+                if r.at.compute {
+                    s.compute
+                } else {
+                    Some(s.wasm)
+                }
+            })
             .ok_or_else(|| {
                 ApiError::internal("the release lacks the service it was recorded with")
             })?;
@@ -374,6 +462,22 @@ impl Node {
         actor: &str,
         frontend: bool,
     ) -> Result<String, ApiError> {
+        let (bundle, _compute) = self
+            .resolve_release_parts(package, version, service, actor, frontend)
+            .await?;
+        Ok(bundle)
+    }
+
+    /// [`Self::resolve_release`], with the compute component the same release ships for
+    /// the service (`None` when it ships none).
+    pub async fn resolve_release_parts(
+        &self,
+        package: &str,
+        version: Option<&str>,
+        service: Option<&str>,
+        actor: &str,
+        frontend: bool,
+    ) -> Result<(String, Option<String>), ApiError> {
         // No version: the latest installed release `actor` sees. A registry
         // install always names its version.
         let version = match version {
@@ -399,9 +503,9 @@ impl Node {
                 .get(package)
                 .and_then(|p| p.versions.get(&version))
                 .filter(|v| frontend || s.sees_release(v, actor))
-                .map(|v| v.services.clone())
+                .map(|v| (v.services.clone(), v.compute.clone()))
         };
-        let services = match self.sys(seen) {
+        let (services, compute) = match self.sys(seen) {
             Some(s) => s,
             None => {
                 let _ = self.install_from_registry(package, &version, actor).await?;
@@ -411,7 +515,11 @@ impl Node {
             }
         };
         let key = service.unwrap_or_default();
-        services.get(key).cloned().ok_or_else(|| {
+        let found = services
+            .get(key)
+            .cloned()
+            .map(|b| (b, compute.get(key).cloned()));
+        found.ok_or_else(|| {
             let names: Vec<&String> = services.keys().collect();
             ApiError::bad_request(
                 "NO_SUCH_SERVICE",

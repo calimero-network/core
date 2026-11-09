@@ -1,222 +1,96 @@
 ---
-title: Access-controlled storage
-description: Restrict who can write a piece of state with the Shared, User, and Frozen wrappers.
+title: Access control
+description: Decide who may call each method of a Calimero app — node-enforced method attributes, guards on the org role, per-account values, write-once rows and content-addressed records.
 sidebar:
   order: 6
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-**Task:** keep a piece of state but limit who is allowed to change it.
+A component app runs on its group's leader, and its writes are the log's: no
+other node replays them. So a rule about who may write is a check in the method,
+before anything is written. Two layers enforce it:
 
-By default any caller can write any field. Wrapping a field in one of
-three collections from `calimero_storage::collections` adds an authorization rule
-that is checked when the run writes:
+1. **The node**, from the method's attributes in the ABI, before the app runs.
+2. **The app**, with `guards` and `env::caller()`, inside the method.
 
-| Wrapper | Who can write | Read |
-| --- | --- | --- |
-| `SharedStorage<T>` | only members of the writer set | anyone |
-| `UserStorage<T>` | each user writes only their own slot | anyone |
-| `FrozenStorage<T>` | write-once, then immutable | anyone |
+## What the node enforces
 
-<Aside type="note" title="The run is the boundary">
-  A call runs once, on the app's leader, and the wrapper refuses a write the
-  caller may not make; the other replicas apply the leader's diff and do not run
-  it again. The rule holds because the app's own code is what runs
-  ([Where the rule is checked](/build/permissioned-storage/#where-the-rule-is-checked)).
+| Attribute | The node refuses |
+| --- | --- |
+| none | Callers who are not signed in (`401`). |
+| `#[app::public]` | Nothing: anyone may call it on a public app, optionally rate-limited (`rate = "10/min"`). |
+| `#[app::confirm]` | A call without a fresh passkey assertion. |
+| `#[app::allow(system)]` | Only the node itself calls it (timers imply it). |
+| `#[app::allow(app = "<id>")]` | Cross-app calls from any other app. |
+| `#[app::allow(action)]` | Anyone but the app's own actions. |
+
+A method with no attribute still admits any signed-in account the node lets
+reach the app. Membership of the app's org is the app's to check.
+
+## Guards: the org role
+
+```rust
+pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
+    guards::require_member()?;
+    self.user_simple.set(&value)?;
+    Ok(())
+}
+```
+
+`guards::require_member()` and `guards::require_admin()` return the caller's
+account, or fail with `LoginRequired` (not an account: public, system or
+another app) or `Forbidden` (below the role). For anything else, match on the
+caller yourself, as `apps/permissions-showcase` does:
+
+```rust
+use calimero_sdk::env::Caller;
+
+fn caller() -> app::Result<String> {
+    match env::caller() {
+        Caller::Account(a) | Caller::ApiKey { account: a, .. } => Ok(a),
+        _ => Err(AppError::login_required()),
+    }
+}
+```
+
+`env::org_role(&account)` gives `Guest`, `Member`, `Admin` or `Owner` (ordered);
+`env::in_team(&account, team)` checks a team.
+
+## Write rules as data shapes
+
+Each rule below is a key layout plus a check, all from the component apps in
+`apps/` of core.
+
+| Rule | Shape |
+| --- | --- |
+| **Only the author edits it** | Key the row by `(author, id)` with the author taken from the caller, never from an argument. Nobody can name another's row. |
+| **Write once** | Key by `(…, author)` and refuse when the row exists (`AlreadyWritten`); offer no edit or remove. |
+| **Moderated** | Never edited; removal checks the caller against a `moderators` table the owner seeded in `init`. |
+| **Each account's own value** | `PerUser<T>`: `set`/`get`/`remove` act on the caller's account; `get_for(account)` reads another's. |
+| **Content-addressed, never changed** | `Frozen<T>`: `insert` returns the hash and whether it was new; equal content stores nothing. |
+| **Fixed at creation** | Write it in `#[app::init]` and expose no method that writes it. |
+
+```rust
+/// Sets `key` in the caller's own nested map.
+pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()> {
+    let account = guards::require_member()?;
+    self.user_nested.insert(&(account.clone(), key.clone()), &value)?;
+    Ok(())
+}
+```
+
+<Aside type="caution">
+  Take identity from `env::caller()` or a guard, never from an argument: an
+  argument is whatever the client sent.
 </Aside>
 
-The mistakes that turn these rules into decoration, from checks guarding a
-public collection to identity fields a writer can forge, are collected in
-[Securing app state, right and wrong](/build/guides/securing-state/).
+## Test it
 
-## SharedStorage — a writer set
-
-A group-writable value. Only public keys in the writer set may `insert`; a
-current admin can `rotate_writers` to change the set (the request is published
-as a governance op, and your own run reads the new set at once). This is
-`apps/kv-store-with-shared-storage`:
+The SDK's harness runs the real component with an org of your choosing, so a
+refusal is a test away ([Testing](/core/build/testing/)):
 
 ```rust
-use std::collections::BTreeSet;
-use calimero_sdk::{app, AccountId};
-use calimero_storage::collections::{LwwRegister, SharedStorage};
-
-#[app::state]
-pub struct KvStore {
-    shared_value: SharedStorage<LwwRegister<String>>,
-}
-
-#[app::logic]
-impl KvStore {
-    #[app::init]
-    pub fn init() -> KvStore {
-        // seed the writer set with whoever installed the app
-        let initializer: AccountId = calimero_sdk::env::account_id().into();
-        let mut writers = BTreeSet::new();
-        writers.insert(initializer);
-        // second arg `frozen`: once true, the writer set can never rotate
-        KvStore { shared_value: SharedStorage::new(writers, false) }
-    }
-
-    pub fn set_shared(&mut self, value: String) -> app::Result<()> {
-        self.shared_value.insert(LwwRegister::new(value))?; // rejected if caller isn't a writer
-        Ok(())
-    }
-
-    pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
-        self.shared_value.rotate_writers(new_writers.into_iter().collect())?;
-        Ok(())
-    }
-}
+let mut t = TestApp::new(component, Org::new().admins(["ada"]).members(["bob"]).guests(["eve"]), T0);
+assert!(t.as_("eve").call("setUserSimple", json!({ "value": "x" })).is_err());
 ```
-
-## UserStorage — per-user slots
-
-Internally a map keyed by `AccountId`. `insert` always writes the **current
-executor's** slot, so users can't overwrite each other. Reads can target any
-user. This is `apps/kv-store-with-user-and-frozen-storage`:
-
-```rust
-use calimero_sdk::{app, AccountId};
-use calimero_storage::collections::{LwwRegister, UserStorage};
-
-#[app::state]
-pub struct KvStore {
-    user_items: UserStorage<LwwRegister<String>>,
-}
-
-#[app::logic]
-impl KvStore {
-    pub fn set_user(&mut self, value: String) -> app::Result<()> {
-        self.user_items.insert(value.into())?; // writes the caller's own slot
-        Ok(())
-    }
-
-    pub fn get_user(&self) -> app::Result<Option<String>> {
-        Ok(self.user_items.get()?.map(|v| v.get().clone()))
-    }
-
-    // read another user's slot by their account
-    pub fn get_user_for(&self, user_key: AccountId) -> app::Result<Option<String>> {
-        Ok(self.user_items.get_for_user(&user_key)?.map(|v| v.get().clone()))
-    }
-}
-```
-
-## FrozenStorage — write-once
-
-Content-addressed and immutable: `insert` returns the value's hash and is
-idempotent (the same value inserts once); there is no remove or overwrite. Read
-back by that hash. Same example app:
-
-```rust
-use calimero_sdk::app;
-use calimero_storage::collections::FrozenStorage;
-
-#[app::state]
-pub struct KvStore {
-    frozen_items: FrozenStorage<String>,
-}
-
-#[app::logic]
-impl KvStore {
-    pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
-        let hash = self.frozen_items.insert(value)?; // [u8; 32] content hash
-        Ok(hex::encode(hash))
-    }
-
-    pub fn get_frozen(&self, hash_hex: String) -> app::Result<Option<String>> {
-        let mut hash = [0u8; 32];
-        hex::decode_to_slice(hash_hex, &mut hash[..])?;
-        Ok(self.frozen_items.get(&hash)?)
-    }
-}
-```
-
-## Worked example: a shared team document
-
-These wrappers compose. A real "team document" wants two different rules in one
-state struct: the document **settings** (its title) should be editable only by
-owners, while any member should be able to **append a comment** — and edit only
-their own. That is `SharedStorage` for the first field and `AuthoredVector` for
-the second.
-
-`AuthoredVector<T>` is an append-only list that stamps each entry with the
-account of whoever pushed it. Anyone may `push`, but `update`/`tombstone` on
-an entry are gated to its original author, checked the same way, when the run writes:
-
-```rust
-use calimero_sdk::{app, AccountId};
-use calimero_storage::collections::{AuthoredVector, LwwRegister, SharedStorage};
-
-#[app::state]
-pub struct TeamDoc {
-    title: SharedStorage<LwwRegister<String>>, // owner-only: writer set
-    comments: AuthoredVector<String>,          // any member appends; author owns each
-}
-
-#[app::logic]
-impl TeamDoc {
-    #[app::init]
-    pub fn init() -> TeamDoc {
-        let owner: AccountId = calimero_sdk::env::account_id().into();
-        let mut writers = std::collections::BTreeSet::new();
-        writers.insert(owner);
-        TeamDoc {
-            title: SharedStorage::new(writers, false),
-            comments: AuthoredVector::new(),
-        }
-    }
-
-    // settings edit — rejected unless caller is in the title's writer set
-    pub fn set_title(&mut self, title: String) -> app::Result<()> {
-        self.title.insert(LwwRegister::new(title))?;
-        Ok(())
-    }
-
-    // grant edit rights to another teammate (only a current admin can rotate)
-    pub fn add_owner(&mut self, who: Vec<AccountId>) -> app::Result<()> {
-        let mut writers = self.title.writers();
-        writers.extend(who);
-        self.title.rotate_writers(writers)?;
-        Ok(())
-    }
-
-    // any member may append a comment; the push stamps them as its author
-    pub fn add_comment(&mut self, text: String) -> app::Result<usize> {
-        Ok(self.comments.push(text)?) // returns the new entry index
-    }
-
-    // edit a comment — rejected unless the caller authored entry `idx`
-    pub fn edit_comment(&mut self, idx: usize, text: String) -> app::Result<()> {
-        self.comments.update(idx, text)?;
-        Ok(())
-    }
-
-    pub fn list_comments(&self) -> app::Result<Vec<String>> {
-        Ok(self.comments.iter()?.collect()) // reads are open to anyone
-    }
-}
-```
-
-The two roles fall out of the wrapper choice, not from any if-statement you
-write: a non-owner calling `set_title` is rejected because they are not in the
-writer set, and a member editing someone else's comment is rejected because
-`AuthoredVector::update` checks the per-entry author stamp. Owners change over
-time via `rotate_writers`; comment authorship is fixed at push.
-
-## Exercise it
-
-```sh
-# allowed only if the caller is in the writer set
-meroctl call -c my-app set_shared --args '{"value": "agreed"}'
-```
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Access-controlled storage (deep dive)" href="/build/permissioned-storage/" description="The wrappers, op masks, and where each rule is checked." />
-  <LinkCard title="Collections" href="/build/collections/" description="The full set of collection types, access-controlled ones included." />
-  <LinkCard title="Organizations" href="/protocol/organizations/" description="Who may call an app: org members, teams and roles." />
-</CardGrid>

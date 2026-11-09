@@ -23,3 +23,12 @@ pub fn release_apply(dir: &Path, group: GroupId) {
         h.retain(|(d, g)| !(*g == group && d == dir));
     }
 }
+
+/// Make closing the store of the node at `dir` wait `delay` before RocksDB
+/// closes, as a thread descheduled in the middle of dropping the last handle
+/// would.
+pub fn slow_close(dir: &Path, delay: std::time::Duration) {
+    if let Ok(mut d) = crate::store::CLOSE_DELAYS.lock() {
+        d.push((dir.to_owned(), delay));
+    }
+}

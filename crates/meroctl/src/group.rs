@@ -75,11 +75,17 @@ pub enum GroupCmd {
         group: String,
         #[arg(long)]
         capabilities: u32,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     /// Leave the team.
     Leave {
         namespace: String,
         group: String,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     /// v1's group upgrades: move the organization's contexts (or one team's,
     /// `--group`, with `--cascade` its subtree) to a release, then follow and retry.
@@ -101,12 +107,18 @@ pub enum MembersCmd {
         role: TeamRole,
         #[arg(long)]
         capabilities: Option<u32>,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     #[command(alias = "rm")]
     Remove {
         namespace: String,
         group: String,
         account: String,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -215,20 +227,26 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             account,
             role,
             capabilities,
-        }) => client
-            .post(
+            dev_passkey,
+        }) => {
+            env.post_approved(
                 &format!("orgs/{namespace}/teams/{group}/members"),
                 json!({ "account": account, "role": role.wire(), "capabilities": capabilities }),
+                dev_passkey.as_deref(),
             )
-            .await?,
+            .await?
+        }
         GroupCmd::Members(MembersCmd::Remove {
             namespace,
             group,
             account,
+            dev_passkey,
         }) => {
-            client
-                .delete(&format!("orgs/{namespace}/teams/{group}/members/{account}"))
-                .await?
+            env.delete_approved(
+                &format!("orgs/{namespace}/teams/{group}/members/{account}"),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         GroupCmd::Metadata {
             namespace,
@@ -246,20 +264,27 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             namespace,
             group,
             capabilities,
+            dev_passkey,
         } => {
-            client
-                .post(
-                    &format!("orgs/{namespace}/capabilities"),
-                    json!({ "team": group, "capabilities": capabilities }),
-                )
-                .await?
+            env.post_approved(
+                &format!("orgs/{namespace}/capabilities"),
+                json!({ "team": group, "capabilities": capabilities }),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
-        GroupCmd::Leave { namespace, group } => {
+        GroupCmd::Leave {
+            namespace,
+            group,
+            dev_passkey,
+        } => {
             let me = client.me().await?;
             let account = me["accountId"].as_str().unwrap_or_default();
-            client
-                .delete(&format!("orgs/{namespace}/teams/{group}/members/{account}"))
-                .await?
+            env.delete_approved(
+                &format!("orgs/{namespace}/teams/{group}/members/{account}"),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         GroupCmd::Upgrade(UpgradeCmd::Trigger {
             namespace,

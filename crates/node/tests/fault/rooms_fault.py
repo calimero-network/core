@@ -75,7 +75,8 @@ def setup(cl: Cluster, wasm: str):
     cl.cli(1, "login", "--dev-passkey", str(pk), "--name", "owner", "--origin", ORIGIN)
     org = cl.cli(1, "namespace", "create", "Acme")["orgId"]
     app = cl.cli(1, "context", "create", "--name", "rooms", "--path", wasm, "--namespace", org)["appId"]
-    key = cl.cli(1, "account", "api-key", "create", "--label", "rooms-fault")["key"]
+    key = cl.cli(1, "account", "api-key", "create", "--label", "rooms-fault",
+                 "--dev-passkey", str(pk))["key"]
     return app, key
 
 

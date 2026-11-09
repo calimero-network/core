@@ -5,40 +5,50 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-description.workspace = true
-publish = true
+description = "The Rust app SDK for calimero:app: app attributes, encoding, tables, collections and env"
+publish = false
+
+[features]
+# The test harness: the real component on the real engine with an in-memory host.
+# Host target only; the module is compiled out on wasm32.
+testing = [
+    "dep:calimero-app-host",
+    "calimero-app-host/testing",
+    "dep:calimero-app-engine-wasmtime",
+    "dep:eyre",
+    "dep:tempfile",
+]
 
 [dependencies]
-borsh = { workspace = true, features = ["derive"] }
+base64.workspace = true
+calimero-app-wit.workspace = true
+calimero-sdk-macros.workspace = true
+ciborium.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-calimero-account.workspace = true
-calimero-prelude.workspace = true
-calimero-primitives = { workspace = true, features = ["borsh"] }
-calimero-sdk-macros.workspace = true
-calimero-sys.workspace = true
-tracing = { workspace = true, optional = true }
-# Uses the `fmt` + `registry` features (both on by default); inherits the
-# workspace's feature set since `workspace = true` can't override it.
-tracing-subscriber = { workspace = true, optional = true }
+thiserror.workspace = true
 
-# ABI description is a host-build concern: the manifest is extracted by running
-# the app natively. Linking it into the wasm only bloats the module.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-calimero-wasm-abi.workspace = true
+hex.workspace = true
+rand.workspace = true
+sha2.workspace = true
+calimero-app-host = { workspace = true, optional = true }
+calimero-app-engine-wasmtime = { workspace = true, optional = true }
+eyre = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
-[features]
-# Routes `tracing` macro output (`info!`/`debug!`/… from the app and any crate
-# it imports) through the host log function. Off by default to keep the wasm
-# binary small; apps opt in with `calimero-sdk = { features = ["tracing"] }`.
-tracing = ["dep:tracing", "dep:tracing-subscriber"]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen.workspace = true
 
 [dev-dependencies]
-macrotest.workspace = true
+proptest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { path = ".", features = ["testing"] }
+calimero-app-build.workspace = true
+calimero-app-engine-wasmtime.workspace = true
+calimero-app-host.workspace = true
+tempfile.workspace = true
 trybuild.workspace = true
-# The macro-test fixtures exercise full `#[app::state]` expansion, which emits
-# `::calimero_storage` paths (CRDT merge registry). This is a dev-dependency
-# cycle (calimero-storage depends on calimero-sdk) — Cargo permits it because
-# the back-edge is a dev-dependency.
-calimero-storage.workspace = true

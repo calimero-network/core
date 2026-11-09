@@ -19,17 +19,14 @@ operating the nodes can read the apps' data.
 | **calimero-sealed** | The sealed HTTP transport, server and client |
 | **calimero-identity** | Passkeys, sessions, API keys, confirmation challenges |
 | **calimero-client** | Rust client: attestation check, sealed requests, sign-in |
-| **calimero-runtime** | Wasmer runtime for Rust SDK apps, with gas metering and host functions |
 | **calimero-app-engine-wasmtime** | Wasmtime engine for `calimero:app` components |
-| **calimero-sdk** | App development SDK with proc macros |
-| **calimero-storage** | CRDT collections and the storage interface apps write through |
+| **calimero-sdk** | The Rust SDK apps are written with, built into `calimero:app` components |
 
 The full list is in [`crates/AGENTS.md`](crates/AGENTS.md).
 
 ## Quick start
 
 ```bash
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
 cargo run -p merod -- local                     # 3 nodes on 127.0.0.1:2501-2503
 cargo install --path crates/meroctl
 meroctl node add local http://127.0.0.1:2501/ --allow-mock
@@ -53,13 +50,12 @@ The docs live in [`docs/`](docs/) (Astro Starlight).
 
 ## Related Repositories
 
-- [calimero-network/merobox](https://github.com/calimero-network/merobox) -- scenario testing (`cloud-v2` backend)
 - [calimero-network/mero-tee](https://github.com/calimero-network/mero-tee) -- TEE images, mero-kms, signed releases
 - [calimero-network/mdma](https://github.com/calimero-network/mdma) -- Calimero's cluster manager (VMs, placement, the rebalancer)
 - [calimero-network/mero-js](https://github.com/calimero-network/mero-js) -- JavaScript/TypeScript client
 - [calimero-network/calimero-client-py](https://github.com/calimero-network/calimero-client-py) -- Python client
 
-`cargo mero`, the app toolchain, is in [`tools/cargo-mero`](tools/cargo-mero).
+Apps build with `calimero-app-build` (`mero-app-build`) and are signed with [`tools/mero-sign`](tools/mero-sign).
 
 ## License
 

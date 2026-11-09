@@ -12,26 +12,25 @@ is its command line.
 - **One Raft log per app** (`calimero-log`). The leader runs the WASM call
   and appends `{ call, outcome { result, diff, events } }`. Followers apply the diff;
   nothing is re-executed. `base_index` guards against applying a stale diff.
-- **Two executors** (`types::Executor`; the transition the spec records as D53,
-  overriding D1/D15 until v1 apps move): a v1 core module (SDK 0.12) runs on
-  wasmer (`app::Executor`, today's `calimero-runtime` over a copy-on-write
-  `Overlay`; everything below that is not under "Component executor"); a
-  `calimero:app` component (the v2 SDK) runs on wasmtime through the host core
+- **One engine** (`types::Executor`): an app is a `calimero:app` component (built
+  with `calimero-sdk`) and runs on wasmtime through the host core
   (`node/component.rs`, `component.rs`). The executor is decided once, from the WASM
   the app's bundle names (a package's service or a raw upload,
-  `wasmparser::Parser::is_component`), when the app is created
-  (`AppRecord::executor`, absent = wasmer), and the app's `init` entry records it in
-  the group's state (`AppState::executor`, in `Head`, so a snapshot carries it; a
-  state from before has none: wasmer). Each executor's entries are a format of its
-  own (`app::AppCmd`, `component::ComponentCmd`, distinct `op` names) and write a
-  keyspace of its own (`rows::KV`/`IDEM` and `rows::CKV`/`CIDEM`/`CORDER`); a replica
-  applies an entry with the executor its state names, and one of the other format
-  changes nothing (tests `a_wasmer_entry_never_applies_to_a_component_app`,
-  `wasmer_and_component_apps_share_a_cluster`). An upgrade that would move an app
-  between executors is refused at the leader (`upgrade_local`), either way, until
-  rebuild migrations (D38) exist (`upgrades_across_executors_are_refused_both_ways`).
-  A data directory written before components opens and its apps run on wasmer
-  (`old_datadir.rs`, from a directory `a09547b2b` wrote).
+  `wasmparser::Parser::is_component`), when the app is created (`AppRecord::executor`),
+  and the app's `init` entry records it in the group's state (`AppState::executor`, in
+  `Head`, so a snapshot carries it).
+- **SDK 0.12 apps (wasmer) are gone**: the node no longer runs a WASM core module.
+  `Executor::Wasmer` stays only so records and states written before still read (no
+  recorded executor means wasmer). A core-module bundle is refused at upload, create and
+  package install with `400 UNSUPPORTED_BUNDLE` (`ApiError::unsupported_bundle`), and an
+  upgrade to one with `UNSUPPORTED_BUNDLE`; an existing wasmer app is still listed and
+  deletable, and every call, view, upgrade, intent, xcall list and ABI read on it answers
+  `410 UNSUPPORTED_ENGINE` (`ApiError::unsupported_engine`, `app::WASMER_GONE`). A wasmer
+  entry in an app's log applies as a deterministic no-op (`AppMachine::unsupported`:
+  `last_index` moves, nothing else). Tests: `old_datadir.rs` (a directory `a09547b2b`
+  wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
+  `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
+  `a_wasmer_entry_never_applies_to_a_component_app`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -43,9 +42,14 @@ is its command line.
   (Noise IK with its own transport key, `x-calimero-node: <id>`);
   `Node::identify_peer` attests the claimed node's registered address itself and
   takes the claim only if that quote names the proven key (cached by key; the
-  quote's release with it). `api::peer` replaces the bare cluster-secret check
+  quote's release with it). That attestation, and the one before a channel to
+  a peer opens (`Node::connected`), runs in a task of its own (`node::detach`,
+  one per caller or peer at a time, `MAX_DETACHED`): on TDX it takes about a
+  second, longer than the one heartbeat openraft gives an RPC, and dropped
+  with the RPC it never finished (regression:
+  `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
-  (`view`, `call`, `events`, `storage`, `blob/held`, `app-ready`, `presence`)
+  (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
   refused while a hosted app marks the blob; `raft` needs `rpc.sender()` = the
@@ -55,6 +59,19 @@ is its command line.
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
+- **Raft addressee** (`PeerTransport::send`, `api::internal_raft`): the sender check above
+  covers one end of a Raft message; the other is its addressee. Every Raft message names the
+  node it is for (`target`), and a node that is not that node refuses it with `421 NOT_ADDRESSEE`.
+  So a genuine member's message that reaches the wrong node (a reused port, a node moved or
+  replaced) cannot move that node's term or log. Regression:
+  `a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy`. Both cases are counted
+  in `calimero_raft_misaddressed_total{reason="not_addressee"|"no_target"}`. **Transition:** a
+  message without `target` comes from a peer on a release before this one (rc.4 and earlier). This
+  release accepts it, counts it as `no_target`, and warns at most once per
+  `api::NO_TARGET_WARN_EVERY` (60 s; one slot per process, taken by compare-and-swap; the count in
+  between is in the metric). The release after this one refuses a missing `target` too
+  (`RaftBody::target` stops being optional). Ship that only once every node runs this release,
+  which `no_target` at zero on every node shows.
 - **Decisions carry proofs** (`proof.rs`, `system::authorize`, run before every command):
   consent is logged as `{ subject, method, args, nonce, assertion }`
   (`api::consent` keeps the nonce in `Pending::Confirm`); `apply` rebuilds
@@ -70,13 +87,73 @@ is its command line.
   whichever organization keeps it. `BindPublisher` carries a passkey consent
   over the key's current binding generation; `SetReleaseDeadline` the
   operator's signature (`cluster / __release_deadline / { version, after }`;
-  `after: null` lifts it). The consent page (`consent_page::act`) logs the same
+  `after: null` lifts it). Credentials and memberships carry the person's
+  consent too (`account:<a>`: `__add_passkey { credentialId, publicKey }`,
+  signed by a passkey the account already has; `__remove_passkey
+  { credentialId }`; `__create_api_key`, `system::api_key_args`, the key's
+  hash included; `org:<org>`: `__set_org_role { account, role }`,
+  `__remove_member { account }`, `__set_team_member { team, account, lead,
+  role, capabilities }`, `__remove_team_member { team, account }`,
+  `__set_capabilities { team, account, capabilities }`,
+  `__set_default_capabilities { capabilities }`, `__create_invite`,
+  `system::invite_args`). A step-up whose arguments the node makes (an API
+  key, an invite token, the registered credential) goes through
+  `api::consent_minted`: the first request keeps them, and what the retry
+  needs but must not log (`Pending::Confirm::carry`), with the challenge.
+  Invites are kept under the token's Ed25519 public key
+  (`proof::invite_key`); `RedeemInvite` carries the token key's signature
+  (`proof::sign_invite_redeem`), so a node that only saw the log cannot
+  redeem one. A redemption that changes nothing for the account (a member at
+  the invite's role or above, in every team it names) spends no use
+  (`RedeemInvite { free_when_unchanged }`, which the API always sets; absent in
+  an entry an earlier release logged, which replays spending one; regressions:
+  `a_member_redeeming_an_invite_leaves_its_use_for_the_invitee`,
+  `a_redemption_logged_before_free_redemptions_replays_as_it_did`,
+  `an_owner_opening_their_own_invite_leaves_it_for_the_invitee`). The fleet
+  carries the operator's signature (`cluster /
+  __register_node { id, addr, zone }`, `__remove_node { id }`,
+  `__set_quotas { quotas }`; `<app> / __set_replicas { replicas }`, one
+  signature for both of a move's writes: the union applies with it unspent,
+  the target spends it). The configured peers come with `Genesis { nodes }`;
+  `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
   consent as the API, its assertion made on the node's own origin (`apply`
   checks the signature and the statement, not the origin). Tests run
   commands' own authority rules through `run_authorized` (`run_unproven` with
   the new-work refusal). Test clusters start with the harness's
-  operator key (`ops_signed` signs like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
-  `operator_decisions_need_the_operator_signature`, `system::tests`.
+  operator key (`ops_signed` and `ops_signed_delete` sign like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
+  `forged_credentials_memberships_and_redemptions_are_refused`,
+  `operator_decisions_need_the_operator_signature`,
+  `credentials_memberships_and_the_fleet_are_approved_where_they_are_made`,
+  `system::tests` (`credentials_need_the_accounts_own_passkey`,
+  `memberships_need_the_actors_passkey`, `invites_are_redeemed_with_the_tokens_key`,
+  `the_fleet_and_quotas_need_the_operators_signature`,
+  `a_replica_move_is_signed_once_over_its_target`).
+  Sessions too: a sign-up (`CreateAccount`) carries the new passkey's
+  assertion over `system::account_args` (`account:<id> / __create_account`;
+  `register/finish` answers `412` once the registration verifies, the pending
+  `Pending::SignUp` keeps the account and the first refresh token, and the
+  retry's `confirm` logs it); a sign-in's `CreateRefresh` carries the login
+  assertion, whose challenge is that of `session / __sign_in /
+  system::sign_in_args` (`api::NewSession`, made in `login_begin`); a
+  refresh token stands for an Ed25519 key (`proof::refresh_key`, kept in
+  `RefreshRecord::key`) that signs its exchange (`UseRefresh::signature`,
+  `proof::refresh_use_message`; a record without a key is not exchanged);
+  `SetSignCount` carries the assertion whose counter it records
+  (`calimero_identity::assertion_counter`); `RevokeApiKey` the account's
+  consent (`__revoke_api_key { keyId }`). Regressions:
+  `forged_sessions_counters_key_revocations_and_accounts_are_refused`,
+  `system::tests` (`a_sign_ins_refresh_token_needs_its_passkeys_assertion`,
+  `a_refresh_token_is_exchanged_with_its_own_key`,
+  `an_account_is_created_by_its_own_passkey`,
+  `an_api_key_is_revoked_with_its_accounts_passkey`,
+  `a_counter_moves_with_the_assertion_that_moved_it`). A cluster requires
+  these session proofs from `SystemState::session_proofs_from` on: a genesis
+  this release logs (`Genesis { session_proofs: true }`), or in a cluster begun
+  before, the `RequireSessionProofs` its first system leader on this release
+  writes (`reconcile`). An entry before it (what an earlier release logged,
+  replayed on restart) applies as it did, so replicas never diverge on it
+  (`session_commands_logged_before_their_proofs_apply_as_they_did`,
+  `old_datadir.rs`).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -94,8 +171,8 @@ is its command line.
   records only `{hash, size}`. A node missing a blob fetches it from a peer
   (`internal/blob/get`) on first use. Log entries are capped at
   `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
-  A call whose arguments alone pass the cap is refused where it arrives
-  (`413 TOO_LARGE`), never forwarded to the leader first (regression:
+  A call whose arguments pass `MAX_ARGS_BYTES` (below that cap) is refused where it arrives
+  (`413 ARGS_TOO_LARGE`), never proposed (regression:
   `a_write_too_large_for_the_log_is_refused_at_once_on_every_node`).
 - **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
   `POST /packages/install { package, version }` fetches from the
@@ -110,6 +187,20 @@ is its command line.
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.
+  A service may also ship a compute component (`compute` in the manifest): it is prepared on
+  `Node::compute_engine` only (never the replica engine), and the release is refused
+  `400 COMPUTE_ABI_MISMATCH` unless its ABI lists exactly the main ABI's compute methods,
+  each with the same caps, and `400 BAD_BUNDLE` when it imports outside the compute world or
+  its ABI is not the compute world's.
+  A release without one installs and its app runs calls; it cannot run compute.
+  `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
+  `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
+  `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
+  `AppRecord::compute_bundle` carries the running release's compute hash next to `bundle`.
+  Releases may share an app component and differ in compute, so create and upgrade carry the compute hash of the release they name (`resolve_release_parts`), and apply only checks that a release ships that pair (`SystemState::ships_compute`).
+  A create or upgrade by bundle hash alone resolves the compute part of the releases that ship that app component (`SystemState::compute_of`), `400 AMBIGUOUS_COMPUTE` when they differ, and answers `compute: false` when none ships one.
+  The app's log carries the pair too: `ComponentCmd::Init` and `Upgrade` name `compute_bundle` beside `bundle`, and apply keeps it in `ComponentHead::compute_bundle`, so a run pins the pair the group runs and never the system record's, which a delayed or failed system write may leave behind.
+  A release's parts count against the bundle quota each at its own size (`PackageVersion::part_sizes`; a release from before counts the whole `.mpk` per part).
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
@@ -147,6 +238,90 @@ is its command line.
   it installed), recorded as `system::OPERATOR`, which no account can be and
   which no account quota counts. Owner side: the passkey routes below. Whichever
   party does not hold a decision gets 403 (API) and a refusal (`apply`).
+  Two more rules, `--deployments open|granted` and `--deployers
+  operator|owner` (`Governance::deployments`, `deployers`; below), are left
+  out of the governance JSON when default, so a default cluster attests the
+  bytes it did before (`the_default_governance_binds_the_bytes_it_did_before_deployers`);
+  the one change after genesis is `SetDeploymentsGranted` (open to granted,
+  operator-signed, never back).
+- **Deployers** (`SystemState::deployers`, `cluster_owner`, `may_deploy`):
+  where deployments are `granted`, an account installs (`InstallPackage`,
+  `PutBundle`) only with a live `DeployerGrant` of its own (`account:<id>`) or,
+  holding `MANAGE_APPLICATION` org-wide, of its organization (`org:<id>`);
+  `until` is judged at the command's own time (`installedAt`, `PutBundle::at`),
+  never a node's clock. The API refuses first, before any registry fetch,
+  verification or store (`Node::refuse_undeployable` in
+  `install_from_registry`, `install_upload` and `POST /bundles`; `403
+  DEPLOY_NOT_GRANTED`); `apply` refuses again (`system::NOT_A_DEPLOYER`). So
+  does `POST /apps` (and an upgrade run, the consent page) where it would
+  install a release from the registry first; an instance of a release the
+  caller already sees needs no grant. The operator's installs never need one.
+  Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
+  (`POST /ops/deployers`, `DELETE /ops/deployers/{key}` or `POST
+  /ops/deployers/{key}/revoke`; `cluster /
+  __grant_deployer / { deployer, until }`, `__revoke_deployer / { deployer }`;
+  `at` is not signed: the 428 and the signed retry are two requests) until,
+  with `deployers: owner`, the operator names the owner once
+  (`SetClusterOwner`, `POST /ops/cluster-owner`, `__cluster_owner`); from then
+  on only the owner account or the owner org's org-wide `MANAGE_APPLICATION`
+  holders, with passkey consent (`POST /deployers`, `DELETE
+  /deployers/{key}`), and the operator's signature is refused
+  (`SystemState::deployers_owner`, `authorize`). Revoking keeps what was
+  installed and running. `GET /deployers` for the operator and the owner side.
+  Regressions: `only_granted_accounts_install_on_a_granted_cluster`,
+  `an_open_cluster_installs_as_before_until_the_operator_grants_deployments`,
+  `the_cluster_owner_grants_deployers_once_the_operator_names_it`
+  (`tests/deployers.rs`), `on_a_granted_cluster_only_deployers_install`,
+  `deployer_grants_carry_the_operators_signature_then_the_owners_passkey`,
+  `deployments_are_granted_one_way` (`system::tests`).
+- **Deployments** (`SystemState::deployments`, `system::Deployment`,
+  `Offer`): an owner's (`Deployer`: account or org) list of offered apps, app
+  name -> one installed `package@version`. Managed by whoever `acts_for` the
+  owner (the account; org-wide `MANAGE_APPLICATION`), each change with that
+  actor's passkey consent judged at apply: `CreateDeployment` (`POST
+  /deployments { name, owner }`, `cluster / __create_deployment / { name,
+  owner }`; the id is `system::deployment_id` of the consent's nonce),
+  `OfferApp` (`POST /deployments/{id}/apps`, `deployment:{id} / __offer_app /
+  { app, package, version }`; the release installed and seen by the actor;
+  an entry keeps its package), `WithdrawApp` (`DELETE
+  /deployments/{id}/apps/{app}`; refused while an instance from it runs that
+  package; the release stays installed), `DeleteDeployment` (`DELETE
+  /deployments/{id}`; nothing offered, no instance from it). Create and offer
+  need `may_deploy` for the actor where deployments are granted. Bounds:
+  `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT`;
+  names `deployment_name_fits`, app names and ids `deployment_segment_fits`.
+  `POST /apps { deployment, package, version? }` creates from the offer
+  (`api::offered_bundle`, no install, no grant, no `sees_release`) and records
+  `AppRecord::deployment`; `CreateApp` checks the offer again
+  (`offers_bundle`). `UninstallPackage` refuses an offered release (`offered`);
+  `DeleteOrg` refuses an org that owns a deployment. Reads: `GET /deployments`
+  (what the caller manages), `GET /deployments/{id}` (public, on fresh state:
+  name, owner kind and name, offers), `GET /deployments/{id}/orgs` (managers, `sys_fresh`:
+  customer orgs' id, name, instance count, apps and versions, first created).
+  Not done: the spec's migration of old installs into deployments, transfer,
+  the lockout guard, the consent page naming the deployment. Regressions:
+  `tests/deployments.rs`, `deployments_are_their_managers_and_keep_what_they_offer`,
+  `deployment_changes_carry_their_managers_consent`,
+  `state_from_before_deployments_reads_with_none_and_writes_as_before`,
+  `a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind`.
+- **Sign-up policy** (`Governance::sign_up`, `--sign-up open|invite|closed`,
+  left out of the governance JSON when `open`): `CreateAccount { invite }`
+  is judged at apply by `SystemState::admits` (`open`: anyone; `invite`: an
+  org invite, which joins the org, or a cluster sign-up invite; `closed`: a
+  sign-up invite only; an invite presented is checked on every policy).
+  The invite is `SignUpRedemption { inviteKey, now, signature }`, the token
+  key's `proof::sign_invite_redeem` over the new account, spent in
+  `used_proofs`; refusals start with `system::SIGN_UP_PREFIX` (`403
+  SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse first
+  (`api::refuse_sign_up`, fresh state before refusing; the finish before its
+  challenge is spent). `SystemState::sign_up_invites` (`CreateSignUpInvite`,
+  `RevokeSignUpInvite`, bounded by `MAX_SIGN_UP_INVITES` and
+  `MAX_SIGN_UP_INVITE_USES`) and `SetSignUp` are run by the operator's
+  signature until the cluster's owner is named, then the owner's passkey
+  (`SystemState::runs_sign_up`; `__sign_up`, `__create_sign_up_invite`,
+  `__revoke_sign_up_invite`). Routes: `GET /sign-up` (public), `/ops/sign-up[/invites]`,
+  `/sign-up[/invites]` (owner). Regressions: `tests/sign_up.rs`,
+  `system::tests::sign_up`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
   - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
@@ -199,14 +374,24 @@ is its command line.
   `placement_across_zones_keeps_to_approved_releases`, `placement::tests`.
 - **Outbound HTTPS** (`calimero-outbound`): `Config::outbound` from
   `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
-  `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
+  `call_local`'s runs (calls, follow-ups, timers; not a read-only member's) and to a
+  component's actions (`NodeHttp`, "Component executor"), for
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
   the account, or for an org whoever holds `MANAGE_APPLICATION` org-wide, with
   `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
   `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
-  re-run sends it again.
+  re-run sends it again. A component's calls, timers and deliveries get the same gate
+  (D76, "Component executor").
+- **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
+  (`FileSealer`, `FileOpener`) under a random data key.
+  The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
+  `FileOpener::finish_expecting` checks the plaintext size and SHA-256 against the mark, as GCM does not commit to its key.
+  `wrap_key` wraps the data key as salt || nonce || AES-256-GCM under a subkey of `backup::file_key` (per app, from K_c, not the TEE key), with the app id as AAD.
+  `wrap_for_job` re-wraps a secret to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
+  The job node opens it through `SealedTransport::derive`, which never returns the raw DH output and labels its HKDF (`calimero_sealed::derive_shared`, shared with the wrap side).
+  `noise_seed` and `run_token` derive a run's seed and capability from the file key.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, made on the node's first start and kept
   in `<data_dir>/signing-key` wrapped under K_r, `signing_key.rs`: a restart
@@ -215,6 +400,17 @@ is its command line.
   (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
   and `GET /apps/{app}/attestation` gathers every replica's
   (`Client::verify_app_cluster`).
+- **Account proofs** (`api/account_proof.rs`, `Node::account_proof`): `POST
+  /auth/account-proof { nonce, audience }` (a passkey session, `holder`: never
+  an API key or a package-bound session) answers
+  `calimero_client::attest::AccountProof`, the receipt key's signature over
+  `"calimero.account-proof.v1\0" || JCS({ cluster, node, account, nonce,
+  audience, issuedAt, expiresAt })`, valid `ACCOUNT_PROOF_TTL` (5 min); limits
+  `ACCOUNT_PROOF_NONCE`, `MAX_ACCOUNT_PROOF_AUDIENCE`, plain text only.
+  `GET /ops/nodes/{id}/receipt-key` (ops token) answers the key
+  `Node::session_issuer` holds for that node, so the operator (mdma) checks a
+  proof from any node. Regression: `tests/account_proofs.rs`; vector:
+  `an_account_proof_binds_its_statement_and_key`.
 - **KMS evidence**: `GET /attestation?purpose=kms` adds `kms` (`config.kms_keys`: the
   KMS quote merod accepted for its storage key, and the boot script's record for the
   data disk's, `--kms-disk-evidence`) and binds it (`kms_report_data`). Without a
@@ -223,13 +419,10 @@ is its command line.
   quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
   has any key. Not a route of a running node: `serve_release` is its own tiny server
   (that one route, `MAX_CONCURRENT_RELEASE_QUOTES`), run only by `merod attest --serve`.
-- **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
-  sets, blob marks. App code's overlay answers nothing there and a run that tries is
-  refused; the host writes with `Overlay::set_host` and reads with
-  `Storage::host_get`. Rotations are judged by `rotation_refusal`.
-- **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
-  read the system state through `sys_fresh` (a read index), so a removal committed
-  elsewhere holds before the next request.
+- **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
+  `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
+  (a read index), so a removal committed elsewhere holds before the next request. Regression:
+  `an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
@@ -244,7 +437,21 @@ is its command line.
   then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
   Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
   `membership::tests`.
-- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` records it; only the operator's signed `/ops/nodes` registers it again. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Upgrade keys** (`ApiKeyRecord::upgrades`, `types::UpgradeScope`; docs: protocol
+  "Upgrade keys", cloud "Deploy from CI"): `POST /auth/apikeys { upgrades: { app,
+  package? } }` (passkey consent; `api_key_args` states `upgrades` only when set, so
+  other keys' consents read as before) makes a key bound to one app, its package and
+  that package's pinned signer, plus the public half of an Ed25519 key derived from the
+  key (`proof::api_key_public`). `api::principal` refuses it everywhere (`403
+  UPGRADE_KEY_ONLY`); only `app_upgrade` takes it (`api::credential`), for `{ version }`
+  of its package (`SystemState::key_may_upgrade`), signing the statement in place of
+  the step-up (`proof::sign_key_upgrade`, carried in `UpgradeApp::consent`). `authorize`
+  verifies it under the key the log holds then (revoked or expired: refused) and spends
+  it; every other upgrade rule is unchanged. `UpgradeRecord::api_key` names the key
+  (`lastUpgrade.apiKey`). Regressions: `tests/upgrade_keys.rs`.
+- **Job nodes** (`NodeRole::Job`, `job_node.rs`, `node/job.rs`): `POST /ops/nodes { id, addr, zone?, role? }` (operator-signed; `role` is in the signed arguments unless it is `replica`; `"replica"` default, `"job"`; any other role is refused) registers a node that only runs compute. It is in the directory but never a Raft member (not even a learner: a member keeps its log sealed under K_c, which a job node never holds), never a replica, blob (a sealed file included, `a_sealed_file_is_never_sent_to_a_job_node`) or bundle target, majority member, presence peer, CSP origin or cluster-key recipient. Every site that picks nodes for the cluster's own work reads `SystemState::replica_nodes()` / `replica_node(id)`, never `nodes`; `/ops/apps/{app}/replicas` naming a job node answers `400 JOB_NODE`, `internal/cluster-key` for one is refused, `/ops/placement` lists it with `role` and app counts stay replica-only. `DELETE /ops/nodes/{id}` removes one without touching system voters. A node's role is fixed (`RegisterNode` refuses another role for an id; remove it first) and `/ops/nodes` refuses `role: job` for a system voter, learner or `--peers` id (`NODE_HOLDS_CLUSTER`); removal changes system membership only for a node that is in it. Nodes are reached by id: Raft's `PeerTransport::send` and `internal/cluster-key` take the address `Node::replica_addr(id)` holds (the directory's, else `--peers`; none for a job node), and address-only callers (`Node::peer`, so `peer_post` and streams) resolve it by a normalised comparison (`system::normalize_addr`) and refuse anything that is not a replica's, so the cluster secret never leaves for a job node. `RegisterNode` refuses an address another id holds (`ADDRESS_TAKEN` at the API). A ceremony holder is resolved through `replica_node`. Registering a job node (`POST /ops/nodes`, `role: job`) answers `409 CLUSTER_NOT_UPGRADED` unless every replica node, voter and learner runs at least this node's release, so no job record exists while an older node could misread it (upgrade the voters first). Upgrade the voters before anything else: the `RegisterNode` refusals (role fixed, address taken) bind only nodes that run this release. A node registered as a replica is admitted as a learner only after it attests its transport key as a cluster node (`attests_as_replica`): a job node registered as a replica never is, and `--peers` must list only replica nodes. `merod run --job-node` calls `run_job(JobConfig)`: no store, K_c, KMS, Raft or system group; it serves `/health`, `/attestation` (only `purpose=jobs`, answering `jobKey` bound with the transport key, release, cluster and node id in one quote; every other purpose or none is 404, so no channel that attests a transport key opens to it; a cluster node answers `purpose=jobs` with 404) and `GET /job/load` (`{ running, capacity }`, `RUNS_PER_JOB_NODE` = 2). Its Ed25519 job key is made in memory at start. Leader side: `Node::attest_job(id, app)` fetches `purpose=jobs` over a fresh nonce, verifies it with `verify_job_key` under the peer policy (`--peer-profiles`, `--peer-min-release`), keeps the result `JOB_ATTEST_TTL` (60 s) for as long as the directory's `node_epoch` for the id is unchanged (any registration or removal) and until a channel to it fails (`forget_job`); it fails outright when the directory could not be brought up to date. `attest_job` also refuses a release the app's org or account has not approved (`release_may_hold`, as `may_send` does), and `/ops/placement` reads a job node's release through the same cached attestation; `Node::job_load(peer)` asks over a sealed channel pinned to the attested transport key. Regressions: `tests/job_nodes.rs`, `placement::tests::a_job_node_is_never_placed`.
+- **Job runs** (`job_node/{admission,bundles,runs,exec}.rs`, `job_wire.rs`; tests `job_runs.rs`): a job node runs one attempt of a compute run per assignment, all inside the sealed channel. **Who may give it work**: only the cluster whose identity key it was started with (`merod run --job-node --cluster-identity HEX`, from `GET /ops/cluster` / `meroctl ops cluster`). The identity is an Ed25519 key derived from K_c (`backup::cluster_identity_key`, seed `HMAC-SHA256(K_c, "calimero.cluster-identity.v1")`), so a valid signature shows a node of this cluster signed; the job node fetches and attests nothing about the sender, and has no `--peers`; a key that is not a curve point or is of small order is refused at start (`check_cluster_identity`), signatures are checked strictly, and the identity is bound into the job node's `purpose=jobs` quote (`AttestationDoc::cluster_identity`, `job_key_binding`) so the leader's `attest_job` refuses a job node that serves another cluster. `PUT /job/bundles/{hash}` takes a component only with `x-bundle-signature`, the identity's signature over `"calimero.compute.bundle.v1\0" || hash` (`403 BAD_SIGNATURE`), then checks the hash and prepares it once on the compute engine (`MAX_JOB_BUNDLES` kept, least recently used first); only a compute component (`calimero:app/compute`, its ABI listing compute methods) prepares, and an app component is refused with `400 BAD_BUNDLE` even when the cluster signed it, so the job node never links storage, state or the network for it. `POST /job/runs` (at most `MAX_ASSIGNMENT_BYTES`) takes an `Assignment` (`job_wire`: app, run, attempt, method, args, bundle, caller, owner, `startTsMs`, budget, inputs `{id = hex SHA-256 of the ciphertext, size, sha256, wrapped}`, wrapped seed, hex token, `signature`) signed by the identity over a length-prefixed binary message of every field (`assignment_message`, big-endian integers; `Node::sign_assignment` is the cluster side). Refusals, in order: shape (`400 BAD_ASSIGNMENT`/`BAD_BUDGET`, duplicate input ids, `413 TOO_MANY_INPUTS`/`INPUT_TOO_LARGE`/`INPUTS_TOO_LARGE`), `403 BAD_SIGNATURE`, then an assignment already held answers its state (`409 RUN_CONFLICT` if it differs), `503 BUSY` at `RUNS_PER_JOB_NODE` runs waiting or running or when the finished outputs held on disk plus the most each active run and the new one may still write exceed `MAX_FINISHED_BYTES` (nothing is evicted, the leader collects or deletes), `409 NEED_BUNDLE`, `400 NOT_COMPUTE` (the compute ABI must list the method as a compute method), `400 BAD_WRAP` (every wrapped key opens at admission through `unwrap_for_job`, so a key made for another node, run, attempt or index never gets in). Runs are keyed by `(app, run, attempt)` (run ids are per app) and every other route is `/job/runs/{app}/{run}/{attempt}/...` with the app id URL-encoded; they need the run token in `x-run-token` (constant-time compare); a wrong token answers exactly as an unknown run, `404 UNKNOWN_RUN`, which the leader treats as lost. `PUT .../inputs/{i}` stores the ciphertext only if its length is `sealed_len(size)` and its SHA-256 is the input's id (`400 BAD_INPUT_SIZE`/`BAD_INPUT_ID`), and only if it opens under the run's key to a file of the declared size and plaintext SHA-256 (`exec::input_matches`, decided once, from memory); an input that does not match ends the run on the spot with a signed `integrity` report, since the leader sent it; the run starts on its own OS thread when every input is in (at once for none). Sealed request bodies are decrypted and buffered before any route check, bounded by the sealed in-flight cap; that is accepted. `GET .../{attempt}` answers `{ state: awaiting|running|done|lost, progress?, report?, signature? }`: `done` carries the signed report, a failed run included; `lost` is a run this node could not serve (`Unavailable` trap, thread panic, node file I/O, an input that fails to open during the run, which is the node's own disk), never signed, which the leader restarts elsewhere with the next attempt. `GET .../outputs/{i}` and `.../key` give an output's ciphertext and data key (hex) once done; outputs are listed in the order the run finished them. `DELETE` sets the cancel flag, waits `CANCEL_WAIT` for the run to stop, answers its last status and drops it with its scratch files (a run that did not stop stays and answers `running`); runs not deleted are swept `JOB_RESULT_TTL` after they end, runs still waiting for inputs end lost and are swept after `AWAITING_INPUTS_TTL`; the scratch directory is emptied at start, so a restarted node knows no runs. The run is the compute component's `run` export, invoked as an action with a compute context over the files of the assignment only (`Assignment.bundle` names the compute component's hash): inputs are streamed from the scratch ciphertext through `FileOpener` and checked with `finish_expecting` at the end, and a failure then is a read error, so the run is lost, never signed as `integrity`. Outputs are sealed to disk under a fresh key each (`NewFile.ciphertext` stays empty); engine `WasmtimeEngine::for_compute`, `invoke_cancellable`. A trap maps to the reason structurally (`exec::classify`): fuel, memory, cancelled, trap (fault, stack, any other denied call), app-error; a wall clock that ran out (`Timeout`) is a lost attempt, so the outcome never depends on the machine and only fuel is the deterministic cap. A trap or app-error report also carries the text (`Report::message`, signed, at most `MAX_REPORT_MESSAGE_BYTES`). The `Report` (`job_wire`) holds app, run, attempt, status, reason, the result bytes, outputs `{id = SHA-256 of the ciphertext, size, sha256}` and usage as integers (`cpuMicros` thread CPU, `gibMicros` peak memory times wall, `fuel`); the job key signs `"calimero.compute.report.v1\0"`, the SHA-256 of the assignment message it ran (so a report stands for that assignment only) and the length-prefixed fields, output ids as their 32 decoded bytes (`report_message`); one encoding only: ids and hashes are lowercase 64 hex, a done report has no reason, a failed one has a reason and neither result nor outputs, and `verify_report(job_key, assignment_digest, report, signature)` is the one check the leader uses. `Assignment`'s `Debug` hides the token and the wrapped keys; the seed and keys live in `Zeroizing`, except the copy of the seed the host core keeps in its `Invocation` for the run's life. A job node feeds no metrics series: a compute run leaves every `calimero_app_*` series of the cluster unchanged until the leader counts it. The leader's reads from a job node (`attest_job`, `job_load`) stop at `MAX_JOB_RESPONSE_BYTES`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
@@ -257,15 +464,26 @@ is its command line.
   is Prometheus text (directory counts, this node's groups, streams, system
   membership, build release; per-group Raft term, lags and quorum age; store
   sizes; and, from `metrics::track` on the router, requests by route template
-  and status, error codes, latency per route group and body bytes), never
-  names or state: labels are templates, groups, codes and numbers, and ids only
-  on the usage series below
-  (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
+  and status, error codes, latency per route group and body bytes; WASM run
+  time by kind, `calimero_wasm_run_duration_seconds{kind}` from
+  `metrics::wasm_run` in `Node::metered` and the view and action runs; a
+  logged call's `run` and `commit` time,
+  `calimero_call_phase_duration_seconds{phase}`, observed in
+  `call_local_component` once the entry is appended), never
+  names or state: labels are templates, groups, codes, kinds, phases and
+  numbers, and ids only on the usage series below
+  (regressions: `metrics_count_requests_errors_and_raft_without_naming_anyone`,
+  `wasm_runs_and_a_calls_run_and_commit_are_timed`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
   `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
-  labelled `app` and `org` (the payer: org id, or `account:{owner}` for a
-  personal app; `usage::payer`). Every WASM run goes through `Node::metered`
+  labelled `app`, `org` (the payer, whose quotas it counts against: org id,
+  or `account:{owner}` for a personal app; `usage::payer`) and `developer`
+  (who Calimero Cloud bills: for an instance of a deployment the deployment's
+  owner, in the same form, else the payer; `usage::developer`,
+  `usage::Billed::of`). Both are functions of the app, so they add no series
+  (at most 8 per hosted app). Regression for developers:
+  `an_instances_usage_is_billed_to_its_deployments_developer`. Every WASM run goes through `Node::metered`
   (`off_workers` plus `usage::measure`: thread CPU time, `CLOCK_THREAD_CPUTIME_ID`,
   around the run on its one thread; wall time off Unix), so CPU is counted on
   the node that ran the WASM: the leader for calls, `init`, migrations,
@@ -310,15 +528,21 @@ is its command line.
   sees a package name only for releases it installed (`Reader::Operator`,
   `sees_release`), never an account, a name or an upgrade's error text.
   Node releases come from `Node::release_of_node` (attested once, then kept;
-  at most `PLACEMENT_RELEASE_WAIT` each), as for placement. Regressions:
+  at most `PLACEMENT_RELEASE_WAIT` each), as for placement. Every report also
+  names each app's `lastWriteAt` (Unix seconds, `null` before its first write;
+  `api::with_last_writes`): `ComponentHead::last_write_ms`, read from this
+  node's replica or, for an app it does not host, a replica's
+  (`Node::last_write_ms`, `internal/last-write`, at most `LAST_WRITE_WAIT`
+  each, one page at a time). Regressions:
   `app_versions_and_release_approvals_are_reported_without_names`,
-  `an_operator_upgrade_is_reported_as_the_operators`.
+  `an_operator_upgrade_is_reported_as_the_operators`,
+  `an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
   client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
   that did commit. System-log forwards keep the long timeout: some system commands
-  are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
+  are not idempotent yet. Regression: `frozen-leader` in `tests/fault/suite.py`.
 - **Leader races**: `Group::propose` takes no leadership round before a call's
   append, so a deposed leader may run a call on stale state; its entry never
   commits, or commits as a no-op (`base_index` ≠ the app's last entry,
@@ -328,27 +552,20 @@ is its command line.
   the first call after every election conflicted once (regression:
   `the_first_call_after_a_leader_change_commits_without_a_rerun`;
   `calimero_build_conflicts_total` in `/ops/metrics` counts conflicts). Replies without an append (idempotent replays) are confirmed first.
-  The module is compiled from the bundle read before the lock, so the build
+  The component is prepared from the bundle read before the lock, so the call
   also answers a conflict when the state names another bundle by then (an
-  upgrade applied in between; `AppMachine::stale_module`, also checked by
-  `upgrade_local`). Regression:
-  `a_call_built_with_a_module_an_upgrade_replaced_never_commits`.
+  upgrade applied in between; `call_component` compares `AppState::bundle`).
 - **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
-  follow-up, timer, init, migration, strong view) happens inside the group's
+  timer tick, init, strong view) happens inside the group's
   proposal lock, on the machine's read lock, from borrowed state, so it cannot
   move to `spawn_blocking`; it goes through `block_in_place`, which hands the
   worker's other tasks (Raft heartbeats, the system group, HTTP) to another
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
-- **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`):
-  without a named `migrate`, an upgrade one state version up runs
-  the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
-  refused, and so is a target whose ABI strips authorship from a field
-  (`calimero_wasm_abi::downgrade::identity_downgrades`, the L1 gate; regression:
-  `an_upgrade_that_strips_authorship_is_refused`). Bundles without an ABI upgrade code-only. In a migration
-  (`Executor::migrate`) the export returns the new root state, the app's
-  `__calimero_migration_check` must pass, and the host writes the root entry
-  (`write_root_state`). The directory records the new bundle only once the
-  upgrade succeeded.
+- **Upgrades are code-only**: a component upgrade swaps the bundle
+  (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
+  consent page shows the state version each side's `calimero:abi` declares and flags a
+  change (`stateVersion`), as no migration runs. The directory records the new bundle only
+  once the upgrade succeeded.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
   passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
@@ -368,47 +585,86 @@ is its command line.
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
   and takes the org's teams, invites and apps. Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
+- **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
+  `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
+  the owner keeps the seed). `SetRecoveryKey` (owner, consent `__set_recovery_key
+  { publicKey }`; a new key or `null` ends a pending recovery), `StartRecovery`
+  (any account, with the seed's signature over org, account and nonce,
+  `calimero_identity::recovery`, checked against the org's current key in
+  `authorize` and spent), `CancelRecovery` (owner, `__cancel_recovery
+  { account }`), `FinishRecovery` (the named account, `__finish_recovery
+  { org }`, at least `RECOVERY_DELAY_SECS` (72 h) after the start, judged at
+  the commands' `at`: the node's clock, `Node::app_clock`, so tests move it).
+  Finishing removes every previous owner from the org and its teams and moves
+  their org apps to the new owner; account credentials are never touched. One
+  pending recovery per org (`409 RECOVERY_PENDING`); `403 WRONG_RECOVERY_KEY`
+  for no org, no key or a wrong signature alike. Routes: `POST
+  /orgs/{org}/recovery`, `.../recovery/{start,cancel,finish}`. Regressions:
+  `tests/org_recovery.rs`, `recovery_needs_the_owners_passkey_the_seed_and_the_delay`,
+  `rotating_the_recovery_key_retires_the_old_seed`,
+  `state_from_before_recovery_reads_with_none_and_writes_as_before`.
+- **Account recovery** (`docs/specs/account-recovery.md`; shaped like
+  organization recovery above, same `RECOVERY_DELAY_SECS`): an account may
+  hold one recovery code (`calimero_identity::new_recovery_code`, Crockford
+  base32, `normalize_recovery_code`, `MAX_RECOVERY_CODE_CHARS`); the log keeps
+  only its Ed25519 public key (`proof::recovery_key`, as invites;
+  `SystemState::recovery_keys`, key -> account). `SetAccountRecoveryKey`
+  (`POST /auth/recovery`, unbound passkey session, `consent_minted`
+  `account:<a> / __set_recovery { recoveryKey }`, the code answered once),
+  `RemoveAccountRecoveryKey` (`DELETE /auth/recovery`, `__remove_recovery
+  {}`). Signed out, `POST /auth/recovery/begin { code }` then `/start
+  { challengeId, code, registration }` (UV, the cluster's own origins):
+  `StartAccountRecovery` carries the code key's signature
+  (`proof::sign_recover` over account, credential id, SHA-256 of its public
+  key and `at`, checked in `authorize` and spent), spends the code, and
+  records `SystemState::account_recoveries[a] = types::PendingAccountRecovery
+  { credential, startedAt, readyAt }`; no passkey, no session. One per
+  account (`409 RECOVERY_PENDING`). `CancelAccountRecovery` (`POST
+  /auth/recovery/cancel`, a passkey the account has, `__cancel_recovery
+  { credentialId }`). `FinishAccountRecovery` (`POST /auth/recovery/finish
+  { accountId? }`, `412`, `Pending::RecoverFinish`): the pending passkey's
+  assertion over `session / __sign_in / sign_in_args` of the new refresh
+  token (`api::NewSession`, as `CreateRefresh`), verified at apply under that
+  credential; at `at >= readyAt` (the node's `app_clock`, `409
+  RECOVERY_NOT_READY` before) it adds the passkey (counter from the
+  assertion), revokes every session of the account
+  (`SystemState::revoke_account_sessions`) and records the refresh token.
+  `/auth/me`: `recoveryCode`, `recoveryPending`. Regressions:
+  `tests/recovery.rs`, `a_recovery_code_is_set_and_removed_with_the_accounts_passkey`,
+  `an_account_recovery_starts_only_with_the_codes_signature_and_the_account_cancels`,
+  `an_account_recovery_finishes_after_the_delay_with_the_new_passkey`,
+  `state_from_before_account_recovery_reads_and_writes_as_before`.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+- **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
+  "Passkeys are each cluster's own"): clusters share an rp-id, so a
+  registration's `user.name`/`displayName` is `passkey_user_name` (person ·
+  `config.cluster`, plus the app's name for a sign-up begun on a package
+  origin), and an assertion with a credential no account has answers `401
+  PASSKEY_UNKNOWN_HERE` (`unknown_here`, from `check_assertion_for`), naming no
+  other cluster or account. Regressions:
+  `a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here`,
+  `a_registered_origin_signs_people_in_to_its_package_only`.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
-- **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
-  caller's account (no device ids); the context id is `SHA-256(app_id)`.
-  `env::caller_org` is the caller's role and teams in the app's organization
-  (`app::caller_org`, passed through `Module::run_cloud`).
-- **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
-  unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
-  replicated and sealed, but a run is handed only its caller's space.
-- **Shared-storage writers**: a cell's rotated writer set is kept in the app's state
-  (`app::writers_key`), written with the run that rotated it.
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
   keys) are base64url that never starts with `-` (`api::typed_id`), which
   meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
 - **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
   sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
-- **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`): bytes live in the
-  cluster's blob store (`hex(SHA-256)`, a majority before the answer, a missing one
-  fetched from a peer), and the app's state marks which are its own
-  (`app::blob_key`). A run's blob host is `services::AppBlobs`: a run writes blobs
-  onto its outcome (never through the host), the leader stores them before
-  proposing and spreads them after the entry commits; a run opens only blobs its
-  app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
-  print, `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
-  list them from a scan of the app's state (`AppMachine::storage_stats`, on a
-  replica). A download asks the app's leader whether the app still marks the
-  blob (`blob_held_strong`; 503 when no leader answers): a replica that has not
-  applied a delete still holds the mark and the bytes (regression:
-  `a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind`). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
-  `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
-  node (`internal/blob/delete`) unless another app still marks the same content
-  (asked of each app's leader, `blob_held_strong`: a lagging replica could miss
-  a mark just committed; an app whose leader does not answer counts as holding
-  it) or it is a bundle or a release `.mpk`. Known window: the same content
-  uploaded to another app between that check and the deletion loses its bytes.
-  A blob past `MAX_BLOB_BYTES` (47 MiB) is refused `413 TOO_LARGE` by the node,
-  one past the sealed cap (64 MiB) by the envelope, in the clear; the client
-  reports both as `TOO_LARGE`. Regressions:
+- **Blobs** (`POST/GET /apps/{app}/blobs[/{id}]`; how an app holds one: see
+  "Component executor"): bytes live in the cluster's blob store (`hex(SHA-256)`, a
+  majority before the answer, a missing one fetched from a peer). A download asks the
+  app's leader whether the app still holds the blob (`blob_held_strong`; 503 when no
+  leader answers). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) forgets it, then
+  `Node::collect_blob` deletes the bytes on every node (`internal/blob/delete`) unless
+  another app still holds the same content (asked of each app's leader; an app whose
+  leader does not answer counts as holding it) or it is a bundle or a release `.mpk`.
+  Known window: the same content uploaded to another app between that check and the
+  deletion loses its bytes. A blob past `MAX_BLOB_BYTES` (47 MiB) is refused
+  `413 TOO_LARGE` by the node, one past the sealed cap (64 MiB) by the envelope, in the
+  clear; the client reports both as `TOO_LARGE`. Regressions:
   `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
   `an_upload_past_the_sealed_cap_is_answered_413`.
 - **App frontends** (`app_host.rs`): with `--apps-domain D`
@@ -416,14 +672,79 @@ is its command line.
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
   cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
+  `/app/{app}/` → the release that instance runs, `/d/{deployment}/` →
+  `/{version}/?deployment={id}` of the release it offers (looked up again on
+  fresh state when nothing matches),
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
-  origins in `connect-src`, `/.well-known/calimero.json`; an unknown label under
-  D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
+  origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
+  measurements and Intel's collateral; regression
+  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (with the deployments
+  offering the package); an unknown label under
+  D is a 404, never a node route. Each package is also at
+  `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
+  and origin (for mdma's hostname resolver; another cluster's label 404s;
+  regression in `app_frontends_are_served_and_their_sessions_are_bound`,
+  vector in `cluster_labels_match_the_resolvers_vector`). Each deployment has its own host too,
+  `{deployment_label(id)}.D` (`app_host::Site`): the one package it offers
+  (404 while it offers none or several), `/` → what `/d/{deployment}/` gives,
+  `/d/` only for itself, well-known `deployment` set and listed first; the
+  deployment API answers its `host`. Regression:
+  `each_deployment_serves_its_frontend_on_its_own_host`. App origins (both
+  kinds) pass CORS, and a passkey ceremony
   from one opens a session bound to its package (`SessionClaims::app`, carried
   by refresh): `Principal::within` keeps it to that package's apps (gate, app
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, and it creates instances
   of its own package only. Its step-ups come from its own origin only.
+- **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
+  identities "Registered origins"): a package's manager
+  (`SystemState::manages_package`: the bound publisher's org-wide
+  `MANAGE_APPLICATION` holders, else `PackageRecord::owner`) registers a web
+  origin of their own (`GET|POST|DELETE /package-origins/{package}`;
+  `AddPackageOrigin`/`RemovePackageOrigin`, passkey consent `package:{p} /
+  __add_origin / { origin, rpId }`, `__remove_origin / { origin }`, checked in
+  `authorize`). Each carries its own rp-id (the host or a parent; never the
+  cluster's rp-id or a parent, `origins::covers_cluster`). `api::app_origin`
+  is the one lookup (served first, then registered) for ceremonies
+  (`claimed_app`, `rp_with`: a registered origin alone under its rp-id), CORS
+  (`lib.rs`) and the consent page's `returnTo`; begin routes take `origin`
+  (`403 ORIGIN_NOT_REGISTERED`). Sessions opened there are bound like a served
+  frontend's and name the origin (`SessionClaims::origin`,
+  `RefreshRecord::origin`, kept by a sign-up's `Pending::SignUp` and stated
+  nowhere in the sign-in challenge, like `app`); `principal` and `refresh`
+  refuse them once it is removed, and `UseRefresh` refuses an exchange that
+  changes it. A sign-up there answers its `412` with the origin's rp-id and
+  takes the confirmation from that origin only; the sign-up policy judges it
+  like any other (`a_registered_origin_signs_up_only_whom_the_cluster_takes`). `UninstallPackage` of the last release forgets them. Limits
+  `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`; `http` only for
+  `localhost` names on a `--dev` node (`allow_package_uploads`). Regressions:
+  `tests/package_origins.rs`, `package_origins_carry_their_managers_consent`,
+  `package_origins_are_unique_bounded_and_go_with_their_package`,
+  `state_from_before_package_origins_reads_with_none_and_writes_as_before`.
+  **Served origins** (custom domains; design `docs/specs/custom-domains.md`):
+  `served: true` on the body, `PackageOrigin::served` and
+  `AddPackageOrigin::served` (both left out when false), consent
+  `{ origin, rpId, served: true }` (`origins::add_args`, the one builder for
+  the API and `authorize`). `app_host::layer` serves the package's site on a
+  `Host` whose origin (`served_origin_of`: `https://name` on 443, or
+  `http://name.localhost:port`) is a served one (`Node::served_site`, after
+  `app_host_site`; never under the apps domain or on a node's API host).
+  Ceremonies, CORS, binding and removal are the registered origin's, unchanged
+  (`app_origin` answers it with its rp-id; `app_origin_package` stays
+  apps-domain only). The API refuses (`served_fits`) a port, no
+  `--apps-domain` (`NOT_SERVING`), a name under the apps domain or the
+  cluster's rp-id, a node's API host, a held origin with the other `served`;
+  limits `MAX_SERVED_ORIGINS_PER_PACKAGE` (4), `MAX_SERVED_ORIGINS` (64, the
+  certificate metadata budget); `require_upgraded_nodes` before the consent,
+  so no older node drops the flag. `GET /ops/served-origins` (ops token)
+  lists `{ origin, host, label, addedAt }`, no package names, for mdma's
+  certificates and resolver routes. merod terminates no TLS: Traefik in the
+  TD does, with certificates mdma delivers. Regressions:
+  `a_served_origin_serves_its_packages_frontend_and_binds_its_sessions`,
+  `served_origins_carry_their_own_consent_and_limit`,
+  `origins_from_before_served_ones_read_unserved_and_write_as_before`,
+  `a_served_origin_is_an_https_host_without_a_port`,
+  `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
   `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
@@ -435,7 +756,10 @@ is its command line.
   request (this node's memory,
   `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
   a model from node state and verified manifests (an upgrade's capability
-  sheet is `consent_page::diff`; the plain-language `title`, `points` and
+  sheet is `consent_page::diff`, its methods, events, timers and state version from the
+  `calimero:abi` each component embeds, `component::embedded_abi`; regression:
+  `an_upgrades_page_names_what_the_components_abis_change` with
+  `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
   a collapsed *Technical details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
@@ -464,37 +788,13 @@ is its command line.
   refreshes and is passed on too, `PRESENCE_TTL_MS` (7 s) sweep each second,
   `MAX_AUTHORS_PER_APP` (512, the stalest evicted), 4 KiB of state.
 - **Inspection**:
-  `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
+  `GET /apps/{app}/storage` (keys, bytes, blobs, `lastWriteAt`), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
-  API keys, owned orgs, the quotas, and `fuelToday`/`writesToday` summed over its
-  personal component apps), `GET /orgs/{org}/usage` (the same figures over an
-  organization's apps, its admins only, D78), `GET /apps/{app}/usage` (a component's
-  runs, owner and org admins only; see "Usage" below).
-- **Search** (`services::Search`): tantivy indexes, in memory per
-  app and built from the app's `__calimero_search_*` exports. A view brings them
-  up to the very state it reads first: from the entities entries touched
-  (`Outcome::touched`, from the run's `StorageDelta`; kept for the last
-  `TOUCHED_RING` entries), else a full scan. Derived, never replicated.
-- **Follow-ups** (`AppState::pending`): an entry's event handlers
-  (`app::emit!((e, "handler"))`, `tee:` for a TEE handler) and its `xcall`s are
-  queued when it applies; the leader runs them (`Node::drive`, woken by `kick`)
-  as entries that consume them (`Trigger::FollowUp`), or, for an xcall, calls
-  the target with an idempotency key and then commits `AppCmd::Done`. A new
-  leader neither skips nor repeats one. Only `#[app::handler]`
-  methods run for an event; an xcall reaches only `#[app::xcall]` entry points
-  (`from_same_app`: the same bundle), only within the caller's organization
-  (outside one: its owner), as `Caller::App` with `env::xcall_origin`; cascades
-  stop at `MAX_FOLLOWUP_DEPTH`. Handlers and xcalls run once, not per replica.
-- **Timers and the TEE**: the cluster is every app's TEE. The leader fires each
-  `#[app::tee(every = "..")]` method once per period (`Trigger::Timer`, the
-  last tick per method in `AppState::timer_ticks`). Such a run and a `tee:`
-  handler author as `AccountId::TEE_AUTHORITY` with `tee_trigger`, open and
-  seal with the app's TEE key (`backup::tee_key`, from K_c), and seal a
-  member's share to the key the node keeps for them (`backup::member_key`):
-  their account is their one device (`SealingContext::stand_ins`), and only
-  their own runs open with it. ABI facts (timers, handlers, xcall entry
-  points) come from the bundle's embedded ABI (`services::BundleFacts`), so
-  apps are built with `cargo mero build`; a bundle without one gets none.
+  API keys, owned orgs, the quotas, and `developerFuelToday`/`developerWritesToday`:
+  today's runs of the apps the account is the developer of), `GET /orgs/{org}/usage`
+  (the same figures for the apps an organization is the developer of, its admins
+  only, D78), `GET /apps/{app}/usage` (a component's runs, owner and org admins only;
+  see "Usage" below).
 - **Teams** (`types::Org`): nested (`parent`, moved with
   `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent, the
   organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`)
@@ -502,28 +802,34 @@ is its command line.
   member, read-only) and capabilities (`caps`, `MemberCapabilities` bits;
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
-  runs only a component app's views, any other call refused before it runs, so no
-  run burns the payer's fuel uncounted (regression:
-  `a_read_only_members_call_is_refused_before_it_runs`); on a wasmer app they run
-  calls, but one that would write is refused (`403`, `node::READ_ONLY`; v1
-  discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
+  runs only its views, any other call refused before it runs (`403`,
+  `node::READ_ONLY`), so no run burns the developer's fuel uncounted (regression:
+  `a_read_only_members_call_is_refused_before_it_runs`). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
   whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
   app's (a folder's name and colour).
-- **App state on disk** (`app.rs`): `AppMachine` holds no state in memory but its
-  small `Head` (bundle, pending follow-ups, timers, ring bounds). The app's keys are
-  hidden rows of its group (`rows::KV`), idempotency records too (`rows::IDEM`, expired
-  oldest first from a ring per TTL class), events a ring of `EVENT_RING` (`rows::EVENT`).
-  Runs read through `StateRead` (`KvView` for the app, a `BTreeMap` in tests); the
-  system group stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the
-  group's sealed snapshot file; `backup::latest` opens one with K_c.
+- **App state on disk** (`app.rs`, `component.rs`): `AppMachine` holds no state in
+  memory but its small `Head` (bundle, executor, the component's host records). The
+  app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
+  (`rows::CIDEM`), events a ring of `EVENT_RING` (`rows::EVENT`). The system group
+  stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the group's
+  sealed snapshot file; `backup::latest` opens one with K_c.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
   Concurrent callers share a round (`ReadRounds`): one that arrives while a
   round runs waits for the next one, never takes the one already under way.
+  One round per request: `principal` (or `gate`, anonymous) keeps the index its
+  round named (`Principal::sys_index`, `Node::sys_fresh_index`); the request's
+  later checks and the app leader's (`CallRequest::sys_index`, carried on
+  `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
+  argument that this is as fresh as a round of their own) instead of running
+  another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  Regressions: `a_call_costs_one_system_read_round`,
+  `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
+  (`tests/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
@@ -534,6 +840,19 @@ is its command line.
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
   the disk identity, so the nodes of one release share K_r; every release has its
   own mero-kms root, so K_r changes at each release upgrade.
+- **Rollback counter** (`rollback.rs`, `docs/specs/rollback-protection.md`): with a
+  key from mero-kms that keeps counters (`kms::KmsCounter`, `Config::rollback`), the
+  node keeps an entry `(generation, mark)` in its store (`Engine::put_node_meta`, row
+  `rollback`, bound to its node id) and raises it with mero-kms's every
+  `CHECKPOINT_EVERY` (1 s), store first (`Checkpoints::run`, from `lib.rs`).
+  `Node::start` judges the store before any group starts (`rollback::judge`): behind
+  mero-kms, empty under a used id, mero-kms without the node's entry, another node's
+  store, or a protected store answered without counters are refused; a KMS without
+  counters and a store without one start unprotected. `Config::accept_rollback`
+  (`merod run --accept-rollback`) resets the node's entry to the store's and raises
+  the cluster epoch. Reported in `/ops/status` (`rollback`) and `/health`
+  (`rollbackEpoch`). Tests: `tests/rollback.rs`, `rollback::tests` (`MemoryCounter`
+  stands in for mero-kms).
 - **Cluster key** (`cluster_key.rs`): K_c seals the store, snapshots, backups and
   feeds the cluster secret, TEE, member and component-cache keys, so data
   outlives a release. Kept in `<data_dir>/cluster-key`, wrapped under K_r. The
@@ -579,36 +898,45 @@ is its command line.
   `a_removed_nodes_sessions_are_refused`.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
-  The exception is `maxFuelPerPayerPerDay` (Q20, D76, D78; `"0"`, the default, is no
-  limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It is
-  charged to the app's payer, #4739's `usage::payer` (D78): an org app's
-  organization, a personal app's owner (`account:{owner}`). The fuel lives in the app
-  groups' usage books, so it is checked where a client's call or an xcall delivery
-  runs (`Node::fuel_quota_refusal`, from `call_local_component` and the wasmer
-  `call_local`, after the idempotent replay, before the run). The check asks no peer
-  (`Node::payer_fuel_cached`): apps this node replicates are read from the replica,
-  the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s) while a
-  cap is set asks all peers at once (`internal/usage/today`) and keeps a silent
-  peer's last figures; so the cap is approximate by one interval and an app no peer
-  ever reported counts as nothing (fails open). Over it, calls to every app of that
-  payer are refused, wasmer apps included, though only components are metered (D76);
-  an xcall delivery refused so is dropped by `drive` with the `QUOTA_EXCEEDED` code
-  logged; an organization over its cap leaves its owner's personal apps running
-  (D78). The refusal is not logged, so the key is not spent; `init`, timer ticks and
-  event handlers are never refused, and a component's still count toward the
-  payer's day. The quota is fuel; wall time is information only (D76). A non-zero
-  cap is written only once every registered node's attested release is this node's
-  or newer (`Node::nodes_behind_release`, as D71 gates `base_seq`), else
-  `409 UPGRADE_PENDING` (`api::UPGRADE_PENDING`, one code for every such release
-  gate): an older node would drop the field and its snapshots would reset the cap.
-  Accepted gap (#4809): an older node added after the cap is set, then sent a quota
-  change itself, writes the quotas without the cap; the runbook says not to add
-  nodes older than `1.0.0-rc.7` then, and the W19 minimum-release gate closes it. Usage reads (`app_usage`, `internal/usage`,
-  `replicas_usage_on`) use `replica_group()`, never a group the node keeps after the
-  app moved away. Regressions: `the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs`,
-  `an_over_cap_payer_is_refused_within_one_refresh_while_a_peer_hangs`,
-  `an_xcall_into_an_over_cap_payers_wasmer_app_is_refused`,
-  `the_fuel_cap_is_a_decimal_string`, `a_fuel_cap_waits_until_every_node_runs_this_release`.
+  `maxFileBytesPerOrg` counts the plaintext bytes of a component's files.
+  `SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer (`usage::payer`), kept in step by `set_app_file_bytes`.
+  `SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release at 0.
+  `DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
+  `TransferApp` of a personal app is refused when the new owner's quota would not hold its files.
+  The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default,
+  is no limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It
+  is charged to the app's developer, `usage::developer` (#4839), the same identity
+  usage is billed to: the owner of the deployment an app was created from, else the
+  app's organization or owner. So two payers' instances of one developer's
+  deployment share one cap. The fuel lives in the app groups' usage books, so it is
+  checked where a client's call, a delivered xcall or a synchronous xcall runs
+  (`Node::fuel_quota_refusal`, from `call_local_component`, after the idempotent
+  replay and the delivered-xcall check, before the run); an action's own calls are
+  not refused, as its start was. The check asks no peer
+  (`Node::developer_fuel_cached`): apps this node replicates are read from the
+  replica, the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s)
+  while a cap is set asks all peers at once (`internal/usage/today`) and keeps a
+  silent peer's last figures; so the cap is approximate by one interval and an app
+  no peer ever reported counts as nothing (fails open). A refused delivered xcall is
+  the target's final answer (D29, `deliver_one`), not a dead letter. The refusal is
+  not logged, so the key is not spent; `init`, timer ticks and event handlers are
+  never refused, and they still count toward the developer's day. The quota is fuel;
+  wall time is information only (D76). A non-zero cap is written only once every
+  registered node's attested release is this node's or newer
+  (`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
+  (`api::UPGRADE_PENDING`, one code for every such release gate), judged before the
+  operator is asked to sign (`__set_quotas`, #4791): an older node would drop the
+  field and its snapshots would reset the cap. Accepted gap (#4809): an older node
+  added after the cap is set, then sent a quota change itself, writes the quotas
+  without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
+  and the W19 minimum-release gate closes it. Usage reads (`app_usage`,
+  `internal/usage`, `replicas_usage_on`) use `replica_group()`, never a group the
+  node keeps after the app moved away. Regressions:
+  `the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs`,
+  `an_over_cap_developer_is_refused_within_one_refresh_while_a_peer_hangs`,
+  `a_delivered_xcall_into_an_over_cap_developers_app_is_refused`,
+  `the_fuel_cap_is_a_decimal_string`, `a_fuel_cap_waits_until_every_node_runs_this_release`,
+  and `deployments::two_payers_of_one_developers_apps_share_its_fuel_cap`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
   elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
@@ -618,29 +946,41 @@ is its command line.
   and is refused if it never was (then a replica that is behind answers 503,
   never "unknown"). Regression:
   `a_reused_refresh_token_revokes_the_session_on_a_lagging_node`.
+- **Kept refresh tokens** (`api::kept_refresh`, `Config::refresh_rotate_after`,
+  production `api::REFRESH_ROTATE_AFTER`, 1 h; the test harness 0): a refresh
+  token younger than that mints a session from the system state at a read
+  index (`sys_fresh`), live, its session not revoked, its passkey still the
+  account's, and writes nothing; older, unkeyed, not caught up or not held
+  fresh, it goes through `UseRefresh` as above. Every active session then
+  writes once per rotation, not once per `SESSION_TTL`. Regressions:
+  `tests/refresh.rs`.
 
 ## Component executor (`calimero:app` components, the v2 SDK)
 
 Spec `app-runtime-v0.14`, on the node's log,
-API and system group. What differs from the wasmer path:
+API and system group:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
   (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
   with a MAC under a key derived from K_c (S8). `Node::prepared_for` prepares a bundle
   once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
   `POST /bundles` and package installs run the engine's `prepare` on a component
-  where they compile a core module on wasmer.
+  (a core module is refused, see "SDK 0.12 apps").
 - **State** (`component::ComponentState`, D46): the component's stored keys
   (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
-  and HMAC-keyed like a wasmer app's), and each replica keeps them in memory too as an
+  and HMAC-keyed), and each replica keeps them in memory too as an
   ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
   `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
   still holds the previous one; `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
-  Idempotency (D74 in spec v0.26, `idempotency.rs`, the one rule of both executors):
-  records in `rows::CIDEM` (wasmer: `rows::IDEM`), a ring per class in `rows::corder`
-  (wasmer: `rows::expiry`). A key's class is its prefix (`class_of`): a `node:` key (the
+  `last_write_ms` is the entry timestamp of the newest call that applied with a
+  diff or files, or of an uploaded blob or file (`ComponentHead::note_write`;
+  not `init`, ticks, refused calls or conflicts). It is left out at zero, so a head from before
+  it reads and writes as it did
+  (`a_head_from_before_the_last_write_reads_and_writes_as_it_did`).
+  Idempotency (D74 in spec v0.26, `idempotency.rs`):
+  records in `rows::CIDEM`, a ring per class in `rows::corder`. A key's class is its prefix (`class_of`): a `node:` key (the
   node's own, or a D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24
   hours. A record expires once the earlier of the newest applied entry's timestamp and
   the applying entry's own (`expiry_now`) passes its own by that time, never by a node's
@@ -654,8 +994,8 @@ API and system group. What differs from the wasmer path:
   `a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor`,
   `a_burst_of_node_keys_does_not_evict_callers_records_above_their_floor`,
   `one_skewed_entry_does_not_expire_the_records_written_after_it`,
-  `a_callers_key_containing_node_is_kept_24_hours`, and on wasmer the same with
-  `_on_wasmer`, plus `records_over_the_new_cap_drain_a_bounded_number_per_entry`.
+  `a_callers_key_containing_node_is_kept_24_hours`,
+  `records_over_the_new_cap_drain_a_bounded_number_per_entry`.
   **Upgrade note (rolling upgrade, no version gate):** while a cluster runs both the
   previous release and this one, an app's replicas keep different idempotency records:
   the previous release expires only when a keyed call applies, against that call's own
@@ -669,15 +1009,17 @@ API and system group. What differs from the wasmer path:
   replicas before relying on the new cap.
 - **Calls** (`Node::call_component`, routed by the API from the app's executor):
   inside `Group::propose_led`, off the async workers (`node::off_workers`, the one
-  copy both executors use); `base_index` is the app's last entry
-  (`AppState::last_index`), as on the wasmer path. Statuses (spec section 5, D23,
+  copy every run uses); `base_index` is the app's last entry
+  (`AppState::last_index`). Statuses (spec section 5, D23,
   D36): `422 APP_ERROR` with `details.{code, fields}`, `422 TRAP` with
   `details.{kind, detail}`, `503 TIMEOUT` (not logged, key not spent); arguments
   over `MAX_ARGS_BYTES` (512 KiB) are `413 ARGS_TOO_LARGE`, an entry over the log's
   cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
 - **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
   bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
-  (`AppRecord::confirm_methods` is the wasmer path's).
+  (`AppRecord::confirm_methods` is always empty now: a request names none). A compute method
+  (kind `compute`) and a `computeResult` method are `WrongKind` on `/intents` and `/views` for
+  every caller, System included: only the node runs them.
 - **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
   (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
   continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed
@@ -696,8 +1038,7 @@ API and system group. What differs from the wasmer path:
 - **Events** (R9): a component's `EventRecord` carries its `audience` and caller;
   the event stream (`api::local_events`, the subscriber passed to a peer's
   `internal/events`) and a call's answer check `SystemState::receives` when they
-  send it, so a removed member stops receiving at once. A wasmer app's events have
-  no audience and go out as before.
+  send it, so a removed member stops receiving at once.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
@@ -705,16 +1046,16 @@ API and system group. What differs from the wasmer path:
   it to `ComponentHead::usage` (a `UsageBook`), per UTC day of the entry's `ts_ms`,
   pruning `USAGE_DAYS` (31) back from the earlier of that day and the day after the
   newest one held, so a far-future stamp never erases the real days
-  (`a_far_future_entry_does_not_erase_the_real_days`); followers never measure, so every replica's book is the same
-  (a snapshot carries it in `Head`). Timeouts are not logged, so not counted (#4736);
-  views are not counted (Q9). The API gives every figure as a decimal string (D20):
-  `/apps/{app}/usage`, `bundleBytes`, `fuelToday`, `writesToday` in `/auth/usage`
-  (personal apps only, D78), and `fuelToday`, `writesToday` in `/orgs/{org}/usage`.
-  Tests: `the_usage_book_sums_what_the_entries_carry`,
+  (`a_far_future_entry_does_not_erase_the_real_days`); followers never measure, so
+  every replica's book is the same (a snapshot carries it in `Head`). Timeouts are
+  not logged, so not counted (#4736); views are not counted (Q9); actions and compute
+  runs are not in the book yet. The API gives every figure as a decimal string (D20):
+  `/apps/{app}/usage`, `bundleBytes`, `developerFuelToday`, `developerWritesToday`
+  in `/auth/usage`, and `developerFuelToday`, `developerWritesToday` in
+  `/orgs/{org}/usage`. Tests: `the_usage_book_sums_what_the_entries_carry`,
   `usage_survives_a_leader_change_and_a_snapshot_install`,
   `an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick`,
   `a_fuel_limit_of_zero_never_refuses`, `only_the_owner_and_org_admins_read_an_apps_usage`,
-  `a_wasmer_app_of_an_account_over_its_fuel_gets_429`,
   `an_org_apps_runs_count_toward_the_org_not_its_owner`,
   `an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run`,
   `only_an_orgs_admins_read_its_usage`.
@@ -727,10 +1068,143 @@ API and system group. What differs from the wasmer path:
   for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
-  `/apps/{app}/storage` counts its keys and bytes; the blob routes answer
-  `409 NOT_SUPPORTED` (R8). The host refuses blobs, search, xcall, event handlers,
-  TEE runs and outbound HTTPS to a component; a wasmer app's
-  xcall into a component is refused (`node::COMPONENT_REFUSES`).
+  `/apps/{app}/storage` counts its keys, bytes and blobs (see "Files" for the file routes). The host refuses event
+  handlers and TEE runs to a component, and an xcall into a wasmer app is a dead letter.
+- **Xcalls** (D13, D25, D29, `component/xcall.rs`): an `Ok` entry's `Outcome::xcalls`
+  go to the source's outbox (`XcallHead` in `ComponentHead`, rows `rows::COUT ‖ seq`,
+  at most `MAX_OUTBOX`). The source leader's timer poll (`Node::deliver_xcalls`, at most
+  `DELIVER_BATCH` a round) delivers the head through `call_component` with
+  `CallRequest::xcall = XcallFrom { source, seq }`, `Caller::App`, a `node:xcall-…` key;
+  the target checks the boundary again (`same_boundary`: one org, or one owner's
+  personal apps), its watermark (`XcallHead::seen`, D25: answered as delivered without
+  running), the ABI (`allowApps`, `"*"` = any; `abi_check`), runs `kind = xcall-deliver`
+  and records `CallEntry::xcall`, whose apply moves the watermark whatever the status.
+  The source then logs `componentXcallDone { seq, dead }`. Timeouts and `5xx` are retried
+  (`xcall_retry`, in memory, `backoff_ms`) until `XCALL_WINDOW_MS` from the send; a
+  missing target, another org's, a wasmer app, or the window passing dead-letters it
+  (`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its
+  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin, a hosting node).
+  Test: `component_xcalls_are_delivered_in_order_or_dead_lettered`.
+- **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
+  (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
+  app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
+  hidden rows `rows::CBLOB`, in memory as `BlobTable`), not a mark in its keyspace.
+  Upload (`POST /apps/{app}/blobs`, `Content-Type` kept as the mime, at most
+  `MAX_BLOB_MIME_BYTES`) commits `componentBlob`; the owner's delete
+  `componentBlobForget` (both through `CallRequest::host`, `Node::component_blob_cmd`).
+  A `BlobRef` in a stored value is CBOR tag `calimero_app_host::BLOB_REF_TAG`; `apply`
+  counts references from each diff and the values it replaces (`ref_deltas`), so every
+  replica agrees; a blob with none is held `BLOB_IDLE_MS` (1 h) from its upload or its
+  last reference, then forgotten against entry timestamps (`expiry_now`, at most
+  `BLOB_EXPIRY_STEP` per entry) and queued in `ComponentHead::collect`; the leader's
+  timer poll collects the bytes (`collect_blob`) and logs `componentBlobsCollected`.
+  Runs see the records through `RunBlobs` (`HostCore::with_blobs`): `info`, and `grant`
+  = `<expiresMs>.<HMAC>` under `grant_key(K_c)`, which `GET /apps/{app}/blobs/{id}?grant=`
+  takes without a session (a bad one is `404`). At most `MAX_COMPONENT_BLOBS` per app
+  (`429`). Tests: `a_components_blobs_are_held_by_references_and_granted`,
+  `an_owner_deletes_a_components_blob`.
+- **Search** (spec section 7, `component/search.rs`, `Node::component_search`): the ABI's
+  `state.search` names each searchable table's text fields; every record
+  (`generation ‖ (table, "r", key..)`, `record_table`) is a `calimero-search` document
+  (id = SHA-256 of the stored key). A view brings the app's indexes up to the state it
+  reads before it runs (`ComponentSearch::for_view`, inside `read_local`): from the record
+  keys the entries since touched (`AppMachine::note_touched` at apply, the same
+  `TOUCHED_RING`), else a full scan; a new bundle rebuilds. The run
+  gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
+  Derived, in memory, dropped with the app group. Test:
+  `views_search_a_components_tables_as_they_change`.
+- **Actions** (D12, D17, D22, D27, S9, R14; `component/action.rs`): a client's call of an
+  `#[app::action]` method (`abi_check` lets an account or API key start one) logs an `Ok`
+  call whose outcome carries `ActionOut { id: a.<term>.<seq>.0 }` and answers
+  `{ actionId }`; `start-action` in a call or timer does the same from the run. Apply
+  records it pending (`rows::CACT ‖ id`, `ActionsHead::pending`, at most
+  `MAX_PENDING_ACTIONS`) with the starter's `Caller` and the entry time. The leader's
+  timer poll (`Node::run_actions`) runs pending ones it is not running in a pool of
+  `MAX_ACTION_WORKERS` (`action_slots`): `attempt_action` on a blocking thread, `kind =
+  action`, `Budget::action()` (10 s), the starter as caller, monotonic clock at the start;
+  `NodeAction` serves `view` (`Node::view`, strong) and `call` (`call_component` with the
+  D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
+  the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
+  (the signed release's prefixes, the owner's approval, the operator's hosts,
+  `{{secret:..}}`, one request per run). The end is logged as `componentActionEnd`: a
+  timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
+  trap or removed method fails at once; a failure sends `ActionFailed { actionId,
+  method, reason }` to the starter (an event with an `Accounts` audience) and runs
+  `onActionFailed` as the starter. A new leader resumes what is pending; an end that
+  another leader logged first changes nothing. Test:
+  `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`.
+- **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
+  read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
+  do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
+  then the app's fetch gets an error). The host core records each exchange
+  (`Outcome::http`, `component::HttpRecord`: the request with its placeholders, the
+  redacted response, bodies cut to 64 KiB with their lengths) in the call's entry,
+  whatever its status; followers never fetch, and a keyed retry replays. Tests:
+  `a_call_checks_a_turnstile_token_through_a_captcha_service`,
+  `a_runs_outbound_exchange_is_recorded_in_its_entry`.
+- **Synchronous xcalls** (`NodeXcall`): a run made with a key (`RunExtras::key`: a
+  call's `call:<caller>:<idempotency key>`, a tick's `tick:<method>:<slot>`, an action's
+  `action:<id>`, a view's placeholder) reaches other apps through `xcall.call`/`xcall.view`.
+  The target must be another component app within `same_boundary` (any other answer is
+  one `no such app in this organization`). A call goes through `call_component` with the
+  host core's derived key, `Caller::App(source)` and `CallRequest::sync_from` (the target
+  checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
+  view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
+  (3 s) while the runtime runs it; two apps calling each other at once both time out.
+  Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
+  (`apps/v2-fixtures/captcha`).
+- **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
+  It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
+  A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
+  A sealed file's record carries a `FileSeal` (`BlobRecord::file`: the plaintext hash and the wrapped key) in the hidden `rows::CBLOB` rows the guest cannot reach, so a snapshot and `restore` carry it.
+  A writer seals into memory (`FileSealer`) and wraps the data key; the blob id is the hex SHA-256 of the ciphertext.
+  The outcome and the entry carry marks only (`Outcome::files`, a serde default: old entries decode unchanged).
+  `apply` records them as unreferenced blobs before the diff, only for status `Ok`, so a `BlobRef` the same entry stores is counted and a file is never collectable in between.
+  A file is then held while a stored `BlobRef` names it, `BLOB_IDLE_MS` after its entry or after the last reference went, and forgotten by `expire_blobs` in the same entry on every replica.
+  The leader then collects its bytes through the same `collect_blob` and `componentBlobsCollected` as any blob; a replica that is down then keeps unreachable bytes, as for a blob.
+  `BlobTable::upload` and `forget_blob` refuse a file id, so a blob upload or an owner delete cannot take one.
+  `RunBlobs::info` answers a file with its plaintext size and hash and an empty mime, as `files.info` does; the host core refuses `blobs.grant` for it.
+  `GET`, `POST` and `DELETE` on `/apps/{app}/blobs` refuse a file id with `409 NOT_SUPPORTED` (`refuse_sealed_file`, judged by the app's leader through `file_held_strong`).
+  `/apps/{app}/storage` counts their sealed bytes in `blobBytes` (a tag per chunk).
+  **Uploads** are `POST /apps/{app}/blobs?sealed=true` (`Client::upload_file`); without the query the route uploads a blob as before.
+  Only the app's owner and the members of its organization (role Member or above, `api::may_handle_files`) may upload and list files, even where the app is public; a guest or a stranger gets `403` on an upload.
+  `GET /apps/{app}/blobs` adds the files to its list, with `sealed: true` and the plaintext SHA-256, for those callers only, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and plaintext SHA-256 to them (never the key).
+  Everyone else gets the list without files and `404` on a file's info, as for an id the app does not hold.
+  `StorageStats::files` carries each file's id, size and SHA-256 for these routes, and `internal/storage` sends it to a peer.
+  A node that does not lead the app seals and stores nothing: it passes the body to the leader (`internal/file-upload`, one hop; a follower answers `421 NOT_LEADER` with `details.leaderUrl` and the receiver follows it).
+  The leader (`Node::upload_local`) seals through `NodeFiles::create`, holding the node-wide pending budget, charges the quota, pushes to its group's voters and commits `ComponentCmd::File` under a key made per HTTP request.
+  Only a forward retried inside that request replays the first answer; a recorded answer for another file wins and the new file is undone.
+  `apply` records the file as an unreferenced blob stamped with the entry's `ts_ms`, as `Node::component_blob_cmd` stamps an upload, so a client has the idle time to attach it.
+  If the commit fails, a `componentBarrier` entry (applies as nothing) is committed through the leader, so the failed entry has either committed or never will.
+  The leader then reads the record: present, the upload succeeded; absent, its bytes and charge go; no barrier possible, they stay.
+  A file is held while its blob record exists, and the quota counts it for as long.
+  A logged entry's new files are charged first, within `CHARGE_WAIT` (`Node::charge_files`, from the run's thread).
+  A refused charge pushes nothing, answers `429` and logs nothing; a charge that lands after the wait is refunded when its answer arrives.
+  `Node::discard` undoes the bytes and the charge if the entry does not commit.
+  The charge is released by retention: `expire_blobs` queues a forgotten file's plaintext size in `ComponentHead::collect_files` beside its id in `collect`.
+  The leader's `componentBlobsCollected` entry answers `freed`, the bytes of the queued files it really took off, and the node releases that many (`collect_component_blobs`), so a repeated entry releases nothing.
+  A node that stops hosting an app that is deleted everywhere drops its sealed files' bytes (`Node::drop_deleted_files`); plain blobs stay, as they may be another app's.
+  A crash between the entry and the release leaves an over-count, never a loss; a queue past `MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
+  Before a call, tick or `init` proposes, `Node::persist_files` stores the ciphertext here and pushes all new files at once to the app group's voters and learners (its own Raft membership, not the directory's replicas), under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
+  It needs a majority of the voters, this node counted; a voter with no address still counts.
+  It runs only after the entry bytes are built, so an entry the log replaces as too large stores nothing.
+  When the majority is missing the call is `503 FILES_UNAVAILABLE` (the forward loops pass it on unchanged and do not retry it; the client does, with its key), nothing is logged and the pushed bytes are removed; so are the bytes of an entry that conflicts or whose proposal fails.
+  The ciphertext a run's writers hold until its entry is proposed draws on a node-wide budget (`MAX_PENDING_FILE_BYTES`, `PendingBytes`, kept by `Ran` until the entry is proposed or refused).
+  A write it cannot hold takes nothing and aborts the logged run as `FileError::Unavailable`, so runs together never hold more than the budget.
+  `open` uses the local blob only if its SHA-256 is its id, else drops it and fetches it from the other replicas (5 s), and decrypts as the guest reads.
+  Any opener failure, including at the end of the stream, is `ReadError::Corrupt`, which the host core makes a `HostDenied` trap.
+  Open readers hold their ciphertext bytes against a per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged runs wait 1 s for it).
+  Only a compute run opens a file (the host core refuses `files.open` in every other kind), so a sealed file's contents are readable only inside a compute run of the release the organization approved.
+  A file that cannot be had (no replica holds it, or a budget is spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent (`FileError::Unavailable`, for `create`, `write` and `finish`) and ends a compute run `Unavailable`.
+  Tests read a file through `Node::read_sealed_file` (feature `testing`), which uses the provider a run reads with.
+  The provider is built for every run but touches keys, budgets and bytes only when a run touches a file.
+  Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
+  Pushes skip members `may_send` refuses, and `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app holds (`holds_blob`); bundles and other blobs still use every node.
+  Replica moves hand over the app's files with the bundle (`hand_over_bytes`), and again after the voters change, only what the joining nodes do not hold, for files made while the move ran; the second hand-over is retried for 10 s and never abandons the move.
+  **Upgrade note (quota):** an older system leader rejects `ChargeFileBytes`, so uploads and calls that create files fail until the system group runs this release.
+  A snapshot from before carries no file-byte counts, so files stored earlier start from zero, and their release floors at zero.
+  **Upgrade note (rolling upgrade):** a node on a release without files refuses to prepare a bundle that imports `calimero:app/files` (`ForbiddenImport`), so it never runs, leads or answers for an app that uses files.
+  Replicas of different releases coexist only while a release upgrade moves apps, and the old ones are retired.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are
@@ -738,29 +1212,35 @@ API and system group. What differs from the wasmer path:
 
 ## Not done yet
 
-rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, snapshot restore into a
-running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
+keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
+rollback epoch in the attested KMS evidence, snapshot restore into a
+running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 
 ```bash
-cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
-# fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
-for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
-  migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
-  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
-  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
-  cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
-# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
-# tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
+# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/kv-store-with-shared-storage,
+# apps/rooms, any app a scenario installs) are built on first use (harness/cluster.rs::fixture,
+# tests/common/mod.rs) into $CARGO_TARGET_DIR/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
-# A4, the fault test (merod run --dev processes on ports 7600-7699, above the merobox
-# workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
+# every scenario file on an in-process cluster (runner: tests/harness/scenario.rs): apps/*/scenarios/*.json
+# (+ <name>.org.json), apps/*/scenarios/cluster/**/*.json, workflows/**/scenarios/**/*.json;
+# tests/scenarios-skip.txt lists the ones reported, not run (docs: contribute/testing#scenarios)
+cargo test -p calimero-node --test scenarios [-- FILTER]   # SCENARIO_FILTER, SCENARIO_SHARD=k/n
+# A4, the fault test (merod run --dev processes on ports 7600-7699, shifted by
+# WORKFLOW_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
+# the process suite (tests/fault/README.md): crash/freeze/restart, frozen leader, orgs and
+# keys, signed packages, rolling upgrade under load, the kv-store soak; the kv component
+# (target/app-components/kv.wasm, mero-app-build) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+# (scripts/pack-component.py)
+python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [--nightly]
+python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
+python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
+# (also session refreshes and the system log's entries/s they cost, exchanged and kept)
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help
 cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)

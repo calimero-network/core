@@ -155,14 +155,14 @@ release. See [Packages & frontends](/protocol/applications/).
 **Registry** — The operator's package source (`--registry-url`); each node
 fetches registry releases from it itself.
 
-**Frontend** — A package's web files, served at `{label}.{apps-domain}`.
+**Frontend** — A package's web files, served at `{label}.{apps-domain}`, at its cluster's `{cluster_label}.{apps-domain}`, and at each deployment's own host `{dlabel}.{apps-domain}`.
 
 **Follow-up** — A run another run asked for: an event handler or an xcall,
 queued in the app's state and run once by the leader. See
 [Event handlers & cross-app calls](/protocol/xcall/).
 
-**Xcall** — A fire-and-forget call into another app's `#[app::xcall]` entry
-point. [Cross-context call]
+**Xcall** — A message to another app's method that allows the sender
+(`#[app::allow(app = ..)]`), delivered after the sending entry commits. [Cross-context call]
 
 **Timer** — An `#[app::tee(every = "…")]` method the leader fires once per
 period.
@@ -177,8 +177,9 @@ leader, checked by `__calimero_migration_check`. See
 **Blob** — Content in the cluster's blob store; an app's own blobs are those its
 state **marks**. See [Blobs](/protocol/blobs/).
 
-**Private space** — An account's own part of an app's state
-(`env::private_storage_*`).
+**Private space** — An account's own part of an app's state: in
+`calimero-sdk`, a `PerUser<T>` value, which each account reads and writes only
+for itself.
 
 **Host key space** — Keys under `\0calimero.` in an app's state, written only by
 the node.

@@ -1,16 +1,19 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
-use calimero_app_build::build_component;
-use calimero_app_engine_wasmtime::WasmtimeEngine;
-use calimero_app_host::{
-    Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind, OrgRole, Outcome,
-    PrepareError, Prepared, Status, TrapKind,
+use calimero_app_build::{build_component, build_components, BuiltApp};
+use calimero_app_engine_wasmtime::{
+    WasmtimeEngine, CANCELLED, MAX_RANDOM_BYTES_PER_CALL, WALL_CLOCK_EXCEEDED,
 };
+use calimero_app_host::{
+    Budget, Caller, ComputeCtx, Directory, Engine, HostCore, Invocation, InvocationKind,
+    MemoryFiles, OrgRole, Outcome, PrepareError, Prepared, Status, TrapKind, FILES_DISABLED,
+};
+use sha2::{Digest, Sha256};
 
 const ENTRY_TS_MS: u64 = 1_700_000_000_123;
 /// The key the tests' engines authenticate their cache with.
@@ -64,6 +67,7 @@ fn host_with(kind: InvocationKind, method: &str, args: &[u8], panic_on_org: bool
         id_seq: 1,
         seed: [7; 32],
         timer: None,
+        compute: None,
     };
     let state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     HostCore::new(
@@ -95,6 +99,15 @@ fn prepare(fx: &Fixture, name: &str) -> Prepared {
     fx.engine
         .prepare(&format!("{name}-hash"), &guest(name))
         .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+/// The guest hashes and builds megabytes in unoptimized wasm, far over a call's default fuel.
+fn heavy() -> Budget {
+    Budget {
+        fuel: 20_000_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    }
 }
 
 fn trap_kind(outcome: &Outcome) -> Option<TrapKind> {
@@ -251,6 +264,92 @@ fn an_older_wasi_patch_of_a_stubbed_interface_is_accepted() {
 }
 
 #[test]
+fn a_component_built_against_0_5_0_still_links_and_runs() {
+    let fx = fixture();
+    let component = guest("legacy_050");
+    let imports = calimero_app_build::imports_of(&component).unwrap();
+    assert!(
+        imports.iter().any(|i| i == "calimero:app/storage@0.5.0"),
+        "{imports:?}"
+    );
+    assert!(
+        !imports.iter().any(|i| i.ends_with("@0.5.1")),
+        "{imports:?}"
+    );
+    let app = fx.engine.prepare("legacy", &component).expect("accepted");
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "bump", b""),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_eq!(out.result, 1u32.to_le_bytes());
+    assert_eq!(out.diff.len(), 1);
+}
+
+#[test]
+fn a_guest_writes_a_file_in_a_call_and_cannot_read_it_back_outside_a_compute_run() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+
+    let call = host(InvocationKind::Call, "write", b"").with_files(Arc::new(files.clone()));
+    let out = fx.engine.invoke(&app, call, heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let expected: Vec<u8> = (0..1024 * 1024 + 256 * 1024)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let sha = Sha256::digest(&expected).to_vec();
+    assert_eq!(out.new_files.len(), 1);
+    let file = &out.new_files[0];
+    assert_eq!(file.size, expected.len() as u64);
+    assert_eq!(file.sha256, sha);
+    assert_eq!(out.result, file.id.as_bytes());
+    files.apply(&out.new_files);
+
+    let view = host(InvocationKind::View, "read", &out.result).with_files(Arc::new(files));
+    let read = fx.engine.invoke(&app, view, heavy());
+    assert_eq!(
+        trap_kind(&read),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        read.status
+    );
+}
+
+#[test]
+fn creating_a_file_in_a_view_traps_host_denied() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+    let view = host(InvocationKind::View, "make", b"").with_files(Arc::new(files));
+    let out = fx.engine.invoke(&app, view, Budget::view());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+}
+
+#[test]
+fn a_node_without_files_gives_the_guest_a_soft_error() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "write", b""),
+        Budget::call(),
+    );
+    match out.status {
+        Status::AppError { code, message } => {
+            assert_eq!((code.as_str(), message.as_str()), ("Files", FILES_DISABLED));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn a_component_without_an_abi_is_refused() {
     let fx = fixture();
     let raw = guest("spin");
@@ -367,13 +466,13 @@ fn stdout_and_stderr_lines_go_to_the_log() {
 }
 
 #[test]
-fn outgoing_http_outside_actions_traps_host_denied() {
+fn outgoing_http_traps_in_views_and_is_recorded_in_calls() {
     let fx = fixture();
     let app = prepare(&fx, "clock_reader");
     let out = fx.engine.invoke(
         &app,
-        host(InvocationKind::Call, "fetch", b""),
-        Budget::call(),
+        host(InvocationKind::View, "fetch", b""),
+        Budget::view(),
     );
     assert_eq!(
         trap_kind(&out),
@@ -381,6 +480,16 @@ fn outgoing_http_outside_actions_traps_host_denied() {
         "{:?}",
         out.status
     );
+    // A call may send (D76); with no gate the request is refused (the guest's response
+    // future holds the error), and the entry records the attempt.
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "fetch", b""),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok);
+    assert_eq!(out.http.len(), 1);
+    assert!(out.http[0].response.is_err());
 }
 
 #[test]
@@ -715,7 +824,7 @@ fn an_exhausted_instance_pool_is_a_retryable_timeout() {
         assert_eq!(
             out.status,
             Status::Trap {
-                kind: TrapKind::Timeout,
+                kind: TrapKind::Unavailable,
                 detail: "instance pool exhausted".to_owned(),
             }
         );
@@ -754,4 +863,454 @@ fn leb_bytes(mut value: usize) -> Vec<u8> {
         }
         out.push(byte | 0x80);
     }
+}
+
+fn compute_engine() -> WasmtimeEngine {
+    WasmtimeEngine::for_compute().expect("compute engine")
+}
+
+fn compute_host(method: &str, seed: u8) -> HostCore {
+    let inv = Invocation {
+        kind: InvocationKind::Action,
+        method: method.to_owned(),
+        args: b"{}".to_vec(),
+        caller: Caller::System,
+        entry_ts_ms: ENTRY_TS_MS,
+        id_term: 0,
+        id_seq: 0,
+        seed: [seed; 32],
+        timer: None,
+        compute: Some(ComputeCtx {
+            run_id: "run-1".to_owned(),
+            owner: "owner".to_owned(),
+            inputs: Vec::new(),
+        }),
+    };
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    HostCore::new(
+        "app-1",
+        Arc::new(state),
+        0,
+        inv,
+        Arc::new(TestDir {
+            panic_on_org: false,
+        }),
+    )
+    .expect("valid invocation")
+}
+
+fn compute_budget() -> Budget {
+    Budget {
+        fuel: 20_000_000_000,
+        wall_clock: Duration::from_secs(30),
+        memory_pages: 1_024,
+    }
+}
+
+fn prepare_compute(engine: &WasmtimeEngine, name: &str) -> Prepared {
+    engine
+        .prepare(&format!("{name}-hash"), &guest(name))
+        .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+#[test]
+fn a_compute_run_past_its_fuel_is_out_of_fuel() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let budget = Budget {
+        fuel: 5_000_000,
+        ..compute_budget()
+    };
+    let out = engine.invoke(&app, compute_host("spin", 1), budget);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}",
+        out.status
+    );
+    assert_eq!(out.usage.fuel, 5_000_000);
+}
+
+#[test]
+fn a_compute_run_past_its_wall_is_a_timeout() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let budget = Budget {
+        wall_clock: Duration::from_millis(300),
+        ..compute_budget()
+    };
+    let start = Instant::now();
+    let out = engine.invoke_cancellable(&app, compute_host("spin", 1), budget, Arc::default());
+    assert_eq!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Timeout,
+            detail: WALL_CLOCK_EXCEEDED.to_owned()
+        }
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn a_compute_run_past_its_memory_is_out_of_memory_and_reports_its_peak() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let out = engine.invoke(&app, compute_host("bomb", 1), compute_budget());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfMemory),
+        "{:?}",
+        out.status
+    );
+    let limit = 1_024 * 64 * 1024;
+    assert!(
+        out.usage.peak_memory > limit / 2 && out.usage.peak_memory <= limit,
+        "{}",
+        out.usage.peak_memory
+    );
+}
+
+#[test]
+fn a_compute_run_is_cancelled_from_another_thread() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let start = Instant::now();
+    let out = engine.invoke_cancellable(&app, compute_host("spin", 1), compute_budget(), cancel);
+    setter.join().unwrap();
+    assert_eq!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Cancelled,
+            detail: CANCELLED.to_owned()
+        }
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn compute_runs_with_the_same_seed_draw_the_same_bytes_and_other_seeds_differ() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let draw = |seed| engine.invoke(&app, compute_host("draw", seed), compute_budget());
+    let (a, b, c) = (draw(3), draw(3), draw(4));
+    assert_eq!(a.status, Status::Ok, "{:?}", a.status);
+    assert_eq!(a.result.len(), 32);
+    assert_eq!(a.result, b.result);
+    assert_ne!(a.result, c.result);
+}
+
+#[test]
+fn a_component_using_a_hash_map_prepares_and_runs_on_both_engines() {
+    let compute = compute_engine();
+    let cache = tempfile::tempdir().unwrap();
+    let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
+    for (engine, guest) in [(&compute, "compute_probe"), (&pooled, "probe")] {
+        let app = prepare_compute(engine, guest);
+        let out = engine.invoke(&app, compute_host("hashmap", 1), compute_budget());
+        assert_eq!(out.status, Status::Ok, "{guest}: {:?}", out.status);
+        assert_eq!(out.result.len(), 64 * 4, "{guest}");
+    }
+}
+
+#[test]
+fn hash_map_iteration_follows_the_seed_in_every_engine() {
+    let compute = compute_engine();
+    let cache = tempfile::tempdir().unwrap();
+    let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
+    for (engine, guest) in [(&compute, "compute_probe"), (&pooled, "probe")] {
+        let app = prepare_compute(engine, guest);
+        let run = |seed| engine.invoke(&app, compute_host("hashmap", seed), compute_budget());
+        let (a, b, c) = (run(3), run(3), run(4));
+        assert_eq!(a.status, Status::Ok, "{guest}: {:?}", a.status);
+        assert_eq!(a.result, b.result, "{guest}");
+        assert_ne!(a.result, c.result, "{guest}");
+    }
+}
+
+#[test]
+fn compute_runs_see_the_start_entry_clock() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let out = engine.invoke(&app, compute_host("wall", 1), compute_budget());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let seconds = u64::from_le_bytes(out.result[..8].try_into().unwrap());
+    assert_eq!(seconds, ENTRY_TS_MS / 1_000);
+}
+
+#[test]
+fn nans_are_canonical_and_identical_across_compute_runs() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let run = || engine.invoke(&app, compute_host("nan", 1), compute_budget());
+    let (a, b) = (run(), run());
+    assert_eq!(a.status, Status::Ok, "{:?}", a.status);
+    assert_eq!(a.result, b.result);
+    let canonical32 = 0x7fc0_0000u32.to_le_bytes();
+    let canonical64 = 0x7ff8_0000_0000_0000u64.to_le_bytes();
+    let mut want = Vec::new();
+    want.extend(canonical32);
+    want.extend(canonical32);
+    want.extend(canonical64);
+    want.extend(canonical64);
+    want.extend(canonical32);
+    assert_eq!(a.result, want);
+}
+
+fn pages(result: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(result[at * 8..at * 8 + 8].try_into().unwrap())
+}
+
+#[test]
+fn a_compute_run_may_hold_more_than_a_pool_slot_and_reports_the_peak() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let budget = Budget {
+        memory_pages: 2_048,
+        ..compute_budget()
+    };
+    let out = engine.invoke(&app, compute_host("bomb", 1), budget);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfMemory),
+        "{:?}",
+        out.status
+    );
+    let (floor, limit) = (64 * 1024 * 1024, 2_048 * 64 * 1024);
+    assert!(
+        out.usage.peak_memory > floor && out.usage.peak_memory <= limit,
+        "{}",
+        out.usage.peak_memory
+    );
+}
+
+#[test]
+fn a_compute_run_may_grow_to_four_gib() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let budget = Budget {
+        memory_pages: 65_536,
+        ..compute_budget()
+    };
+    let out = engine.invoke(&app, compute_host("grow", 1), budget);
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_ne!(pages(&out.result, 1), 0xffff_ffff, "memory.grow failed");
+    assert_eq!(pages(&out.result, 2), 65_536);
+    assert_eq!(out.usage.peak_memory, 65_536 * 64 * 1024);
+}
+
+#[test]
+fn random_requests_over_the_per_call_limit_are_denied_in_every_engine() {
+    let compute = compute_engine();
+    let cache = tempfile::tempdir().unwrap();
+    let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
+    for (engine, guest) in [(&compute, "compute_probe"), (&pooled, "probe")] {
+        let app = prepare_compute(engine, guest);
+        let ask = |len: u64| {
+            let mut host = compute_host("random", 1);
+            let mut inv = host.invocation().clone();
+            inv.args = len.to_string().into_bytes();
+            host = HostCore::new(
+                "app-1",
+                Arc::new(BTreeMap::<Vec<u8>, Vec<u8>>::new()),
+                0,
+                inv,
+                Arc::new(TestDir {
+                    panic_on_org: false,
+                }),
+            )
+            .unwrap();
+            engine.invoke(&app, host, compute_budget())
+        };
+        let ok = ask(MAX_RANDOM_BYTES_PER_CALL as u64);
+        assert_eq!(ok.status, Status::Ok, "{:?}", ok.status);
+        for len in [MAX_RANDOM_BYTES_PER_CALL as u64 + 1, u64::MAX] {
+            let out = ask(len);
+            assert_eq!(
+                trap_kind(&out),
+                Some(TrapKind::HostDenied),
+                "{len}: {:?}",
+                out.status
+            );
+        }
+    }
+}
+
+#[test]
+fn the_compute_engine_refuses_components_that_import_state_or_http() {
+    let engine = compute_engine();
+    // clock_reader imports `calimero:app/context` and `wasi:http`.
+    let err = engine
+        .prepare("clock_reader-hash", &guest("clock_reader"))
+        .err()
+        .expect("a replica component on a job node");
+    assert!(matches!(err, PrepareError::ForbiddenImport(_)), "{err:?}");
+    let err = engine
+        .prepare("view_writer-hash", &guest("view_writer"))
+        .err()
+        .expect("a state component on a job node");
+    assert!(
+        matches!(err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/storage"))
+    );
+}
+
+#[test]
+fn a_compute_component_prepares_on_the_compute_engine_and_is_refused_by_the_replica_engine() {
+    prepare_compute(&compute_engine(), "compute_probe");
+    let fx = fixture();
+    let err = fx
+        .engine
+        .prepare("compute_probe-hash", &guest("compute_probe"))
+        .err()
+        .expect("a compute component on a replica");
+    assert!(
+        matches!(&err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/job")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_compute_run_reads_its_run_id_through_the_job_interface() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "compute_probe");
+    let out = engine.invoke(&app, compute_host("id", 1), compute_budget());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_eq!(out.result, b"run-1");
+}
+
+/// The compute fixture app, built once: its app component and its compute component.
+fn compute_fixture() -> &'static BuiltApp {
+    static BUILT: OnceLock<BuiltApp> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("compute-fixture");
+        build_components(&dir, &target).unwrap_or_else(|e| panic!("build fixture: {e}"))
+    })
+}
+
+fn fixture_compute() -> &'static [u8] {
+    &compute_fixture()
+        .compute
+        .as_ref()
+        .expect("the fixture has compute methods")
+        .component
+}
+
+#[test]
+fn the_fixtures_compute_component_prepares_on_the_compute_engine_and_not_on_a_replica() {
+    let prepared = compute_engine()
+        .prepare("fixture-compute", fixture_compute())
+        .expect("compute engine");
+    assert!(prepared.abi.methods.contains_key("digest"));
+    assert!(!prepared.abi.methods.contains_key("onDone"));
+
+    let err = fixture()
+        .engine
+        .prepare("fixture-compute", fixture_compute())
+        .err()
+        .expect("a replica engine refuses a compute component");
+    assert!(
+        matches!(&err, PrepareError::ForbiddenImport(i) if i.starts_with("calimero:app/job")),
+        "{err:?}"
+    );
+    compute_engine()
+        .prepare("fixture-app", &compute_fixture().app.component)
+        .err()
+        .expect("a job node refuses the app component");
+}
+
+#[test]
+fn a_compute_run_of_the_fixture_writes_its_input_xor_the_seeded_stream() {
+    // The input: the `files` guest's 1.25 MiB pattern, kept in a store the run reads.
+    let fx = fixture();
+    let writer = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+    let call = host(InvocationKind::Call, "write", b"").with_files(Arc::new(files.clone()));
+    let made = fx.engine.invoke(&writer, call, heavy());
+    assert_eq!(made.status, Status::Ok, "{:?}", made.status);
+    files.apply(&made.new_files);
+    let input_id = String::from_utf8(made.result).unwrap();
+    let input: Vec<u8> = (0..1024 * 1024 + 256 * 1024)
+        .map(|i| (i % 251) as u8)
+        .collect();
+
+    let seed = 9;
+    let engine = compute_engine();
+    let app = engine
+        .prepare("fixture-compute", fixture_compute())
+        .expect("prepare");
+    let run = || {
+        let host = compute_host("digest", seed);
+        let mut inv = host.invocation().clone();
+        inv.compute.as_mut().unwrap().inputs = vec![input_id.clone()];
+        let host = HostCore::new(
+            "app-1",
+            Arc::new(BTreeMap::<Vec<u8>, Vec<u8>>::new()),
+            0,
+            inv,
+            Arc::new(TestDir {
+                panic_on_org: false,
+            }),
+        )
+        .unwrap()
+        .with_files(Arc::new(files.clone()));
+        let budget = Budget {
+            fuel: 20_000_000_000,
+            wall_clock: Duration::from_secs(60),
+            memory_pages: 4_096,
+        };
+        engine.invoke(&app, host, budget)
+    };
+    let (a, b) = (run(), run());
+    assert_eq!(a.status, Status::Ok, "{:?}", a.status);
+
+    let mut stream = vec![0u8; input.len()];
+    compute_host("digest", seed).random_fill(&mut stream);
+    let expected: Vec<u8> = input.iter().zip(&stream).map(|(i, k)| i ^ k).collect();
+    assert_eq!(a.new_files.len(), 1);
+    assert_eq!(a.new_files[0].size, expected.len() as u64);
+    assert_eq!(a.new_files[0].sha256, Sha256::digest(&expected).to_vec());
+    assert_eq!(a.new_files[0], b.new_files[0]);
+    let hash = hex::encode(Sha256::digest(&input));
+    assert_eq!(a.result, format!("[\"{hash}\"]").into_bytes());
+}
+
+#[test]
+fn each_engine_refuses_an_abi_of_the_other_world() {
+    let plain = serde_json::json!({
+        "abiVersion": 1,
+        "methods": { "spin": { "kind": "call" } },
+    });
+    let compute_abi = serde_json::json!({
+        "abiVersion": 1,
+        "world": "calimero:app/compute@0.5.1",
+        "methods": {},
+    });
+    let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");
+    let err = compute_engine()
+        .prepare("job-hash", &job)
+        .err()
+        .expect("a compute component whose ABI names the app world");
+    assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
+
+    let app = calimero_app_build::with_abi(&guest("probe"), &compute_abi).expect("patch");
+    let err = fixture()
+        .engine
+        .prepare("app-hash", &app)
+        .err()
+        .expect("an app component whose ABI names the compute world");
+    assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
 }

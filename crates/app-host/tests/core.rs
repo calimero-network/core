@@ -13,6 +13,12 @@ use calimero_app_host::{
     MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
     MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
+use calimero_app_host::{
+    subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, ACTION_WALL_CLOCK,
+};
+use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
+use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
+use calimero_app_host::{MAX_XCALLS, XCALL_BAD_TARGET, XCALL_TOO_MANY};
 use serde_json::json;
 
 struct NoDirectory;
@@ -49,6 +55,7 @@ fn inv(kind: InvocationKind) -> Invocation {
         id_seq: 42,
         seed: [7; 32],
         timer: None,
+        compute: None,
     }
 }
 
@@ -403,16 +410,17 @@ fn disabled_interfaces_refuse() {
     let state = base(&[]);
     let call = inv(InvocationKind::Call);
     let mut host = core_for(&state, &call);
+    // A call starts an action; its key comes from the run's unique ids (D17, D52).
     assert_eq!(
         host.start_action("enrich", b"{}"),
-        Ok(Err("actions are not enabled".to_owned()))
+        Ok(Ok("a.3.42.0".to_owned()))
     );
+    // Without the node's blob store an app has no blobs.
+    assert_eq!(host.blobs_info(&"ab".repeat(32)), Ok(None));
     assert!(matches!(
-        host.xcall_send("other", "m", b""),
+        host.blobs_grant(&"ab".repeat(32), 60),
         Err(HostDenied(_))
     ));
-    assert!(matches!(host.blobs_info("b"), Err(HostDenied(_))));
-    assert!(matches!(host.blobs_grant("b", 60), Err(HostDenied(_))));
     assert!(matches!(host.action_key(), Err(HostDenied(_))));
     assert!(matches!(host.action_view("m", b""), Err(HostDenied(_))));
     assert!(matches!(host.action_call("m", b""), Err(HostDenied(_))));
@@ -457,7 +465,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.0",
+        "world": "calimero:app@0.5.1",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },
@@ -503,7 +511,8 @@ fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
         json!({ "abiVersion": "1", "methods": {} }),
         json!({ "abiVersion": 0, "methods": {} }),
         json!({ "abiVersion": 1, "methods": { "t": { "kind": "timer", "every": 5 } } }),
-        json!({ "abiVersion": 1, "methods": { "x": { "kind": "action" } } }),
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": "migrate" } } }),
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": "action", "allowAction": 1 } } }),
     ] {
         assert!(
             matches!(Abi::from_json(&bad), Err(PrepareError::BadAbi(_))),
@@ -1091,4 +1100,461 @@ fn single_entry_batches_merge_puts_and_tombstones() {
     let mut reversed = expected;
     reversed.reverse();
     assert_eq!(drain_one_by_one(&mut host, true), reversed);
+}
+
+/// One blob, `[9; 32]`, granted as `"<hex>@<expires_ms>"`.
+struct OneBlob;
+
+impl BlobHost for OneBlob {
+    fn info(&self, id: &[u8; 32]) -> Option<BlobInfo> {
+        (*id == [9; 32]).then(|| BlobInfo {
+            size: 3,
+            sha256: vec![9; 32],
+            mime: "text/plain".to_owned(),
+        })
+    }
+    fn grant(&self, _id: &[u8; 32], expires_ms: u64) -> String {
+        format!("grant@{expires_ms}")
+    }
+}
+
+fn blob_ref(id: [u8; 32]) -> Vec<u8> {
+    let mut out = Vec::new();
+    ciborium::into_writer(
+        &ciborium::Value::Tag(BLOB_REF_TAG, Box::new(ciborium::Value::Bytes(id.to_vec()))),
+        &mut out,
+    )
+    .unwrap();
+    out
+}
+
+#[test]
+fn blobs_answer_from_the_nodes_record_and_grants_expire_from_the_run_clock() {
+    let state = base(&[]);
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::View,
+        InvocationKind::Timer,
+    ] {
+        let mut i = inv(kind);
+        if kind == InvocationKind::Timer {
+            i.timer = Some(TimerCtx {
+                scheduled_ms: 1_000,
+                previous_ms: None,
+            });
+        }
+        let mut host = core_for(&state, &i).with_blobs(Arc::new(OneBlob));
+        let id = "09".repeat(32);
+        assert_eq!(host.blobs_info(&id).unwrap().unwrap().size, 3);
+        assert_eq!(host.blobs_info(&"08".repeat(32)), Ok(None));
+        assert_eq!(host.blobs_info("not hex"), Ok(None));
+        assert_eq!(host.blobs_grant(&id, 60).unwrap(), "grant@61000");
+        assert!(host.blobs_grant(&id, 0).is_err());
+        assert!(host.blobs_grant(&id, MAX_GRANT_TTL_SECS + 1).is_err());
+        assert!(host.blobs_grant(&"08".repeat(32), 60).is_err());
+    }
+    for kind in [InvocationKind::Action, InvocationKind::Migrate] {
+        let host = core_for(&state, &inv(kind)).with_blobs(Arc::new(OneBlob));
+        assert!(host.blobs_info(&"09".repeat(32)).is_err(), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_value_may_refer_only_to_the_apps_own_blobs() {
+    let state = base(&[]);
+    let mut host = core_for(&state, &inv(InvocationKind::Call)).with_blobs(Arc::new(OneBlob));
+    host.storage_put(b"held", &blob_ref([9; 32])).unwrap();
+    assert!(matches!(
+        host.storage_put(b"other", &blob_ref([8; 32])),
+        Err(HostDenied(_))
+    ));
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.diff.len(), 1);
+}
+
+/// Answers every query with one hit on key `k`.
+struct OneHit;
+
+impl SearchHost for OneHit {
+    fn query(&self, _q: &SearchQuery) -> Result<SearchPage, String> {
+        Ok(SearchPage {
+            hits: vec![calimero_app_host::SearchHit {
+                key: b"k".to_vec(),
+                score: 1.0,
+                snippet: String::new(),
+            }],
+            next: None,
+            total: 1,
+        })
+    }
+}
+
+fn query(limit: u32, text: &str) -> SearchQuery {
+    SearchQuery {
+        table: "notes".into(),
+        text: text.into(),
+        mode: SearchMode::Words,
+        cursor: 0,
+        limit,
+    }
+}
+
+#[test]
+fn only_views_search_and_queries_are_bounded() {
+    let state = base(&[]);
+    let view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    assert_eq!(
+        view.search_query(&query(10, "eggs"))
+            .unwrap()
+            .unwrap()
+            .total,
+        1
+    );
+    assert!(view.search_query(&query(0, "eggs")).unwrap().is_err());
+    assert!(view
+        .search_query(&query(MAX_SEARCH_LIMIT + 1, "eggs"))
+        .unwrap()
+        .is_err());
+    assert!(view
+        .search_query(&query(10, &"x".repeat(257)))
+        .unwrap()
+        .is_err());
+    for kind in [
+        InvocationKind::Call,
+        InvocationKind::Init,
+        InvocationKind::Action,
+    ] {
+        let host = core_for(&state, &inv(kind)).with_search(Arc::new(OneHit));
+        assert!(host.search_query(&query(10, "eggs")).is_err(), "{kind:?}");
+    }
+    // Without the node's index no table is searchable.
+    let bare = core_for(&state, &inv(InvocationKind::View));
+    assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
+}
+
+#[test]
+fn the_abi_reads_search_fields_and_skips_empty_tables() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {},
+        "state": { "search": { "notes": ["title"], "rows": [] } },
+    }))
+    .unwrap();
+    assert_eq!(abi.search.len(), 1);
+    assert_eq!(abi.search["notes"], vec!["title".to_owned()]);
+    assert!(Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {},
+        "state": { "search": { "notes": [1] } },
+    }))
+    .is_err());
+}
+
+#[test]
+fn xcalls_wait_in_the_outbox_and_go_only_with_an_ok_run() {
+    let state = base(&[]);
+    let mut host = core_for(&state, &inv(InvocationKind::Call));
+    assert_eq!(host.xcall_send("other", "deliver", b"{}"), Ok(Ok(())));
+    assert_eq!(
+        host.xcall_send("other", "__blob", b"{}"),
+        Ok(Err(XCALL_BAD_TARGET.to_owned()))
+    );
+    assert_eq!(
+        host.xcall_send("", "m", b"{}"),
+        Ok(Err(XCALL_BAD_TARGET.to_owned()))
+    );
+    for _ in 1..MAX_XCALLS {
+        host.xcall_send("other", "m", b"{}").unwrap().unwrap();
+    }
+    assert_eq!(
+        host.xcall_send("other", "m", b"{}"),
+        Ok(Err(XCALL_TOO_MANY.to_owned()))
+    );
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.xcalls.len(), MAX_XCALLS);
+    assert_eq!(out.xcalls[0].method, "deliver");
+
+    let mut failed = core_for(&state, &inv(InvocationKind::Call));
+    failed.xcall_send("other", "m", b"{}").unwrap().unwrap();
+    let out = failed.finish(
+        Status::AppError {
+            code: "No".into(),
+            message: "{}".into(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert!(out.xcalls.is_empty(), "a failed run sends nothing");
+
+    for kind in [
+        InvocationKind::View,
+        InvocationKind::Action,
+        InvocationKind::Migrate,
+    ] {
+        let mut host = core_for(&state, &inv(kind));
+        assert!(host.xcall_send("other", "m", b"{}").is_err(), "{kind:?}");
+    }
+    let mut delivery = core_for(&state, &inv(InvocationKind::XcallDeliver));
+    assert_eq!(delivery.xcall_send("other", "m", b"{}"), Ok(Ok(())));
+}
+
+#[test]
+fn the_abi_reads_which_apps_a_method_allows() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {
+            "fromAny": { "kind": "call", "allowApps": ["*"] },
+            "fromOne": { "kind": "call", "allowApps": ["app-a"] },
+            "fromNone": { "kind": "call" },
+        },
+    }))
+    .unwrap();
+    assert!(abi.methods["fromAny"].allows_app("anything"));
+    assert!(abi.methods["fromOne"].allows_app("app-a"));
+    assert!(!abi.methods["fromOne"].allows_app("app-b"));
+    assert!(!abi.methods["fromNone"].allows_app("app-a"));
+}
+
+/// Records what an action asked of the node.
+#[derive(Default)]
+struct Runner {
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl ActionHost for Runner {
+    fn key(&self) -> String {
+        "a.1.1.0".to_owned()
+    }
+    fn view(&self, method: &str, _args: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(format!("\"{method}\"").into_bytes())
+    }
+    fn call(&self, method: &str, _args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), key.to_owned()));
+        Ok(b"null".to_vec())
+    }
+}
+
+struct Echo;
+
+impl HttpHost for Echo {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: request.url.clone().into_bytes(),
+        })
+    }
+}
+
+fn get(url: &str) -> HttpRequest {
+    HttpRequest {
+        method: "GET".into(),
+        url: url.into(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
+#[test]
+fn actions_send_http_and_calls_record_what_they_send() {
+    let state = base(&[(b"k", b"v")]);
+    let runner = Arc::new(Runner::default());
+    let mut action = core_for(&state, &inv(InvocationKind::Action))
+        .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
+        .with_http(Arc::new(Echo));
+    assert!(action.storage_get(b"k").is_err(), "no state access (D12)");
+    assert_eq!(action.action_key().unwrap(), "a.1.1.0");
+    assert_eq!(
+        action.action_view("company", b"{}"),
+        Ok(Ok(b"\"company\"".to_vec()))
+    );
+    // The same call twice gets two keys; a retry would get the same two (D27).
+    action.action_call("apply", b"{}").unwrap().unwrap();
+    action.action_call("apply", b"{}").unwrap().unwrap();
+    action.action_call("apply", b"{\"x\":1}").unwrap().unwrap();
+    let calls = runner.calls.lock().unwrap().clone();
+    assert_eq!(calls[0].1, subcall_key("a.1.1.0", "apply", b"{}", 0));
+    assert_eq!(calls[1].1, subcall_key("a.1.1.0", "apply", b"{}", 1));
+    assert_eq!(calls[2].1, subcall_key("a.1.1.0", "apply", b"{\"x\":1}", 0));
+    let sent = action
+        .http_send(&get("https://enrich.test/v1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(sent.body, b"https://enrich.test/v1");
+
+    // An action's exchanges are not recorded: it has no entry of its own.
+    let out = action.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(out.http.is_empty());
+
+    // A call has no action context; it sends HTTP (D76) and records the exchange for its
+    // entry, whatever its status. Views and `init` send none (S9).
+    let mut call = core_for(&state, &inv(InvocationKind::Call))
+        .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
+        .with_http(Arc::new(Echo));
+    assert!(call.action_key().is_err());
+    assert!(call.action_call("apply", b"{}").is_err());
+    let mut big = get("https://enrich.test/v1");
+    big.method = "POST".into();
+    big.body = vec![b'x'; calimero_app_host::MAX_RECORDED_BODY_BYTES + 10];
+    assert_eq!(
+        call.http_send(&big).unwrap().unwrap().body,
+        b"https://enrich.test/v1"
+    );
+    let out = call.finish(
+        Status::AppError {
+            code: "Nope".into(),
+            message: String::new(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert_eq!(out.http.len(), 1);
+    assert_eq!(
+        out.http[0].request.body.len(),
+        calimero_app_host::MAX_RECORDED_BODY_BYTES
+    );
+    assert_eq!(
+        out.http[0].request_body_len,
+        calimero_app_host::MAX_RECORDED_BODY_BYTES + 10
+    );
+    assert_eq!(out.http[0].response.as_ref().unwrap().status, 200);
+    for kind in [InvocationKind::View, InvocationKind::Init] {
+        let mut run = core_for(&state, &inv(kind)).with_http(Arc::new(Echo));
+        assert!(
+            run.http_send(&get("https://enrich.test/v1")).is_err(),
+            "{kind:?}"
+        );
+    }
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_http(Arc::new(Echo));
+    assert!(view.start_action("enrich", b"{}").is_err());
+    assert_eq!(ACTION_WALL_CLOCK, Duration::from_secs(10));
+}
+
+#[test]
+fn started_actions_leave_only_with_an_ok_run() {
+    let state = base(&[]);
+    let mut host = core_for(&state, &inv(InvocationKind::Call));
+    let id = host.start_action("enrich", b"{}").unwrap().unwrap();
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.actions.len(), 1);
+    assert_eq!(out.actions[0].id, id);
+    let mut host = core_for(&state, &inv(InvocationKind::Call));
+    host.start_action("enrich", b"{}").unwrap().unwrap();
+    let out = host.finish(
+        Status::Trap {
+            kind: calimero_app_host::TrapKind::Fault,
+            detail: String::new(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert!(out.actions.is_empty());
+}
+
+/// A node's reach into other apps, recording what it was asked.
+#[derive(Default)]
+struct OtherApps {
+    calls: std::sync::Mutex<Vec<(String, String, String)>>,
+}
+
+impl calimero_app_host::XcallHost for OtherApps {
+    fn key(&self) -> String {
+        "run-key".to_owned()
+    }
+    fn call(&self, app: &str, method: &str, _args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((app.to_owned(), method.to_owned(), key.to_owned()));
+        if method == "huge" {
+            return Ok(vec![
+                b' ';
+                calimero_app_host::MAX_SYNC_XCALL_RESULT_BYTES + 1
+            ]);
+        }
+        Ok(b"true".to_vec())
+    }
+    fn view(&self, app: &str, method: &str, _args: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(format!("\"{app}.{method}\"").into_bytes())
+    }
+}
+
+#[test]
+fn synchronous_xcalls_are_keyed_bounded_and_one_hop_deep() {
+    use calimero_app_host::{
+        sync_xcall_key, MAX_SYNC_XCALLS, XCALL_SYNC_SELF, XCALL_SYNC_TOO_MANY,
+        XCALL_SYNC_UNAVAILABLE,
+    };
+    let state = base(&[]);
+    let apps = Arc::new(OtherApps::default());
+    let with = |kind| {
+        core_for(&state, &inv(kind))
+            .with_xcall_host(Arc::clone(&apps) as Arc<dyn calimero_app_host::XcallHost>)
+    };
+    let mut call = with(InvocationKind::Call);
+    assert_eq!(
+        call.xcall_call("captcha", "verify", b"{}"),
+        Ok(Ok(b"true".to_vec()))
+    );
+    call.xcall_call("captcha", "verify", b"{}")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        call.xcall_view("captcha", "status", b"{}"),
+        Ok(Ok(b"\"captcha.status\"".to_vec()))
+    );
+    // Identical calls get keys by occurrence, so a re-run of the caller replays both.
+    let calls = apps.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls[0].2,
+        sync_xcall_key("run-key", "captcha", "verify", b"{}", 0)
+    );
+    assert_eq!(
+        calls[1].2,
+        sync_xcall_key("run-key", "captcha", "verify", b"{}", 1)
+    );
+    // Soft refusals: the app itself, a reserved method, an oversized answer.
+    assert_eq!(
+        call.xcall_call("app", "verify", b"{}"),
+        Ok(Err(XCALL_SYNC_SELF.to_owned()))
+    );
+    assert!(call
+        .xcall_call("captcha", "__upgrade", b"{}")
+        .unwrap()
+        .is_err());
+    assert!(call.xcall_call("captcha", "huge", b"{}").unwrap().is_err());
+    // Past the per-run cap.
+    let mut busy = with(InvocationKind::Call);
+    for _ in 0..MAX_SYNC_XCALLS {
+        busy.xcall_view("captcha", "status", b"{}")
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(
+        busy.xcall_view("captcha", "status", b"{}"),
+        Ok(Err(XCALL_SYNC_TOO_MANY.to_owned()))
+    );
+    // Actions call (timers too, like calls); views only read; a delivered xcall, init and a
+    // migration reach nothing.
+    assert!(with(InvocationKind::Action)
+        .xcall_call("captcha", "verify", b"{}")
+        .is_ok());
+    assert!(with(InvocationKind::View)
+        .xcall_call("captcha", "verify", b"{}")
+        .is_err());
+    assert!(with(InvocationKind::View)
+        .xcall_view("captcha", "status", b"{}")
+        .is_ok());
+    for kind in [InvocationKind::XcallDeliver, InvocationKind::Init] {
+        assert!(with(kind).xcall_call("captcha", "verify", b"{}").is_err());
+        assert!(with(kind).xcall_view("captcha", "status", b"{}").is_err());
+    }
+    // Without the node's host, the guest is told so.
+    assert_eq!(
+        core_for(&state, &inv(InvocationKind::Call)).xcall_call("captcha", "verify", b"{}"),
+        Ok(Err(XCALL_SYNC_UNAVAILABLE.to_owned()))
+    );
 }

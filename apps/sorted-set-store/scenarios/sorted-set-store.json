@@ -1,0 +1,213 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "add",
+  "args": {
+   "value": "pear"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "add",
+  "args": {
+   "value": "apple"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "add",
+  "args": {
+   "value": "apricot"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "add",
+  "args": {
+   "value": "apple"
+  },
+  "expect": {
+   "ok": false
+  },
+  "events": {
+   "bob": [
+    "Added",
+    "Added",
+    "Added"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "elements",
+  "args": {},
+  "expect": {
+   "ok": [
+    "apple",
+    "apricot",
+    "pear"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "contains",
+  "args": {
+   "value": "pear"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "prefix",
+  "args": {
+   "prefix": "ap"
+  },
+  "expect": {
+   "ok": [
+    "apple",
+    "apricot"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "range",
+  "args": {
+   "start": "apricot",
+   "end": "pear"
+  },
+  "expect": {
+   "ok": [
+    "apricot"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "page",
+  "args": {
+   "offset": 2,
+   "limit": 2
+  },
+  "expect": {
+   "ok": [
+    "pear"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "page",
+  "args": {
+   "offset": 3,
+   "limit": 2
+  },
+  "expect": {
+   "ok": []
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "first",
+  "args": {},
+  "expect": {
+   "ok": "apple"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "last",
+  "args": {},
+  "expect": {
+   "ok": "pear"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "remove",
+  "args": {
+   "value": "apple"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "remove",
+  "args": {
+   "value": "apple"
+  },
+  "expect": {
+   "ok": false
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "ok": "2"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "view",
+  "method": "len",
+  "args": {},
+  "expect": {
+   "refused": "NOT_FOUND"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "clear",
+  "args": {},
+  "events": {
+   "bob": [
+    "Added",
+    "Added",
+    "Added",
+    "Removed",
+    "Cleared"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "isEmpty",
+  "args": {},
+  "expect": {
+   "ok": true
+  }
+ }
+]

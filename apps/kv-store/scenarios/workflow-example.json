@@ -1,0 +1,161 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "hello",
+   "value": "world"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "hello"
+  },
+  "expect": {
+   "ok": "world"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "hello"
+  },
+  "expect": {
+   "ok": "world"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "node3_key",
+   "value": "node3_value"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "node3_key"
+  },
+  "expect": {
+   "ok": "node3_value"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "iteration_1",
+   "value": "value_1_from_node1"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "iteration_1"
+  },
+  "expect": {
+   "ok": "value_1_from_node1"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "iteration_1"
+  },
+  "expect": {
+   "ok": "value_1_from_node1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "iteration_2",
+   "value": "value_2_from_node1"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "iteration_2"
+  },
+  "expect": {
+   "ok": "value_2_from_node1"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "iteration_2"
+  },
+  "expect": {
+   "ok": "value_2_from_node1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "set",
+  "args": {
+   "key": "iteration_3",
+   "value": "value_3_from_node1"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "iteration_3"
+  },
+  "expect": {
+   "ok": "value_3_from_node1"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "call",
+  "method": "get",
+  "args": {
+   "key": "iteration_3"
+  },
+  "expect": {
+   "ok": "value_3_from_node1"
+  }
+ }
+]

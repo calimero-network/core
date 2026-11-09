@@ -277,6 +277,29 @@ impl SealedTransport {
         ))
     }
 
+    /// Attest the node and open a session now unless one is open, so the
+    /// next request need not. Run where no deadline cuts it short: the
+    /// attestation can take longer than a request may (a TDX quote's collateral
+    /// comes from Intel), and one dropped halfway leaves nothing to reuse.
+    ///
+    /// # Errors
+    /// When the node cannot be attested or refuses the handshake.
+    pub async fn connect(&self) -> Result<()> {
+        self.current_session().await.map(|_| ())
+    }
+
+    /// Whether a session is open and not about to lapse. `false` while another
+    /// request holds the session state, which is only for a moment.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.state.try_lock().is_ok_and(|state| {
+            state
+                .session
+                .as_ref()
+                .is_some_and(|s| Instant::now() < s.renew_at)
+        })
+    }
+
     /// The session to use now, opened if there is none or it is about to lapse.
     async fn current_session(&self) -> Result<Arc<Session>> {
         let mut state = self.state.lock().await;

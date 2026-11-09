@@ -47,6 +47,7 @@ events — must stay under **1 MiB**.
 | One blob (an uploaded file, a package `.mpk`, uploaded or fetched from a registry) | 47 MiB: it reaches the other nodes base64-encoded in one sealed request | `MAX_BLOB_BYTES`, `MAX_MPK_BYTES` |
 | Metadata (organization, member, team, app) | 16 KiB of JSON | `MAX_METADATA_BYTES` |
 | Passkeys per account | 10 | `AddPasskey` |
+| Registered web origins | 8 per package, 4096 per cluster, 255 bytes each | `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`, `MAX_ORIGIN_BYTES` |
 | Aliases per account | 1000, each 1–64 characters | `MAX_ALIASES` |
 | Passkey label | 64 characters | `MAX_LABEL_CHARS` |
 | Upgrade runs kept per organization | 20 | `UPGRADE_RUNS_KEPT` |
@@ -78,7 +79,7 @@ that, or for a declared length past 1 GiB or a client waiting on
 | What | Lifetime |
 | --- | --- |
 | Session token | 15 minutes |
-| Refresh token | 30 days, single use |
+| Refresh token | 30 days; exchanged by the first refresh once an hour old |
 | Session-signing key rotation | 6 hours by default, at least 30 minutes |
 | API key | Up to 1 year |
 | Invite | 7 days by default; 1 use by default |
@@ -100,16 +101,16 @@ Per account, set by the operator (`POST /ops/quotas`), checked at apply
 | API keys | 50 |
 | Organizations owned | 20 |
 | Accounts on the cluster | 100 000 |
-| Fuel per payer per UTC day (an org for its apps, an account for its personal apps, D78), over its component apps | 0 (no limit); checked before a client's call to any of its apps runs, not at apply: `init` and timer ticks still run and count (D76) |
+| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner, D78) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count (D76) |
 
 The fuel cap is approximate by at most one refresh interval (5 s). A call never
 asks a peer: the node reads the apps it replicates from its own replicas, and the
 others from what every peer answered at its last refresh, which asks all peers at
-once every 5 s while a cap is set. A payer can so run past its cap for up to one
+once every 5 s while a cap is set. A developer can so run past its cap for up to one
 interval. A peer that stops answering keeps the figures it last reported. An app no
 peer has reported yet counts as nothing, so the cap fails open rather than closed:
-refusing every call to all of a payer's apps whenever one replica of one of them is
-unreachable would be worse than a payer briefly exceeding a daily cap. The cap is a
+refusing every call to all of a developer's apps whenever one replica of one of them
+is unreachable would be worse than a developer briefly exceeding a daily cap. The cap is a
 decimal string in JSON (D20); a node writes a non-zero cap only once every node runs
 its release or newer (`409 UPGRADE_PENDING`).
 

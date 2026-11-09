@@ -1,0 +1,4 @@
+# Scenario files on disk that `cargo test -p calimero-node --test scenarios` must not discover,
+# one per line: <path relative to the repository root> <why it is not a scenario to run>.
+# The test main fails on any `*.json` under a `scenarios` directory that is neither
+# discovered nor listed here, on an entry without a reason, and on a stale entry.

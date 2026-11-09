@@ -6,7 +6,6 @@ on:
       - "crates/bundle/**"
       - "crates/identity/**"
       - "crates/sealed/**"
-      - "crates/storage/**"
       - "crates/tee-attestation/**"
       - "tools/mero-sign/**"
       - "fuzz/**"
@@ -53,11 +52,6 @@ jobs:
               - "tools/mero-sign/**"
               - "fuzz/fuzz_targets/bundle_open.rs"
               - "fuzz/seeds/bundle_open/**"
-            crdt_sync:
-              - *shared
-              - "crates/storage/**"
-              - "fuzz/fuzz_targets/crdt_sync.rs"
-              - "fuzz/seeds/crdt_sync/**"
             sealed_request:
               - *shared
               - "crates/sealed/**"
@@ -109,7 +103,6 @@ jobs:
       matrix:
         target:
           - bundle_open
-          - crdt_sync
           - sealed_request
           - passkey_verify
           - session_token

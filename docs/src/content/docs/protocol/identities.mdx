@@ -18,8 +18,12 @@ An account id is 32 random bytes in base64url, made when someone signs up. The
 account record holds a display name, its passkeys (at most 10) and their
 labels, the account's aliases for apps, and the approvals it makes for apps it
 owns outside any organization (mero-tee releases and outbound prefixes; see
-[Deployment governance](/protocol/governance/)). Sign-up is open; the
-operator's `maxAccounts` quota bounds how many accounts a cluster takes.
+[Deployment governance](/protocol/governance/)). Who may sign up is the
+cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
+default; the operator's `maxAccounts` quota bounds how many accounts a cluster
+takes), `invite` or `closed`. `CreateAccount` carries the invite a person signs
+up with, as the token key's signature over the new account and the time, and
+`apply` judges it against the policy.
 
 The release of the node an account signed up through is approved for that
 account's own apps from the start, so its apps can run where it began.
@@ -30,20 +34,45 @@ account's own apps from the start, so its apps can run where it began.
 (ES256 and EdDSA, via `ring`). Attestation statements are not checked
 (passkeys register with `attestation: none`); the relying party id is `--rp-id`
 and the accepted origins are `--origins`, plus a package's frontend origin for a
-ceremony that comes from it.
+ceremony that comes from it. A ceremony from an origin a package's manager
+registered (below) is checked against that origin alone and its own relying
+party id.
 
 | Ceremony | Routes | Result |
 | --- | --- | --- |
 | Sign up | `/auth/passkey/register/{begin,finish}` | A new account with this passkey, and a session |
 | Sign in | `/auth/passkey/login/{begin,finish}` | A session for the passkey's account |
-| Add a device | `/auth/passkeys/add/{begin,finish}` (signed in) | Another passkey on the account |
-| Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
+| Add a device | `/auth/passkeys/add/{begin,finish}` (signed in; `finish` answers `412` and is approved by a passkey the account already has) | Another passkey on the account |
+| Recover (lost every passkey) | `/auth/recovery/{begin,start}` (signed out; the account's recovery code and a new passkey), then after 72 hours `/auth/recovery/finish` (the new passkey; `/auth/recovery/cancel` with an existing passkey stops it before) | The code spent and the passkey pending; at finish the passkey on the account, every earlier session revoked, and a session |
+| Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` (removal approved with a passkey, `412` first) | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
 
 A ceremony's challenge lives in the memory of the node that issued it, for 5
 minutes; its id names that node. It may finish on any node: that node takes
 the challenge from the issuer over the attested peer channel, so it is still
 used once (a load balancer may send the two requests anywhere). A node holds
 at most 10 000 open ceremonies; past that it answers `429`.
+
+### Passkeys are each cluster's own
+
+Accounts and passkeys live in one cluster's system group, while clusters may
+share a relying party id (every Calimero Cloud cluster uses
+`calimero.network`). A browser therefore offers a passkey made on one cluster
+on every other one. Two things keep that from confusing anyone:
+
+- **The name it is made under.** A registration's `user.name` and
+  `user.displayName` (sign-up, adding a device, recovery) are the person's name
+  and the cluster's (`--cluster`), `alice · eu-shared-1`; a sign-up begun on a
+  package's frontend (a served or registered origin, `origin` on
+  `register/begin`) names the app too, `alice · kv-store (eu-shared-1)`: the
+  newest release's display name, else the package id. Each part is cut at 32
+  characters (`MAX_PASSKEY_NAME_PART_CHARS`). The account's own name is the
+  person's alone.
+- **The answer to a passkey from elsewhere.** An assertion (sign-in or step-up)
+  whose credential no account here has answers `401 PASSKEY_UNKNOWN_HERE`,
+  "this passkey belongs to another Calimero cluster or was removed from this
+  one; sign up here, or open the app from the link for the cluster your account
+  is on". It names no cluster and no account: a node knows only its own
+  cluster's passkeys, and the answer is the same for a passkey that was removed.
 
 Sign-in and sign-up need the user present. A **step-up** — approving a confirm
 method, an upgrade, an approval or an organization's deletion — needs the user
@@ -59,10 +88,16 @@ wrapped under its storage key K_r, so a restart on the same data directory (a
 crash, a rolling upgrade of the binary) keeps it.
 The claims are the account, a session id, the expiry (15 minutes), the passkey
 the session was opened with, for a session opened on a package's frontend that
-package, and the issuing node with its key. Signing in also returns a refresh
-token (`rt_…`, 30 days, single use): `POST /auth/refresh` on any node exchanges
-it for a new token, signed by that node, and a new refresh token; a refresh
-token presented a second time revokes its session.
+package (and, on a registered origin, that origin), and the issuing node with its key. Signing in also returns a refresh
+token (`rt_…`, 30 days): `POST /auth/refresh` on any node answers a new
+token, signed by that node. A refresh token younger than an hour
+(`api::REFRESH_ROTATE_AFTER`) is kept: the node judges it on the cluster's
+latest system state (a read index) and writes nothing to the system log, so a
+sign-out, a recovery or a passkey removal committed through any node already
+ends it. An older one is exchanged in the system log for a new refresh token;
+a refresh token presented again after it was exchanged revokes its session.
+So every active session writes to the system log once an hour, not once per
+session token.
 
 A node verifies a token issued elsewhere without asking the issuer: it checks
 the signature against the issuer's signing key as it attested it at the
@@ -111,15 +146,15 @@ another node.
 
 There are no device keys. A device is a passkey; `/auth/me` reports which one
 the current session was opened with (`passkeyId`), and removing a passkey ends
-that device's sessions. Inside an app, `env::account_id()` and
-`env::executor_id()` are both the caller's account ([Who a run acts
-as](/protocol/authorship/)). Presence keeps one entry per device: the session's
+that device's sessions. Inside an app, `env::caller()` is the account, whichever
+of its devices made the call ([Who a run acts as](/protocol/authorship/)). Presence keeps one entry per device: the session's
 passkey, or the API key.
 
 ## API keys
 
 `POST /auth/apikeys { label, apps?, methods?, readOnly?, allowConfirm?, ttlSecs? }`
-creates a key `cal_…` for the signed-in account; only its hash is stored and
+creates a key `cal_…` for the signed-in account, approved with a passkey (`412`
+first; the consent binds the key's hash and record); only its hash is stored and
 the key is shown once. A key may be scoped:
 
 - `apps`: only these app instances (default: every app the account reaches);
@@ -128,6 +163,42 @@ the key is shown once. A key may be scoped:
 - `allowConfirm`: may carry the account holder's passkey assertion for a confirm
   method (it can never produce one);
 - `ttlSecs`: lifetime, at most and by default one year.
+- `upgrades: { app, package? }`: an [upgrade key](#upgrade-keys), which takes
+  none of the fields above but `ttlSecs`.
+
+## Upgrade keys
+
+A deploy from CI cannot answer a passkey step-up. An **upgrade key** is an API
+key whose scope is one app's upgrades: `POST /auth/apikeys { label, ttlSecs?,
+upgrades: { app, package? } }`, approved with the passkey of someone who [may
+upgrade](/protocol/upgrades/#who-may-upgrade) the app. Its record keeps the
+app, the package (by default the one the app runs) and that package's pinned
+signer, and the public half of an Ed25519 key derived from the key itself
+(`proof::api_key_public`: seed `SHA-256("calimero.api-key.v1\0" || key)`); the
+passkey consent covers all four.
+
+- **What it does**: `POST /apps/{app}/upgrade { version }` for its app, with no
+  step-up, to a release of its package installed under the signer it names (a
+  registry release is installed first, as for a session). The node signs the
+  upgrade's statement (`<app> / __upgrade / { bundle, migrate, manifest }`) with
+  the derived key, and the directory's `UpgradeApp` carries that signature in
+  place of a passkey consent. Every replica checks it where it applies, against
+  the key as the log holds it then, and spends it once; a node that saw only
+  the log cannot sign one.
+- **What it does not**: every other route, reads included, answers `403
+  UPGRADE_KEY_ONLY`. A raw bundle, another package, another signer and another
+  app are refused `403`.
+- **The rules that still apply**: governance holding app upgrades for owners,
+  the key's account still [may upgrade](/protocol/upgrades/#who-may-upgrade) the
+  app (a member who lost `MANAGE_APPLICATION` takes the key's power with them),
+  an owner release is never moved to a publisher one, [release
+  deadlines](/protocol/governance/#release-deadlines), and [deployer
+  grants](/protocol/governance/#deployers) for a registry install.
+- **Revoking** it (`DELETE /auth/apikeys/{key}`, approved with a passkey) stops it on every node at once,
+  for an upgrade logged later too. It also ends with its `ttlSecs`.
+- **What is logged**: the app's `lastUpgrade` names the account and the key
+  (`apiKey`), in `GET /auth/apps` and `GET /orgs/{org}/apps`; the node logs
+  each such upgrade with the app, the key's id and the bundle.
 
 ## Which credential may do what
 
@@ -136,6 +207,7 @@ the key is shown once. A key may be scoped:
 | Call and read apps it reaches | ✓ | that package's apps only | ✓ | within scope |
 | Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
 | Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
+| Upgrade one app to signed releases of its package, without a step-up | — | — | — | an [upgrade key](#upgrade-keys), and nothing else |
 | Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
 | Ask for an approval on the node's consent page | ✓ | ✓ (returns to its own origin) | — | — |
 
@@ -147,6 +219,97 @@ A session opened on a package's frontend is bound to that package
 release of that package, and the node refuses it credential management, API
 keys, approvals, upgrades, uninstalls and uploads. An app's page is third-party
 code; this keeps it from acting as the whole account.
+
+## Registered origins
+
+A developer's own site (their domain, a hosting preview) is not an origin the
+node serves, so on its own it could not run a passkey ceremony against the
+cluster. A package's **manager** registers it (`/package-origins/{package}`):
+where the package's signing key is bound to a publisher organization, that
+organization's org-wide `MANAGE_APPLICATION` holders; otherwise the account
+that installed the package's first release. Never the operator, an API key or
+a package-bound session.
+
+| Change | Route | Consent (`412` first) |
+| --- | --- | --- |
+| List | `GET /package-origins/{package}` | none |
+| Register | `POST /package-origins/{package} { origin, rpId?, served? }` | `package:{package} / __add_origin / { origin, rpId }` (`{ origin, rpId, served: true }` for a served one) |
+| Remove | `DELETE /package-origins/{package} { origin }` | `package:{package} / __remove_origin / { origin }` |
+
+The consent is logged with the command (`AddPackageOrigin`,
+`RemovePackageOrigin`) and checked where it applies, on every node: a
+command without the manager's own consent over exactly that change is
+refused there, whichever node proposed it. The registrations live in the
+system state (`SystemState::package_origins`, `crate::origins`).
+
+**Relying party.** WebAuthn binds a passkey to a relying-party id, which must
+be the page's host or a parent domain of it. The cluster's `--rp-id` cannot be
+a developer's domain, so each registered origin carries its own `rpId`: the
+origin's host by default, or a parent domain of it that the manager names
+(`https://app.example.com` with `example.com`). The cluster's rp-id, or a
+parent of it, is refused, so the cluster's own passkeys never answer on a
+developer's site. A person signing in there makes a passkey for that site;
+the account it opens is an ordinary cluster account whose sessions from that
+origin are always bound to the package. WebAuthn's Related Origin Requests
+(one rp-id, a `/.well-known/webauthn` list of origins) was not chosen:
+browsers allow the list five registrable domains, for the whole cluster; the
+rp-id's host would have to serve the list, which the node does not control;
+and not every browser supports it.
+
+**Ceremonies.** `POST /auth/passkey/{register,login}/begin` take the page's
+`origin` and answer its rpId (`403 ORIGIN_NOT_REGISTERED` for an origin that
+is neither the cluster's, a node's own, a served frontend's nor registered).
+The finish routes verify a ceremony from a registered origin against
+`{ rpId, [origin] }` alone, and open a session bound to the package exactly as
+a served frontend's (`SessionClaims::app`), which also names the origin
+(`SessionClaims::origin`, carried through refresh; an exchange that changes
+it is refused). A step-up of that session answers `412` with the origin's
+rpId.
+
+A sign-up there is a sign-up like any other: the cluster's sign-up policy
+judges it (`invite` on `register/begin` and `register/finish`, `403
+SIGN_UP_REFUSED`, checked again at apply), and the new passkey signs the
+account it creates (`register/finish` answers `412`). That `412` names the
+origin's rpId, as the new passkey belongs to it, and the confirmation is taken
+from that origin only.
+
+**Removal** ends it: from the next request every session opened on the
+origin, and its refresh token, is refused `401`, judged on fresh system
+state. An uninstalled package takes its origins with it.
+
+**Limits and rules.** `https://host[:port]` exactly as a browser writes it
+(lowercase, no path, no default port); `http://` only for a `localhost` name
+and only on a `--dev` node. One package per origin (first come; the cluster's
+own origins and served frontends are refused). 8 origins per package, 4096
+per cluster. CORS on the node's API admits registered origins. The node logs,
+at `info`, each registration and removal (package, origin, rp-id) and each
+session opened on a registered origin (package and origin); who made the
+change is in the system log's command and at `debug` only, never in the
+journal an operator reads.
+
+**Served origins (custom domains).** Registered with `served: true`, the
+origin is one the cluster also serves the package's frontend on, from its
+signed bundle, as at `{label}.D`: the developer points their domain at the
+cluster, and a request whose `Host` is that name (on 443) gets the package's
+site before any node route. Everything else is a registered origin's: its own
+rp-id, package-bound sessions naming it, removal ending them and the site with
+them. Its consent names `served: true`, so a consent to the plain origin never
+makes it served, and one origin is held either way (change it by removing it
+first). Only `https://host` with no port (`http://name.localhost:port` on a
+`--dev` node); not on a node without `--apps-domain` (`400 NOT_SERVING`), not
+under the apps domain or the cluster's rp-id, not a node's API host; 4 per
+package and 64 per cluster; adding one needs every node on this release
+(`409 CLUSTER_NOT_UPGRADED`). The operator lists them, by the package's label,
+at `GET /ops/served-origins`, from which Calimero Cloud orders each one's TLS
+certificate for the cluster's attested nodes and routes the name. A custom
+domain's sessions are only as safe as its DNS: whoever controls the name can
+serve their own page there and use its passkeys for that package. Design:
+`docs/specs/custom-domains.md`.
+
+Not yet: proof that the manager controls the origin (a squatter on another
+developer's origin denies them its use on this cluster, but never sees a
+token: the sessions go to the pages on that origin), and origins scoped to a
+deployment.
 
 ## Development passkeys
 

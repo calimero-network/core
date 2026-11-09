@@ -14,7 +14,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true, features = ["derive", "env"] }
-base64.workspace = true
 dirs.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
@@ -38,5 +37,6 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 
+calimero-app-build.workspace = true
 calimero-bundle.workspace = true
 calimero-node.workspace = true

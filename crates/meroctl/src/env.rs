@@ -215,20 +215,21 @@ impl Env {
         })
     }
 
-    /// Delete an organization, which its owner approves (as [`Self::post_approved`]).
+    /// DELETE that a person approves (an organization, a passkey, a
+    /// member), as [`Self::post_approved`].
     pub async fn delete_approved(
         &self,
-        org: &str,
+        path: &str,
         dev_passkey: Option<&Path>,
     ) -> eyre::Result<Value> {
         match dev_passkey {
             Some(file) => {
                 let mut pk = load_dev_passkey(file)?;
-                let out = self.client.delete_org(org, &mut pk).await;
+                let out = self.client.delete_confirmed(path, &mut pk).await;
                 save_passkey(file, &pk)?;
                 Ok(out?)
             }
-            None => Ok(self.client.delete(&format!("orgs/{org}")).await?),
+            None => Ok(self.client.delete(path).await?),
         }
     }
 

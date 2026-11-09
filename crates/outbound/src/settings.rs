@@ -43,6 +43,11 @@ pub struct OutboundTestSettings {
     /// name) in-process, with a JSON echo of what would have been sent, once
     /// every gate has passed and the secrets are filled in.
     pub echo: bool,
+    /// Answer Cloudflare Turnstile's siteverify URL ([`crate::TURNSTILE_VERIFY_URL`])
+    /// in-process, as Cloudflare answers its test secrets: `1x…AA` passes, `2x…AA` fails,
+    /// `3x…AA` answers "timeout-or-duplicate". A token is spent by its first check, unless
+    /// a later one repeats its idempotency key.
+    pub turnstile: bool,
     /// Secrets given as values, scoped as `env_secrets` are. Exclusive with
     /// `env_secrets` and a sidecar.
     pub secrets: BTreeMap<String, TestSecretSettings>,

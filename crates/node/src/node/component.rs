@@ -3,7 +3,7 @@
 //!
 //! Everything an app does besides running its code (routing, the API, the system
 //! group, sessions, packages, presence, receipts, upgrades' authority) is the
-//! node's, shared with the wasmer executor. What is here: preparing components
+//! node's. What is here: preparing components
 //! (single-flight per bundle), the ABI gate, unique ids (D52), app time (D16,
 //! D19), timers (D34), and the calls, views, `init` and code-only upgrades of a
 //! component app.
@@ -15,10 +15,16 @@
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
 
+mod files;
+
+#[cfg(feature = "testing")]
+pub(super) use self::files::Probes;
+pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use calimero_app_host::{
     Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, TimerCtx,
@@ -28,13 +34,17 @@ use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
+use self::files::{Blob, NodeFiles, PendingBytes, Stored};
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
+use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
+use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
 use crate::component::{
     utc_day, Applied, CallEntry, ComponentCmd, DayUsage, Outcome, SysDirectory, TickEntry,
     UsageBook,
 };
 use crate::error::ApiError;
+use crate::metrics::CallPhase;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
 
@@ -83,7 +93,7 @@ pub const TIMER_POLL: Duration = Duration::from_millis(100);
 
 /// How often a node asks every peer, at once, what the apps it replicates used today,
 /// for the fuel cap (D76, D78). The cap reads that answer and never asks a peer
-/// during a call, so it is approximate by at most this long: a payer can run past
+/// during a call, so it is approximate by at most this long: a developer can run past
 /// its cap for one interval. 5 s keeps that overshoot a small part of a daily cap
 /// and costs each node one small request per peer per interval, however many apps
 /// there are. The refresh runs only while a cap is set.
@@ -184,14 +194,7 @@ impl From<WriteError> for LocalError {
 /// K_r over a fixed label, so it changes with the storage key and nothing else.
 #[must_use]
 pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
-    use ring::hmac;
-    let tag = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
-        b"calimero.components.v1",
-    );
-    let mut key = [0; 32];
-    key.copy_from_slice(tag.as_ref());
-    key
+    crate::backup::tag(storage_key, "calimero.components.v1")
 }
 
 /// The latest slot of a timer with interval `every`, installed at `install_ms`,
@@ -211,6 +214,7 @@ fn abi_check(
     caller: &Caller,
     view: bool,
     consented: bool,
+    from_action: bool,
 ) -> Result<(), ApiError> {
     if super::reserved_method(method) {
         return Err(app_refusal("UnknownMethod"));
@@ -218,8 +222,20 @@ fn abi_check(
     let Some(m) = prepared.abi.methods.get(method) else {
         return Err(app_refusal("UnknownMethod"));
     };
-    if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+    // A call of an action starts it (D17); an action never runs as a view, nor is it
+    // started by an action, an xcall or the system.
+    let starts_action = m.kind == MethodKind::Action
+        && !view
+        && !from_action
+        && matches!(caller, Caller::Account { .. } | Caller::ApiKey { .. });
+    if (!matches!(m.kind, MethodKind::Call | MethodKind::View) && !starts_action)
+        || m.compute_result
+    {
         return Err(app_refusal("WrongKind"));
+    }
+    // `allow(action)`: only the app's own actions call it, never a client directly.
+    if m.action_only && !from_action {
+        return Err(app_refusal("Forbidden"));
     }
     if view && m.confirm {
         return Err(app_refusal("ConfirmNotAView"));
@@ -232,26 +248,55 @@ fn abi_check(
             Err(ApiError::unauthenticated("sign in to call this method"))
         }
         Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
+        // A delivered xcall reaches only a method that allows its source (D13).
+        Caller::App { app } if !m.allows_app(app) => Err(app_refusal("Forbidden")),
         _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
         _ => Ok(()),
     }
 }
 
-/// The entry of a call as bytes; one over `MAX_ENTRY_BYTES` becomes the same call
-/// trapped `HostDenied` with nothing in it, decided before proposing (D50).
-fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
+/// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the
+/// same call trapped `HostDenied` with nothing in it (D50).
+fn entry_bytes(mut cmd: ComponentCmd) -> (Vec<u8>, bool) {
     let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
-        return bytes;
+        return (bytes, false);
     }
     const DENIED: &str = "entry too large";
     match &mut cmd {
         ComponentCmd::Call(entry) => entry.outcome = entry.outcome.denied(DENIED),
         ComponentCmd::Tick(entry) => entry.outcome = entry.outcome.denied(DENIED),
         ComponentCmd::Init { outcome, .. } => **outcome = outcome.denied(DENIED),
-        ComponentCmd::Upgrade { .. } => {}
+        ComponentCmd::Upgrade { .. }
+        | ComponentCmd::Blob { .. }
+        | ComponentCmd::BlobForget { .. }
+        | ComponentCmd::BlobsCollected { .. }
+        | ComponentCmd::File { .. }
+        | ComponentCmd::Barrier
+        | ComponentCmd::XcallDone { .. }
+        | ComponentCmd::ActionEnd { .. } => {}
     }
-    serde_json::to_vec(&cmd).unwrap_or_default()
+    (serde_json::to_vec(&cmd).unwrap_or_default(), true)
+}
+
+/// The plaintext bytes of the files `cmd` marks.
+fn new_file_bytes(cmd: &ComponentCmd) -> u64 {
+    let outcome = match cmd {
+        ComponentCmd::Call(entry) => &entry.outcome,
+        ComponentCmd::Tick(entry) => &entry.outcome,
+        ComponentCmd::Init { outcome, .. } => outcome,
+        _ => return 0,
+    };
+    outcome.files.iter().map(|f| f.size).sum()
+}
+
+/// A finished run: its outcome, and the ciphertext of the files it made, which stays
+/// out of the outcome (the log carries marks only).
+struct Ran {
+    outcome: Outcome,
+    blobs: Vec<Blob>,
+    /// Keeps the node's budget for `blobs` until the run's entry is proposed or refused.
+    _pending: Option<Arc<PendingBytes>>,
 }
 
 impl Node {
@@ -267,10 +312,122 @@ impl Node {
         self.clock.advance(ms);
     }
 
+    /// The key `app`'s file data keys are wrapped under. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn app_file_key(&self, app: &str) -> [u8; 32] {
+        crate::backup::file_key(&self.cluster_key, app)
+    }
+
+    /// Makes this node answer peers' blob requests as `mode` says. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_peer_blobs(&self, mode: super::PeerBlobs) {
+        *self
+            .probes
+            .peer_blobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn peer_blobs_mode(&self) -> super::PeerBlobs {
+        *self
+            .probes
+            .peer_blobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Counts a blob put a peer sent here. Tests only.
+    #[cfg(feature = "testing")]
+    pub(crate) fn note_blob_put(&self) {
+        let _n = self.probes.blob_puts_seen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many times this node pushed new files to its replicas. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn file_pushes(&self) -> u64 {
+        self.probes.file_pushes.load(Ordering::Relaxed)
+    }
+
+    /// Fails the next upload's mark commit on this node: `1` before it is proposed, `2` after
+    /// it applied. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_mark_commit(&self, mode: u8) {
+        self.probes.commit_fault.store(mode, Ordering::Relaxed);
+    }
+
+    /// How many blob puts peers sent this node. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn blob_puts_seen(&self) -> u64 {
+        self.probes.blob_puts_seen.load(Ordering::Relaxed)
+    }
+
+    /// Makes the next call this node logs conflict with the state it was built on. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn conflict_next_call(&self) {
+        self.probes
+            .conflict_next_call
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Leaves only `leave` bytes for open file readers to take, node-wide. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_open_file_bytes(&self, leave: usize) {
+        let held = self
+            .open_file_bytes
+            .available_permits()
+            .saturating_sub(leave);
+        let _forgotten = self.open_file_bytes.forget_permits(held);
+    }
+
+    /// Leaves only `leave` bytes for the pushes of new files. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_push_bytes(&self, leave: usize) {
+        let held = self.push_bytes.available_permits().saturating_sub(leave);
+        let _forgotten = self.push_bytes.forget_permits(held);
+    }
+
+    /// Leaves only `leave` bytes for the new files runs hold before their entries. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_pending_file_bytes(&self, leave: usize) {
+        let held = (self.pending_file_bytes.available_permits()).saturating_sub(leave);
+        let _forgotten = self.pending_file_bytes.forget_permits(held);
+    }
+
+    /// The bytes of new files runs may still take. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn pending_file_bytes_left(&self) -> usize {
+        self.pending_file_bytes.available_permits()
+    }
+
+    /// Caps the bytes the readers of one run hold at `cap` (new runs). Tests only.
+    #[cfg(feature = "testing")]
+    pub fn limit_run_open_bytes(&self, cap: usize) {
+        self.probes.run_open_cap.store(cap, Ordering::Relaxed);
+    }
+
+    /// The bytes the readers of one run may hold.
+    fn run_open_cap(&self) -> usize {
+        #[cfg(feature = "testing")]
+        return self.probes.run_open_cap.load(Ordering::Relaxed);
+        #[cfg(not(feature = "testing"))]
+        files::MAX_RUN_OPEN_BYTES
+    }
+
     /// The engine every component app runs on.
     #[must_use]
     pub fn app_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {
         &self.wasm
+    }
+
+    /// The engine a release's compute components are prepared on.
+    #[must_use]
+    pub fn compute_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {
+        &self.compute_wasm
     }
 
     /// The executor `bundle` runs on, from its WASM (the bytes of its package's
@@ -382,20 +539,101 @@ impl Node {
         self.config.budget.unwrap_or_else(Budget::call)
     }
 
-    /// Run one invocation of `app_id` against `state` at `applied`.
+    /// The key download grants of every app are MACed with (R8).
+    #[must_use]
+    pub fn blob_grant_key(&self) -> [u8; 32] {
+        grant_key(self.cluster_key())
+    }
+
+    /// Run one invocation of `app_id` against `state` and its blobs at `applied`.
     fn run_component(
         &self,
         prepared: &Prepared,
         app_id: &str,
-        state: Arc<dyn calimero_app_host::StateView>,
+        state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
-    ) -> Outcome {
+        extras: RunExtras,
+    ) -> Ran {
+        self.run_with(prepared, app_id, state, applied, invocation, extras, None)
+    }
+
+    /// [`Self::run_component`], with the app's search index for a view (spec section 7).
+    /// `extras` says what else the run reaches: other apps synchronously through
+    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (D76).
+    #[allow(clippy::too_many_arguments)]
+    fn run_with(
+        &self,
+        prepared: &Prepared,
+        app_id: &str,
+        (state, blobs): (Arc<dyn calimero_app_host::StateView>, Blobs),
+        applied: u64,
+        invocation: Invocation,
+        extras: RunExtras,
+        search: Option<Arc<dyn calimero_app_host::SearchHost>>,
+    ) -> Ran {
+        let http = extras.outbound.then(|| {
+            let meter = self.meter(app_id, &prepared.hash);
+            Arc::new(TimedHttp {
+                inner: Arc::new(NodeHttp(self.outbound_for(
+                    app_id,
+                    &prepared.hash,
+                    self.usage.outbound(&meter.app, &meter.billed),
+                ))),
+                timeout: CALL_FETCH_TIMEOUT,
+            })
+        });
+        let xcalls = extras.key.and_then(|key| {
+            let node = self.this.lock().ok()?.upgrade()?;
+            let handle = tokio::runtime::Handle::try_current().ok()?;
+            Some(Arc::new(NodeXcall {
+                node,
+                source: app_id.to_owned(),
+                key,
+                handle,
+            }) as Arc<dyn calimero_app_host::XcallHost>)
+        });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        let files = NodeFiles::new(self, app_id, Arc::clone(&blobs), invocation.kind);
+        let pending = files.pending();
+        let blobs = Arc::new(RunBlobs {
+            app_id: app_id.to_owned(),
+            records: blobs,
+            key: self.blob_grant_key(),
+        });
         match HostCore::new(app_id, state, applied, invocation, directory) {
-            Ok(host) => Outcome::from_host(self.wasm.invoke(prepared, host, self.budget())),
-            Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
+            Ok(host) => {
+                let host = host.with_blobs(blobs).with_files(Arc::new(files));
+                let host = match search {
+                    Some(search) => host.with_search(search),
+                    None => host,
+                };
+                let host = match xcalls {
+                    Some(xcalls) => host.with_xcall_host(xcalls),
+                    None => host,
+                };
+                let host = match http {
+                    Some(http) => host.with_http(http),
+                    None => host,
+                };
+                let mut out = self.wasm.invoke(prepared, host, self.budget());
+                let blobs = out
+                    .new_files
+                    .iter_mut()
+                    .map(|f| (f.id.clone(), std::mem::take(&mut f.ciphertext)))
+                    .collect();
+                Ran {
+                    outcome: Outcome::from_host(out),
+                    blobs,
+                    _pending: Some(pending),
+                }
+            }
+            Err(e) => Ran {
+                outcome: Outcome::trap(TrapKind::Fault, &e.to_string()),
+                blobs: Vec::new(),
+                _pending: None,
+            },
         }
     }
 
@@ -403,18 +641,76 @@ impl Node {
     /// `init`), which runs inside `Group::propose_led`, on the machine's read lock,
     /// for up to its deadline: off the async workers ([`Node::metered`], which
     /// adds what it took to `meter`'s app).
+    #[allow(clippy::too_many_arguments)]
     fn run_logged(
         &self,
         meter: &Meter,
         prepared: &Prepared,
         app_id: &str,
-        state: Arc<dyn calimero_app_host::StateView>,
+        state: (Arc<dyn calimero_app_host::StateView>, Blobs),
         applied: u64,
         invocation: Invocation,
-    ) -> Outcome {
-        self.metered(meter, || {
-            self.run_component(prepared, app_id, state, applied, invocation)
+        extras: RunExtras,
+    ) -> Ran {
+        self.metered(meter, invocation.kind, || {
+            self.run_component(prepared, app_id, state, applied, invocation, extras)
         })
+    }
+
+    /// The entry that logs `cmd`, once the files it marks are on a majority of the voters and
+    /// counted against the quota, and what was stored for it. An entry replaced as too large
+    /// marks and deletes none.
+    fn logged_entry(
+        &self,
+        app_id: &str,
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))] mut cmd: ComponentCmd,
+        blobs: &[Blob],
+    ) -> Result<(Vec<u8>, Stored), ApiError> {
+        #[cfg(feature = "testing")]
+        if let ComponentCmd::Call(call) = &mut cmd {
+            if self
+                .probes
+                .conflict_next_call
+                .swap(false, Ordering::Relaxed)
+            {
+                call.base_index += 1;
+            }
+        }
+        let charged = new_file_bytes(&cmd);
+        let (bytes, replaced) = entry_bytes(cmd);
+        if replaced {
+            return Ok((bytes, Stored::default()));
+        }
+        // Counted first: a refused charge sends no bytes anywhere.
+        if charged > 0 {
+            self.charge_files(app_id, charged)?;
+        }
+        if let Err(e) = self.persist_files(app_id, blobs) {
+            self.discard(
+                app_id,
+                Stored {
+                    ids: Vec::new(),
+                    charged,
+                },
+            );
+            return Err(e);
+        }
+        let stored = Stored {
+            ids: blobs.iter().map(|(id, _)| id.clone()).collect(),
+            charged,
+        };
+        Ok((bytes, stored))
+    }
+
+    /// [`Node::discard`] after a failed proposal, unless the entry may still commit
+    /// (a new leader can append it): only `NotLeader` and `TooLarge` mean it never will.
+    fn discard_failed(&self, app_id: &str, stored: Stored, error: &WriteError) {
+        if matches!(
+            error,
+            WriteError::NotLeader { .. } | WriteError::TooLarge { .. }
+        ) {
+            self.discard(app_id, stored);
+        }
     }
 
     /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
@@ -459,9 +755,15 @@ impl Node {
         // INIT_FAILED); anything else is retried by `reconcile`.
         // The bundle the group names if an upgrade gave it one before init applied
         // (its first bundle's init timed out), else the app record's.
-        let bundle = g
-            .read_local(|m, _| m.state.bundle.clone())
-            .unwrap_or_else(|| app.bundle.clone());
+        let (bundle, compute_bundle) = g
+            .read_local(|m, _| {
+                let head = &m.state.component.head;
+                m.state
+                    .bundle
+                    .clone()
+                    .map(|b| (b, head.compute_bundle.clone()))
+            })
+            .unwrap_or_else(|| (app.bundle.clone(), app.compute_bundle.clone()));
         let prepared = match self.prepared_for(&bundle).await {
             Ok(p) => Ok(p),
             Err(e) if e.code == BAD_BUNDLE => Err(format!("component refused: {}", e.message)),
@@ -475,21 +777,24 @@ impl Node {
             return Err(args_too_large());
         }
         let mut timed_out = false;
+        let mut not_stored = None;
+        let mut persisted = Stored::default();
         let meter = self.meter(&app.app_id, &bundle);
         let p = g
             .propose_led(|m, applied, leadership| {
+                not_stored = None;
                 if m.state.initialized || m.state.init_error.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = match &prepared {
+                let ran = match &prepared {
                     Ok(prepared) => self.run_logged(
                         &meter,
                         prepared,
                         &app.app_id,
-                        m.view(),
+                        (m.view(), m.blob_view()),
                         applied,
                         Invocation {
                             kind: InvocationKind::Init,
@@ -501,36 +806,63 @@ impl Node {
                             id_seq,
                             seed: calimero_identity::random::<32>(),
                             timer: None,
+                            compute: None,
                         },
+                        RunExtras::default(),
                     ),
-                    Err(why) => Outcome::trap(TrapKind::Fault, why),
+                    Err(why) => Ran {
+                        outcome: Outcome::trap(TrapKind::Fault, why),
+                        blobs: Vec::new(),
+                        _pending: None,
+                    },
                 };
-                if outcome.is_timeout() {
+                let outcome = ran.outcome;
+                if outcome.is_retryable() {
                     // Not logged (D23): reconcile runs init again.
                     timed_out = true;
                     return Proposal::Reply(Vec::new());
                 }
                 timed_out = false;
-                Proposal::Append(entry_bytes(ComponentCmd::Init {
+                let cmd = ComponentCmd::Init {
                     bundle: bundle.clone(),
+                    compute_bundle: compute_bundle.clone(),
                     base_index: m.state.last_index,
                     ts_ms,
                     id_term,
                     id_seq,
                     outcome: Box::new(outcome),
-                }))
+                };
+                match self.logged_entry(&app.app_id, cmd, &ran.blobs) {
+                    Ok((entry, stored)) => {
+                        persisted = stored;
+                        Proposal::Append(entry)
+                    }
+                    Err(e) => {
+                        not_stored = Some(e);
+                        Proposal::Reply(Vec::new())
+                    }
+                }
             })
             .await
-            .map_err(|e| status_of(&e))?;
+            .map_err(|e| {
+                self.discard_failed(&app.app_id, std::mem::take(&mut persisted), &e);
+                status_of(&e)
+            })?;
         if timed_out {
             return Err(timeout_error());
+        }
+        if let Some(e) = not_stored {
+            return Err(e);
         }
         if !p.appended {
             return Err(ApiError::conflict("already initialized"));
         }
         let a: Applied =
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
-        let a = to_wasmer_applied(a);
+        if a.conflict {
+            self.discard(&app.app_id, persisted);
+        }
+        let a = to_host_applied(a);
         self.count_conflict(&a);
         if prepared.is_ok() && !a.conflict {
             self.usage.called(&meter, RunKind::Mutation);
@@ -575,7 +907,7 @@ impl Node {
 
     /// Propose the latest due slot of each of the app's timers not yet applied
     /// (one catch-up tick for a gap). Nothing runs before the app is initialized.
-    async fn tick_app(&self, g: &Group<AppMachine>) {
+    async fn tick_app(&self, g: &Arc<Group<AppMachine>>) {
         let Some((app_id, bundle, install, applied)) = g.read_local(|m, _| {
             let bundle = m.state.bundle.clone().filter(|_| m.state.initialized)?;
             Some((
@@ -587,9 +919,15 @@ impl Node {
         }) else {
             return;
         };
+        let collect = g.read_local(|m, _| m.state.component.head.collect.clone());
+        if !collect.is_empty() {
+            self.collect_component_blobs(g, collect).await;
+        }
         let Ok(prepared) = self.prepared_for(&bundle).await else {
             return;
         };
+        self.deliver_xcalls(g, &app_id, &prepared).await;
+        self.run_actions(g, &app_id, &prepared);
         let now = self.clock.now_ms();
         for (timer, method) in &prepared.abi.methods {
             if method.kind != MethodKind::Timer {
@@ -620,6 +958,7 @@ impl Node {
         slot: u64,
     ) -> Result<(), WriteError> {
         let meter = self.meter(app_id, &prepared.hash);
+        let mut persisted = Stored::default();
         let p = g
             .propose_led(|m, applied, leadership| {
                 // An upgrade applied since the round read the ABI: the next poll
@@ -633,11 +972,11 @@ impl Node {
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = self.run_logged(
+                let ran = self.run_logged(
                     &meter,
                     prepared,
                     app_id,
-                    m.view(),
+                    (m.view(), m.blob_view()),
                     applied,
                     Invocation {
                         kind: InvocationKind::Timer,
@@ -652,13 +991,19 @@ impl Node {
                             scheduled_ms: slot,
                             previous_ms,
                         }),
+                        compute: None,
+                    },
+                    RunExtras {
+                        key: Some(format!("tick:{timer}:{slot}")),
+                        outbound: true,
                     },
                 );
-                if outcome.is_timeout() {
-                    debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
+                let outcome = ran.outcome;
+                if outcome.is_retryable() {
+                    debug!(app = %app_id, timer, slot, "tick hit its wall clock or the node was unavailable; proposed again");
                     return Proposal::Reply(Vec::new());
                 }
-                Proposal::Append(entry_bytes(ComponentCmd::Tick(Box::new(TickEntry {
+                let cmd = ComponentCmd::Tick(Box::new(TickEntry {
                     timer: timer.to_owned(),
                     scheduled_ms: slot,
                     previous_ms,
@@ -667,12 +1012,28 @@ impl Node {
                     id_term,
                     id_seq,
                     outcome,
-                }))))
+                }));
+                match self.logged_entry(app_id, cmd, &ran.blobs) {
+                    Ok((entry, stored)) => {
+                        persisted = stored;
+                        Proposal::Append(entry)
+                    }
+                    Err(e) => {
+                        debug!(app = %app_id, timer, slot, error = %e, "tick files not stored; proposed again");
+                        Proposal::Reply(Vec::new())
+                    }
+                }
             })
-            .await?;
-        // A tick that timed out was not logged and runs again.
+            .await
+            .inspect_err(|e| self.discard_failed(app_id, std::mem::take(&mut persisted), e))?;
+        // A tick that was retryable (wall clock or node unavailable) was not logged and runs again.
         if p.appended {
             self.usage.called(&meter, RunKind::FollowUp);
+            let applied: Applied = serde_json::from_slice(&p.output)
+                .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+            if applied.conflict {
+                self.discard(app_id, persisted);
+            }
         }
         Ok(())
     }
@@ -692,8 +1053,16 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.message))?;
         // The caller's standing (org role, teams, read-only rows) is read from the
         // system state below: it includes every change committed before the call,
-        // wherever it was committed.
-        self.sys_fresh().await;
+        // wherever it was committed. A client's call carries the index of the
+        // round its gate made (`CallRequest::sys_index`), which covers that
+        // (`Node::sys_fresh_from`); a timer, delivery or action runs a round.
+        let sys_index = match req.sys_index {
+            Some(i) => {
+                let _caught_up = self.sys_fresh_from(Some(i)).await;
+                Some(i)
+            }
+            None => self.sys_fresh_index().await.0,
+        };
         let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
         if let (Some(app), Some(account)) = (&app, req.caller.account()) {
             if !self.sys(|s| s.may_reach(app, Some(account))) {
@@ -710,28 +1079,67 @@ impl Node {
         // A read-only member's call runs, but one that would write keys or emit
         // events is refused (v1 discarded such writes; a client is told).
         let read_only = match &app {
-            Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
+            Some(app) => crate::api::read_only_in(self, app, req.caller.account(), sys_index).await,
             None => false,
         };
-        // An owner over its daily fuel is refused before the run (Q20); a retry of a
-        // call that committed still replays, below.
+        // A developer over its daily fuel (D76, D78) is refused before a client's call,
+        // a delivered xcall or a synchronous xcall runs; a retry of a call that
+        // committed still replays, below. An action's own calls are not refused: the
+        // action was started by a call that was checked, as an event handler's run is.
         let over_quota = match &app {
-            Some(app) => self.fuel_quota_refusal(app),
-            None => None,
+            Some(app) if req.action.is_none() => self.fuel_quota_refusal(app),
+            _ => None,
+        };
+        // A delivered xcall only within one organization (or one owner's personal apps),
+        // judged again here on this replica's system state.
+        let source = req
+            .xcall
+            .as_ref()
+            .map(|from| from.source.as_str())
+            .or(req.sync_from.as_deref());
+        if let Some(source) = source {
+            if !self.sys(|s| same_boundary(s, source, &req.app_id)) {
+                return Err(LocalError::Refused(app_refusal("Forbidden")));
+            }
+        }
+        let kind = if source.is_some() {
+            InvocationKind::XcallDeliver
+        } else {
+            InvocationKind::Call
         };
         let args = args_bytes(&req.args);
         let mut refused = None;
         let meter = self.meter(&req.app_id, &bundle);
         let mut answered = false;
+        let mut persisted = Stored::default();
+        // The run that built the entry, and when the entry was proposed: a logged
+        // call's two phases (`calimero_call_phase_duration_seconds`).
+        let mut ran_for = None;
+        let mut proposed_at = None;
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
                 answered = false;
+                ran_for = None;
+                proposed_at = None;
                 // A retry of a call that committed is its recorded answer, whatever
                 // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
+                    }
+                }
+                // A message applied here already answers as delivered (D25).
+                if let Some(from) = &req.xcall {
+                    if m.state.component.head.xcall.seen(from) {
+                        let seen = Applied::unlogged(
+                            applied,
+                            Outcome {
+                                status: Status::Ok,
+                                ..Outcome::default()
+                            },
+                        );
+                        return Proposal::Reply(serde_json::to_vec(&seen).unwrap_or_default());
                     }
                 }
                 if let Some(e) = &over_quota {
@@ -753,12 +1161,13 @@ impl Node {
                     &req.caller,
                     false,
                     req.consent.is_some(),
+                    req.action.is_some(),
                 ) {
                     refused = Some(e);
                     return Proposal::Reply(Vec::new());
                 }
                 // A read-only member reaches views only: any other method is refused
-                // before it runs, so no run burns the payer's fuel uncounted.
+                // before it runs, so no run burns the developer's fuel uncounted.
                 let view = prepared
                     .abi
                     .methods
@@ -772,40 +1181,85 @@ impl Node {
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
-                let outcome = self.run_logged(
-                    &meter,
-                    &prepared,
-                    &req.app_id,
-                    m.view(),
-                    applied,
-                    Invocation {
-                        kind: InvocationKind::Call,
-                        method: req.method.clone(),
-                        args: args.clone(),
-                        caller: req.caller.to_host(),
-                        entry_ts_ms: ts_ms,
-                        id_term,
-                        id_seq,
-                        seed: calimero_identity::random::<32>(),
-                        timer: None,
-                    },
-                );
-                // A timeout is not logged and does not spend the key (D23).
-                if outcome.is_timeout() {
+                let starts_action = prepared
+                    .abi
+                    .methods
+                    .get(&req.method)
+                    .is_some_and(|m| m.kind == MethodKind::Action);
+                let ran = if starts_action {
+                    // Started, not run here: logged as started, run by the runner (D17).
+                    let id = format!("a.{id_term}.{id_seq}.0");
+                    Ran {
+                        outcome: Outcome {
+                            status: Status::Ok,
+                            result: json!({ "actionId": id }),
+                            actions: vec![crate::component::action::ActionOut {
+                                id,
+                                method: req.method.clone(),
+                                args: req.args.clone(),
+                            }],
+                            ..Outcome::default()
+                        },
+                        blobs: Vec::new(),
+                        _pending: None,
+                    }
+                } else {
+                    let started = Instant::now();
+                    let ran = self.run_logged(
+                        &meter,
+                        &prepared,
+                        &req.app_id,
+                        (m.view(), m.blob_view()),
+                        applied,
+                        Invocation {
+                            kind,
+                            method: req.method.clone(),
+                            args: args.clone(),
+                            caller: req.caller.to_host(),
+                            entry_ts_ms: ts_ms,
+                            id_term,
+                            id_seq,
+                            seed: calimero_identity::random::<32>(),
+                            timer: None,
+                            compute: None,
+                        },
+                        RunExtras {
+                            // The caller is part of the key: two callers' calls under the
+                            // same key are two calls of the target.
+                            key: Some(format!(
+                                "call:{}:{}",
+                                serde_json::to_string(&req.caller).unwrap_or_default(),
+                                req.idempotency_key.as_deref().unwrap_or_default()
+                            )),
+                            // A read-only member's run reaches no outbound host.
+                            outbound: !read_only,
+                        },
+                    );
+                    ran_for = Some(started.elapsed());
+                    ran
+                };
+                let outcome = ran.outcome;
+                // A retryable run (wall clock or node unavailable) is not logged and does not spend the
+                // key (D23).
+                if outcome.is_retryable() {
                     let a = Applied::unlogged(applied, outcome);
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
                 answered = true;
                 // A view reached through a call (an API node that read an older ABI)
-                // still may not write for a read-only member. Events are logged side
-                // effects too (Ruling 41): an emit-only run is refused like one that
-                // writes keys.
-                if read_only && (!outcome.diff.is_empty() || !outcome.events.is_empty()) {
+                // still may not write for a read-only member. Events and files are
+                // logged side effects too (Ruling 41): an emit-only run is refused like
+                // one that writes keys.
+                if read_only
+                    && (!outcome.diff.is_empty()
+                        || !outcome.events.is_empty()
+                        || !outcome.files.is_empty())
+                {
                     return Proposal::Reply(
                         serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
                     );
                 }
-                Proposal::Append(entry_bytes(ComponentCmd::Call(Box::new(CallEntry {
+                let cmd = ComponentCmd::Call(Box::new(CallEntry {
                     method: req.method.clone(),
                     args: req.args.clone(),
                     caller: req.caller.clone(),
@@ -816,11 +1270,35 @@ impl Node {
                     id_term,
                     id_seq,
                     outcome,
-                }))))
+                    xcall: req.xcall.clone(),
+                }));
+                // The files are on a majority of the replicas before the entry that marks
+                // them is proposed; if not, nothing is logged and the key is not spent.
+                match self.logged_entry(&req.app_id, cmd, &ran.blobs) {
+                    Ok((entry, stored)) => {
+                        persisted = stored;
+                        proposed_at = Some(Instant::now());
+                        Proposal::Append(entry)
+                    }
+                    Err(e) => {
+                        answered = false;
+                        refused = Some(e);
+                        Proposal::Reply(Vec::new())
+                    }
+                }
             })
-            .await?;
+            .await
+            .inspect_err(|e| self.discard_failed(&req.app_id, std::mem::take(&mut persisted), e))?;
         if let Some(e) = refused {
             return Err(LocalError::Refused(e));
+        }
+        if p.appended {
+            if let Some(took) = ran_for {
+                crate::metrics::call_phase(CallPhase::Run, took);
+            }
+            if let Some(at) = proposed_at {
+                crate::metrics::call_phase(CallPhase::Commit, at.elapsed());
+            }
         }
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))?;
@@ -829,6 +1307,9 @@ impl Node {
                 .conflicts
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        if p.appended && a.conflict {
+            self.discard(&req.app_id, persisted);
+        }
         if answered && !a.conflict {
             self.usage.called(&meter, RunKind::Mutation);
         }
@@ -836,7 +1317,8 @@ impl Node {
     }
 
     /// `app`'s usage book (Q20), from a replica: this node's if it is one of the app's
-    /// replicas, else one that is. A wasmer app has none.
+    /// replicas, else one that is. An app recorded before components (SDK 0.12, no
+    /// longer run) has none.
     pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
         if app.executor != Executor::Component {
             return Ok(UsageBook::default());
@@ -883,7 +1365,7 @@ impl Node {
     /// within the interval keeps its last figures. Nothing is asked while no fuel
     /// cap is set.
     pub async fn refresh_usage(&self) {
-        if self.sys(|s| s.quotas.max_fuel_per_payer_per_day) == 0 {
+        if self.sys(|s| s.quotas.max_fuel_per_developer_per_day) == 0 {
             return;
         }
         let day = utc_day(self.clock.now_ms());
@@ -930,14 +1412,15 @@ impl Node {
         }
     }
 
-    /// What `payer`'s component apps used today (UTC, on app time), for the API: each
-    /// app's book read from a replica, all apps at once (Q20, D78). The payer is
-    /// `usage::payer`'s: an organization's id for its apps, `account:{owner}`
-    /// (`usage::account_payer`) for an account's personal ones. An app no replica
-    /// answers for counts as nothing.
-    pub async fn payer_usage_today(&self, payer: &str) -> DayUsage {
+    /// What `developer`'s component apps used today (UTC, on app time), for the API:
+    /// each app's book read from a replica, all apps at once (Q20, D78). The developer
+    /// is `usage::developer`'s (#4839), the identity usage is billed to: the owner of
+    /// the deployment an app was created from (an organization's id, or
+    /// `account:{id}`), else the app's organization or `account:{owner}`
+    /// (`usage::account_payer`). An app no replica answers for counts as nothing.
+    pub async fn developer_usage_today(&self, developer: &str) -> DayUsage {
         let today = utc_day(self.clock.now_ms());
-        let apps = self.payer_apps(payer);
+        let apps = self.developer_apps(developer);
         let days = futures_util::future::join_all(apps.iter().map(|app| async move {
             match self.app_usage(app).await {
                 Ok(book) => book.on(today),
@@ -955,23 +1438,26 @@ impl Node {
         total
     }
 
-    /// The component apps `payer` pays for.
-    fn payer_apps(&self, payer: &str) -> Vec<AppRecord> {
+    /// The component apps `developer` is billed for (`usage::Billed::of`).
+    fn developer_apps(&self, developer: &str) -> Vec<AppRecord> {
         self.sys(|s| {
             s.apps
                 .values()
-                .filter(|a| a.executor == Executor::Component && crate::usage::payer(a) == payer)
+                .filter(|a| {
+                    a.executor == Executor::Component
+                        && crate::usage::Billed::of(s, a).developer == developer
+                })
                 .cloned()
                 .collect()
         })
     }
 
-    /// `payer`'s fuel today as the cap sees it, without asking any peer: the apps this
-    /// node replicates read from the replica, the others from the last
+    /// `developer`'s fuel today as the cap sees it, without asking any peer: the apps
+    /// this node replicates read from the replica, the others from the last
     /// [`Self::refresh_usage`] (so up to [`USAGE_REFRESH`] old).
-    fn payer_fuel_cached(&self, payer: &str) -> u64 {
+    fn developer_fuel_cached(&self, developer: &str) -> u64 {
         let today = utc_day(self.clock.now_ms());
-        let apps = self.payer_apps(payer);
+        let apps = self.developer_apps(developer);
         let known = self.peer_usage.lock().ok();
         apps.iter()
             .map(|app| match self.replica_group(app) {
@@ -981,21 +1467,22 @@ impl Node {
             .fold(0, u64::saturating_add)
     }
 
-    /// The refusal of a new call to `app`, of either executor, when its payer (its
-    /// organization, or for a personal app its owner; D78) is at or over
-    /// `max_fuel_per_payer_per_day` (D76; 0: no limit, nothing is read). Reads no
-    /// peer ([`Self::payer_fuel_cached`]). Only a client's call or an xcall
-    /// delivery is refused: `init`, timer ticks and event handlers still run, and the
-    /// component runs among them still count toward the payer's day.
+    /// The refusal of a new call to `app` when its developer (D78: the identity usage
+    /// is billed to, `usage::developer`) is at or over `max_fuel_per_developer_per_day`
+    /// (D76; 0: no limit, nothing is read). Reads no peer
+    /// ([`Self::developer_fuel_cached`]). Only a client's call or an xcall is refused:
+    /// `init`, timer ticks, event handlers and an action's own calls still run, and
+    /// they still count toward the developer's day.
     pub(super) fn fuel_quota_refusal(&self, app: &AppRecord) -> Option<ApiError> {
-        let limit = self.sys(|s| s.quotas.max_fuel_per_payer_per_day);
+        let limit = self.sys(|s| s.quotas.max_fuel_per_developer_per_day);
         if limit == 0 {
             return None;
         }
-        let used = self.payer_fuel_cached(&crate::usage::payer(app));
+        let developer = self.sys(|s| crate::usage::Billed::of(s, app).developer);
+        let used = self.developer_fuel_cached(&developer);
         (used >= limit).then(|| {
             super::rejected(&format!(
-                "{}: fuel per payer per day ({used} of {limit})",
+                "{}: fuel per developer per day ({used} of {limit})",
                 crate::system::QUOTA_PREFIX
             ))
         })
@@ -1022,7 +1509,7 @@ impl Node {
         consented: bool,
     ) -> Result<(), ApiError> {
         let prepared = self.prepared_for(&self.running_bundle(app)).await?;
-        abi_check(&prepared, method, caller, view, consented)
+        abi_check(&prepared, method, caller, view, consented, false)
     }
 
     /// The bundle `app` runs: the app group's own record on this replica, else (this
@@ -1133,7 +1620,10 @@ impl Node {
                 let v = self
                     .peer_forward(&addr, "internal/call", &body)
                     .await
-                    .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+                    .map_err(|e| {
+                        e.downcast::<ApiError>()
+                            .unwrap_or_else(|e| ApiError::unavailable(&e.to_string()))
+                    })?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
             Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => Err(entry_refused(&e)),
@@ -1150,18 +1640,26 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
-        let (bundle, state, applied, ts_ms) = g.read_local(|m, applied| {
+        let bundle = g
+            .read_local(|m, _| m.component_bundle())
+            .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
+        let prepared = self.prepared_for(&bundle).await?;
+        abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        // The state, its blobs and the search index as of one applied index; an upgrade
+        // applied since the bundle was read runs on its own bundle next time.
+        let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
             (
                 m.component_bundle(),
-                m.view(),
+                (m.view(), m.blob_view()),
                 applied,
                 m.state.component.head.last_ts_ms,
+                self.component_search
+                    .for_view(&bundle, &prepared.abi.search, m, applied),
             )
         });
-        let bundle =
-            bundle.ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false)?;
+        if bundle_now.as_deref() != Some(bundle.as_str()) {
+            return Err(ApiError::unavailable("the app was upgraded; retry"));
+        }
         let node = self
             .this
             .lock()
@@ -1180,28 +1678,477 @@ impl Node {
                 id_seq: 0,
                 seed: [0; 32],
                 timer: None,
+                compute: None,
             },
         );
         let meter = self.meter(&req.app_id, &bundle);
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
-                node.run_component(&prepared, &app_id, state, applied, invocation)
+                node.run_with(
+                    &prepared,
+                    &app_id,
+                    state,
+                    applied,
+                    invocation,
+                    RunExtras {
+                        key: Some("view".to_owned()),
+                        outbound: false,
+                    },
+                    search,
+                )
+                .outcome
             })
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
         self.usage.ran(&meter, run);
-        if !out.is_timeout() {
+        crate::metrics::wasm_run(InvocationKind::View, run.wall);
+        if !out.is_retryable() {
             self.usage.called(&meter, RunKind::View);
         }
         Ok(ViewAnswer {
             index: applied,
-            timeout: out.is_timeout(),
+            timeout: out.is_retryable(),
             status: out.status,
             result: out.result,
             error: out.error,
         })
+    }
+
+    /// A component's blob command (R8) on this node, the app group's leader: an upload
+    /// (`__blob { id, size, mime }`) or its owner's delete (`__blob_forget { id }`), which
+    /// only the API builds (`CallRequest::host`), after judging who may.
+    pub(super) async fn component_blob_cmd(
+        &self,
+        g: &Group<AppMachine>,
+        req: &CallRequest,
+    ) -> Result<crate::app::Applied, WriteError> {
+        let id = req.args["id"].as_str().unwrap_or_default().to_owned();
+        let upload = req.method == "__blob";
+        let p = g
+            .propose_led(|m, _, _| {
+                let cmd = if upload {
+                    ComponentCmd::Blob {
+                        id: id.clone(),
+                        size: req.args["size"].as_u64().unwrap_or_default(),
+                        mime: req.args["mime"].as_str().unwrap_or_default().to_owned(),
+                        ts_ms: self.stamp(m),
+                    }
+                } else {
+                    ComponentCmd::BlobForget { id: id.clone() }
+                };
+                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
+            })
+            .await?;
+        let a: Applied = serde_json::from_slice(&p.output)
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        Ok(to_host_applied(a))
+    }
+
+    /// Start the app's pending actions this node is not running yet, as its leader, in the
+    /// node's worker pool (D17): each runs off the async workers and logs its end.
+    fn run_actions(&self, g: &Arc<Group<AppMachine>>, app_id: &str, prepared: &Prepared) {
+        let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let pending = g.read_local(|m, _| m.pending_actions());
+        let now = self.clock.now_ms();
+        for record in pending {
+            let key = (app_id.to_owned(), record.id.clone());
+            let waiting = self
+                .action_retry
+                .lock()
+                .ok()
+                .and_then(|r| r.get(&key).copied());
+            if waiting.is_some_and(|at| now < at) {
+                continue;
+            }
+            let started = self
+                .actions_running
+                .lock()
+                .is_ok_and(|mut running| running.insert(key.clone()));
+            if !started {
+                continue;
+            }
+            let Ok(permit) = Arc::clone(&self.action_slots).try_acquire_owned() else {
+                if let Ok(mut running) = self.actions_running.lock() {
+                    let _was = running.remove(&key);
+                }
+                return;
+            };
+            let (node, g, prepared) = (Arc::clone(&node), Arc::clone(g), prepared.clone());
+            drop(tokio::spawn(async move {
+                node.run_action(&g, &prepared, record).await;
+                drop(permit);
+                if let Ok(mut running) = node.actions_running.lock() {
+                    let _was = running.remove(&key);
+                }
+            }));
+        }
+    }
+
+    /// One attempt at an action (D12, D22), then its end logged: done; an attempt that
+    /// timed out (retried later, `MAX_ATTEMPTS` in all); or failed, which also runs the
+    /// app's `onActionFailed`.
+    async fn run_action(
+        self: &Arc<Self>,
+        g: &Group<AppMachine>,
+        prepared: &Prepared,
+        record: crate::component::action::ActionRecord,
+    ) {
+        use crate::component::action::{reason, retry_after_ms, MAX_ATTEMPTS};
+        let app_id = g.read_local(|m, _| m.app_id.clone());
+        let is_action = prepared
+            .abi
+            .methods
+            .get(&record.method)
+            .is_some_and(|m| m.kind == MethodKind::Action);
+        let (failed, retry) = if is_action {
+            let out = self.attempt_action(&app_id, prepared, &record).await;
+            match out.status {
+                Status::Ok => (None, false),
+                _ if out.is_retryable() && record.attempts + 1 < MAX_ATTEMPTS => (None, true),
+                _ if out.is_retryable() => (Some(format!("timed out {MAX_ATTEMPTS} times")), false),
+                _ => (Some(reason(&out.error.to_string())), false),
+            }
+        } else {
+            (Some("method removed".to_owned()), false)
+        };
+        let id = record.id.clone();
+        let ended = g
+            .propose_led(|m, _, _| {
+                // Ended already (another leader logged it): nothing to add.
+                if m.action_record(&id).is_none() {
+                    return Proposal::Reply(Vec::new());
+                }
+                Proposal::Append(
+                    serde_json::to_vec(&ComponentCmd::ActionEnd {
+                        id: id.clone(),
+                        failed: failed.clone(),
+                        retry,
+                        ts_ms: self.stamp(m),
+                    })
+                    .unwrap_or_default(),
+                )
+            })
+            .await;
+        let key = (app_id.clone(), id.clone());
+        if let Ok(mut r) = self.action_retry.lock() {
+            if retry {
+                let _prev = r.insert(key, self.clock.now_ms() + retry_after_ms(record.attempts));
+            } else {
+                let _was = r.remove(&key);
+            }
+        }
+        if let (Ok(p), Some(why)) = (ended, failed) {
+            if p.appended {
+                self.on_action_failed(&app_id, prepared, &record, &why)
+                    .await;
+            }
+        }
+    }
+
+    /// Run `record` once on the engine, off the async workers, as `kind = action` with
+    /// the starter's caller, storage off, views and calls through this node and outbound
+    /// HTTP through the gate (S9).
+    async fn attempt_action(
+        self: &Arc<Self>,
+        app_id: &str,
+        prepared: &Prepared,
+        record: &crate::component::action::ActionRecord,
+    ) -> Outcome {
+        let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
+        let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        let runner = Arc::new(NodeAction {
+            node: Arc::clone(self),
+            app_id: app_id.to_owned(),
+            caller: record.caller.clone(),
+            key: record.id.clone(),
+            handle: tokio::runtime::Handle::current(),
+        });
+        let xcalls = Arc::new(NodeXcall {
+            node: Arc::clone(self),
+            source: app_id.to_owned(),
+            key: format!("action:{}", record.id),
+            handle: tokio::runtime::Handle::current(),
+        });
+        let meter = self.meter(app_id, &prepared.hash);
+        let http = Arc::new(NodeHttp(self.outbound_for(
+            app_id,
+            &prepared.hash,
+            self.usage.outbound(&meter.app, &meter.billed),
+        )));
+        let invocation = Invocation {
+            kind: InvocationKind::Action,
+            method: record.method.clone(),
+            args: args_bytes(&record.args),
+            caller: record.caller.to_host(),
+            entry_ts_ms: record.started_ms,
+            id_term: 0,
+            id_seq: 0,
+            seed: [0; 32],
+            timer: None,
+            compute: None,
+        };
+        let budget = Budget {
+            wall_clock: Budget::action().wall_clock,
+            ..self.budget()
+        };
+        let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
+        let ran = tokio::task::spawn_blocking(move || {
+            crate::usage::measure(|| {
+                match HostCore::new(
+                    &app,
+                    Arc::new(std::collections::BTreeMap::new()),
+                    0,
+                    invocation,
+                    directory,
+                ) {
+                    Ok(host) => Outcome::from_host(
+                        wasm.invoke(
+                            &prepared,
+                            host.with_action(runner)
+                                .with_http(http)
+                                .with_xcall_host(xcalls),
+                            budget,
+                        ),
+                    ),
+                    Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
+                }
+            })
+        })
+        .await;
+        match ran {
+            Ok((out, run)) => {
+                self.usage.ran(&meter, run);
+                crate::metrics::wasm_run(InvocationKind::Action, run.wall);
+                out
+            }
+            Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
+        }
+    }
+
+    /// The app's `onActionFailed`, if its ABI has a call by that name: told which action
+    /// failed and why, as the action's caller (D22). Best effort, once.
+    async fn on_action_failed(
+        &self,
+        app_id: &str,
+        prepared: &Prepared,
+        record: &crate::component::action::ActionRecord,
+        why: &str,
+    ) {
+        const HANDLER: &str = "onActionFailed";
+        if !prepared
+            .abi
+            .methods
+            .get(HANDLER)
+            .is_some_and(|m| m.kind == MethodKind::Call)
+        {
+            return;
+        }
+        let req = CallRequest {
+            idempotency_key: Some(format!(
+                "{}action-failed-{}",
+                crate::app::NODE_KEY_PREFIX,
+                record.id
+            )),
+            ..CallRequest::new(
+                app_id.to_owned(),
+                HANDLER.to_owned(),
+                json!({ "actionId": record.id, "method": record.method, "reason": why }),
+                record.caller.clone(),
+            )
+        };
+        if let Err(e) = self.call_component(&req).await {
+            debug!(app = %app_id, action = %record.id, error = %e.message, "onActionFailed did not run");
+        }
+    }
+
+    /// Deliver the head of `source`'s outbox, in order, at most [`DELIVER_BATCH`] messages
+    /// a round (D25, D29). A message that cannot be delivered yet waits its backoff and
+    /// blocks the ones after it; past [`XCALL_WINDOW_MS`] it is dead-lettered.
+    async fn deliver_xcalls(&self, g: &Group<AppMachine>, source: &str, prepared: &Prepared) {
+        for _ in 0..DELIVER_BATCH {
+            let Some(msg) = g.read_local(|m, _| {
+                let h = &m.state.component.head.xcall;
+                (h.first < h.next).then(|| m.outgoing(h.first)).flatten()
+            }) else {
+                return;
+            };
+            let key = (source.to_owned(), msg.seq);
+            let now = self.clock.now_ms();
+            let waiting = self
+                .xcall_retry
+                .lock()
+                .ok()
+                .and_then(|r| r.get(&key).copied());
+            if waiting.is_some_and(|(_, next_at)| now < next_at) {
+                return;
+            }
+            let dead = match self.deliver_one(source, &msg).await {
+                Ok(dead) => dead,
+                Err(why) if now >= msg.sent_ms.saturating_add(XCALL_WINDOW_MS) => {
+                    Some(format!("not delivered within an hour: {why}"))
+                }
+                Err(why) => {
+                    let attempts = waiting.map_or(0, |(a, _)| a) + 1;
+                    debug!(app = %source, seq = msg.seq, error = %why, "xcall retried later");
+                    if let Ok(mut r) = self.xcall_retry.lock() {
+                        let _prev = r.insert(key, (attempts, now + backoff_ms(attempts)));
+                    }
+                    return;
+                }
+            };
+            let seq = msg.seq;
+            let reason = dead.clone();
+            let done = g
+                .propose_led(|m, _, _| {
+                    Proposal::Append(
+                        serde_json::to_vec(&ComponentCmd::XcallDone {
+                            seq,
+                            dead: reason.clone(),
+                            ts_ms: self.stamp(m),
+                        })
+                        .unwrap_or_default(),
+                    )
+                })
+                .await;
+            if let Ok(mut r) = self.xcall_retry.lock() {
+                let _was = r.remove(&key);
+            }
+            if done.is_err() {
+                return;
+            }
+            if let Some(reason) = dead {
+                self.on_xcall_failed(source, prepared, &msg, &reason).await;
+            }
+        }
+    }
+
+    /// One delivery attempt: `Ok(None)` the target answered (whatever it answered),
+    /// `Ok(Some(reason))` it never can (dead letter), `Err` try again later.
+    async fn deliver_one(&self, source: &str, msg: &Outgoing) -> Result<Option<String>, String> {
+        let target = self.sys(|s| s.apps.get(&msg.app).cloned());
+        let Some(target) = target else {
+            return Ok(Some("the target app does not exist".into()));
+        };
+        if !self.sys(|s| same_boundary(s, source, &target.app_id)) {
+            return Ok(Some("the apps are not in the same organization".into()));
+        }
+        if target.executor != Executor::Component {
+            return Ok(Some("the target app is not a component".into()));
+        }
+        let req = CallRequest {
+            idempotency_key: Some(format!(
+                "{}xcall-{source}-{}",
+                crate::app::NODE_KEY_PREFIX,
+                msg.seq
+            )),
+            xcall: Some(XcallFrom {
+                source: source.to_owned(),
+                seq: msg.seq,
+            }),
+            ..CallRequest::new(
+                target.app_id.clone(),
+                msg.method.clone(),
+                msg.args.clone(),
+                Caller::App {
+                    app: source.to_owned(),
+                },
+            )
+        };
+        match self.call_component(&req).await {
+            Ok(a) if a.timeout => Err("the target timed out".into()),
+            Ok(_) => Ok(None),
+            Err(e) if e.status >= 500 => Err(e.message),
+            // A refusal (an unknown method, a method that does not allow the source) is
+            // the target's final answer, like an app error (D29).
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// The source's `onXcallFailed`, if its ABI has one the system may call: told which
+    /// message was dead-lettered and why (D29). Best effort, once.
+    async fn on_xcall_failed(
+        &self,
+        source: &str,
+        prepared: &Prepared,
+        msg: &Outgoing,
+        reason: &str,
+    ) {
+        const HANDLER: &str = "onXcallFailed";
+        if !prepared
+            .abi
+            .methods
+            .get(HANDLER)
+            .is_some_and(|m| m.allow_system && m.kind == MethodKind::Call)
+        {
+            return;
+        }
+        let req = CallRequest {
+            idempotency_key: Some(format!(
+                "{}xcall-failed-{}",
+                crate::app::NODE_KEY_PREFIX,
+                msg.seq
+            )),
+            ..CallRequest::new(
+                source.to_owned(),
+                HANDLER.to_owned(),
+                json!({
+                    "app": msg.app,
+                    "method": msg.method,
+                    "reason": reason,
+                }),
+                Caller::System,
+            )
+        };
+        if let Err(e) = self.call_component(&req).await {
+            debug!(app = %source, seq = msg.seq, error = %e.message, "onXcallFailed did not run");
+        }
+    }
+
+    /// The content type a component app's blob was uploaded with, from this node's replica
+    /// (`None` when it does not host the app or the app does not hold the blob).
+    #[must_use]
+    pub fn blob_mime(&self, app: &AppRecord, id: &[u8; 32]) -> Option<String> {
+        self.app_group(app.group)?.read_local(|m, _| {
+            m.state
+                .component
+                .blobs
+                .records
+                .get(id)
+                .map(|r| r.mime.clone())
+        })
+    }
+
+    /// Collect the bytes of blobs the app forgot (idle past their time, R8), at most
+    /// [`COLLECT_BATCH`] a round, and log that they are done. `collect_blob` keeps the bytes
+    /// another app still holds.
+    async fn collect_component_blobs(&self, g: &Group<AppMachine>, queued: Vec<String>) {
+        let ids: Vec<String> = queued.into_iter().take(COLLECT_BATCH).collect();
+        for id in &ids {
+            if let Ok(raw) = hex::decode(id) {
+                if let Ok(raw) = <[u8; 32]>::try_from(raw.as_slice()) {
+                    self.collect_blob(&raw).await;
+                }
+            }
+        }
+        let cmd = ComponentCmd::BlobsCollected { ids };
+        let logged = g
+            .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
+            .await;
+        match logged {
+            // Released by the entry that really took the files off the queue, so a repeat frees nothing.
+            Ok(p) => {
+                let freed = serde_json::from_slice::<Applied>(&p.output)
+                    .ok()
+                    .and_then(|a| a.result["freed"].as_u64());
+                let app_id = g.read_local(|m, _| m.app_id.clone());
+                self.refund_files(&app_id, freed.unwrap_or(0)).await;
+            }
+            Err(e) => debug!(error = %e, "collected blobs not logged; collected again next round"),
+        }
     }
 
     /// Switch a component app to another component, code only, on this node, the
@@ -1211,6 +2158,7 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         bundle: &str,
+        compute_bundle: Option<&str>,
         migrate: Option<&str>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
@@ -1234,15 +2182,17 @@ impl Node {
         }
         let p = g
             .propose_led(|m, _, _| {
-                Proposal::Append(entry_bytes(ComponentCmd::Upgrade {
+                let (entry, _replaced) = entry_bytes(ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
+                    compute_bundle: compute_bundle.map(str::to_owned),
                     base_index: m.state.last_index,
-                }))
+                });
+                Proposal::Append(entry)
             })
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        let a = to_wasmer_applied(a);
+        let a = to_host_applied(a);
         self.count_conflict(&a);
         Ok(a)
     }
@@ -1261,9 +2211,311 @@ fn read_only_refusal(applied: u64) -> Applied {
     )
 }
 
+/// What an action reaches through the node (D12): views and calls of its own app, as
+/// its caller, run on the async runtime while the action's thread waits.
+struct NodeAction {
+    node: Arc<Node>,
+    app_id: String,
+    caller: Caller,
+    key: String,
+    handle: tokio::runtime::Handle,
+}
+
+impl NodeAction {
+    /// Run `fut` on the runtime and wait for it on this (blocking) thread.
+    fn wait<T: Send + 'static>(
+        &self,
+        fut: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(self.handle.spawn(async move {
+            let _sent = tx.send(fut.await);
+        }));
+        rx.recv().ok()
+    }
+}
+
+/// A run's answer as `action.view`/`action.call` return it: the JSON result, or the
+/// error as JSON text.
+fn answer_bytes(status: &Status, result: &Value, error: &Value) -> Result<Vec<u8>, String> {
+    if *status == Status::Ok {
+        Ok(serde_json::to_vec(result).unwrap_or_default())
+    } else {
+        Err(error.to_string())
+    }
+}
+
+impl calimero_app_host::ActionHost for NodeAction {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn view(&self, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        let args = parse_args(args)?;
+        let req = ViewRequest {
+            app_id: self.app_id.clone(),
+            method: method.to_owned(),
+            args,
+            caller: self.caller.clone(),
+            strong: true,
+            min_index: 0,
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.view(&req).await }) {
+            Some(Ok(a)) if a.timeout => Err("the view timed out".into()),
+            Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
+            Some(Err(e)) => Err(e.message),
+            None => Err("the node is shutting down".into()),
+        }
+    }
+
+    fn call(&self, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        let args = parse_args(args)?;
+        let req = CallRequest {
+            idempotency_key: Some(key.to_owned()),
+            action: Some(self.key.clone()),
+            ..CallRequest::new(
+                self.app_id.clone(),
+                method.to_owned(),
+                args,
+                self.caller.clone(),
+            )
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.call_component(&req).await }) {
+            Some(Ok(a)) if a.timeout => Err("the call timed out".into()),
+            Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
+            Some(Err(e)) => Err(e.message),
+            None => Err("the node is shutting down".into()),
+        }
+    }
+}
+
+/// What a component run reaches besides its own state, by the kind of run.
+#[derive(Clone, Debug, Default)]
+struct RunExtras {
+    /// The run's own key (a call's caller and idempotency key, a tick's slot, a view's
+    /// placeholder): with one, the run reaches other apps synchronously ([`NodeXcall`]).
+    key: Option<String>,
+    /// The app's outbound gate (D76): calls (but a read-only member's), timers and
+    /// deliveries; never views or `init`.
+    outbound: bool,
+}
+
+/// How long a call, timer or delivery waits for one outbound response (D76): within the
+/// 2 s call budget (`calimero_app_host::Budget::call`), so a slow host costs the run an
+/// error it handles, not the log a stalled entry.
+pub const CALL_FETCH_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+/// [`NodeHttp`] for a logged run: the gate's answer, or a timeout after `timeout`. The
+/// request may still complete in the background; the run has moved on, and its entry
+/// records the timeout.
+struct TimedHttp {
+    inner: Arc<NodeHttp>,
+    timeout: Duration,
+}
+
+impl calimero_app_host::HttpHost for TimedHttp {
+    fn send(
+        &self,
+        request: &calimero_app_host::HttpRequest,
+    ) -> Result<calimero_app_host::HttpResponse, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (inner, request) = (Arc::clone(&self.inner), request.clone());
+        let _detached = std::thread::Builder::new()
+            .name("call-fetch".into())
+            .spawn(move || {
+                let _sent = tx.send(calimero_app_host::HttpHost::send(&*inner, &request));
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv_timeout(self.timeout)
+            .unwrap_or_else(|_| Err(format!("no response within {:?}", self.timeout)))
+    }
+}
+
+/// How long a run waits for another app's synchronous answer. Past it the run is told the
+/// call timed out; a call may still commit in the target, and the run's retry replays it.
+pub const SYNC_XCALL_WAIT: Duration = Duration::from_secs(3);
+
+/// What a component run reaches in other apps (`xcall.call`, `xcall.view`): views and
+/// calls of a component app in the same organization (or of the same owner), as
+/// `Caller::App(source)`, run on the async runtime while the run's thread waits at most
+/// [`SYNC_XCALL_WAIT`]. The target runs a call as a delivery, so it reaches no further.
+///
+/// Two apps calling each other at the same moment each hold their own call while they
+/// wait for the other's: both wait out [`SYNC_XCALL_WAIT`] and are told it timed out.
+struct NodeXcall {
+    node: Arc<Node>,
+    source: String,
+    key: String,
+    handle: tokio::runtime::Handle,
+}
+
+/// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
+/// the app error it is (`{code, fields}`), anything else as `{message, error}`.
+fn refusal_text(e: &ApiError) -> String {
+    if e.details.get("code").is_some() {
+        return e.details.to_string();
+    }
+    json!({ "message": e.message, "error": e.code }).to_string()
+}
+
+/// A refusal or failure for the guest, as the JSON text `xcall.*` returns.
+fn xcall_failure(message: &str) -> String {
+    json!({ "message": message }).to_string()
+}
+
+impl NodeXcall {
+    /// The target's canonical id, if this run may reach it: another component app, in the
+    /// caller's boundary (`same_boundary`).
+    fn target(&self, app: &str) -> Result<String, String> {
+        let target = self.node.canonical_app_id(app);
+        if target == self.source {
+            return Err(xcall_failure(calimero_app_host::XCALL_SYNC_SELF));
+        }
+        let ok = self.node.sys(|s| {
+            s.apps
+                .get(&target)
+                .is_some_and(|a| a.executor == Executor::Component)
+                && same_boundary(s, &self.source, &target)
+        });
+        if !ok {
+            // One answer for missing, foreign and wasmer apps: nothing is revealed.
+            return Err(xcall_failure("no such app in this organization"));
+        }
+        Ok(target)
+    }
+
+    /// Run `fut` on the runtime and wait for it on this (blocking) thread.
+    fn wait<T: Send + 'static>(
+        &self,
+        fut: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Result<T, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(self.handle.spawn(async move {
+            let _sent = tx.send(fut.await);
+        }));
+        rx.recv_timeout(SYNC_XCALL_WAIT).map_err(|e| match e {
+            std::sync::mpsc::RecvTimeoutError::Timeout => xcall_failure("the xcall timed out"),
+            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                xcall_failure("the node is shutting down")
+            }
+        })
+    }
+}
+
+impl calimero_app_host::XcallHost for NodeXcall {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        let target = self.target(app)?;
+        let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let req = CallRequest {
+            idempotency_key: Some(key.to_owned()),
+            sync_from: Some(self.source.clone()),
+            ..CallRequest::new(
+                target,
+                method.to_owned(),
+                args,
+                Caller::App {
+                    app: self.source.clone(),
+                },
+            )
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.call_component(&req).await })? {
+            Ok(a) if a.timeout => Err(xcall_failure("the call timed out")),
+            Ok(a) if a.conflict => Err(xcall_failure("the call raced a leader change")),
+            Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
+            Err(e) => Err(refusal_text(&e)),
+        }
+    }
+
+    fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        let target = self.target(app)?;
+        let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let req = ViewRequest {
+            app_id: target,
+            method: method.to_owned(),
+            args,
+            caller: Caller::App {
+                app: self.source.clone(),
+            },
+            strong: true,
+            min_index: 0,
+        };
+        let node = Arc::clone(&self.node);
+        match self.wait(async move { node.view(&req).await })? {
+            Ok(a) if a.timeout => Err(xcall_failure("the view timed out")),
+            Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
+            Err(e) => Err(refusal_text(&e)),
+        }
+    }
+}
+
+fn parse_args(args: &[u8]) -> Result<Value, String> {
+    if args.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(args).map_err(|e| format!("arguments are not JSON: {e}"))
+}
+
+/// An action's outbound HTTP through the node's gate (S9, R14): the signed release's
+/// declared prefixes, the owner's approval, the operator's hosts, secrets filled in.
+struct NodeHttp(Option<Arc<dyn calimero_outbound::OutboundHost>>);
+
+impl calimero_app_host::HttpHost for NodeHttp {
+    fn send(
+        &self,
+        request: &calimero_app_host::HttpRequest,
+    ) -> Result<calimero_app_host::HttpResponse, String> {
+        use calimero_primitives::outbound::{OutboundMethod, OutboundRequest, OutboundResponse};
+        let Some(gate) = &self.0 else {
+            return Err("this app declares no outbound hosts in a signed release".into());
+        };
+        let method = match request.method.as_str() {
+            "GET" => OutboundMethod::Get,
+            "POST" => OutboundMethod::Post,
+            "PUT" => OutboundMethod::Put,
+            "PATCH" => OutboundMethod::Patch,
+            "DELETE" => OutboundMethod::Delete,
+            other => return Err(format!("method {other} is not allowed")),
+        };
+        let out = OutboundRequest {
+            method,
+            url: request.url.clone(),
+            headers: request.headers.clone(),
+            body: request.body.clone(),
+        };
+        let bytes = borsh::to_vec(&out).map_err(|e| e.to_string())?;
+        let answer = gate.send(&bytes)?;
+        let response: OutboundResponse = borsh::from_slice(&answer).map_err(|e| e.to_string())?;
+        Ok(calimero_app_host::HttpResponse {
+            status: response.status,
+            headers: Vec::new(),
+            body: response.body,
+        })
+    }
+}
+
+/// Whether an xcall from `source` may reach `target`: both in one organization, or both
+/// personal apps of one owner.
+fn same_boundary(s: &crate::system::SystemState, source: &str, target: &str) -> bool {
+    let (Some(a), Some(b)) = (s.apps.get(source), s.apps.get(target)) else {
+        return false;
+    };
+    match (&a.org, &b.org) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => a.owner == b.owner,
+        _ => false,
+    }
+}
+
 /// A component's answer in the shape the node's own commands (`init`, upgrades)
 /// answer with: their callers read the status, the error and the conflict flag.
-fn to_wasmer_applied(a: Applied) -> crate::app::Applied {
+fn to_host_applied(a: Applied) -> crate::app::Applied {
     crate::app::Applied {
         index: a.index,
         status: a.status,
@@ -1279,6 +2531,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_component_cache_key_matches_its_known_answer() {
+        assert_eq!(
+            hex::encode(component_cache_key(&[7; 32])),
+            "76c96b3cbf04b23fd1e753c6b064af2c6825aca228d1be3897621b9d4714e8af"
+        );
+    }
+
+    #[test]
     fn the_due_slot_is_the_latest_one_aligned_to_the_install_time() {
         let every = Duration::from_secs(1);
         assert_eq!(due_slot(10_000, every, 9_000), None, "before install");
@@ -1288,5 +2548,36 @@ mod tests {
         // Five missed slots collapse into the latest one.
         assert_eq!(due_slot(10_000, every, 16_500), Some(16_000));
         assert_eq!(due_slot(10_000, Duration::ZERO, 16_500), None);
+    }
+
+    #[test]
+    fn compute_and_compute_result_methods_are_refused_to_every_caller() {
+        let abi = calimero_app_host::Abi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": {
+                "digest": { "kind": "compute", "compute": { "fuel": 1, "result": "onDone" } },
+                "onDone": { "kind": "call", "computeResult": true, "allowSystem": true },
+                "plain": { "kind": "call", "allowSystem": true, "public": true },
+            }
+        }))
+        .unwrap();
+        let prepared = Prepared {
+            hash: String::new(),
+            abi,
+            inner: std::sync::Arc::new(()),
+        };
+        let account = Caller::Account {
+            account: "alice".to_owned(),
+        };
+        for caller in [account, Caller::System, Caller::Public] {
+            for (view, from_action) in [(false, false), (true, false), (false, true)] {
+                for method in ["digest", "onDone"] {
+                    let refused =
+                        abi_check(&prepared, method, &caller, view, true, from_action).unwrap_err();
+                    assert_eq!(refused.details["code"], "WrongKind", "{method} {caller:?}");
+                }
+            }
+        }
+        assert!(abi_check(&prepared, "plain", &Caller::System, false, true, false).is_ok());
     }
 }

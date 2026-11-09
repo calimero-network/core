@@ -59,7 +59,7 @@ An app group's machine key space (`crates/node/src/app.rs`, `rows`):
 | --- | --- | --- |
 | `k` + the app's key | yes | The app's storage: what its runs write, private spaces, writer sets and blob marks (the host's `\0calimero.*` keys) |
 | `i` + `caller\|key` | yes | Idempotency records: the answer replayed for a repeated key, and its expiry |
-| `h` | no | The `Head`: bundle, initialized and init error, last applied index, pending follow-ups, timer ticks, event-ring and expiry-ring bounds |
+| `h` | no | The `Head`: bundle, initialized and init error, last applied index, pending follow-ups, timer ticks, event-ring and expiry-ring bounds, and a component's host records (among them `lastWriteMs`, the timestamp of its last write, left out until the first) |
 | `e ‖ n (u64 BE)` | no | Event `n` of the event ring (the last 10 000) |
 | `r ‖ class ‖ n` | no | The idempotency keys in the order they expire, per TTL class (client keys, node keys) |
 

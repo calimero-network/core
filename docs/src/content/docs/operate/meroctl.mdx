@@ -41,7 +41,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade` and `ops upgrade-namespace` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move` and `ops set-quotas` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -58,8 +58,13 @@ which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
 That holds for `context update`, `context transfer`, `namespace delete`, `namespace outbound`,
-`namespace approve-release`, `account outbound`, `account approve-release`,
-`group upgrade trigger` and `group upgrade retry`.
+`namespace approve-release`, `namespace invite`, `namespace leave`,
+`namespace members add`, `namespace members remove`, `namespace capabilities`,
+`account outbound`, `account approve-release`, `account api-key create`,
+`account device revoke`, `group members add`, `group members remove`,
+`group settings`, `group leave`, `group upgrade trigger`,
+`group upgrade retry`, `app origins add` and `app origins remove`. `account device add` takes `--approve-with FILE`, a
+passkey file the account already has.
 
 ## node
 
@@ -85,7 +90,8 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 ## app
 
 Signed packages. An application is installed once on the
-cluster and verified on every node that runs it.
+cluster and verified on every node that runs it. `meroctl package` is the
+same command (`meroctl package origins list PACKAGE`).
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -97,6 +103,20 @@ cluster and verified on every node that runs it.
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
+| `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
+| `app origins add PACKAGE ORIGIN [--rp-id ID] [--served] [--dev-passkey FILE]` | `POST /package-origins/{package}` | Register a web origin whose pages may sign people in to the application ([registered origins](/protocol/identities/#registered-origins)). `ORIGIN` is `https://host[:port]` as a browser writes it (`http` only on a `localhost` name, on a `--dev` node). `--rp-id` is the passkey relying party there: the origin's host (the default) or a parent domain of it, never the cluster's rp-id or a parent of it; passkeys made there belong to that domain. A package registers at most 8. `--served` makes it a custom domain: the cluster also serves the application's frontend there from its signed bundle (`https://host`, no port; not under the apps domain or the cluster's rp-id; at most 4 per package and 64 per cluster). The node refuses it `400 NOT_SERVING` without `--apps-domain` and `409 CLUSTER_NOT_UPGRADED` while a node runs an older release; an origin held with the other `served` is `409 ORIGIN_TAKEN` (remove it first). Browsers reach it once Calimero Cloud holds its certificate and route (`docs/specs/custom-domains.md`). |
+| `app origins remove PACKAGE ORIGIN [--dev-passkey FILE]` (`rm`) | `DELETE /package-origins/{package}` | Remove a registered origin; the sessions opened there end. |
+
+The application's manager handles its origins: where its signing key is bound
+to a publisher organization, that organization's org-wide `MANAGE_APPLICATION`
+holders, else the account that installed it first. Each change carries the
+manager's passkey consent (`package:{package} / __add_origin / { origin, rpId }`,
+`{ origin, rpId, served: true }` for a served one,
+`__remove_origin / { origin }`): `--dev-passkey` on a development cluster;
+without it the node answers `412 CONFIRM_REQUIRED` and nothing changes, and on
+a real cluster the manager makes the change in the console (Web addresses),
+where the browser holds their passkey. A frontend the cluster serves from the
+bundle needs no origin here.
 
 ## context
 
@@ -137,7 +157,6 @@ App instances.
 | `--params JSON` | Arguments for the app's `init`. |
 | `--namespace ORG` | Create it in this organization. |
 | `--group TEAM` | With `--namespace`: reached by this team's members (`access: team`). |
-| `--confirm METHOD` | A method that needs a passkey confirmation per call; repeat for each. |
 | `--alias ALIAS` | Also name it with this alias. |
 
 ## call
@@ -230,12 +249,12 @@ The signed-in account.
 | `account show` | `GET /auth/me` | The account, its devices, organizations and approvals. |
 | `account usage` | `GET /auth/usage` | What it uses against its quotas. |
 | `account device list` (`ls`) | `GET /auth/me` | Its devices (passkeys) and the current one. |
-| `account device add --dev-passkey FILE [--origin URL]` | `/auth/passkeys/add/*` | Add a device: a new file passkey (development clusters). `FILE` must not exist. |
+| `account device add --dev-passkey FILE --approve-with EXISTING [--origin URL]` | `/auth/passkeys/add/*` | Add a device: a new file passkey (development clusters), approved with a passkey file the account already has. `FILE` must not exist. |
 | `account device label CREDENTIAL LABEL` | `POST /auth/passkeys/{cred}` | Name a device; `""` clears the name. |
-| `account device revoke CREDENTIAL` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. |
+| `account device revoke CREDENTIAL [--dev-passkey FILE]` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. Approved with a passkey. |
 | `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
-| `account api-key revoke KEY_ID` | `DELETE /auth/apikeys/{key}` | Revoke one. |
+| `account api-key revoke KEY_ID [--dev-passkey FILE]` | `DELETE /auth/apikeys/{key}` | Revoke one, approved with a passkey. |
 | `account approve-release VERSION [--dev-passkey FILE]` | `POST /auth/releases` | Approve a mero-tee release to hold the account's own contexts. |
 | `account outbound --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /auth/outbound` | Approve outbound prefixes for the account's own contexts. |
 
@@ -262,10 +281,11 @@ node answers `403` for the others.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
+| `ops cluster` | `GET /ops/cluster` | The cluster's name and identity key (hex), which `merod run --job-node --cluster-identity` takes. |
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
 | `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |
-| `ops add-node ID ADDR [--zone Z]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. |
+| `ops add-node ID ADDR [--zone Z] [--role replica\|job]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
 | `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
 | `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |

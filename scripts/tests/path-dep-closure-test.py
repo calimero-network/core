@@ -18,10 +18,9 @@ SCRIPT = ROOT / "scripts" / "path-dep-closure.py"
 # (package, its directory, whether its own dev-dependencies count): every binary a
 # cache is keyed for, and every test suite scripts/ci-scope.py scopes a job on.
 PACKAGES = [
-    ("cargo-mero", "tools/cargo-mero", False),
     ("merod", "crates/merod", False),
-    ("cargo-mero", "tools/cargo-mero", True),
-    ("storage-cost", "tools/storage-cost", True),
+    ("meroctl", "crates/meroctl", True),
+    ("calimero-node", "crates/node", True),
 ]
 
 

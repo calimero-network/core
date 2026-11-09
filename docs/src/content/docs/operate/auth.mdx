@@ -46,12 +46,84 @@ each a device of the account.
   affinity for `/auth/passkey/*` and `/auth/passkeys/add/*`, or clients must
   talk to one node URL. A node holds at most 10,000 open ceremonies and then
   answers `429 RATE_LIMITED`.
-- **Sign-up is open.** Anyone who can reach the cluster can register an
-  account. The `maxAccounts` quota (default 100,000) bounds the total; see
+- **Sign-up policy.** Each cluster has one, set at genesis (`--sign-up`)
+  and attested with its governance; see [Sign-up policy](#sign-up-policy).
+  On an `open` cluster (the default) anyone who can reach it can register an
+  account, and the `maxAccounts` quota (default 100,000) bounds the total; see
   [quotas](/operate/runbooks/#set-quotas).
 
+## Sign-up policy
+
+| Policy | Who may create an account |
+| --- | --- |
+| `open` (default) | Anyone who reaches the cluster. |
+| `invite` | Someone holding a valid **organization invite** (the new account joins the organization) or a **cluster sign-up invite**. |
+| `closed` | Someone holding a cluster sign-up invite only: the operator's (or owner's) pre-authorization. Organization invites still let existing accounts join. |
+
+Read it before sign-up, without a session: `GET /sign-up` answers
+`{ policy, orgInvites, signUpInvites, inviteRequired }`. The attested
+governance carries it too (`signUp`, left out when `open`), on
+`GET /attestation?purpose=receipts` and `GET /releases`.
+
+Sign up with an invite by sending its token on both halves of the ceremony:
+
+```json
+POST /auth/passkey/register/begin   { "name": "Ada", "invite": "<token>" }
+POST /auth/passkey/register/finish  { "challengeId": "...", "registration": {...}, "invite": "<token>" }
+```
+
+`begin` refuses a sign-up the policy would refuse with `403 SIGN_UP_REFUSED`
+before any passkey is made, and so does `finish`, before it spends the
+challenge; the system log judges it again where it applies, so a leader
+cannot let anyone else in. An invite given on an `open` cluster is checked
+too (an unknown, expired or used one is refused, never ignored), and an
+organization invite there joins its organization. The node signs the
+invite's redemption with the token's key, as for
+[`/invites/{token}/redeem`](/protocol/organizations/): the log never sees
+the token. With the Rust client: `Client::sign_up_invited(passkey, name,
+Some(token))`.
+
+Who runs sign-up (its policy and its sign-up invites) is the party that runs
+the cluster's deployers: the operator, with its key, until the operator names
+the cluster's owner on a `--deployers owner` cluster; from then on the owner,
+with a passkey, and the operator's signature is refused.
+
+| Change | Operator (`--ops-token`, signed) | Owner (passkey, `412` first) | Statement |
+| --- | --- | --- | --- |
+| Set the policy | `POST /ops/sign-up { policy }` | `POST /sign-up { policy }` | `cluster / __sign_up / { policy }` |
+| Issue a sign-up invite | `POST /ops/sign-up/invites { token, uses?, expiresAt }` | `POST /sign-up/invites { uses?, ttlSecs? }` (answers the `token`) | `cluster / __create_sign_up_invite / { inviteKey, uses, expiresAt }` |
+| Withdraw one | `DELETE /ops/sign-up/invites/{inviteKey}` (or `POST .../revoke`) | `DELETE /sign-up/invites/{inviteKey}` | `cluster / __revoke_sign_up_invite / { inviteKey }` |
+| List them | `GET /ops/sign-up/invites` | `GET /sign-up/invites` | |
+
+The operator chooses its token (16 to 256 bytes) so that the `428
+OPERATOR_SIGNATURE_REQUIRED` and the signed retry name the same invite;
+`inviteKey` is `proof::invite_key(token)`, the Ed25519 public key whose seed is
+`SHA-256("calimero.invite.v1\0" || token)`, and the list answers keys and terms
+only. A sign-up invite creates 1 to 10,000 accounts (default 1) and lives at
+most a year; at most 10,000 are live at once. Accounts it created stay when it
+is withdrawn, and a policy change never removes an account.
+
 Devices: `POST /auth/passkeys/add/*` adds one (`meroctl account device add`),
-`DELETE /auth/passkeys/{cred}` removes one and ends the sessions it opened.
+approved with a passkey the account already has; `DELETE
+/auth/passkeys/{cred}` removes one, approved with a passkey, and ends the
+sessions it opened. Both answer `412 CONFIRM_REQUIRED` first, and every node
+checks the approval where the change applies.
+
+Recovery (lost every passkey; design:
+[`docs/specs/account-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/account-recovery.md)):
+
+| Route | Who | What |
+| --- | --- | --- |
+| `POST /auth/recovery` | signed in, unbound passkey session (`412` first) | Make a recovery code, shown once, replacing any earlier one; only its public key is stored |
+| `DELETE /auth/recovery` | signed in (`412` first) | Remove it |
+| `POST /auth/recovery/begin { code }` | signed out | A passkey registration for the account the code names; `401` for a wrong or spent code, `409 RECOVERY_PENDING` while one is under way |
+| `POST /auth/recovery/start { challengeId, code, registration }` | signed out | Spend the code and log the new passkey as pending: `{ accountId, credentialId, startedAt, readyAt }`. No passkey is added and no session opens. A wrong code answers `401` and spends the ceremony |
+| `POST /auth/recovery/cancel` | signed in with a passkey the account has (`412` first) | Cancel the recovery under way |
+| `POST /auth/recovery/finish { accountId? }` | signed out, the new passkey (`412` first) | Once `readyAt` passed (`RECOVERY_DELAY_SECS`, 72 hours, as for an organization): the passkey is added, every earlier session of the account ends, every API key of the account is revoked, and the answer is a new session. `409 RECOVERY_NOT_READY` (with `readyAt`) before |
+
+`/auth/me` answers `recoveryCode: true|false` and `recoveryPending` (`{
+accountId, credentialId, startedAt, readyAt }` or `null`), so every signed-in
+device can warn while a recovery is under way.
 
 ## Sessions
 
@@ -64,9 +136,11 @@ refreshToken }`.
   release may serve the account ([Sessions](/protocol/identities/#sessions)).
   A node on a release the account's owners have not approved answers
   `421 WRONG_NODE` instead of issuing or taking one: use another node.
-- **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` exchanges it
-  for a new session and a new refresh token. Reusing a refresh token is
-  recorded and ends the session.
+- **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` answers a
+  new session and the refresh token to use next: the same one while it is
+  younger than an hour (nothing is written to the system log), a new one
+  after. Presenting a refresh token again after it was exchanged is recorded
+  and ends the session.
 - **Signing keys.** Each node signs with its receipt key, made on its first
   start and kept in its data directory wrapped under K_r: a restart or a
   rolling upgrade of the binary keeps the sessions it issued, and they verify
@@ -77,9 +151,10 @@ refreshToken }`.
 
 ## API keys
 
-Created by an account holder with a passkey session (`POST /auth/apikeys`,
-`meroctl account api-key create`); the key is shown once and only its hash is
-stored.
+Created by an account holder with a passkey session and approved with a
+passkey (`POST /auth/apikeys`, `412 CONFIRM_REQUIRED` first; `meroctl account
+api-key create`); the key is shown once and only its hash is stored. An API
+key never creates another.
 
 | Field | Meaning |
 | --- | --- |
@@ -115,10 +190,19 @@ file passkey (`--dev-passkey`) on development clusters.
 ## App-bound sessions
 
 With `--apps-domain`, a passkey ceremony run from a package's frontend origin
-(`{label}.{domain}`) opens a session bound to that package. It reaches only
+(`{label}.{domain}`, its cluster host `{cluster_label}.{domain}`, or a deployment's host `{dlabel}.{domain}` offering it)
+opens a session bound to that package. It reaches only
 apps that run a release of that package, can create instances of that package
 only, and is refused credentials, API keys, approvals, upgrades, uninstalls
 and uploads. Its step-up confirmations come from its own origin only.
+
+A package's manager can also register origins of their own (a developer's
+site): `GET|POST|DELETE /package-origins/{package}`, each change approved with
+their passkey. A ceremony there uses the origin's own rp-id and opens the same
+package-bound session; removing the origin ends those sessions. Registered
+with `served: true` (a custom domain), the cluster also serves the package's
+frontend there. See
+[Registered origins](/protocol/identities/#registered-origins).
 
 ## The ops token
 

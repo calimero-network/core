@@ -31,6 +31,13 @@ otherwise: read-your-writes without going through the leader.
 A node that holds no replica of the app forwards a view to one that does, with
 the same 5-second bound as calls.
 
+Who may run a view is judged on fresh system state: the node that takes the
+request makes one read-index round on the system group, so a revocation
+committed through any node before the view holds. A call is judged the same
+way and also costs one round: the app's leader reuses the entry node's index
+rather than asking again ([One round per
+request](/protocol/system-group/#one-round-per-request) gives the argument).
+
 The answer is `{ index, result, receipt }`: the applied index the view ran at,
 the result, and a [receipt](/protocol/tee-attestation/#receipts).
 
@@ -61,7 +68,7 @@ exports:
 
 ## Events
 
-A run may emit events (`app::emit!`). They are part of the outcome, so they are
+A run may emit events (`env::emit`). They are part of the outcome, so they are
 committed with the entry and applied on every replica: each replica appends
 them to the app's event ring (`EVENT_RING`, the last 10 000 events) as
 `{ index, seq, kind, data }`.

@@ -169,6 +169,10 @@ fn last_upgrade_json(
         if let Some(run) = &u.run {
             v["run"] = json!(run);
         }
+        // The upgrade key that made it, in place of a passkey.
+        if let Some(key) = &u.api_key {
+            v["apiKey"] = json!(key);
+        }
     }
     v
 }

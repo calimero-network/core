@@ -11,7 +11,7 @@ Registry and git dependencies are pinned by Cargo.lock, so they are not listed.
 A cache keyed on these directories' git trees cannot go stale when a package
 gains a dependency, which a hand-kept list would.
 
-Usage: path-dep-closure.py [--dev] <package-dir>...   (e.g. tools/cargo-mero)
+Usage: path-dep-closure.py [--dev] <package-dir>...   (e.g. crates/merod)
 """
 
 import sys

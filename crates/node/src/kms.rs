@@ -11,11 +11,18 @@
 //!
 //! Each fetch keeps what it verified of the KMS (`KmsEvidence`); the node
 //! reports it, bound into its quote, at `GET /attestation?purpose=kms`.
+//!
+//! The same release carries the node's rollback counter (`KmsCounter`, for
+//! `crate::rollback`) when mero-kms keeps one.
 
 use std::path::Path;
 
+use calimero_kms_client::{CounterAck, CounterEntry, Counters};
+use calimero_log::NodeId;
 use eyre::{bail, WrapErr};
 use ring::hkdf;
+
+use crate::rollback::{Ack, Counter, CounterFuture, Entry, Grant};
 
 /// K_r = HKDF-SHA256(KMS key, salt "calimero.cloud.storage.v1", info cluster).
 #[must_use]
@@ -51,20 +58,78 @@ pub fn read_key_file(path: &Path) -> eyre::Result<zeroize::Zeroizing<Vec<u8>>> {
 }
 
 /// Fetch the KMS key for the cluster's disk identity (created if missing),
-/// with the record of the KMS quote that was verified before asking.
+/// with the record of the KMS quote that was verified before asking, and node
+/// `node`'s rollback counter (`rollback`; `None` from a KMS that keeps none).
 pub async fn fetch(
     kms_url: &str,
     identity: &Path,
+    node: NodeId,
 ) -> eyre::Result<(
     zeroize::Zeroizing<Vec<u8>>,
     calimero_tee_attestation::KmsEvidence,
+    KmsCounter,
 )> {
     let url = kms_url
         .parse()
         .wrap_err_with(|| format!("invalid KMS URL {kms_url}"))?;
     let identity = camino::Utf8Path::from_path(identity)
         .ok_or_else(|| eyre::eyre!("{} is not UTF-8", identity.display()))?;
-    calimero_kms_client::disk_key::fetch_disk_key(url, identity, true).await
+    let (key, evidence, counters) =
+        calimero_kms_client::disk_key::fetch_disk_key_and_counters(url, identity, true, Some(node))
+            .await?;
+    Ok((key, evidence, KmsCounter(counters)))
+}
+
+/// The node's rollback counter in mero-kms, as its key release gave it.
+/// `None` inside: a mero-kms that keeps no counters.
+#[derive(Debug)]
+pub struct KmsCounter(Option<Counters>);
+
+impl Counter for KmsCounter {
+    fn grant(&self) -> Option<Grant> {
+        let c = self.0.as_ref()?;
+        Some(Grant {
+            epoch: c.epoch,
+            entry: c.entry.map(|e| Entry {
+                generation: e.generation,
+                mark: e.mark,
+            }),
+        })
+    }
+
+    fn raise(&self, to: Entry) -> CounterFuture<'_> {
+        Box::pin(async move {
+            let Some(c) = &self.0 else {
+                bail!("mero-kms keeps no rollback counters");
+            };
+            let ack = c
+                .raise(CounterEntry {
+                    generation: to.generation,
+                    mark: to.mark,
+                })
+                .await?;
+            Ok(ack_of(ack))
+        })
+    }
+
+    fn reset(&self, mark: u64) -> CounterFuture<'_> {
+        Box::pin(async move {
+            let Some(c) = &self.0 else {
+                bail!("mero-kms keeps no rollback counters");
+            };
+            Ok(ack_of(c.reset(mark).await?))
+        })
+    }
+}
+
+fn ack_of(ack: CounterAck) -> Ack {
+    Ack {
+        epoch: ack.epoch,
+        entry: Entry {
+            generation: ack.entry.generation,
+            mark: ack.entry.mark,
+        },
+    }
 }
 
 /// Where a node's storage key comes from.

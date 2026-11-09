@@ -1,0 +1,15 @@
+[package]
+name = "v2-fixture-notes-v1"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Cluster-test fixture on the v2 app SDK: release 1.0.0 of the consent page's upgrade"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../../../crates/sdk" }
+
+# Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
+[workspace]

@@ -1,132 +1,158 @@
-//! Canonical example for [`SortedSet`] — an element-ordered collection that
-//! supports range queries, prefix scans, pagination, and min/max (core#2559).
+//! An element-ordered set: range queries, prefix scans, pagination, min and max.
 //!
-//! It is to [`SortedSet`] what `sorted-kv-store` is to `SortedMap`: the same
-//! add-wins union CRDT and on-disk ordered index, but the element doubles as its
-//! own key, so iteration comes back in ascending element order and you can read a
-//! slice of the set (`range` / `prefix` / `page` / `first` / `last`) without
-//! loading all of it. Think of it as the `BTreeSet` to `UnorderedSet`'s
-//! `HashSet`.
+//! It is to a set what `sorted-kv-store` is to a map: a `Set` keeps its elements in order
+//! and its own count, so every read comes back in ascending element order, and `range` /
+//! `prefix` / `page` / `first` / `last` read a slice of the set without loading all of it.
+//! Think of it as a `BTreeSet`.
 
-use calimero_sdk::app;
-use calimero_storage::collections::SortedSet;
+use calimero_sdk::prelude::*;
+use calimero_sdk::StorageError;
 
-#[app::state(emits = for<'a> Event<'a>)]
+#[app::state(version = 1)]
 pub struct SortedSetStore {
-    items: SortedSet<String>,
+    items: Set<String>,
 }
 
 #[app::event]
-pub enum Event<'a> {
-    Added { value: &'a str },
-    Removed { value: &'a str },
+pub enum Event {
+    Added { value: String },
+    Removed { value: String },
     Cleared,
 }
 
+/// The page size the multi-page reads below fetch with.
+const BATCH: u32 = 1000;
+
 #[app::logic]
+#[allow(clippy::len_without_is_empty)]
 impl SortedSetStore {
     #[app::init]
-    pub fn init() -> SortedSetStore {
-        SortedSetStore {
-            items: SortedSet::new(),
-        }
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
     }
 
-    /// Add `value`; returns `true` if it was newly inserted (already-present
-    /// elements are a no-op, as in any set).
+    /// Adds `value`; `true` when it was new (an element already present is a no-op).
     pub fn add(&mut self, value: String) -> app::Result<bool> {
-        app::log!("Adding value: {:?}", value);
-
-        let added = self.items.insert(value.clone())?;
+        let added = self.items.insert(&value)?;
         if added {
-            app::emit!(Event::Added { value: &value });
+            env::emit(Event::Added { value }, Audience::All)?;
         }
-
         Ok(added)
     }
 
     /// Whether `value` is in the set.
-    pub fn contains(&self, value: &str) -> app::Result<bool> {
-        app::log!("Checking membership: {:?}", value);
-
-        Ok(self.items.contains(value)?)
+    #[app::view]
+    pub fn contains(&self, value: String) -> app::Result<bool> {
+        Ok(self.items.contains(&value)?)
     }
 
-    /// Remove `value`; returns `true` if it was present.
-    pub fn remove(&mut self, value: &str) -> app::Result<bool> {
-        app::log!("Removing value: {:?}", value);
-
-        let removed = self.items.remove(value)?;
+    /// Removes `value`; `true` when it was present.
+    pub fn remove(&mut self, value: String) -> app::Result<bool> {
+        let removed = self.items.remove(&value)?;
         if removed {
-            app::emit!(Event::Removed { value });
+            env::emit(Event::Removed { value }, Audience::All)?;
         }
-
         Ok(removed)
     }
 
+    /// Removes every element; `Cleared` only when there were any.
     pub fn clear(&mut self) -> app::Result<()> {
-        app::log!("Clearing all elements");
-
-        // Mirror `add`/`remove`: only emit when the set actually changed, and
-        // only after the clear succeeds.
-        let was_non_empty = !self.items.is_empty()?;
-        self.items.clear()?;
-        if was_non_empty {
-            app::emit!(Event::Cleared);
+        if self.items.clear()? > 0 {
+            env::emit(Event::Cleared, Audience::All)?;
         }
-
         Ok(())
     }
 
-    /// The number of elements in the set.
-    pub fn len(&self) -> app::Result<usize> {
+    /// The number of elements.
+    #[app::view]
+    pub fn len(&self) -> app::Result<u64> {
         Ok(self.items.len()?)
     }
 
     /// Whether the set has no elements.
+    #[app::view]
     pub fn is_empty(&self) -> app::Result<bool> {
         Ok(self.items.is_empty()?)
     }
 
-    /// All elements, **in ascending order** (the headline difference from an
-    /// `UnorderedSet`).
+    /// All elements, ascending.
+    #[app::view]
     pub fn elements(&self) -> app::Result<Vec<String>> {
-        app::log!("Getting all elements (sorted)");
-
-        Ok(self.items.iter()?.collect())
+        collect(|opts| self.items.page(opts))
     }
 
-    /// Elements within `[start, end)`, ascending — a range query backed by the
-    /// ordered index (no full scan).
+    /// Elements within `[start, end)`, ascending: the set's own bounds, no full scan.
+    #[app::view]
     pub fn range(&self, start: String, end: String) -> app::Result<Vec<String>> {
-        app::log!("Range query: [{:?}, {:?})", start, end);
-
-        Ok(self.items.range(start..end)?.collect())
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        collect(|opts| self.items.range(&start, &end, opts))
     }
 
-    /// Elements that start with `prefix`, ascending — e.g. `prefix("user:")`.
+    /// Elements that start with `prefix`, ascending: the read covers only the elements
+    /// under it.
+    #[app::view]
     pub fn prefix(&self, prefix: String) -> app::Result<Vec<String>> {
-        app::log!("Prefix scan: {:?}", prefix);
-
-        Ok(self.items.prefix(prefix.as_bytes())?.collect())
+        let prefix = [prefix.to_key_part()];
+        collect(|opts| self.items.starts_with(&prefix, opts))
     }
 
-    /// A page of `limit` elements starting at `offset`, ascending — paginate
-    /// without materialising the whole set. Returns an empty `Vec` once
-    /// `offset` reaches or passes the end of the set.
-    pub fn page(&self, offset: usize, limit: usize) -> app::Result<Vec<String>> {
-        app::log!("Page: offset={offset} limit={limit}");
-
-        Ok(self.items.page(offset, limit)?)
+    /// `limit` elements after the first `offset`, ascending; empty once `offset` reaches the
+    /// end. The skipped elements are still read; to page a large set, prefer `range` from the
+    /// last element held.
+    #[app::view]
+    pub fn page(&self, offset: u32, limit: u32) -> app::Result<Vec<String>> {
+        let mut out = Vec::new();
+        if limit == 0 {
+            return Ok(out);
+        }
+        let mut skipped = 0;
+        let mut opts = FindOpts::default().limit(BATCH);
+        loop {
+            let page = self.items.page(opts.clone())?;
+            for value in page.items {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                out.push(value);
+                if out.len() == limit as usize {
+                    return Ok(out);
+                }
+            }
+            match page.next {
+                Some(next) => opts = opts.cursor(next),
+                None => return Ok(out),
+            }
+        }
     }
 
     /// The smallest element.
+    #[app::view]
     pub fn first(&self) -> app::Result<Option<String>> {
-        self.items.first().map_err(Into::into)
+        Ok(self.items.first()?)
     }
 
     /// The largest element.
+    #[app::view]
     pub fn last(&self) -> app::Result<Option<String>> {
-        self.items.last().map_err(Into::into)
+        Ok(self.items.last()?)
+    }
+}
+
+/// Every page `read` returns, from the first on, in order.
+fn collect(
+    read: impl Fn(FindOpts) -> Result<Page<String>, StorageError>,
+) -> app::Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut opts = FindOpts::default().limit(BATCH);
+    loop {
+        let page = read(opts.clone())?;
+        out.extend(page.items);
+        match page.next {
+            Some(next) => opts = opts.cursor(next),
+            None => return Ok(out),
+        }
     }
 }

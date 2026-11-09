@@ -7,30 +7,26 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use calimero_log::{
-    BoxFuture, Engine, Group, GroupId, NodeId, Proposal, RpcRequest, RpcResponse, Transport,
-    WriteError,
+    BoxFuture, Engine, Group, GroupId, NodeId, RpcRequest, RpcResponse, Transport, WriteError,
 };
 use futures_util::StreamExt;
-use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::app::{
-    AppCmd, AppMachine, Applied, CallEntry, Executor, FollowUp, Outcome, RunEnv, Status, Trigger,
-};
+use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
-use crate::services::{AppBlobs, BundleFacts, Search};
-use crate::system::{output, SystemCmd, SystemMachine, SystemState};
-use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
-use crate::usage::{Kind as RunKind, Meter, Usage};
+use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemState};
+use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
+use crate::usage::{Meter, Usage};
 
 mod component;
+mod job;
 
-use component::LocalError;
+pub use job::JobPeer;
 
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
@@ -48,6 +44,8 @@ struct StatsWire {
     bytes: u64,
     blob_bytes: u64,
     blobs: Vec<(String, u64)>,
+    #[serde(default)]
+    files: Vec<(String, u64, String)>,
 }
 
 impl From<StatsWire> for crate::app::StorageStats {
@@ -62,6 +60,14 @@ impl From<StatsWire> for crate::app::StorageStats {
                 .filter_map(|(id, size)| {
                     let raw: [u8; 32] = hex::decode(id).ok()?.try_into().ok()?;
                     Some((raw, size))
+                })
+                .collect(),
+            files: w
+                .files
+                .into_iter()
+                .filter_map(|(id, size, sha256)| {
+                    let id = hex::decode(id).ok()?.try_into().ok()?;
+                    Some((id, size, hex::decode(sha256).ok()?.try_into().ok()?))
                 })
                 .collect(),
         }
@@ -108,6 +114,11 @@ pub struct Config {
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
     pub read_wait: Duration,
+    /// How long a refresh token serves the refreshes that present it before
+    /// one of them exchanges it in the system log
+    /// (`api::REFRESH_ROTATE_AFTER` in production). Zero: every refresh
+    /// exchanges it, a system write each.
+    pub refresh_rotate_after: Duration,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
     pub tee_release: Option<String>,
@@ -148,6 +159,13 @@ pub struct Config {
     /// storage key, and the data disk's when the boot script recorded it).
     /// Reported, bound into the quote, by `GET /attestation?purpose=kms`.
     pub kms_keys: calimero_client::attest::KmsKeys,
+    /// The rollback counter this node checks its store against and raises
+    /// (`rollback`): mero-kms's, from the key release. `None`: no counter
+    /// (`--dev`, a key given by flag or file), and the store is not judged.
+    pub rollback: Option<Arc<dyn crate::rollback::Counter>>,
+    /// Start on a store the counter says was rolled back (`--accept-rollback`):
+    /// mero-kms lowers this node's entry and raises the cluster epoch.
+    pub accept_rollback: bool,
 }
 
 impl Config {
@@ -155,33 +173,56 @@ impl Config {
     /// channel, and a new node's request for the cluster key.
     #[must_use]
     pub fn peer_policy(&self) -> Policy {
-        Policy {
-            allow_mock: self.allow_mock_peers,
-            app_hash: None,
-            measurements: self.peer_measurements.clone(),
-            allowed_tcb_statuses: Vec::new(),
-            // A node trusts debug peers only when it runs a debug image itself.
-            allow_debug_profiles: self
-                .tee_profile
-                .as_deref()
-                .is_some_and(calimero_client::attest::is_debug_profile),
-        }
+        peer_policy(
+            self.allow_mock_peers,
+            &self.peer_measurements,
+            self.tee_profile.as_deref(),
+        )
     }
 
     /// The release this node's attestations name.
     #[must_use]
     pub fn attested_release(&self) -> crate::attest::Release {
-        crate::attest::Release {
-            version: self
-                .tee_release
-                .clone()
-                .unwrap_or_else(|| self.release.clone()),
-            profile: match (&self.tee_profile, self.attestation) {
-                (_, Mode::Mock) => "mock".into(),
-                (Some(p), _) => p.clone(),
-                (None, _) => "tdx".into(),
-            },
-        }
+        attested_release(
+            &self.release,
+            self.tee_release.as_deref(),
+            self.tee_profile.as_deref(),
+            self.attestation,
+        )
+    }
+}
+
+/// How a node judges a peer's quote. It trusts debug peers only when it runs a
+/// debug image itself.
+pub(crate) fn peer_policy(
+    allow_mock: bool,
+    measurements: &calimero_client::Measurements,
+    tee_profile: Option<&str>,
+) -> Policy {
+    Policy {
+        allow_mock,
+        app_hash: None,
+        measurements: measurements.clone(),
+        allowed_tcb_statuses: Vec::new(),
+        allow_debug_profiles: tee_profile.is_some_and(calimero_client::attest::is_debug_profile),
+    }
+}
+
+/// The release a node's attestation names: its mero-tee release (else the
+/// build's) and the image profile (`mock` for mock quotes).
+pub(crate) fn attested_release(
+    release: &str,
+    tee_release: Option<&str>,
+    tee_profile: Option<&str>,
+    mode: Mode,
+) -> crate::attest::Release {
+    crate::attest::Release {
+        version: tee_release.unwrap_or(release).to_owned(),
+        profile: match (tee_profile, mode) {
+            (_, Mode::Mock) => "mock".into(),
+            (Some(p), _) => p.to_owned(),
+            (None, _) => "tdx".into(),
+        },
     }
 }
 
@@ -198,18 +239,32 @@ pub struct CallRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub consent: Option<Value>,
-    /// Raw input instead of `args` (an event handler's event, an xcall's params).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<calimero_log::Bytes>,
-    /// Why the node runs it itself; `None` for a request. Peers pass it along
-    /// on `internal/call`, which only peers reach.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<Trigger>,
     /// One of the node's own commands ([`HOST_METHODS`]), which the node
     /// issues itself once the API has judged who may. Never set from a
     /// client's request; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host: bool,
+    /// A component app's delivered xcall (D25): which message of which source. Set only
+    /// by the source's leader; peers pass it along on `internal/call`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xcall: Option<crate::component::xcall::XcallFrom>,
+    /// A component app's call made by one of its actions (D12): the action's key. Set only
+    /// by the node's action runner; reaches `allow(action)` methods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// A component app's synchronous xcall: the calling app, which waits for the answer.
+    /// Set only by the node running the caller (`NodeXcall`); peers pass it along on
+    /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_from: Option<String>,
+    /// The system index the request's read-index round named on the node that
+    /// judged it (`Principal::sys_index`): every system write committed before
+    /// the request arrived is at or below it. The replica that runs the call
+    /// waits to apply it ([`Node::sys_fresh_from`]) instead of running a round
+    /// of its own. Set only by the API and the node's own runners; peers pass
+    /// it along on `internal/call`. `None`: the leader runs a round itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sys_index: Option<u64>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -237,9 +292,11 @@ impl CallRequest {
             caller,
             idempotency_key: None,
             consent: None,
-            input: None,
-            trigger: None,
             host: false,
+            xcall: None,
+            action: None,
+            sync_from: None,
+            sys_index: None,
         }
     }
 
@@ -250,14 +307,6 @@ impl CallRequest {
         Self {
             host: true,
             ..Self::new(app_id, method.to_owned(), args, caller)
-        }
-    }
-
-    fn input_bytes(&self) -> Vec<u8> {
-        match &self.input {
-            Some(b) => b.0.clone(),
-            None if self.args.is_null() => Vec::new(),
-            None => serde_json::to_vec(&self.args).unwrap_or_default(),
         }
     }
 }
@@ -353,12 +402,12 @@ pub struct Node {
     pub engine: Arc<Engine>,
     pub system: Arc<Group<SystemMachine>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
-    /// Runs the apps whose bundle is a v1 core module (wasmer).
-    pub executor: Executor,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them, spec section 5); compiled artifacts cached under
     /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
+    /// Prepares a release's compute components at install; no run ever goes through it.
+    compute_wasm: calimero_app_engine_wasmtime::WasmtimeEngine,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
@@ -367,6 +416,15 @@ pub struct Node {
     /// How many times this node ran the engine's `prepare` (feature `testing`).
     #[cfg(feature = "testing")]
     prepares: std::sync::atomic::AtomicU64,
+    /// The ciphertext bytes open file readers may still take, across all runs.
+    open_file_bytes: Arc<tokio::sync::Semaphore>,
+    /// The bytes of new files that may be on their way to replicas at once.
+    push_bytes: Arc<tokio::sync::Semaphore>,
+    /// The ciphertext of new files that runs hold until their entries are proposed.
+    pending_file_bytes: Arc<tokio::sync::Semaphore>,
+    /// Knobs and counters for tests (feature `testing`).
+    #[cfg(feature = "testing")]
+    probes: component::Probes,
     /// App time of component apps ([`Clock`]).
     clock: Clock,
     /// Per component app group: the term this node last led it in, and its
@@ -378,6 +436,15 @@ pub struct Node {
     /// What each peer's replicas last said its apps used today, for the fuel cap
     /// (`component::USAGE_REFRESH`).
     peer_usage: Mutex<component::PeerUsage>,
+    /// Outbox messages this node failed to deliver as a source's leader (D29): per
+    /// (source app, seq), the attempts and the app time of the next one.
+    xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
+    /// Actions this node is running as their app's leader, by (app, action key) (D17).
+    actions_running: Mutex<HashSet<(String, String)>>,
+    /// When an action that timed out may run again, app time (D22).
+    action_retry: Mutex<HashMap<(String, String), u64>>,
+    /// The action worker pool: at most `MAX_ACTION_WORKERS` runs at once.
+    action_slots: Arc<tokio::sync::Semaphore>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns and the sessions it
     /// issues. Made on the node's first start and kept in its data directory
@@ -398,8 +465,14 @@ pub struct Node {
     /// proved: the node registered at the address that attests that key, and
     /// the release that attestation named ([`Self::identify_peer`]).
     callers: Mutex<HashMap<[u8; 32], PeerIdentity>>,
-    /// One attestation of a caller at a time per node id.
-    identifying: tokio::sync::Mutex<()>,
+    /// One attestation of a caller at a time.
+    identifying: Arc<tokio::sync::Mutex<()>>,
+    /// Attestations of callers under way, by key and claimed node: each runs
+    /// in a task of its own, so a caller that hangs up does not abort it.
+    identifications: Mutex<HashMap<CallerClaim, Detached<Option<PeerIdentity>>>>,
+    /// Channels to peers being opened, by address: each in a task of its own
+    /// ([`Self::connected`]).
+    connecting: Mutex<HashMap<String, Detached<Result<(), String>>>>,
     /// The issuers of node-signed sessions this node has attested, by node id
     /// ([`Self::session_issuer`]), every peer's ahead of time
     /// ([`Self::warm_issuers`]).
@@ -407,6 +480,8 @@ pub struct Node {
     /// When a token's verification last attested each issuer
     /// ([`ISSUER_RETRY_SECS`]).
     issuer_tries: Mutex<HashMap<NodeId, u64>>,
+    /// Job nodes this node attested, with when ([`Node::attest_job`]).
+    job_peers: Mutex<HashMap<NodeId, (std::time::Instant, u64, JobPeer)>>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
@@ -417,22 +492,25 @@ pub struct Node {
     pub consent: crate::consent_page::ConsentRequests,
     /// Nodes being added to the system group now.
     joining: Mutex<std::collections::HashSet<NodeId>>,
+    /// Registered nodes that did not attest as cluster nodes (logged once each).
+    unattested: Mutex<HashSet<NodeId>>,
     /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
     moving: Mutex<HashSet<String>>,
     /// A promotion of learners to system voters is under way.
     promoting: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
-    /// Full-text search over the apps hosted here.
-    pub search: Search,
-    /// ABI facts per bundle hash.
-    facts: Mutex<HashMap<String, Arc<BundleFacts>>>,
-    /// Wakes the follow-up driver: an entry may have queued work.
-    pub kick: tokio::sync::Notify,
+    /// Full-text search over the apps hosted here (spec section 7).
+    pub component_search: crate::component::search::ComponentSearch,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
+    /// The rollback counter's checkpoints (`rollback`), when this node has one.
+    pub checkpoints: Option<Arc<crate::rollback::Checkpoints>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
     sys_reads: ReadRounds,
+    /// Read-index rounds this node began on the system group
+    /// (`calimero_system_read_rounds_total`).
+    pub sys_rounds: std::sync::atomic::AtomicU64,
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
@@ -454,6 +532,43 @@ struct ReadRounds {
     turn: tokio::sync::Mutex<()>,
 }
 
+/// Work that runs to the end in a task of its own, whoever still waits on it.
+type Detached<T> = futures_util::future::Shared<futures_util::future::BoxFuture<'static, T>>;
+
+/// A caller's proven transport key and the node it claims to be.
+type CallerClaim = ([u8; 32], NodeId);
+
+/// Most detached attestations of one kind under way at once (callers being
+/// identified, peer channels being opened); past it the request is refused
+/// and its caller tries again.
+const MAX_DETACHED: usize = 64;
+
+/// Start `work` in a task of its own, unless `map` holds unfinished work under
+/// `key`; either way, the work to wait on. Finished work is dropped from `map`.
+fn detach<K, T>(
+    map: &Mutex<HashMap<K, Detached<T>>>,
+    key: K,
+    work: impl FnOnce() -> futures_util::future::BoxFuture<'static, T>,
+) -> Option<Detached<T>>
+where
+    K: std::hash::Hash + Eq,
+    T: Clone + Send + Sync + 'static,
+{
+    use futures_util::FutureExt as _;
+    let mut map = map.lock().ok()?;
+    map.retain(|_, w| w.peek().is_none());
+    if let Some(w) = map.get(&key) {
+        return Some(w.clone());
+    }
+    if map.len() >= MAX_DETACHED {
+        return None;
+    }
+    let w = work().shared();
+    drop(tokio::spawn(w.clone()));
+    let _prev = map.insert(key, w.clone());
+    Some(w)
+}
+
 /// Raft RPCs to peers, over their sealed channels.
 struct PeerTransport {
     node: Mutex<Weak<Node>>,
@@ -462,20 +577,26 @@ struct PeerTransport {
 impl Transport for PeerTransport {
     fn send(
         &self,
-        _target: NodeId,
-        addr: String,
+        target: NodeId,
+        _addr: String,
         group: GroupId,
         request: RpcRequest,
     ) -> BoxFuture<Result<RpcResponse, String>> {
         let node = self.node.lock().ok().and_then(|n| n.upgrade());
         Box::pin(async move {
             let node = node.ok_or("node is shutting down")?;
+            // The id decides where it goes: the membership's address is only a hint.
+            let addr = node
+                .replica_addr(target)
+                .ok_or_else(|| format!("node {target} is not a node of this cluster"))?;
             if !node.may_send(&addr, group).await {
                 return Err(format!(
                     "{addr} runs a release the app's owner has not approved; it gets none of the app's data"
                 ));
             }
-            let body = json!({ "group": group, "rpc": request });
+            // The addressee, so a node that answers at `addr` but is not
+            // `target` refuses the message (`api::internal_raft`).
+            let body = json!({ "group": group, "target": target, "rpc": request });
             let resp = node
                 .peer_post(&addr, "internal/raft", &body)
                 .await
@@ -485,17 +606,35 @@ impl Transport for PeerTransport {
     }
 }
 
-/// What the wasmer path answers a component app that reaches it: its
-/// commands (blobs, follow-ups, xcalls) are the wasmer executor's; a component
-/// has no blobs until R8 and no xcalls until D25.
+/// What the node answers a component app's call that reaches its own commands
+/// path: a component's calls are `call_component`'s, its blobs its own host
+/// records (R8).
 pub const COMPONENT_REFUSES: &str =
-    "this app is a component: the wasmer executor's commands (blobs, xcalls, follow-ups) do not reach it";
+    "this app is a component: its calls are not the node's own commands";
 
 /// The error of a call a read-only member made that would have written.
 pub const READ_ONLY: &str = "read-only in this team: the call would write";
 
+/// How a node answers a peer's blob requests (feature `testing`).
+#[cfg(feature = "testing")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerBlobs {
+    Accept,
+    /// Answers `503` without storing.
+    Refuse,
+    /// Stores, then answers `503`: a peer that holds the bytes but is not counted.
+    StoreThenFail,
+}
+
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a system write may take, election and forwarding included, before
+/// it answers `503 UNAVAILABLE`. A system group that cannot commit (too few
+/// voters answering, or a membership change waiting on members that do not)
+/// otherwise left the write waiting until the proxy in front of merod cut the
+/// connection at 30 s, so the caller saw a dropped request and not the reason.
+pub const SYSTEM_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A command the system log refused at apply.
 /// The largest blob (an app's file, a package's `.mpk`) a node keeps: it
@@ -516,14 +655,56 @@ pub fn stalled(stall: &crate::system::Stall) -> ApiError {
     }))
 }
 
+/// The code of an install refused where deployments are granted and the
+/// installer holds no live deployer grant.
+pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
+
+/// An install refused for want of a deployer grant: `403 DEPLOY_NOT_GRANTED`.
+pub fn not_a_deployer() -> ApiError {
+    ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
+}
+
+pub(crate) fn blob_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "a blob is limited to {} MiB (what reaches the other nodes)",
+            MAX_BLOB_BYTES >> 20
+        ),
+    )
+}
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, "QUOTA_EXCEEDED", reason)
     } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
         ApiError::new(409, RELEASE_DEADLINE, reason)
+    } else if reason.starts_with(crate::system::SIGN_UP_PREFIX) {
+        ApiError::new(403, "SIGN_UP_REFUSED", reason)
+    } else if reason == crate::system::NOT_A_DEPLOYER {
+        not_a_deployer()
+    } else if let Some(code) = recovery_code(reason) {
+        ApiError::new(409, code, reason)
     } else {
         ApiError::bad_request("REJECTED", reason)
     }
+}
+
+/// The code of a recovery refusal that is a conflict with the organization's
+/// or the account's state, not a malformed request.
+fn recovery_code(reason: &str) -> Option<&'static str> {
+    use crate::system::{
+        ACCOUNT_RECOVERY_PENDING, NO_RECOVERY_KEY, RECOVERY_NOT_READY, RECOVERY_PENDING,
+    };
+    [
+        (NO_RECOVERY_KEY, "NO_RECOVERY_KEY"),
+        (RECOVERY_PENDING, "RECOVERY_PENDING"),
+        (ACCOUNT_RECOVERY_PENDING, "RECOVERY_PENDING"),
+        (RECOVERY_NOT_READY, "RECOVERY_NOT_READY"),
+    ]
+    .into_iter()
+    .find_map(|(r, code)| (r == reason).then_some(code))
 }
 
 fn status_of(e: &WriteError) -> ApiError {
@@ -553,6 +734,20 @@ impl Node {
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
         )?;
+        // Before any group starts: a store older than mero-kms has seen
+        // never serves (`rollback`).
+        let checkpoints = match &config.rollback {
+            Some(counter) => {
+                crate::rollback::start(
+                    &engine,
+                    config.node_id,
+                    Arc::clone(counter),
+                    config.accept_rollback,
+                )
+                .await?
+            }
+            None => None,
+        };
         let system = engine
             .start_group(SYSTEM_GROUP, SystemMachine::default())
             .await?;
@@ -569,29 +764,39 @@ impl Node {
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
         )?);
+        let compute_wasm = calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?;
         let clock = Clock::new(config.clock_offset_ms);
-        let secret = hmac::sign(
-            &hmac::Key::new(hmac::HMAC_SHA256, &cluster_key),
-            format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
-        );
         let node = Arc::new(Self {
-            cluster_secret: calimero_identity::b64url(secret.as_ref()),
+            cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
             key_releases: tokio::sync::Semaphore::new(crate::api::MAX_CONCURRENT_KEY_RELEASES),
             config,
             engine: Arc::clone(&engine),
             system,
             apps: RwLock::new(HashMap::new()),
-            executor: Executor::default(),
             wasm,
+            compute_wasm,
             prepared: Mutex::new(HashMap::new()),
             preparing: Mutex::new(HashMap::new()),
             #[cfg(feature = "testing")]
             prepares: std::sync::atomic::AtomicU64::new(0),
+            open_file_bytes: Arc::new(tokio::sync::Semaphore::new(component::MAX_OPEN_FILE_BYTES)),
+            push_bytes: Arc::new(tokio::sync::Semaphore::new(component::MAX_PUSH_BYTES)),
+            pending_file_bytes: Arc::new(tokio::sync::Semaphore::new(
+                component::MAX_PENDING_FILE_BYTES,
+            )),
+            #[cfg(feature = "testing")]
+            probes: component::Probes::default(),
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
             peer_usage: Mutex::default(),
+            xcall_retry: Mutex::new(HashMap::new()),
+            actions_running: Mutex::new(HashSet::new()),
+            action_retry: Mutex::new(HashMap::new()),
+            action_slots: Arc::new(tokio::sync::Semaphore::new(
+                crate::component::action::MAX_ACTION_WORKERS,
+            )),
             transport: sealed,
             receipt_key,
             peers: Mutex::new(HashMap::new()),
@@ -604,21 +809,25 @@ impl Node {
             frontends: crate::app_host::FrontendCache::default(),
             consent: crate::consent_page::ConsentRequests::default(),
             joining: Mutex::default(),
+            unattested: Mutex::default(),
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             callers: Mutex::new(HashMap::new()),
-            identifying: tokio::sync::Mutex::new(()),
+            identifying: Arc::default(),
+            identifications: Mutex::default(),
+            connecting: Mutex::default(),
             issuers: Mutex::new(HashMap::new()),
             issuer_tries: Mutex::new(HashMap::new()),
+            job_peers: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
+            sys_rounds: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
-            search: Search::default(),
-            facts: Mutex::new(HashMap::new()),
-            kick: tokio::sync::Notify::new(),
+            component_search: crate::component::search::ComponentSearch::default(),
             this: Mutex::new(Weak::new()),
+            checkpoints,
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
         *node.this.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
@@ -652,7 +861,38 @@ impl Node {
         &self.cluster_secret
     }
 
+    /// The address node `id` is reached at, if it is a replica node: the
+    /// directory's, else `--peers`'. A job node has none.
+    #[must_use]
+    pub fn replica_addr(&self, id: NodeId) -> Option<String> {
+        self.sys(|s| match s.nodes.get(&id) {
+            Some(n) if n.role == NodeRole::Job => None,
+            Some(n) => Some(n.addr.clone()),
+            None => self.config.peers.get(&id).cloned(),
+        })
+    }
+
+    /// The address the directory or `--peers` holds for the replica node at
+    /// `addr` (any spelling); a job node's address is refused even if `--peers` lists it.
+    fn replica_addr_of(&self, addr: &str) -> Option<String> {
+        let wanted = normalize_addr(addr);
+        self.sys(|s| {
+            if s.job_nodes().any(|n| normalize_addr(&n.addr) == wanted) {
+                return None;
+            }
+            s.replica_nodes()
+                .map(|n| &n.addr)
+                .chain(self.config.peers.values())
+                .find(|a| normalize_addr(a) == wanted)
+                .cloned()
+        })
+    }
+
     fn peer(&self, addr: &str) -> eyre::Result<Arc<calimero_sealed::client::SealedTransport>> {
+        let Some(addr) = self.replica_addr_of(addr) else {
+            eyre::bail!("{addr} is not a node of this cluster");
+        };
+        let addr = addr.as_str();
         let mut peers = self.peers.lock().map_err(|e| eyre::eyre!("{e}"))?;
         if let Some(p) = peers.get(addr) {
             return Ok(Arc::clone(p));
@@ -678,9 +918,40 @@ impl Node {
         Ok(t)
     }
 
-    /// POST JSON to a peer's internal route over its sealed channel.
-    pub async fn peer_post(&self, addr: &str, path: &str, body: &Value) -> eyre::Result<Value> {
+    /// The sealed channel to the peer at `addr`, opened first if it is not.
+    /// The opening (attesting the peer, then the handshake) runs in a task of
+    /// its own: attesting a TDX peer takes about a second, Intel's collateral
+    /// included, and openraft drops an RPC after one heartbeat (200 ms). Run
+    /// inside the RPC, every attempt was dropped halfway and the next began
+    /// again, so the channel never opened (eu-shared-2's system group kept no
+    /// leader). Now the attempt outlives the RPC and the next one finds the
+    /// channel open; one opening per peer runs at a time.
+    async fn connected(
+        &self,
+        addr: &str,
+    ) -> eyre::Result<Arc<calimero_sealed::client::SealedTransport>> {
+        use futures_util::FutureExt as _;
         let peer = self.peer(addr)?;
+        if peer.is_open() {
+            return Ok(peer);
+        }
+        let opening = detach(&self.connecting, addr.to_owned(), || {
+            let peer = Arc::clone(&peer);
+            async move { peer.connect().await.map_err(|e| format!("{e:#}")) }.boxed()
+        })
+        .ok_or_else(|| eyre::eyre!("too many peer channels are being opened"))?;
+        opening.await.map_err(|e| eyre::eyre!(e))?;
+        Ok(peer)
+    }
+
+    /// POST JSON to a peer's internal route over its sealed channel.
+    pub async fn peer_post(
+        &self,
+        addr: &str,
+        path: &str,
+        body: &(impl Serialize + ?Sized),
+    ) -> eyre::Result<Value> {
+        let peer = self.connected(addr).await?;
         let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
         let req = self
             .http
@@ -738,9 +1009,18 @@ impl Node {
     /// Commit a system command through the system group's leader.
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        // Up to ~8 s: long enough to ride out a system leader election.
-        for attempt in 0..50 {
-            match self.system.write(bytes.clone()).await {
+        // Long enough to ride out a system leader election, and never longer
+        // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
+        // count of tries, which a leaderless group used up in about 7.5 s
+        // (`a_system_write_waits_for_a_leader_until_its_deadline`).
+        let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+        for attempt in 0_u32.. {
+            let Ok(written) =
+                tokio::time::timeout_at(deadline, self.system.write(bytes.clone())).await
+            else {
+                return Err(self.system_stalled());
+            };
+            match written {
                 Ok((index, out)) => {
                     let _ = index;
                     return output(&out).map_err(|e| rejected(&e));
@@ -766,9 +1046,50 @@ impl Node {
                 Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
                 Err(e) => debug!(attempt, error = %e, "system write not yet possible"),
             }
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            if tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(150)))
+                .await
+                .is_err()
+            {
+                return Err(self.system_stalled());
+            }
         }
-        Err(ApiError::unavailable("the system group has no leader"))
+        Err(self.system_stalled())
+    }
+
+    /// The `503` of a system write that did not commit in
+    /// [`SYSTEM_WRITE_TIMEOUT`], naming the system group as this node sees it:
+    /// its leader, voters and learners, and on the leader the members whose
+    /// log is behind. The write may still commit later; nothing here undoes it.
+    fn system_stalled(&self) -> ApiError {
+        let status = self.system.status();
+        let ids = |v: &[NodeId]| {
+            v.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut why = format!(
+            "the system group did not commit this write in {} s (leader {}, voters [{}], learners [{}]",
+            SYSTEM_WRITE_TIMEOUT.as_secs(),
+            status.leader.map_or_else(|| "none".to_owned(), |l| l.to_string()),
+            ids(&status.voters),
+            ids(&status.learners),
+        );
+        if status.is_leader {
+            let metrics = self.system.raft().metrics().borrow().clone();
+            let last = metrics.last_log_index.unwrap_or(0);
+            let behind: Vec<NodeId> = metrics
+                .replication
+                .iter()
+                .flatten()
+                .filter(|(_, log)| log.map_or(0, |l| l.index) < last)
+                .map(|(peer, _)| *peer)
+                .collect();
+            why.push_str(&format!(", behind the leader: [{}]", ids(&behind)));
+        }
+        why.push_str("); it may still apply once the group can commit");
+        warn!(%why, "system write timed out");
+        ApiError::unavailable(&why)
     }
 
     /// The voters and learners of app group `group` as this node's replica
@@ -818,37 +1139,76 @@ impl Node {
     /// catch up, for a caller that must not answer from a stale one.
     /// Callers that wait at the same moment share one round (`ReadRounds`).
     pub async fn sys_fresh(&self) -> bool {
+        self.sys_fresh_index().await.1
+    }
+
+    /// [`Node::sys_fresh`], answering also the index the round named (`None`
+    /// when no leader answered), for a request to carry to the other checks it
+    /// makes ([`Node::sys_fresh_from`]), here or on the app's leader.
+    pub async fn sys_fresh_index(&self) -> (Option<u64>, bool) {
+        let index = self.sys_round().await;
+        let caught_up = match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => false,
+        };
+        (index, caught_up)
+    }
+
+    /// Fresh system state for a request whose read-index round already named
+    /// `index` (`Principal::sys_index`, `CallRequest::sys_index`): wait to
+    /// apply it here, with no round of its own. `None`: run a round
+    /// ([`Node::sys_fresh`]).
+    ///
+    /// Why that is as fresh as a round of its own: a round answers the system
+    /// leader's applied index after it confirmed it still leads, and a caller
+    /// takes only a round begun after it arrived (`ReadRounds`), so every
+    /// system write committed before the request arrived is at or below
+    /// `index`. Raft's log matching makes the entries up to `index` the same on
+    /// every replica, and a replica's applied index only grows, so a state at
+    /// or past `index`, on this node or any other, holds each of those writes:
+    /// the removal, revocation or demotion committed before the request is
+    /// seen by every check made for it. A write committed after the request
+    /// arrived is concurrent with it, and either order is linearizable. When
+    /// this replica cannot apply `index` in `Config::read_wait`, a round of its
+    /// own would name an index at least as high, which it could not apply
+    /// either; the read goes ahead best effort, as `sys_fresh` does.
+    pub async fn sys_fresh_from(&self, index: Option<u64>) -> bool {
+        match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => self.sys_fresh().await,
+        }
+    }
+
+    /// The index of a read-index round begun after this caller arrived,
+    /// shared with the callers waiting at the same moment (`ReadRounds`).
+    async fn sys_round(&self) -> Option<u64> {
         use std::sync::atomic::Ordering;
 
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
-        let index = {
-            let _turn = rounds.turn.lock().await;
-            let (round, index) = *rounds
-                .finished
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if round > arrived {
-                index
-            } else {
-                let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
-                let index = self.sys_read_index().await;
-                *rounds
-                    .finished
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
-                index
-            }
-        };
-        match index {
-            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
-            None => false,
+        let _turn = rounds.turn.lock().await;
+        let (round, index) = *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if round > arrived {
+            return index;
         }
+        let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
+        let index = self.sys_read_index().await;
+        *rounds
+            .finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+        index
     }
 
     /// One read-index round: the system leader's applied index, once it has
     /// confirmed it leads. `None` when no leader answers.
     async fn sys_read_index(&self) -> Option<u64> {
+        let _prev = self
+            .sys_rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.system.read_strong(|_, applied| applied).await {
             Ok(i) => Some(i),
             Err(WriteError::NotLeader {
@@ -898,6 +1258,9 @@ impl Node {
         if id == self.config.node_id {
             return Some(self.own_release());
         }
+        if self.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+            return self.job_attestation(id).await.ok().map(|p| p.release);
+        }
         let addr = self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))?;
         if self.release_at(&addr).is_none() {
             // Any sealed request attests it.
@@ -915,20 +1278,13 @@ impl Node {
     /// nonce, at the address the cluster has for `claimed`; cached by key (a
     /// key lives as long as the process holding it). `None` when the claim
     /// does not hold: no such node, removed, or another key there.
+    ///
+    /// The attestation runs in a task of its own ([`detach`]): it takes
+    /// longer than a Raft RPC may (about a second on TDX), and a caller that
+    /// gives up must not abort it, or no RPC from that peer is ever taken.
     pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
-        let cached = |node: &Self| {
-            node.callers
-                .lock()
-                .ok()?
-                .get(&key)
-                .filter(|p| p.node == claimed)
-                .cloned()
-        };
-        if let Some(p) = cached(self) {
-            return self.is_peer(p.node).then_some(p);
-        }
-        let _one = self.identifying.lock().await;
-        if let Some(p) = cached(self) {
+        use futures_util::FutureExt as _;
+        if let Some(p) = self.cached_caller(&key, claimed) {
             return self.is_peer(p.node).then_some(p);
         }
         if !self.is_peer(claimed) {
@@ -936,50 +1292,76 @@ impl Node {
         }
         let addr = self.addr_of(claimed)?;
         let url: Url = addr.parse().ok()?;
-        let release = Arc::new(Mutex::new(None));
-        let attestor = HttpAttestor {
-            seen_release: Arc::clone(&release),
-            policy: self.config.peer_policy(),
-        };
-        let attested =
-            calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
-                .await;
-        let attested = match attested {
-            Ok(k) => k,
-            Err(e) => {
-                warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
-                return None;
+        // What the task needs, and the node only weakly: a stopping node must
+        // not be kept alive (its store open) by an attestation under way.
+        let (http, policy, turn) = (
+            self.http.clone(),
+            self.config.peer_policy(),
+            Arc::clone(&self.identifying),
+        );
+        let node = self.this.lock().ok()?.clone();
+        let identifying = detach(&self.identifications, (key, claimed), || {
+            async move {
+                let _one = turn.lock().await;
+                if let Some(p) = node.upgrade()?.cached_caller(&key, claimed) {
+                    return Some(p);
+                }
+                let release = Arc::new(Mutex::new(None));
+                let attestor = HttpAttestor {
+                    seen_release: Arc::clone(&release),
+                    policy,
+                };
+                let attested =
+                    calimero_sealed::client::Attest::attest_transport_key(&attestor, &http, &url)
+                        .await;
+                let attested = match attested {
+                    Ok(k) => k,
+                    Err(e) => {
+                        warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
+                        return None;
+                    }
+                };
+                if attested != key {
+                    warn!(
+                        node = claimed,
+                        "a peer called with a key its node's address does not attest"
+                    );
+                    return None;
+                }
+                let identity = PeerIdentity {
+                    node: claimed,
+                    release: release.lock().ok()?.clone(),
+                };
+                if let Ok(mut callers) = node.upgrade()?.callers.lock() {
+                    // A restarted node has a new key: forget its old one.
+                    callers.retain(|_, p| p.node != claimed);
+                    let _prev = callers.insert(key, identity.clone());
+                }
+                Some(identity)
             }
-        };
-        if attested != key {
-            warn!(
-                node = claimed,
-                "a peer called with a key its node's address does not attest"
-            );
-            return None;
-        }
-        let identity = PeerIdentity {
-            node: claimed,
-            release: release.lock().ok()?.clone(),
-        };
-        if let Ok(mut callers) = self.callers.lock() {
-            // A restarted node has a new key: forget its old one.
-            callers.retain(|_, p| p.node != claimed);
-            let _prev = callers.insert(key, identity.clone());
-        }
-        Some(identity)
+            .boxed()
+        })?;
+        identifying.await.filter(|p| self.is_peer(p.node))
     }
 
-    /// Whether `id` is a node of this cluster: registered (or in `--peers`)
-    /// and not removed, or still a voter or learner of the system group (a
-    /// node being removed takes part until its membership change commits).
+    fn cached_caller(&self, key: &[u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
+        self.callers
+            .lock()
+            .ok()?
+            .get(key)
+            .filter(|p| p.node == claimed)
+            .cloned()
+    }
+
+    /// Whether `id` is a node of this cluster: registered as a replica node (or
+    /// in `--peers`, if not registered as a job node) and not removed, or still a
+    /// voter or learner of the system group (a node being removed takes part
+    /// until its membership change commits).
     #[must_use]
     pub fn is_peer(&self, id: NodeId) -> bool {
         id != self.config.node_id
-            && (self.sys(|s| {
-                !s.removed_nodes.contains(&id)
-                    && (s.nodes.contains_key(&id) || self.config.peers.contains_key(&id))
-            }) || self.system.member_addr(id).is_some())
+            && (self.sys(|s| !s.removed_nodes.contains(&id)) && self.replica_addr(id).is_some()
+                || self.system.member_addr(id).is_some())
     }
 
     /// Where node `id` is reached: its registered address, its `--peers`
@@ -1193,6 +1575,37 @@ impl Node {
         }
     }
 
+    /// A proof that the passkey session of `account` asked this node to bind
+    /// `nonce` for `audience`, valid for `ttl` seconds, signed with this
+    /// node's receipt key (`POST /auth/account-proof`).
+    #[must_use]
+    pub fn account_proof(
+        &self,
+        account: &str,
+        nonce: &str,
+        audience: &str,
+        ttl: u64,
+    ) -> calimero_client::attest::AccountProof {
+        use calimero_client::attest::{AccountProof, AccountStatement};
+        use ed25519_dalek::Signer;
+        let issued_at = crate::types::now_secs();
+        let statement = AccountStatement {
+            cluster: self.config.cluster.clone(),
+            node: self.config.node_id,
+            account: account.to_owned(),
+            nonce: nonce.to_owned(),
+            audience: audience.to_owned(),
+            issued_at,
+            expires_at: issued_at + ttl,
+        };
+        let signature = self.receipt_key.sign(&statement.message());
+        AccountProof {
+            statement,
+            key: hex::encode(self.receipt_public()),
+            signature: hex::encode(signature.to_bytes()),
+        }
+    }
+
     /// The mero-tee release this node runs, as its attestation names it.
     #[must_use]
     pub fn own_release(&self) -> String {
@@ -1264,10 +1677,8 @@ impl Node {
         if let Some(g) = self.app_group(app.group) {
             return Ok(g);
         }
-        let g = self
-            .engine
-            .start_group(app.group, AppMachine::new(app.app_id.clone()))
-            .await?;
+        let machine = AppMachine::new(app.app_id.clone());
+        let g = self.engine.start_group(app.group, machine).await?;
         let _prev = self
             .apps
             .write()
@@ -1320,8 +1731,7 @@ impl Node {
             .copied()
             .collect();
         let newcomers: Vec<(NodeId, String)> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| !members.contains(&n.id))
                 .map(|n| (n.id, n.addr.clone()))
                 .collect()
@@ -1337,6 +1747,12 @@ impl Node {
             }
             let node = Arc::clone(&me);
             drop(tokio::spawn(async move {
+                if !node.attests_as_replica(id, &addr).await {
+                    if let Ok(mut j) = node.joining.lock() {
+                        let _was = j.remove(&id);
+                    }
+                    return;
+                }
                 match node.system.add_learner(id, addr).await {
                     Ok(()) => info!(node = id, "a registered node joined the system group"),
                     Err(e) => warn!(node = id, error = %e, "a registered node could not join yet"),
@@ -1346,6 +1762,44 @@ impl Node {
                 }
             }));
         }
+    }
+
+    /// Whether the node at `addr` attests as a cluster node; one that does not
+    /// (a job node registered as a replica) is never admitted, logged once.
+    async fn attests_as_replica(&self, id: NodeId, addr: &str) -> bool {
+        let attested = async {
+            let url: Url = addr.parse()?;
+            let attestor = HttpAttestor {
+                policy: self.config.peer_policy(),
+                seen_release: Arc::default(),
+            };
+            calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
+                .await
+                .map(|_key| ())
+        };
+        let Err(e) = attested.await else {
+            if let Ok(mut u) = self.unattested.lock() {
+                let _was = u.remove(&id);
+            }
+            return true;
+        };
+        let first = self
+            .unattested
+            .lock()
+            .map(|mut u| u.insert(id))
+            .unwrap_or(false);
+        if first {
+            let unreachable = e
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(|r| r.is_connect() || r.is_timeout());
+            let why = if unreachable {
+                "a registered node is unreachable: not admitted yet"
+            } else {
+                "a registered node does not attest as a cluster node: not admitted"
+            };
+            warn!(node = id, error = %format!("{e:#}"), "{why}");
+        }
+        false
     }
 
     /// On the system leader: while the system group has fewer than
@@ -1377,7 +1831,7 @@ impl Node {
             let candidates: Vec<(NodeId, String)> = status
                 .learners
                 .iter()
-                .filter(|l| s.nodes.contains_key(l) && !s.removed_nodes.contains(l))
+                .filter(|l| s.replica_node(l).is_some() && !s.removed_nodes.contains(l))
                 .filter(|l| {
                     matched
                         .get(l)
@@ -1420,31 +1874,39 @@ impl Node {
     /// Bring hosted groups in line with the system state.
     pub async fn reconcile(&self) {
         // The cluster's first leader fixes its governance and registers the
-        // configured peers.
+        // configured peers, with genesis. Every later node joins only through
+        // the operator's signed `/ops/nodes` (`RegisterNode` carries the
+        // operator's signature, checked where it applies).
         if self.system.status().is_leader {
             if self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
-                let _r = self
-                    .sys_write(&SystemCmd::Genesis {
-                        governance: self.config.governance.clone(),
-                        release: Some(self.own_release()),
-                        operator_key: self.operator_key(),
-                    })
-                    .await;
-            }
-            let missing: Vec<NodeRecord> = self.sys(|s| {
-                self.config
+                let nodes: Vec<NodeRecord> = self
+                    .config
                     .peers
                     .iter()
-                    .filter(|(id, _)| !s.nodes.contains_key(id) && !s.removed_nodes.contains(id))
                     .map(|(id, addr)| NodeRecord {
                         id: *id,
                         addr: addr.clone(),
                         zone: String::new(),
+                        role: NodeRole::Replica,
                     })
-                    .collect()
-            });
-            for node in missing {
-                let _r = self.sys_write(&SystemCmd::RegisterNode { node }).await;
+                    .collect();
+                let _r = self
+                    .sys_write(&SystemCmd::Genesis {
+                        session_proofs: true,
+                        governance: self.config.governance.clone(),
+                        release: Some(self.own_release()),
+                        operator_key: self.operator_key(),
+                        nodes,
+                    })
+                    .await;
+            }
+            // A cluster begun before session proofs requires them from here
+            // on; what it logged before applies as it did (`RequireSessionProofs`).
+            if self.sys(|s| {
+                s.session_proofs_from.is_none()
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+            }) {
+                let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
             self.admit_registered_nodes();
             self.promote_learners();
@@ -1464,22 +1926,20 @@ impl Node {
                     continue;
                 }
             };
-            // A wasmer app is initialized once it has a bundle; a component app may
-            // be given one by an upgrade before its init applied (its init timed
-            // out), and still needs its init then, on that bundle.
-            let needs_init = g.read_local(|m, _| {
-                !m.state.initialized
-                    && (m.state.bundle.is_none()
-                        || (m.state.executor() == Some(Kind::Component)
-                            && m.state.init_error.is_none()))
-            });
+            // An SDK 0.12 app runs nothing here, its init included. A component app
+            // may be given a bundle by an upgrade before its init applied (its init
+            // timed out), and still needs its init then, on that bundle.
+            let needs_init = app.executor == Kind::Component
+                && g.read_local(|m, _| {
+                    !m.state.initialized
+                        && (m.state.bundle.is_none()
+                            || (m.state.executor() == Some(Kind::Component)
+                                && m.state.init_error.is_none()))
+                });
             if needs_init && g.status().is_leader {
-                if let Err(e) = self.init_app(&g, &app).await {
+                if let Err(e) = self.init_component(&g, &app).await {
                     debug!(app = %app.app_id, error = %e.message, "init not yet possible");
                 }
-            }
-            if g.status().is_leader {
-                self.drive(&g, &app).await;
             }
         }
         // Stop groups this node no longer replicates.
@@ -1501,9 +1961,14 @@ impl Node {
                         .find(|a| a.group == group)
                         .map(|a| a.app_id.clone())
                 }) {
-                    self.search.drop_app(&app);
+                    self.component_search.drop_app(&app);
                 }
-                let _g = self.apps.write().ok().and_then(|mut a| a.remove(&group));
+                let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
+                if let Some(g) =
+                    stopped.filter(|_| self.sys(|s| s.apps.values().all(|a| a.group != group)))
+                {
+                    self.drop_deleted_files(&g);
+                }
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
             }
@@ -1518,8 +1983,7 @@ impl Node {
             .put_blob(hash, wasm)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -1562,8 +2026,7 @@ impl Node {
             return self.release_wasm(hash, &release).await;
         }
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -1598,7 +2061,7 @@ impl Node {
         app_id: &str,
         bundle: &str,
         sent: Arc<std::sync::atomic::AtomicU64>,
-    ) -> Option<Arc<dyn calimero_runtime::logic::OutboundHost>> {
+    ) -> Option<Arc<dyn calimero_outbound::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
         let release = self.release_of(bundle)?;
         let (identity, approval) = self.sys(|s| {
@@ -1627,114 +2090,9 @@ impl Node {
         )
     }
 
-    /// What a run of `app_id` by `caller` is handed besides its call.
-    fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
-        let opener = caller.account().map(|a| {
-            Arc::new(calimero_primitives::identity::PrivateKey::from(
-                crate::backup::member_key(&self.cluster_key, app_id, a),
-            ))
-        });
-        RunEnv {
-            org: self.sys(|s| crate::app::caller_org(s, app_id, caller)),
-            blobs: Some(Arc::new(AppBlobs {
-                node: self.this.lock().map(|w| w.clone()).unwrap_or_default(),
-            })),
-            sealing: calimero_runtime::logic::SealingContext {
-                opener,
-                namespace_sealing_key: Some(self.tee_sealing_key(app_id)),
-                ..Default::default()
-            },
-            ..RunEnv::default()
-        }
-    }
-
-    /// The sealing keys of a run the node fires as the app's TEE: it opens
-    /// with the app's TEE key, seals to it, and seals a member's share to the
-    /// key standing for that member (every account that may reach the app).
-    fn tee_sealing(&self, app_id: &str) -> calimero_runtime::logic::SealingContext {
-        use calimero_primitives::identity::PrivateKey;
-        let tee = PrivateKey::from(crate::backup::tee_key(&self.cluster_key, app_id));
-        let accounts: Vec<String> = self.sys(|s| {
-            let Some(app) = s.apps.get(app_id) else {
-                return Vec::new();
-            };
-            let mut out: Vec<String> = vec![app.owner.clone()];
-            match &app.access {
-                crate::types::Access::Accounts { accounts } => out.extend(accounts.iter().cloned()),
-                crate::types::Access::Org => {
-                    if let Some(org) = app.org.as_ref().and_then(|o| s.orgs.get(o)) {
-                        out.extend(org.members.keys().cloned());
-                    }
-                }
-                _ => {}
-            }
-            out.sort();
-            out.dedup();
-            out
-        });
-        // A member's one "device" is their account, which is what their runs
-        // see as `env::device_id()`; sealing to it seals to their member key.
-        let mut account_devices = BTreeMap::new();
-        let mut stand_ins = BTreeMap::new();
-        for a in &accounts {
-            let key = PrivateKey::from(crate::backup::member_key(&self.cluster_key, app_id, a));
-            let id = Caller::Account { account: a.clone() }.account_bytes();
-            let _prev = account_devices.insert(id, vec![id]);
-            let _prev = stand_ins.insert(id, *AsRef::<[u8; 32]>::as_ref(&key.public_key()));
-        }
-        calimero_runtime::logic::SealingContext {
-            tee_authority_keys: vec![*AsRef::<[u8; 32]>::as_ref(&tee.public_key())],
-            opener: Some(Arc::new(tee)),
-            vault_keys: Vec::new(),
-            account_devices,
-            stand_ins,
-            namespace_sealing_key: Some(self.tee_sealing_key(app_id)),
-        }
-    }
-
-    /// The app's TEE key, public half, as `env::tee_sealing_key` reads it:
-    /// what a value only the app's TEE may read is sealed to (the
-    /// cluster is every app's TEE).
-    fn tee_sealing_key(&self, app_id: &str) -> calimero_runtime::logic::SealingKeyResolver {
-        let tee = calimero_primitives::identity::PrivateKey::from(crate::backup::tee_key(
-            &self.cluster_key,
-            app_id,
-        ));
-        let public = *AsRef::<[u8; 32]>::as_ref(&tee.public_key());
-        calimero_runtime::logic::SealingKeyResolver(Arc::new(move || Some(public)))
-    }
-
-    /// What a bundle's ABI declares that the node acts on.
-    pub async fn facts(&self, bundle: &str) -> Arc<BundleFacts> {
-        if let Some(f) = self.facts.lock().ok().and_then(|f| f.get(bundle).cloned()) {
-            return f;
-        }
-        let facts = Arc::new(
-            self.bundle_wasm(bundle)
-                .await
-                .map(|w| BundleFacts::of(&w))
-                .unwrap_or_default(),
-        );
-        if let Ok(mut f) = self.facts.lock() {
-            let _prev = f.insert(bundle.to_owned(), Arc::clone(&facts));
-        }
-        facts
-    }
-
-    /// Store a blob here and on the other nodes; `Ok` once a majority holds it.
-    /// Its id is `hex(SHA-256(bytes))`, the key the store files it under.
-    /// `app` names the app it is a blob of (`None`: code, a package release):
-    /// an app's blob goes only to nodes whose release may hold its data.
     pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
-            return Err(ApiError::new(
-                413,
-                "TOO_LARGE",
-                &format!(
-                    "a blob is limited to {} MiB (what reaches the other nodes)",
-                    MAX_BLOB_BYTES >> 20
-                ),
-            ));
+            return Err(blob_too_large());
         }
         let id = hex::encode(calimero_identity::sha256(bytes));
         self.engine
@@ -1749,13 +2107,7 @@ impl Node {
     /// [`Self::may_send`] judges a Raft entry); `Ok` once a majority of those
     /// holds it.
     async fn spread_blob(&self, id: &str, bytes: &[u8], app: Option<&str>) -> Result<(), ApiError> {
-        let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
-                .filter(|n| n.id != self.config.node_id)
-                .map(|n| n.addr.clone())
-                .collect()
-        });
+        let peers = self.other_nodes();
         let group = app.and_then(|a| self.sys(|s| s.apps.get(a).map(|r| r.group)));
         let mut eligible = Vec::with_capacity(peers.len());
         for addr in peers {
@@ -1779,29 +2131,94 @@ impl Node {
         Ok(())
     }
 
+    /// The address of every node but this one.
+    fn other_nodes(&self) -> Vec<String> {
+        self.sys(|s| {
+            s.replica_nodes()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        })
+    }
+
+    /// The address of every replica of `app` but this node.
+    pub(crate) fn other_replicas(&self, app: &AppRecord) -> Vec<String> {
+        self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|r| **r != self.config.node_id)
+                .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
+                .collect()
+        })
+    }
+
+    /// Removes this node's bytes of the sealed files of an app that was deleted. Files are per
+    /// app and never shared; plain blobs are content-addressed and may be another app's.
+    fn drop_deleted_files(&self, g: &Group<AppMachine>) {
+        let files: Vec<String> = g.read_local(|m, _| {
+            (m.state.component.blobs.records.iter())
+                .filter(|(_, r)| r.file.is_some())
+                .map(|(id, _)| hex::encode(id))
+                .collect()
+        });
+        for id in files.iter().filter(|id| !self.is_code_blob(id)) {
+            if let Err(e) = self.engine.delete_blob(id) {
+                warn!(file = %id, error = %e, "file bytes not deleted");
+            }
+        }
+    }
+
+    /// Whether `hash` is code (a bundle, a package release): any node may fetch it, and it is
+    /// never deleted as a blob.
+    pub(crate) fn is_code_blob(&self, hash: &str) -> bool {
+        self.sys(|s| {
+            s.bundles.contains_key(hash)
+                || s.packages
+                    .values()
+                    .any(|p| p.versions.values().any(|v| v.mpk == hash))
+        })
+    }
+
     /// Hand `to` (nodes about to become replicas of `app`) the bytes the app
     /// needs that live outside its log: its bundle and every blob its state
     /// marks. They would otherwise be fetched from a peer on first use, and a
     /// cluster grown from one node holds them only on that node: once it is
-    /// gone, nobody could run the app. Returns how many it handed over.
+    /// gone, nobody could run the app. `held` names what `to` already hold; answers
+    /// everything they hold now.
     pub async fn hand_over_bytes(
         &self,
         app: &AppRecord,
         g: &Group<AppMachine>,
         to: &[(NodeId, String)],
-    ) -> Result<usize, ApiError> {
+        held: &HashSet<String>,
+    ) -> Result<HashSet<String>, ApiError> {
+        let mut now = held.clone();
         if to.is_empty() {
-            return Ok(0);
+            return Ok(now);
         }
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .unwrap_or_else(|| app.bundle.clone());
-        let wasm = self.bundle_wasm(&bundle).await?;
-        self.hand_to(&bundle, wasm, to).await?;
+        if now.insert(bundle.clone()) {
+            let wasm = self.bundle_wasm(&bundle).await?;
+            self.hand_to(&bundle, wasm, to).await?;
+        }
         // One blob in memory at a time: an app may hold many large ones.
-        let blobs = g.read_local(|m, _| m.storage_stats().blobs);
-        for (id, _size) in &blobs {
-            let id = hex::encode(id);
+        let ids: Vec<String> = g.read_local(|m, _| {
+            let mut ids: Vec<String> = (m.storage_stats().blobs.iter())
+                .map(|(id, _)| hex::encode(id))
+                .collect();
+            ids.extend(
+                (m.state.component.blobs.records.iter())
+                    .filter(|(_, r)| r.file.is_some())
+                    .map(|(id, _)| hex::encode(id)),
+            );
+            ids
+        });
+        for id in ids {
+            if !now.insert(id.clone()) {
+                continue;
+            }
             let bytes = match self
                 .engine
                 .get_blob(&id)
@@ -1812,7 +2229,7 @@ impl Node {
             };
             self.hand_to(&id, bytes, to).await?;
         }
-        Ok(1 + blobs.len())
+        Ok(now)
     }
 
     /// Store `bytes` (named by their hash) on each of `to`.
@@ -1835,16 +2252,18 @@ impl Node {
 
     /// A blob's bytes from a peer (this node missed it), kept here after.
     pub async fn fetch_blob(&self, id: &str) -> Result<Vec<u8>, ApiError> {
-        let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
-                .filter(|n| n.id != self.config.node_id)
-                .map(|n| n.addr.clone())
-                .collect()
-        });
+        self.fetch_blob_from(id, &self.other_nodes()).await
+    }
+
+    /// [`Self::fetch_blob`] asking only `peers`.
+    pub(crate) async fn fetch_blob_from(
+        &self,
+        id: &str,
+        peers: &[String],
+    ) -> Result<Vec<u8>, ApiError> {
         for addr in peers {
             let Ok(v) = self
-                .peer_post(&addr, "internal/blob/get", &json!({ "hash": id }))
+                .peer_post(addr, "internal/blob/get", &json!({ "hash": id }))
                 .await
             else {
                 continue;
@@ -1868,12 +2287,34 @@ impl Node {
         &self,
         app: &AppRecord,
     ) -> Result<crate::app::StorageStats, ApiError> {
+        self.stats_from(app, false).await
+    }
+
+    /// [`Self::storage_stats`] as `app`'s leader answers it (a linearizable
+    /// read), so a caller sees what it wrote through any node.
+    pub async fn storage_stats_strong(
+        &self,
+        app: &AppRecord,
+    ) -> Result<crate::app::StorageStats, ApiError> {
+        self.stats_from(app, true).await
+    }
+
+    async fn stats_from(
+        &self,
+        app: &AppRecord,
+        strong: bool,
+    ) -> Result<crate::app::StorageStats, ApiError> {
         if let Some(g) = self.hosted(&app.app_id) {
-            return Ok(g.read_local(|m, _| m.storage_stats()));
+            if !strong {
+                return Ok(g.read_local(|m, _| m.storage_stats()));
+            }
+            if let Ok(stats) = g.read_strong(|m, _| m.storage_stats()).await {
+                return Ok(stats);
+            }
         }
-        let body = json!({ "app": app.app_id });
+        let body = json!({ "app": app.app_id, "strong": strong });
         for id in &app.replicas {
-            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
                 continue;
             };
             if let Ok(v) = self.peer_forward(&addr, "internal/storage", &body).await {
@@ -1885,20 +2326,35 @@ impl Node {
         Err(ApiError::unavailable("no replica answered"))
     }
 
+    /// When `app` last committed a write (Unix milliseconds,
+    /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
+    /// this node's own if it hosts the app, else the first replica that
+    /// answers `internal/last-write`. `None` before the app's first write, and
+    /// when no replica answered.
+    pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
+        if let Some(g) = self.hosted(&app.app_id) {
+            return g.read_local(|m, _| m.last_write_ms());
+        }
+        let body = json!({ "app": app.app_id });
+        for id in &app.replicas {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
+                continue;
+            };
+            if let Ok(v) = self.peer_forward(&addr, "internal/last-write", &body).await {
+                return v["lastWriteMs"].as_u64();
+            }
+        }
+        None
+    }
+
     /// After an app forgot blob `id`: delete its bytes on every node, unless
     /// another app still marks it or it is a bundle or a package release.
     pub async fn collect_blob(&self, id: &[u8; 32]) {
         let hex_id = hex::encode(id);
-        let (code, apps) = self.sys(|s| {
-            let code = s.bundles.contains_key(&hex_id)
-                || s.packages
-                    .values()
-                    .any(|p| p.versions.values().any(|v| v.mpk == hex_id));
-            (code, s.apps.values().cloned().collect::<Vec<_>>())
-        });
-        if code {
+        if self.is_code_blob(&hex_id) {
             return;
         }
+        let apps: Vec<AppRecord> = self.sys(|s| s.apps.values().cloned().collect());
         for app in &apps {
             // Read on each app's leader: a lagging replica could miss a mark
             // committed a moment ago (the same content uploaded to another
@@ -1911,8 +2367,7 @@ impl Node {
             warn!(blob = %hex_id, error = %e, "blob not deleted");
         }
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -1931,8 +2386,25 @@ impl Node {
     /// [`Self::blob_held`] as `app`'s leader answers it (a linearizable
     /// read); `None` when no replica could answer as leader.
     pub async fn blob_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        self.blob_asked_strong(app, id, false).await
+    }
+
+    /// Whether `id` is one of `app`'s sealed files, as its leader answers it.
+    pub async fn file_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        self.blob_asked_strong(app, id, true).await
+    }
+
+    /// The leader's answer to whether `id` is held (`file`: held as a sealed file).
+    async fn blob_asked_strong(&self, app: &AppRecord, id: &[u8; 32], file: bool) -> Option<bool> {
+        let asks = |m: &AppMachine| {
+            if file {
+                m.is_sealed_file(id)
+            } else {
+                m.holds_blob(id)
+            }
+        };
         if let Some(g) = self.replica_group(app) {
-            if let Ok(held) = g.read_strong(|m, _| m.holds_blob(id)).await {
+            if let Ok(held) = g.read_strong(|m, _| asks(m)).await {
                 return Some(held);
             }
         }
@@ -1940,10 +2412,11 @@ impl Node {
             app.replicas
                 .iter()
                 .filter(|r| **r != self.config.node_id)
-                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
                 .collect()
         });
-        let body = json!({ "app": app.app_id, "id": hex::encode(id), "strong": true });
+        let body =
+            json!({ "app": app.app_id, "id": hex::encode(id), "strong": true, "file": file });
         for addr in others {
             if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
                 if let Some(held) = v["held"].as_bool() {
@@ -1964,7 +2437,7 @@ impl Node {
             app.replicas
                 .iter()
                 .filter(|r| **r != self.config.node_id)
-                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .filter_map(|r| s.replica_node(r).map(|n| n.addr.clone()))
                 .collect()
         });
         let body = json!({ "app": app.app_id, "id": hex::encode(id) });
@@ -1978,84 +2451,31 @@ impl Node {
         Ok(false)
     }
 
-    async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
-        let wasm = self.bundle_wasm(bundle).await?;
-        self.usage.learn(bundle, &wasm);
-        self.executor
-            .module(bundle, &wasm)
-            .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))
-    }
-
-    async fn init_app(&self, g: &Group<AppMachine>, app: &AppRecord) -> Result<Applied, ApiError> {
-        if app.executor == Kind::Component {
-            return self.init_component(g, app).await;
-        }
-        let module = self.module_for(&app.bundle).await?;
-        let owner = Caller::Account {
-            account: app.owner.clone(),
-        };
-        let bundle = app.bundle.clone();
-        let app_id = app.app_id.clone();
-        let init_args = app.init_args.clone();
-        let env = self.env(&app.app_id, &owner);
-        let meter = self.meter(&app.app_id, &app.bundle);
-        let p = g
-            .propose(|m, _| {
-                if m.state.initialized || m.state.bundle.is_some() {
-                    return Proposal::Reply(Vec::new());
-                }
-                let outcome = self.metered(&meter, || {
-                    Executor::run(
-                        &module,
-                        &app_id,
-                        &owner,
-                        "init",
-                        &init_args,
-                        &m.state.kv,
-                        &env,
-                    )
-                });
-                self.keep_blobs(&outcome);
-                let cmd = AppCmd::Init {
-                    bundle: bundle.clone(),
-                    base_index: m.state.last_index,
-                    outcome,
-                };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
-            })
-            .await
-            .map_err(|e| status_of(&e))?;
-        if !p.appended {
-            return Err(ApiError::conflict("already initialized"));
-        }
-        self.kick.notify_one();
-        let applied: Applied =
-            serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
-        self.count_conflict(&applied);
-        if !applied.conflict {
-            self.usage.called(&meter, RunKind::Mutation);
-        }
-        Ok(applied)
-    }
-
     /// Where a run of `app_id` on `bundle` is billed ([`crate::usage`]). Read
     /// before the run's proposal, outside the app group's locks.
     pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
         Meter {
             app: app_id.to_owned(),
-            payer: self
-                .sys(|s| s.apps.get(app_id).map(crate::usage::payer))
+            billed: self
+                .sys(|s| s.apps.get(app_id).map(|a| crate::usage::Billed::of(s, a)))
                 .unwrap_or_default(),
             bundle: bundle.to_owned(),
         }
     }
 
-    /// Run `f`, one WASM run, off the async workers ([`off_workers`]), and add
-    /// the CPU and memory it took to `meter`'s app: on the thread that runs
-    /// it, on this node, whatever becomes of its result.
-    pub(crate) fn metered<R>(&self, meter: &Meter, f: impl FnOnce() -> R) -> R {
+    /// Run `f`, one WASM run of `kind`, off the async workers ([`off_workers`]),
+    /// add the CPU and memory it took to `meter`'s app and its wall time to
+    /// `calimero_wasm_run_duration_seconds`: on the thread that runs it, on this
+    /// node, whatever becomes of its result.
+    pub(crate) fn metered<R>(
+        &self,
+        meter: &Meter,
+        kind: calimero_app_host::InvocationKind,
+        f: impl FnOnce() -> R,
+    ) -> R {
         let (out, run) = off_workers(|| crate::usage::measure(f));
         self.usage.ran(meter, run);
+        crate::metrics::wasm_run(kind, run.wall);
         out
     }
 
@@ -2063,19 +2483,19 @@ impl Node {
     /// (`calimero_app_state_bytes`, `calimero_app_blob_bytes`). Each app's scan
     /// holds its group's read lock, as `GET /apps/{app}/storage` does.
     pub fn sample_usage(&self) {
-        let hosted: Vec<(String, String)> = self.sys(|s| {
+        let hosted: Vec<(String, crate::usage::Billed)> = self.sys(|s| {
             s.apps
                 .values()
-                .map(|a| (a.app_id.clone(), crate::usage::payer(a)))
+                .map(|a| (a.app_id.clone(), crate::usage::Billed::of(s, a)))
                 .collect()
         });
-        for (app, payer) in hosted {
+        for (app, billed) in hosted {
             let Some(g) = self.hosted(&app) else {
                 continue;
             };
             let stats = g.read_local(|m, _| m.storage_stats());
             self.usage
-                .stored(&app, &payer, stats.bytes, stats.blob_bytes);
+                .stored(&app, &billed, stats.bytes, stats.blob_bytes);
         }
     }
 
@@ -2088,16 +2508,6 @@ impl Node {
         }
     }
 
-    /// Keep the blobs a run wrote here, before its entry is proposed; the
-    /// leader hands them to the other nodes once the entry commits.
-    fn keep_blobs(&self, outcome: &Outcome) {
-        for (id, bytes) in &outcome.new_blobs {
-            if let Err(e) = self.engine.put_blob(id, bytes) {
-                warn!(blob = %id, error = %e, "blob not stored");
-            }
-        }
-    }
-
     /// Apply a presence update here and pass it to every other node; it
     /// does not wait for them (presence is best effort, and refreshed).
     pub fn publish_presence(self: &Arc<Self>, u: crate::presence::Update) {
@@ -2105,8 +2515,7 @@ impl Node {
             return;
         }
         let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
+            s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
                 .map(|n| n.addr.clone())
                 .collect()
@@ -2133,246 +2542,41 @@ impl Node {
         }));
     }
 
-    /// After a run's entry committed: its blobs to the other nodes.
-    async fn spread_blobs(&self, app: &str, blobs: Vec<(String, Vec<u8>)>) {
-        for (id, bytes) in blobs {
-            if let Err(e) = self.spread_blob(&id, &bytes, Some(app)).await {
-                warn!(blob = %id, error = %e.message, "blob held by too few nodes");
-            }
-        }
-    }
-
     /// Run a call on this node, which must be the app group's leader.
     async fn call_local(
         &self,
         g: &Group<AppMachine>,
         req: &CallRequest,
-    ) -> Result<Applied, LocalError> {
+    ) -> Result<Applied, WriteError> {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
-        // change committed before the call, wherever it was committed.
-        if req.trigger.is_none() {
-            self.sys_fresh().await;
-        }
+        // change committed before the call, wherever it was committed: the
+        // round the API made for the request covers it (`sys_fresh_from`).
+        self.sys_fresh_from(req.sys_index).await;
         if req.host && req.method == "__upgrade" {
-            return Ok(self.upgrade_local(g, req).await?);
+            return self.upgrade_local(g, req).await;
         }
-        // Everything below runs a wasmer app's code or writes its keyspace; a
-        // component's calls are `call_component`'s, and its blobs wait for R8.
-        if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
-            return Ok(Applied {
-                index: g.applied(),
-                status: Status::AppError,
-                result: Value::Null,
-                error: Value::String(COMPONENT_REFUSES.into()),
-                events: Vec::new(),
-                conflict: false,
-            });
+        // What reaches here is one of the node's own commands: a component's calls
+        // are `call_component`'s, and an SDK 0.12 app runs nothing.
+        let executor = g.read_local(|m, _| m.state.executor());
+        if executor == Some(Kind::Component)
+            && req.host
+            && matches!(req.method.as_str(), "__blob" | "__blob_forget")
+        {
+            return self.component_blob_cmd(g, req).await;
         }
-        let bundle = g.read_local(|m, _| m.state.bundle.clone());
-        let module = match bundle.as_deref() {
-            Some(b) => self.module_for(b).await.ok(),
-            None => None,
+        let why = match executor {
+            Some(Kind::Component) => COMPONENT_REFUSES,
+            _ => crate::app::WASMER_GONE,
         };
-        let now = now_ms();
-        if req.host && req.method == "__blob_forget" {
-            let cmd = AppCmd::BlobForget {
-                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
-            };
-            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
-            let (_index, out) = g.write(bytes).await?;
-            return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()).into());
-        }
-        if req.host && req.method == "__blob" {
-            let cmd = AppCmd::Blob {
-                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
-                size: req.args["size"].as_u64().unwrap_or_default(),
-            };
-            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
-            let (_index, out) = g.write(bytes).await?;
-            return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()).into());
-        }
-        let mut env = self.env(&req.app_id, &req.caller);
-        // Who may reach this method, when the node runs it itself.
-        let facts = match bundle.as_deref() {
-            Some(b) => self.facts(b).await,
-            None => Arc::new(BundleFacts::default()),
-        };
-        let refused: Option<String> = match &req.trigger {
-            // The API refuses these first; an xcall or follow-up naming one ends here.
-            _ if reserved_method(&req.method) => Some(format!("{} is not a method", req.method)),
-            None => None,
-            Some(Trigger::Timer { .. }) => {
-                env.tee_trigger = true;
-                env.sealing = self.tee_sealing(&req.app_id);
-                None
-            }
-            Some(Trigger::FollowUp { seq }) => {
-                let tee = g.read_local(|m, _| {
-                    matches!(
-                        m.state.pending.get(seq).map(|p| &p.followup),
-                        Some(FollowUp::Handler { tee: true, .. })
-                    )
-                });
-                env.tee_trigger = tee;
-                if tee {
-                    env.sealing = self.tee_sealing(&req.app_id);
-                }
-                (!tee && !facts.handlers.iter().any(|h| h == &req.method))
-                    .then(|| format!("{} is not an #[app::handler]", req.method))
-            }
-            Some(Trigger::XCall { origin, .. }) => {
-                env.xcall_origin = Some(calimero_identity::sha256(origin.as_bytes()));
-                self.xcall_refusal(&facts, origin, &req.app_id, &req.method)
-            }
-        };
-        let input = req.input_bytes();
-        // A read-only member's call runs, but one that would write is refused
-        // (v1 discarded such writes; a client is told).
-        let read_only = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
-            Some(app) => crate::api::read_only_in(self, &app, req.caller.account()).await,
-            None => false,
-        };
-        // A call writes: it may call out, under what its app declares and its
-        // owner approved. Views, inits, migrations and a read-only member's
-        // calls get no client.
-        let meter = self.meter(&req.app_id, bundle.as_deref().unwrap_or_default());
-        if !read_only {
-            env.outbound = bundle.as_deref().and_then(|b| {
-                self.outbound_for(
-                    &req.app_id,
-                    b,
-                    self.usage.outbound(&meter.app, &meter.payer),
-                )
-            });
-        }
-        // A payer over its daily fuel (D76, D78) is refused before a client's call or
-        // an xcall delivery runs, as on the component path; a retry of a call that
-        // committed still replays, below. Timers, event handlers and the node's own
-        // commands still run. A refused xcall is dropped by `drive` with the refusal
-        // logged (`QUOTA_EXCEEDED`).
-        let over_quota = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
-            Some(app) if !req.host && matches!(req.trigger, None | Some(Trigger::XCall { .. })) => {
-                self.fuel_quota_refusal(&app)
-            }
-            _ => None,
-        };
-        let mut quota_refused = None;
-        let mut fresh_blobs = Vec::new();
-        let mut ran = false;
-        let p = g
-            .propose(|m, applied| {
-                quota_refused = None;
-                if let Some(key) = &req.idempotency_key {
-                    if let Some(prev) = m.replay(&req.caller, key) {
-                        return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
-                    }
-                }
-                if let Some(e) = &over_quota {
-                    quota_refused = Some(e.clone());
-                    return Proposal::Reply(Vec::new());
-                }
-                // A follow-up already run (a replayed driver pass) is not run twice.
-                if let Some(Trigger::FollowUp { seq }) = &req.trigger {
-                    if !m.state.pending.contains_key(seq) {
-                        return Proposal::Reply(Vec::new());
-                    }
-                }
-                // The module (and the facts and outbound client) came from the
-                // bundle read before the lock; an upgrade may have applied since.
-                if let Some(stale) = m.stale_module(bundle.as_deref()) {
-                    return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
-                }
-                let outcome = match (&module, &refused) {
-                    (_, Some(why)) => Outcome {
-                        status: Status::AppError,
-                        error: Value::String(why.clone()),
-                        ..Outcome::default()
-                    },
-                    (Some(module), None) => {
-                        ran = true;
-                        let (outcome, _ret) = self.metered(&meter, || {
-                            Executor::run_bytes(
-                                module,
-                                &req.app_id,
-                                &req.caller,
-                                &req.method,
-                                &input,
-                                &m.state.kv,
-                                &env,
-                            )
-                        });
-                        if read_only && (!outcome.diff.is_empty() || !outcome.new_blobs.is_empty())
-                        {
-                            let refused = Applied {
-                                index: applied,
-                                status: Status::AppError,
-                                result: Value::Null,
-                                error: Value::String(READ_ONLY.into()),
-                                events: Vec::new(),
-                                conflict: false,
-                            };
-                            return Proposal::Reply(
-                                serde_json::to_vec(&refused).unwrap_or_default(),
-                            );
-                        }
-                        self.keep_blobs(&outcome);
-                        fresh_blobs.clone_from(&outcome.new_blobs);
-                        outcome
-                    }
-                    (None, None) => Outcome::trap("the app is not initialized yet"),
-                };
-                let cmd = AppCmd::Call(Box::new(CallEntry {
-                    method: req.method.clone(),
-                    args: req.args.clone(),
-                    caller: req.caller.clone(),
-                    idempotency_key: req.idempotency_key.clone(),
-                    consent: req.consent.clone(),
-                    ts_ms: now,
-                    // The app's last entry, not the log's applied index: blank and
-                    // membership entries change no app state, and `apply` compares
-                    // with the last entry the app applied (`AppState::last_index`).
-                    base_index: m.state.last_index,
-                    outcome,
-                    trigger: req.trigger.clone(),
-                }));
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
-            })
-            .await?;
-        if let Some(e) = quota_refused {
-            return Err(LocalError::Refused(e));
-        }
-        if p.output.is_empty() {
-            // A follow-up someone already ran: nothing to answer.
-            return Ok(Applied {
-                index: 0,
-                status: Status::Ok,
-                result: Value::Null,
-                error: Value::Null,
-                events: Vec::new(),
-                conflict: false,
-            });
-        }
-        let applied: Applied = serde_json::from_slice(&p.output)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        if p.appended {
-            self.count_conflict(&applied);
-        }
-        // Counted once, by the run whose answer stood: a conflict runs again.
-        if ran && !applied.conflict {
-            let kind = match req.trigger {
-                None => RunKind::Mutation,
-                Some(_) => RunKind::FollowUp,
-            };
-            self.usage.called(&meter, kind);
-        }
-        if p.appended && !applied.conflict {
-            self.kick.notify_one();
-            self.spread_blobs(&req.app_id, fresh_blobs).await;
-        }
-        Ok(applied)
+        Ok(Applied {
+            index: g.applied(),
+            status: Status::AppError,
+            result: Value::Null,
+            error: Value::String(why.into()),
+            events: Vec::new(),
+            conflict: false,
+        })
     }
 
     /// Switch an app to a new bundle, running its migration export if named.
@@ -2387,16 +2591,19 @@ impl Node {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let mut migrate = req
+        let compute_bundle = req
+            .args
+            .get("computeBundle")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let migrate = req
             .args
             .get("migrate")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        // An upgrade never moves an app between executors (either way, state or
-        // none) until rebuild migrations (D38) exist: the two keep different
-        // state formats. Judged from the target's WASM against the executor
-        // the app's state names, or, before its `init` applied (none named yet),
-        // the one the replicated app record names (decided once, at creation).
+        // Judged from the executor the app's state names, or, before its `init`
+        // applied (none named yet), the one the replicated app record names
+        // (decided once, at creation); and from the target's WASM.
         let recorded = self
             .sys(|s| s.apps.get(&req.app_id).map(|a| a.executor))
             .unwrap_or(Kind::Wasmer);
@@ -2405,258 +2612,26 @@ impl Node {
             .executor_of(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
-        if from != to {
+        let refused = match (from, to) {
+            (Kind::Component, Kind::Component) => None,
+            (Kind::Wasmer, _) => Some(crate::app::WASMER_GONE.to_owned()),
+            (_, Kind::Wasmer) => Some(format!(
+                "upgrade refused: {bundle}: {}",
+                crate::error::UNSUPPORTED_BUNDLE
+            )),
+        };
+        if let Some(why) = refused {
             return Ok(Applied {
                 index: g.applied(),
                 status: Status::AppError,
                 result: Value::Null,
-                error: Value::String(format!(
-                    "upgrade refused: {} runs on {}, the app on {}; an upgrade across executors waits for rebuild migrations (D38)",
-                    bundle,
-                    executor_name(to),
-                    executor_name(from),
-                )),
+                error: Value::String(why),
                 events: Vec::new(),
                 conflict: false,
             });
         }
-        if from == Kind::Component {
-            return self.upgrade_component(g, &bundle, migrate.as_deref()).await;
-        }
-        let module = self
-            .module_for(&bundle)
+        self.upgrade_component(g, &bundle, compute_bundle.as_deref(), migrate.as_deref())
             .await
-            .map_err(|e| WriteError::Unavailable(e.message))?;
-        // The bundle the migration is planned from; the build checks it is
-        // still the state's, as a call's does.
-        let current = g.read_local(|m, _| m.state.bundle.clone());
-        // Without a named migration, plan it from the two ABIs.
-        if migrate.is_none() {
-            if let Some(current) = current.clone().filter(|c| *c != bundle) {
-                let (from, to) = (
-                    self.bundle_wasm(&current).await,
-                    self.bundle_wasm(&bundle).await,
-                );
-                if let (Ok(from), Ok(to)) = (from, to) {
-                    match crate::services::plan_upgrade(&from, &to) {
-                        Ok(planned) => migrate = planned,
-                        Err(why) => {
-                            return Ok(Applied {
-                                index: g.applied(),
-                                status: Status::AppError,
-                                result: Value::Null,
-                                error: Value::String(format!("upgrade refused: {why}")),
-                                events: Vec::new(),
-                                conflict: false,
-                            })
-                        }
-                    }
-                }
-            }
-        }
-        let env = self.env(&req.app_id, &req.caller);
-        let meter = self.meter(&req.app_id, &bundle);
-        let mut ran = false;
-        let p = g
-            .propose(|m, _| {
-                if let Some(stale) = m.stale_module(current.as_deref()) {
-                    return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
-                }
-                let outcome = match &migrate {
-                    Some(method) => {
-                        ran = true;
-                        let outcome = self.metered(&meter, || {
-                            Executor::migrate(
-                                &module,
-                                &req.app_id,
-                                &req.caller,
-                                method,
-                                &m.state.kv,
-                                &env,
-                            )
-                        });
-                        self.keep_blobs(&outcome);
-                        outcome
-                    }
-                    None => Outcome::default(),
-                };
-                let cmd = AppCmd::Upgrade {
-                    bundle: bundle.clone(),
-                    base_index: m.state.last_index,
-                    outcome,
-                };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
-            })
-            .await?;
-        let applied: Applied = serde_json::from_slice(&p.output)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        if p.appended {
-            self.count_conflict(&applied);
-        }
-        if ran && !applied.conflict {
-            self.usage.called(&meter, RunKind::Mutation);
-        }
-        Ok(applied)
-    }
-
-    /// Why an `xcall` from app `origin` may not run `method` of app `target`,
-    /// if it may not: the method must be an `#[app::xcall]` entry
-    /// point, `from_same_app` admits only the same bundle, and the two apps
-    /// must share their organization (or, outside one, their owner).
-    fn xcall_refusal(
-        &self,
-        target_facts: &BundleFacts,
-        origin: &str,
-        target: &str,
-        method: &str,
-    ) -> Option<String> {
-        let Some(callers) = target_facts.xcalls.get(method) else {
-            return Some(format!(
-                "xcall denied: {method} is not an #[app::xcall] entry point"
-            ));
-        };
-        let (source, dest) =
-            self.sys(|s| (s.apps.get(origin).cloned(), s.apps.get(target).cloned()));
-        let (Some(source), Some(dest)) = (source, dest) else {
-            return Some("xcall denied: unknown app".into());
-        };
-        let same_boundary = match (&source.org, &dest.org) {
-            (Some(a), Some(b)) => a == b,
-            (None, None) => source.owner == dest.owner,
-            _ => false,
-        };
-        if !same_boundary {
-            return Some("xcall denied: the apps are not in the same organization".into());
-        }
-        if *callers == calimero_wasm_abi::schema::XCallCallers::SameApp
-            && source.bundle != dest.bundle
-        {
-            return Some(format!("xcall denied: {method} admits only the same app"));
-        }
-        None
-    }
-
-    /// The leader's work for an app beyond requests: timer methods whose period
-    /// came, and follow-ups (event handlers, xcalls) the log queued. Each runs
-    /// as an entry that also records it done, so a new leader neither skips
-    /// nor repeats one.
-    pub async fn drive(&self, g: &Group<AppMachine>, app: &AppRecord) {
-        let (bundle, initialized, executor) = g.read_local(|m, _| {
-            (
-                m.state.bundle.clone(),
-                m.state.initialized,
-                m.state.executor(),
-            )
-        });
-        // A component's timers are `tick_timers`'s; it has no follow-ups.
-        let (Some(bundle), true, Some(Kind::Wasmer)) = (bundle, initialized, executor) else {
-            return;
-        };
-        let facts = self.facts(&bundle).await;
-        let app_caller = Caller::App {
-            app: app.app_id.clone(),
-        };
-        let now = crate::types::now_secs();
-        for (method, every) in &facts.timers {
-            let tick = now / every;
-            let last = g.read_local(|m, _| m.state.timer_ticks.get(method).copied());
-            if last.is_some_and(|l| l >= tick) {
-                continue;
-            }
-            let mut req = CallRequest::new(
-                app.app_id.clone(),
-                method.clone(),
-                Value::Null,
-                app_caller.clone(),
-            );
-            req.trigger = Some(Trigger::Timer {
-                method: method.clone(),
-                tick,
-            });
-            match self.call_local(g, &req).await {
-                Ok(a) if a.status != Status::Ok => {
-                    warn!(app = %app.app_id, %method, error = %a.error, "timer method failed");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    debug!(app = %app.app_id, %method, error = %e, "timer not fired");
-                    return;
-                }
-            }
-        }
-        let pending: Vec<(u64, crate::app::Pending)> = g.read_local(|m, _| {
-            m.state
-                .pending
-                .iter()
-                .take(64)
-                .map(|(k, v)| (*k, v.clone()))
-                .collect()
-        });
-        for (seq, p) in pending {
-            match p.followup {
-                FollowUp::Handler { method, input, .. } => {
-                    let mut req = CallRequest::new(
-                        app.app_id.clone(),
-                        method,
-                        Value::Null,
-                        app_caller.clone(),
-                    );
-                    req.input = Some(input);
-                    req.trigger = Some(Trigger::FollowUp { seq });
-                    match self.call_local(g, &req).await {
-                        Ok(a) if a.status != Status::Ok => {
-                            warn!(app = %app.app_id, method = %req.method, error = %a.error, "event handler failed");
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            debug!(app = %app.app_id, seq, error = %e, "handler not run");
-                            return;
-                        }
-                    }
-                }
-                FollowUp::XCall {
-                    context,
-                    method,
-                    input,
-                } => {
-                    let target = self.canonical_app_id(&context);
-                    let mut req =
-                        CallRequest::new(target.clone(), method, Value::Null, app_caller.clone());
-                    req.input = Some(input);
-                    req.idempotency_key = Some(format!("xcall:{}:{seq}", app.app_id));
-                    req.trigger = Some(Trigger::XCall {
-                        origin: app.app_id.clone(),
-                        depth: p.depth + 1,
-                    });
-                    let known = self.sys(|s| s.apps.contains_key(&target));
-                    if known {
-                        match self.call(&req).await {
-                            Ok(a) if a.status != Status::Ok => {
-                                warn!(from = %app.app_id, to = %target, error = %a.error, "xcall refused");
-                            }
-                            Ok(_) => {}
-                            Err(e) if e.code == "UNAVAILABLE" => {
-                                debug!(to = %target, error = %e.message, "xcall waits for its target");
-                                return;
-                            }
-                            // A dead letter: the target's payer is over its fuel cap
-                            // (D76), or the target refused it otherwise.
-                            Err(e) => {
-                                warn!(to = %target, code = %e.code, error = %e.message, "xcall failed");
-                            }
-                        }
-                    } else {
-                        warn!(from = %app.app_id, to = %context, "xcall to an unknown app dropped");
-                    }
-                    let done =
-                        serde_json::to_vec(&AppCmd::Done { seqs: vec![seq] }).unwrap_or_default();
-                    if let Err(e) = g.write(done).await {
-                        debug!(error = %e, "xcall not yet marked done");
-                        return;
-                    }
-                }
-            }
-        }
     }
 
     /// Run a call wherever the app's leader is.
@@ -2677,16 +2652,17 @@ impl Node {
             &keyed
         };
         let app = self.app(&req.app_id).await?;
+        if app.executor == Kind::Wasmer {
+            return Err(ApiError::unsupported_engine());
+        }
         // A component's calls are `call_component`'s (the API routes them there);
-        // what reaches here for one is a wasmer app's xcall or follow-up, which
-        // a component does not take (D25).
-        if app.executor == Kind::Component && !req.host {
+        // only the node's own commands reach here.
+        if !req.host {
             return Err(ApiError::new(409, "NOT_SUPPORTED", COMPONENT_REFUSES));
         }
         // The entry carries the arguments, so arguments past the cap never
         // fit: refuse here rather than forward a megabyte to the leader first.
-        let args_len = serde_json::to_vec(&req.args).map_or(0, |a| a.len())
-            + req.input.as_ref().map_or(0, |i| i.0.len());
+        let args_len = serde_json::to_vec(&req.args).map_or(0, |a| a.len());
         if args_len > calimero_log::MAX_ENTRY_BYTES {
             return Err(status_of(&WriteError::TooLarge {
                 size: args_len,
@@ -2701,14 +2677,11 @@ impl Node {
                 match self.call_local(&g, req).await {
                     Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
-                    Err(LocalError::Refused(e)) => return Err(e),
-                    Err(LocalError::Write(WriteError::NotLeader {
+                    Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
-                    })) if id != self.config.node_id && !addr.is_empty() => Some(addr),
+                    }) if id != self.config.node_id && !addr.is_empty() => Some(addr),
                     // No leader will take it either: answer now, as a forward does.
-                    Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => {
-                        return Err(status_of(&e))
-                    }
+                    Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
                     Err(e) => {
                         debug!(error = %e, "call not yet possible here");
                         None
@@ -2737,12 +2710,14 @@ impl Node {
         Err(ApiError::unavailable("the app has no leader"))
     }
 
-    /// Answer an internal call (from a peer), for either executor: run it here,
-    /// without forwarding further. The node's own commands (`req.host`) are the
-    /// node's whatever the executor.
+    /// Answer an internal call (from a peer): run it here, without forwarding
+    /// further. The node's own commands (`req.host`) are the node's.
     pub async fn call_here_any(&self, req: &CallRequest) -> Result<Value, ApiError> {
         let app = self.app(&req.app_id).await?;
-        if app.executor == Kind::Component && !req.host {
+        if app.executor == Kind::Wasmer {
+            return Err(ApiError::unsupported_engine());
+        }
+        if !req.host {
             let a = self.call_here_component(&app, req).await?;
             return serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()));
         }
@@ -2758,10 +2733,9 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
         match self.call_local(&g, req).await {
             Ok(a) => Ok(a),
-            Err(LocalError::Refused(e)) => Err(e),
-            Err(LocalError::Write(WriteError::NotLeader {
+            Err(WriteError::NotLeader {
                 leader: Some((id, addr)),
-            })) if id != self.config.node_id && !addr.is_empty() => {
+            }) if id != self.config.node_id && !addr.is_empty() => {
                 let body =
                     serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
                 let v = self
@@ -2770,7 +2744,7 @@ impl Node {
                     .map_err(|e| ApiError::unavailable(&e.to_string()))?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
-            Err(LocalError::Write(e)) => Err(status_of(&e)),
+            Err(e) => Err(status_of(&e)),
         }
     }
 
@@ -2782,45 +2756,17 @@ impl Node {
         if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
             return self.view_local_component(g, req).await;
         }
-        let bundle = g
-            .read_local(|m, _| m.state.bundle.clone())
-            .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let module = self.module_for(&bundle).await?;
-        let mut env = self.env(&req.app_id, &req.caller);
-        let meter = self.meter(&req.app_id, &bundle);
-        let answer = g.read_local(|m, applied| {
-            // Search answers from indexes brought up to this very state.
-            env.search = self.search.for_view(&module, &bundle, m, applied);
-            let out = self.metered(&meter, || {
-                Executor::run(
-                    &module,
-                    &req.app_id,
-                    &req.caller,
-                    &req.method,
-                    &req.args,
-                    &m.state.kv,
-                    &env,
-                )
-            });
-            ViewAnswer {
-                index: applied,
-                status: out.status,
-                result: out.result,
-                error: out.error,
-                timeout: false,
-            }
-        });
-        self.usage.called(&meter, RunKind::View);
-        Ok(answer)
+        Err(ApiError::unsupported_engine())
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
-        if app.executor == Kind::Component {
-            self.abi_gate(&app, &req.method, &req.caller, true, false)
-                .await?;
+        if app.executor == Kind::Wasmer {
+            return Err(ApiError::unsupported_engine());
         }
+        self.abi_gate(&app, &req.method, &req.caller, true, false)
+            .await?;
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {
@@ -2901,7 +2847,7 @@ impl Node {
         // but takes no new one.
         let deadlines = self.sys(|s| s.any_deadline_passed(now));
         let mut allowed = Vec::new();
-        for id in self.sys(|s| s.nodes.keys().copied().collect::<Vec<_>>()) {
+        for id in self.sys(|s| s.replica_nodes().map(|n| n.id).collect::<Vec<_>>()) {
             let ok = match (approved, deadlines) {
                 (None, false) => true,
                 (approved, _) => self.release_of_node(id).await.is_some_and(|r| {
@@ -2963,12 +2909,12 @@ impl Node {
     }
 }
 
-/// The executor's name, as an error names it.
-const fn executor_name(e: Kind) -> &'static str {
-    match e {
-        Kind::Wasmer => "wasmer (a core module)",
-        Kind::Component => "wasmtime (a component)",
-    }
+/// What peers present as `x-cluster-auth`: a MAC of the cluster name under K_c.
+fn cluster_secret(cluster_key: &[u8; 32], cluster: &str) -> String {
+    calimero_identity::b64url(&crate::backup::tag(
+        cluster_key,
+        format!("calimero.cluster.v1|{cluster}"),
+    ))
 }
 
 /// Runs `f`, a WASM run that may take up to its budget, without holding an
@@ -2984,6 +2930,73 @@ fn off_workers<R>(f: impl FnOnce() -> R) -> R {
             tokio::task::block_in_place(f)
         }
         _ => f(),
+    }
+}
+
+/// Runs `attempt` until it succeeds or `within` has passed, `pause` apart; the last error otherwise.
+pub(crate) async fn retry_within<T, E, F, Fut>(
+    within: Duration,
+    pause: Duration,
+    mut attempt: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match attempt().await {
+            Err(_) if tokio::time::Instant::now() + pause < deadline => {
+                tokio::time::sleep(pause).await;
+            }
+            done => return done,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_within_tests {
+    use super::retry_within;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn it_retries_until_success_and_gives_up_with_the_last_error() {
+        let mut calls = 0;
+        let ok = retry_within(Duration::from_secs(5), Duration::from_millis(1), || {
+            calls += 1;
+            let n = calls;
+            async move {
+                if n < 3 {
+                    Err(n)
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(ok, Ok(3));
+        let mut calls = 0;
+        let failed: Result<(), u32> =
+            retry_within(Duration::from_millis(30), Duration::from_millis(10), || {
+                calls += 1;
+                let n = calls;
+                async move { Err(n) }
+            })
+            .await;
+        assert!(failed.is_err() && (2..=4).contains(&calls), "{calls} calls");
+    }
+}
+
+#[cfg(test)]
+mod cluster_secret_tests {
+    use super::cluster_secret;
+
+    #[test]
+    fn the_cluster_secret_matches_its_known_answer() {
+        assert_eq!(
+            cluster_secret(&[7; 32], "test"),
+            "DMlHI6sAvDPbCJbzsN0QduVwNi6MriMe5KHoRHrNkB4"
+        );
     }
 }
 

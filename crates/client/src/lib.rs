@@ -48,7 +48,7 @@ enum Payload {
     Empty,
     Json(Value),
     Bytes {
-        content_type: &'static str,
+        content_type: std::borrow::Cow<'static, str>,
         bytes: bytes::Bytes,
     },
 }
@@ -411,7 +411,7 @@ impl Client {
                 content_type,
                 bytes,
             } => req
-                .header("content-type", *content_type)
+                .header("content-type", &**content_type)
                 .body(bytes.clone()),
         };
         let req = req.build().map_err(eyre::Report::from)?;
@@ -458,18 +458,79 @@ impl Client {
         self.json(Method::DELETE, path, None).await
     }
 
+    /// DELETE `path` with a JSON body: a proof the caller made itself
+    /// (`{confirm}`, `{operatorProof}`).
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn delete_with_body(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::DELETE, path, Some(body)).await
+    }
+
     // ------------------------------------------------------------ identity
 
-    /// Create an account with a new passkey and sign in.
+    /// Create an account with a new passkey and sign in. The node asks the
+    /// new passkey to sign the account it creates (`412 CONFIRM_REQUIRED`),
+    /// so a sign-up asks the passkey twice: to create it, then to sign.
     pub async fn sign_up(&self, passkey: &mut dyn Passkey, name: &str) -> Result<Session> {
-        let begin = self
-            .post("auth/passkey/register/begin", json!({ "name": name }))
-            .await?;
+        self.sign_up_with(passkey, name, None, None).await
+    }
+
+    /// [`Self::sign_up`] from a page on `origin`: for an origin a package's
+    /// manager registered, the node answers its own rp-id, and the session is
+    /// bound to that package.
+    ///
+    /// # Errors
+    /// As [`Self::post`]; `403 ORIGIN_NOT_REGISTERED` for an origin the
+    /// cluster does not know.
+    pub async fn sign_up_at(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        origin: Option<&str>,
+    ) -> Result<Session> {
+        self.sign_up_with(passkey, name, origin, None).await
+    }
+
+    /// [`Self::sign_up`] with an invite: an organization invite token (the
+    /// new account joins the organization) or a cluster sign-up invite
+    /// token, which a cluster whose sign-up is `invite` or `closed` needs
+    /// (`GET /sign-up` says which). Refused `403 SIGN_UP_REFUSED` before the
+    /// passkey is asked when the cluster would not take it.
+    pub async fn sign_up_invited(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        invite: Option<&str>,
+    ) -> Result<Session> {
+        self.sign_up_with(passkey, name, None, invite).await
+    }
+
+    /// A sign-up from `origin` (see [`Self::sign_up_at`]) with `invite` (see
+    /// [`Self::sign_up_invited`]); the invite goes on the begin, the finish
+    /// and its `412` retry.
+    pub async fn sign_up_with(
+        &self,
+        passkey: &mut dyn Passkey,
+        name: &str,
+        origin: Option<&str>,
+        invite: Option<&str>,
+    ) -> Result<Session> {
+        let mut body = json!({ "name": name, "invite": invite });
+        if let (Some(b), Some(o)) = (body.as_object_mut(), origin) {
+            let _prev = b.insert("origin".into(), json!(o));
+        }
+        let begin = self.post("auth/passkey/register/begin", body).await?;
         let registration = passkey.create(&begin["options"]);
         let s: Session = serde_json::from_value(
-            self.post(
+            self.post_confirmed(
                 "auth/passkey/register/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                json!({
+                    "challengeId": begin["challengeId"],
+                    "registration": registration,
+                    "invite": invite,
+                }),
+                passkey,
             )
             .await?,
         )
@@ -478,23 +539,55 @@ impl Client {
         Ok(s)
     }
 
-    /// Add another passkey (another device) to the signed-in account.
-    /// Returns its credential id.
-    pub async fn add_passkey(&self, passkey: &mut dyn Passkey) -> Result<String> {
+    /// Add another passkey (another device, `new`) to the signed-in
+    /// account, approved with one it already has (`approver`, answering the
+    /// node's `412 CONFIRM_REQUIRED`). Returns its credential id.
+    pub async fn add_passkey(
+        &self,
+        new: &mut dyn Passkey,
+        approver: &mut dyn Passkey,
+    ) -> Result<String> {
         let begin = self.post("auth/passkeys/add/begin", json!({})).await?;
-        let registration = passkey.create(&begin["options"]);
+        let registration = new.create(&begin["options"]);
         let done = self
-            .post(
+            .post_confirmed(
                 "auth/passkeys/add/finish",
                 json!({ "challengeId": begin["challengeId"], "registration": registration }),
+                approver,
             )
             .await?;
         Ok(done["credentialId"].as_str().unwrap_or_default().to_owned())
     }
 
+    /// Remove one of the account's passkeys, approved with a passkey it has.
+    pub async fn remove_passkey(
+        &self,
+        credential: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.delete_confirmed(
+            &format!("auth/passkeys/{}", path_segment(credential)),
+            passkey,
+        )
+        .await
+    }
+
     /// Sign in with an existing passkey.
     pub async fn sign_in(&self, passkey: &mut dyn Passkey) -> Result<Session> {
-        let begin = self.post("auth/passkey/login/begin", json!({})).await?;
+        self.sign_in_at(passkey, None).await
+    }
+
+    /// [`Self::sign_in`] from a page on `origin` (see [`Self::sign_up_at`]).
+    ///
+    /// # Errors
+    /// As [`Self::sign_up_at`].
+    pub async fn sign_in_at(
+        &self,
+        passkey: &mut dyn Passkey,
+        origin: Option<&str>,
+    ) -> Result<Session> {
+        let body = origin.map_or_else(|| json!({}), |o| json!({ "origin": o }));
+        let begin = self.post("auth/passkey/login/begin", body).await?;
         let challenge = calimero_identity::from_b64url(
             begin["options"]["challenge"].as_str().unwrap_or_default(),
         )
@@ -533,13 +626,27 @@ impl Client {
         self.get("auth/me").await
     }
 
-    /// Create an API key; returns `(key_id, key)`. The key is shown once.
-    pub async fn create_api_key(&self, options: Value) -> Result<(String, String)> {
-        let v = self.post("auth/apikeys", options).await?;
+    /// Create an API key, approved with the account's passkey; returns
+    /// `(key_id, key)`. The key is shown once.
+    pub async fn create_api_key(
+        &self,
+        options: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<(String, String)> {
+        let v = self
+            .post_confirmed("auth/apikeys", options, passkey)
+            .await?;
         Ok((
             v["keyId"].as_str().unwrap_or_default().to_owned(),
             v["key"].as_str().unwrap_or_default().to_owned(),
         ))
+    }
+
+    /// Revoke one of the account's API keys, approved with its passkey
+    /// (`412 CONFIRM_REQUIRED`).
+    pub async fn revoke_api_key(&self, key_id: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.delete_confirmed(&format!("auth/apikeys/{}", path_segment(key_id)), passkey)
+            .await
     }
 
     // ------------------------------------------------------------ apps
@@ -548,11 +655,11 @@ impl Client {
     async fn upload(
         &self,
         path: &str,
-        content_type: &'static str,
+        content_type: impl Into<std::borrow::Cow<'static, str>>,
         bytes: Vec<u8>,
     ) -> Result<Value> {
         let payload = Payload::Bytes {
-            content_type,
+            content_type: content_type.into(),
             bytes: bytes.into(),
         };
         answer(self.send_payload(Method::POST, path, payload).await?).await
@@ -652,7 +759,47 @@ impl Client {
         .await
     }
 
-    /// One of an app's blobs, by id (base58 or hex).
+    /// Upload a blob with its content type; a component app records it (R8) and serves
+    /// downloads with it.
+    pub async fn upload_blob_as(&self, app: &str, mime: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.upload(&format!("apps/{app}/blobs"), mime.to_owned(), bytes)
+            .await
+    }
+
+    /// Upload a sealed file for component app `app` (its owner or an organization member);
+    /// answers `{ blobId, id, size, sha256, index }`, the size and SHA-256 of the plaintext.
+    pub async fn upload_file(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.upload(
+            &format!("apps/{app}/blobs?sealed=true"),
+            "application/octet-stream",
+            bytes,
+        )
+        .await
+    }
+
+    /// Download a component app's blob with a grant one of its runs handed out
+    /// (`blobs.grant`); no session needed.
+    pub async fn download_blob_granted(&self, app: &str, id: &str, grant: &str) -> Result<Vec<u8>> {
+        let resp = self
+            .send(
+                Method::GET,
+                &format!(
+                    "apps/{}/blobs/{}?grant={}",
+                    path_segment(app),
+                    path_segment(id),
+                    path_segment(grant)
+                ),
+                None,
+            )
+            .await?;
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            let v: Value = resp.json().await.unwrap_or(Value::Null);
+            return Err(api_error(status, &v));
+        }
+        Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
+    }
+
     /// The app's blobs: `{ blobs: [{ blobId, id, size }] }`.
     pub async fn list_blobs(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/blobs", path_segment(app))).await
@@ -678,6 +825,13 @@ impl Client {
         .await
     }
 
+    /// A component app's xcalls: `{ pending, deadLetters: [{ seq, app, method, reason,
+    /// atMs }] }` (its owner or an org admin).
+    pub async fn app_xcalls(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/xcalls", path_segment(app)))
+            .await
+    }
+
     /// What the app's storage holds: `{ keys, bytes, blobs, blobBytes }`.
     pub async fn app_storage(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/storage", path_segment(app)))
@@ -690,7 +844,7 @@ impl Client {
     }
 
     /// What this account uses, with the cluster's quotas, and what its apps ran
-    /// today (`fuelToday`, `writesToday`).
+    /// as a developer today (`developerFuelToday`, `developerWritesToday`).
     pub async fn usage(&self) -> Result<Value> {
         self.get("auth/usage").await
     }
@@ -764,6 +918,55 @@ impl Client {
         self.confirmed(Method::POST, path, body, passkey).await
     }
 
+    /// The web origins registered for `package`'s frontend (its manager's).
+    ///
+    /// # Errors
+    /// As [`Self::get`].
+    pub async fn package_origins(&self, package: &str) -> Result<Value> {
+        self.get(&package_origins_path(package)).await
+    }
+
+    /// Register `origin` for `package`'s frontend (its rp-id `rp_id`, else
+    /// the origin's host), approved with the manager's `passkey`: a passkey
+    /// ceremony there opens a session bound to the package.
+    ///
+    /// # Errors
+    /// As [`Self::post_confirmed`].
+    pub async fn add_package_origin(
+        &self,
+        package: &str,
+        origin: &str,
+        rp_id: Option<&str>,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let mut body = json!({ "origin": origin });
+        if let (Some(b), Some(rp)) = (body.as_object_mut(), rp_id) {
+            let _prev = b.insert("rpId".into(), json!(rp));
+        }
+        self.post_confirmed(&package_origins_path(package), body, passkey)
+            .await
+    }
+
+    /// Remove a registered origin of `package`, approved with the manager's
+    /// `passkey`; the sessions opened there end.
+    ///
+    /// # Errors
+    /// As [`Self::post_confirmed`].
+    pub async fn remove_package_origin(
+        &self,
+        package: &str,
+        origin: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.confirmed(
+            Method::DELETE,
+            &package_origins_path(package),
+            json!({ "origin": origin }),
+            passkey,
+        )
+        .await
+    }
+
     /// End every session of this account, on every device.
     pub async fn sign_out_everywhere(&self) -> Result<Value> {
         self.post("auth/logout-all", json!({})).await
@@ -774,6 +977,57 @@ impl Client {
     pub async fn delete_confirmed(&self, path: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.confirmed(Method::DELETE, path, json!({}), passkey)
             .await
+    }
+
+    /// POST an operator decision (Ops API): when the node answers `428
+    /// OPERATOR_SIGNATURE_REQUIRED`, sign the bytes it names (`message`,
+    /// base64) with `sign` (the operator's Ed25519 key) and send it again
+    /// with `operatorProof: { nonce, signature }`.
+    pub async fn post_operator_signed(
+        &self,
+        path: &str,
+        body: Value,
+        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<Value> {
+        self.operator_signed(Method::POST, path, body, sign).await
+    }
+
+    /// DELETE an operator decision, signed as [`Self::post_operator_signed`]
+    /// (the proof goes in a JSON body).
+    pub async fn delete_operator_signed(
+        &self,
+        path: &str,
+        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<Value> {
+        self.operator_signed(Method::DELETE, path, json!({}), sign)
+            .await
+    }
+
+    async fn operator_signed(
+        &self,
+        method: Method,
+        path: &str,
+        mut body: Value,
+        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
+    ) -> Result<Value> {
+        let details = match self.json(method.clone(), path, Some(body.clone())).await {
+            Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
+                e.details().cloned().unwrap_or(Value::Null)
+            }
+            other => return other,
+        };
+        let message = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            details["message"].as_str().unwrap_or_default(),
+        )
+        .map_err(eyre::Report::from)?;
+        if let Some(b) = body.as_object_mut() {
+            let _prev = b.insert(
+                "operatorProof".into(),
+                json!({ "nonce": details["nonce"], "signature": hex::encode(sign(&message)) }),
+            );
+        }
+        self.json(method, path, Some(body)).await
     }
 
     /// `method` on `path`, answering a `412 CONFIRM_REQUIRED` with a passkey
@@ -885,6 +1139,58 @@ impl Client {
         self.confirmed(
             Method::DELETE,
             &format!("orgs/{}", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Set or rotate (`Some`, a [`calimero_identity::recovery::recovery_public`])
+    /// or remove (`None`) an organization's recovery key: the owner's,
+    /// approved with their passkey. A recovery under way is cancelled.
+    pub async fn set_recovery_key(
+        &self,
+        org: &str,
+        public_key: Option<&str>,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery", path_segment(org)),
+            json!({ "publicKey": public_key }),
+            passkey,
+        )
+        .await
+    }
+
+    /// Start handing `org` to the signed-in account `account` with the
+    /// recovery `seed`, which signs here and is never sent. Answers
+    /// `{ startedAt, readyAt }`.
+    pub async fn start_recovery(&self, org: &str, account: &str, seed: &[u8; 32]) -> Result<Value> {
+        use calimero_identity::recovery::sign_recovery;
+        let nonce = calimero_identity::b64url(&calimero_identity::random::<16>());
+        let signature = sign_recovery(seed, org, account, &nonce);
+        self.post(
+            &format!("orgs/{}/recovery/start", path_segment(org)),
+            json!({ "nonce": nonce, "signature": signature }),
+        )
+        .await
+    }
+
+    /// Cancel the recovery under way: the owner's, approved with their passkey.
+    pub async fn cancel_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery/cancel", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Finish a recovery this account started, once its delay passed,
+    /// approved with this account's passkey: it becomes the owner.
+    pub async fn finish_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/recovery/finish", path_segment(org)),
             json!({}),
             passkey,
         )
@@ -1196,6 +1502,14 @@ impl Client {
 
 /// One URL path segment: everything but unreserved characters escaped, so an
 /// id cannot reach another route.
+/// The route of `package`'s registered origins (`package-origins/{package}`,
+/// the package percent-encoded): for a caller that sends the change without a
+/// passkey and lets the node answer `412 CONFIRM_REQUIRED`.
+#[must_use]
+pub fn package_origins_path(package: &str) -> String {
+    format!("package-origins/{}", path_segment(package))
+}
+
 fn path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -1214,7 +1528,7 @@ mod retry_tests {
 
     use serde_json::Value;
 
-    use super::{retry_unavailable, Error, CALL_RETRIES};
+    use super::{package_origins_path, retry_unavailable, Error, CALL_RETRIES};
 
     fn api(status: u16) -> Error {
         Error::Api {
@@ -1223,6 +1537,15 @@ mod retry_tests {
             message: String::new(),
             details: Value::Null,
         }
+    }
+
+    #[test]
+    fn a_package_names_one_path_segment() {
+        assert_eq!(
+            package_origins_path("com.example.kv"),
+            "package-origins/com.example.kv"
+        );
+        assert_eq!(package_origins_path("a/b?c"), "package-origins/a%2Fb%3Fc");
     }
 
     #[tokio::test(start_paused = true)]

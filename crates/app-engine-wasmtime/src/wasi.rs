@@ -6,16 +6,13 @@
 //!   `filesystem/{types, preopens}` with no preopened directory, so no descriptor ever
 //!   exists and nothing reaches the node's file system.
 //! - this module: `clocks/wall-clock` and `clocks/monotonic-clock` (fixed per invocation;
-//!   a sleep is ready at once and never blocks a node thread), `random/random` (the host
-//!   core's RNG).
-//! - `http/types` and `http/outgoing-handler`: every function a component imports from
-//!   them is linked per component as a stub that traps `HostDenied`, and every resource
-//!   as an opaque host type nobody can construct (Ruling 20). Actions are off in this
-//!   milestone, so no store gets real HTTP; wasmtime-wasi-http's implementation is not
-//!   linked at all, because its body streams can block a node thread past the epoch
-//!   deadline. Real `http/types` will be linked only into action stores.
+//!   a sleep is ready at once and never blocks a node thread), `random/random` and
+//!   `random/insecure-seed` (the host core's RNG).
+//! - `http/types` and `http/outgoing-handler`: `http.rs`, buffered bodies that never block,
+//!   requests sent only from actions (D12, S9). wasmtime-wasi-http is not linked: its body
+//!   streams can block a node thread past the epoch deadline.
 //!
-//! `wasi:sockets` and `wasi:random/insecure*` are never linked, and `prepare` refuses any
+//! `wasi:sockets` and `wasi:random/insecure` are never linked, and `prepare` refuses any
 //! component importing them.
 
 use std::io;
@@ -27,17 +24,15 @@ use std::task::Context;
 use std::task::Poll;
 
 use bytes::Bytes;
-use calimero_app_host::{HostDenied, InvocationKind, MAX_LOG_BYTES};
+use calimero_app_host::{HostDenied, MAX_LOG_BYTES};
+
+use crate::MAX_RANDOM_BYTES_PER_CALL;
 use tokio::io::AsyncWrite;
-use wasmtime::component::types::ComponentItem;
-use wasmtime::component::Component;
 use wasmtime::component::HasData;
 use wasmtime::component::HasSelf;
 use wasmtime::component::Linker;
 use wasmtime::component::Resource;
 use wasmtime::component::ResourceTable;
-use wasmtime::component::ResourceType;
-use wasmtime::Engine;
 use wasmtime::Result;
 use wasmtime_wasi::cli::IsTerminal;
 use wasmtime_wasi::cli::StdoutStream;
@@ -47,7 +42,7 @@ use wasmtime_wasi::filesystem::WasiFilesystem;
 use wasmtime_wasi::filesystem::WasiFilesystemView;
 use wasmtime_wasi::p2::bindings::clocks::monotonic_clock;
 use wasmtime_wasi::p2::bindings::clocks::wall_clock;
-use wasmtime_wasi::p2::bindings::random::random;
+use wasmtime_wasi::p2::bindings::random::{insecure_seed, random};
 use wasmtime_wasi::p2::bindings::sync as wasi_sync;
 use wasmtime_wasi::p2::bindings::{cli, filesystem};
 use wasmtime_wasi::p2::DynPollable;
@@ -66,11 +61,6 @@ const CLOCK_RESOLUTION_NS: u64 = 1_000_000;
 /// the run's log is full, never refused (a full log must not fail the app).
 const LOG_WRITE_PERMIT: usize = 64 * 1024;
 
-/// Imports under this prefix are stubbed per component (Ruling 20).
-const HTTP_PREFIX: &str = "wasi:http/";
-const HTTP_OUTSIDE_ACTION: &str = "outgoing http is only allowed in actions";
-const HTTP_DISABLED: &str = "outgoing http is not enabled";
-
 /// Links every WASI interface the world imports, plus the D44 stubs.
 pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     let l = linker;
@@ -81,6 +71,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     wall_clock::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     monotonic_clock::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
     random::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
+    insecure_seed::add_to_linker::<StoreData, HasSelf<StoreData>>(l, |d| d)?;
 
     cli::environment::add_to_linker::<StoreData, WasiCli>(l, StoreData::cli)?;
     cli::stdout::add_to_linker::<StoreData, WasiCli>(l, StoreData::cli)?;
@@ -164,12 +155,10 @@ impl monotonic_clock::Host for StoreData {
 
 impl random::Host for StoreData {
     fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
-        // A request larger than the instance's memory could never be returned; refuse it
-        // before allocating.
         let len = usize::try_from(len)
             .ok()
-            .filter(|len| *len <= self.max_random_bytes)
-            .ok_or_else(|| denied(HostDenied("random request larger than memory".into())))?;
+            .filter(|len| *len <= MAX_RANDOM_BYTES_PER_CALL)
+            .ok_or_else(|| denied(HostDenied("random request over the per-call limit".into())))?;
         let mut buf = vec![0; len];
         self.host.random_fill(&mut buf);
         Ok(buf)
@@ -182,69 +171,17 @@ impl random::Host for StoreData {
     }
 }
 
-// --- outgoing HTTP (D12, S9) -----------------------------------------------------------
-
-/// Only actions may send, and actions are not enabled in this milestone; either way the
-/// call traps HostDenied and no request leaves the node.
-fn outgoing_refusal(data: &StoreData) -> &'static str {
-    if data.host.invocation().kind == InvocationKind::Action {
-        HTTP_DISABLED
-    } else {
-        HTTP_OUTSIDE_ACTION
+impl insecure_seed::Host for StoreData {
+    // Drawn from the seeded stream, never the OS, so a rerun hashes and iterates alike.
+    fn insecure_seed(&mut self) -> Result<(u64, u64)> {
+        let mut buf = [0; 16];
+        self.host.random_fill(&mut buf);
+        let (a, b) = buf.split_at(8);
+        Ok((
+            u64::from_le_bytes(a.try_into()?),
+            u64::from_le_bytes(b.try_into()?),
+        ))
     }
-}
-
-/// The opaque host type behind every stubbed `wasi:http` resource; never constructed.
-struct HttpStub;
-
-/// Defines every function and resource `component` imports from `wasi:http/*` on
-/// `linker`: functions trap `HostDenied`, resources are `HttpStub`, which no function
-/// ever creates. Done per component so any 0.2 patch it imports is covered.
-pub(crate) fn stub_http(
-    linker: &mut Linker<StoreData>,
-    engine: &Engine,
-    component: &Component,
-) -> Result<()> {
-    let component_type = component.component_type();
-    let imports: Vec<_> = component_type.imports(engine).collect();
-    // Resources `http/types` re-exports from `wasi:io` (streams, pollable) are io's own,
-    // already linked; only resources the http interfaces define get the stub type.
-    let foreign: Vec<_> = imports
-        .iter()
-        .filter(|(name, _)| !name.starts_with(HTTP_PREFIX))
-        .filter_map(|(_, item)| match &item.ty {
-            ComponentItem::ComponentInstance(instance) => Some(instance.exports(engine)),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|(_, item)| match item.ty {
-            ComponentItem::Resource(resource) => Some(resource),
-            _ => None,
-        })
-        .collect();
-    for (name, item) in &imports {
-        if !name.starts_with(HTTP_PREFIX) {
-            continue;
-        }
-        let ComponentItem::ComponentInstance(instance) = &item.ty else {
-            continue;
-        };
-        let mut defined = linker.instance(name)?;
-        for (export, item) in instance.exports(engine) {
-            match item.ty {
-                ComponentItem::ComponentFunc(_) => {
-                    defined.func_new(export, |store, _ty, _params, _results| {
-                        Err(denied(HostDenied(outgoing_refusal(store.data()).into())))
-                    })?;
-                }
-                ComponentItem::Resource(resource) if !foreign.contains(&resource) => {
-                    defined.resource(export, ResourceType::host::<HttpStub>(), |_, _| Ok(()))?;
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(())
 }
 
 // --- stdout and stderr into the owner-only app log -------------------------------------

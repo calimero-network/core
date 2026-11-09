@@ -4,12 +4,19 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::abi::ComputeCaps;
+use crate::files::NewFile;
+
 /// Fuel per call or view (D28); Task 13 measures the real ratio to wall time.
 pub const DEFAULT_FUEL: u64 = 200_000_000;
 /// Memory per instance: 1,024 WASM pages (64 MiB).
 pub const DEFAULT_MEMORY_PAGES: u32 = 1_024;
+/// 64 KiB wasm pages in a MiB.
+const PAGES_PER_MIB: u32 = 16;
 /// Epoch deadline for a call or a view (spec section 5).
 pub const CALL_WALL_CLOCK: Duration = Duration::from_secs(2);
+/// Epoch deadline for an action run (spec section 5, D12).
+pub const ACTION_WALL_CLOCK: Duration = Duration::from_secs(10);
 
 /// Which entry point of `handle` runs, mirroring the WIT `invocation-kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +47,15 @@ pub struct TimerCtx {
     pub previous_ms: Option<u64>,
 }
 
+/// The run a compute invocation belongs to: its id, the app's owner as fixed at the start,
+/// and the files it may read. A run sees nothing else of the app's context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputeCtx {
+    pub run_id: String,
+    pub owner: String,
+    pub inputs: Vec<String>,
+}
+
 /// One invocation of an app method.
 ///
 /// `id_term` is the leader's Raft term while it runs the invocation and `id_seq` the
@@ -49,7 +65,8 @@ pub struct TimerCtx {
 /// (D47, Ruling 12). `entry_ts_ms` is the entry timestamp
 /// for calls, timers, init, migrate and xcall delivery, and the timestamp of the applied
 /// entry being read for views (D19). `seed` is the leader's fresh seed for the run; views
-/// and actions ignore it and draw from the node's CSPRNG.
+/// and actions ignore it and draw from the node's CSPRNG. A compute run is an action that
+/// carries `compute`: it draws from `seed` and sees `entry_ts_ms`, like a logged run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub kind: InvocationKind,
@@ -61,6 +78,7 @@ pub struct Invocation {
     pub id_seq: u64,
     pub seed: [u8; 32],
     pub timer: Option<TimerCtx>,
+    pub compute: Option<ComputeCtx>,
 }
 
 /// Per-invocation limits the engine enforces.
@@ -82,6 +100,25 @@ impl Budget {
         }
     }
 
+    /// The budget of an action run (D12): 10 s of wall clock; fuel and memory as a call.
+    #[must_use]
+    pub const fn action() -> Self {
+        Self {
+            wall_clock: ACTION_WALL_CLOCK,
+            ..Self::call()
+        }
+    }
+
+    /// The budget a compute method declares.
+    #[must_use]
+    pub fn compute(caps: &ComputeCaps) -> Self {
+        Self {
+            wall_clock: Duration::from_secs(caps.wall_secs.into()),
+            memory_pages: caps.memory_mib.saturating_mul(PAGES_PER_MIB),
+            fuel: caps.fuel,
+        }
+    }
+
     /// The budget of a view; the same limits as a call.
     #[must_use]
     pub const fn view() -> Self {
@@ -93,7 +130,13 @@ impl Budget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrapKind {
     OutOfFuel,
+    /// The wall-clock budget ran out.
     Timeout,
+    /// A compute run's interrupt flag was set.
+    Cancelled,
+    /// The node could not serve the run (no instance slot, allocation or file bytes): never the
+    /// app's fault, retryable.
+    Unavailable,
     OutOfMemory,
     StackOverflow,
     Fault,
@@ -135,12 +178,23 @@ pub struct Event {
     pub audience: Audience,
 }
 
-/// What an invocation cost. `writes` is counted by the host core.
+/// A message to another app's method (D25, D29): kept in the run's outbox and delivered
+/// by the platform after the entry commits, only if the run ends `Ok`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Xcall {
+    pub app: String,
+    pub method: String,
+    pub args: Vec<u8>,
+}
+
+/// What an invocation cost. `writes` is counted by the host core; `peak_memory` is the most
+/// linear memory the engine granted, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
     pub fuel: u64,
     pub cpu: Duration,
     pub writes: u32,
+    pub peak_memory: u64,
 }
 
 /// Everything the executor sees of an invocation; exactly what the log stores.
@@ -150,8 +204,17 @@ pub struct Outcome {
     pub result: Vec<u8>,
     pub diff: Vec<Write>,
     pub events: Vec<Event>,
+    /// The xcalls the run sent; empty unless `Ok`.
+    pub xcalls: Vec<Xcall>,
+    /// The actions the run started (D17); empty unless `Ok`.
+    pub actions: Vec<crate::action::ActionStart>,
     /// The owner-only app log (stdout, stderr, `log`); kept whatever the status.
     pub logs: Vec<String>,
+    /// A logged run's outbound requests and their responses, for its log entry (D76);
+    /// kept whatever the status, since they left the node. Empty for views and actions.
+    pub http: Vec<crate::action::HttpExchange>,
+    /// Files the run finished; empty unless the status is `Ok`.
+    pub new_files: Vec<NewFile>,
     pub usage: Usage,
 }
 
@@ -192,7 +255,7 @@ impl HostDenied {
     }
 }
 
-/// A blob's metadata. Mirrors the WIT `blob-info`; blobs are not enabled in this milestone.
+/// A blob's metadata. Mirrors the WIT `blob-info`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobInfo {
     pub size: u64,
@@ -209,4 +272,7 @@ pub enum InvalidInvocation {
     /// A `TimerCtx` on an invocation that is not a timer tick.
     #[error("only a timer invocation carries a timer slot")]
     SlotOutsideTimer,
+    /// A compute run on an invocation that is not an action.
+    #[error("only an action invocation carries a compute run")]
+    RunOutsideAction,
 }

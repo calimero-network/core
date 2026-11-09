@@ -21,7 +21,12 @@
 //!   replica's own state ([`crate::app::AppMachine::storage_stats`]); every
 //!   replica reports the same app, so a scraper takes one, never the sum.
 //!
-//! Labels are opaque ids only: `app`, its payer `org` ([`payer`]), and `kind`.
+//! Labels are opaque ids only: `app`, its payer `org` ([`payer`]), the
+//! `developer` billed for it ([`developer`]), and `kind`. `org` and
+//! `developer` are functions of `app` (one value each per app at a time), so
+//! they add no series: a node exports at most 8 series per app it hosts (3
+//! call kinds, CPU, memory, outbound, state, blobs), and an app that changes
+//! payer or developer starts over under the new values ([`Usage::entry`]).
 //! An app's series go once it leaves this node (deleted, or its replica moved).
 //! Counters start at zero when the process starts.
 
@@ -77,6 +82,26 @@ pub fn payer(app: &AppRecord) -> String {
 #[must_use]
 pub fn account_payer(account: &str) -> String {
     format!("account:{account}")
+}
+
+/// Who is billed for an app's usage on Calimero Cloud: the owner of the
+/// deployment it was created from (`AppRecord::deployment`, a developer's
+/// offer a customer instantiated), in [`payer`]'s form (an org's id, or
+/// `account:{id}`); for an app made from a release directly, its [`payer`].
+/// `deployment` is the [`Deployment`] the app names, if it still exists.
+///
+/// Unlike [`payer`] this moves no quota but one: file bytes and limits stay
+/// the owning organization's or account's, while the daily fuel cap
+/// (`Quotas::max_fuel_per_developer_per_day`, D76, D78) follows the developer.
+///
+/// [`Deployment`]: crate::system::Deployment
+#[must_use]
+pub fn developer(app: &AppRecord, deployment: Option<&crate::system::Deployment>) -> String {
+    match deployment.map(|d| &d.owner) {
+        Some(crate::system::Deployer::Org(org)) => org.clone(),
+        Some(crate::system::Deployer::Account(account)) => format!("account:{account}"),
+        None => payer(app),
+    }
 }
 
 /// What one run took.
@@ -144,18 +169,37 @@ pub fn declared_memory(wasm: &[u8]) -> u64 {
     bytes
 }
 
-/// Where a run is billed: the app, its payer and the bundle it runs.
+/// Who an app's usage is billed to: its [`payer`] and its [`developer`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Billed {
+    pub payer: String,
+    pub developer: String,
+}
+
+impl Billed {
+    /// Who `app` is billed to, as the system state `s` stands.
+    #[must_use]
+    pub fn of(s: &crate::system::SystemState, app: &AppRecord) -> Self {
+        let deployment = app.deployment.as_ref().and_then(|d| s.deployments.get(d));
+        Self {
+            payer: payer(app),
+            developer: developer(app, deployment),
+        }
+    }
+}
+
+/// Where a run is billed: the app, who pays for it and the bundle it runs.
 #[derive(Clone, Debug, Default)]
 pub struct Meter {
     pub app: String,
-    pub payer: String,
+    pub billed: Billed,
     pub bundle: String,
 }
 
 /// One app's counters on this node.
 #[derive(Default)]
 struct AppUsage {
-    payer: String,
+    billed: Billed,
     calls: [u64; Kind::ALL.len()],
     cpu: Duration,
     /// Linear memory bytes × wall nanoseconds.
@@ -179,18 +223,18 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Usage {
-    /// `app`'s counters under `payer`. A payer change (a transferred personal
-    /// app) starts a new series from zero, so the new payer is billed only
-    /// for what follows.
+    /// `app`'s counters under `billed`. A payer or developer change (a
+    /// transferred personal app) starts a new series from zero, so the new one
+    /// is billed only for what follows.
     fn entry<'a>(
         apps: &'a mut HashMap<String, AppUsage>,
         app: &str,
-        payer: &str,
+        billed: &Billed,
     ) -> &'a mut AppUsage {
         let usage = apps.entry(app.to_owned()).or_default();
-        if usage.payer != payer {
+        if usage.billed != *billed {
             *usage = AppUsage {
-                payer: payer.to_owned(),
+                billed: billed.clone(),
                 ..AppUsage::default()
             };
         }
@@ -213,7 +257,7 @@ impl Usage {
             .copied()
             .unwrap_or(0);
         let mut apps = lock(&self.apps);
-        let usage = Self::entry(&mut apps, &meter.app, &meter.payer);
+        let usage = Self::entry(&mut apps, &meter.app, &meter.billed);
         usage.cpu = usage.cpu.saturating_add(run.cpu);
         usage.memory = usage
             .memory
@@ -223,22 +267,22 @@ impl Usage {
     /// Count a call whose answer stood.
     pub fn called(&self, meter: &Meter, kind: Kind) {
         let mut apps = lock(&self.apps);
-        let usage = Self::entry(&mut apps, &meter.app, &meter.payer);
+        let usage = Self::entry(&mut apps, &meter.app, &meter.billed);
         let n = &mut usage.calls[kind as usize];
         *n = n.saturating_add(1);
     }
 
     /// The counter of `app`'s outbound requests, for its run's client.
     #[must_use]
-    pub fn outbound(&self, app: &str, payer: &str) -> Arc<AtomicU64> {
+    pub fn outbound(&self, app: &str, billed: &Billed) -> Arc<AtomicU64> {
         let mut apps = lock(&self.apps);
-        Arc::clone(&Self::entry(&mut apps, app, payer).outbound)
+        Arc::clone(&Self::entry(&mut apps, app, billed).outbound)
     }
 
     /// Record a sample of `app`'s state and blob bytes.
-    pub fn stored(&self, app: &str, payer: &str, state: u64, blobs: u64) {
+    pub fn stored(&self, app: &str, billed: &Billed, state: u64, blobs: u64) {
         let mut apps = lock(&self.apps);
-        Self::entry(&mut apps, app, payer).stored = Some((state, blobs));
+        Self::entry(&mut apps, app, billed).stored = Some((state, blobs));
     }
 
     /// Drop the series of every app `hosted` does not name.
@@ -254,7 +298,12 @@ impl Usage {
         let mut rows: Vec<(&String, &AppUsage)> = apps.iter().collect();
         rows.sort_unstable_by(|a, b| a.0.cmp(b.0));
         let labels = |app: &str, u: &AppUsage| {
-            format!("app=\"{}\",org=\"{}\"", escape(app), escape(&u.payer))
+            format!(
+                "app=\"{}\",org=\"{}\",developer=\"{}\"",
+                escape(app),
+                escape(&u.billed.payer),
+                escape(&u.billed.developer)
+            )
         };
         let clock = if THREAD_CPU {
             "thread CPU time"
@@ -350,10 +399,18 @@ fn escape(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn billed(payer: &str, developer: &str) -> Billed {
+        Billed {
+            payer: payer.to_owned(),
+            developer: developer.to_owned(),
+        }
+    }
+
+    /// An app made from a release directly: its developer is its payer.
     fn meter(app: &str, payer: &str) -> Meter {
         Meter {
             app: app.to_owned(),
-            payer: payer.to_owned(),
+            billed: billed(payer, payer),
             bundle: "b".to_owned(),
         }
     }
@@ -417,11 +474,11 @@ mod tests {
         u.called(&m, Kind::View);
         let text = rendered(&u);
         for line in [
-            "calimero_app_calls_total{app=\"app1\",org=\"org1\",kind=\"mutation\"} 2",
-            "calimero_app_calls_total{app=\"app1\",org=\"org1\",kind=\"view\"} 1",
-            "calimero_app_wasm_cpu_seconds_total{app=\"app1\",org=\"org1\"} 0.25",
+            "calimero_app_calls_total{app=\"app1\",org=\"org1\",developer=\"org1\",kind=\"mutation\"} 2",
+            "calimero_app_calls_total{app=\"app1\",org=\"org1\",developer=\"org1\",kind=\"view\"} 1",
+            "calimero_app_wasm_cpu_seconds_total{app=\"app1\",org=\"org1\",developer=\"org1\"} 0.25",
             // 2 pages × 2 s.
-            "calimero_app_wasm_memory_byte_seconds_total{app=\"app1\",org=\"org1\"} 262144",
+            "calimero_app_wasm_memory_byte_seconds_total{app=\"app1\",org=\"org1\",developer=\"org1\"} 262144",
             "# TYPE calimero_app_state_bytes gauge",
         ] {
             assert!(text.lines().any(|l| l == line), "no `{line}` in\n{text}");
@@ -440,16 +497,16 @@ mod tests {
     #[test]
     fn outbound_and_storage_series_appear_once_they_count() {
         let u = Usage::default();
-        let sent = u.outbound("app1", "account:alice");
+        let sent = u.outbound("app1", &billed("account:alice", "account:alice"));
         let _prev = sent.fetch_add(3, Ordering::Relaxed);
-        u.stored("app1", "account:alice", 120, 0);
-        u.stored("app2", "org2", 10, 4096);
+        u.stored("app1", &billed("account:alice", "account:alice"), 120, 0);
+        u.stored("app2", &billed("org2", "org2"), 10, 4096);
         let text = rendered(&u);
         for line in [
-            "calimero_app_outbound_requests_total{app=\"app1\",org=\"account:alice\"} 3",
-            "calimero_app_state_bytes{app=\"app1\",org=\"account:alice\"} 120",
-            "calimero_app_state_bytes{app=\"app2\",org=\"org2\"} 10",
-            "calimero_app_blob_bytes{app=\"app2\",org=\"org2\"} 4096",
+            "calimero_app_outbound_requests_total{app=\"app1\",org=\"account:alice\",developer=\"account:alice\"} 3",
+            "calimero_app_state_bytes{app=\"app1\",org=\"account:alice\",developer=\"account:alice\"} 120",
+            "calimero_app_state_bytes{app=\"app2\",org=\"org2\",developer=\"org2\"} 10",
+            "calimero_app_blob_bytes{app=\"app2\",org=\"org2\",developer=\"org2\"} 4096",
         ] {
             assert!(text.lines().any(|l| l == line), "no `{line}` in\n{text}");
         }
@@ -478,8 +535,104 @@ mod tests {
         let text = rendered(&u);
         assert!(!text.contains("account:alice"), "{text}");
         assert!(text.contains(
-            "calimero_app_calls_total{app=\"app1\",org=\"account:bob\",kind=\"mutation\"} 1"
+            "calimero_app_calls_total{app=\"app1\",org=\"account:bob\",developer=\"account:bob\",kind=\"mutation\"} 1"
         ));
+    }
+
+    fn app(org: Option<&str>, deployment: Option<&str>) -> AppRecord {
+        serde_json::from_value(serde_json::json!({
+            "appId": "a", "name": "n", "group": 2, "bundle": "b", "owner": "carol",
+            "org": org, "replicas": [1], "createdAt": 0, "deployment": deployment,
+        }))
+        .unwrap()
+    }
+
+    fn state_with_deployment(id: &str, owner: serde_json::Value) -> crate::system::SystemState {
+        let mut s = crate::system::SystemState::default();
+        let d = serde_json::from_value(serde_json::json!({
+            "id": id, "name": "dev", "owner": owner, "apps": {},
+            "createdBy": "dev", "createdAt": 0,
+        }))
+        .unwrap();
+        let _prev = s.deployments.insert(id.to_owned(), d);
+        s
+    }
+
+    #[test]
+    fn an_instance_of_a_deployment_is_billed_to_the_deployments_owner() {
+        let s = state_with_deployment("d1", serde_json::json!({ "org": "devorg" }));
+        let customer = app(Some("custorg"), Some("d1"));
+        assert_eq!(
+            Billed::of(&s, &customer),
+            billed("custorg", "devorg"),
+            "the customer's org keeps the quotas; the developer pays"
+        );
+        let s = state_with_deployment("d2", serde_json::json!({ "account": "dave" }));
+        assert_eq!(
+            Billed::of(&s, &app(None, Some("d2"))),
+            billed("account:carol", "account:dave")
+        );
+    }
+
+    #[test]
+    fn an_app_made_from_a_release_is_billed_to_its_payer() {
+        let s = crate::system::SystemState::default();
+        assert_eq!(Billed::of(&s, &app(Some("o"), None)), billed("o", "o"));
+        assert_eq!(
+            Billed::of(&s, &app(None, None)),
+            billed("account:carol", "account:carol")
+        );
+        // A deployment the state no longer has: the payer, never an empty label.
+        assert_eq!(
+            Billed::of(&s, &app(Some("o"), Some("gone"))),
+            billed("o", "o")
+        );
+    }
+
+    #[test]
+    fn two_developers_apps_on_one_node_are_billed_apart() {
+        let u = Usage::default();
+        u.learn("b", &module(1));
+        let a = Meter {
+            app: "appA".to_owned(),
+            billed: billed("custorg", "devA"),
+            bundle: "b".to_owned(),
+        };
+        let b = Meter {
+            app: "appB".to_owned(),
+            billed: billed("custorg", "devB"),
+            bundle: "b".to_owned(),
+        };
+        u.called(&a, Kind::Mutation);
+        u.called(&a, Kind::Mutation);
+        u.called(&b, Kind::View);
+        let text = rendered(&u);
+        for line in [
+            "calimero_app_calls_total{app=\"appA\",org=\"custorg\",developer=\"devA\",kind=\"mutation\"} 2",
+            "calimero_app_calls_total{app=\"appB\",org=\"custorg\",developer=\"devB\",kind=\"view\"} 1",
+        ] {
+            assert!(text.lines().any(|l| l == line), "no `{line}` in\n{text}");
+        }
+        assert!(
+            !text.contains("developer=\"devB\",kind=\"mutation\""),
+            "{text}"
+        );
+        assert!(!text.contains("developer=\"devA\",kind=\"view\""), "{text}");
+    }
+
+    #[test]
+    fn a_new_developer_starts_from_zero() {
+        let u = Usage::default();
+        let mut m = meter("app1", "o");
+        u.called(&m, Kind::Mutation);
+        m.billed.developer = "dev".to_owned();
+        u.called(&m, Kind::Mutation);
+        let text = rendered(&u);
+        assert!(
+            text.contains("calimero_app_calls_total{app=\"app1\",org=\"o\",developer=\"dev\",kind=\"mutation\"} 1"),
+            "{text}"
+        );
+        assert!(!text.contains("developer=\"o\""), "{text}");
     }
 
     #[test]

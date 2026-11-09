@@ -1,8 +1,8 @@
 //! Outbound HTTPS requests from a run, and the secrets they may carry.
 //!
-//! The runtime's `http_request` host function hands the request bytes to
-//! whatever [`OutboundHost`] the node supplied; this module is that host. It
-//! makes a request only when every gate holds:
+//! A component's action asks the node for an HTTP request; the node hands the
+//! request's bytes to the [`OutboundHost`] this crate makes for the run
+//! ([`OutboundService::for_run`]). It makes a request only when every gate holds:
 //!
 //! 1. **The operator turned it on** (`[outbound] enabled`, off by
 //!    default) and allows the request's host (`hosts`: listed, or `"*"` for
@@ -46,7 +46,6 @@ use calimero_primitives::outbound::{
     OutboundMethod, OutboundRequest, OutboundResponse, MAX_HEADERS, MAX_HEADER_BYTES,
     MAX_REQUEST_BODY, MAX_RESPONSE_BODY, MAX_URL, SECRET_PREFIX, SECRET_SUFFIX, TIMEOUT_MS,
 };
-use calimero_runtime::logic::OutboundHost;
 use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -55,6 +54,17 @@ use zeroize::Zeroizing;
 mod settings;
 
 pub use settings::*;
+
+/// Sends a run's outbound request: borsh `OutboundRequest` in, borsh
+/// `OutboundResponse` out (`calimero_primitives::outbound`).
+pub trait OutboundHost: Send + Sync + fmt::Debug {
+    /// Send `request`, or say why not.
+    ///
+    /// # Errors
+    /// A message for the guest: a refused or malformed request, a failed
+    /// connection, a timeout, a response over the size limit.
+    fn send(&self, request: &[u8]) -> Result<Vec<u8>, String>;
+}
 
 /// The most prefixes one approval holds.
 pub const MAX_OUTBOUND_APPROVALS: usize = 64;
@@ -342,6 +352,10 @@ pub trait Transport: Send + Sync + fmt::Debug {
     /// The request failed, timed out, or answered more than the limit.
     fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)>;
 }
+
+/// Cloudflare Turnstile's token check. The node posts a client's token here, through
+/// the app's own outbound gate, before it runs a `captcha(turnstile)` method.
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 /// The node's outbound policy: the operator's hosts and secrets.
 #[derive(Debug)]

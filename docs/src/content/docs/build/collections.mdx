@@ -1,372 +1,117 @@
 ---
-title: Collections
-description: The collection types your app state is built from — what each stores, who may write it, and when to use each.
+title: Tables & Collections
+description: Reference for the state types of calimero-sdk — Table with indexes, unique constraints and counts, and the collections Cell, UnorderedMap, Set, Vector, Counter, Frozen, PerUser, Text and RichText.
 sidebar:
-  order: 4
+  order: 5
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-Your [`#[app::state]`](/build/sdk-macros/) is built from the collection types in
-`calimero_storage::collections`. Each stores its entries as separate entities,
-so a call writes only the entries it touches, and the access-controlled ones
-check who may write when the run writes. An app's calls run one at a time on its
-leader and the other replicas apply what each run wrote
-([CRDT collections](/protocol/crdt-internals/)), so choosing a collection is
-choosing a data structure, a cost and a write rule, not a merge.
+An app's state is the fields of its `#[app::state]` struct. Each field is a
+**table** or a **collection**, a handle over the app's ordered key-value store
+(`crates/sdk/src/table.rs`, `crates/sdk/src/collections`). Loading the state
+reads nothing; every operation reads or writes only the keys it needs.
 
-<Aside type="note" title="Get returns an owned, read-only copy">
-  Storage values are not resident in memory like a `HashMap`'s — every `get`
-  deserializes a fresh copy, returned as a read-only `ValueRef<V>`. To mutate and
-  persist, use `get_mut` or `entry().or_default()` (both write back on drop). To
-  keep a copy, `.clone()` it. Mutating a plain `get` result does not compile —
-  that closes the "edit a throwaway copy and lose the change" footgun.
-</Aside>
+One leader applies every write in log order, so these are plain data
+structures, not CRDTs: there is nothing to merge. The exception is `Text`,
+which stays a sequence CRDT so that edits typed against a stale view still land
+where they were meant (see [Collaborative text](/core/build/guides/collaborative-text/)).
 
-## Type reference
+## Tables
 
-| Type | What it is | When to use |
-|------|-----------------|-------------|
-| `UnorderedMap<K, V>` | Key→value map; each entry its own entity. No iteration order. | Default key→value store; O(1) point lookups. |
-| `UnorderedSet<V>` | Membership set; each member its own entity. | Default set; O(1) membership tests. |
-| `SortedMap<K, V>` | An `UnorderedMap` with reads in key order. | When you need range / prefix / pagination / sorted iteration. |
-| `SortedSet<V>` | An `UnorderedSet` with reads in member order. | Ordered membership with range / prefix / pagination. |
-| `IndexedMap<K, V>` | An `UnorderedMap`'s stored bytes, with queries on the fields the value type declares. | List views that filter, count or page by a field: "open issues, newest first", "notes of deal 7". |
-| `Vector<V>` | Append-only sequence; `push` mints a stable element id. | Ordered lists where you append and index. |
-| `FugueText` | Fugue text over run-length blocks; two runs typed at one spot never interleave. | Collaborative plain text. |
-| `RichText<Sc>` | A `FugueText` plus write-once formatting marks. | One formatted body. |
-| `RichDocument<Sc>` | Ordered blocks, each with kind, depth, attributes and a `RichText` body, written field by field. | Block documents: headings, paragraphs, lists. |
-| `ReplicatedGrowableArray` | Text; characters ordered by neighbor + HLC. Two runs typed at one spot can interleave. | Apps that already store RGA text. |
-| `LwwRegister<T>` | One value; a write replaces it. | A single scalar/field. |
-| `Counter` / `GCounter` / `PNCounter` | Per-account slots summed at read. | Counts; `PNCounter` allows decrements. |
-| `Authored<C>` | Any keyed collection `C` (`UnorderedMap`, `SortedMap`, `IndexedMap`) where each entry is owned by its inserter. | Shared data where users own what they wrote, read however `C` reads. |
-| `AuthoredMap<K, V>` | `Authored<UnorderedMap<K, V>>`. | Shared map where users own their own entries. |
-| `AuthoredSortedMap<K, V>` | `Authored<SortedMap<K, V>>`. | Shared map with hierarchical keys where reads are range / prefix slices. |
-| `WriteOnce<C>` | `Authored<C>` whose entries can never be edited or deleted, even by their owner. | Signed messages, votes, an audit log. |
-| `Moderated<C>` / `ModeratedOnce<C>` | `Authored<C>` / `WriteOnce<C>` whose entries a rotatable set of moderators may also delete. | Posts or messages where moderators remove spam. |
-| `AuthoredVector<V>` | `Vector` where each slot is owned by its author. | Append-only log where authors control their entries. |
-| `UserStorage<T>` | Per-user slots; each account writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
-| `SharedStorage<T>` | Value guarded by a writer set, checked when the run writes. | Group-writable shared state with rotatable writers. |
-| `Ownable<T>` | Single-owner cell (a `SharedStorage` with one writer). | Single-owner resource with transfer. |
-| `PermissionedStorage<T, A>` | Writer-set cell with a custom authorization policy. | Fine-grained per-operation access (read/write/delete/admin). |
-| `FrozenStorage<T>` | Content-addressed, immutable; key is `SHA256(value)`. | Immutable, de-duplicated blobs/documents. |
-| `ContentAddressed<C>` | Any keyed collection `C` with `[u8; 32]` keys, content-addressed and immutable. | An immutable log you also filter or page, e.g. `ContentAddressed<IndexedMap<[u8; 32], Event>>`. |
-| `Frozen<T>` | One value, written once by whoever created it; a change or a delete is refused. | A charter, a founding date, configuration fixed at `init`. |
-| `AccessControl` | Role registry (admins + named roles) backed by `SharedStorage`. | Multi-tier authorization (admins, editors, ...). |
-| `Registry<K, V, A>` | Claims owned by their claimants; verdicts written only by the authority `A`, each its own entry, the highest epoch then lowest order standing. | Usernames, seats, slugs: at most one owner per name. |
-
-<Aside type="caution">
-  These are the publicly re-exported types in `crates/storage/src/collections.rs`.
-  `Counter` is an alias over a const-generic `Counter<ALLOW_DECREMENT>`:
-  `GCounter` (increment-only, reads `u64`) and `PNCounter` (increment + decrement,
-  reads `i64`). `WriterSetCell` and `FrozenValue` also exist but are the building
-  blocks behind `SharedStorage` and `FrozenStorage` — reach for the higher-level
-  types.
-</Aside>
-
-## The everyday types
-
-- **`UnorderedMap` / `UnorderedSet`** — your defaults. Each entry is its own
-  entity, so a call that sets one key writes only that entry; a
-  `UnorderedMap<String, LwwRegister<String>>` is the pattern `apps/kv-store` uses.
-- **`SortedMap` / `SortedSet`** — the unordered pair with reads in key order:
-  `range(a..b)`, `prefix(p)`, `page(offset, limit)`, `first()`, and `last()`.
-  A cluster node keeps no ordered index, so each of these reads loads and sorts
-  every entry ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
-  See `apps/sorted-kv-store`.
-- **`IndexedMap`** — an `UnorderedMap` whose value type declares what it is
-  looked up by, so a list view is a query by field. Derive the declaration and
-  query by index name:
-
-  ```rust
-  #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
-  #[borsh(crate = "calimero_sdk::borsh")]
-  #[index(status_created(status, created_at))]
-  pub struct Issue {
-      #[index] pub status: LwwRegister<String>,
-      #[index] pub labels: LwwRegister<Vec<String>>,   // one row per label
-      pub created_at: LwwRegister<u64>,
-  }
-
-  let newest_open = self.issues
-      .query("status_created").eq("open").desc().limit(20).entries()?;
-  let open = self.issues.query("status").eq("open").count()?;
-  ```
-
-  `eq` pins the index key's next component and `range` bounds the one after;
-  on a compound index the free components order the result. A `Vec` field puts
-  the entry in once per element and an `Option::None` leaves it out. Change an
-  indexed field with `update(key, |v| ...)`, which keeps the indexes in step.
-  The map reports itself as an `UnorderedMap` and stores exactly its bytes, so
-  switching a field from `UnorderedMap` to `IndexedMap` needs no migration. A
-  cluster node keeps no secondary index, so each query scans every entry,
-  `O(n)` ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
-  See `apps/indexed-issue-tracker`,
-  and `apps/indexed-forum` for a compound index over a list and `IndexedMap`
-  beside authored and set collections.
-- **`Vector`** — append + index. `push` assigns each element a stable id, so
-  iteration order is preserved across reloads.
-- **`LwwRegister<T>`** — wrap any scalar. This is how you store a `String`,
-  number, or enum inside app state (bare scalars are rejected by the state
-  lint). `set` replaces the value; `get_mut` edits in place and writes on drop.
-- **`Counter` family** — increments are tracked per account and summed on read.
-  `GCounter` is increment-only; `PNCounter` also decrements.
-
-<Aside type="tip" title="New collaborative text: use FugueText">
-  `FugueText`, `RichText` and `RichDocument` keep two runs typed at the same spot whole instead of interleaving them, and cost less per keystroke.
-  [Build a collaborative editor](/build/guides/collaborative-text/) shows how to wire an editor to them.
-</Aside>
-
-`ReplicatedGrowableArray` names each character by a `CharId` (HLC + sequence)
-and orders the text by a deterministic walk over them. Two runs typed at the
-same spot can interleave, which is why new text should use `FugueText`.
-
-## Worked examples
-
-A different real scenario for each everyday type — pick the one whose shape
-matches what you are modeling.
-
-**`SortedMap` — a live leaderboard.** Keys sort ascending by their *raw bytes*,
-so to show highest scores first, store `u64::MAX - score` big-endian; the
-top scores then come first:
+A `Table<R>` holds [records](/core/build/sdk-macros/#deriverecord-and-table):
+rows with a primary key, unique constraints, indexes, maintained counts and,
+optionally, full-text search.
 
 ```rust
-// Leaderboard, highest score first. Big-endian is mandatory: otherwise 255
-// sorts after 256, and `u64::MAX - score` inverts ascending order into a ranking.
-let mut board: SortedMap<[u8; 8], LwwRegister<String>> = SortedMap::new();
-board.insert((u64::MAX - score).to_be_bytes(), player.into())?;
-let top_10 = board.page(0, 10)?;                       // sorts every entry, then takes 10
-```
-
-The same shape backs a time-ordered activity feed — key on a big-endian
-timestamp and `range(since.to_be_bytes()..now.to_be_bytes())?` to read a window.
-
-**`UnorderedMap` — an asset registry.** The default key→value store when every
-access is a point lookup by id and iteration order never matters:
-
-```rust
-// id -> asset metadata; O(1) lookups, no ordering overhead.
-let mut assets: UnorderedMap<String, LwwRegister<String>> = UnorderedMap::new();
-assets.insert(asset_id.clone(), metadata_uri.into())?;
-let uri = assets.get(&asset_id)?;                      // O(1), independent of size
-```
-
-**`UnorderedSet` — a moderation blocklist.** Membership is exactly what a
-blocklist (or a tag set) wants: blocking an account twice leaves it blocked
-once:
-
-```rust
-let mut blocked: UnorderedSet<String> = UnorderedSet::new();
-let was_new = blocked.insert(account_id)?;             // false if already present
-if blocked.contains(&caller)? { return; }              // reject the action
-```
-
-**`Vector` — an append-only audit log.** `push` mints a stable element id, so
-insertion order survives reloads; read the whole log with a single `iter` pass:
-
-```rust
-let mut audit: Vector<LwwRegister<String>> = Vector::new();
-audit.push(format!("{caller} granted role: admin").into())?;
-for line in audit.iter()? { /* render oldest-first */ }  // one O(n) pass — never get(i) in a loop
-```
-
-**`Counter` — like / view counts.** Increments are tracked per account and
-summed on read, so each like adds to its liker's own slot. Nest per id:
-
-```rust
-let mut likes: UnorderedMap<String, Counter> = UnorderedMap::new();
-likes.entry(post_id)?.or_default().increment()?;       // one more in the caller's slot
-```
-
-**`ReplicatedGrowableArray` — a collaborative document.** A shared notepad
-several people edit; build text with one bulk `insert_str`, never a
-per-character loop (each call re-materializes the whole document):
-
-```rust
-let mut doc: ReplicatedGrowableArray = ReplicatedGrowableArray::new();
-doc.insert_str(0, "Hello, world")?;                    // bulk — materializes order once
-let text = doc.get_text()?;                            // deterministic walk over all chars
-```
-
-## Key types
-
-Map and set entries are addressed by the **raw bytes of their key**, so a key type
-must implement `AsRef<[u8]>` (the SDK's `StorageKey` requirement, alongside being
-borsh-(de)serializable, `Eq`, and `'static`). A bare `u64` or an arbitrary struct has
-no canonical byte form, so it is **rejected at compile time** — `insert` / `get` simply
-won't accept it:
-
-```rust
-// Does not compile: `u64` is not a `StorageKey` — it has no `AsRef<[u8]>`.
-let mut scores: UnorderedMap<u64, LwwRegister<String>> = UnorderedMap::new();
-```
-
-The fix is a thin **newtype** that wraps an already-byte-encodable representation and
-forwards `AsRef<[u8]>` to it. This is the `apps/custom-key-store` pattern — and it is
-also where you put key normalization or validation:
-
-```rust
-#[derive(Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
-pub struct Slug(String);
-
-impl AsRef<[u8]> for Slug {        // the impl that makes it a valid key
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
+#[derive(Record)]
+#[table(
+    key = "id",
+    unique(slot = ["room_id", "start"]),
+    index(by_start = ["checked_in", "start"]),
+    count(by_room = ["room_id"]),
+)]
+pub struct Booking {
+    pub id: String,
+    pub room_id: String,
+    pub start: u64,
+    pub title: String,
+    pub checked_in: bool,
 }
-
-// Now compiles: `Slug: StorageKey`, so every key op is available.
-let mut pages: UnorderedMap<Slug, LwwRegister<String>> = UnorderedMap::new();
 ```
 
-In an owned collection (`Authored`, `WriteOnce`, `Moderated`, `ModeratedOnce`) a
-key's `as_ref()` bytes must also be the **tail of its borsh encoding**, because
-the storage layer recovers the key from the stored entry's bytes. `Slug(String)` is
-(borsh writes a `String` as its length, then its bytes), and so are `Vec<u8>`,
-`[u8; N]` and account ids; a key whose bytes are not is refused on insert.
+| Method | Does |
+| --- | --- |
+| `insert(record)` | Inserts; an existing key is `Duplicate { index: "key" }`, a unique clash `Duplicate { index: <name> }`. |
+| `upsert(record)` | Inserts or replaces; unique constraints still apply. |
+| `get(&key)` / `contains(&key)` | The record with this key / whether it exists. |
+| `update(&key, \|r\| ..)` | Changes the record and re-indexes what changed; `false` when absent. |
+| `remove(&key)` | Removes the record and its index, unique and count entries; `false` when absent. |
+| `find(index, &prefix, opts)` | Records whose index fields start with `prefix`, in index order, one page at a time. |
+| `scan(opts)` | All records in key order, one page at a time. |
+| `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
+| `search(query, ..)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
 
-The same shape works for an id newtype over `[u8; 32]`. For a numeric key, wrap the
-**big-endian** bytes (`u64::to_be_bytes()`) so that — in a `SortedMap` — byte order
-matches numeric order; see [Modeling your state](/build/state-modeling/) for why
-little-endian keys sort incorrectly.
+Index and count names are camelCase (`by_start` → `"byStart"`). Prefixes and
+bounds are `KeyPart`s: `Str`, `Int`, `Bool`, `Bytes`.
 
-## Access-controlled collections
+```rust
+let due = self.bookings.find(
+    "byStart",
+    &[KeyPart::Bool(false)],
+    FindOpts::default().to(vec![KeyPart::Int(i128::from(tick.scheduled))]),
+)?;
+for b in due.items {
+    self.bookings.remove(&b.id)?;
+}
+```
 
-These add a write rule to a collection. The rule is checked when the run
-writes, on the app's leader, against the caller's account; a write the caller
-may not make is refused and nothing is appended, and the other replicas apply
-the leader's diff without running it again
-([Where the rule is checked](/build/permissioned-storage/#where-the-rule-is-checked)).
-Because the rule lives in the type, it holds for every method that writes the
-field, not only the ones that remember to check.
+### Pages
 
-- **`Authored<C>`** — *per-entry ownership over any keyed collection*. The
-  collection decides how entries are read, and `Authored` decides who may change
-  them:
+Every multi-row read returns a `Page { items, next }`. `FindOpts` sets
+`limit` (100 when unset, at most 1,000), `cursor` (the previous page's
+`next`), `reverse`, and `from` (inclusive) / `to` (exclusive) bounds after the
+prefix. A page reads at most `limit + 1` entries.
 
-  ```rust
-  posts:    Authored<IndexedMap<String, Post>>,   // filter, sort, count by fields
-  comments: Authored<SortedMap<String, Comment>>, // threads as key ranges
-  ```
+## Collections
 
-  `insert` stamps the caller as owner, and `update` / `modify` / `remove` are
-  refused for anyone else. Reads are the
-  inner collection's own (`query`, `range`, `prefix`, `entries`), with `get`,
-  `owner_of` and `owned_by_me` added. `Authored<C>` is `Guarded<C, Owner>`: one
-  entry carries one stamp, so the write policy is a type parameter rather than
-  wrappers that nest. `Authored<IndexedMap>` stores exactly an `AuthoredMap`'s
-  bytes, so switching a field between them needs no migration. See
-  `apps/indexed-forum`.
+| Type | Operations |
+| --- | --- |
+| `Cell<T>` | `get`, `set`, `clear` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
+| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
+| `Vector<T>` | `push` (returns the position), `get`, `set` (`OutOfBounds` past the end), `pop`, `len`, `is_empty`, `page`, `clear` |
+| `Counter` | `get`, `add`, `increment` |
+| `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of` |
+| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` reads another's |
+| `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
+| `RichText` | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
 
-- **`AuthoredMap<K, V>` / `AuthoredVector<V>`** — *per-entry ownership*.
-  `AuthoredMap` is `Authored<UnorderedMap<K, V>>` under its original name. Anyone
-  can insert a new key (or push a new slot); the inserter is recorded as owner.
-  Only the owner may `update` or `remove` (vector entries are tombstoned, not
-  physically removed). Anyone can read. Use for
-  shared maps/logs where users own what they contributed.
+Despite its name, `UnorderedMap` reads in key order (`page`, `range`, `first`,
+`last`), so it also serves as a sorted map; tuple keys make nested maps.
 
-- **`AuthoredSortedMap<K, V>`** — the same ownership model with an ordered view,
-  so a reader can `prefix` / `range` / `page` instead of walking everything.
-  Identical in storage (it reports `CrdtType::UserStorage` like `AuthoredMap`),
-  and it costs what `SortedMap` costs: on a cluster, each ordered read loads and
-  sorts every entry.
+```rust
+#[app::state(version = 1)]
+pub struct Store {
+    items: UnorderedMap<String, String>,
+    tags: Set<String>,
+    visits: Counter,
+    profile: PerUser<String>,
+}
+```
 
-  <Aside type="caution" title="An authored collection can be grown by anyone">
-  On an authored collection the two halves of the ownership model compound:
-  **anyone may insert under any key**, and **only an entry's own owner may ever
-  remove it**. So a member acting in bad faith can grow the collection without
-  bound and nobody else can shrink it, and every read that loads the whole
-  collection pays for that. On a cluster that is every ordered read too, since
-  the node keeps no index: a `prefix` slice of an `AuthoredSortedMap` loads and
-  sorts every entry before it slices. Shard by the key readers ask for (one
-  collection per topic, per channel) so a flood in one shard costs only its
-  readers.
+## Costs and limits
 
-  Worked example in `apps/authored-sorted-kv-store`, with
-  `workflows/authored-sorted-kv-store.yml` checking that authored state is read
-  back by another account and that the owner gate refuses that account's edit.
-  </Aside>
+- Lengths and counts are stored and kept with an atomic add on every write, so
+  `len` and `count` are one read, never a scan.
+- `clear` deletes in batches of at most 1,000 until nothing is left.
+- A key over 1 KiB is refused (`KeyTooLong`) before any store call.
+- Values are deterministic CBOR; keys are order-preserving tuples, the
+  contract the TypeScript SDK produces the same bytes for.
+- `Text` reads and edits load every node (1,000 per host read); its `len` is
+  one read.
 
-- **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
-  only write its own slot (`insert` targets `env::account_id()`); reads are
-  unrestricted (`get` for the current user, `get_for_user(key)` for any). Use for
-  per-user preferences or state. See `apps/kv-store-with-user-and-frozen-storage`.
-
-- **`SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>`** —
-  *writer-set guarded*. The value lives behind a set of authorized writer
-  identities. `SharedStorage` lets any current writer write; `Ownable` is the
-  single-writer case with `owner` / `transfer_ownership`; `PermissionedStorage`
-  takes a policy `A` (e.g. `OwnerAcl`, `WriterSetAcl`, `ProtocolAuthorizer`) for
-  per-operation granularity (read / write / delete / admin). Writers are
-  rotatable (`rotate_writers`), and the node checks each rotation after the run
-  against the writer set it replaces. See
-  `apps/kv-store-with-shared-storage`.
-
-- **`AccessControl`** — a role registry built on `SharedStorage` whose writer set
-  is the admin tier. Admins grant/revoke named roles (`grant(role, who)`,
-  `has_role`, `grant_admin`, ...); a grant is checked against the admin writer
-  set when the run writes. Use
-  for multi-tier authorization.
-
-- **`Registry<K, V, A>`** — *one owner per name*. Members `claim` a name into
-  their own `Authored` entry; only the authority `A` writes verdicts: a TEE
-  through a `TeeOnly` cell (`Tee`, the default), the admins through a
-  `SharedStorage` cell (`Admin`), or nobody (`NoAuthority`, which reports
-  contests). `status` is `Free`, `Pending`, `Owned`, `Lost` or `Contested`, and
-  `owner_of` is `Some` only once a verdict names an owner. See
-  [choosing a collection](/build/choosing-state/#unique-names-registry),
-  `apps/name-registry` (`Tee`) and `apps/name-registry-admin` (`Admin`).
-
-## Immutable / content-addressed
-
-- **`FrozenStorage<T>`** — a map whose key is the `SHA256` of the value. Entries
-  are immutable: no overwrite, no remove. `insert(value)` returns the hash;
-  inserting identical content again stores nothing new. Use for
-  archives, static assets, or any content-addressed immutable data. See
-  `apps/kv-store-with-user-and-frozen-storage`.
-
-- **`ContentAddressed<C>`** — the same rule over any keyed collection with
-  `[u8; 32]` keys: `ContentAddressed<IndexedMap<[u8; 32], Event>>` is an
-  immutable, de-duplicated log you can still filter and page. `insert(value)`
-  returns the hash, an entry whose key is not its hash is refused, and
-  nothing can update or remove one. `ContentAddressed<UnorderedMap<[u8; 32], T>>`
-  stores exactly a `FrozenStorage<T>`'s bytes. A content-addressed value should
-  be plain data, since its hash is taken over the bytes it is written with.
-
-- **`WriteOnce<C>`** — owned *and* immutable: the inserter owns the entry, and
-  nobody, the owner included, can change or delete it. A second, different
-  value for one key seals the entry and `get` returns
-  `StorageError::Conflicted`. Every listing
-  of a `WriteOnce` or `ModeratedOnce` collection (`entries_with_owners`,
-  `entries_by`, `my_entries`, `entries_at`, `entries`, and a sorted map's
-  `keys`, `values`, `range`, `prefix`, `page`, `first`, `last`) returns a
-  `Written<V>` per entry, `Written::Conflicted` for a sealed one, so a tally
-  must count it. An `IndexedMap` query matches indexed values, and a sealed
-  entry has none, so it never matches one. Use it when the key is the app's own
-  (a message id) rather than a hash.
-
-- **`Frozen<T>`** — one value rather than a collection: written in `init`, read
-  with `get`, and there is no `set`. Its only writer holds a write-once
-  capability, so a removal is refused, and a second value from its writer
-  seals it (`get` returns `StorageError::Conflicted`).
-
-See [Choosing state](/build/choosing-state/) for how these compare, and for
-what protects the collections nested inside a guarded entry.
-
-<Aside type="tip" title="Composing values">
-  Collection values can be other collections. Nest them
-  (`UnorderedMap<String, Counter>`) and each nested collection is written entry
-  by entry. A map entry holding a plain struct is one entity, though: a write
-  replaces the whole struct. See
-  [Writing: the entry is the unit](/build/choosing-state/#writing-the-entry-is-the-unit).
+<Aside type="tip">
+  Prefer `env::unique_id()` to a `Counter` for ids: it needs no read and no
+  write ([The env API](/core/build/host-functions/)).
 </Aside>
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Choosing state" href="/build/choosing-state/" description="Which map, which write policy, what is replicated, and how permissions reach nested data." />
-  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Restrict who may write a value, and where that rule is checked." />
-  <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="What each collection costs in time and disk reads as state grows." />
-  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="How the storage tree underneath these types is replicated." />
-</CardGrid>

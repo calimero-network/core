@@ -6,6 +6,8 @@ use std::path::Path;
 use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
+const CLUSTER_IDENTITY: &str = "c0bfb91fd240b8b36345da220f2a4040028c563d3499d01af91919e90fe1990a"; // a strong point: what `[1; 32]` as cluster key derives
+
 fn merod(home: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_merod"));
     let _ = c.env("CALIMERO_HOME", home).env("RUST_LOG", "warn");
@@ -155,6 +157,29 @@ fn init_config_run_and_inspect_a_node() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&missing.stderr).contains("node's id"));
+
+    // An rp id the app frontends' or an origin's host cannot use is refused
+    // at start, naming the flag, rather than failing every passkey sign-in.
+    for (flag, value) in [
+        ("--apps-domain", "apps.example.com"),
+        ("--origins", "https://evil-calimero.network"),
+    ] {
+        let refused = merod(home.path())
+            .args([
+                "--node",
+                "n1",
+                "run",
+                "--rp-id",
+                "calimero.network",
+                flag,
+                value,
+            ])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(flag) && stderr.contains(value), "{stderr}");
+    }
 
     // `run` starts the node from the file.
     let child = merod(home.path())
@@ -340,4 +365,152 @@ fn attest_serve_answers_each_nonce() {
     let (status, _) = get(port, "/attestation").unwrap();
     assert!(status.contains("404"), "{status}");
     interrupt(child);
+}
+
+/// `--job-node` takes only what a job node uses: a flag that would make it hold
+/// a cluster (here `--bootstrap`, a storage key) is refused before it starts.
+#[test]
+fn a_job_node_refuses_flags_that_make_no_sense_for_it() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let job = |extra: &[&str]| {
+        merod(home.path())
+            .args(["--node", "j1", "run", "--job-node", "--dev"])
+            .args(["--node-id", "9"])
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    for (flag, value) in [("--bootstrap", None), ("--storage-key", Some("aa"))] {
+        let out = job(&[Some(flag), value]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>());
+        assert!(!out.status.success(), "{flag}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(&format!("{flag} makes no sense")), "{err}");
+    }
+    assert!(health(port).is_none(), "nothing started");
+}
+
+/// A job node over the binary: a scratch directory, `/health`, an attestation
+/// binding its job key, and no receipts.
+#[test]
+fn a_job_node_attests_its_job_key_and_has_no_receipts() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let data = home.path().join("data");
+    let child = merod(home.path())
+        .args(["run", "--job-node", "--dev", "--node-id", "9"])
+        .args(["--cluster-identity", CLUSTER_IDENTITY])
+        .args(["--listen", &format!("127.0.0.1:{port}")])
+        .arg("--data-dir")
+        .arg(&data)
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while health(port).is_none() {
+        assert!(Instant::now() < deadline, "the job node did not start");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let nonce = [6u8; 32];
+    let jobs = format!("/attestation?nonce={}&purpose=jobs", hex::encode(nonce));
+    let (status, body) = get(port, &jobs).unwrap();
+    assert!(status.contains("200"), "{status} {body}");
+    let doc: calimero_client::attest::AttestationDoc = serde_json::from_str(&body).unwrap();
+    let mock = calimero_client::Policy {
+        allow_mock: true,
+        ..calimero_client::Policy::default()
+    };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (transport, job_key) = rt
+        .block_on(calimero_client::attest::verify_job_key(&doc, &nonce, &mock))
+        .unwrap();
+    assert_eq!(hex::encode(transport), doc.transport_key);
+    assert_eq!(Some(hex::encode(job_key)), doc.job_key);
+    // Another nonce does not verify the same document.
+    assert!(rt
+        .block_on(calimero_client::attest::verify_job_key(
+            &doc, &[7; 32], &mock
+        ))
+        .is_err());
+
+    let receipts = format!("/attestation?nonce={}&purpose=receipts", hex::encode(nonce));
+    let (status, _) = get(port, &receipts).unwrap();
+    assert!(status.contains("404"), "{status}");
+    // No other attestation: a channel that attests the transport key the usual way never opens.
+    let plain = format!("/attestation?nonce={}", hex::encode(nonce));
+    let (status, _) = get(port, &plain).unwrap();
+    assert!(status.contains("404"), "{status}");
+
+    assert!(data.join("scratch").is_dir());
+    assert!(!data.join("raft").exists() && !data.join("cluster.key").exists());
+    interrupt(child);
+}
+
+/// A job node needs the identity of the cluster whose work it takes, as 32 bytes of hex.
+#[test]
+fn a_job_node_needs_the_cluster_identity_it_takes_work_from() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let job = |extra: &[&str]| {
+        merod(home.path())
+            .args([
+                "--node",
+                "j2",
+                "run",
+                "--job-node",
+                "--dev",
+                "--node-id",
+                "9",
+            ])
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = job(&[]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--cluster-identity is required"), "{err}");
+    for bad in ["zz", "ab", &"ab".repeat(33)] {
+        let out = job(&["--cluster-identity", bad]);
+        assert!(!out.status.success(), "{bad}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("64 hex digits"), "{err}");
+    }
+    // A key anyone can sign with is no identity.
+    let weak = format!("01{}", "00".repeat(31));
+    let out = job(&["--cluster-identity", &weak]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("weak"), "{err}");
+    // The peers of a cluster node mean nothing to it.
+    let out = job(&[
+        "--cluster-identity",
+        CLUSTER_IDENTITY,
+        "--peers",
+        "1=http://a:1",
+    ]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--peers makes no sense"));
+    assert!(health(port).is_none(), "nothing started");
+}
+
+/// A job node outside `--dev` attests itself with a TEE release and profile: without them it
+/// does not start.
+#[test]
+fn a_tdx_job_node_needs_the_release_and_profile_to_attest_itself() {
+    let home = tempfile::tempdir().unwrap();
+    let out = merod(home.path())
+        .args(["run", "--job-node", "--node-id", "9"])
+        .args(["--cluster-identity", CLUSTER_IDENTITY])
+        .args(["--listen", &format!("127.0.0.1:{}", free_port())])
+        .arg("--data-dir")
+        .arg(home.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("MERO_TEE_VERSION"), "{err}");
 }

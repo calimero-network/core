@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use openraft::storage::{LogFlushed, RaftLogStorage};
@@ -198,6 +198,10 @@ impl Transaction {
     }
 }
 
+/// The group id of the node's own `meta` rows (`Engine::put_node_meta`). The
+/// node numbers its groups from 1 upwards, so no group ever takes it.
+pub(crate) const NODE_ROWS: GroupId = GroupId::MAX;
+
 const TAG_LOG: u8 = 1;
 const TAG_META: u8 = 2;
 const TAG_STATE: u8 = 3;
@@ -311,6 +315,17 @@ pub struct Db {
     /// The directory it was opened in, which names it to [`crate::testing`].
     #[cfg(feature = "testing")]
     pub(crate) dir: PathBuf,
+    /// Last field, so it is set after RocksDB has closed and released its lock.
+    pub(crate) closed: Closed,
+}
+
+/// Set when dropped; see [`Db::closed`].
+pub(crate) struct Closed(pub(crate) Arc<AtomicBool>);
+
+impl Drop for Closed {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 /// Groups whose applies are held back, by the directory their node opened
@@ -318,6 +333,25 @@ pub struct Db {
 #[cfg(feature = "testing")]
 pub(crate) static HELD: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
     std::sync::Mutex::new(Vec::new());
+
+/// How long closing a store waits first, by the directory it was opened in
+/// (feature `testing`; see [`crate::testing::slow_close`]).
+#[cfg(feature = "testing")]
+pub(crate) static CLOSE_DELAYS: std::sync::Mutex<Vec<(PathBuf, std::time::Duration)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(feature = "testing")]
+impl Drop for Db {
+    fn drop(&mut self) {
+        let delay = CLOSE_DELAYS
+            .lock()
+            .ok()
+            .and_then(|d| d.iter().find(|(dir, _)| *dir == self.dir).map(|(_, t)| *t));
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
+    }
+}
 
 impl Db {
     /// Open (or create) the database under `dir`: the store in `dir/store`,
@@ -357,6 +391,7 @@ impl Db {
             losing: std::sync::RwLock::default(),
             #[cfg(feature = "testing")]
             dir: dir.to_owned(),
+            closed: Closed(Arc::default()),
         }))
     }
 
@@ -1155,5 +1190,28 @@ mod known_answers {
             sealer.open(b"other aad", &vector("sealed_row")).is_err(),
             "the aad is bound"
         );
+    }
+}
+
+#[cfg(test)]
+mod node_rows {
+    use super::*;
+
+    /// The node's rollback counter lives in the store itself: it survives a
+    /// restart, is sealed like every row, and no group's rows touch it.
+    #[test]
+    fn a_node_row_survives_a_reopen_and_opens_only_under_its_key() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let db = Db::open(dir.path(), &[1; 32]).unwrap();
+            db.put_meta(NODE_ROWS, "rollback", &7_u64).unwrap();
+            db.put_meta(1, "rollback", &1_u64).unwrap();
+        }
+        let db = Db::open(dir.path(), &[1; 32]).unwrap();
+        assert_eq!(db.get_meta::<u64>(NODE_ROWS, "rollback").unwrap(), Some(7));
+        assert_eq!(db.get_meta::<u64>(1, "rollback").unwrap(), Some(1));
+        drop(db);
+        let other = Db::open(dir.path(), &[2; 32]).unwrap();
+        assert!(other.get_meta::<u64>(NODE_ROWS, "rollback").is_err());
     }
 }

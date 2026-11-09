@@ -59,6 +59,13 @@ pub struct AttestationDoc {
     /// transport key ([`kms_report_data`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kms: Option<KmsKeys>,
+    /// A job node's signing key (Ed25519, hex), when the attestation was asked
+    /// for it (`purpose=jobs`): then the quote binds it with the transport key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_key: Option<String>,
+    /// The cluster identity (Ed25519, hex) a job node takes work from; the jobs quote binds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_identity: Option<String>,
 }
 
 /// What a node verified of the mero-kms replicas it took its keys from, one
@@ -166,12 +173,98 @@ pub struct Governance {
     /// (organization `MANAGE_APPLICATION` holders), per publisher key, or the
     /// operator.
     pub outbound: Authority,
+    /// Who may install apps (signed packages, raw bundles). `open`: any
+    /// account. `granted`: only an account holding a live deployer grant, or
+    /// a `MANAGE_APPLICATION` holder of an organization holding one; anyone
+    /// may still create instances of the releases they see. Left out of the
+    /// JSON when `open`, so a cluster with the defaults attests the bytes it
+    /// did before this field.
+    #[serde(default, skip_serializing_if = "Deployments::is_default")]
+    pub deployments: Deployments,
+    /// Who grants deployers where deployments are `granted`. `operator`: the
+    /// operator's key. `owner`: the cluster's owner (an account, or an
+    /// organization's `MANAGE_APPLICATION` holders) with a passkey, once the
+    /// operator names it; the operator until then. Left out when `operator`.
+    #[serde(default, skip_serializing_if = "Deployers::is_default")]
+    pub deployers: Deployers,
+    /// Who may create an account. `open`: anyone who reaches the cluster
+    /// (bounded by the account quota). `invite`: only someone holding a
+    /// valid invite, an organization's or a cluster sign-up invite. `closed`:
+    /// only someone the cluster's operator (or owner) pre-authorized with a
+    /// sign-up invite. Changed after genesis only by the operator's
+    /// signature, or the cluster owner's passkey once one is named. Left out
+    /// of the JSON when `open`.
+    #[serde(default, skip_serializing_if = "SignUp::is_default")]
+    pub sign_up: SignUp,
+}
+
+/// Who may create an account on a cluster ([`Governance::sign_up`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignUp {
+    /// Anyone who reaches the cluster.
+    #[default]
+    Open,
+    /// Someone holding an organization invite or a cluster sign-up invite.
+    Invite,
+    /// Someone holding a cluster sign-up invite (a pre-authorization) only.
+    Closed,
+}
+
+impl SignUp {
+    /// Whether this is the default (`open`), which the JSON leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Open
+    }
+}
+
+/// Who may install apps on a cluster ([`Governance::deployments`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployments {
+    /// Any account.
+    #[default]
+    Open,
+    /// Only deployers someone granted. The operator may move a cluster from
+    /// `open` to `granted` once; never back.
+    Granted,
+}
+
+impl Deployments {
+    /// Whether this is the default (`open`), which the JSON leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Open
+    }
+}
+
+/// Who grants deployers on a cluster ([`Governance::deployers`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Deployers {
+    /// The operator, with its key.
+    #[default]
+    Operator,
+    /// The cluster's owner, once the operator names it (a dedicated cluster
+    /// handed to its customer).
+    Owner,
+}
+
+impl Deployers {
+    /// Whether this is the default (`operator`), which the JSON leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::Operator
+    }
 }
 
 impl Governance {
     /// The bytes a quote binds: the JSON, fields in declaration order
     /// (`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`, what
-    /// `JSON.stringify` writes for the same object too).
+    /// `JSON.stringify` writes for the same object too). `deployments`,
+    /// `deployers` and `signUp` follow only when not the default, so a client
+    /// that recomputes the binding keeps them, in this order, when present.
     #[must_use]
     pub fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
@@ -187,6 +280,33 @@ pub fn receipt_key_binding(receipt_key: &[u8; 32], governance: &Governance) -> [
     h.update(b"calimero.tee-attest.receipt-key.v2");
     h.update(receipt_key);
     h.update(sha2::Sha256::digest(governance.canonical()));
+    h.finalize().into()
+}
+
+/// What a job-node attestation's report data binds after the nonce: both keys, the
+/// release, cluster and node id (text u32-BE length-prefixed).
+#[must_use]
+pub fn job_key_binding(
+    transport_key: &[u8; 32],
+    job_key: &[u8; 32],
+    release: &str,
+    cluster: &str,
+    node: u64,
+    cluster_identity: Option<&[u8; 32]>,
+) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"calimero.tee-attest.job-key.v1");
+    h.update(transport_key);
+    h.update(job_key);
+    for text in [release, cluster] {
+        h.update((text.len() as u32).to_be_bytes());
+        h.update(text.as_bytes());
+    }
+    h.update(node.to_be_bytes());
+    if let Some(identity) = cluster_identity {
+        h.update(identity);
+    }
     h.finalize().into()
 }
 
@@ -249,6 +369,80 @@ impl Receipt {
             && vk
                 .verify(
                     &Self::message(&self.app, self.index, &self.result_hash, self.node),
+                    &ed25519_dalek::Signature::from_bytes(&sig),
+                )
+                .is_ok()
+    }
+}
+
+/// What an [`AccountProof`]'s signature covers before its statement.
+pub const ACCOUNT_PROOF_DOMAIN: &[u8] = b"calimero.account-proof.v1\0";
+
+/// What a node states in an [`AccountProof`]: the passkey session that asked
+/// was `account`'s, on `node` of `cluster`, and it bound a relying party's
+/// `nonce` for `audience`, valid from `issued_at` until `expires_at` (Unix
+/// seconds). The node only vouches for who asked; the relying party issued
+/// the nonce and names its own audience.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountStatement {
+    pub cluster: String,
+    pub node: u64,
+    pub account: String,
+    pub nonce: String,
+    pub audience: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+
+impl AccountStatement {
+    /// The bytes signed: [`ACCOUNT_PROOF_DOMAIN`] then the statement's
+    /// canonical JSON (RFC 8785), so a verifier in any language rebuilds them
+    /// from the statement it was handed.
+    #[must_use]
+    pub fn message(&self) -> Vec<u8> {
+        let mut m = ACCOUNT_PROOF_DOMAIN.to_vec();
+        // SAFETY: a struct of strings and integers always serializes.
+        m.extend(serde_json_canonicalizer::to_vec(self).expect("a statement serializes"));
+        m
+    }
+}
+
+/// A node's signed [`AccountStatement`] (`POST /auth/account-proof`): signed
+/// by the node's attested receipt key, so a third party that knows that key
+/// (`GET /attestation?purpose=receipts`, or an operator's
+/// `GET /ops/nodes/{id}/receipt-key`) checks which account a person controls
+/// without taking their word for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountProof {
+    pub statement: AccountStatement,
+    /// The receipt key, hex.
+    pub key: String,
+    /// Ed25519 over [`AccountStatement::message`], hex.
+    pub signature: String,
+}
+
+impl AccountProof {
+    /// Whether this proof is signed by `key` (the node's attested receipt
+    /// key). The caller still checks the statement: its cluster, nonce,
+    /// audience and expiry.
+    #[must_use]
+    pub fn verify(&self, key: &[u8; 32]) -> bool {
+        use ed25519_dalek::Verifier;
+        let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(key) else {
+            return false;
+        };
+        let Some(sig) = hex::decode(&self.signature)
+            .ok()
+            .and_then(|b| <[u8; 64]>::try_from(b).ok())
+        else {
+            return false;
+        };
+        hex::encode(key) == self.key
+            && vk
+                .verify(
+                    &self.statement.message(),
                     &ed25519_dalek::Signature::from_bytes(&sig),
                 )
                 .is_ok()
@@ -415,6 +609,34 @@ pub async fn verify_receipt_key(
     expected[32..].copy_from_slice(&receipt_key_binding(&key, &governance));
     verify_report(doc, nonce, policy, &expected).await?;
     Ok((key, governance))
+}
+
+/// Verify a job-node attestation (`purpose=jobs`): [`verify`]'s checks over a
+/// quote binding see [`job_key_binding`]. Answers `(transport_key, job_key)`.
+pub async fn verify_job_key(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    policy: &Policy,
+) -> eyre::Result<([u8; 32], [u8; 32])> {
+    let transport_key = hex32(&doc.transport_key)?;
+    let job_key = hex32(
+        doc.job_key
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("the attestation names no job key"))?,
+    )?;
+    let identity = doc.cluster_identity.as_deref().map(hex32).transpose()?;
+    let mut expected = [0; 64];
+    expected[..32].copy_from_slice(nonce);
+    expected[32..].copy_from_slice(&job_key_binding(
+        &transport_key,
+        &job_key,
+        &doc.release.version,
+        &doc.cluster,
+        doc.node,
+        identity.as_ref(),
+    ));
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok((transport_key, job_key))
 }
 
 /// The quote is genuine (or an allowed mock), from a trusted image, and its
@@ -638,7 +860,104 @@ mod tests {
             receipt_key: None,
             governance: None,
             kms: None,
+            job_key: None,
+            cluster_identity: None,
         }
+    }
+
+    fn mock_job_doc(transport: [u8; 32], job: [u8; 32], nonce: [u8; 32]) -> AttestationDoc {
+        let mut report = [0; 64];
+        report[..32].copy_from_slice(&nonce);
+        report[32..].copy_from_slice(&job_key_binding(
+            &transport,
+            &job,
+            "2.4.0",
+            "c",
+            1,
+            Some(&[4; 32]),
+        ));
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        AttestationDoc {
+            quote: STANDARD.encode(quote),
+            transport_key: hex::encode(transport),
+            job_key: Some(hex::encode(job)),
+            cluster_identity: Some(hex::encode([4; 32])),
+            mock: true,
+            nonce: hex::encode(nonce),
+            ..doc("2.4.0")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_job_key_attestation_binds_both_keys() {
+        let mock = Policy {
+            allow_mock: true,
+            ..Policy::default()
+        };
+        let nonce = [7; 32];
+        let good = mock_job_doc([1; 32], [2; 32], nonce);
+        let (t, j) = verify_job_key(&good, &nonce, &mock).await.unwrap();
+        assert_eq!((t, j), ([1; 32], [2; 32]));
+        let swapped_job = AttestationDoc {
+            job_key: Some(hex::encode([3; 32])),
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_job, &nonce, &mock).await.is_err());
+        // The identity a job node takes work from is attested: another one does not verify,
+        // nor does one left out or put in.
+        for identity in [Some(hex::encode([5; 32])), None] {
+            let swapped = AttestationDoc {
+                cluster_identity: identity,
+                ..good.clone()
+            };
+            assert!(verify_job_key(&swapped, &nonce, &mock).await.is_err());
+        }
+        let swapped_release = AttestationDoc {
+            release: Release {
+                version: "2.9.0".into(),
+                ..good.release.clone()
+            },
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_release, &nonce, &mock)
+            .await
+            .is_err());
+        let swapped_cluster = AttestationDoc {
+            cluster: "other".into(),
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_cluster, &nonce, &mock)
+            .await
+            .is_err());
+        let swapped_node = AttestationDoc {
+            node: 2,
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_node, &nonce, &mock).await.is_err());
+        let swapped_transport = AttestationDoc {
+            transport_key: hex::encode([4; 32]),
+            ..good.clone()
+        };
+        assert!(verify_job_key(&swapped_transport, &nonce, &mock)
+            .await
+            .is_err());
+        assert!(verify_job_key(&good, &[8; 32], &mock).await.is_err());
+        let none = AttestationDoc {
+            job_key: None,
+            cluster_identity: None,
+            ..good.clone()
+        };
+        let err = verify_job_key(&none, &nonce, &mock).await.unwrap_err();
+        assert!(err.to_string().contains("no job key"), "{err}");
+        assert!(verify_job_key(&good, &nonce, &Policy::default())
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn a_document_without_a_job_key_serializes_as_before() {
+        let v = serde_json::to_value(doc("2.4.0")).unwrap();
+        assert!(v.get("jobKey").is_none());
     }
 
     /// A receipt holds for its result and key only.
@@ -664,6 +983,53 @@ mod tests {
         assert!(!r.verify(&[9; 32], &result));
         let moved = Receipt { index: 8, ..r };
         assert!(!moved.verify(&key, &result));
+    }
+
+    /// An account proof holds for its statement and key only, and its bytes
+    /// are the published vector mdma checks too (`calimero-network/mdma`,
+    /// `tests/test_v2_node_account_proof.py`).
+    #[test]
+    fn an_account_proof_binds_its_statement_and_key() {
+        use ed25519_dalek::Signer;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let key = sk.verifying_key().to_bytes();
+        let statement = AccountStatement {
+            cluster: "eu-shared-1".into(),
+            node: 2,
+            account: "acct-A".into(),
+            nonce: "n0nce-0123456789abcdef".into(),
+            audience: "mdma".into(),
+            issued_at: 1_700_000_000,
+            expires_at: 1_700_000_300,
+        };
+        let message = statement.message();
+        assert_eq!(
+            message,
+            b"calimero.account-proof.v1\0{\"account\":\"acct-A\",\"audience\":\"mdma\",\"cluster\":\"eu-shared-1\",\"expiresAt\":1700000300,\"issuedAt\":1700000000,\"node\":2,\"nonce\":\"n0nce-0123456789abcdef\"}"
+        );
+        assert_eq!(
+            hex::encode(key),
+            "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
+        );
+        let proof = AccountProof {
+            statement: statement.clone(),
+            key: hex::encode(key),
+            signature: hex::encode(sk.sign(&message).to_bytes()),
+        };
+        assert_eq!(
+            proof.signature,
+            "e68bd3aa01d968d879599c293068ae604d018430a42e37f81efaddb59542bd934e7797ce3af78f81a8e47a76d8575bf29a0c9724fe34c8398dc5072298d29807"
+        );
+        assert!(proof.verify(&key));
+        assert!(!proof.verify(&[9; 32]));
+        let other = AccountProof {
+            statement: AccountStatement {
+                account: "acct-B".into(),
+                ..statement
+            },
+            ..proof
+        };
+        assert!(!other.verify(&key));
     }
 
     #[tokio::test]
@@ -902,5 +1268,60 @@ mod tests {
         assert!(p.allowed_tcb_statuses.is_empty()); // UpToDate only
         assert!(!p.accept_mock);
         assert!(p.require_app_hash);
+    }
+
+    /// A cluster deployed with the defaults binds the bytes it bound before
+    /// `deployments` and `deployers` existed, so its receipt keys verify for
+    /// clients that know neither; a granted cluster binds both, after the
+    /// other three, and an attested document without them reads as the
+    /// defaults.
+    #[test]
+    fn the_default_governance_binds_the_bytes_it_did_before_deployers() {
+        assert_eq!(
+            Governance::default().canonical(),
+            br#"{"releases":"owner","appUpgrades":"owner","outbound":"owner"}"#
+        );
+        let granted = Governance {
+            deployments: Deployments::Granted,
+            deployers: Deployers::Owner,
+            ..Governance::default()
+        };
+        assert_eq!(
+            String::from_utf8(granted.canonical()).unwrap(),
+            r#"{"releases":"owner","appUpgrades":"owner","outbound":"owner","deployments":"granted","deployers":"owner"}"#
+        );
+        assert_ne!(
+            receipt_key_binding(&[1; 32], &granted),
+            receipt_key_binding(&[1; 32], &Governance::default())
+        );
+        let old: Governance = serde_json::from_slice(
+            br#"{"releases":"operator","appUpgrades":"owner","outbound":"owner"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.deployments, Deployments::Open);
+        assert_eq!(old.deployers, Deployers::Operator);
+        assert_eq!(old.sign_up, SignUp::Open);
+    }
+
+    /// A cluster whose sign-up is not open binds it, last; an open one binds
+    /// the bytes it did before `signUp` existed.
+    #[test]
+    fn a_sign_up_policy_is_bound_only_when_not_open() {
+        let invite = Governance {
+            sign_up: SignUp::Invite,
+            ..Governance::default()
+        };
+        assert_eq!(
+            String::from_utf8(invite.canonical()).unwrap(),
+            r#"{"releases":"owner","appUpgrades":"owner","outbound":"owner","signUp":"invite"}"#
+        );
+        let closed = Governance {
+            sign_up: SignUp::Closed,
+            ..invite.clone()
+        };
+        assert_ne!(
+            receipt_key_binding(&[1; 32], &closed),
+            receipt_key_binding(&[1; 32], &invite)
+        );
     }
 }

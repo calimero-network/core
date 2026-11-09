@@ -21,24 +21,31 @@ pub mod cluster_key;
 pub mod component;
 pub mod consent_page;
 pub mod error;
+pub mod files;
 pub mod idempotency;
 pub mod inspect;
+pub mod job_node;
+pub mod job_wire;
 pub mod kms;
 pub mod local;
 pub mod membership;
 pub mod metrics;
 pub mod node;
+pub mod origins;
 pub mod packages;
 pub mod placement;
 pub mod presence;
 pub mod proof;
 pub mod report;
-pub mod services;
+pub mod rollback;
 pub mod signing_key;
 pub mod system;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod types;
 pub mod usage;
 
+pub use job_node::{run_job, JobConfig, RunningJob};
 pub use node::{Config, Node};
 
 /// The core release this build is: `[workspace.metadata.workspaces].version`
@@ -84,8 +91,9 @@ impl Running {
     }
 }
 
-/// The configured origins, and every package's frontend origin
-/// (`app_host`), whose sessions are bound to their package.
+/// The configured origins, every package's frontend origin (`app_host`)
+/// and every origin a package's manager registered (`origins`), whose
+/// sessions are bound to their package.
 fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
     use axum::http::{header, HeaderValue, Method};
     let origins: Vec<HeaderValue> = node
@@ -98,7 +106,7 @@ fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
     let allow = tower_http::cors::AllowOrigin::predicate(move |origin: &HeaderValue, _| {
         origins.contains(origin)
             || (weak.upgrade().zip(origin.to_str().ok()))
-                .is_some_and(|(n, o)| n.app_origin_package(o).is_some())
+                .is_some_and(|(n, o)| crate::api::app_origin(&n, o).is_some())
     });
     tower_http::cors::CorsLayer::new()
         .allow_origin(allow)
@@ -175,6 +183,10 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         None => None,
     };
 
+    if let Some(checkpoints) = &node.checkpoints {
+        drop(tokio::spawn(Arc::clone(checkpoints).run(shutdown.clone())));
+    }
+
     drop(tokio::spawn(calimero_sealed::expire_sessions(
         Arc::downgrade(&node.transport),
         shutdown.clone(),
@@ -189,7 +201,6 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             tokio::select! {
                 () = stop.cancelled() => return,
                 _ = applied.changed() => {}
-                () = node_kick(&weak) => {}
                 () = tokio::time::sleep(Duration::from_millis(500)) => {}
             }
             let Some(node) = weak.upgrade() else { return };
@@ -305,12 +316,4 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         shutdown,
         server,
     })
-}
-
-/// Wait for an app entry that may have queued follow-up work.
-async fn node_kick(node: &std::sync::Weak<Node>) {
-    match node.upgrade() {
-        Some(n) => n.kick.notified().await,
-        None => std::future::pending().await,
-    }
 }

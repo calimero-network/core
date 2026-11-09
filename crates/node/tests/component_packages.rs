@@ -9,12 +9,24 @@ mod common;
 use std::collections::BTreeMap;
 
 use calimero_client::{Client, Consistency};
+use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::Executor;
 use common::{signed_up, Cluster};
 use serde_json::{json, Value};
 
-/// A signed single-service `.mpk`, the shape `cargo mero bundle` produces.
+/// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    mpk_with(package, version, wasm, None, key)
+}
+
+/// [`mpk`] shipping `compute` as the service's compute component.
+fn mpk_with(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    compute: Option<&[u8]>,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
         path: path.to_owned(),
@@ -35,6 +47,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm)),
         abi: None,
+        compute: compute.map(|c| artifact("compute.wasm", c)),
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
@@ -49,10 +62,12 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         Vec::new(),
         flate2::Compression::default(),
     ));
-    for (name, bytes) in [
+    let mut entries = vec![
         ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
         ("app.wasm", wasm.to_vec()),
-    ] {
+    ];
+    entries.extend(compute.map(|c| ("compute.wasm", c.to_vec())));
+    for (name, bytes) in entries {
         let mut header = tar::Header::new_gnu();
         header.set_path(name).unwrap();
         header.set_size(bytes.len() as u64);
@@ -186,4 +201,296 @@ async fn rooms_installs_and_runs_from_the_registry() {
         .unwrap();
     assert_eq!(installed["version"], json!("1.0.0"));
     run_rooms_from(&c, &owner, "com.test.rooms", "1.0.0").await;
+}
+
+fn abi(component: &[u8]) -> Value {
+    calimero_app_build::abi_of(component)
+        .unwrap()
+        .expect("an ABI")
+}
+
+/// `component` with its ABI changed by `edit`.
+fn patched(component: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let mut abi = abi(component);
+    edit(&mut abi);
+    calimero_app_build::with_abi(component, &abi).unwrap()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+const PUBLISHER: [u8; 32] = [9; 32];
+
+async fn compute_cluster() -> (Cluster, Client, SoftAuthenticator) {
+    let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
+    let (owner, pk) = signed_up(&c, 0, "owner").await;
+    (c, owner, pk)
+}
+
+async fn install(owner: &Client, version: &str, wasm: &[u8], compute: Option<&[u8]>) -> Value {
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    owner
+        .upload_package(mpk_with("com.test.compute", version, wasm, compute, &key))
+        .await
+        .unwrap()
+}
+
+async fn refused(owner: &Client, wasm: &[u8], compute: &[u8]) -> calimero_client::Error {
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    owner
+        .upload_package(mpk_with(
+            "com.test.compute",
+            "1.0.0",
+            wasm,
+            Some(compute),
+            &key,
+        ))
+        .await
+        .unwrap_err()
+}
+
+async fn create(owner: &Client, version: &str) -> String {
+    let created = owner
+        .post(
+            "apps",
+            json!({ "name": "compute", "package": "com.test.compute", "version": version }),
+        )
+        .await
+        .unwrap();
+    created["appId"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_with_both_components_records_both_and_its_app_runs_calls() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().expect("a compute component");
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+
+    let (main_hash, job_hash) = (sha256_hex(&both.app), sha256_hex(&job));
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    node.sys(|s| {
+        let release = &s.packages["com.test.compute"].versions["1.0.0"];
+        assert_eq!(release.services[""], main_hash);
+        assert_eq!(release.compute[""], job_hash);
+        let at = s.bundles[&job_hash].package.as_ref().expect("a release");
+        assert!(at.compute, "{at:?}");
+        assert!(!s.bundles[&main_hash].package.as_ref().unwrap().compute);
+    });
+    assert!(node.engine.get_blob(&job_hash).unwrap().is_some());
+
+    let app = create(&owner, "1.0.0").await;
+    let record = node.app(&app).await.unwrap();
+    assert_eq!(record.bundle, main_hash);
+    assert_eq!(record.compute_bundle.as_deref(), Some(job_hash.as_str()));
+    let done = owner
+        .view(&app, "done", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(done.result, json!("0"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_without_a_compute_artifact_installs_and_its_app_runs_calls() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    install(&owner, "1.0.0", &both.app, None).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    assert!(
+        node.sys(|s| s.packages["com.test.compute"].versions["1.0.0"]
+            .compute
+            .is_empty())
+    );
+
+    let app = create(&owner, "1.0.0").await;
+    assert_eq!(node.app(&app).await.unwrap().compute_bundle, None);
+    let done = owner
+        .view(&app, "done", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(done.result, json!("0"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_abi_that_disagrees_with_the_main_abi_is_refused() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let cheaper = patched(&job, |a| {
+        a["methods"]["digest"]["compute"]["fuel"] = json!(1)
+    });
+    let e = refused(&owner, &both.app, &cheaper).await;
+    assert_eq!(e.code(), Some("COMPUTE_ABI_MISMATCH"), "{e}");
+
+    let extra = patched(&job, |a| {
+        a["methods"]["other"] = a["methods"]["digest"].clone();
+    });
+    let e = refused(&owner, &both.app, &extra).await;
+    assert_eq!(e.code(), Some("COMPUTE_ABI_MISMATCH"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_component_that_imports_state_is_refused() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    // The app component imports `calimero:app/storage`, which no compute world has.
+    let e = refused(&owner, &both.app, &both.app).await;
+    assert_eq!(e.code(), Some("BAD_BUNDLE"), "{e}");
+    assert!(e.to_string().contains("calimero:app/storage"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_component_must_carry_a_compute_world_abi() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let app_abi = abi(&both.app);
+    let wrong_world = calimero_app_build::with_abi(&job, &app_abi).unwrap();
+    let e = refused(&owner, &both.app, &wrong_world).await;
+    assert_eq!(e.code(), Some("BAD_BUNDLE"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_component_cannot_be_a_services_main_component() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let e = owner
+        .upload_package(mpk("com.test.compute", "1.0.0", &job, &key))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_BUNDLE"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_running_releases_compute_hash_follows_an_upgrade() {
+    let (c, owner, mut pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    let main2 = patched(&both.app, |a| a["build"] = json!(2));
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    install(&owner, "1.0.1", &main2, Some(&job2)).await;
+    install(
+        &owner,
+        "1.0.2",
+        &patched(&both.app, |a| a["build"] = json!(3)),
+        None,
+    )
+    .await;
+
+    let app = create(&owner, "1.0.0").await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let running = || async { node.app(&app).await.unwrap().compute_bundle };
+    // What the app's group runs, which a run pins: set with the bundle by the same entry.
+    let in_group = || {
+        node.hosted(&app)
+            .unwrap()
+            .read_local(|m, _| m.state.component.head.compute_bundle.clone())
+    };
+    assert_eq!(running().await, Some(sha256_hex(&job)));
+    assert_eq!(in_group(), Some(sha256_hex(&job)));
+    for (version, expect) in [("1.0.1", Some(sha256_hex(&job2))), ("1.0.2", None)] {
+        let up = owner
+            .upgrade_app(&app, json!({ "version": version }), &mut pk)
+            .await
+            .unwrap();
+        assert_eq!(up["status"], "ok", "{up}");
+        assert_eq!(up["compute"], json!(expect.is_some()), "{up}");
+        assert_eq!(running().await, expect, "{version}");
+        assert_eq!(in_group(), expect, "{version}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_created_or_upgraded_by_bundle_hash_takes_that_releases_compute_component() {
+    let (c, owner, mut pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let main2 = patched(&both.app, |a| a["build"] = json!(2));
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    let main3 = patched(&both.app, |a| a["build"] = json!(3));
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    install(&owner, "1.0.1", &main2, Some(&job2)).await;
+    install(&owner, "1.0.2", &main3, None).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let by_hash = |wasm: &[u8]| json!({ "name": "compute", "bundle": sha256_hex(wasm) });
+
+    let created = owner.post("apps", by_hash(&both.app)).await.unwrap();
+    assert_eq!(created["compute"], json!(true), "{created}");
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let running = || async { node.app(&app).await.unwrap().compute_bundle };
+    assert_eq!(running().await, Some(sha256_hex(&job)));
+
+    let up = owner
+        .upgrade_app(&app, json!({ "bundle": sha256_hex(&main2) }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["compute"], json!(true), "{up}");
+    assert_eq!(running().await, Some(sha256_hex(&job2)));
+
+    let up = owner
+        .upgrade_app(&app, json!({ "bundle": sha256_hex(&main3) }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["compute"], json!(false), "{up}");
+    assert_eq!(running().await, None);
+    let plain = owner.post("apps", by_hash(&main3)).await.unwrap();
+    assert_eq!(plain["compute"], json!(false), "{plain}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_bundle_hash_shared_by_releases_with_different_compute_is_ambiguous() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    install(&owner, "1.0.1", &both.app, Some(&job2)).await;
+    let e = owner
+        .post(
+            "apps",
+            json!({ "name": "compute", "bundle": sha256_hex(&both.app) }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("AMBIGUOUS_COMPUTE"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_that_changes_only_compute_code_gives_its_app_its_own_compute_hash() {
+    let (c, owner, mut pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    install(&owner, "1.0.0", &both.app, Some(&job)).await;
+    // The app component is byte-identical: only the compute component differs.
+    install(&owner, "1.0.1", &both.app, Some(&job2)).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+
+    let created = create(&owner, "1.0.1").await;
+    assert_eq!(
+        node.app(&created).await.unwrap().compute_bundle,
+        Some(sha256_hex(&job2)),
+        "created from the second release"
+    );
+
+    let app = create(&owner, "1.0.0").await;
+    assert_eq!(
+        node.app(&app).await.unwrap().compute_bundle,
+        Some(sha256_hex(&job))
+    );
+    let up = owner
+        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(
+        node.app(&app).await.unwrap().compute_bundle,
+        Some(sha256_hex(&job2)),
+        "upgraded to the second release"
+    );
 }

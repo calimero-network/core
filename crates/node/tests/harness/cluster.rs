@@ -1,12 +1,9 @@
 //! The in-process cluster the node's tests and the cluster throughput bench
 //! share: `n` nodes on loopback ports, mock attestation, sealed channels, the
-//! real kv-store fixture.
-//!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! kv fixture (`apps/v2-fixtures/kv`, a `calimero:app` component).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use calimero_client::{Client, Policy};
@@ -16,15 +13,34 @@ use calimero_node::{run, Config, Running};
 
 pub const ORIGIN: &str = "http://localhost:3000";
 
+/// The kv fixture (`apps/v2-fixtures/kv`: `set`, `get`, `entries`, `remove`, ...) as a
+/// component, built on first use and cached by source hash under
+/// `target/app-components`, as `tests/common/mod.rs` builds its fixtures.
 pub fn kv_wasm() -> Vec<u8> {
-    let path = std::env::var("KV_STORE_WASM")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm")
-        });
-    std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}; build kv-store for wasm32 first", path.display()))
+    fixture("apps/v2-fixtures/kv")
+}
+
+/// The component at `dir` (relative to the repository root), built and cached.
+pub fn fixture(dir: &str) -> Vec<u8> {
+    // Tests run in parallel threads of one process; two builds of the same crate into
+    // one target directory race, so builds are serialized.
+    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = BUILDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sdk = root.join("crates/sdk");
+    let macros = root.join("crates/sdk-macros");
+    let alias = root.join("crates/app-sdk");
+    let wit = root.join("crates/app-wit");
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), std::path::PathBuf::from);
+    calimero_app_build::build_component_cached(
+        &root.join(dir),
+        &[&sdk, &macros, &alias, &wit],
+        &target.join("app-components"),
+    )
+    .unwrap_or_else(|e| panic!("build {dir}: {e}"))
 }
 
 /// The operator key test clusters start with (`Config::operator_key`).
@@ -49,26 +65,20 @@ pub fn operator_public() -> String {
 pub async fn ops_signed(
     client: &Client,
     path: &str,
-    mut body: serde_json::Value,
+    body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    client
+        .post_operator_signed(path, body, &operator_sign)
+        .await
+}
+
+/// The operator key's signature over `message`.
+pub fn operator_sign(message: &[u8]) -> Vec<u8> {
     use ed25519_dalek::Signer;
-    match client.post(path, body.clone()).await {
-        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
-            let d = e.details().cloned().unwrap_or_default();
-            let message = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                d["message"].as_str().unwrap_or_default(),
-            )
-            .unwrap_or_default();
-            let signature = ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED).sign(&message);
-            body["operatorProof"] = serde_json::json!({
-                "nonce": d["nonce"],
-                "signature": hex::encode(signature.to_bytes()),
-            });
-            client.post(path, body).await
-        }
-        other => other,
-    }
+    ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED)
+        .sign(message)
+        .to_bytes()
+        .to_vec()
 }
 
 pub fn free_port() -> u16 {
@@ -110,11 +120,17 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
             snapshot_every: 200,
         },
         read_wait: Duration::from_secs(2),
+        // Every refresh exchanges its token in the log, as the tests of
+        // rotation and reuse expect; `tests/refresh.rs` runs the production
+        // `api::REFRESH_ROTATE_AFTER`.
+        refresh_rotate_after: Duration::ZERO,
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
         kms_keys: Default::default(),
+        rollback: None,
+        accept_rollback: false,
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,

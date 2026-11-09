@@ -48,7 +48,7 @@ This branch was created to systematically verify that:
      - `apps/collaborative-editor/workflows/collaborative-editor.yml`
      - `apps/kv-store-with-user-and-frozen-storage/workflows/test_frozen_storage.yml`
      - `apps/kv-store-with-user-and-frozen-storage/workflows/test_user_storage.yml`
-     - `apps/kv-store/workflows/bundle-invitation-test.yml`
+     - `apps/kv-store/scenarios/bundle-invitation.json`
      - `apps/private_data/workflows/example.yml`
      - `apps/xcall-example/workflows/xcall-example.yml`
    - **Action Required**: Install or locate `merobox` tool, or run workflows manually using `merod` and `meroctl`
@@ -168,7 +168,7 @@ This branch was created to systematically verify that:
    ```bash
    # Start Docker first
    # Then run workflows to generate more test data
-   cd apps/kv-store
+   cd apps/wasmer-fixtures/kv-store
    merobox bootstrap run workflows/bundle-invitation-test.yml
    ```
 

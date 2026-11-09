@@ -13,14 +13,16 @@
 //! while the request is judged there. The follower's own requests (its read
 //! index, from the leader) are not held, and clients reach it directly.
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! (see `harness/cluster.rs`).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::node::{CallRequest, NOT_REACHED};
+use calimero_node::types::Caller;
 use calimero_node::{run, Running};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -85,6 +87,10 @@ struct ProxiedCluster {
 
 impl ProxiedCluster {
     async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    async fn start_with(configure: impl Fn(&mut calimero_node::Config)) -> Self {
         // `free_port` hands the port back before the node binds it, so another
         // test can take it meanwhile: a start that loses that race tries again
         // on other ports, as `Cluster::start_with` does.
@@ -127,6 +133,7 @@ impl ProxiedCluster {
                 // A held follower must not start an election while it waits.
                 config.raft.election_min_ms = 5_000;
                 config.raft.election_max_ms = 6_000;
+                configure(&mut config);
                 match run(config).await {
                     Ok(r) => nodes.push(r),
                     Err(e) => {
@@ -324,7 +331,6 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
 /// An anonymous `GET /apps/{app}`: once the app stops being public through the
 /// leader, a follower that has not applied that must not show the app.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "fails until #4723: app_get does not read fresh state for anonymous callers"]
 async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind() {
     let c = ProxiedCluster::start().await;
     let leader = c.system_leader();
@@ -464,4 +470,324 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     let _deleted = delete.await.unwrap();
     let err = read.expect_err("a blob deleted before the request must not be served");
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
+/// A blob deleted through the app's leader leaves no bytes on a follower that
+/// had not applied the delete when the leader asked it to drop them: the
+/// follower must not keep them because its own replica still marks the blob
+/// (the intermittent `blobs_list_and_delete_and_storage_is_inspectable`
+/// failure, "the bytes outlived every app").
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let mut leader = None;
+    for _ in 0..200 {
+        leader = (0..3).find(|i| {
+            c.nodes[*i]
+                .node
+                .hosted(&app)
+                .is_some_and(|g| g.status().is_leader)
+        });
+        if leader.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let leader = leader.expect("the app's group elects a leader");
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let blob = alice.upload_blob(&app, vec![9_u8; 4096]).await.unwrap();
+    let id = blob["id"].as_str().unwrap().to_owned();
+    let raw: [u8; 32] = hex::decode(&id).unwrap().try_into().unwrap();
+    let follower_group = c.nodes[follower].node.hosted(&app).unwrap();
+    let follower_has_bytes = || {
+        c.nodes[follower]
+            .node
+            .engine
+            .get_blob(&id)
+            .unwrap()
+            .is_some()
+    };
+    for _ in 0..100 {
+        if follower_group.read_local(|m, _| m.holds_blob(&raw)) && follower_has_bytes() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(follower_has_bytes(), "the follower holds the bytes first");
+    let deleter = c.client(leader);
+    let _s = deleter.sign_in(&mut alice_pk).await.unwrap();
+
+    // Hold the follower and delete through the leader: the other follower's
+    // ack commits the delete, and the request to drop the bytes waits with
+    // the held follower's appends.
+    c.hold[follower].send_replace(true);
+    let delete = tokio::spawn({
+        let (app, id) = (app.clone(), id.clone());
+        async move { deleter.delete_blob(&app, &id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        follower_group.read_local(|m, _| m.holds_blob(&raw)),
+        "the follower must still hold the mark"
+    );
+    c.hold[follower].send_replace(false);
+    let _deleted = delete.await.unwrap().unwrap();
+
+    // Once the follower catches up, it holds neither the mark nor the bytes.
+    for _ in 0..150 {
+        if !follower_group.read_local(|m, _| m.holds_blob(&raw)) && !follower_has_bytes() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !follower_group.read_local(|m, _| m.holds_blob(&raw)),
+        "the follower applied the delete"
+    );
+    assert!(
+        !follower_has_bytes(),
+        "the bytes outlived the only app that marked them"
+    );
+}
+
+/// A deployment deleted through the system leader is gone for an anonymous
+/// reader on a follower that has not applied the delete yet: the public read
+/// must not serve the copy that follower still holds (the intermittent
+/// `deployments::accounts_and_organizations_own_deployments_their_managers_change`
+/// failure).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, mut alice_pk) = signed_up(&c, leader, "alice").await;
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = alice
+        .post_confirmed(
+            "deployments",
+            json!({ "name": "labs", "owner": { "account": alice_id } }),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_owned();
+    let follower_node = &c.nodes[follower].node;
+    let here = || follower_node.sys(|s| s.deployments.contains_key(&id));
+    for _ in 0..100 {
+        if here() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let anonymous = c.client(follower);
+    let shown = anonymous.get(&format!("deployments/{id}")).await;
+    assert!(shown.is_ok(), "{:?}", shown.err());
+
+    // Hold the follower, delete through the leader, then read anonymously
+    // on the follower.
+    c.hold[follower].send_replace(true);
+    let _deleted = alice
+        .delete_confirmed(&format!("deployments/{id}"), &mut alice_pk)
+        .await
+        .unwrap();
+    assert!(here(), "the follower must still hold the deployment");
+    let read = tokio::spawn({
+        let id = id.clone();
+        async move { anonymous.get(&format!("deployments/{id}")).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[follower].send_replace(false);
+    let err = read
+        .await
+        .unwrap()
+        .expect_err("a deployment deleted before the request must be gone");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
+/// Read-index rounds every node began on the system group so far
+/// (`calimero_system_read_rounds_total`).
+fn rounds(c: &ProxiedCluster) -> u64 {
+    c.nodes
+        .iter()
+        .map(|r| r.node.sys_rounds.load(std::sync::atomic::Ordering::SeqCst))
+        .sum()
+}
+
+/// A client's call costs one read-index round on the system group, whichever
+/// node it enters and wherever the app's leader is: the round the gate makes
+/// for the request covers the checks the app's leader makes before it runs
+/// the call (`Node::sys_fresh_from`). Before, the leader ran a round of its
+/// own (two per call, three when the call entered a follower replica first);
+/// a strong view was one, and stays one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_costs_one_system_read_round() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let _warm = alice
+        .call(&app, "set", json!({ "key": "k", "value": "0" }), None)
+        .await
+        .unwrap();
+    for entry in 0..3 {
+        // Alice's session on the node the requests enter.
+        let client = c.client(entry);
+        let _s = client.sign_in(&mut pk).await.unwrap();
+        for n in 0..3 {
+            let before = rounds(&c);
+            let _r = client
+                .call(
+                    &app,
+                    "set",
+                    json!({ "key": "k", "value": n.to_string() }),
+                    None,
+                )
+                .await
+                .unwrap();
+            let call = rounds(&c) - before;
+            let before = rounds(&c);
+            let _v = client
+                .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+                .await
+                .unwrap();
+            let view = rounds(&c) - before;
+            assert_eq!(
+                (call, view),
+                (1, 1),
+                "system read rounds of one call and one strong view entering node {entry}"
+            );
+        }
+    }
+}
+
+/// A revocation committed before a call's round holds on the app's leader,
+/// though the leader has not applied it when the call reaches it, and no node
+/// runs a round for the call there: the call carries the index its gate's
+/// round named (`CallRequest::sys_index`) and the leader waits to apply it
+/// (`Node::sys_fresh_from`). Without that wait the leader would run the call
+/// on its stale grant and commit it.
+///
+/// Apps get two replicas, so a later app is led by a node other than the
+/// system leader (placement takes the least loaded, then the lowest id); its
+/// leader's peer traffic, the system appends included, is held. The call is
+/// handed to the leader as `internal/call` hands it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
+    let c = ProxiedCluster::start_with(|cfg| cfg.replicas = 2).await;
+    let sys_leader = c.system_leader();
+    let (alice, _a) = signed_up(&c, sys_leader, "alice").await;
+    let (bob, _b) = signed_up(&c, sys_leader, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let mut placed = None;
+    for n in 0..4 {
+        let app = alice
+            .create_app(&format!("kv{n}"), &bundle, json!({}))
+            .await
+            .unwrap();
+        let mut leader = None;
+        for _ in 0..100 {
+            leader = (0..3).find(|i| {
+                c.nodes[*i]
+                    .node
+                    .hosted(&app)
+                    .is_some_and(|g| g.status().is_leader)
+            });
+            if leader.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let leader = leader.expect("the app has a leader");
+        if leader != sys_leader {
+            placed = Some((app, leader));
+            break;
+        }
+    }
+    let (app, app_leader) = placed.expect("an app led by a node other than the system leader");
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        )
+        .await
+        .unwrap();
+    let leader_node = std::sync::Arc::clone(&c.nodes[app_leader].node);
+    let reaches = || {
+        leader_node.sys(|s| {
+            s.apps
+                .get(&app)
+                .is_some_and(|a| s.may_reach(a, Some(&bob_id)))
+        })
+    };
+    for _ in 0..100 {
+        if reaches() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reaches(), "the app's leader must hold the grant");
+    let bob_call = |value: &str| {
+        CallRequest::new(
+            app.clone(),
+            "set".into(),
+            json!({ "key": "k", "value": value }),
+            Caller::Account {
+                account: bob_id.clone(),
+            },
+        )
+    };
+    let granted = leader_node.call_component(&bob_call("0")).await.unwrap();
+    assert!(granted.error.is_null(), "granted: {:?}", granted.error);
+
+    // Hold the app's leader, revoke Bob through the system leader, then make
+    // the round a request would make now.
+    c.hold[app_leader].send_replace(true);
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    let (index, _caught_up) = c.nodes[sys_leader].node.sys_fresh_index().await;
+    let index = index.expect("the system leader names its index");
+    assert!(
+        reaches(),
+        "the app's leader must not have applied the revocation"
+    );
+
+    let before = rounds(&c);
+    let call = tokio::spawn({
+        let node = std::sync::Arc::clone(&leader_node);
+        let req = CallRequest {
+            sys_index: Some(index),
+            ..bob_call("1")
+        };
+        async move { node.call_component(&req).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[app_leader].send_replace(false);
+    let answer = call.await.unwrap().expect("an answer");
+    assert_eq!(
+        answer.error.as_str(),
+        Some(NOT_REACHED),
+        "a revocation committed before the round must hold: {:?}",
+        answer.result
+    );
+    assert_eq!(rounds(&c), before, "the call must run no round of its own");
 }

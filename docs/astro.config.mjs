@@ -17,7 +17,8 @@ export default defineConfig({
     '/protocol/receive-path/': '/core/protocol/replication/',
     '/protocol/divergence-recovery/': '/core/protocol/replication/',
     '/protocol/data-anatomy/': '/core/protocol/storage/',
-    '/protocol/hlc/': '/core/protocol/crdt-internals/',
+    '/protocol/hlc/': '/core/protocol/storage/',
+    '/protocol/crdt-internals/': '/core/protocol/storage/',
     '/protocol/capability-inheritance/': '/core/protocol/organizations/',
     '/protocol/governance-edge-cases/': '/core/protocol/organizations/',
     '/protocol/accounts/': '/core/protocol/identities/',
@@ -28,6 +29,16 @@ export default defineConfig({
     '/cloud/operate/': '/core/operate/deployment/',
     '/cloud/coming-from-v1/': '/core/protocol/glossary/',
     '/build/delegated-execution-client/': '/core/protocol/write-path/',
+    '/build/cargo-mero/': '/core/build/packaging-signing/',
+    // SDK 0.12 pages, folded into the component SDK's reference.
+    '/build/abi/': '/core/build/app-abi/',
+    '/build/advanced-sdk/': '/core/build/sdk-macros/',
+    '/build/state-modeling/': '/core/build/collections/',
+    '/build/choosing-state/': '/core/build/collections/',
+    '/build/storage-complexity/': '/core/build/collections/',
+    '/build/permissioned-storage/': '/core/build/guides/access-control/',
+    '/build/guides/securing-state/': '/core/build/guides/access-control/',
+    '/build/guides/collections/': '/core/build/collections/',
   },
   integrations: [
     starlight({
@@ -83,7 +94,7 @@ export default defineConfig({
         {
           // Overview, quickstart and writing apps.
           label: 'Get started',
-          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps'],
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/deploy-from-ci'],
         },
         {
           label: 'Build',
@@ -97,7 +108,6 @@ export default defineConfig({
               label: 'How-to guides',
               items: [
                 'build/guides',
-                'build/guides/collections',
                 'build/guides/collaborative-text',
                 'build/guides/events',
                 'build/guides/cross-context',
@@ -105,8 +115,6 @@ export default defineConfig({
                 'build/guides/search',
                 'build/guides/outbound',
                 'build/guides/access-control',
-                'build/guides/securing-state',
-                'build/cargo-mero',
                 'build/packaging-signing',
                 'build/examples',
                 'build/testing',
@@ -118,10 +126,7 @@ export default defineConfig({
                 'build/sdk-macros',
                 'build/host-functions',
                 'build/collections',
-                'build/state-modeling',
-                'build/choosing-state',
                 'build/app-abi',
-                'build/abi',
                 'build/error-handling',
               ],
             },
@@ -129,10 +134,7 @@ export default defineConfig({
               label: 'Deep dives',
               collapsed: true,
               items: [
-                'build/permissioned-storage',
-                'build/advanced-sdk',
                 'build/migrations',
-                'build/storage-complexity',
                 'build/gotchas',
               ],
             },
@@ -217,7 +219,6 @@ export default defineConfig({
               collapsed: true,
               items: [
                 'protocol/storage',
-                'protocol/crdt-internals',
                 'protocol/limits',
                 'protocol/glossary',
               ],

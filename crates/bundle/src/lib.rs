@@ -23,7 +23,7 @@ pub use signature::{
 use serde::{Deserialize, Serialize};
 
 /// The node refuses a bundle's `manifest.json` above this size, before any
-/// signature check. `cargo mero` derives its icon budget from this.
+/// signature check.
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 /// Represents an artifact within a bundle (WASM, ABI, migration)
@@ -141,7 +141,7 @@ pub struct BundleHandlers {
 ///
 /// Distinct from `min_runtime_version`, which is a hand-declared floor ("refuse
 /// to run below this") and defaults to `0.1.0` for anyone who never sets it.
-/// This block is derived, not declared: `cargo mero bundle` reads it off the
+/// This block is derived, not declared: a bundling tool reads it off the
 /// resolve graph, so it cannot drift from the bytecode it ships beside.
 ///
 /// A sibling of `metadata`, like `handlers`, and for the same reason: stamping
@@ -202,6 +202,10 @@ pub struct BundleService {
     pub wasm: BundleArtifact,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abi: Option<BundleArtifact>,
+    /// The service's compute component, the one job nodes run; absent when the
+    /// service declares no compute methods. An older node ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute: Option<BundleArtifact>,
 }
 
 /// Who upgrades the instances of a package, as its signed manifest declares
@@ -276,6 +280,10 @@ pub struct BundleManifest {
     /// Single-service ABI (backward compat). Ignored when `services` is non-empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abi: Option<BundleArtifact>,
+    /// Single-service compute component (see [`BundleService::compute`]). Ignored when
+    /// `services` is non-empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute: Option<BundleArtifact>,
 
     /// Named services. When present, each context specifies which service it runs.
     /// If empty/absent, the bundle is single-service and uses `wasm`/`abi` above.
@@ -329,6 +337,7 @@ pub struct WasmArtifact<'a> {
     /// Service name. `None` for single-service bundles.
     pub name: Option<&'a str>,
     pub wasm: &'a BundleArtifact,
+    pub compute: Option<&'a BundleArtifact>,
 }
 
 impl BundleManifest {
@@ -358,6 +367,7 @@ impl BundleManifest {
                 .map(|s| WasmArtifact {
                     name: Some(&s.name),
                     wasm: &s.wasm,
+                    compute: s.compute.as_ref(),
                 })
                 .collect(),
             _ => self
@@ -367,6 +377,7 @@ impl BundleManifest {
                     vec![WasmArtifact {
                         name: None,
                         wasm: w,
+                        compute: self.compute.as_ref(),
                     }]
                 })
                 .unwrap_or_default(),
@@ -379,6 +390,7 @@ impl BundleManifest {
         let Self {
             wasm,
             abi,
+            compute,
             services,
             frontend,
             version: _,
@@ -404,10 +416,16 @@ impl BundleManifest {
         if let Some(abi) = abi {
             artifacts.push(("abi".to_owned(), abi));
         }
+        if let Some(compute) = compute {
+            artifacts.push(("compute".to_owned(), compute));
+        }
         for (i, service) in services.iter().flatten().enumerate() {
             artifacts.push((format!("services[{i}].wasm"), &service.wasm));
             if let Some(abi) = &service.abi {
                 artifacts.push((format!("services[{i}].abi"), abi));
+            }
+            if let Some(compute) = &service.compute {
+                artifacts.push((format!("services[{i}].compute"), compute));
             }
         }
         for (i, file) in frontend.iter().flat_map(|f| &f.files).enumerate() {
@@ -878,6 +896,29 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn compute_components_are_artifacts_the_node_path_checks() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(
+            r#""compute": { "path": "job.wasm", "hash": "00", "size": 1 },"#,
+        ))
+        .unwrap();
+        let fields: Vec<_> = manifest.artifacts().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(fields, ["wasm", "compute"]);
+
+        let services: BundleManifest = serde_json::from_str(
+            r#"{
+                "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+                "services": [
+                    { "name": "a", "wasm": { "path": "a.wasm", "hash": "00", "size": 1 },
+                      "compute": { "path": "a.job.wasm", "hash": "00", "size": 1 } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let fields: Vec<_> = services.artifacts().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(fields, ["services[0].wasm", "services[0].compute"]);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use calimero_app_wit::{allowed_imports, stubbed_imports, WIT_DIR, WORLD};
+use calimero_app_wit::{
+    allowed_imports, compute_allowed_imports, stubbed_imports, COMPUTE_WORLD, WIT_DIR, WORLD,
+};
 use wit_parser::{Resolve, WorldItem};
 
 fn qualified(resolve: &Resolve, id: wit_parser::InterfaceId) -> String {
@@ -28,7 +30,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
         .select_world(&[pkg], Some("app"))
         .expect("world app exists");
     let world = &resolve.worlds[world_id];
-    assert_eq!(WORLD, "calimero:app/app@0.5.0");
+    assert_eq!(WORLD, "calimero:app/app@0.5.1");
 
     let mut imports = BTreeSet::new();
     for item in world.imports.values() {
@@ -43,7 +45,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
     }
     let expected: BTreeSet<String> = allowed_imports().iter().map(|s| s.to_string()).collect();
     assert_eq!(imports, expected);
-    assert_eq!(allowed_imports().len(), 19);
+    assert_eq!(allowed_imports().len(), 22);
 
     let exports: Vec<_> = world.exports.keys().map(|k| format!("{k:?}")).collect();
     assert_eq!(exports.len(), 1, "exports: {exports:?}");
@@ -52,6 +54,60 @@ fn world_parses_and_imports_exactly_the_spec_set() {
         WorldItem::Function(f) => assert_eq!(f.name, "handle"),
         other => panic!("export is not a function: {other:?}"),
     }
+}
+
+fn imports_of_world(name: &str) -> BTreeSet<String> {
+    let mut resolve = Resolve::default();
+    let (pkg, _) = resolve.push_dir(WIT_DIR).expect("wit dir parses");
+    let world_id = resolve
+        .select_world(&[pkg], Some(name))
+        .unwrap_or_else(|e| panic!("world {name}: {e}"));
+    resolve.worlds[world_id]
+        .imports
+        .values()
+        .filter_map(|item| match item {
+            WorldItem::Interface { id, .. } => Some(qualified(&resolve, *id)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn compute_world_imports_exactly_its_allow_list_and_exports_only_run() {
+    assert_eq!(COMPUTE_WORLD, "calimero:app/compute@0.5.1");
+    let expected: BTreeSet<String> = compute_allowed_imports()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(imports_of_world("compute"), expected);
+
+    let mut resolve = Resolve::default();
+    let (pkg, _) = resolve.push_dir(WIT_DIR).expect("wit dir parses");
+    let world = &resolve.worlds[resolve.select_world(&[pkg], Some("compute")).unwrap()];
+    let exports: Vec<_> = world.exports.values().collect();
+    assert_eq!(exports.len(), 1);
+    match exports[0] {
+        WorldItem::Function(f) => assert_eq!(f.name, "run"),
+        other => panic!("export is not a function: {other:?}"),
+    }
+}
+
+#[test]
+fn compute_world_has_no_state_xcall_or_http() {
+    let imports = imports_of_world("compute");
+    for name in ["storage", "xcall", "context", "events", "action", "search"] {
+        assert!(
+            !imports.contains(&format!("calimero:app/{name}@0.5.1")),
+            "{name}"
+        );
+    }
+    assert!(imports.iter().all(|i| !i.starts_with("wasi:http/")));
+    assert!(imports.contains("calimero:app/job@0.5.1"));
+}
+
+#[test]
+fn app_world_does_not_import_job() {
+    assert!(!imports_of_world("app").contains("calimero:app/job@0.5.1"));
 }
 
 #[test]

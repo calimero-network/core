@@ -1,11 +1,13 @@
 //! Request metrics for `/ops/metrics`: counts, errors, latency and bytes per
 //! route, gathered by one layer on the API router ([`track`]). The sealed
 //! envelope routes every opened request through that router again, so the
-//! layer sees each request once, with the status the handler answered.
+//! layer sees each request once, with the status the handler answered. Beside
+//! them, how long WASM runs take ([`wasm_run`]) and how a call's time splits
+//! between its run and its commit ([`call_phase`]).
 //!
 //! Labels are route templates (`/apps/{app}/intents`), route groups, status
-//! classes and error codes: never an id, a name or anything from a request's
-//! body. Whoever scrapes the metrics is the operator, who must learn no
+//! classes, error codes, run kinds and call phases: never an id, a name, a
+//! method or anything from a request's body. Whoever scrapes the metrics is the operator, who must learn no
 //! more than counts.
 //!
 //! Where v1's merod exported the same measure, the name and labels are v1's
@@ -19,18 +21,27 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::HttpBody as _;
 use axum::extract::{MatchedPath, Request};
 use axum::middleware::Next;
 use axum::response::Response;
+use calimero_app_host::InvocationKind;
 
 /// Upper bounds, in seconds, of the request duration histogram's buckets: 1 ms
 /// doubling to about 16 s, v1's `exponential_buckets(0.001, 2.0, 15)`.
 const DURATION_BUCKETS: [f64; 15] = [
     0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512, 1.024, 2.048, 4.096,
     8.192, 16.384,
+];
+
+/// Upper bounds, in seconds, of the WASM run and call phase histograms'
+/// buckets: 250 µs doubling to about 16 s. A small call runs in well under a
+/// millisecond, a call's budget is 2 s and an action's 10 s.
+const RUN_BUCKETS: [f64; 17] = [
+    0.000_25, 0.000_5, 0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512, 1.024,
+    2.048, 4.096, 8.192, 16.384,
 ];
 
 /// `(method, route template, status class)`: v1's `HttpLabels`.
@@ -41,22 +52,79 @@ type HttpKey = (String, String, &'static str);
 #[derive(Clone, Debug)]
 pub struct ErrorCode(pub String);
 
-#[derive(Default)]
-struct Histogram {
-    buckets: [u64; DURATION_BUCKETS.len()],
+/// Cumulative counts over the `N` upper bounds it is observed and rendered with.
+struct Histogram<const N: usize> {
+    buckets: [u64; N],
     count: u64,
     sum: f64,
 }
 
-impl Histogram {
-    fn observe(&mut self, secs: f64) {
-        for (bucket, le) in self.buckets.iter_mut().zip(DURATION_BUCKETS) {
-            if secs <= le {
+impl<const N: usize> Default for Histogram<N> {
+    fn default() -> Self {
+        Self {
+            buckets: [0; N],
+            count: 0,
+            sum: 0.0,
+        }
+    }
+}
+
+impl<const N: usize> Histogram<N> {
+    fn observe(&mut self, bounds: &[f64; N], secs: f64) {
+        for (bucket, le) in self.buckets.iter_mut().zip(bounds) {
+            if secs <= *le {
                 *bucket += 1;
             }
         }
         self.count += 1;
         self.sum += secs;
+    }
+
+    /// `name`'s `_bucket`, `_sum` and `_count` samples under `labels`.
+    fn render(&self, out: &mut String, name: &str, labels: &str, bounds: &[f64; N]) {
+        for (le, n) in bounds.iter().zip(self.buckets) {
+            let _w = writeln!(out, "{name}_bucket{{{labels},le=\"{le}\"}} {n}");
+        }
+        let _w = writeln!(
+            out,
+            "{name}_bucket{{{labels},le=\"+Inf\"}} {}\n{name}_sum{{{labels}}} {}\n{name}_count{{{labels}}} {}",
+            self.count, self.sum, self.count
+        );
+    }
+}
+
+/// The `kind` label of a WASM run: what the invocation was, never which app or
+/// method.
+const fn run_kind(kind: InvocationKind) -> &'static str {
+    match kind {
+        InvocationKind::Call => "call",
+        InvocationKind::View => "view",
+        InvocationKind::Action => "action",
+        InvocationKind::Timer => "timer",
+        InvocationKind::XcallDeliver => "xcall",
+        InvocationKind::Init => "init",
+        InvocationKind::Migrate => "migrate",
+    }
+}
+
+/// The two parts of a logged call's time on the app's leader ([`call_phase`]).
+#[derive(Clone, Copy, Debug)]
+pub enum CallPhase {
+    /// The WASM run that built the entry.
+    Run,
+    /// From the entry's proposal until the log committed it and this node
+    /// applied it.
+    Commit,
+}
+
+impl CallPhase {
+    const ALL: [Self; 2] = [Self::Run, Self::Commit];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Commit => "commit",
+        }
     }
 }
 
@@ -67,13 +135,19 @@ struct Registry {
     /// `(group, code)` → error answers.
     errors: BTreeMap<(&'static str, String), u64>,
     /// Time to the response's head.
-    durations: BTreeMap<HttpKey, Histogram>,
+    durations: BTreeMap<HttpKey, Histogram<{ DURATION_BUCKETS.len() }>>,
+    /// [`run_kind`] → wall time of the WASM runs this node made.
+    wasm_runs: BTreeMap<&'static str, Histogram<{ RUN_BUCKETS.len() }>>,
+    /// A logged call's time by [`CallPhase`].
+    call_phases: [Histogram<{ RUN_BUCKETS.len() }>; CallPhase::ALL.len()],
     /// group → requests being handled now.
     in_flight: BTreeMap<&'static str, i64>,
     /// group → request body bytes, as each body's length says (capped).
     request_bytes: BTreeMap<&'static str, u64>,
     /// group → response body bytes, where the length was known up front.
     response_bytes: BTreeMap<&'static str, u64>,
+    /// Raft messages whose addressee did not check out, by [`RaftAddressee`].
+    raft_misaddressed: BTreeMap<&'static str, u64>,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
@@ -116,6 +190,50 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Why `internal/raft` counted a message ([`raft_misaddressed`]).
+#[derive(Clone, Copy, Debug)]
+pub enum RaftAddressee {
+    /// Addressed to another node: refused (`421 NOT_ADDRESSEE`).
+    NotAddressee,
+    /// No addressee (a peer on a release before it): accepted with a warning
+    /// for now, refused from the release after.
+    NoTarget,
+}
+
+impl RaftAddressee {
+    const ALL: [Self; 2] = [Self::NotAddressee, Self::NoTarget];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::NotAddressee => "not_addressee",
+            Self::NoTarget => "no_target",
+        }
+    }
+}
+
+/// Count one Raft message whose addressee did not check out; returns the
+/// count so far for `reason`.
+pub fn raft_misaddressed(reason: RaftAddressee) -> u64 {
+    let mut r = registry();
+    let n = r.raft_misaddressed.entry(reason.label()).or_default();
+    *n += 1;
+    *n
+}
+
+/// Note one WASM run's wall time on this node, whatever became of its result.
+pub fn wasm_run(kind: InvocationKind, wall: Duration) {
+    registry()
+        .wasm_runs
+        .entry(run_kind(kind))
+        .or_default()
+        .observe(&RUN_BUCKETS, wall.as_secs_f64());
+}
+
+/// Note one part of a logged call's time on the app's leader.
+pub fn call_phase(phase: CallPhase, took: Duration) {
+    registry().call_phases[phase as usize].observe(&RUN_BUCKETS, took.as_secs_f64());
+}
+
 /// Read the process's start time; called once when the node starts serving.
 pub fn mark_started() {
     let _ = *STARTED;
@@ -136,7 +254,12 @@ pub fn group(route: &str) -> &'static str {
         "/internal/raft" => "raft",
         "/apps/{app}/intents" => "calls",
         "/apps/{app}/views" => "views",
-        _ if route.starts_with("/auth/passkey/") || route == "/auth/refresh" => "sign_in",
+        _ if route.starts_with("/auth/passkey/")
+            || route == "/auth/refresh"
+            || route.starts_with("/sign-up") =>
+        {
+            "sign_in"
+        }
         _ if route.starts_with("/auth") => "account",
         _ if in_app("/events") || in_app("/presence") => "streams",
         _ if in_app("/blobs") => "blobs",
@@ -144,7 +267,10 @@ pub fn group(route: &str) -> &'static str {
         _ if route.starts_with("/orgs") || route.starts_with("/invites") => "orgs",
         _ if route.starts_with("/bundles")
             || route.starts_with("/packages")
-            || route.starts_with("/publishers") =>
+            || route.starts_with("/package-origins")
+            || route.starts_with("/publishers")
+            || route.starts_with("/deployers")
+            || route.starts_with("/deployments") =>
         {
             "packages"
         }
@@ -253,7 +379,7 @@ impl Registry {
         self.durations
             .entry(key)
             .or_default()
-            .observe(started.elapsed().as_secs_f64());
+            .observe(&DURATION_BUCKETS, started.elapsed().as_secs_f64());
     }
 }
 
@@ -307,6 +433,18 @@ pub fn render(out: &mut String) {
     }
     let _w = writeln!(
         out,
+        "# HELP calimero_raft_misaddressed_total Raft messages from peers whose addressee did not check out: not_addressee (refused, 421 NOT_ADDRESSEE), no_target (accepted with a warning this release).\n# TYPE calimero_raft_misaddressed_total counter"
+    );
+    for reason in RaftAddressee::ALL {
+        let label = reason.label();
+        let n = r.raft_misaddressed.get(label).copied().unwrap_or(0);
+        let _w = writeln!(
+            out,
+            "calimero_raft_misaddressed_total{{reason=\"{label}\"}} {n}"
+        );
+    }
+    let _w = writeln!(
+        out,
         "# HELP http_request_duration_seconds Time to a response's head, by method, route template and status class.\n# TYPE http_request_duration_seconds histogram"
     );
     for ((method, path, status), h) in &r.durations {
@@ -314,16 +452,35 @@ pub fn render(out: &mut String) {
             "method=\"{method}\",path=\"{path}\",status=\"{status}\",group=\"{}\"",
             group(path)
         );
-        for (le, n) in DURATION_BUCKETS.iter().zip(h.buckets) {
-            let _w = writeln!(
-                out,
-                "http_request_duration_seconds_bucket{{{labels},le=\"{le}\"}} {n}"
-            );
-        }
-        let _w = writeln!(
+        h.render(
             out,
-            "http_request_duration_seconds_bucket{{{labels},le=\"+Inf\"}} {}\nhttp_request_duration_seconds_sum{{{labels}}} {}\nhttp_request_duration_seconds_count{{{labels}}} {}",
-            h.count, h.sum, h.count
+            "http_request_duration_seconds",
+            &labels,
+            &DURATION_BUCKETS,
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_wasm_run_duration_seconds Wall time of the WASM runs this node made, by kind (call, view, action, timer, xcall, init, migrate), whatever became of their result.\n# TYPE calimero_wasm_run_duration_seconds histogram"
+    );
+    for (kind, h) in &r.wasm_runs {
+        h.render(
+            out,
+            "calimero_wasm_run_duration_seconds",
+            &format!("kind=\"{kind}\""),
+            &RUN_BUCKETS,
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_call_phase_duration_seconds A logged call's time on the app's leader: run (the WASM run that built its entry) and commit (from the proposal until the entry committed and applied here).\n# TYPE calimero_call_phase_duration_seconds histogram"
+    );
+    for (phase, h) in CallPhase::ALL.iter().zip(&r.call_phases) {
+        h.render(
+            out,
+            "calimero_call_phase_duration_seconds",
+            &format!("phase=\"{}\"", phase.label()),
+            &RUN_BUCKETS,
         );
     }
     let _w = writeln!(
@@ -693,8 +850,13 @@ mod tests {
         assert_eq!(group("/internal/raft"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
+        // Who may install packages is a packages question.
+        assert_eq!(group("/deployers/{key}"), "packages");
+        assert_eq!(group("/deployments/{id}/orgs"), "packages");
         assert_eq!(group("/consent/{request}/result"), "consent");
         assert_eq!(group("/releases"), "attestation");
+        assert_eq!(group("/sign-up/invites/{key}"), "sign_in");
+        assert_eq!(group("/ops/sign-up"), "ops");
         assert_eq!(group("/publishers/{signer}"), "packages");
     }
 
@@ -804,9 +966,9 @@ mod tests {
     #[test]
     fn a_histogram_counts_each_observation_in_every_bucket_at_or_above_it() {
         let mut h = Histogram::default();
-        h.observe(0.003);
-        h.observe(0.5);
-        h.observe(60.0);
+        h.observe(&DURATION_BUCKETS, 0.003);
+        h.observe(&DURATION_BUCKETS, 0.5);
+        h.observe(&DURATION_BUCKETS, 60.0);
         assert_eq!(h.buckets.first(), Some(&0)); // ≤ 1 ms
         assert_eq!(h.buckets.get(2), Some(&1)); // ≤ 4 ms
         assert_eq!(h.buckets.get(9), Some(&2)); // ≤ 512 ms

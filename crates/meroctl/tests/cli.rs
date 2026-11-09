@@ -1,7 +1,8 @@
 //! `meroctl` against a local cluster (`merod local`'s launcher, in process):
 //! every command group, through the binary, as a user and as the operator.
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`.
+//! Builds the kv component `apps/v2-fixtures/kv` from this checkout (cached under
+//! `$CARGO_TARGET_DIR/app-components`), or reads `KV_STORE_WASM`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,14 +10,24 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-fn kv_wasm() -> PathBuf {
-    std::env::var("KV_STORE_WASM").map_or_else(
-        |_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm")
-        },
-        PathBuf::from,
+fn kv_wasm() -> Vec<u8> {
+    if let Some(path) = std::env::var_os("KV_STORE_WASM") {
+        return std::fs::read(&path).unwrap();
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target =
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+    calimero_app_build::build_component_cached(
+        &root.join("apps/v2-fixtures/kv"),
+        &[
+            &root.join("crates/sdk"),
+            &root.join("crates/sdk-macros"),
+            &root.join("crates/app-sdk"),
+            &root.join("crates/app-wit"),
+        ],
+        &target.join("app-components"),
     )
+    .unwrap_or_else(|e| panic!("build apps/v2-fixtures/kv: {e}"))
 }
 
 /// How many nodes the test cluster runs, on `base + 1 ..= base + NODES`.
@@ -68,6 +79,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
             size: wasm.len() as u64,
         }),
         abi: None,
+        compute: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
@@ -184,7 +196,7 @@ fn scenario(root: &Path, url: &str) {
     };
     let pk = root.join("alice-passkey.json");
     let pk = path(&pk);
-    let kv = std::fs::read(kv_wasm()).unwrap();
+    let kv = kv_wasm();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let write = |name: &str, bytes: &[u8]| {
         let p = root.join(name);
@@ -238,6 +250,58 @@ fn scenario(root: &Path, url: &str) {
     assert_eq!(
         alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"
+    );
+
+    // Web origins: the first installer manages them, with a passkey per change.
+    let site = "https://kv.example.com";
+    let asked = alice
+        .try_run(&["package", "origins", "add", "com.test.kv", site])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let bad = alice
+        .try_run(&[
+            "package",
+            "origins",
+            "add",
+            "com.test.kv",
+            site,
+            "--rp-id",
+            "other.com",
+            "--dev-passkey",
+            pk,
+        ])
+        .unwrap_err();
+    assert!(bad.contains("BAD_RP_ID"), "{bad}");
+    let _ = alice.run(&[
+        "package",
+        "origins",
+        "add",
+        "com.test.kv",
+        site,
+        "--rp-id",
+        "example.com",
+        "--dev-passkey",
+        pk,
+    ]);
+    let listed = alice.run(&["app", "origins", "list", "com.test.kv"]);
+    assert_eq!(listed["origins"][0]["origin"], site, "{listed}");
+    assert_eq!(listed["origins"][0]["rpId"], "example.com", "{listed}");
+    let asked = alice
+        .try_run(&["app", "origins", "remove", "com.test.kv", site])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let _ = alice.run(&[
+        "app",
+        "origins",
+        "remove",
+        "com.test.kv",
+        site,
+        "--dev-passkey",
+        pk,
+    ]);
+    assert_eq!(
+        alice.run(&["app", "origins", "list", "com.test.kv"])["origins"],
+        json!([])
     );
 
     // context: an instance of an application, named by an alias.
@@ -390,7 +454,15 @@ fn scenario(root: &Path, url: &str) {
     assert_ne!(alice.run(&["context", "get", &raw])["bundle"], before);
 
     // account api-key: a scoped key works on its own.
-    let key = alice.run(&["account", "api-key", "create", "--context", "notes"]);
+    let key = alice.run(&[
+        "account",
+        "api-key",
+        "create",
+        "--context",
+        "notes",
+        "--dev-passkey",
+        pk,
+    ]);
     let key = s(&key["key"]);
     let service = Meroctl {
         home: root.join("service"),
@@ -408,6 +480,49 @@ fn scenario(root: &Path, url: &str) {
         "--view",
     ]);
     assert_eq!(view["result"], "1");
+
+    // account api-key --upgrades: CI upgrades its context with the key alone
+    // and can do nothing else with it.
+    let kv_1_2 = write(
+        "kv-1.2.0.mpk",
+        &mpk("com.test.kv", "1.2.0", &variant(&kv, "v12"), &publisher),
+    );
+    let _ = alice.run(&["app", "install", "--path", path(&kv_1_2)]);
+    let ci_key = alice.run(&[
+        "account",
+        "api-key",
+        "create",
+        "--label",
+        "ci",
+        "--upgrades",
+        "notes",
+        "--dev-passkey",
+        pk,
+    ]);
+    let ci_key = s(&ci_key["key"]);
+    let _ = service.run(&[
+        "--api-key",
+        &ci_key,
+        "context",
+        "update",
+        &notes,
+        "--version",
+        "1.2.0",
+    ]);
+    assert!(alice
+        .run(&["context", "get", "notes"])
+        .to_string()
+        .contains(&s(&alice.run(&["app", "versions", "com.test.kv"])
+            ["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["version"] == "1.2.0")
+            .unwrap()["services"][""])));
+    let refused = service
+        .try_run(&["--api-key", &ci_key, "whoami"])
+        .unwrap_err();
+    assert!(refused.contains("UPGRADE_KEY_ONLY"), "{refused}");
 
     // namespace and group: an organization, its teams, members, metadata.
     let org = alice.run(&["namespace", "create", "acme"]);
@@ -459,7 +574,15 @@ fn scenario(root: &Path, url: &str) {
     let _ = bob.run(&["node", "add", "local", url, "--allow-mock"]);
     let bob_id =
         s(&bob.run(&["login", "--dev-passkey", path(&bob_pk), "--name", "bob"])["accountId"]);
-    let token = s(&alice.run(&["namespace", "invite", &org, "--role", "member"])["token"]);
+    let token = s(&alice.run(&[
+        "namespace",
+        "invite",
+        &org,
+        "--role",
+        "member",
+        "--dev-passkey",
+        pk,
+    ])["token"]);
     let _ = bob.run(&["namespace", "join", &token]);
     let members = alice.run(&["namespace", "members", "list", &org]);
     assert!(members.to_string().contains(&bob_id), "{members}");
@@ -472,12 +595,23 @@ fn scenario(root: &Path, url: &str) {
         &bob_id,
         "--role",
         "read-only",
+        "--dev-passkey",
+        pk,
     ]);
     assert!(alice
         .run(&["group", "members", "list", &org, &team])
         .to_string()
         .contains(&bob_id));
-    let _ = alice.run(&["group", "members", "remove", &org, &team, &bob_id]);
+    let _ = alice.run(&[
+        "group",
+        "members",
+        "remove",
+        &org,
+        &team,
+        &bob_id,
+        "--dev-passkey",
+        pk,
+    ]);
     let _ = alice.run(&[
         "namespace",
         "member-metadata",
@@ -485,7 +619,7 @@ fn scenario(root: &Path, url: &str) {
         &bob_id,
         r#"{"title":"eng"}"#,
     ]);
-    let _ = bob.run(&["namespace", "leave", &org]);
+    let _ = bob.run(&["namespace", "leave", &org, "--dev-passkey", path(&bob_pk)]);
     assert!(!alice
         .run(&["namespace", "members", "list", &org])
         .to_string()
@@ -541,6 +675,13 @@ fn scenario(root: &Path, url: &str) {
         alice.run(&a)
     };
     assert_eq!(ops(&["status"])["apps"], 3);
+    let cluster = ops(&["cluster"]);
+    assert_eq!(
+        cluster["identity"].as_str().map(str::len),
+        Some(64),
+        "{cluster}"
+    );
+    assert!(cluster["cluster"].is_string(), "{cluster}");
     let placement = ops(&["placement"]);
     assert_eq!(
         placement["apps"].as_array().map(Vec::len),
@@ -580,12 +721,44 @@ fn scenario(root: &Path, url: &str) {
         .unwrap_err();
     assert!(refused.contains("owner"), "{refused}");
     assert!(ops(&["quotas"]).is_object());
+    // The role is a closed set.
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--role",
+            "gpu",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("invalid value"), "{refused}");
+    // This cluster has no operator key: the role reaches the node, which asks for the key.
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--role",
+            "job",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("no operator key"), "{refused}");
     // A node no context lives on, and one that does not exist.
     let unknown = alice
         .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])
         .unwrap_err();
     assert!(
-        unknown.contains("no such node") || unknown.contains("NOT_LEADER"),
+        // A cluster without an operator key refuses every fleet change
+        // before it looks the node up.
+        unknown.contains("no such node")
+            || unknown.contains("NOT_LEADER")
+            || unknown.contains("no operator key"),
         "{unknown}"
     );
 

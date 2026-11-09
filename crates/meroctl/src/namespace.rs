@@ -75,6 +75,9 @@ pub enum NamespaceCmd {
         /// How many times it can be redeemed.
         #[arg(long)]
         uses: Option<u32>,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     /// Join with an invitation token.
     Join {
@@ -83,6 +86,9 @@ pub enum NamespaceCmd {
     /// Leave the organization.
     Leave {
         namespace: String,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     /// The organization's teams.
     Groups {
@@ -118,6 +124,9 @@ pub enum NamespaceCmd {
         account: Option<String>,
         #[arg(long)]
         group: Option<String>,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     /// Approve URL prefixes an application's publisher may call out to from
     /// the organization's contexts (the owner's, where the owner holds outbound approvals).
@@ -155,9 +164,18 @@ pub enum MembersCmd {
         account: String,
         #[arg(long, value_enum, default_value = "member")]
         role: Role,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     #[command(alias = "rm")]
-    Remove { namespace: String, account: String },
+    Remove {
+        namespace: String,
+        account: String,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -187,7 +205,7 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             namespace,
             dev_passkey,
         } => {
-            env.delete_approved(&namespace, dev_passkey.as_deref())
+            env.delete_approved(&format!("orgs/{namespace}"), dev_passkey.as_deref())
                 .await?
         }
         NamespaceCmd::Invite {
@@ -196,23 +214,31 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             groups,
             ttl_secs,
             uses,
-        } => client
-            .post(
+            dev_passkey,
+        } => {
+            env.post_approved(
                 &format!("orgs/{namespace}/invites"),
                 json!({ "role": role.wire(), "teams": groups, "ttlSecs": ttl_secs, "uses": uses }),
+                dev_passkey.as_deref(),
             )
-            .await?,
+            .await?
+        }
         NamespaceCmd::Join { token } => {
             client
                 .post(&format!("invites/{token}/redeem"), json!({}))
                 .await?
         }
-        NamespaceCmd::Leave { namespace } => {
+        NamespaceCmd::Leave {
+            namespace,
+            dev_passkey,
+        } => {
             let me = client.me().await?;
             let account = me["accountId"].as_str().unwrap_or_default();
-            client
-                .delete(&format!("orgs/{namespace}/members/{account}"))
-                .await?
+            env.delete_approved(
+                &format!("orgs/{namespace}/members/{account}"),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         NamespaceCmd::Groups { namespace } => {
             json!({ "groups": org(env, &namespace).await?["teams"] })
@@ -237,18 +263,25 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             namespace,
             account,
             role,
+            dev_passkey,
         }) => {
-            client
-                .post(
-                    &format!("orgs/{namespace}/members"),
-                    json!({ "account": account, "role": role.wire() }),
-                )
-                .await?
+            env.post_approved(
+                &format!("orgs/{namespace}/members"),
+                json!({ "account": account, "role": role.wire() }),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
-        NamespaceCmd::Members(MembersCmd::Remove { namespace, account }) => {
-            client
-                .delete(&format!("orgs/{namespace}/members/{account}"))
-                .await?
+        NamespaceCmd::Members(MembersCmd::Remove {
+            namespace,
+            account,
+            dev_passkey,
+        }) => {
+            env.delete_approved(
+                &format!("orgs/{namespace}/members/{account}"),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         NamespaceCmd::Metadata(MetadataCmd::Get { namespace }) => {
             json!({ "metadata": org(env, &namespace).await?["metadata"] })
@@ -275,13 +308,14 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             capabilities,
             account,
             group,
+            dev_passkey,
         } => {
-            client
-                .post(
-                    &format!("orgs/{namespace}/capabilities"),
-                    json!({ "account": account, "team": group, "capabilities": capabilities }),
-                )
-                .await?
+            env.post_approved(
+                &format!("orgs/{namespace}/capabilities"),
+                json!({ "account": account, "team": group, "capabilities": capabilities }),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         NamespaceCmd::Outbound {
             namespace,

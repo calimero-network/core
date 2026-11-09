@@ -1,0 +1,95 @@
+[
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "getPage",
+  "args": {
+   "title": "Home"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setPage",
+  "args": {
+   "title": "Home",
+   "body": "welcome"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "getPage",
+  "args": {
+   "title": "  HOME "
+  },
+  "expect": {
+   "ok": "welcome"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "setPage",
+  "args": {
+   "title": "home",
+   "body": "edited by bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "getPage",
+  "args": {
+   "title": "Home"
+  },
+  "expect": {
+   "ok": "edited by bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setPage",
+  "args": {
+   "title": "About",
+   "body": "about us"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "getPage",
+  "args": {
+   "title": "about"
+  },
+  "expect": {
+   "ok": "about us"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "getPage",
+  "args": {
+   "title": "HOME"
+  },
+  "expect": {
+   "ok": "edited by bob"
+  }
+ },
+ {
+  "as": "carol",
+  "op": "view",
+  "method": "getPage",
+  "args": {
+   "title": "Home"
+  },
+  "expect": {
+   "refused": "NOT_FOUND"
+  }
+ }
+]

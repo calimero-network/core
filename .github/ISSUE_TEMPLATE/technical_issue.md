@@ -28,12 +28,12 @@ Numbered, minimal steps someone else can follow to see the issue.
 2. ...
 3. See error / wrong result
 
-Include the actual vs expected result, and attach logs, a failing test, or a merobox scenario if you have one.
+Include the actual vs expected result, and attach logs, a failing test, or a scenario file if you have one.
 
 ## Criteria for resolving
 
 A checklist that objectively decides when this is fixed. Behavior first, then verification.
 
 - [ ] <the specific behavior that must hold once fixed>
-- [ ] Regression test covering the case above (unit test or merobox scenario)
+- [ ] Regression test covering the case above (unit test, cluster test, scenario file or process-suite test)
 - [ ] `cargo fmt --check`, `cargo clippy`, and `cargo test` pass

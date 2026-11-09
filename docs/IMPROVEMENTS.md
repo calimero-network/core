@@ -93,7 +93,7 @@ polished product. Grouped by theme; check items off as they land.
 
 ## I · Contribute track content
 - [ ] 73. "Where to start / good first issue" guide.
-- [x] 74. Testing strategy page (unit, cluster, CLI, SDK harnesses, merobox).
+- [x] 74. Testing strategy page (unit, cluster, CLI, SDK harnesses, scenarios, the process suite).
 - [ ] 75. "Add a new X" cookbook (config option, collection, host fn).
 - [ ] 76. ~~ADR index page~~ (dropped — ADRs removed from the repo).
 - [ ] 77. Debugging guide (`merod inspect`, tracing, `ops status`).
@@ -197,7 +197,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R51. xcall worked example (secondary-index pattern).
 - [ ] R52. Blob upload/download worked example with a frontend.
 - [ ] R53. "Deploy to a 3-node cluster" tutorial.
-- [ ] R54. Testing tutorial: unit (TestHost) + e2e (merobox).
+- [ ] R54. Testing tutorial: unit (TestHost / TestApp) + e2e (scenario files).
 
 ## Design & UX polish
 - [ ] R55. Per-page OG/social-card images (auto-generated).

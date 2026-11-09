@@ -1,6 +1,6 @@
 ---
 title: Packaging & signing your app
-description: The builder workflow that turns a compiled WASM module into an installable, signed .mpk bundle — build, extract the ABI, sign with mero-sign, and install with meroctl.
+description: The builder workflow that turns an app into an installable, signed .mpk bundle — build the component, sign with mero-sign, and install with meroctl.
 sidebar:
   label: Packaging & signing
 ---
@@ -8,42 +8,32 @@ sidebar:
 import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Once your app compiles, it still has to become something a node can install.
-That deliverable is an **`.mpk` bundle**: a single archive carrying your WASM, its ABI, a `manifest.json`, and an Ed25519 signature.
+That deliverable is an **`.mpk` bundle**: a single archive carrying your
+`calimero:app` component, a `manifest.json`, and an Ed25519 signature.
 This page walks the builder workflow that produces one.
 
-The signing tool is `mero-sign` (`tools/mero-sign/`), also exposed as
-`cargo mero key` and `cargo mero sign`. The node side — how a bundle
-is parsed, verified, and trusted on install — lives in
+The signing tool is `mero-sign` (`tools/mero-sign/`); `scripts/pack-component.py`
+writes the manifest, signs it through `mero-sign` and packs the archive. The node
+side — how a bundle is parsed, verified, and trusted on install — lives in
 [Upgrades & migration](/protocol/upgrades/); this page does not duplicate that
 detail.
 
 ## The workflow
 
-<Aside type="tip" title="cargo mero automates this">
-  The [cargo mero toolchain](/build/cargo-mero/) runs this whole workflow as one
-  command: `cargo mero bundle` builds every service, writes and signs
-  `manifest.json`, and packages the `.mpk`. The manual steps below stay valid and
-  document what the tool does under the hood.
-</Aside>
-
 <Steps>
 
-1. **Build the WASM and extract the ABI.**
+1. **Build the component.**
 
-   Compile your app to `wasm32-unknown-unknown`, then produce the ABI artifacts.
-   The ABI manifest (methods, events, types) and the state schema are
-   [built from your types' own descriptions](/build/abi/) at build time; see
-   [App interface (ABI)](/build/app-abi/) for what they contain.
+   `calimero-app-build` compiles your crate for `wasm32-wasip2` and turns it into a
+   `calimero:app` component, with the ABI the SDK's macros embed (its
+   `calimero:abi` section):
 
    ```bash
-   cargo mero build   # compile, wasm-opt, embed the ABI into the wasm
+   cargo run -p calimero-app-build --bin mero-app-build -- apps/my-app --out my-app.wasm
    ```
 
-   The build leaves `res/<crate_name>.wasm` (with the ABI embedded as the
-   `calimero_abi_v1` section) and the full `res/abi.json` next to it.
-   `cargo mero bundle` stages both into the bundle directory for you, together
-   with the `manifest.json` you sign in step 3.
-
+   A WASM core module (an SDK 0.12 app) is refused by the node
+   (`400 UNSUPPORTED_BUNDLE`).
 
 2. **Generate a signing key (one-time).**
 
@@ -69,29 +59,27 @@ detail.
    key for anything real.
    </Aside>
 
-3. **Sign the manifest and create the `.mpk`.**
+3. **Write and sign the manifest, and create the `.mpk`.**
 
-   Point `mero-sign sign` at your `manifest.json`. It derives the `signerId` from
+   `scripts/pack-component.py` writes `manifest.json` (`version`, `package`,
+   `appVersion`, `minRuntimeVersion` and the `app.wasm` artifact with its SHA-256
+   and size), has `mero-sign sign` sign it, and packs `manifest.json` and
+   `app.wasm` into a gzip-compressed tar. `mero-sign` derives the `signerId` from
    the key, refuses to sign if `minRuntimeVersion` is absent (a signer must not
    rewrite the document it signs), canonicalizes the manifest with RFC 8785 (JCS),
-   signs the domain-tagged SHA-256 of those canonical bytes, and writes a `signature` object
-   back into the manifest. It then packages the bundle directory into an `.mpk`.
+   signs the domain-tagged SHA-256 of those canonical bytes, and writes a
+   `signature` object back into the manifest.
 
    ```bash
-   mero-sign sign bundle-temp/manifest.json --key my-signing-key.json
-   # Signed manifest: bundle-temp/manifest.json
-   #    signerId: did:key:z6Mkm9KCceaDHiwAuYM7y3HteaCHSEkPzACySDkqkXTK6nWd
-   #  Bundle created: res/kv-store-1.0.0.mpk
+   python3 -I scripts/pack-component.py --wasm my-app.wasm --package com.example.my-app \
+     --app-version 1.0.0 --key my-signing-key.json --out dist/com.example.my-app-1.0.0.mpk
+   # omit --key to sign with the development key
    ```
-
-   The resulting `.mpk` is a gzip-compressed tar archive whose required entry is
-   `manifest.json`, alongside the WASM and ABI artifacts the manifest references.
-   `state-schema.json` is a build output only and is never staged into the bundle.
 
 4. **Install with `meroctl`.**
 
    ```bash
-   meroctl --node node1 app install --path res/kv-store-1.0.0.mpk
+   meroctl --node node1 app install --path dist/com.example.my-app-1.0.0.mpk
    ```
 
    The node reads `manifest.json` straight out of the archive and verifies the
@@ -118,7 +106,7 @@ identity of your app and guard it accordingly.
 There is one rule, not a per-path split: a bundle must carry a valid Ed25519
 manifest signature to be installed, whether it comes from a registry, a URL, or
 a local file. Dev builds are not an exception - they sign with the well-known
-dev key (`cargo mero bundle --dev`) and are verified like any other bundle. The
+dev key (`mero-sign sign --dev`) and are verified like any other bundle. The
 signature also binds the wasm bytes: each wasm artifact is checked against the
 SHA-256 the signed manifest records for it. The exact verification rules are
 documented in [Upgrades & migration](/protocol/upgrades/).

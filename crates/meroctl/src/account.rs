@@ -8,7 +8,7 @@ use calimero_identity::testing::SoftAuthenticator;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::env::{write_private, Env};
+use crate::env::{load_dev_passkey, save_passkey, write_private, Env};
 
 #[derive(Debug, Subcommand)]
 pub enum AccountCmd {
@@ -46,17 +46,33 @@ pub enum AccountCmd {
 pub enum DeviceCmd {
     #[command(alias = "ls")]
     List,
-    /// Add a device: a new file passkey (development clusters).
+    /// Add a device: a new file passkey (development clusters), approved
+    /// with a device the account already has.
     Add {
         #[arg(long)]
         dev_passkey: PathBuf,
+        /// The passkey file of a device the account already has: it
+        /// approves the new one.
+        #[arg(long)]
+        approve_with: PathBuf,
         #[arg(long, default_value = "http://localhost:3000")]
         origin: String,
     },
     /// Name a device ("" clears the name).
-    Label { credential: String, label: String },
-    /// Remove a device; its sessions end.
-    Revoke { credential: String },
+    Label {
+        /// The passkey's credential id (base64url: it may start with `-`).
+        #[arg(allow_hyphen_values = true)]
+        credential: String,
+        label: String,
+    },
+    /// Remove a device; its sessions end. Approved with a passkey.
+    Revoke {
+        /// The passkey's credential id (base64url: it may start with `-`).
+        #[arg(allow_hyphen_values = true)]
+        credential: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -72,11 +88,26 @@ pub enum ApiKeyCmd {
         read_only: bool,
         #[arg(long)]
         ttl_secs: Option<u64>,
+        /// An upgrade key, for CI: it upgrades this context to signed
+        /// releases of its application (`context update --version`) and does
+        /// nothing else. Takes no other scope.
+        #[arg(long, conflicts_with_all = ["contexts", "read_only"])]
+        upgrades: Option<String>,
+        /// With `--upgrades`: the application whose releases it may move the
+        /// context to (default: the one it runs).
+        #[arg(long, requires = "upgrades")]
+        package: Option<String>,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     #[command(alias = "ls")]
     List,
+    /// Revoke a key. Approved with a passkey.
     Revoke {
         key_id: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -91,6 +122,7 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
         }
         AccountCmd::Device(DeviceCmd::Add {
             dev_passkey,
+            approve_with,
             origin,
         }) => {
             if dev_passkey.exists() {
@@ -100,39 +132,58 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
                 );
             }
             let mut pk = SoftAuthenticator::new("localhost", &origin);
-            let id = client.add_passkey(&mut pk).await?;
+            let mut approver = load_dev_passkey(&approve_with)?;
+            let id = client.add_passkey(&mut pk, &mut approver).await;
+            save_passkey(&approve_with, &approver)?;
+            let id = id?;
             write_private(&dev_passkey, &pk.to_json())?;
             json!({ "credential": id, "passkey": dev_passkey })
         }
         AccountCmd::Device(DeviceCmd::Label { credential, label }) => {
             client.label_passkey(&credential, &label).await?
         }
-        AccountCmd::Device(DeviceCmd::Revoke { credential }) => {
-            client
-                .delete(&format!("auth/passkeys/{credential}"))
-                .await?
+        AccountCmd::Device(DeviceCmd::Revoke {
+            credential,
+            dev_passkey,
+        }) => {
+            env.delete_approved(
+                &format!("auth/passkeys/{credential}"),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         AccountCmd::ApiKey(ApiKeyCmd::Create {
             label,
             contexts,
             read_only,
             ttl_secs,
+            upgrades,
+            package,
+            dev_passkey,
         }) => {
             let mut apps = Vec::with_capacity(contexts.len());
             for c in &contexts {
                 apps.push(env.app(c).await?);
             }
             let apps = (!apps.is_empty()).then_some(apps);
-            let (key_id, key) = client
-                .create_api_key(json!({
-                    "label": label, "apps": apps, "readOnly": read_only, "ttlSecs": ttl_secs,
-                }))
+            let mut body = json!({
+                "label": label, "apps": apps, "readOnly": read_only, "ttlSecs": ttl_secs,
+            });
+            if let Some(context) = upgrades {
+                body["upgrades"] = json!({ "app": env.app(&context).await?, "package": package });
+            }
+            let v = env
+                .post_approved("auth/apikeys", body, dev_passkey.as_deref())
                 .await?;
-            json!({ "keyId": key_id, "key": key })
+            json!({ "keyId": v["keyId"], "key": v["key"] })
         }
         AccountCmd::ApiKey(ApiKeyCmd::List) => client.get("auth/apikeys").await?,
-        AccountCmd::ApiKey(ApiKeyCmd::Revoke { key_id }) => {
-            client.delete(&format!("auth/apikeys/{key_id}")).await?
+        AccountCmd::ApiKey(ApiKeyCmd::Revoke {
+            key_id,
+            dev_passkey,
+        }) => {
+            env.delete_approved(&format!("auth/apikeys/{key_id}"), dev_passkey.as_deref())
+                .await?
         }
         AccountCmd::ApproveRelease {
             version,

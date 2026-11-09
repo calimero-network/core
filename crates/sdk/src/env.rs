@@ -1,1754 +1,337 @@
-//! Environment functions and WASM interface for Calimero applications.
+//! The app environment: who is calling, org and team membership, time, randomness, events.
 //!
-//! This module provides the core environment functions that allow Calimero applications
-//! to interact with the runtime, including logging, state management, and event emission.
-//!
-//! # Key Features
-//!
-//! - **Logging**: Structured logging with different levels (debug, info, warn, error)
-//! - **State Management**: Persistent storage with key-value operations
-//! - **Event Emission**: Event emission with optional callback handlers
-//! - **Panic Handling**: Custom panic handling with location information
-//! - **WASM Interface**: Low-level WASM function calls for runtime interaction
-//!
-//! # Usage
-//!
-//! Most applications will use the higher-level SDK functions rather than calling
-//! these environment functions directly. However, they provide the foundation
-//! for all Calimero application functionality.
-//!
-//! ```rust,no_run
-//! use calimero_sdk::env;
-//!
-//! #[derive(serde::Serialize)]
-//! struct MyEvent {
-//!     data: String,
-//! }
-//!
-//! impl calimero_sdk::event::AppEvent for MyEvent {
-//!     fn kind(&self) -> std::borrow::Cow<'_, str> {
-//!         "MyEvent".into()
-//!     }
-//!     fn data(&self) -> std::borrow::Cow<'_, [u8]> {
-//!         serde_json::to_vec(self).unwrap().into()
-//!     }
-//! }
-//!
-//! impl calimero_sdk::event::AppEventExt for MyEvent {}
-//!
-//! // Log a message
-//! env::log("Hello, Calimero!");
-//!
-//! // Emit an event
-//! let my_event = MyEvent { data: "hello".to_string() };
-//! env::emit(&my_event);
-//! ```
+//! In the guest every function reaches the host through the `calimero:app` imports. On the
+//! host target (tests) they read a thread-local [`mock`] state instead.
+
+use std::cell::Cell;
+use std::io::Write;
+use std::time::SystemTime;
+
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::json;
+
+use crate::app::AppEvent;
+use crate::error::{AppError, Result};
 
 #[cfg(target_arch = "wasm32")]
-use std::panic::set_hook;
-
+mod wasm;
 #[cfg(target_arch = "wasm32")]
-use calimero_sys::{
-    self as sys, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId, ValueReturn,
-    XCall,
-};
+use wasm as backend;
 
-use crate::event::AppEvent;
-
-/// Native mock host backing the in-process test harness. Off-`wasm32` the
-/// `calimero_sys` imports don't exist, so [`crate::env`] routes here instead.
 #[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub mod host;
-
-/// Mirrors a committed root `Entry` (read from `calimero_storage`'s native mock)
-/// into the SDK host storage at [`calimero_prelude::root_storage_key`], so
-/// [`crate::state::read_raw`] observes it during `TestHost` migration tests.
-///
-/// Test-harness plumbing: the generated `TestState` bridge calls this after each
-/// commit (it has access to both crates; `calimero_sdk` itself cannot depend on
-/// `calimero_storage`). Native-only.
+pub mod mock;
 #[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub fn __test_seed_root(root_entry: Vec<u8>) {
-    // The entry lives in its entity row, as the data part (see
-    // `calimero_prelude::row`); the index part is not needed to read it.
-    let mut row = vec![calimero_prelude::row::MAGIC | calimero_prelude::row::HAS_DATA];
-    row.extend_from_slice(&root_entry);
-    host::seed_storage(&calimero_prelude::root_storage_key(), row);
+use mock as backend;
+
+/// Who invoked the method (D13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Caller {
+    /// A signed-in account.
+    Account(String),
+    /// An API key acting for an account.
+    ApiKey {
+        /// The key's id.
+        key_id: String,
+        /// The account the key acts for.
+        account: String,
+    },
+    /// No account (a public method).
+    Public,
+    /// The platform itself (timers, migrations).
+    System,
+    /// Another app, by id (a delivered xcall).
+    App(String),
 }
 
-/// Host-backed `tracing` subscriber (cargo feature `tracing`). Routes
-/// `tracing` macro output through [`log`] so it reaches the execution outcome.
-#[cfg(feature = "tracing")]
-mod subscriber;
-
-/// Sets the maximum `tracing` level forwarded to the host (feature `tracing`).
-#[cfg(feature = "tracing")]
-pub use subscriber::set_log_level;
-/// Re-exported so apps can set the level without depending on `tracing`
-/// directly, e.g. `env::set_log_level(env::LevelFilter::DEBUG)`.
-#[cfg(feature = "tracing")]
-pub use tracing::level_filters::LevelFilter;
-
-/// Register ID used for data operations in the WASM runtime.
-#[cfg(target_arch = "wasm32")]
-const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
-
-/// Reports that a host function has no native mock equivalent.
-///
-/// A handful of host functions (cross-context calls, networked blobs,
-/// signature verification) have no meaningful in-process behaviour. They
-/// stay callable so app code compiles for tests, but invoking one under
-/// [`crate::testing::TestHost`] panics with a clear message rather than the
-/// opaque "only available when compiled for wasm32" `calimero_sys` stub.
-#[cfg(not(target_arch = "wasm32"))]
-#[track_caller]
-#[cold]
-fn unsupported_native(name: &str) -> ! {
-    panic!("`env::{name}` is not supported by the in-process test harness (TestHost)");
-}
-
-/// Panics the application with caller location information.
-///
-/// This function provides a structured panic that includes the location
-/// where the panic occurred, making debugging easier.
-#[track_caller]
-#[inline]
-pub fn panic() -> ! {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::panic(Ref::new(&Location::caller()))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    panic!("application panicked");
-}
-
-/// Panics the application with a custom message and caller location.
-///
-/// This function provides a structured panic with a custom error message
-/// and the location where the panic occurred.
-///
-/// # Parameters
-///
-/// * `message` - The custom panic message to display
-#[track_caller]
-#[inline]
-pub fn panic_str(message: &str) -> ! {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::panic_utf8(
-            Ref::new(&Buffer::from(message)),
-            Ref::new(&Location::caller()),
-        )
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    panic!("{message}");
-}
-
-#[cfg(target_arch = "wasm32")]
-#[track_caller]
-#[inline]
-fn expected_register<T>() -> T {
-    panic_str("Expected a register to be set, but it was not.");
-}
-
-#[cfg(target_arch = "wasm32")]
-#[track_caller]
-#[inline]
-fn expected_boolean<T>(e: u32) -> T {
-    panic_str(&format!("Expected 0|1. Got {e}"));
-}
-
-/// Sets up a custom panic hook for better error reporting.
-///
-/// This function configures a panic hook that provides detailed error information
-/// including the panic message and location, making debugging easier in the WASM environment.
-///
-/// Off-`wasm32` (under the test harness) this is a no-op: Rust's default panic
-/// behaviour already surfaces the message and location to the test runner.
-pub fn setup_panic_hook() {
-    #[cfg(target_arch = "wasm32")]
-    set_hook(Box::new(|info| {
-        #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
-        let message = match info.payload().downcast_ref::<&'static str>() {
-            Some(message) => *message,
-            None => info
-                .payload()
-                .downcast_ref::<String>()
-                .map_or("<no message>", |message| &**message),
-        };
-
-        unsafe {
-            sys::panic_utf8(
-                Ref::new(&Buffer::from(message)),
-                Ref::new(&Location::from(info.location())),
-            )
-        }
-    }));
-}
-
-/// Installs the host-backed `tracing` subscriber so `tracing` macros
-/// (`info!`/`debug!`/…) emitted by the app — and by any crate it imports — are
-/// forwarded to the host log and surface in the execution outcome.
-///
-/// No-op unless the `tracing` cargo feature is enabled. Idempotent: the
-/// generated WASM exports call this at method entry (alongside
-/// [`setup_panic_hook`]), so apps get `tracing` output with no manual setup.
-/// Tune verbosity with [`set_log_level`].
-#[inline]
-pub fn init_logging() {
-    #[cfg(feature = "tracing")]
-    subscriber::init();
-}
-
-/// Marks code as unreachable for optimization purposes.
-///
-/// This function is used to indicate that certain code paths should never be reached.
-/// It provides platform-specific unreachable instructions for optimal performance.
-#[track_caller]
-pub fn unreachable() -> ! {
-    #[cfg(target_arch = "wasm32")]
-    core::arch::wasm32::unreachable();
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unreachable!()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-#[must_use]
-pub fn register_len(register_id: RegisterId) -> Option<usize> {
-    let len = unsafe { sys::register_len(register_id) };
-
-    if len == PtrSizedInt::MAX {
-        return None;
-    }
-
-    Some(len.as_usize())
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
-    let len = register_len(register_id)?;
-
-    // Zero-initialize rather than `with_capacity` + `set_len`: the host fills the
-    // buffer during the call below, but the `BufferMut` descriptor must already
-    // advertise `len` bytes for the host to write into. Exposing uninitialized
-    // capacity as the live slice (via `set_len`) before the host writes is UB if
-    // the host writes fewer bytes than advertised and still reports success —
-    // the unwritten tail would be read as initialized. `vec![0; len]` is sound.
-    let mut buffer = vec![0_u8; len];
-
-    let succeed: bool = unsafe {
-        sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
-            .try_into()
-            .unwrap_or_else(expected_boolean)
-    };
-
-    if !succeed {
-        panic_str("Buffer is too small.");
-    }
-
-    Some(buffer)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
-    let len = register_len(register_id)?;
-
-    let mut buffer = [0; N];
-
-    #[expect(
-        clippy::needless_borrows_for_generic_args,
-        reason = "we don't want to copy the buffer, but write to the same one that's returned"
-    )]
-    let succeed: bool = unsafe {
-        sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
-            .try_into()
-            .unwrap_or_else(expected_boolean)
-    };
-
-    if !succeed {
-        panic_str(&format!(
-            "register content length ({len}) does not match buffer length ({N})"
-        ));
-    }
-
-    Some(buffer)
-}
-
-#[must_use]
-pub fn context_id() -> [u8; 32] {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::context_id(DATA_REGISTER) }
-        read_register_sized(DATA_REGISTER).expect("Must have context identity.")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::context_id()
-}
-
-/// The **account** this call is authorized as — who is calling, as a person or
-/// agent rather than a machine.
-///
-/// This is the id to key per-person state by: `Map<account_id, Vote>` is one vote
-/// per person, and stays that way when they add a second device. It is stable
-/// across a device's keys rotating, and across losing every device and recovering.
-///
-/// Use [`device_id`] instead — never this — for anything that must differ between
-/// two devices of the same person: a replica or writer slot, a per-machine
-/// setting, an "is this the machine that wrote it" check. Two devices report the
-/// same account here on purpose.
-#[must_use]
-pub fn account_id() -> [u8; 32] {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::account_id(DATA_REGISTER) }
-        read_register_sized(DATA_REGISTER).expect("Must have an account identity.")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::account_id()
-}
-
-/// The **device** executing this call — one installation, and the replica its
-/// writes are attributed to.
-///
-/// Distinct per machine even for one person, which is what makes it right for
-/// per-writer state and wrong for per-person state. If you are counting people,
-/// use [`account_id`].
-#[must_use]
-pub fn device_id() -> [u8; 32] {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::device_id(DATA_REGISTER) }
-        read_register_sized(DATA_REGISTER).expect("Must have a device identity.")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::device_id()
-}
-
-/// The context that dispatched the current `xcall`, or `None` for a direct/RPC
-/// call.
-///
-/// The node sets this from the calling context — it cannot be forged by the
-/// caller — so a target method may use it to authorize the source (e.g. accept
-/// a call only from a context it spawned). Returning `None` also lets a method
-/// require xcall-only invocation by rejecting direct calls.
-#[must_use]
-pub fn xcall_origin() -> Option<[u8; 32]> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        // Bind the presence flag in let position (like `read_register_sized`)
-        // so the `unsafe {}` block is never parsed as a bare statement. The host
-        // writes the origin into the register and returns whether one was set.
-        let present: bool = unsafe {
-            sys::xcall_origin(DATA_REGISTER)
-                .try_into()
-                .unwrap_or_else(expected_boolean)
-        };
-        present.then(|| read_register_sized(DATA_REGISTER).expect("xcall origin present"))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::xcall_origin()
-}
-
-/// A caller's role in an organization, lowest to highest.
+/// An account's role in an org.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OrgRole {
+    /// Below member.
     Guest,
+    /// A member.
     Member,
+    /// An admin.
     Admin,
+    /// The owner.
     Owner,
 }
 
-/// The caller's standing in the organization the app belongs to.
+/// Who receives an event.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CallerOrg {
-    /// The organization's id.
-    pub org: String,
-    pub role: OrgRole,
-    /// Ids of the organization's teams the caller is in.
-    pub teams: Vec<String>,
+pub enum Audience {
+    /// Everyone subscribed to the app.
+    All,
+    /// The caller of the run.
+    Caller,
+    /// These accounts.
+    Accounts(Vec<String>),
+    /// The members of a team.
+    Team(String),
+    /// The members of the app's org.
+    Org,
+    /// The admins of the app's org.
+    OrgAdmins,
 }
 
-impl CallerOrg {
-    /// Decode the node's `org\nrole\nteam\n...` form.
-    #[must_use]
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let text = core::str::from_utf8(bytes).ok()?;
-        let mut lines = text.split('\n');
-        let org = lines.next().filter(|o| !o.is_empty())?.to_owned();
-        let role = match lines.next()? {
-            "guest" => OrgRole::Guest,
-            "member" => OrgRole::Member,
-            "admin" => OrgRole::Admin,
-            "owner" => OrgRole::Owner,
-            _ => return None,
-        };
-        let teams = lines.filter(|t| !t.is_empty()).map(str::to_owned).collect();
-        Some(Self { org, role, teams })
-    }
-
-    /// Whether the caller is in `team`.
-    #[must_use]
-    pub fn in_team(&self, team: &str) -> bool {
-        self.teams.iter().any(|t| t == team)
-    }
+/// A timer tick, in milliseconds since the epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimerInfo {
+    /// The slot this tick is for.
+    pub scheduled: u64,
+    /// The previous slot applied; none on a timer's first tick.
+    pub previous: Option<u64>,
 }
 
-/// The caller's standing in the app's organization: `None` when the app
-/// belongs to no organization, the caller is not a member, or the node does
-/// not run organizations (v1 nodes). Gate a method on it the way the node
-/// gates the app: `env::caller_org().is_some_and(|o| o.role >= OrgRole::Admin)`.
-#[must_use]
-pub fn caller_org() -> Option<CallerOrg> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let present: bool = unsafe {
-            sys::caller_org(DATA_REGISTER)
-                .try_into()
-                .unwrap_or_else(expected_boolean)
-        };
-        if !present {
-            return None;
-        }
-        CallerOrg::decode(&read_register(DATA_REGISTER)?)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::caller_org()
+thread_local! {
+    static TIMER: Cell<Option<TimerInfo>> = const { Cell::new(None) };
 }
 
-#[inline]
-#[must_use]
-pub fn input() -> Option<Vec<u8>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::input(DATA_REGISTER) }
-        read_register(DATA_REGISTER)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::input()
+/// The caller of this invocation.
+pub fn caller() -> Caller {
+    backend::caller()
 }
 
-#[inline]
-pub fn value_return<T, E>(result: &Result<T, E>)
-where
-    T: AsRef<[u8]>,
-    E: AsRef<[u8]>,
-{
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::value_return(Ref::new(&ValueReturn::from(result.as_ref())))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let bytes: &[u8] = match result {
-            Ok(value) => value.as_ref(),
-            Err(error) => error.as_ref(),
-        };
-        host::value_return(bytes);
-    }
+/// This app's id.
+pub fn app_id() -> String {
+    backend::app_id()
 }
 
-/// Emits the transient migration witness produced by a `#[app::migrate]` whose
-/// return type is a `(State, Witness)` tuple. The witness rides out on the
-/// runtime `Outcome` and is delivered to `#[app::migration_check]`; it is NEVER
-/// written to storage. Called by the macro-generated migrate export.
-#[inline]
-pub fn emit_migration_witness(blob: &[u8]) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::emit_migration_witness(Ref::new(&Buffer::from(blob)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::emit_migration_witness(blob);
+/// The account that owns the app.
+pub fn app_owner() -> String {
+    backend::app_owner()
 }
 
-/// Logs a message to the runtime's logging system.
-///
-/// This function sends a log message to the runtime, which will be displayed
-/// in the application logs. This is the primary way to output debug information
-/// from Calimero applications.
-///
-/// # Parameters
-///
-/// * `message` - The message to log
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// env::log("Application started");
-/// let item_id = "item_123";
-/// env::log(&format!("Processing item: {}", item_id));
-/// ```
-#[inline]
-pub fn log(message: &str) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::log_utf8(Ref::new(&Buffer::from(message)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::log(message);
+/// The org the app belongs to, if any.
+pub fn org() -> Option<String> {
+    backend::org()
 }
 
-/// Emits an event through the runtime without any callback handler.
-///
-/// This function sends an event to the runtime for processing. The event
-/// will be available to external systems but no callback handler will be executed.
-///
-/// # Parameters
-///
-/// * `event` - The event to emit (must implement `AppEvent`)
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// #[derive(serde::Serialize)]
-/// struct MyEvent {
-///     data: String,
-/// }
-///
-/// impl calimero_sdk::event::AppEvent for MyEvent {
-///     fn kind(&self) -> std::borrow::Cow<'_, str> {
-///         "MyEvent".into()
-///     }
-///     fn data(&self) -> std::borrow::Cow<'_, [u8]> {
-///         serde_json::to_vec(self).unwrap().into()
-///     }
-/// }
-///
-/// impl calimero_sdk::event::AppEventExt for MyEvent {}
-///
-/// let my_event = MyEvent { data: "hello".to_string() };
-/// env::emit(&my_event);
-/// ```
-#[inline]
-pub fn emit<T: AppEvent>(event: &T) {
-    let kind = event.kind();
-    let data = event.data();
-
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::emit(Ref::new(&Event::new(&kind, &data)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::emit(&kind, &data);
+/// `account`'s role in the app's org; none when the app has no org or they are not in it.
+pub fn org_role(account: &str) -> Option<OrgRole> {
+    backend::org_role(account)
 }
 
-/// Emits an event through the runtime with a callback handler.
-///
-/// This function sends an event to the runtime and arranges for the specified
-/// handler method to be called after the event is processed. The handler
-/// method should be defined in your application.
-///
-/// # Parameters
-///
-/// * `event` - The event to emit (must implement `AppEvent`)
-/// * `handler` - The name of the handler method to call
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// #[derive(serde::Serialize)]
-/// struct MyEvent {
-///     data: String,
-/// }
-///
-/// impl calimero_sdk::event::AppEvent for MyEvent {
-///     fn kind(&self) -> std::borrow::Cow<'_, str> {
-///         "MyEvent".into()
-///     }
-///     fn data(&self) -> std::borrow::Cow<'_, [u8]> {
-///         serde_json::to_vec(self).unwrap().into()
-///     }
-/// }
-///
-/// impl calimero_sdk::event::AppEventExt for MyEvent {}
-///
-/// let my_event = MyEvent { data: "hello".to_string() };
-/// env::emit_with_handler(&my_event, "my_handler");
-/// ```
-#[inline]
-pub fn emit_with_handler<T: AppEvent>(event: &T, handler: &str) {
-    let kind = event.kind();
-    let data = event.data();
-
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::emit_with_handler(
-            Ref::new(&Event::new(&kind, &data)),
-            Ref::new(&Buffer::from(handler.as_bytes())),
-        );
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::emit_with_handler(&kind, &data, handler);
+/// Whether `account` is in `team`.
+pub fn in_team(account: &str, team: &str) -> bool {
+    backend::in_team(account, team)
 }
 
-/// Makes a cross-context call to be executed after the current execution completes.
-///
-/// This function queues a call to another context that will be executed locally
-/// after the current execution finishes. The call will be executed on the specified
-/// context with the given function name and parameters.
-///
-/// # Parameters
-///
-/// * `context_id` - The 32-byte ID of the context to call
-/// * `function` - The name of the function to call in the target context
-/// * `params` - The parameters to pass to the function (typically JSON-encoded)
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// let target_context = [0u8; 32]; // The context ID to call
-/// let params = serde_json::to_vec(&"hello").unwrap();
-/// env::xcall(&target_context, "my_function", &params);
-/// ```
-#[inline]
-pub fn xcall(context_id: &[u8; 32], function: &str, params: &[u8]) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::xcall(Ref::new(&XCall::new(context_id, function, params)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (context_id, function, params);
-        unsupported_native("xcall");
-    }
+/// The log index this run applies on top of.
+pub fn applied_index() -> u64 {
+    backend::applied_index()
 }
 
-/// Commits state changes to the runtime.
-///
-/// This function commits the current state changes along with a root hash
-/// and artifact to the runtime for persistence.
-///
-/// # Parameters
-///
-/// * `root_hash` - The root hash of the state tree
-/// * `artifact` - The artifact data to commit
-pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::commit(
-            Ref::new(&Buffer::from(&root_hash[..])),
-            Ref::new(&Buffer::from(artifact)),
-        );
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::commit(root_hash, artifact);
+/// A unique id: `<leader term>.<call seq>.<n>` (D52). Prefer it to `Counter::increment` (D47).
+pub fn unique_id() -> String {
+    backend::unique_id()
 }
 
-/// Reads a value from persistent storage.
-///
-/// This function retrieves a value from the application's persistent storage
-/// using the provided key. Returns `None` if the key doesn't exist.
-///
-/// # Parameters
-///
-/// * `key` - The storage key to read from
-///
-/// # Returns
-///
-/// * `Some(Vec<u8>)` - The stored value if the key exists
-/// * `None` - If the key doesn't exist
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// if let Some(value) = env::storage_read(b"my_key") {
-///     println!("Found value: {:?}", value);
-/// }
-/// ```
-#[inline]
-pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
-            .try_into()
-            .unwrap_or_else(expected_boolean::<bool>)
-            .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::storage_read(key)
-}
-
-/// Removes a value from persistent storage.
-///
-/// This function removes a key-value pair from the application's persistent storage.
-///
-/// # Parameters
-///
-/// * `key` - The storage key to remove
-///
-/// # Returns
-///
-/// * `true` - If the key existed and was removed
-/// * `false` - If the key didn't exist
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// if env::storage_remove(b"my_key") {
-///     println!("Key was removed");
-/// } else {
-///     println!("Key didn't exist");
-/// }
-/// ```
-#[inline]
-pub fn storage_remove(key: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into() }
-            .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::storage_remove(key)
-}
-
-/// Writes a value to persistent storage.
-///
-/// This function stores a key-value pair in the application's persistent storage.
-/// The value will be available across application restarts.
-///
-/// # Parameters
-///
-/// * `key` - The storage key to write to
-/// * `value` - The value to store
-///
-/// # Returns
-///
-/// * `true` - A previous value existed under `key` and was evicted.
-/// * `false` - No previous value; a new entry was inserted.
-///
-/// The return value is **not** a success/failure indicator. The write
-/// itself either succeeds or traps the WASM module with a `HostError`
-/// (`KeyLengthOverflow`, `ValueLengthOverflow`, `InvalidMemoryAccess`),
-/// which propagates as a runtime error, not as `false`. Callers that
-/// don't care whether the key existed before can safely discard the bool.
-///
-/// **Note:** [`private_storage_write`] uses a different return-value
-/// convention (true = succeeded, false = private storage unavailable)
-/// because that backend can be absent at runtime, unlike main storage
-/// which is always available.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// if env::storage_write(b"my_key", b"my_value") {
-///     println!("Overwrote an existing value");
-/// } else {
-///     println!("Inserted a new entry");
-/// }
-/// ```
-#[inline]
-pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::storage_write(
-                Ref::new(&Buffer::from(key)),
-                Ref::new(&Buffer::from(value)),
-                DATA_REGISTER,
-            )
-            .try_into()
-        }
-        .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::storage_write(key, value)
-}
-
-// ==================== Ordered Secondary Index (SortedMap) ====================
-//
-// Node-local, NOT synchronized. Keys are the unhashed `collection ‖ order_key`
-// so the backend keeps them in byte (= logical key) order. Only `SortedMap`
-// (via the `MainStorage` adaptor) calls these.
-
-/// Insert/overwrite `key -> value` in the ordered index. Returns whether the
-/// host persisted the write (so the caller can avoid stamping a stale
-/// index-validity marker on failure).
-#[inline]
-pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
-        }
-        .try_into()
-        .unwrap_or_else(expected_boolean)
-    }
-    // `SortedMap`'s ordered index is served by `calimero_storage`'s own native
-    // mock (a process-local `BTreeMap`) under the test harness, so this SDK-level
-    // host hook is never reached off-wasm.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (key, value);
-        unsupported_native("storage_index_set")
-    }
-}
-
-/// Remove `key` from the ordered index. Returns whether the host persisted the
-/// write (see [`storage_index_set`]).
-#[inline]
-pub fn storage_index_remove(key: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
-            .try_into()
-            .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = key;
-        unsupported_native("storage_index_remove")
-    }
-}
-
-/// Remove every ordered-index key beginning with `prefix`. Returns whether the
-/// host persisted the write (see [`storage_index_set`]).
-#[inline]
-pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
-            .try_into()
-            .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = prefix;
-        unsupported_native("storage_index_remove_prefix")
-    }
-}
-
-/// Scan the ordered index over `[lo, hi)`, ascending, after `offset` and
-/// capped at `limit` (`None` = unbounded). Decodes the host's length-prefixed
-/// reply (`count:u32`, then per pair `klen:u32, k, vlen:u32, v`, little-endian).
-#[inline]
-pub fn storage_index_scan(
-    lo: &[u8],
-    hi: &[u8],
-    offset: usize,
-    limit: Option<usize>,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel
-        // would be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX`
-        // (`u32::MAX`) would not equal the host's `u64::MAX`. `0` is unambiguous
-        // on any width.
-        let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
-        let found: bool = unsafe {
-            sys::storage_index_scan(
-                Ref::new(&Buffer::from(lo)),
-                Ref::new(&Buffer::from(hi)),
-                PtrSizedInt::new(offset),
-                PtrSizedInt::new(limit_raw),
-                DATA_REGISTER,
-            )
-            .try_into()
-        }
-        .unwrap_or_else(expected_boolean);
-
-        if !found {
-            return Vec::new();
-        }
-        let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-        decode_index_pairs(&buf)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (lo, hi, offset, limit);
-        unsupported_native("storage_index_scan")
-    }
-}
-
-/// The largest `(key, value)` in the ordered index over `[lo, hi)` — a reverse
-/// seek backing `SortedMap::last`.
-#[inline]
-pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let found: bool = unsafe {
-            sys::storage_index_last(
-                Ref::new(&Buffer::from(lo)),
-                Ref::new(&Buffer::from(hi)),
-                DATA_REGISTER,
-            )
-            .try_into()
-        }
-        .unwrap_or_else(expected_boolean);
-
-        if !found {
-            return None;
-        }
-        let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-        decode_index_pairs(&buf).into_iter().next()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (lo, hi);
-        unsupported_native("storage_index_last")
-    }
-}
-
-/// Write the node-local ordered-index validity marker `key -> value`. Node-local
-/// and NOT synchronized (routed to the non-synced marker column), so a peer
-/// never observes a marker for an index it did not build. Returns whether the
-/// host persisted the write.
-#[inline]
-pub fn storage_index_meta_set(key: &[u8], value: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::storage_index_meta_set(
-                Ref::new(&Buffer::from(key)),
-                Ref::new(&Buffer::from(value)),
-            )
-        }
-        .try_into()
-        .unwrap_or_else(expected_boolean)
-    }
-    // Off-wasm, `calimero_storage`'s native mock serves the marker directly, so
-    // this SDK-level host hook is never reached (see `storage_index_set`).
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (key, value);
-        unsupported_native("storage_index_meta_set")
-    }
-}
-
-/// Read the node-local ordered-index validity marker for `key`, or `None` if
-/// absent (see [`storage_index_meta_set`]).
-#[inline]
-pub fn storage_index_meta_get(key: &[u8]) -> Option<Vec<u8>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let found: bool =
-            unsafe { sys::storage_index_meta_get(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
-                .try_into()
-                .unwrap_or_else(expected_boolean);
-        if !found {
-            return None;
-        }
-        Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = key;
-        unsupported_native("storage_index_meta_get")
-    }
-}
-
-/// Clear the node-local ordered-index validity marker for `key`, forcing the
-/// next ordered read to rebuild the index (see [`storage_index_meta_set`]). The
-/// invalidate-on-sync primitive called by the storage apply/merge path when a
-/// collection's element set changes outside `insert`. Returns whether the host
-/// persisted the write.
-#[inline]
-pub fn storage_index_meta_clear(key: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::storage_index_meta_clear(Ref::new(&Buffer::from(key))) }
-            .try_into()
-            .unwrap_or_else(expected_boolean)
-    }
-    // Off-wasm, `calimero_storage`'s native mock serves the marker directly, so
-    // this SDK-level host hook is never reached (see `storage_index_set`).
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = key;
-        unsupported_native("storage_index_meta_clear")
-    }
-}
-
-/// Decode the length-prefixed scan reply produced by the host's
-/// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
-/// far (the host controls this buffer, so it's well-formed in practice).
-///
-/// WASM-only: the ordered-index host hooks are unreachable off-wasm (see
-/// `storage_index_set`), so the decoder has no native caller.
-#[cfg(target_arch = "wasm32")]
-fn decode_index_pairs(buf: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    let take_u32 = |buf: &[u8], pos: &mut usize| -> Option<usize> {
-        let end = pos.checked_add(4)?;
-        let n = u32::from_le_bytes(buf.get(*pos..end)?.try_into().ok()?) as usize;
-        *pos = end;
-        Some(n)
-    };
-    let Some(count) = take_u32(buf, &mut pos) else {
-        return out;
-    };
-    for _ in 0..count {
-        let Some(klen) = take_u32(buf, &mut pos) else {
-            break;
-        };
-        // `pos + klen` can overflow `usize` on a 32-bit (wasm32) host for a
-        // hostile/corrupt length prefix; `checked_add` makes that a clean stop
-        // rather than a wrapping read or a debug-build panic before `.get`.
-        let Some(kend) = pos.checked_add(klen) else {
-            break;
-        };
-        let Some(key) = buf.get(pos..kend).map(<[u8]>::to_vec) else {
-            break;
-        };
-        pos = kend;
-        let Some(vlen) = take_u32(buf, &mut pos) else {
-            break;
-        };
-        let Some(vend) = pos.checked_add(vlen) else {
-            break;
-        };
-        let Some(value) = buf.get(pos..vend).map(<[u8]>::to_vec) else {
-            break;
-        };
-        pos = vend;
-        out.push((key, value));
-    }
-    out
-}
-
-// ==================== Private Storage Functions ====================
-// These functions operate on node-local storage that is NOT synchronized across nodes.
-
-/// Reads a value from private (node-local) storage.
-///
-/// Private storage is NOT synchronized across nodes - it remains local to this node only.
-/// This is useful for storing secrets, node-specific configuration, or other data that
-/// should not be shared with other nodes in the context.
-///
-/// # Parameters
-///
-/// * `key` - The storage key to read
-///
-/// # Returns
-///
-/// * `Some(Vec<u8>)` - The value if found
-/// * `None` - If the key doesn't exist or private storage is not available
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// if let Some(value) = env::private_storage_read(b"my_secret") {
-///     println!("Found private value: {:?}", value);
-/// }
-/// ```
-#[inline]
-pub fn private_storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::private_storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
-            .try_into()
-            .unwrap_or_else(expected_boolean::<bool>)
-            .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::private_storage_read(key)
-}
-
-/// Removes a value from private (node-local) storage.
-///
-/// Private storage is NOT synchronized across nodes - it remains local to this node only.
-///
-/// # Parameters
-///
-/// * `key` - The storage key to remove
-///
-/// # Returns
-///
-/// * `true` - If the key existed and was removed
-/// * `false` - If the key didn't exist or private storage is not available
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// if env::private_storage_remove(b"my_secret") {
-///     println!("Private key was removed");
-/// }
-/// ```
-#[inline]
-pub fn private_storage_remove(key: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::private_storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into()
-        }
-        .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::private_storage_remove(key)
-}
-
-/// Writes a value to private (node-local) storage.
-///
-/// Private storage is NOT synchronized across nodes - it remains local to this node only.
-/// This is useful for storing secrets, node-specific configuration, or other data that
-/// should not be shared with other nodes in the context.
-///
-/// # Parameters
-///
-/// * `key` - The storage key to write to
-/// * `value` - The value to store
-///
-/// # Returns
-///
-/// * `true` - The write succeeded (a new entry was inserted, or an
-///   existing entry was overwritten).
-/// * `false` - Private storage is not available on this node (the
-///   backend is optional and may be absent at runtime; the write
-///   was a no-op).
-///
-/// Other failure modes (`KeyLengthOverflow`, `ValueLengthOverflow`,
-/// `InvalidMemoryAccess`) trap the WASM module via `HostError` rather
-/// than returning `false`.
-///
-/// **Note:** [`storage_write`] uses a different return-value
-/// convention (true = previous value evicted, false = new key
-/// inserted) because main storage is always available, so a
-/// success/failure bool would be tautological.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use calimero_sdk::env;
-///
-/// if env::private_storage_write(b"my_secret", b"secret_value") {
-///     println!("Private value stored successfully");
-/// } else {
-///     println!("Private storage is not available on this node");
-/// }
-/// ```
-#[inline]
-pub fn private_storage_write(key: &[u8], value: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::private_storage_write(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
-                .try_into()
-        }
-        .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::private_storage_write(key, value)
-}
-
-/// Fill the buffer with random bytes.
-///
-/// Under the in-process test harness (off-`wasm32`) this is backed by a
-/// deterministic, **non-cryptographic** PRNG so test runs are reproducible — do
-/// not rely on it for security properties in tests.
-#[inline]
-pub fn random_bytes(buf: &mut [u8]) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::random_bytes(Ref::new(&BufferMut::new(buf)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::random_bytes(buf);
-}
-
-/// Whether this run was fired by the node's TEE scheduler as the TEE authority.
-///
-/// The node sets it — a JSON-RPC caller cannot — and only on an attested TEE the
-/// namespace's TEE authoring policy allows. In such a run [`account_id`] is
-/// `AccountId::TEE_AUTHORITY`, which is what lets it write `TeeOnly` state.
-/// `#[app::tee]` methods check it and refuse every other invocation.
-#[inline]
-#[must_use]
-pub fn tee_origin() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let present: bool = unsafe {
-            sys::tee_origin()
-                .try_into()
-                .unwrap_or_else(expected_boolean)
-        };
-        present
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::tee_origin()
-}
-
-/// Fill the buffer with randomness drawn inside the TEE.
-///
-/// Unlike [`random_bytes`], which on a member's node returns whatever that member
-/// chooses, this is only available in a TEE-triggered run (see [`tee_origin`]):
-/// the host traps otherwise. Use it for anything players must not be able to bias.
-///
-/// Under the in-process test harness it shares [`random_bytes`]' deterministic
-/// PRNG, and panics outside a `TestHost::call_as_tee` run like the host would.
-#[inline]
-pub fn tee_random_bytes(buf: &mut [u8]) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::tee_random_bytes(Ref::new(&BufferMut::new(buf)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        assert!(
-            host::tee_origin(),
-            "tee_random_bytes is only available in a TEE-triggered execution"
-        );
-        host::random_bytes(buf);
-    }
-}
-
-/// Seal `plaintext` to the Ed25519 public key `key`, so that only a run in this
-/// context whose executor is `key` can [`open_sealed`] it.
-///
-/// A TEE deals a hidden card by sealing it to each of the player's device keys
-/// ([`account_device_keys`]) and writing the envelopes into `TeeOnly` state.
-/// Every member replicates them; only the player's own devices open them.
-///
-/// Available in every run, since sealing reveals nothing. It proves
-/// confidentiality only: anyone who knows a key can seal to it, so what makes a
-/// dealt card genuine is where it is stored, not the envelope. `None` if `key`
-/// is not a usable Ed25519 point.
-///
-/// Under the in-process test harness the envelope is not encrypted; it opens
-/// only for the key and context it names, like the real one.
-#[must_use]
-pub fn seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::seal_to(
-                Ref::new(&Buffer::from(&key[..])),
-                Ref::new(&Buffer::from(plaintext)),
-                DATA_REGISTER,
-            )
-        }
-        .try_into()
-        .unwrap_or_else(expected_boolean::<bool>)
-        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::seal_to(key, plaintext)
-}
-
-/// Open an envelope [`seal_to`] made for this run's executor key.
-///
-/// `None` if the envelope is sealed to another key or in another context,
-/// malformed, or tampered with.
-///
-/// On a TEE node the host traps unless the TEE scheduler fired the run, so a
-/// JSON-RPC call on that node cannot read what is sealed to the TEE. In a
-/// delegated run it traps too: the node's key is not the principal's.
-#[must_use]
-pub fn open_sealed(sealed: &[u8]) -> Option<Vec<u8>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::open_sealed(Ref::new(&Buffer::from(sealed)), DATA_REGISTER) }
-            .try_into()
-            .unwrap_or_else(expected_boolean::<bool>)
-            .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::open_sealed(sealed)
-}
-
-/// The attested keys of the context's TEE authorities: the keys a value only
-/// the TEE may read is sealed to.
-///
-/// Only in a TEE-triggered run (see [`tee_origin`]); the host traps otherwise.
-/// Under the in-process test harness it is the one mock TEE key
-/// `TestHost::call_as_tee` runs as.
-#[must_use]
-pub fn tee_authority_keys() -> Vec<[u8; 32]> {
-    #[cfg(target_arch = "wasm32")]
-    let keys = {
-        unsafe { sys::tee_authority_keys(DATA_REGISTER) }
-        read_register(DATA_REGISTER).unwrap_or_default()
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let keys = host::tee_authority_keys();
-    let (keys, _) = keys.as_chunks::<32>();
-    keys.to_vec()
-}
-
-/// The namespace TEE key a value only the TEE may read is sealed to now, or
-/// `None` while the context's namespace has no TEE authority holding one.
-///
-/// Available in every run: it is public, and every member's node derives it
-/// from the replicated governance log. Seal an outbound secret to it with
-/// [`seal_outbound_secret`]. Under the in-process test harness it is whatever
-/// `TestHost::set_tee_sealing_key` set, `None` by default.
-#[must_use]
-pub fn tee_sealing_key() -> Option<[u8; 32]> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let set: bool = unsafe { sys::tee_sealing_key(DATA_REGISTER) }
-            .try_into()
-            .unwrap_or_else(expected_boolean::<bool>);
-        set.then(|| {
-            let bytes = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-            <[u8; 32]>::try_from(bytes.as_slice()).unwrap_or_else(|_| expected_register())
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::tee_sealing_key()
-}
-
-/// Seals `value` for outbound requests to the namespace's TEE key: only a
-/// node that is a TEE authority of the namespace can fill it into a request,
-/// and only for one of `hosts` (DNS names, lowercase). Store the result and
-/// write its [`placeholder`](calimero_primitives::outbound::SealedSecret::placeholder)
-/// where the value goes in a request's header or body.
-///
-/// `None` while the namespace has no TEE key ([`tee_sealing_key`]): there is no
-/// node that could ever open it, so tell the caller to add a TEE first.
-/// Available in every run; the value passes through this run's memory, never
-/// into state.
-#[must_use]
-pub fn seal_outbound_secret(
-    value: &str,
-    hosts: &[&str],
-) -> Option<calimero_primitives::outbound::SealedSecret> {
-    let key = tee_sealing_key()?;
-    let payload = calimero_primitives::outbound::SealedSecretPayload {
-        value: value.to_owned(),
-        hosts: hosts.iter().map(|h| h.to_ascii_lowercase()).collect(),
-    };
-    let bytes = borsh::to_vec(&payload).ok()?;
-    let envelope = seal_to(&key, &bytes)?;
-    Some(calimero_primitives::outbound::SealedSecret { key, envelope })
-}
-
-/// The signing key of every live device of `account` in the context's
-/// namespace: the keys a value only that member may read is sealed to, so that
-/// each of their devices can open it. Empty for an account with no device
-/// bound here.
-///
-/// Only in a TEE-triggered run (see [`tee_origin`]); the host traps otherwise.
-/// Under the in-process test harness it is every device the account has
-/// called as.
-#[must_use]
-pub fn account_device_keys(account: &[u8; 32]) -> Vec<[u8; 32]> {
-    #[cfg(target_arch = "wasm32")]
-    let keys = {
-        let found: bool = unsafe {
-            sys::account_device_keys(Ref::new(&Buffer::from(&account[..])), DATA_REGISTER)
-        }
-        .try_into()
-        .unwrap_or_else(expected_boolean::<bool>);
-        if found {
-            read_register(DATA_REGISTER).unwrap_or_else(expected_register)
-        } else {
-            Vec::new()
-        }
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let keys = host::account_device_keys(account);
-    let (keys, _) = keys.as_chunks::<32>();
-    keys.to_vec()
-}
-
-/// Full-text search over this context's index `request.index`: the raw host
-/// call behind [`crate::search`], which most apps use instead.
-///
-/// Only a view (`#[app::view]`) may call it, and only on a node with search:
-/// the node hands the search handle to read-only runs alone, and binds it to
-/// the context the view runs in — there is no way to name another context.
-/// The node charges the call gas for the work it does.
-///
-/// The index lags state by up to the indexer's commit interval (~250 ms), and
-/// a hit is a pointer, not a value: re-read each hit's entity and drop the
-/// ones that no longer exist or no longer match.
-///
-/// # Errors
-///
-/// The node's reason for refusing the request (unknown field, a substring
-/// shorter than 3 characters, a malformed response).
-///
-/// # Panics
-///
-/// Outside a view, or on a node without search, the host traps the run.
-pub fn search(
-    request: &calimero_primitives::search::SearchRequest,
-) -> Result<calimero_primitives::search::SearchResponse, String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let bytes = borsh::to_vec(request).map_err(|e| e.to_string())?;
-        let ok: bool =
-            unsafe { sys::search_query(Ref::new(&Buffer::from(&*bytes)), DATA_REGISTER) }
-                .try_into()
-                .unwrap_or_else(expected_boolean::<bool>);
-        let out = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-        if ok {
-            borsh::from_slice(&out).map_err(|e| e.to_string())
-        } else {
-            Err(String::from_utf8_lossy(&out).into_owned())
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = request;
-        Err("full-text search needs a node".to_owned())
-    }
-}
-
-/// Ask the node to make one outbound HTTPS request to an outside service: a
-/// captcha check, a payment API, any HTTPS API.
-///
-/// The node makes it only when every gate holds, and answers with its reason
-/// otherwise:
-///
-/// - the node's operator turned outbound requests on (`[context.outbound]`,
-///   off by default) and allows the request's host;
-/// - a URL prefix in the app's signed manifest (`outbound`) covers
-///   `request.url`: the same host, the prefix's path or one below it;
-/// - the run writes state and executes on this node, as its own write or one
-///   it relays for an author (never a view, a migration, a state op or a
-///   peer's delta);
-/// - it is the run's only request, within the limits in
-///   [`calimero_primitives::outbound`], to a host with public addresses only.
-///
-/// A secret the request needs is written `{{secret:NAME}}` in a header value
-/// or the body. The node fills it in from its operator's secrets, only for a
-/// host that secret is bound to, and removes any copy of it from the response:
-/// the app never reads it.
-///
-/// The request and its response stay on this node. Only the state the run
-/// writes because of them replicates, so decide from the response and store
-/// the decision, not the response.
-///
-/// # Errors
-///
-/// The node's reason for refusing the request, or the transport's failure.
-/// [`OutboundRefusal::of`](calimero_primitives::outbound::OutboundRefusal::of)
-/// picks out the two an app should handle: `NotApproved` (ask an admin of the
-/// namespace) and `AwaitingApproval` (an admin should approve what this version
-/// added).
-///
-/// # Panics
-///
-/// When the node gives this run no outbound client at all, or on a second
-/// request in one run, the host traps the run.
-pub fn http_request(
-    request: &calimero_primitives::outbound::OutboundRequest,
-) -> Result<calimero_primitives::outbound::OutboundResponse, String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let bytes = borsh::to_vec(request).map_err(|e| e.to_string())?;
-        let ok: bool =
-            unsafe { sys::http_request(Ref::new(&Buffer::from(&*bytes)), DATA_REGISTER) }
-                .try_into()
-                .unwrap_or_else(expected_boolean::<bool>);
-        let out = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-        if ok {
-            borsh::from_slice(&out).map_err(|e| e.to_string())
-        } else {
-            Err(String::from_utf8_lossy(&out).into_owned())
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = request;
-        Err("outbound requests need a node".to_owned())
-    }
-}
-
-/// The borsh-encoded writers of the `SharedStorage` cell `cell` at this run's
-/// governance cut, for the storage crate to decode.
-///
-/// `None` means the host cannot resolve them and the caller must fail closed.
-/// `Some(None)` means no rotation took effect, so the writers stored with the cell
-/// stand. `Some(Some(bytes))` is the rotated set. Under the in-process test
-/// harness every cell is at genesis.
-#[must_use]
-pub fn shared_writers(cell: &[u8; 32]) -> Option<Option<Vec<u8>>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        match unsafe { sys::shared_writers(Ref::new(&Buffer::from(&cell[..])), DATA_REGISTER) } {
-            1 => Some(None),
-            2 => Some(Some(
-                read_register(DATA_REGISTER).unwrap_or_else(expected_register),
-            )),
-            _ => None,
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::shared_writers(cell)
-}
-
-/// Asks the host to rotate a `SharedStorage` cell's writers: a borsh-encoded
-/// rotation request the node publishes as a governance op. Nothing is stored by
-/// the guest, and the rotation takes effect once the op applies.
-#[inline]
-pub fn shared_writers_rotate(rotation: &[u8]) {
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        sys::shared_writers_rotate(Ref::new(&Buffer::from(rotation)))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::shared_writers_rotate(rotation);
-}
-
-/// Gets the current time.
-#[inline]
-#[must_use]
+/// The wall clock in milliseconds since the epoch. Logged runs see the entry's timestamp.
 pub fn time_now() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let mut bytes = [0; 8];
+    backend::time_now_ms().unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    })
+}
 
-        #[expect(
-            clippy::needless_borrows_for_generic_args,
-            reason = "we don't want to copy the buffer, but write to the same one that's returned"
-        )]
-        unsafe {
-            sys::time_now(Ref::new(&BufferMut::new(&mut bytes)));
+/// `len` random bytes; seeded per logged run, so deterministic when replayed.
+pub fn random_bytes(len: usize) -> Vec<u8> {
+    backend::random_bytes(len)
+}
+
+/// Emit an `#[app::event]` value: its variant name and JSON data (D20: 64-bit integers as
+/// decimal strings).
+pub fn emit<E: AppEvent>(event: E, audience: Audience) -> Result<()> {
+    let (name, data) = event.encode()?;
+    emit_raw(name, &data, audience)
+}
+
+/// Emit an event by name: `data` is serialized as JSON, like call arguments and results.
+pub fn emit_raw<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience) -> Result<()> {
+    let data = serde_json::to_vec(data)
+        .map_err(|e| AppError::with_fields("Emit", json!({ "message": e.to_string() })))?;
+    backend::emit(name, data, audience)
+}
+
+/// Send `args` (serialized as JSON) to `method` of app `app` (D25): the message waits in
+/// this run's outbox and the platform delivers it after the entry commits, only if the run
+/// succeeds, at least once and in order per sending app, as `Caller::App(<this app>)`. The
+/// target app must be in the same organization (or, for a personal app, have the same
+/// owner) and its method must `allow(app = "<this app>")` or `allow(app = "*")`. Calls,
+/// timers, `init` and deliveries only.
+///
+/// # Errors
+///
+/// `Xcall` with the host's reason: more than 100 xcalls in one run, an empty or overlong
+/// app id or method, or a reserved (`__`) method.
+pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result<()> {
+    let args = serde_json::to_vec(args)
+        .map_err(|e| AppError::with_fields("Xcall", json!({ "message": e.to_string() })))?;
+    backend::xcall(app, method, &args)
+        .map_err(|message| AppError::with_fields("Xcall", json!({ "message": message })))
+}
+
+/// Call `method` of app `app` synchronously and decode its JSON result: the target runs it
+/// as one call in its own log, as `Caller::App(<this app>)`, before this run continues.
+/// The target must be in the same organization (or, for a personal app, have the same
+/// owner), a component app other than this one, and its method must
+/// `allow(app = "<this app>")` or `allow(app = "*")`. Calls, timers and actions only; a
+/// delivered xcall makes none.
+///
+/// Not atomic: the target's call commits whatever this run does next, so a target method
+/// should be safe to have run (a captcha's `verify` spends the challenge either way). A
+/// re-run of this call (a client's retry, a leader change) replays the target's answer:
+/// the target's key is derived from this run's, the target, the method, the arguments
+/// and how many identical calls came before in the run.
+///
+/// # Errors
+///
+/// `XcallFailed` with the fields of the failure: the target's app error (`code`,
+/// `fields`), a refusal or a timeout (`message`); `BadOutput` when the result is not a `T`.
+pub fn xcall_call<T: DeserializeOwned, A: Serialize + ?Sized>(
+    app: &str,
+    method: &str,
+    args: &A,
+) -> Result<T> {
+    let args = sync_args(args)?;
+    decode_sync(backend::xcall_call(app, method, &args))
+}
+
+/// Run view `method` of app `app` on its latest committed state and decode its JSON
+/// result, with the checks of [`xcall_call`]. Calls, timers, views and actions.
+///
+/// # Errors
+///
+/// As [`xcall_call`].
+pub fn xcall_view<T: DeserializeOwned, A: Serialize + ?Sized>(
+    app: &str,
+    method: &str,
+    args: &A,
+) -> Result<T> {
+    let args = sync_args(args)?;
+    decode_sync(backend::xcall_view(app, method, &args))
+}
+
+fn sync_args<A: Serialize + ?Sized>(args: &A) -> Result<Vec<u8>> {
+    serde_json::to_vec(args)
+        .map_err(|e| AppError::with_fields("BadArgs", json!({ "message": e.to_string() })))
+}
+
+/// A synchronous xcall's answer: the result decoded, or `XcallFailed` with the failure's
+/// JSON fields (a message that is not a JSON object becomes `{"message": ..}`).
+fn decode_sync<T: DeserializeOwned>(answer: std::result::Result<Vec<u8>, String>) -> Result<T> {
+    match answer {
+        Ok(out) => {
+            let out = if out.is_empty() {
+                b"null".to_vec()
+            } else {
+                out
+            };
+            serde_json::from_slice(&out).map_err(|e| {
+                AppError::with_fields("BadOutput", json!({ "message": e.to_string() }))
+            })
         }
-
-        u64::from_le_bytes(bytes)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::time_now()
-}
-
-/// Verifies an Ed25519 signature.
-///
-/// This function calls the host environment to cryptographically verify that
-/// a given signature was produced by the given public key for the given message.
-///
-/// # Arguments
-///
-/// * `signature` - The 64-byte Ed25519 signature.
-/// * `public_key` - The 32-byte Ed25519 public key.
-/// * `message` - The message bytes that were signed.
-///
-/// # Returns
-///
-/// * `true` if the signature is valid.
-/// * `false` if the signature is invalid.
-///
-/// # Panics
-///
-/// Panics if the host returns a value other than `0` or `1`.
-#[inline]
-pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        // Create buffer descriptors for the host
-        let signature_buf = Buffer::from(&signature[..]);
-        let public_key_buf = Buffer::from(&public_key[..]);
-        let message_buf = Buffer::from(message);
-
-        // Call the host function via FFI
-        let result = unsafe {
-            sys::ed25519_verify(
-                Ref::new(&signature_buf),
-                Ref::new(&public_key_buf),
-                Ref::new(&message_buf),
-            )
-        };
-
-        // Convert the sys::Bool (repr(C) u32) to a bool, panicking if it's not 0 or 1.
-        result.try_into().unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (signature, public_key, message);
-        // Pulling a crypto backend into the SDK just for the test mock isn't
-        // worth it; tests that need real verification can call the runtime.
-        unsupported_native("ed25519_verify");
-    }
-}
-
-// ========================================
-// STREAMING BLOB API
-// ========================================
-
-/// Narrow a public `u64` blob file descriptor to the pointer-sized integer the
-/// host ABI expects. On a 32-bit (wasm32) host a plain `as usize` would silently
-/// truncate the high bits, potentially aliasing a *different*, live descriptor.
-/// A value that doesn't fit (one the host could never have issued) instead
-/// collapses to an all-ones sentinel the host rejects as invalid.
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn blob_fd(fd: u64) -> PtrSizedInt {
-    PtrSizedInt::new(usize::try_from(fd).unwrap_or(usize::MAX))
-}
-
-/// Create a new blob write handle for streaming data.
-/// Returns a file descriptor that can be used with blob_write() and blob_close().
-pub fn blob_create() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::blob_create() }.as_usize() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::blob_create()
-}
-
-/// Open a blob for reading by its 32-byte ID.
-/// Returns a file descriptor that can be used with blob_read() and blob_close().
-/// The host traps unless the blob is held for this context: written by the app,
-/// uploaded with this context's id, fetched from its peers, or its application.
-/// Use [`blob_open_in_context`] to read a blob another node produced.
-pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::blob_open(Ref::new(&Buffer::from(&blob_id[..]))) }.as_usize() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::blob_open(blob_id)
-}
-
-/// Open a blob for reading, fetching it from the context's peers if this node
-/// does not already hold it for this context.
-///
-/// Returns 0 if the blob is neither held for this context nor served by its peers.
-///
-/// Produces no state delta, which is what makes it legal to call from a
-/// `#[app::view]` method — but it is not a cheap read. It can block for
-/// roughly a 30s discovery deadline plus one un-aborted in-flight fetch
-/// under the 60s transfer budget (worst case around 90s), pinning a runtime
-/// worker for the duration. And when the fetch succeeds it writes locally:
-/// the blob's bytes and a `BlobMeta` row are persisted to this node's blob
-/// store just like `blob_create`/`blob_write` would, with no chunk GC path
-/// to reclaim them later. A view method that loops over many distinct blob
-/// ids in a large context will grow the node's blob store accordingly.
-///
-/// `context_id` must be [`context_id()`]; the host refuses any other.
-pub fn blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::blob_open_in_context(
-                Ref::new(&Buffer::from(&blob_id[..])),
-                Ref::new(&Buffer::from(&context_id[..])),
-            )
-        }
-        .as_usize() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::blob_open_in_context(blob_id, context_id)
-}
-
-/// Read data from a blob handle opened with blob_open().
-/// Reads into the provided buffer and returns the number of bytes read.
-/// Returns 0 when end of blob is reached.
-pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::blob_read(blob_fd(fd), Ref::new(&BufferMut::new(buffer))) }.as_usize() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::blob_read(fd, buffer)
-}
-
-/// Write data to a blob handle created with blob_create().
-/// Returns the number of bytes written.
-pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::blob_write(blob_fd(fd), Ref::new(&Buffer::from(data))) }.as_usize() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::blob_write(fd, data)
-}
-
-/// Close a blob handle and finalize the blob.
-///
-/// For write handles: Finalizes the blob and returns its 32-byte ID.
-/// For read handles: Returns the original blob's ID and cleans up the handle.
-/// Panics if the operation fails (e.g. blob finalization fails for write handles).
-pub fn blob_close(fd: u64) -> [u8; 32] {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let mut blob_id_buf = [0_u8; 32];
-        let success: bool = unsafe {
-            sys::blob_close(blob_fd(fd), Ref::new(&BufferMut::new(&mut blob_id_buf))).try_into()
-        }
-        .unwrap_or_else(expected_boolean);
-
-        if success {
-            blob_id_buf
-        } else {
-            panic_str("Blob operation failed")
+        Err(message) => {
+            let fields = match serde_json::from_str::<serde_json::Value>(&message) {
+                Ok(v @ serde_json::Value::Object(_)) => v,
+                _ => json!({ "message": message }),
+            };
+            Err(AppError::with_fields("XcallFailed", fields))
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    host::blob_close(fd).unwrap_or_else(|| panic_str("Blob operation failed"))
 }
 
-// ========================================
-// NETWORK-AWARE BLOB API
-// ========================================
+/// Send `request` over `wasi:http` from a call, a timer or a delivery (D76), as an action's
+/// `ctx.fetch` does: only to a URL under a prefix the app's signed manifest declares and its
+/// owner approved, with `{{secret:NAME}}` filled in by the node (R14), at most one request
+/// per run and within the call's time budget. The exchange is recorded in the call's log
+/// entry: followers and a retry with the same idempotency key read the recorded answer and
+/// never fetch again. Views, `init` and migrations cannot send (the run traps).
+///
+/// # Errors
+///
+/// `Fetch` with the reason it was not sent or failed (refused by the gate, timed out,
+/// unreachable): the app decides what that means.
+pub fn fetch(request: &crate::action::Request) -> Result<crate::action::Response> {
+    backend::fetch(request)
+        .map_err(|message| AppError::with_fields("Fetch", json!({ "message": message })))
+}
 
-/// Announce a blob to a specific context for network discovery.
-/// This makes the blob discoverable by other nodes in the context.
-/// Returns true if the announcement was successful, false unless the blob is
-/// held for this context: written by the app, uploaded with this context's id,
-/// fetched from its peers, or its application.
+/// Start the `#[app::action]` `method` with `args` (D17): logged as started with this run's
+/// entry, only if the run succeeds, then run by the leader outside the log with this run's
+/// caller. Calls and timers only. Returns the action's key.
 ///
-/// # Security
-/// For security reasons, a context can only announce blobs to itself.
-/// If the provided context_id doesn't match the current context, this function returns false.
+/// # Errors
 ///
-/// # Arguments
-/// * `blob_id` - The 32-byte ID of the blob to announce
-/// * `target_context_id` - The 32-byte ID of the context to announce the blob in (must match current context)
-///
-/// # Example
-/// ```no_run
-/// use calimero_sdk::env;
-///
-/// // Create and write a blob
-/// let fd = env::blob_create();
-/// env::blob_write(fd, b"Hello, World!");
-/// let blob_id = env::blob_close(fd);
-///
-/// // Announce it to the current context
-/// let current_context = env::context_id();
-/// let announced = env::blob_announce_to_context(&blob_id, &current_context);
-/// ```
-pub fn blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool {
-    // Security check: only allow announcing to the current context
-    let current_context = context_id();
-    if current_context != *target_context_id {
-        // Attempting to announce to a different context is not allowed
-        return false;
-    }
+/// `StartAction` with the host's reason (more than 100 in one run, a reserved name).
+pub fn start_action<T: Serialize + ?Sized>(method: &str, args: &T) -> Result<String> {
+    let args = serde_json::to_vec(args)
+        .map_err(|e| AppError::with_fields("StartAction", json!({ "message": e.to_string() })))?;
+    backend::start_action(method, &args)
+        .map_err(|message| AppError::with_fields("StartAction", json!({ "message": message })))
+}
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe {
-            sys::blob_announce_to_context(
-                Ref::new(&Buffer::from(&blob_id[..])),
-                Ref::new(&Buffer::from(&target_context_id[..])),
-            )
-            .try_into()
-        }
-        .unwrap_or_else(expected_boolean)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // No network here: succeeds for a blob this context wrote, unless a test
-        // forced failure (`TestHost::set_blob_announce_should_fail`).
-        host::is_blob_held(blob_id) && !host::blob_announce_should_fail()
-    }
+pub(crate) fn backend_action_key() -> String {
+    backend::action_key()
+}
+
+pub(crate) fn backend_action_view(
+    method: &str,
+    args: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    backend::action_view(method, args)
+}
+
+pub(crate) fn backend_action_call(
+    method: &str,
+    args: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    backend::action_call(method, args)
+}
+
+pub(crate) fn backend_fetch(
+    request: &crate::action::Request,
+) -> std::result::Result<crate::action::Response, String> {
+    backend::fetch(request)
+}
+
+/// Blob `id`'s metadata, if the app holds it (R8). Prefer [`crate::BlobRef::info`].
+pub fn blob_info(id: &str) -> Option<crate::BlobInfo> {
+    backend::blob_info(id)
+}
+
+/// A download grant for blob `id`, valid `ttl_seconds` from the run's clock. Prefer
+/// [`crate::BlobRef::grant`].
+pub fn blob_grant(id: &str, ttl_seconds: u32) -> String {
+    backend::blob_grant(id, ttl_seconds)
+}
+
+/// Query the host's full-text index of `table` (views only). Prefer
+/// [`crate::Table::search`], which reads the records back.
+pub fn search_query(
+    table: &str,
+    text: &str,
+    mode: crate::SearchMode,
+    cursor: u32,
+    limit: u32,
+) -> std::result::Result<crate::search::RawPage, String> {
+    backend::search_query(table, text, mode, cursor, limit)
+}
+
+/// The tick this timer method runs for; none in any other invocation.
+pub fn timer() -> Option<TimerInfo> {
+    TIMER.with(Cell::get)
+}
+
+/// Set the timer context. Called by the generated `handle` for `kind = timer`.
+pub fn set_timer(info: Option<TimerInfo>) {
+    TIMER.with(|t| t.set(info));
+}
+
+/// Write a line to the run's log (stderr; the host keeps 64 KiB per run, D50).
+pub fn log(message: &str) {
+    // The host owns the sink; a failed write to it has nowhere to be reported.
+    let _ = writeln!(std::io::stderr(), "{message}");
 }

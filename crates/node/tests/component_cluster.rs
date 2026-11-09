@@ -184,7 +184,7 @@ async fn confirm_methods_need_a_fresh_passkey() {
 
     // An API key without allowConfirm cannot call it at all.
     let (_id, key) = alice
-        .create_api_key(json!({ "label": "agent" }))
+        .create_api_key(json!({ "label": "agent" }), &mut pk)
         .await
         .unwrap();
     let agent = c.client(2);
@@ -203,7 +203,7 @@ async fn confirm_methods_need_a_fresh_passkey() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn organizations_gate_apps_and_api_keys_are_scoped() {
     let c = Cluster::start(3).await;
-    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
     let (bob, _bpk) = signed_up(&c, 1, "bob").await;
     let (carol, _cpk) = signed_up(&c, 2, "carol").await;
     let bob_id = bob.me().await.unwrap()["accountId"]
@@ -226,9 +226,10 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
         .unwrap()
         .to_owned();
     let invite = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/invites"),
             json!({ "role": "member", "teams": [team] }),
+            &mut apk,
         )
         .await
         .unwrap()["token"]
@@ -272,7 +273,7 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
 
     // Removing bob from the org cuts him off at once.
     let _r = alice
-        .delete(&format!("orgs/{org}/members/{bob_id}"))
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut apk)
         .await
         .unwrap();
     for _ in 0..20 {
@@ -293,7 +294,7 @@ async fn organizations_gate_apps_and_api_keys_are_scoped() {
 
     // A read-only API key reads but does not write.
     let (_id, key) = alice
-        .create_api_key(json!({ "readOnly": true, "apps": [app] }))
+        .create_api_key(json!({ "readOnly": true, "apps": [app] }), &mut apk)
         .await
         .unwrap();
     let agent = c.client(2);
@@ -392,7 +393,7 @@ async fn backups_are_encrypted_and_restorable() {
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key (the log's sealed
-    // snapshot file, as for an app on wasmer).
+    // snapshot file).
     assert!(data
         .iter()
         .any(|(_k, v)| String::from_utf8_lossy(v).contains("plaintext-value")));
@@ -487,9 +488,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
     // A follower names the leader instead of failing opaquely.
     let err = ops(follower)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": new }),
+            &common::operator_sign,
         )
         .await
         .unwrap_err();
@@ -502,9 +504,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
 
     let moved = ops(leader)
         .await
-        .post(
+        .post_operator_signed(
             &format!("ops/apps/{app}/replicas"),
             json!({ "replicas": new }),
+            &common::operator_sign,
         )
         .await
         .unwrap();
@@ -537,11 +540,10 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
 async fn a_failed_init_is_reported_not_hidden() {
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    // `(module (memory (export "memory") 1))`: it compiles, but has no `init`.
-    let empty = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
-    let bundle = alice.upload_bundle(empty).await.unwrap();
+    // The kv fixture's `init` takes no arguments: a string for them fails it.
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let err = alice
-        .create_app("broken", &bundle, json!({}))
+        .create_app("broken", &bundle, json!({ "initArgs": "not arguments" }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");
@@ -551,14 +553,17 @@ async fn a_failed_init_is_reported_not_hidden() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn quotas_are_enforced_by_the_log() {
     let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
     let mut quotas = ops.get("ops/quotas").await.unwrap();
     assert_eq!(quotas["maxAppsPerAccount"], json!(100));
     quotas["maxAppsPerAccount"] = json!(1);
     quotas["maxApiKeysPerAccount"] = json!(1);
-    let _ok = ops.post("ops/quotas", quotas).await.unwrap();
+    let _ok = ops
+        .post_operator_signed("ops/quotas", quotas, &common::operator_sign)
+        .await
+        .unwrap();
 
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let _first = alice.create_app("one", &bundle, json!({})).await.unwrap();
@@ -568,8 +573,8 @@ async fn quotas_are_enforced_by_the_log() {
         .unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 
-    let _key = alice.create_api_key(json!({})).await.unwrap();
-    let err = alice.create_api_key(json!({})).await.unwrap_err();
+    let _key = alice.create_api_key(json!({}), &mut pk).await.unwrap();
+    let err = alice.create_api_key(json!({}), &mut pk).await.unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
@@ -583,7 +588,7 @@ async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn apps_see_the_callers_organization_role_and_teams() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let str_of = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = str_of(
@@ -602,9 +607,10 @@ async fn apps_see_the_callers_organization_role_and_teams() {
     );
     let invite = str_of(
         alice
-            .post(
+            .post_confirmed(
                 &format!("orgs/{org}/invites"),
                 json!({ "role": "member", "teams": [team] }),
+                &mut a,
             )
             .await
             .unwrap(),
@@ -648,7 +654,10 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .unwrap()
         .to_owned();
     let _ok = alice
-        .delete(&format!("orgs/{org}/teams/{team}/members/{alice_id}"))
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{team}/members/{alice_id}"),
+            &mut a,
+        )
         .await
         .unwrap();
     let _ok = bob
@@ -745,8 +754,8 @@ async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client:
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn teams_work_like_v1_subgroups() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = s(
         alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
@@ -754,7 +763,11 @@ async fn teams_work_like_v1_subgroups() {
     );
     let token = s(
         alice
-            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .post_confirmed(
+                &format!("orgs/{org}/invites"),
+                json!({ "role": "member" }),
+                &mut a,
+            )
             .await
             .unwrap(),
         "token",
@@ -800,15 +813,16 @@ async fn teams_work_like_v1_subgroups() {
     // Removed from an open folder, Bob does not come back by inheritance;
     // added again, he is back.
     let _ok = alice
-        .delete(&format!("orgs/{org}/teams/{open}/members/{bob_id}"))
+        .delete_confirmed(&format!("orgs/{org}/teams/{open}/members/{bob_id}"), &mut a)
         .await
         .unwrap();
     let err = set(&bob, &open_app, "x").await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{open}/members"),
             json!({ "account": bob_id }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -827,9 +841,10 @@ async fn teams_work_like_v1_subgroups() {
     assert!(listed["teams"].get(&secret).is_none(), "{listed}");
     assert!(listed["teams"].get(&open).is_some(), "{listed}");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{secret}/members"),
             json!({ "account": bob_id, "role": "member" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -841,9 +856,10 @@ async fn teams_work_like_v1_subgroups() {
     let child_app = app_in(child.clone()).await;
     set(&bob, &child_app, "inherited").await.unwrap();
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{child}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -851,7 +867,10 @@ async fn teams_work_like_v1_subgroups() {
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
     // Leaving does not shed the role: he does not come back by inheritance.
     let _ok = bob
-        .delete(&format!("orgs/{org}/teams/{child}/members/{bob_id}"))
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{child}/members/{bob_id}"),
+            &mut b,
+        )
         .await
         .unwrap();
     assert!(bob
@@ -864,9 +883,10 @@ async fn teams_work_like_v1_subgroups() {
         .await
         .is_err());
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{child}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -928,9 +948,10 @@ async fn teams_work_like_v1_subgroups() {
         .unwrap_err();
     assert_eq!(err.code(), Some("REJECTED"), "{err}");
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/capabilities"),
             json!({ "capabilities": 37 }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -961,9 +982,9 @@ async fn teams_work_like_v1_subgroups() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_passkey_is_another_device_of_the_same_account() {
     let c = Cluster::start(3).await;
-    let (laptop, _pk) = signed_up(&c, 0, "alice").await;
+    let (laptop, mut pk) = signed_up(&c, 0, "alice").await;
     let mut phone_key = SoftAuthenticator::new("localhost", ORIGIN);
-    let phone_cred = laptop.add_passkey(&mut phone_key).await.unwrap();
+    let phone_cred = laptop.add_passkey(&mut phone_key, &mut pk).await.unwrap();
     let phone = c.client(1);
     let _s = phone.sign_in(&mut phone_key).await.unwrap();
     let (a, b) = (laptop.me().await.unwrap(), phone.me().await.unwrap());
@@ -1121,7 +1142,7 @@ async fn entry_timestamps_never_go_backwards() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn removed_member_stops_receiving_org_events() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
@@ -1132,7 +1153,11 @@ async fn removed_member_stops_receiving_org_events() {
     for member in [&bob, &carol] {
         let token = s(
             alice
-                .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+                .post_confirmed(
+                    &format!("orgs/{org}/invites"),
+                    json!({ "role": "member" }),
+                    &mut a,
+                )
                 .await
                 .unwrap(),
             "token",
@@ -1165,7 +1190,7 @@ async fn removed_member_stops_receiving_org_events() {
     }
 
     let _r = alice
-        .delete(&format!("orgs/{org}/members/{bob_id}"))
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
         .await
         .unwrap();
     // Every replica has applied the removal before the next event.
@@ -1605,6 +1630,45 @@ async fn unknown_methods_and_init_are_refused_by_the_node() {
     assert_eq!(applied(), at, "a refused call was logged");
 }
 
+/// A compute method and its result method are the node's: no client can call either through
+/// `/intents` or `/views`, and a refused call leaves no log entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_and_compute_result_methods_are_refused_to_clients() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(wasm("compute")).await.unwrap();
+    let app = alice
+        .create_app("compute", &bundle, json!({}))
+        .await
+        .unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let applied = || {
+        c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let at = applied();
+    for method in ["digest", "onDone"] {
+        let e = alice.call(&app, method, json!({}), None).await.unwrap_err();
+        assert_eq!(e.details().unwrap()["code"], "WrongKind", "{method}: {e}");
+        let e = alice
+            .view(&app, method, json!({}), Consistency::Strong)
+            .await
+            .unwrap_err();
+        assert_eq!(e.details().unwrap()["code"], "WrongKind", "{method}: {e}");
+    }
+    assert_eq!(applied(), at, "a refused call was logged");
+    let v = alice
+        .view(&app, "done", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("0"));
+}
+
 /// Upgrades switch the bundle, code only; a named migration is refused (D38).
 /// The upgrade route is the node's: a passkey assertion over the exact
 /// upgrade (412 first), and a refusal answered `422 UPGRADE_FAILED` with the
@@ -2033,6 +2097,7 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
             calimero_log::Proposal::Append(
                 serde_json::to_vec(&calimero_node::component::ComponentCmd::Upgrade {
                     bundle: kv.clone(),
+                    compute_bundle: None,
                     base_index: m.state.last_index,
                 })
                 .unwrap(),
@@ -2091,7 +2156,7 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_only_members_emit_only_call_is_refused() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = s(
@@ -2100,7 +2165,11 @@ async fn a_read_only_members_emit_only_call_is_refused() {
     );
     let token = s(
         alice
-            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .post_confirmed(
+                &format!("orgs/{org}/invites"),
+                json!({ "role": "member" }),
+                &mut a,
+            )
             .await
             .unwrap(),
         "token",
@@ -2121,9 +2190,10 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         "teamId",
     );
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{team}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -2256,7 +2326,11 @@ async fn the_leader_checks_upgrade_authority_again() {
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
     let token = alice
-        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut alice_pk,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -2304,6 +2378,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                 .unwrap()
                 .node
                 .sys_write(&SystemCmd::UpgradeApp {
+                    compute_bundle: None,
                     app_id: app.clone(),
                     bundle: v2.clone(),
                     by_operator: false,
@@ -2345,18 +2420,6 @@ async fn the_leader_checks_upgrade_authority_again() {
         alice.get(&format!("apps/{personal}")).await.unwrap()["bundle"],
         json!(v2)
     );
-}
-
-/// The core-module fixture (`apps/kv-store`, SDK 0.12), which runs on wasmer.
-fn wasmer_kv() -> Vec<u8> {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm");
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}; cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release",
-            path.display()
-        )
-    })
 }
 
 /// Node `i`'s group of `app`, once the node (re)started it, up to ~10 s.
@@ -2607,166 +2670,51 @@ async fn a_snapshot_install_carries_a_components_host_records() {
     assert_eq!(seen.len(), rows.len(), "a slot ran twice: {rows:?}");
 }
 
-/// Writes round `round` (`k{round}` = `v{round}`) to both apps through `cl`, retrying
-/// while the apps elect; answers the two entries' indexes.
-async fn write_both(cl: &Client, apps: [&str; 2], round: usize) -> [u64; 2] {
-    let (key, value) = (format!("k{round}"), format!("v{round}"));
-    let mut out = [0; 2];
-    for (slot, app) in apps.into_iter().enumerate() {
-        let mut done = None;
-        for _ in 0..60 {
-            if let Ok(r) = cl
-                .call(app, "set", json!({ "key": key, "value": value }), None)
-                .await
-            {
-                done = Some(r.index);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        out[slot] = done.unwrap_or_else(|| panic!("{app} took no write in round {round}"));
-    }
-    out
-}
-
-/// Every running node's own replica answers every round of both apps, once it has
-/// applied the given index of each.
-async fn read_everywhere(
-    c: &Cluster,
-    pk: &mut SoftAuthenticator,
-    apps: [&str; 2],
-    rounds: std::ops::Range<usize>,
-    indexes: [u64; 2],
-) {
-    for (i, r) in c.nodes.iter().enumerate() {
-        if r.is_none() {
-            continue;
-        }
-        let cl = c.client(i);
-        let _s = cl.sign_in(pk).await.unwrap();
-        for round in rounds.clone() {
-            let key = format!("k{round}");
-            for (app, min_index) in apps.into_iter().zip(indexes) {
-                let v = cl
-                    .view(
-                        app,
-                        "get",
-                        json!({ "key": key }),
-                        Consistency::Stale { min_index },
-                    )
-                    .await
-                    .unwrap_or_else(|e| panic!("node {i} {app}: {e:?}"));
-                assert_eq!(v.result, json!(format!("v{round}")), "node {i} {app} {key}");
-            }
-        }
-    }
-}
-
-/// One cluster runs a core module on wasmer and a component on wasmtime side by
-/// side: writes to them in turns, each reads back on every node, including after
-/// a leader change.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn wasmer_and_component_apps_share_a_cluster() {
-    use calimero_node::types::Executor;
-
-    let mut c = Cluster::start(3).await;
-    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let old = alice.create_app("old", &v1, json!({})).await.unwrap();
-    let new = alice.create_app("new", &v2, json!({})).await.unwrap();
-    let apps = [old.as_str(), new.as_str()];
-    for (app, executor) in [(&old, Executor::Wasmer), (&new, Executor::Component)] {
-        let record = c.nodes[0].as_ref().unwrap().node.app(app).await.unwrap();
-        assert_eq!(record.executor, executor, "{app}");
-    }
-    let mut last = [0; 2];
-    for round in 0..6 {
-        last = write_both(&alice, apps, round).await;
-    }
-    read_everywhere(&c, &mut pk, apps, 0..6, last).await;
-
-    // A leader change: the node leading the wasmer app stops (it may lead both).
-    let down = c.app_leader(&old).unwrap();
-    c.stop(down).await;
-    let survivor = (0..3).find(|i| *i != down).unwrap();
-    let cl = c.client(survivor);
-    let _s = cl.sign_in(&mut pk).await.unwrap();
-    for round in 6..10 {
-        last = write_both(&cl, apps, round).await;
-    }
-    read_everywhere(&c, &mut pk, apps, 0..10, last).await;
-    // The stopped node comes back and catches up on both, each in its own format.
-    c.restart(down, |_| {}).await;
-    read_everywhere(&c, &mut pk, apps, 0..10, last).await;
-    for i in 0..3 {
-        let node = &c.nodes[i].as_ref().unwrap().node;
-        let executors = (
-            node.hosted(&old)
-                .unwrap()
-                .read_local(|m, _| m.state.executor()),
-            node.hosted(&new)
-                .unwrap()
-                .read_local(|m, _| m.state.executor()),
-        );
-        assert_eq!(
-            executors,
-            (Some(Executor::Wasmer), Some(Executor::Component)),
-            "node {i}"
-        );
-    }
-}
-
-/// Decision 2: an upgrade never moves an app between executors, either way,
-/// whatever its state; the app stays on its bundle and keeps working.
+/// No new SDK 0.12 app: a core module (no `calimero:app` component) is refused as a
+/// bundle (`400 UNSUPPORTED_BUNDLE`), whether uploaded raw or as a signed package's
+/// service, so no app is created from one and no app is upgraded to one; the
+/// refusal says to rebuild with calimero-sdk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn upgrades_across_executors_are_refused_both_ways() {
+async fn a_core_module_bundle_is_refused_as_an_sdk_0_12_app() {
     let c = Cluster::start(3).await;
-    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
-    // One app with state on each executor, and one fresh one (no state of its own).
-    let old = alice.create_app("old", &v1, json!({})).await.unwrap();
-    let new = alice.create_app("new", &v2, json!({})).await.unwrap();
-    let fresh = alice.create_app("fresh", &v2, json!({})).await.unwrap();
-    for app in [&old, &new] {
-        let _r = alice
-            .call(app, "set", json!({ "key": "a", "value": "kept" }), None)
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    // `(module (memory (export "memory") 1))`: a valid core module, as SDK 0.12 built.
+    let core = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
+    let refused = |e: calimero_client::Error| {
+        let status = match &e {
+            calimero_client::Error::Api { status, .. } => *status,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((status, e.code()), (400, Some("UNSUPPORTED_BUNDLE")), "{e}");
+        assert!(e.to_string().contains("calimero-sdk"), "{e}");
+    };
+    refused(alice.upload_bundle(core.clone()).await.unwrap_err());
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    refused(
+        alice
+            .upload_package(mpk_declaring(
+                "com.test.core",
+                "0.1.0",
+                &core,
+                &publisher,
+                &[],
+            ))
             .await
-            .unwrap();
-    }
-    for (app, from, to) in [(&old, &v1, &v2), (&new, &v2, &v1), (&fresh, &v2, &v1)] {
-        let e = alice
-            .upgrade_app(app, json!({ "bundle": to }), &mut pk)
+            .unwrap_err(),
+    );
+    assert!(
+        alice
+            .get("packages")
             .await
-            .unwrap_err();
-        assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{app}: {e}");
-        assert!(
-            e.details().unwrap()["error"]
-                .as_str()
-                .is_some_and(|m| m.contains("across executors")),
-            "{app}: {e}"
-        );
-        assert_eq!(
-            alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
-            json!(from),
-            "{app}"
-        );
-        for i in 0..3 {
-            assert_eq!(
-                running_bundle(&c, i, app).as_deref(),
-                Some(from.as_str()),
-                "node {i}"
-            );
-        }
-    }
-    for app in [&old, &new] {
-        let v = alice
-            .view(app, "get", json!({ "key": "a" }), Consistency::Strong)
-            .await
-            .unwrap();
-        assert_eq!(v.result, json!("kept"), "{app}");
-    }
+            .unwrap()
+            .to_string()
+            .find("com.test.core")
+            .is_none(),
+        "no package was recorded"
+    );
+    // The same node takes the component.
+    let ok = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let _app = alice.create_app("kv", &ok, json!({})).await.unwrap();
 }
 
 /// Decision 14: the endpoints that read an app's code or storage answer for a
@@ -2801,21 +2749,769 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     );
     assert_eq!(storage["blobs"], json!(0));
 
-    let refused = |e: calimero_client::Error| match e {
-        calimero_client::Error::Api { status, code, .. } => (status, code),
-        other => panic!("{other:?}"),
-    };
+    // The blob routes answer for a component (R8): nothing uploaded yet.
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
     let id = "00".repeat(32);
-    let e = alice.list_blobs(&app).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
     let e = alice.blob_info(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
     let e = alice.download_blob(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
-    let e = alice.delete_blob(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
-    let e = alice.upload_blob(&app, b"x".to_vec()).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
+/// R8: a component's blob is uploaded through the node, referred to from state by a
+/// typed `BlobRef`, read and granted from runs, and held for as long as state refers
+/// to it; once idle past its time every replica forgets it and the bytes go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_components_blobs_are_held_by_references_and_granted() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+
+    let up = alice
+        .upload_blob_as(&app, "text/plain", b"hello".to_vec())
+        .await
+        .unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    assert_eq!(up["size"], json!(5));
+    assert_eq!(alice.blob_info(&app, &id).await.unwrap()["size"], json!(5));
+    let r = alice
+        .call(
+            &app,
+            "attach",
+            json!({ "name": "greeting", "blob": id }),
+            None,
+        )
+        .await
+        .unwrap();
+    for i in 0..3 {
+        applied_past(&c, i, &app, r.index - 1).await;
+    }
+    assert_eq!(
+        strong_view(&alice, &app, "file", json!({ "name": "greeting" })).await,
+        json!({ "id": id, "size": "5", "mime": "text/plain" })
+    );
+    assert_eq!(alice.download_blob(&app, &id).await.unwrap(), b"hello");
+
+    // A grant from a run downloads without a session, on any node, until it expires.
+    let grant = strong_view(
+        &alice,
+        &app,
+        "share",
+        json!({ "name": "greeting", "ttl": 60 }),
+    )
+    .await;
+    let grant = grant.as_str().unwrap().to_owned();
+    let anonymous = c.client(2);
+    assert_eq!(
+        anonymous
+            .download_blob_granted(&app, &id, &grant)
+            .await
+            .unwrap(),
+        b"hello"
+    );
+    let e = anonymous.download_blob(&app, &id).await.unwrap_err();
+    assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
+    let forged = format!("9{grant}");
+    let e = anonymous
+        .download_blob_granted(&app, &id, &forged)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+
+    // A value may refer only to a blob the app holds.
+    let e = alice
+        .call(
+            &app,
+            "attach",
+            json!({ "name": "x", "blob": "11".repeat(32) }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+
+    // An upload nobody refers to, and the referred one once detached, go after their
+    // idle time; the referred one stays until then.
+    let idle = alice
+        .upload_blob_as(&app, "text/plain", b"never attached".to_vec())
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.advance_all(2 * 3_600_000);
+    let _r = alice
+        .call(&app, "set", json!({ "key": "tick", "value": "1" }), None)
+        .await
+        .unwrap();
+    let e = alice.blob_info(&app, &idle).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    assert_eq!(alice.blob_info(&app, &id).await.unwrap()["size"], json!(5));
+    let _r = alice
+        .call(&app, "detach", json!({ "name": "greeting" }), None)
+        .await
+        .unwrap();
+    c.advance_all(2 * 3_600_000);
+    let _r = alice
+        .call(&app, "set", json!({ "key": "tick", "value": "2" }), None)
+        .await
+        .unwrap();
+    let mut gone = false;
+    for _ in 0..50 {
+        if alice.list_blobs(&app).await.unwrap()["blobs"] == json!([])
+            && alice.download_blob(&app, &id).await.is_err()
+        {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "an idle blob stayed");
+    // The bytes left every node's store too (the leader collected them).
+    for _ in 0..50 {
+        if c.nodes.iter().flatten().all(|r| {
+            r.node.engine.get_blob(&id).ok().flatten().is_none()
+                && r.node.engine.get_blob(&idle).ok().flatten().is_none()
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the bytes of a forgotten blob stayed in a store");
+}
+
+/// Spec section 7: the host keeps a full-text index of a table's declared fields from the
+/// component's state, and views on any replica query it as of the state they read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn views_search_a_components_tables_as_they_change() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let mut last = 0;
+    for (id, title, body) in [
+        ("1", "Groceries", "milk and eggs"),
+        ("2", "Trip", "pack the eggs carefully"),
+        ("3", "Work", "quarterly plans"),
+    ] {
+        last = alice
+            .call(
+                &app,
+                "note",
+                json!({ "id": id, "title": title, "body": body }),
+                None,
+            )
+            .await
+            .unwrap()
+            .index;
+    }
+    let sorted = |v: Value| {
+        let mut ids: Vec<String> = serde_json::from_value(v).unwrap();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        sorted(strong_view(&alice, &app, "findNotes", json!({ "text": "eggs" })).await),
+        ["1", "2"]
+    );
+    // Every replica builds its own index from the state it applied.
+    for i in 0..3 {
+        let cl = c.client(i);
+        let _s = cl.sign_in(&mut pk).await.unwrap();
+        let v = cl
+            .view(
+                &app,
+                "findNotes",
+                json!({ "text": "quarterly" }),
+                Consistency::Stale { min_index: last },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!(["3"]), "node {i}");
+    }
+    // Updates and removals reach the index before the next view reads.
+    let _r = alice
+        .call(
+            &app,
+            "note",
+            json!({ "id": "3", "title": "Work", "body": "eggs too" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .call(&app, "dropNote", json!({ "id": "1" }), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        sorted(strong_view(&alice, &app, "findNotes", json!({ "text": "eggs" })).await),
+        ["2", "3"]
+    );
+    // A call of a declared view runs as a strong view, so it may search too.
+    let r = alice
+        .call(&app, "findNotes", json!({ "text": "eggs" }), None)
+        .await
+        .unwrap();
+    assert_eq!(sorted(r.result), ["2", "3"]);
+}
+
+/// D25/D29: a component's xcalls wait in its outbox and are delivered after the entry
+/// commits, in order, as `Caller::App(source)` to a method that allows it; one that can
+/// never be delivered (a missing target, another organization's app) is dead-lettered and
+/// the source's `onXcallFailed` is told; a target's refusal is its final answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let source = alice
+        .create_app("source", &bundle, json!({}))
+        .await
+        .unwrap();
+    let target = alice
+        .create_app("target", &bundle, json!({}))
+        .await
+        .unwrap();
+    let bobs = bob.create_app("bobs", &bundle, json!({})).await.unwrap();
+
+    for i in 0..5 {
+        let _r = alice
+            .call(
+                &source,
+                "relay",
+                json!({ "app": target, "key": "k", "value": format!("{i}") }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    // Delivered in order: the last value wins, and the outbox empties.
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        last = strong_view(&alice, &target, "get", json!({ "key": "k" })).await;
+        let pending = alice.app_xcalls(&source).await.unwrap()["pending"].clone();
+        if last == json!("4") && pending == json!(0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(last, json!("4"));
+    assert_eq!(
+        alice.app_xcalls(&source).await.unwrap()["deadLetters"],
+        json!([])
+    );
+
+    // The target refuses a method that allows no app: a final answer, no dead letter.
+    let _r = alice
+        .call(
+            &source,
+            "relayToSet",
+            json!({ "app": target, "key": "z", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    // A missing target and another owner's app are dead-lettered at once.
+    let _r = alice
+        .call(
+            &source,
+            "relay",
+            json!({ "app": "no-such-app", "key": "a", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .call(
+            &source,
+            "relay",
+            json!({ "app": bobs, "key": "b", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut dead = Vec::new();
+    for _ in 0..100 {
+        let x = alice.app_xcalls(&source).await.unwrap();
+        dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+        if dead.len() == 2 && x["pending"] == json!(0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(dead.len(), 2, "{dead:?}");
+    assert_eq!(dead[0]["app"], json!("no-such-app"));
+    assert!(dead[0]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("does not exist"));
+    assert_eq!(dead[1]["app"], json!(bobs));
+    assert!(dead[1]["reason"].as_str().unwrap().contains("organization"));
+    assert_eq!(
+        strong_view(&alice, &target, "get", json!({ "key": "z" })).await,
+        json!(null),
+        "a method that allows no app ran"
+    );
+    assert_eq!(
+        strong_view(&bob, &bobs, "get", json!({ "key": "b" })).await,
+        json!(null),
+        "another owner's app was reached"
+    );
+    // The source's onXcallFailed heard of the dead letters.
+    let mut failures = Value::Null;
+    for _ in 0..50 {
+        failures = strong_view(&alice, &source, "xcallFailures", json!({})).await;
+        if failures.as_object().is_some_and(|f| !f.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        failures["setFromApp"]
+            .as_str()
+            .is_some_and(|f| f.contains(&bobs)),
+        "{failures}"
+    );
+    // Only the owner reads them.
+    let e = bob.app_xcalls(&source).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
+/// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
+/// URL prefixes `outbound` (S9), signed by `key`.
+fn mpk_declaring(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+) -> Vec<u8> {
+    use sha2::Digest;
+    let manifest = calimero_bundle::BundleManifest {
+        version: "1.0".to_owned(),
+        package: package.to_owned(),
+        app_version: version.to_owned(),
+        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
+            key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
+        metadata: None,
+        handlers: None,
+        build_info: None,
+        interfaces: None,
+        wasm: Some(calimero_bundle::BundleArtifact {
+            path: "app.wasm".to_owned(),
+            hash: hex::encode(sha2::Sha256::digest(wasm)),
+            size: wasm.len() as u64,
+        }),
+        abi: None,
+        compute: None,
+        links: None,
+        frontend: None,
+        frontend_aliases: Vec::new(),
+        upgrades: None,
+        outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        services: None,
+        signature: None,
+    };
+    let mut manifest = serde_json::to_value(&manifest).unwrap();
+    calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    for (name, bytes) in [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("app.wasm", wasm.to_vec()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+/// Polls view `method` until `done` holds of its result (at most 10 s).
+async fn eventually(
+    cl: &Client,
+    app: &str,
+    method: &str,
+    args: Value,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        last = strong_view(cl, app, method, args.clone()).await;
+        if done(&last) {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{method} never got there: {last}");
+}
+
+/// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
+/// through a view, calls out over `wasi:http` only to a prefix the signed manifest
+/// declares and the owner approved (with a secret the node fills in and redacts), and
+/// writes through a keyed call to an `allow(action)` method no client can call. One that
+/// fails (a refused request, an app error) fails for good and `onActionFailed` hears.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const PACKAGE: &str = "com.calimero.v2-kv";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec!["echo.outbound.test".to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: "s3cret-value".to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec!["echo.outbound.test".to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _ = alice
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+        ))
+        .await
+        .unwrap();
+    let app = alice
+        .post("apps", json!({ "name": "kv", "package": PACKAGE }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "acme", "value": "acme.com" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Not approved yet: the request is refused, the action fails, onActionFailed hears.
+    let started = alice
+        .call(&app, "enrich", json!({ "key": "acme" }), None)
+        .await
+        .unwrap();
+    let id = started.result["actionId"].as_str().unwrap().to_owned();
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    let failure = failures["enrich"].as_str().unwrap();
+    assert!(failure.starts_with(&id), "{failure}");
+    assert!(failure.contains("NotApproved"), "{failure}");
+
+    // Approved: the action calls out and writes what came back through its own call.
+    let _ = alice
+        .approve_outbound(None, PACKAGE, None, false, &mut pk)
+        .await
+        .unwrap();
+    let id = alice
+        .call(&app, "startEnrich", json!({ "key": "acme" }), None)
+        .await
+        .unwrap()
+        .result;
+    assert!(id.as_str().unwrap().starts_with("a."), "{id}");
+    let got = eventually(&alice, &app, "enrichment", json!({ "key": "acme" }), |v| {
+        v.is_string()
+    })
+    .await;
+    let got = got.as_str().unwrap();
+    assert!(got.starts_with("200 "), "{got}");
+    assert!(got.contains("/v1/enrich?v=acme.com"), "{got}");
+    // The secret went out and came back redacted.
+    assert!(!got.contains("s3cret-value"), "{got}");
+    assert!(got.contains("[redacted]"), "{got}");
+
+    // No client calls an `allow(action)` method, and a call or view never calls out.
+    let e = alice
+        .call(
+            &app,
+            "applyEnrichment",
+            json!({ "key": "acme", "value": "forged" }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+
+    // An app error fails an action at once (D22).
+    let _r = alice.call(&app, "explode", json!({}), None).await.unwrap();
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["explode"].is_string()
+    })
+    .await;
+    assert!(
+        failures["explode"].as_str().unwrap().contains("BeatFailed"),
+        "{failures}"
+    );
+}
+
+/// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha
+/// service, another app of the same owner, inside its own call, and writes only if it
+/// passed. The challenge is spent in the captcha app's own log; a second use fails; an
+/// app of another owner cannot reach the service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let captcha_bundle = alice.upload_bundle(wasm("captcha")).await.unwrap();
+    let captcha = alice
+        .create_app("captcha", &captcha_bundle, json!({}))
+        .await
+        .unwrap();
+    let kv_bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let forms = alice
+        .create_app("forms", &kv_bundle, json!({}))
+        .await
+        .unwrap();
+
+    let puzzle = alice
+        .call(&captcha, "challenge", json!({}), None)
+        .await
+        .unwrap()
+        .result;
+    let id = puzzle["id"].as_str().unwrap().to_owned();
+    let answer = strong_view(&alice, &captcha, "answerOf", json!({ "id": id })).await;
+    let answer = answer.as_str().unwrap().to_owned();
+    let human = |value: &str, answer: &str| json!({ "key": "k", "value": value, "captcha": captcha, "challenge": id, "answer": answer });
+
+    // A person cannot spend a challenge directly.
+    let e = alice
+        .call(
+            &captcha,
+            "verify",
+            json!({ "id": id, "answer": answer }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "AppsOnly", "{e}");
+
+    // The forms app's call verifies in the captcha app, then writes, in one request.
+    let _r = alice
+        .call(&forms, "setHuman", human("v", &answer), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+    // The captcha app logged the spend; a view through `xcall.view` sees it.
+    assert_eq!(
+        strong_view(&alice, &captcha, "status", json!({ "id": id })).await,
+        json!("spent")
+    );
+    assert_eq!(
+        strong_view(
+            &alice,
+            &forms,
+            "captchaStatus",
+            json!({ "captcha": captcha, "challenge": id })
+        )
+        .await,
+        json!("spent")
+    );
+
+    // A spent challenge does not pass again, and nothing is written.
+    let e = alice
+        .call(&forms, "setHuman", human("v2", &answer), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "CaptchaFailed", "{e}");
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+
+    // Another owner's app cannot reach the service.
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bobs_bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let bobs = bob
+        .create_app("forms", &bobs_bundle, json!({}))
+        .await
+        .unwrap();
+    let e = bob
+        .call(&bobs, "setHuman", human("x", &answer), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "XcallFailed", "{e}");
+    assert!(
+        e.details().unwrap()["fields"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no such app"),
+        "{e}"
+    );
+}
+
+/// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
+/// service (a signed release declaring Turnstile's siteverify) inside its call; the
+/// service checks the token with Turnstile from its own call, through the outbound gate
+/// (declared, approved, the operator's host and secret), and the forms app writes only
+/// on a pass. A spent token does not pass again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
+    const PACKAGE: &str = "com.calimero.captcha";
+    const HOST: &str = "challenges.cloudflare.com";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            turnstile: true,
+            secrets: [(
+                "TURNSTILE_SECRET".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    // Cloudflare's test secret that passes every unspent token.
+                    value: "1x0000000000000000000000000000000AA".to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+            ..calimero_outbound::OutboundTestSettings::default()
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _ = alice
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &wasm("captcha"),
+            &publisher,
+            &[calimero_outbound::TURNSTILE_VERIFY_URL],
+        ))
+        .await
+        .unwrap();
+    let captcha = alice
+        .post("apps", json!({ "name": "captcha", "package": PACKAGE }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let kv_bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let forms = alice
+        .create_app("forms", &kv_bundle, json!({}))
+        .await
+        .unwrap();
+    let human = |value: &str, token: &str| json!({ "key": "k", "value": value, "captcha": captcha, "token": token });
+
+    // Not approved yet: the service's request is refused, the token is not passed.
+    let e = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v", "tok-0"),
+            Some("k-0"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "CaptchaFailed", "{e}");
+
+    // Approved: Turnstile accepts the token, checked from the service's own call, and
+    // the forms app writes in the same request.
+    let _ = alice
+        .approve_outbound(None, PACKAGE, None, false, &mut pk)
+        .await
+        .unwrap();
+    let first = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v", "tok-1"),
+            Some("k-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+    // The same call again replays its logged answer.
+    let again = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v", "tok-1"),
+            Some("k-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.index, first.index);
+    // Another call with the spent token: Turnstile answers "timeout-or-duplicate".
+    let e = alice
+        .call(
+            &forms,
+            "setHumanTurnstile",
+            human("v2", "tok-1"),
+            Some("k-2"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "CaptchaFailed", "{e}");
+    assert_eq!(
+        strong_view(&alice, &forms, "get", json!({ "key": "k" })).await,
+        json!("v")
+    );
+}
+
+/// R8: the owner deletes a component's blob; it is gone whatever refers to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_deletes_a_components_blob() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let id = alice.upload_blob(&app, b"bytes".to_vec()).await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .call(&app, "attach", json!({ "name": "f", "blob": id }), None)
+        .await
+        .unwrap();
+    let _d = alice.delete_blob(&app, &id).await.unwrap();
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
+    assert_eq!(
+        strong_view(&alice, &app, "file", json!({ "name": "f" })).await,
+        json!(null)
+    );
+    let e = alice.download_blob(&app, &id).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
 /// The engine tests' `spin` guest (`crates/app-engine-wasmtime/tests/guests/spin`): its
@@ -2832,7 +3528,7 @@ fn spin_component() -> Vec<u8> {
 /// Review item 2: a component app whose `init` has not applied (every run of its
 /// bundle times out, D23, so `reconcile` keeps retrying) is still a component at
 /// upgrade: the app record's executor decides until the group's state names one. A
-/// wasmer bundle is refused; a component bundle is taken, and `init` then runs on it.
+/// component bundle is taken, and `init` then runs on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor() {
     // Unlimited fuel, so the spinning init hits its wall clock (a timeout, never
@@ -2847,7 +3543,6 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let stuck = alice.upload_bundle(spin_component()).await.unwrap();
     let fixed = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let wasmer = alice.upload_bundle(wasmer_kv()).await.unwrap();
     // Created; its init never applies (the create call itself waits 30 s for it,
     // so it runs beside the test).
     let creating = {
@@ -2889,26 +3584,6 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
     for i in 0..3 {
         let g = hosted_on(&c, i, &app).await;
         assert_eq!(g.read_local(|m, _| m.state.executor()), None, "node {i}");
-    }
-    // A wasmer bundle: refused, nothing switched.
-    let e = alice
-        .upgrade_app(&app, json!({ "bundle": wasmer }), &mut pk)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
-    assert!(
-        e.details().unwrap()["error"]
-            .as_str()
-            .is_some_and(|m| m.contains("across executors")),
-        "{e}"
-    );
-    for i in 0..3 {
-        let g = hosted_on(&c, i, &app).await;
-        assert_eq!(
-            g.read_local(|m, _| m.state.bundle.clone()),
-            None,
-            "node {i}"
-        );
     }
     // A component bundle: taken, and init then runs on it.
     let up = alice
@@ -2963,7 +3638,7 @@ async fn a_component_sees_no_organization_but_its_own() {
     use calimero_node::component::SysDirectory;
 
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (carol, _c) = signed_up(&c, 1, "carol").await;
     let carol_id = carol.me().await.unwrap()["accountId"]
         .as_str()
@@ -2974,7 +3649,11 @@ async fn a_component_sees_no_organization_but_its_own() {
         .unwrap()
         .to_owned();
     let token = alice
-        .post(&format!("orgs/{acme}/invites"), json!({ "role": "member" }))
+        .post_confirmed(
+            &format!("orgs/{acme}/invites"),
+            json!({ "role": "member" }),
+            &mut a,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -3029,8 +3708,8 @@ async fn a_component_sees_no_organization_but_its_own() {
 }
 
 /// Review nit: the blob routes judge access first. A caller who can't reach a private
-/// component app gets `404` on every blob route (as on any route), never the `409`
-/// that would tell them it exists and is a component.
+/// component app gets `404` on every blob route (as on any route), never an answer
+/// that would tell them it exists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
     let c = Cluster::start(3).await;
@@ -3069,11 +3748,8 @@ async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
         not_found,
         "upload"
     );
-    // Its owner still gets the component's answer.
-    assert_eq!(
-        status(alice.list_blobs(&app).await.unwrap_err()),
-        (409, "NOT_SUPPORTED".to_owned())
-    );
+    // Its owner gets the app's blobs (R8).
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
 }
 
 /// Review nit (D70): a same-key retry is answered from its record even when an upgrade
@@ -3130,7 +3806,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
 /// Review nit, codes: a confirm method a stale front node did not know is confirm
 /// (here: a node that hosts no replica reads the directory's bundle, org-gated,
 /// while the group runs kv, whose `wipe` is a confirm method) still answers the
-/// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge, as the wasmer path does,
+/// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge,
 /// not the leader's `422 ConfirmRequired`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
@@ -3146,6 +3822,7 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
             calimero_log::Proposal::Append(
                 serde_json::to_vec(&calimero_node::component::ComponentCmd::Upgrade {
                     bundle: kv.clone(),
+                    compute_bundle: None,
                     base_index: m.state.last_index,
                 })
                 .unwrap(),
@@ -3177,9 +3854,10 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
 }
 
 /// Review nit, codes: a component the engine refuses at `POST /bundles` is a
-/// `400 BAD_BUNDLE`, as a core module wasmer can't compile is.
+/// `400 BAD_BUNDLE` (a core module is `400 UNSUPPORTED_BUNDLE`,
+/// [`a_core_module_bundle_is_refused_as_an_sdk_0_12_app`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_refused_component_upload_is_a_400_like_wasmers() {
+async fn a_refused_component_upload_is_a_400() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     // A component's header (layer 1) and nothing a component needs after it.
@@ -3216,12 +3894,15 @@ fn usage_totals(u: &Value) -> (u64, u64) {
     })
 }
 
-/// Sets the cluster's `maxFuelPerPayerPerDay` through the ops API (a decimal
+/// Sets the cluster's `maxFuelPerDeveloperPerDay` through the ops API (a decimal
 /// string, D20).
 async fn set_fuel_limit(ops: &Client, limit: u64) {
     let mut quotas = ops.get("ops/quotas").await.unwrap();
-    quotas["maxFuelPerPayerPerDay"] = json!(limit.to_string());
-    let _ok = ops.post("ops/quotas", quotas).await.unwrap();
+    quotas["maxFuelPerDeveloperPerDay"] = json!(limit.to_string());
+    let _ok = ops
+        .post_operator_signed("ops/quotas", quotas, &common::operator_sign)
+        .await
+        .unwrap();
 }
 
 /// Waits until every running node reads `limit` as the fuel quota.
@@ -3229,7 +3910,7 @@ async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
     for _ in 0..100 {
         if c.nodes.iter().flatten().all(|r| {
             r.node.sys(|s| {
-                serde_json::to_value(&s.quotas).unwrap()["maxFuelPerPayerPerDay"]
+                serde_json::to_value(&s.quotas).unwrap()["maxFuelPerDeveloperPerDay"]
                     == json!(limit.to_string())
             })
         }) {
@@ -3391,15 +4072,15 @@ async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
         "{err}"
     );
     let me = alice.usage().await.unwrap();
-    let before = figure(&me["fuelToday"]);
+    let before = figure(&me["developerFuelToday"]);
     assert!(before >= 1, "{me}");
     // Only `init` ran: it is the whole of the account's day, and the app's.
     let u = app_usage(&alice, &app).await;
     assert_eq!(figure(&u["today"]["runs"]), 1, "{u}");
     assert_eq!(figure(&u["today"]["fuel"]), before, "{u} vs {me}");
-    let _writes = figure(&me["writesToday"]);
+    let _writes = figure(&me["developerWritesToday"]);
     let _bytes = figure(&me["bundleBytes"]);
-    assert_eq!(me["quotas"]["maxFuelPerPayerPerDay"], json!("1"));
+    assert_eq!(me["quotas"]["maxFuelPerDeveloperPerDay"], json!("1"));
     assert!(
         alice
             .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
@@ -3425,7 +4106,7 @@ async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let after = figure(&alice.usage().await.unwrap()["fuelToday"]);
+    let after = figure(&alice.usage().await.unwrap()["developerFuelToday"]);
     assert!(
         after > before,
         "the tick's fuel did not count: {before} → {after}"
@@ -3451,7 +4132,7 @@ async fn a_fuel_limit_of_zero_never_refuses() {
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
     let quotas = ops.get("ops/quotas").await.unwrap();
-    assert_eq!(quotas["maxFuelPerPayerPerDay"], json!("0"), "{quotas}");
+    assert_eq!(quotas["maxFuelPerDeveloperPerDay"], json!("0"), "{quotas}");
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
     for i in 0..20 {
@@ -3465,7 +4146,7 @@ async fn a_fuel_limit_of_zero_never_refuses() {
             .await
             .unwrap();
     }
-    let used = figure(&alice.usage().await.unwrap()["fuelToday"]);
+    let used = figure(&alice.usage().await.unwrap()["developerFuelToday"]);
     assert!(used > 0);
 
     set_fuel_limit(&ops, used).await;
@@ -3505,7 +4186,7 @@ async fn a_fuel_limit_of_zero_never_refuses() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_the_owner_and_org_admins_read_an_apps_usage() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (carol, _c) = signed_up(&c, 1, "carol").await;
     let (dave, _d) = signed_up(&c, 2, "dave").await;
     let (eve, _e) = signed_up(&c, 0, "eve").await;
@@ -3515,7 +4196,11 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         .to_owned();
     for (who, role) in [(&carol, "member"), (&dave, "admin")] {
         let token = alice
-            .post(&format!("orgs/{acme}/invites"), json!({ "role": role }))
+            .post_confirmed(
+                &format!("orgs/{acme}/invites"),
+                json!({ "role": role }),
+                &mut a,
+            )
             .await
             .unwrap()["token"]
             .as_str()
@@ -3566,69 +4251,21 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         .unwrap()
         .to_owned();
     let _r = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{acme}/members"),
             json!({ "account": dave_id, "role": "member" }),
+            &mut a,
         )
         .await
         .unwrap();
     let err = dave.get(&format!("apps/{in_org}/usage")).await.unwrap_err();
     assert_eq!(err.code(), Some("FORBIDDEN"), "a demoted admin: {err}");
     let _r = alice
-        .delete(&format!("orgs/{acme}/members/{dave_id}"))
+        .delete_confirmed(&format!("orgs/{acme}/members/{dave_id}"), &mut a)
         .await
         .unwrap();
     let err = dave.get(&format!("apps/{in_org}/usage")).await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "a removed member: {err}");
-}
-
-/// D76: over the daily fuel quota, a call to any app the account owns is refused,
-/// a wasmer app's too (wasmer runs are not metered, so the fuel is its component
-/// app's), with `429 QUOTA_EXCEEDED` and the key not spent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_wasmer_app_of_an_account_over_its_fuel_gets_429() {
-    let c = Cluster::start(3).await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let ops = c.client(1);
-    ops.use_api_key("ops-secret").await;
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let wasmer = alice.create_app("kv-v1", &v1, json!({})).await.unwrap();
-    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
-    // Its `init` uses more than the one unit allowed below.
-    let _component = alice.create_app("kv-v2", &v2, json!({})).await.unwrap();
-    set_fuel_limit(&ops, 1).await;
-    fuel_limit_everywhere(&c, 1).await;
-
-    let set = |key: &'static str| json!({ "key": "k", "value": key });
-    let err = alice
-        .call(&wasmer, "set", set("v"), Some("wasmer-key"))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
-    assert!(
-        matches!(err, calimero_client::Error::Api { status: 429, .. }),
-        "{err}"
-    );
-    let got = alice
-        .view(&wasmer, "get", json!({ "key": "k" }), Consistency::Strong)
-        .await
-        .unwrap()
-        .result;
-    assert!(got.is_null(), "the refused call ran: {got}");
-
-    // The refusal was not logged: the same key runs once the limit is lifted.
-    set_fuel_limit(&ops, 0).await;
-    fuel_limit_everywhere(&c, 0).await;
-    let _r = alice
-        .call(&wasmer, "set", set("v"), Some("wasmer-key"))
-        .await
-        .unwrap();
-    let got = alice
-        .view(&wasmer, "get", json!({ "key": "k" }), Consistency::Strong)
-        .await
-        .unwrap()
-        .result;
-    assert_eq!(got, json!("v"));
 }
 
 /// An organization named `name` that `owner` creates; answers its id.
@@ -3639,10 +4276,20 @@ async fn new_org(owner: &Client, name: &str) -> String {
         .to_owned()
 }
 
-/// `who` joins `org` as `role` through an invite `admin` mints.
-async fn join_org(admin: &Client, who: &Client, org: &str, role: &str) {
+/// `who` joins `org` as `role` through an invite `admin` mints with its passkey.
+async fn join_org(
+    admin: &Client,
+    admin_pk: &mut SoftAuthenticator,
+    who: &Client,
+    org: &str,
+    role: &str,
+) {
     let token = admin
-        .post(&format!("orgs/{org}/invites"), json!({ "role": role }))
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": role }),
+            admin_pk,
+        )
         .await
         .unwrap()["token"]
         .as_str()
@@ -3672,12 +4319,12 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     let app_fuel = figure(&app_usage(&alice, &in_org).await["today"]["fuel"]);
     assert!(app_fuel > 0);
     let org = alice.get(&format!("orgs/{acme}/usage")).await.unwrap();
-    assert_eq!(figure(&org["fuelToday"]), app_fuel, "{org}");
-    assert!(figure(&org["writesToday"]) >= 3, "{org}");
+    assert_eq!(figure(&org["developerFuelToday"]), app_fuel, "{org}");
+    assert!(figure(&org["developerWritesToday"]) >= 3, "{org}");
     assert_eq!(org["apps"], json!(1), "{org}");
     let me = alice.usage().await.unwrap();
     assert_eq!(
-        figure(&me["fuelToday"]),
+        figure(&me["developerFuelToday"]),
         0,
         "the owner paid for the org's app: {me}"
     );
@@ -3687,13 +4334,14 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     set(&alice, &personal, "p").await.unwrap();
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
     let me = alice.usage().await.unwrap();
-    assert_eq!(figure(&me["fuelToday"]), mine, "{me}");
+    assert_eq!(figure(&me["developerFuelToday"]), mine, "{me}");
     let org = alice.get(&format!("orgs/{acme}/usage")).await.unwrap();
-    assert_eq!(figure(&org["fuelToday"]), app_fuel, "{org}");
+    assert_eq!(figure(&org["developerFuelToday"]), app_fuel, "{org}");
 }
 
-/// D78: the daily fuel cap holds per payer. An org over it gets 429 on its apps,
-/// wasmer ones included, while its owner's personal apps, under the cap, still run.
+/// D78: the daily fuel cap holds per developer. An org app made from a release has
+/// the org as its developer: over the cap it gets 429, while its owner's personal
+/// apps, under the cap, still run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() {
     let c = Cluster::start(3).await;
@@ -3707,17 +4355,13 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
         .create_app("kv-org", &bundle, json!({ "org": acme }))
         .await
         .unwrap();
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let wasmer_in_org = alice
-        .create_app("kv-v1-org", &v1, json!({ "org": acme }))
-        .await
-        .unwrap();
     // The org burns far more than the owner's personal app will.
-    let mine = figure(&alice.usage().await.unwrap()["fuelToday"]);
+    let mine = figure(&alice.usage().await.unwrap()["developerFuelToday"]);
     let mut org_fuel = 0;
     for i in 0..400 {
         set(&alice, &in_org, &format!("v{i}")).await.unwrap();
-        org_fuel = figure(&alice.get(&format!("orgs/{acme}/usage")).await.unwrap()["fuelToday"]);
+        org_fuel =
+            figure(&alice.get(&format!("orgs/{acme}/usage")).await.unwrap()["developerFuelToday"]);
         if org_fuel > 20 * mine.max(1) {
             break;
         }
@@ -3729,13 +4373,11 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
     set_fuel_limit(&ops, org_fuel).await;
     fuel_limit_everywhere(&c, org_fuel).await;
 
-    for app in [&in_org, &wasmer_in_org] {
-        let err = alice
-            .call(app, "set", json!({ "key": "k", "value": "x" }), None)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{app}: {err}");
-    }
+    let err = alice
+        .call(&in_org, "set", json!({ "key": "k", "value": "x" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
     alice
         .call(&personal, "set", json!({ "key": "k", "value": "x" }), None)
         .await
@@ -3747,19 +4389,19 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_an_orgs_admins_read_its_usage() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (carol, _c) = signed_up(&c, 1, "carol").await;
     let (dave, _d) = signed_up(&c, 2, "dave").await;
     let (eve, _e) = signed_up(&c, 0, "eve").await;
     let acme = new_org(&alice, "Acme").await;
-    join_org(&alice, &carol, &acme, "member").await;
-    join_org(&alice, &dave, &acme, "admin").await;
+    join_org(&alice, &mut a, &carol, &acme, "member").await;
+    join_org(&alice, &mut a, &dave, &acme, "admin").await;
     let path = format!("orgs/{acme}/usage");
 
     let owner = alice.get(&path).await.unwrap();
-    let _fuel = figure(&owner["fuelToday"]);
+    let _fuel = figure(&owner["developerFuelToday"]);
     let admin = dave.get(&path).await.unwrap();
-    assert_eq!(admin["fuelToday"], owner["fuelToday"]);
+    assert_eq!(admin["developerFuelToday"], owner["developerFuelToday"]);
     let err = carol.get(&path).await.unwrap_err();
     assert_eq!(err.code(), Some("FORBIDDEN"), "a member: {err}");
     let err = eve.get(&path).await.unwrap_err();
@@ -3770,9 +4412,10 @@ async fn only_an_orgs_admins_read_its_usage() {
         .unwrap()
         .to_owned();
     let _r = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{acme}/members"),
             json!({ "account": dave_id, "role": "member" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -3835,7 +4478,7 @@ async fn warm(cl: &Client, app: &str) {
 }
 
 /// Sandi 10-30 (1): the cap never asks a peer during a call, so a replica of another
-/// of the payer's apps that hangs adds nothing to the call.
+/// of the developer's apps that hangs adds nothing to the call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs() {
     let mut c = Cluster::start_with(3, |cfg| cfg.replicas = 1).await;
@@ -3862,11 +4505,11 @@ async fn the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs() {
     );
 }
 
-/// Sandi 10-30 (1): a payer over its cap is refused within one refresh, and a peer
+/// Sandi 10-30 (1): a developer over its cap is refused within one refresh, and a peer
 /// that stops answering keeps the figure it last reported, so the cap does not fail
 /// open the moment one replica is down.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_over_cap_payer_is_refused_within_one_refresh_while_a_peer_hangs() {
+async fn an_over_cap_developer_is_refused_within_one_refresh_while_a_peer_hangs() {
     let mut c = Cluster::start_with(3, |cfg| cfg.replicas = 1).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
@@ -3913,11 +4556,11 @@ async fn an_over_cap_payer_is_refused_within_one_refresh_while_a_peer_hangs() {
     );
 }
 
-/// Sandi 10-30 (4): an xcall delivered into an over-cap payer's wasmer app is refused
-/// like a client's call (`QUOTA_EXCEEDED`), and does not run.
+/// Sandi 10-30 (4): an xcall delivered into an app whose developer is over its fuel
+/// cap is refused like a client's call (`429 QUOTA_EXCEEDED`), and does not run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_xcall_into_an_over_cap_payers_wasmer_app_is_refused() {
-    use calimero_node::app::Trigger;
+async fn a_delivered_xcall_into_an_over_cap_developers_app_is_refused() {
+    use calimero_node::component::xcall::XcallFrom;
     use calimero_node::node::CallRequest;
     use calimero_node::types::Caller;
 
@@ -3925,34 +4568,34 @@ async fn an_xcall_into_an_over_cap_payers_wasmer_app_is_refused() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
-    let v1 = alice.upload_bundle(wasmer_kv()).await.unwrap();
-    let wasmer = alice.create_app("kv-v1", &v1, json!({})).await.unwrap();
-    let v2 = alice.upload_bundle(kv_wasm()).await.unwrap();
-    // Its `init` uses more than the one unit allowed below.
-    let component = alice.create_app("kv-v2", &v2, json!({})).await.unwrap();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let source = alice.create_app("from", &bundle, json!({})).await.unwrap();
+    let target = alice.create_app("to", &bundle, json!({})).await.unwrap();
+    // The two apps' `init` runs use more than the one unit allowed below.
     set_fuel_limit(&ops, 1).await;
     fuel_limit_everywhere(&c, 1).await;
 
     let node = &c.nodes[0].as_ref().unwrap().node;
-    let mut req = CallRequest::new(
-        wasmer.clone(),
-        "set".into(),
-        json!({ "key": "k", "value": "x" }),
-        Caller::App {
-            app: component.clone(),
-        },
-    );
-    req.idempotency_key = Some(format!("xcall:{component}:1"));
-    req.trigger = Some(Trigger::XCall {
-        origin: component.clone(),
-        depth: 1,
-    });
-    let out = node.call(&req).await;
-    let err = out.expect_err("the xcall ran");
+    let req = CallRequest {
+        idempotency_key: Some(format!("node:xcall-{source}-1")),
+        xcall: Some(XcallFrom {
+            source: source.clone(),
+            seq: 1,
+        }),
+        ..CallRequest::new(
+            target.clone(),
+            "set".into(),
+            json!({ "key": "k", "value": "x" }),
+            Caller::App {
+                app: source.clone(),
+            },
+        )
+    };
+    let err = node.call_component(&req).await.expect_err("the xcall ran");
     assert_eq!(err.code, "QUOTA_EXCEEDED", "{err:?}");
     assert_eq!(err.status, 429);
     let got = alice
-        .view(&wasmer, "get", json!({ "key": "k" }), Consistency::Strong)
+        .view(&target, "get", json!({ "key": "k" }), Consistency::Strong)
         .await
         .unwrap()
         .result;
@@ -3964,11 +4607,11 @@ async fn an_xcall_into_an_over_cap_payers_wasmer_app_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_read_only_members_call_is_refused_before_it_runs() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
     let org = new_org(&alice, "Docs").await;
-    join_org(&alice, &bob, &org, "member").await;
+    join_org(&alice, &mut a, &bob, &org, "member").await;
     let bob_id = s(bob.me().await.unwrap(), "accountId");
     let team = s(
         alice
@@ -3981,9 +4624,10 @@ async fn a_read_only_members_call_is_refused_before_it_runs() {
         "teamId",
     );
     let _ok = alice
-        .post(
+        .post_confirmed(
             &format!("orgs/{org}/teams/{team}/members"),
             json!({ "account": bob_id, "role": "readOnly" }),
+            &mut a,
         )
         .await
         .unwrap();
@@ -4020,16 +4664,24 @@ async fn the_fuel_cap_is_a_decimal_string() {
     ops.use_api_key("ops-secret").await;
     let big = "9007199254740993"; // 2^53 + 1
     let _ok = ops
-        .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": big }))
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxFuelPerDeveloperPerDay": big }),
+            &common::operator_sign,
+        )
         .await
         .unwrap();
     let quotas = ops.get("ops/quotas").await.unwrap();
-    assert_eq!(quotas["maxFuelPerPayerPerDay"], json!(big), "{quotas}");
+    assert_eq!(quotas["maxFuelPerDeveloperPerDay"], json!(big), "{quotas}");
     let me = alice.usage().await.unwrap();
-    assert_eq!(me["quotas"]["maxFuelPerPayerPerDay"], json!(big), "{me}");
+    assert_eq!(
+        me["quotas"]["maxFuelPerDeveloperPerDay"],
+        json!(big),
+        "{me}"
+    );
 
     let err = ops
-        .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": 5 }))
+        .post("ops/quotas", json!({ "maxFuelPerDeveloperPerDay": 5 }))
         .await
         .unwrap_err();
     assert!(
@@ -4038,7 +4690,7 @@ async fn the_fuel_cap_is_a_decimal_string() {
     );
     for bad in ["", "-1", "01", "1e3"] {
         let err = ops
-            .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": bad }))
+            .post("ops/quotas", json!({ "maxFuelPerDeveloperPerDay": bad }))
             .await
             .unwrap_err();
         assert!(
@@ -4059,7 +4711,7 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let err = ops
-        .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": "1000" }))
+        .post("ops/quotas", json!({ "maxFuelPerDeveloperPerDay": "1000" }))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
@@ -4075,18 +4727,26 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
     );
     // Other quotas, and a cap of 0, are written as before.
     let _ok = ops
-        .post("ops/quotas", json!({ "maxAppsPerAccount": 7 }))
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxAppsPerAccount": 7 }),
+            &common::operator_sign,
+        )
         .await
         .unwrap();
     let quotas = ops.get("ops/quotas").await.unwrap();
-    assert_eq!(quotas["maxFuelPerPayerPerDay"], json!("0"));
+    assert_eq!(quotas["maxFuelPerDeveloperPerDay"], json!("0"));
 
     // Node 3 runs the release now: the cap is written.
     c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match ops
-            .post("ops/quotas", json!({ "maxFuelPerPayerPerDay": "1000" }))
+            .post_operator_signed(
+                "ops/quotas",
+                json!({ "maxFuelPerDeveloperPerDay": "1000" }),
+                &common::operator_sign,
+            )
             .await
         {
             Ok(_) => break,

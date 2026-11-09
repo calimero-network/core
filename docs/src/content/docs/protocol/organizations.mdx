@@ -34,9 +34,8 @@ every node before their next request ([Reads of the system
 state](/protocol/system-group/#reading-the-system-state)).
 
 A member whose **direct row** in the app's team is **read-only** still reaches
-the app. On a component app only its views run for them, and any other call is
-refused with `403` before it runs; on a wasmer app the call runs, but one that would
-write anything is refused with `403`. A blob upload by them is refused
+the app, but only its views run for them: any other call is refused with `403`
+before it runs. A blob upload by them is refused
 before it starts.
 
 ## Organizations
@@ -127,15 +126,56 @@ organization value). Admins and team leads hold them all where they manage.
 
 Bit 9 is unused: v1's `MemberCapabilities` spends it on `CAN_AUTHOR_ON_BEHALF`,
 so a client that sends v1's `ALL` grants nothing new by accident. A grant is
-`POST /orgs/{org}/capabilities { account, capabilities }` by an admin; `GET
+`POST /orgs/{org}/capabilities { account, capabilities }` by an admin, with
+their passkey (as every membership change: roles, removals and leaving, team
+rows; `412 CONFIRM_REQUIRED` first); `GET
 /orgs/{org}` lists who may approve releases (`releaseApprovers`).
 
 ## Invites
 
 `POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses? }` returns a token
-`inv_…`; only its hash is stored. An invite expires (7 days by default) and
+`inv_…`, after the inviter approves it with a passkey (`412 CONFIRM_REQUIRED`
+first; the consent binds `{ inviteKey, role, teams, expiresAt, uses }`). Only
+the token's Ed25519 public key is stored (`inviteKey`, the key whose seed is
+`SHA-256("calimero.invite.v1\0" ‖ token)`). An invite expires (7 days by default) and
 admits `uses` accounts (1 by default). Its role may not exceed the inviter's and
 is never `owner`. An inviter below admin may name only teams they manage.
-`POST /invites/{token}/redeem`, by a signed-in person, adds them at the invite's
+`POST /invites/{token}/redeem`, by a signed-in person (no passkey prompt): the
+node signs the redemption with the token's key, which every node checks
+where it applies, so a node that saw only the log cannot redeem an invite. It adds them at the invite's
 role (or keeps a higher role they already have) and gives them a plain row in
-each named team.
+each named team. Only a redemption that does one of those spends a use: an
+account already in the organization at the invite's role or above, and in every
+team it names (an owner opening their own link, say), gets the organization back
+and leaves the use for the person the invite was made for. The last use removes
+the invite; redeeming it after that, or after its organization is deleted, is
+refused `400 REJECTED` ("this invite was used up, revoked or never existed"), and
+past its expiry "this invite has expired". A redemption an earlier release logged
+replays as that release applied it (it spent a use whatever it changed): the
+API marks new ones (`RedeemInvite { free_when_unchanged: true }`).
+
+## Recovery
+
+An organization may hold a **recovery key** (`Org::recovery`): an Ed25519 key
+whose 32-byte seed its owner keeps offline; the organization stores only the
+public half (`publicKey`, base64url). It is set at creation (`POST /orgs
+{ name, recoveryKey }`) or by the owner later, with a passkey (`POST
+/orgs/{org}/recovery { publicKey }`, consent `org:<org> / __set_recovery_key /
+{ publicKey }`; `null` removes it). An organization created before recovery
+keys has none until its owner sets one.
+
+Whoever holds the seed hands the organization to the account they are signed
+in as: the client signs `"calimero.org-recovery.v1\0" ‖ org ‖ 0 ‖ account ‖ 0 ‖
+nonce` with the seed and sends only the signature (`POST
+/orgs/{org}/recovery/start { nonce, signature }`). Every node checks it
+against the organization's current key where `StartRecovery` applies and
+spends it, so a node that saw the log cannot redirect or replay it. The
+recovery then waits `RECOVERY_DELAY_SECS` (72 hours, judged at the commands'
+own times); members see it as `recovery.pending` on `GET /orgs/{org}`. The
+owner may cancel it with a passkey (`__cancel_recovery { account }`), and
+setting a new key cancels it too. Once the delay has passed, the account it
+names finishes it with its own passkey (`__finish_recovery { org }`): it
+becomes the owner, every previous owner leaves the organization and its teams,
+and the apps they owned in it become the new owner's. One recovery runs at a
+time (`409 RECOVERY_PENDING`). Recovery never changes an account's passkeys:
+the previous owner's account and its other organizations are as they were.

@@ -128,8 +128,9 @@ enum Cmd {
         #[arg(long, requires = "file")]
         nonce: Option<String>,
     },
-    /// Signed packages (v1's applications): install, list, versions, uninstall, watch.
-    #[command(subcommand)]
+    /// Signed packages (v1's applications): install, list, versions,
+    /// uninstall, watch, web origins. Also `meroctl package`.
+    #[command(subcommand, alias = "package")]
     App(app::AppCmd),
     /// App instances (v1's contexts): create, list, get, update, delete, aliases, access.
     #[command(subcommand)]
@@ -183,6 +184,10 @@ enum Cmd {
         method: String,
         path: String,
         body: Option<String>,
+        /// Answer a `412 CONFIRM_REQUIRED` on a post or delete with this
+        /// passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -375,16 +380,24 @@ async fn main() -> eyre::Result<()> {
         Cmd::Account(cmd) => account::run(cmd, &env).await?,
         Cmd::Dev(cmd) => return dev::run(cmd, &env).await,
         Cmd::Network(NetworkCmd::Status) => env.client.get("health").await?,
-        Cmd::Raw { method, path, body } => {
+        Cmd::Raw {
+            method,
+            path,
+            body,
+            dev_passkey,
+        } => {
             let path = path.trim_start_matches('/');
             let body = body.as_deref().map(json_arg).transpose()?;
             match method.to_ascii_lowercase().as_str() {
                 "get" => env.client.get(path).await?,
-                "delete" => env.client.delete(path).await?,
+                "delete" => env.delete_approved(path, dev_passkey.as_deref()).await?,
                 "post" => {
-                    env.client
-                        .post(path, body.unwrap_or_else(|| json!({})))
-                        .await?
+                    env.post_approved(
+                        path,
+                        body.unwrap_or_else(|| json!({})),
+                        dev_passkey.as_deref(),
+                    )
+                    .await?
                 }
                 "put" => {
                     env.client
@@ -403,4 +416,71 @@ async fn main() -> eyre::Result<()> {
         }
     };
     print(&out)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    /// `package` is `app`: `meroctl package origins ...` reaches the same commands.
+    #[test]
+    fn package_is_app() {
+        for args in [
+            &["meroctl", "package", "origins", "list", "com.example.kv"][..],
+            &[
+                "meroctl",
+                "package",
+                "origins",
+                "add",
+                "com.example.kv",
+                "https://kv.example.com",
+                "--rp-id",
+                "example.com",
+            ][..],
+            &[
+                "meroctl",
+                "app",
+                "origins",
+                "add",
+                "com.example.kv",
+                "https://kv.example.com",
+                "--served",
+            ][..],
+            &[
+                "meroctl",
+                "app",
+                "origins",
+                "rm",
+                "com.example.kv",
+                "https://kv.example.com",
+                "--dev-passkey",
+                "pk.json",
+            ][..],
+        ] {
+            let parsed = Cli::try_parse_from(args);
+            assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
+        }
+    }
+
+    /// A passkey's credential id is base64url and may start with `-`; clap
+    /// must take it as the value, not as a flag.
+    #[test]
+    fn a_credential_id_starting_with_a_dash_is_a_value() {
+        for args in [
+            &[
+                "meroctl",
+                "account",
+                "device",
+                "label",
+                "-7qCMOBQeBL02g",
+                "laptop",
+            ][..],
+            &["meroctl", "account", "device", "revoke", "-7qCMOBQeBL02g"][..],
+        ] {
+            let parsed = Cli::try_parse_from(args);
+            assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
+        }
+    }
 }

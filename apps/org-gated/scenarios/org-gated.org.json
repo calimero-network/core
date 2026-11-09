@@ -1,0 +1,6 @@
+{
+  "admins": ["carol"],
+  "members": ["bob"],
+  "guests": ["dave"],
+  "teams": { "writers": ["bob"] }
+}

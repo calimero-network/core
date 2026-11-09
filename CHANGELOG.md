@@ -2,6 +2,372 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.11] - 2026-11-06
+
+### Added
+
+- **Account proofs** (#4871): `POST /auth/account-proof { nonce, audience }` (a
+  passkey session) answers the node's receipt-key signature over
+  `{ cluster, node, account, nonce, audience, issuedAt, expiresAt }`
+  (`calimero_client::attest::AccountProof`, five minutes), so a third party
+  such as Calimero Cloud learns which account a person controls without
+  taking their word for it. `GET /ops/nodes/{id}/receipt-key` answers the
+  operator the attested receipt key of any node of the cluster to check one.
+- **Account recovery codes** (#4844, `docs/specs/account-recovery.md`). A
+  person who lost every passkey gets their account back with a recovery code
+  made while signed in (`POST /auth/recovery`, a passkey step-up; shown once;
+  only its public key is logged). Signed out, `POST /auth/recovery/begin` and
+  `/start` take the code and a new passkey: the code is spent and the passkey
+  is pending. For 72 hours (`RECOVERY_DELAY_SECS`, as an organization's
+  recovery) any passkey of the account cancels it (`/auth/recovery/cancel`);
+  after, `/auth/recovery/finish`, approved by the new passkey, adds it, ends
+  every session of the account and signs in, with the sign-in proof #4849
+  requires. `/auth/me` shows `recoveryCode` and `recoveryPending`.
+- **`meroctl app origins`** (also `meroctl package origins`): `list PACKAGE`,
+  `add PACKAGE ORIGIN [--rp-id ID]` and `remove PACKAGE ORIGIN` handle a
+  package's registered web origins (`/package-origins/{package}`, #4846).
+  A change takes the manager's passkey: `--dev-passkey FILE` on a development
+  cluster; without it the node answers `412 CONFIRM_REQUIRED` and the change
+  is made in the console. `calimero_client::package_origins_path` names the
+  route for a caller that sends it without a passkey.
+- **Custom domains for served frontends** (#4864): a package's manager registers an
+  origin with `served: true` (`POST /package-origins/{package} { origin,
+  served: true }`, passkey consent over `{ origin, rpId, served: true }`), and
+  the node serves the package's frontend from its signed bundle on that host,
+  as at `{label}.{apps_domain}`. Ceremonies there use the domain's own rp-id
+  and open sessions bound to the package; removing the origin ends the site
+  and its sessions. `GET /ops/served-origins` lists them (by package label)
+  for the operator's certificates and routes. At most 4 per package and 64 per
+  cluster; adding one needs every node on this release. Certificates, routing
+  and the console flow come from mdma and mero-tee; design in
+  `docs/specs/custom-domains.md`.
+- **`meroctl app origins add --served`** (#4867) registers a custom domain (a served
+  origin, above): the body and the manager's consent carry `served: true`,
+  only when the flag is given. `app origins list` shows each origin's
+  `served`.
+- **Each app's last write** (#4874): `lastWriteAt` (Unix seconds, `null`
+  before the first write) on `GET /ops/apps`, `GET /auth/apps`,
+  `GET /orgs/{org}/apps` and `GET /apps/{app}/storage`: the entry timestamp of
+  the newest entry that wrote the app's data. A node without a replica of the
+  app asks one (`internal/last-write`, at most 2 s per app; `null` if none
+  answers). Kept in the component head, which reads and writes as before for an
+  app not written since.
+- **Passkeys named by cluster** (#4872): a new passkey is registered as
+  `alice · <cluster>`, or `alice · <app> (<cluster>)` when the sign-up began on
+  a package's frontend, so a password manager tells them apart.
+
+### Changed
+
+- **A passkey from another cluster is answered as such** (#4872): signing in or
+  stepping up with a credential no account here has answers `401
+  PASSKEY_UNKNOWN_HERE` (was `401 UNAUTHENTICATED` "unknown passkey"), naming
+  no cluster or account. mero-js maps it to `PasskeyUnknownHere`.
+- **A young refresh token is kept** (#4873): a refresh token younger than an
+  hour (`REFRESH_ROTATE_AFTER`) is judged on fresh system state and answered
+  with a new session token and the same refresh token, with no system-log
+  write; an older one is exchanged as before. Refreshes write once per session
+  per hour instead of four times. A copied token taken in its first hour now
+  refreshes alongside its owner until it is rotated, then the reuse revokes the
+  session as before.
+
+### Fixed
+
+- **Account recovery revokes the account's API keys** (#4870): finishing a
+  recovery ends the account's API keys as well as its sessions, so keys made
+  with a lost passkey stop working. A finish logged by rc.10 replays as it did.
+- **A member opening an invite no longer spends it** (#4875): a redemption that
+  changes nothing for the account (already a member at that role, in every team
+  it names) returns the organization and leaves the invite for its invitee. A
+  used-up or unknown invite reads "this invite was used up, revoked or never
+  existed"; the codes are unchanged. Redemptions logged by rc.10 replay as they
+  did.
+
+## [1.0.0-rc.10] - 2026-11-05
+
+### Added
+
+- **Upgrade keys** (#4852): an API key bound to one app and its package
+  (`POST /auth/apikeys { upgrades: { app } }`) upgrades that app from CI with
+  no passkey; it is refused everywhere else (`403 UPGRADE_KEY_ONLY`).
+- **Compute methods** (#4784): a package may ship a compute component, run
+  deterministically on job nodes, never on the replicas.
+
+### Fixed
+
+- **Served frontends can verify their nodes** (#4861). A frontend a node serves
+  from its bundle could not reach the attestation mirror
+  (`https://cloud.calimero.network`) under its content security policy, so it
+  could not fetch the release measurements or Intel's collateral, and no one
+  could sign in on a TDX cluster ("Load failed" in Safari). The mirror is now
+  in `connect-src`.
+
+## [1.0.0-rc.9] - 2026-11-04
+
+### Changed
+
+- **The component SDK is `calimero-sdk`** (was `calimero-app-sdk`), with its
+  attributes in `calimero-sdk-macros` (was `calimero-app-sdk-macros`):
+  `crates/sdk`, `crates/sdk-macros`, `use calimero_sdk::prelude::*;`. The name
+  was freed when SDK 0.12 was deleted. `calimero-app-sdk` stays for now as a
+  crate that only re-exports `calimero-sdk`, so an app that has not moved
+  still builds: the `app` attributes expand to paths through whichever name the
+  app's `Cargo.toml` lists (`proc-macro-crate`), or the name a renamed
+  dependency gives it. To move an app, depend on `calimero-sdk` instead and
+  replace `calimero_app_sdk` with `calimero_sdk`; `calimero-app-sdk` is deleted
+  once no app depends on it. The node's refusals of SDK 0.12 apps now say to
+  rebuild with `calimero-sdk`.
+
+### Security
+
+- **Sessions, counters, key revocations and sign-ups carry their proofs at
+  apply** (next to #4791). A system leader could log, without any proof, a
+  refresh token of its own for any account, the exchange of someone's refresh
+  token for one of its own, a passkey counter at its maximum, the revocation
+  of anyone's API key, or an account holding someone's new credential under an
+  id and a release it picks. Now `CreateRefresh` carries the sign-in's
+  assertion (its challenge states the token), `UseRefresh` a signature by a
+  key derived from the old token, `SetSignCount` the assertion carrying the
+  counter, `RevokeApiKey` the account's passkey consent (`412
+  CONFIRM_REQUIRED` on `DELETE /auth/apikeys/{key}`), and `CreateAccount` the
+  new passkey's assertion over the account and its first session (`412
+  CONFIRM_REQUIRED` on `/auth/passkey/register/finish`: a sign-up asks the
+  passkey twice). Refresh tokens issued before are not exchanged: their
+  holders sign in again. A cluster begun before requires these proofs from
+  the `RequireSessionProofs` entry its first leader on this release writes;
+  what it logged before replays as it applied. `calimero-client`: `sign_up` answers the `412`;
+  `revoke_api_key(key_id, passkey)`. `meroctl account api-key revoke` takes
+  `--dev-passkey`.
+
+## [1.0.0-rc.8] - 2026-11-02
+
+### Added
+
+- **Blobs for component apps** (R8). The blob routes (`POST/GET/DELETE
+  /apps/{app}/blobs[/{id}]`) answer for `calimero:app` components instead of
+  `409 NOT_SUPPORTED`. State refers to a blob through a typed `BlobRef`
+  (`calimero-app-sdk`; CBOR tag 51,739 around its SHA-256), and the node keeps a
+  blob while state refers to it, plus one hour after its upload or its last
+  reference (host-tracked retention), then collects the bytes. Runs read a
+  blob's size, hash and content type (`BlobRef::info`) and hand out download
+  grants (`BlobRef::grant`, up to 24 h) that `GET
+  /apps/{app}/blobs/{id}?grant=` takes without a session. Uploads keep their
+  `Content-Type`. The harness gains `upload_blob` and `blob_refs`.
+- **Full-text search for component apps** (spec section 7). A table declares
+  its text fields with `#[table(search = [..])]` (listed in the state ABI's
+  `search`); the node indexes its records with `calimero-search`, derived from
+  state and brought up to date before each view, and views query it with
+  `Table::search` through a new WIT `search` interface (views only).
+- **xcall for component apps** (D13, D25, D29). `env::xcall(app, method,
+  &args)` queues a message in the app's outbox; the leader delivers it after
+  the entry commits, in order, as `Caller::App(source)` to a method that
+  `allow(app = ..)`s the source (`"*"`: any app), within one organization.
+  Targets deduplicate by a per-source watermark; timeouts are retried for an
+  hour, then (or at once for a missing target or another organization's app)
+  the message is dead-lettered and the source's `onXcallFailed` runs. `GET
+  /apps/{app}/xcalls` lists what waits and the dead letters. The harness gains
+  `take_xcalls` and `deliver`.
+- **Actions and outbound HTTP for component apps** (D12, D17, D22, D27, S9,
+  R14). `#[app::action] fn f(ctx: &mut ActionCtx, ..)` runs on the app's
+  leader outside the log, started by a client's call or `env::start_action`
+  and logged as started and ended; it reads with `ctx.view`, writes with
+  `ctx.call` (keyed so a retry replays), and calls out with `ctx.fetch` over
+  `wasi:http`, only to prefixes the signed manifest declares and the owner
+  approved, with `{{secret:NAME}}` filled in. Timeouts retry (5 attempts); a
+  failure sends `ActionFailed` to the starter and runs `onActionFailed`.
+  `#[app::allow(action)]` methods are callable only from the app's actions.
+  The engine serves `wasi:http` over bounded in-memory buffers (calls and
+  views still cannot send). The harness gains `action`, `mock_http` and
+  `run_started_actions`.
+- **Synchronous xcalls for component apps**. `env::xcall_call(app, method,
+  &args)` runs another app's method as one call in that app's own log and
+  hands its result back to the running call, timer or action;
+  `env::xcall_view` reads another app's latest state (views too). Same
+  organization (or owner) and `allow(app = ..)`, as for `env::xcall`; one hop
+  deep; at most 16 per run; not atomic with the caller, but a re-run of the
+  caller replays the target's answer (its key is derived from the caller's).
+  WIT `xcall` gains `call` and `view`. Example: `apps/v2-fixtures/captcha`, a
+  captcha service other apps verify answers with in the same request. The
+  harness gains `mock_app`.
+- **Outbound HTTP from component calls** (D76; S9 changed). Calls, timers and
+  xcall deliveries may send one request (`env::fetch`), through the same gate
+  as actions: a URL the signed manifest declares, the owner approved and the
+  operator allows, secrets filled in by the node. The exchange is recorded in
+  the call's log entry, so followers and keyed retries never fetch again; a
+  response is awaited at most 1.5 s, and a failure is an error the app
+  handles. Views, `init` and migrations still cannot send. The captcha example
+  gains `verifyTurnstile`.
+
+### Fixed
+
+- **System writes wait for a leader.** A write to the system group (sign-in,
+  memberships, deployments) now retries until its deadline instead of giving
+  up after about 8 s, so a slow election after a node dies no longer answers
+  `503 UNAVAILABLE: the system group has no leader` (#4821).
+
+## [1.0.0-rc.7] - 2026-10-31
+
+### Added
+
+- **Plain collections in the component SDK** (`calimero-app-sdk`): `Cell<T>`
+  (one value), `Set<T>`, `Vector<T>`, `Frozen<T>` (write-once, by content
+  hash) and `PerUser<T>` (the caller's own value), and `UnorderedMap` gains
+  ordered reads (`range`, `prefix`, `first`, `last`, `page`), a stored `len`
+  and `clear`. One leader orders every write, so none of them is a CRDT.
+  Rich text stays one: `Text` (Fugue) and `RichText` (text with marks).
+  kv-store, kv-store-init, org-gated, sorted-kv-store, sorted-set-store,
+  team-metrics and kv-store-with-user-and-frozen-storage use them; their state
+  layout changed (no migration). `#[app::state]` lists each field's kind in the
+  ABI's `state` (#4813).
+- **Deployments.** An owner's (an account's, or an organization's) list of
+  the apps it offers on a cluster, each naming one installed release. Its
+  managers (the account; the organization's org-wide `MANAGE_APPLICATION`
+  holders) change it with their own passkey, judged where the change applies:
+  `POST /deployments { name, owner }`, `POST /deployments/{id}/apps { app,
+  package, version }` (offer, or move to another release), `DELETE
+  /deployments/{id}/apps/{app}` (withdraw; refused while an instance from it
+  runs that app), `DELETE /deployments/{id}` (once it offers nothing). Where
+  deployments are `granted`, creating and offering need a deployer grant.
+  `POST /apps { deployment, package, version? }` creates an instance from an
+  offer (no grant, no install) and the instance records its deployment.
+  `GET /deployments` lists what the caller manages, `GET /deployments/{id}` is
+  public (name, owner's kind and name, offers), and `GET
+  /deployments/{id}/orgs` lists, for its managers, the organizations with
+  instances from it (id, name, count, apps and versions, first created), never
+  members or data. A release a deployment offers is not uninstalled.
+- **Frontends at the deployed release.** `/app/{app}/` redirects to the
+  release that instance runs and `/d/{deployment}/` to the release the
+  deployment offers (`?deployment={id}`), so a customer's page matches their
+  instance after a newer release is installed; `/.well-known/calimero.json`
+  lists the deployments offering the package. Records from before deployments
+  are not moved into one.
+
+### Security
+
+The next phase of gating the system group (`docs/specs/gate-system-group.md`,
+section 5.6): every command that grants access to data now carries a proof
+that `apply` checks on every node, so an entry a system leader forged (a node
+on an unapproved release may lead, decision 7) is refused on every replica.
+**Hard cutover**: no interop with earlier nodes or log entries; clusters are
+recreated, and clients must answer the new `412`/`428` step-ups.
+
+- **Credentials** carry the account's passkey consent: `AddPasskey`
+  (`account:<a> / __add_passkey / { credentialId, publicKey }`, signed by a
+  passkey the account already has), `RemovePasskey` (`__remove_passkey /
+  { credentialId }`) and `CreateApiKey` (`__create_api_key`, binding the
+  key's hash and every field of its record). `POST /auth/passkeys/add/finish`,
+  `DELETE /auth/passkeys/{cred}` and `POST /auth/apikeys` answer `412
+  CONFIRM_REQUIRED` first; an API key never creates another.
+- **Memberships** carry the actor's passkey consent (`org:<org>`):
+  `SetOrgRole`, `RemoveOrgMember` (leaving too), `SetTeamMember`,
+  `RemoveTeamMember`, `SetCapabilities`, `SetDefaultCapabilities` and
+  `CreateInvite`; their routes answer `412` first, and the `DELETE` routes take
+  `{ confirm }` as a JSON body.
+- **Invites** are stored under the token's Ed25519 public key
+  (`seed = SHA-256("calimero.invite.v1\0" || token)`), never its hash; a
+  redemption is signed with the token's key by the node the redeemer gave it
+  to, so a node that only sees the log cannot redeem an invite.
+- **The fleet** carries the operator's signature: `RegisterNode`,
+  `RemoveNode`, `SetQuotas` and `SetReplicas` (one signature over a move's
+  target covers both of its writes). `POST /ops/nodes`, `DELETE
+  /ops/nodes/{id}`, `POST /ops/quotas` and `POST /ops/apps/{app}/replicas`
+  answer `428 OPERATOR_SIGNATURE_REQUIRED` first. The nodes a cluster starts
+  with are registered by `Genesis`; the first leader no longer writes
+  unsigned `RegisterNode` entries for `--peers`.
+- `calimero-client`: `add_passkey` takes the approving passkey,
+  `create_api_key` a passkey, and `remove_passkey`, `post_operator_signed`
+  and `delete_operator_signed` are new. `meroctl` signs the new operator
+  routes with `--operator-key-file` and takes `--dev-passkey` (and
+  `account device add --approve-with`) on the new step-ups.
+
+### Changed
+
+- **Sixteen example apps are on the component SDK** (`calimero-app-sdk`,
+  `wasm32-wasip2`, standalone crates outside the root workspace):
+  authored-sorted-kv-store, components-demo, custom-key-store, indexed-forum,
+  indexed-issue-tracker, kv-store, kv-store-init, kv-store-with-shared-storage,
+  kv-store-with-user-and-frozen-storage, name-registry-admin, org-gated
+  (package `org-gated-notes`), permissions-showcase, rooms, sorted-kv-store,
+  sorted-set-store and team-metrics (two v1 apps, one with badges, merged: with
+  one log ordering every call they differed only by the badges). The wasmer
+  builds of kv-store, kv-store-with-shared-storage and org-gated, which the
+  node's tests load, moved to `apps/wasmer-fixtures/`. The other apps stay on
+  the wasmer SDK until the component SDK has blobs, xcall, search, handlers,
+  TEE methods, outbound requests, migrations and CRDT types.
+
+### Removed
+
+- **merobox.** Core's end-to-end tests no longer use it. Its 143 workflows
+  became JSON scenarios (`scripts/workflow-to-scenario.py`): app-level ones
+  (`apps/<app>/scenarios/*.json` with `<name>.org.json`) run in each component
+  app's harness, and every scenario, app-level and cluster
+  (`apps/*/scenarios/cluster/`, `workflows/**/scenarios/`), runs on an
+  in-process cluster with `cargo test -p calimero-node --test scenarios`
+  (`SCENARIO_SHARD=k/n`). What needs one `merod` process per node (a crash, a
+  freeze, a frozen leader, orgs and keys, packages, a rolling upgrade and the
+  kv-store soak) is the process suite, `crates/node/tests/fault/suite.py`
+  (`--smoke`, `--nightly`), which CI also runs against the merod image.
+  `scripts/run-workflows.py`, `scripts/workflows-{baseline,durations,smoke}.json`,
+  `scripts/check-scenario-coverage.py` and `MEROBOX_REF` are gone.
+
+### Fixed
+
+- **A deleted blob's bytes no longer outlive it on a lagging replica.** A node
+  asked to drop a blob's bytes kept them while its own replica of the app,
+  not yet caught up with the delete, still marked the blob, and nothing asked
+  again. It now judges the mark on the app's leader.
+- **`meroctl account device label|revoke` take a credential id that starts
+  with `-`.** Passkey credential ids are base64url, and clap read one starting
+  with `-` as a flag (`unexpected argument '-7' found`).
+
+## [1.0.0-rc.6] - 2026-10-31
+
+### Added
+
+- **Deployer grants.** `merod --deployments open|granted` and `--deployers
+  operator|owner` (`MEROD_DEPLOYMENTS`, `MEROD_DEPLOYERS`), attested with the
+  rest of the governance. Where deployments are `granted`, only an account
+  holding a live deployer grant (its own, or as an org-wide
+  `MANAGE_APPLICATION` holder of an organization holding one) installs
+  packages or uploads bundles (`403 DEPLOY_NOT_GRANTED`, refused again at
+  apply); anyone still signs up and creates instances of the releases they see.
+  The operator grants and revokes with its key (`POST /ops/deployers`,
+  `DELETE /ops/deployers/{key}`, or its
+  signed form `POST /ops/deployers/{key}/revoke`), moves an existing cluster from `open` to
+  `granted` once (`POST /ops/deployments/granted`), and, with `--deployers
+  owner`, names the cluster's owner once (`POST /ops/cluster-owner`), who then
+  grants with a passkey (`POST /deployers`, `DELETE /deployers/{key}`) and the
+  operator no longer can. `GET /deployers` lists them. A cluster with the
+  defaults attests exactly the governance bytes it did before; a client that
+  recomputes the receipt-key binding (mero-js, if it does) must keep
+  `deployments` and `deployers`, after the other three fields, when the
+  attested governance carries them.
+
+## [1.0.0-rc.5] - 2026-10-30
+
+### Security
+
+- **wasmtime 50.0.1**, for four RustSec advisories against 50.0.0 (#4792).
+
+### Fixed
+
+- **A TDX cluster keeps a system leader.** Since 1.0.0-rc.4 a node attests
+  each peer before it opens a channel to it, and attests each calling peer
+  before it takes its messages; on TDX that takes about a second (Intel's
+  collateral is fetched each time), and openraft drops a Raft RPC after one
+  heartbeat (200 ms). The attestation ran inside the RPC, so every attempt was
+  dropped halfway and the next began again: the channels never opened,
+  elections never settled, and system writes hung. Both now run in a task of
+  their own that a dropped RPC does not abort, one per peer at a time; the
+  next RPC finds the channel open and the caller known. Regression:
+  `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`.
+- A system write (sign-up, passkey, org, node registration) that the system
+  group cannot commit answers `503 UNAVAILABLE` within 10 s, naming the leader,
+  voters, learners and the members behind the leader, instead of waiting until
+  a proxy cuts the connection.
+- A stopped node reports its store closed only once RocksDB has released its
+  lock, so a restart or `merod inspect` right after a stop no longer finds the
+  store still locked (#4801).
+
 ## [1.0.0-rc.4] - 2026-10-30
 
 ### Security

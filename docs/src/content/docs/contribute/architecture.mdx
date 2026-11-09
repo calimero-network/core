@@ -29,8 +29,8 @@ Everything a node does is in `calimero-node` (`crates/node`).
 | Log engine | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node: logs, votes, state, blobs and snapshots. |
 | System group | `node/src/system.rs` (group 1) | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
 | App groups | `node/src/app.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
-| Executors | `app::Executor` over `calimero-runtime` (wasmer); `node/component.rs` over `calimero-app-engine-wasmtime` | Run a call's WASM on the leader against the applied state and return `{ result, diff, events }`; the app's record names which one. |
-| Node | `node/src/node.rs`, `membership.rs` | Routing to leaders, placement, system voter promotion, reconciling hosted groups with the directory, follow-ups (event handlers, xcalls, timers), blob replication, backups. |
+| Engine | `node/component.rs` over `calimero-app-engine-wasmtime` | Run a call's component on the leader against the applied state and return `{ result, diff, events }`. |
+| Node | `node/src/node.rs`, `membership.rs` | Routing to leaders, placement, system voter promotion, reconciling hosted groups with the directory, xcalls and timers, blob replication, backups. |
 | API | `node/src/api.rs` | The HTTP routes (`router`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
 | Sealed transport | `calimero-sealed` | Wraps the router from outside; opens sealed requests and routes them afresh. |
 | Identity | `calimero-identity` | WebAuthn verification, session tokens, API keys, confirm challenges. |
@@ -79,20 +79,14 @@ Everything a node does is in `calimero-node` (`crates/node`).
 - **System writes** (sign-up, installs, org changes) go to the system leader
   the same way; authority is checked when they apply.
 
-## The two app runtimes
+## The app runtime
 
-The Rust SDK (`calimero-sdk`, `calimero-storage`, `calimero-sys`,
-`calimero-wasm-abi`) builds core modules that run on `calimero-runtime`
-(wasmer). Beside them,
-`calimero:app` components (the WIT world in `calimero-app-wit`, built with
-`calimero-app-sdk` and `calimero-app-build`) run on wasmtime
-(`calimero-app-engine-wasmtime`) through the host core `calimero-app-host`. The
-node picks the runtime once per app, from the WASM its bundle names. `calimero-runtime`
-still links a few older node crates: `calimero-node-primitives` (which brings
-`calimero-governance-types`, `calimero-network-primitives`,
-`calimero-blobstore` and `calimero-utils-actix`), `calimero-context-config`,
-`calimero-store` and `calimero-crypto`. They stay only for that, and the crate
-guide marks them.
+Apps are `calimero:app` components (the WIT world in `calimero-app-wit`, built with
+`calimero-sdk` and `calimero-app-build`); they run on wasmtime
+(`calimero-app-engine-wasmtime`) through the host core `calimero-app-host`. SDK 0.12
+apps (core modules on wasmer) are no longer run: the node refuses their bundles, and
+an app a data directory still holds answers `410 UNSUPPORTED_ENGINE` until its owner
+deletes it.
 
 <Aside type="note">
   This is the map, not the territory. Read `crates/node/AGENTS.md` for the

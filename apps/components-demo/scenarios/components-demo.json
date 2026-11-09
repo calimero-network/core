@@ -1,0 +1,22 @@
+[
+  { "as": "owner", "op": "call", "method": "setConfig", "args": { "value": "owner-config" } },
+  { "as": "bob", "op": "view", "method": "getConfig", "expect": { "ok": "owner-config" } },
+  { "as": "bob", "op": "call", "method": "setConfig", "args": { "value": "forged" }, "expect": { "error": "NotOwner" } },
+  { "as": "bob", "op": "view", "method": "myAccount", "expect": { "ok": "@bob" }, "save": "acct_bob" },
+  { "as": "owner", "op": "call", "method": "grantRole", "args": { "role": "editor", "who": "$acct_bob" } },
+  { "as": "bob", "op": "view", "method": "hasRole", "args": { "role": "editor", "who": "$acct_bob" }, "expect": { "ok": true } },
+  { "as": "bob", "op": "call", "method": "tryGrantRole", "args": { "role": "viewer", "who": "$acct_bob" }, "expect": { "ok": false } },
+  { "as": "bob", "op": "call", "method": "grantRole", "args": { "role": "viewer", "who": "$acct_bob" }, "expect": { "error": "NotAdmin" } },
+  { "as": "bob", "op": "view", "method": "hasRole", "args": { "role": "viewer", "who": "$acct_bob" }, "expect": { "ok": false } },
+  { "as": "bob", "op": "call", "method": "settingsSet", "args": { "key": "evil", "value": "forged" }, "expect": { "error": "NotWriter" } },
+  { "as": "owner", "op": "view", "method": "settingsGet", "args": { "key": "evil" }, "expect": { "ok": null } },
+  { "as": "owner", "op": "call", "method": "settingsSet", "args": { "key": "k", "value": "v" } },
+  { "as": "bob", "op": "view", "method": "settingsGet", "args": { "key": "k" }, "expect": { "ok": "v" } },
+  { "as": "owner", "op": "call", "method": "transfer", "args": { "newOwner": "$acct_bob" } },
+  { "as": "owner", "op": "view", "method": "owner", "expect": { "ok": "@bob" } },
+  { "as": "bob", "op": "call", "method": "setConfig", "args": { "value": "by-bob" } },
+  { "as": "owner", "op": "call", "method": "setConfig", "args": { "value": "nope" }, "expect": { "error": "NotOwner" } },
+  { "as": "owner", "op": "view", "method": "getConfig", "expect": { "ok": "by-bob" } },
+  { "as": "owner", "op": "call", "method": "revokeRole", "args": { "role": "editor", "who": "$acct_bob" } },
+  { "as": "bob", "op": "view", "method": "hasRole", "args": { "role": "editor", "who": "$acct_bob" }, "expect": { "ok": false } }
+]
