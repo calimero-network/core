@@ -4,7 +4,7 @@
 
 - **Crate**: `calimero-sdk-macros` (`publish = false`, prototype; proc-macro); re-exported by `calimero-sdk` as `calimero_sdk::app::*` and `calimero_sdk::Record`. Apps never depend on it directly.
 - **Entry**: `src/lib.rs`; `state.rs` (`#[app::state]`), `logic.rs` (`#[app::logic]`, the dispatcher and the ABI), `payload.rs` (`#[app::error]`, `#[app::event]`), `record.rs` (`#[derive(Record)]` + `#[table]`), `types.rs` (camelCase, ABI type names, 64-bit integer detection)
-- **Spec**: `docs/specs/app-runtime-v0.14.md` SDK reference ("Defining an app", "Errors", "Numbers across languages", "Actions, timers and migrations"), section 4 host rules, D13, D20, D48, D51
+- **Spec**: `docs/specs/app-runtime.md` SDK reference ("Defining an app", "Errors", "Numbers across languages", "Actions, timers and migrations"), section 4 host rules, D13, D20, D48, D51
 
 ## What This Crate Does
 

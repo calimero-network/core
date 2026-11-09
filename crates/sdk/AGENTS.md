@@ -4,7 +4,7 @@
 
 - **Crate**: `calimero-sdk` (`publish = false`, prototype); builds for the host (tests) and `wasm32-wasip2` (apps)
 - **Entry**: `src/lib.rs` (+ `prelude`); `action.rs` (`ActionCtx`, `Request`, `Response`), `blob.rs` (`BlobRef`, `BlobInfo`), `search.rs` (`SearchOpts`, `SearchMode`, `Found`, `SearchResults`), `app.rs` (the `app` attributes from `calimero-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `commons.rs` (paged reads, counts, clears, checked keys shared by tables and collections), `collections.rs` (+ `collections/{map,counter,cell,set,vector,frozen,per_user,text,rich_text}.rs`), `env.rs` (+ `env/{wasm,mock}.rs`), `files.rs` (+ `files/{wasm,mock}.rs`), `compute.rs`, `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only; world `app`, or world `compute` under `--cfg calimero_compute`), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
-- **Spec**: `docs/specs/app-runtime-v0.14.md` section 7, the SDK reference, D9, D10, D20, D47, D48, D50, D52
+- **Spec**: `docs/specs/app-runtime.md` section 7, the SDK reference, D9, D10, D20, D47, D48, D50, D52
 
 ## What This Crate Does
 
@@ -54,7 +54,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - `#[app::error]` and `#[app::event]` must live in the `#[app::logic]` module (their ABI constants are picked up there; elsewhere the ABI lists none), and one module takes one of each: a second `#[app::error]` enum in a module is refused (`__CALIMERO_ABI_ERRORS` defined twice, pinned by `tests/ui/second_error.rs`).
 - Actions (D12, D17, D27): `ActionCtx::{key, view, call, fetch}` over the WIT `action` interface and `wasi:http` (`fetch` writes the body and finishes it before `handle`, then reads the response whole; `Request::get/post/header`, `Response::json/text`); errors are `ActionView`, `ActionCall`, `Fetch`. `env::start_action(method, &args)` (calls and timers) returns the action's key; a refusal is `StartAction`. On the host target (`env::mock`) actions answer an error: they run only in a component.
 - `env::xcall(app, method, &args)` (D25) sends JSON args through the WIT `xcall.send`; a host soft error is `AppError` `Xcall { message }`.
-- `env::fetch(&Request)` (D76): outbound HTTP from a call, timer or delivery over `wasi:http`, as `ActionCtx::fetch`; a failure is `AppError` `Fetch { message }`. The harness answers it with `t.mock_http` in every run.
+- `env::fetch(&Request)` (D82): outbound HTTP from a call, timer or delivery over `wasi:http`, as `ActionCtx::fetch`; a failure is `AppError` `Fetch { message }`. The harness answers it with `t.mock_http` in every run.
 - `env::xcall_call::<T>(app, method, &args)` and `env::xcall_view::<T>(..)` (WIT `xcall.call`/`xcall.view`): the target's JSON result decoded as `T` (`BadOutput` otherwise); a failure is `AppError` `XcallFailed` whose fields are the failure's JSON object (the target's `{code, fields}`, or `{message}`). On the host target (`env::mock`) they answer an error: they run only in a component.
 - `env::emit(event, audience)` takes an `#[app::event]` value (spec); `env::emit_raw(name, data, audience)` takes any serde value.
 - `env::mock` (host target) is the stand-in for the host in tests.

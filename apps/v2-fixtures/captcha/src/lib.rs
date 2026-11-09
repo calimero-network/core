@@ -8,7 +8,7 @@
 //! or ask a question from a set, with the answer kept here and never returned.
 //!
 //! `verifyTurnstile` checks a Cloudflare Turnstile token instead, with an outbound request
-//! from the call itself (D76): the signed release declares `TURNSTILE_VERIFY_URL` under
+//! from the call itself (D82): the signed release declares `TURNSTILE_VERIFY_URL` under
 //! `outbound`, its owner approves it, and the node's operator holds the site's secret as
 //! `TURNSTILE_SECRET` for this package, which the node fills in and the app never sees.
 //! The exchange is recorded in this app's log entry, so a retry of the same call replays

@@ -5,7 +5,7 @@
 //! park a node thread past its epoch deadline (the reason wasmtime-wasi-http is not used).
 //! Building fields, requests and bodies works in every run; `outgoing-handler.handle`
 //! asks `HostCore::http_send`, which actions, calls, timers and deliveries pass (views,
-//! `init` and migrations trap `HostDenied`, S9, D76) and which hands the request to the
+//! `init` and migrations trap `HostDenied`, S9, D82) and which hands the request to the
 //! node's outbound gate. The response
 //! is read whole before `handle` returns. The server side (incoming requests, outgoing
 //! responses) is not part of the world's use and traps.

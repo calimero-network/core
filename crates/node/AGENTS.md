@@ -383,7 +383,7 @@ is its command line.
   `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
-  (D76, "Component executor").
+  (D82, "Component executor").
 - **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
   (`FileSealer`, `FileOpener`) under a random data key.
   The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
@@ -1027,7 +1027,7 @@ is its command line.
 
 ## Component executor (`calimero:app` components, the v2 SDK)
 
-Spec `app-runtime-v0.14`, on the node's log,
+Spec `app-runtime`, on the node's log,
 API and system group:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
@@ -1183,7 +1183,7 @@ API and system group:
   `onActionFailed` as the starter. A new leader resumes what is pending; an end that
   another leader logged first changes nothing. Test:
   `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`.
-- **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
+- **Outbound HTTP from calls** (D82; `RunExtras::outbound`, `TimedHttp`): calls (but a
   read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
   do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
   then the app's fetch gets an error). The host core records each exchange

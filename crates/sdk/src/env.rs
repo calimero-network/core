@@ -243,7 +243,7 @@ fn decode_sync<T: DeserializeOwned>(answer: std::result::Result<Vec<u8>, String>
     }
 }
 
-/// Send `request` over `wasi:http` from a call, a timer or a delivery (D76), as an action's
+/// Send `request` over `wasi:http` from a call, a timer or a delivery (D82), as an action's
 /// `ctx.fetch` does: only to a URL under a prefix the app's signed manifest declares and its
 /// owner approved, with `{{secret:NAME}}` filled in by the node (R14), at most one request
 /// per run and within the call's time budget. The exchange is recorded in the call's log

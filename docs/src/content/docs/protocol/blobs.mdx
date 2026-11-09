@@ -79,7 +79,7 @@ and the deletion, the other app's mark survives but its bytes are gone.
 
 A component app (the v2 SDK, `calimero-sdk`) keeps its blobs in the same
 store, with the same upload, download, list and delete routes. What differs is
-which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
+which blobs it holds and for how long (spec `app-runtime` R8):
 
 - **Host records, not marks.** The node records each of the app's blobs
   (`size`, the uploader's `Content-Type`, a reference count) as host-owned rows
