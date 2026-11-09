@@ -170,6 +170,12 @@ impl Watch {
         self.seen_at = Instant::now();
     }
 
+    /// Time spent in our own fetch is not the job node's silence.
+    fn credit(&mut self, spent: Duration) {
+        self.seen += spent;
+        self.seen_at += spent;
+    }
+
     /// Whether the job node has been silent for `limit` of healthy time, or for far longer in
     /// wall time.
     fn silent_for(&self, limit: Duration, now: Instant) -> bool {
