@@ -7367,7 +7367,7 @@ impl SystemMachine {
                 };
                 for id in &below {
                     if let Some(t) = o.teams.get_mut(id) {
-                        let _prev = t.members.remove(&account);
+                        // DELIBERATE BREAK (evidence for #4918, never merged): the member's row stays.
                         let _was = t.read_only.remove(&account);
                         let _caps = t.capabilities.remove(&account);
                     }
