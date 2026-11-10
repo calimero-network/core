@@ -6110,7 +6110,9 @@ async fn internal_segment_put(
     body: Body,
 ) -> ApiResult {
     let _caller = peer(&node, &headers, key).await?;
-    if body.len() > crate::files::SEGMENT_BYTES || hex::encode(sha256(&body)) != hash {
+    if body.len() > crate::files::SEGMENT_BYTES
+        || crate::node::off_workers(|| hex::encode(sha256(&body))) != hash
+    {
         return Err(ApiError::bad_request(
             "BAD_REQUEST",
             "not the segment of that hash",
@@ -6124,9 +6126,11 @@ async fn internal_segment_put(
     if mode == crate::node::PeerBlobs::Refuse {
         return Err(ApiError::unavailable("blob puts are refused"));
     }
-    node.engine
-        .put_segment(&hash, &body)
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    #[cfg(feature = "testing")]
+    if let crate::node::PeerBlobs::Delay(ms) = mode {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+    let _kept = node.keep_segment(&hash, body).await?;
     #[cfg(feature = "testing")]
     if mode == crate::node::PeerBlobs::StoreThenFail {
         return Err(ApiError::unavailable("blob put answered late"));

@@ -437,6 +437,20 @@ impl Node {
         self.probes.commit_fault.store(mode, Ordering::Relaxed);
     }
 
+    /// Fails the next segment an upload session stores here. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_segment_store(&self) {
+        self.probes
+            .segment_store_fault
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Lets an upload session hold `n` unpushed segments (default `UPLOAD_WINDOW`). Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_upload_window(&self, n: usize) {
+        self.probes.upload_window.store(n, Ordering::Relaxed);
+    }
+
     /// How many blob puts peers sent this node. Tests only.
     #[cfg(feature = "testing")]
     #[must_use]

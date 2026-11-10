@@ -128,10 +128,10 @@ Only the app's owner and the members (not guests) of its organization may upload
 
 An upload session lives in the leader's memory, belongs to the account that began it, and takes the file one part per segment.
 `POST /apps/{app}/files/uploads { size }` answers `{ uploadId, partBytes, parts, expiresAt }` (`expiresAt` in Unix seconds).
-`PUT /apps/{app}/files/uploads/{uploadId}/parts/{k}` takes part `k` as raw bytes, exactly `partBytes` but for the last, and answers `{ next }` once the part's segment is on a majority of the voters.
+`PUT /apps/{app}/files/uploads/{uploadId}/parts/{k}` takes part `k` as raw bytes, exactly `partBytes` but for the last, and answers `{ next }` once the part is sealed and stored; its segment is pushed to a majority of the voters in the background, at most four segments ahead (past that the answer waits for a slot, up to 20 seconds, then is `503 FILES_UNAVAILABLE` and the resent part replays its answer).
 Parts go in order: a part ahead of `next` is `409 PART_OUT_OF_ORDER` naming `next`, a resent part answers its first answer, and a resent part with other bytes is `409 PART_CONFLICT`.
 `GET .../uploads/{uploadId}` answers `{ uploadId, size, partBytes, parts, next, expiresAt }`, for a client that resumes.
-`POST .../uploads/{uploadId}/complete` charges the quota, commits the mark and answers like the single request; before every part is in it is `409 UPLOAD_INCOMPLETE` naming `next`.
+`POST .../uploads/{uploadId}/complete` waits up to 20 seconds for every segment to reach a majority (else `503 FILES_UNAVAILABLE`, and a retry resumes), charges the quota, commits the mark and answers like the single request; before every part is in it is `409 UPLOAD_INCOMPLETE` naming `next`.
 It commits under the key `node:upload-{uploadId}`, so a retried `complete` answers the same file, even after a leader change.
 `DELETE .../uploads/{uploadId}` aborts the session and deletes what it stored.
 A session that is unknown, belongs to another account, has run out (no part for 15 minutes, or six hours old) or whose leader changed answers `404 UPLOAD_UNKNOWN`, and the client begins again.

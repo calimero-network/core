@@ -1,9 +1,8 @@
-//! Upload sessions: a large file arrives in parts of `PART_BYTES`, one part per segment, through a
-//! session the app's leader keeps in memory. Each part is sealed into its segment, stored and
-//! pushed to a majority; the quota is charged and the mark committed once, at `complete`.
+//! Upload sessions: a file arrives in parts of `PART_BYTES`, one segment each, through a session the leader keeps.
+//! Parts are pushed to a majority in the background; the quota is charged and the mark committed once, at `complete`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,9 +11,11 @@ use calimero_app_host::MAX_FILE_BYTES;
 use calimero_log::Group;
 use reqwest::Method;
 use serde_json::{json, Value};
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use zeroize::Zeroizing;
 
+use super::compute::path_of;
 use super::files::{files_unavailable, segment_blob, uploaded, Stored, Upload, Uploaded};
 use crate::app::AppMachine;
 use crate::component::FileMark;
@@ -33,15 +34,25 @@ const MAX_UPLOAD_BYTES_IN_FLIGHT: u64 = 16 << 30;
 const UPLOAD_IDLE: Duration = Duration::from_secs(15 * 60);
 /// A session ends this long after it began, whatever it does.
 const UPLOAD_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Segments one session may have stored but not yet on a majority.
+pub(super) const UPLOAD_WINDOW: usize = 4;
 /// The longest a part waits for its segment to reach a majority.
 const PART_PUSH_WAIT: Duration = Duration::from_secs(20);
+/// The longest `complete` waits for every segment to reach a majority.
+const COMPLETE_WAIT: Duration = Duration::from_secs(20);
+/// The first wait before a failed background push is tried again; it doubles up to the second.
+const PUSH_RETRY_FIRST: Duration = Duration::from_millis(200);
+const PUSH_RETRY_MAX: Duration = Duration::from_secs(5);
 /// The longest a follower waits for the leader's answer to a forwarded upload request.
 const PART_FORWARD_TIMEOUT: Duration = Duration::from_secs(25);
+/// Characters of an upload id: 16 random bytes in unpadded base64url.
+const UPLOAD_ID_LEN: usize = 22;
 /// The idempotency key `complete` commits its mark under; a retried `complete` replays it.
 const COMPLETE_KEY: &str = "upload-";
 
 const _: () = assert!(
     PART_PUSH_WAIT.as_millis() < PART_FORWARD_TIMEOUT.as_millis()
+        && COMPLETE_WAIT.as_millis() < PART_FORWARD_TIMEOUT.as_millis()
         && PART_FORWARD_TIMEOUT.as_secs() < 30
 );
 // Session segments are not pinned: the sweep's grace must outlive any session.
@@ -71,21 +82,43 @@ pub(crate) enum UploadOp {
 impl UploadOp {
     /// The peer request that carries this op to the leader.
     fn request(&self, app_id: &str, account: &str) -> (Method, String, Option<Bytes>) {
-        let base = format!("internal/upload/{app_id}/{account}");
+        let path =
+            |tail: &[&str]| path_of(&[&["internal", "upload", app_id, account], tail].concat());
         match self {
             Self::Begin { size } => (
                 Method::POST,
-                format!("internal/upload-begin/{app_id}/{account}/{size}"),
+                path_of(&[
+                    "internal",
+                    "upload-begin",
+                    app_id,
+                    account,
+                    &size.to_string(),
+                ]),
                 None,
             ),
             Self::Part { upload, k, bytes } => (
                 Method::PUT,
-                format!("{base}/{upload}/{k}"),
+                path(&[upload, &k.to_string()]),
                 Some(bytes.clone()),
             ),
-            Self::Status { upload } => (Method::GET, format!("{base}/{upload}"), None),
-            Self::Complete { upload } => (Method::POST, format!("{base}/{upload}/complete"), None),
-            Self::Abort { upload } => (Method::DELETE, format!("{base}/{upload}"), None),
+            Self::Status { upload } => (Method::GET, path(&[upload]), None),
+            Self::Complete { upload } => (Method::POST, path(&[upload, "complete"]), None),
+            Self::Abort { upload } => (Method::DELETE, path(&[upload]), None),
+        }
+    }
+
+    /// `404` unless the session id it names is one [`new_upload_id`] mints.
+    fn checked(&self) -> Result<(), ApiError> {
+        match self {
+            Self::Part { upload, .. }
+            | Self::Status { upload }
+            | Self::Complete { upload }
+            | Self::Abort { upload }
+                if !is_upload_id(upload) =>
+            {
+                Err(unknown())
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -103,6 +136,12 @@ struct Session {
     parts: usize,
     began_ms: u64,
     last_ms: AtomicU64,
+    /// Whether each sealed segment is on a majority; the background pushes set it.
+    pushed: Mutex<Vec<bool>>,
+    /// Woken when a push lands or the session ends.
+    progress: tokio::sync::Notify,
+    /// Ended: it answers as unknown and its pushes stop.
+    ended: AtomicBool,
     state: tokio::sync::Mutex<State>,
 }
 
@@ -113,15 +152,13 @@ struct State {
     segments: Vec<[u8; 32]>,
     /// SHA-256 of each part's plaintext, to tell a resent part from another.
     part_hashes: Vec<[u8; 32]>,
-    /// Whether each segment is on a majority.
-    pushed: Vec<bool>,
+    /// The background pushes, one per segment.
+    tasks: Vec<JoinHandle<()>>,
     /// Parts the client holds an answer for.
     acked: usize,
     finished: Option<Finished>,
     /// The quota was charged; a retried `complete` must not charge again.
     charged: bool,
-    /// Ended: the session answers as unknown.
-    gone: bool,
 }
 
 struct Finished {
@@ -163,6 +200,17 @@ fn parts_of(size: u64) -> usize {
     usize::try_from(size.div_ceil(PART_BYTES as u64).max(1)).unwrap_or(usize::MAX)
 }
 
+fn new_upload_id() -> String {
+    calimero_identity::b64url(&calimero_identity::random::<16>())
+}
+
+fn is_upload_id(id: &str) -> bool {
+    id.len() == UPLOAD_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 fn unknown() -> ApiError {
     ApiError::new(404, "UPLOAD_UNKNOWN", "no such upload: begin another")
 }
@@ -186,6 +234,33 @@ impl Session {
         })
     }
 
+    /// Waits until `ready` holds of the segments' push states, for at most `wait`.
+    async fn wait_until(
+        &self,
+        wait: Duration,
+        ready: impl Fn(&[bool]) -> bool + Send,
+    ) -> Result<(), ApiError> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let woken = self.progress.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            if self.ended.load(Ordering::SeqCst) {
+                return Err(unknown());
+            }
+            let done = {
+                let held = (self.pushed.lock()).unwrap_or_else(std::sync::PoisonError::into_inner);
+                ready(&held)
+            };
+            if done {
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, woken).await.is_err() {
+                return Err(files_unavailable());
+            }
+        }
+    }
+
     /// The length part `k` must have: a whole part, but for the last.
     fn part_len(&self, k: usize) -> usize {
         if k + 1 < self.parts {
@@ -204,6 +279,7 @@ impl Node {
         account: &str,
         op: UploadOp,
     ) -> Result<Value, ApiError> {
+        op.checked()?;
         let deadline = Instant::now() + PART_FORWARD_TIMEOUT;
         let mut last = ApiError::unavailable("no replica of the app answered");
         let mut leader: Option<String> = None;
@@ -253,6 +329,7 @@ impl Node {
         account: &str,
         op: UploadOp,
     ) -> Result<Value, ApiError> {
+        op.checked()?;
         let app = self
             .sys(|s| s.apps.get(app_id).cloned())
             .ok_or_else(|| ApiError::unavailable("no such app"))?;
@@ -335,7 +412,7 @@ impl Node {
                 }
                 UploadOp::Abort { upload } => {
                     let session = self.session(upload, app_id, account, now)?;
-                    self.end_session(&session).await;
+                    self.end(&session);
                     Ok(json!({}))
                 }
             }
@@ -359,7 +436,7 @@ impl Node {
             .cloned()
             .ok_or_else(unknown)?;
         if lapsed(found.began_ms, found.last_ms.load(Ordering::Relaxed), now) {
-            self.end_later(&found);
+            self.end(&found);
             return Err(unknown());
         }
         Ok(found)
@@ -403,7 +480,7 @@ impl Node {
             ));
         }
         let session = Arc::new(Session {
-            id: calimero_identity::b64url(&calimero_identity::random::<16>()),
+            id: new_upload_id(),
             app_id: app.app_id.clone(),
             payer,
             account: account.to_owned(),
@@ -411,6 +488,9 @@ impl Node {
             parts: parts_of(size),
             began_ms: now,
             last_ms: AtomicU64::new(now),
+            pushed: Mutex::default(),
+            progress: tokio::sync::Notify::new(),
+            ended: AtomicBool::new(false),
             state: tokio::sync::Mutex::new(State {
                 writer: Some(SegmentWriter::new()),
                 ..State::default()
@@ -421,15 +501,16 @@ impl Node {
         Ok(view)
     }
 
-    /// Part `k`: sealed into its segment, stored here and pushed to a majority before the answer.
+    /// Part `k`: sealed into its segment and stored here, then pushed in the background; the
+    /// answer waits only for a slot in the session's window.
     async fn take_part(
         &self,
-        session: &Session,
+        session: &Arc<Session>,
         k: usize,
         bytes: &Bytes,
     ) -> Result<Value, ApiError> {
         let mut st = session.state.lock().await;
-        if st.gone {
+        if session.ended.load(Ordering::SeqCst) {
             return Err(unknown());
         }
         let hash = off_workers(|| calimero_identity::sha256(bytes));
@@ -442,6 +523,9 @@ impl Node {
                     st.acked,
                 ));
             }
+            if k < st.acked {
+                return Ok(json!({ "next": k + 1 }));
+            }
         } else if k == st.part_hashes.len() && st.acked == k && k < session.parts {
             if bytes.len() != session.part_len(k) {
                 return Err(ApiError::bad_request(
@@ -450,6 +534,7 @@ impl Node {
                 ));
             }
             self.seal_part(session, &mut st, bytes, hash)?;
+            self.spawn_push(session, &mut st, k);
         } else {
             return Err(refusal(
                 409,
@@ -458,20 +543,56 @@ impl Node {
                 st.acked,
             ));
         }
-        if !st.pushed[k] {
-            let blob = segment_blob(&st.segments[k]);
-            self.push_blobs(&session.app_id, &[blob], PART_PUSH_WAIT)
-                .await?;
-            st.pushed[k] = true;
-        }
+        let window = self.upload_window();
+        let in_window = |pushed: &[bool]| pushed.iter().filter(|p| !**p).count() <= window;
+        session.wait_until(PART_PUSH_WAIT, in_window).await?;
         st.acked = st.acked.max(k + 1);
         Ok(json!({ "next": k + 1 }))
+    }
+
+    #[cfg(feature = "testing")]
+    fn upload_window(&self) -> usize {
+        self.probes.upload_window.load(Ordering::Relaxed)
+    }
+
+    #[cfg(not(feature = "testing"))]
+    #[allow(clippy::unused_self)]
+    fn upload_window(&self) -> usize {
+        UPLOAD_WINDOW
+    }
+
+    /// Pushes segment `k` to a majority in the background, with backoff, until it lands or the
+    /// session ends.
+    fn spawn_push(&self, session: &Arc<Session>, st: &mut State, k: usize) {
+        let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let session = Arc::clone(session);
+        let blob = segment_blob(&st.segments[k]);
+        st.tasks.push(tokio::spawn(async move {
+            let mut backoff = PUSH_RETRY_FIRST;
+            while !session.ended.load(Ordering::SeqCst) {
+                let sent = node
+                    .push_blobs(&session.app_id, std::slice::from_ref(&blob), PART_PUSH_WAIT)
+                    .await;
+                if sent.is_ok() {
+                    let mut pushed =
+                        (session.pushed.lock()).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    pushed[k] = true;
+                    drop(pushed);
+                    session.progress.notify_waiters();
+                    return;
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(PUSH_RETRY_MAX);
+            }
+        }));
     }
 
     /// Seals `bytes` as the next part and stores its segment here.
     fn seal_part(
         &self,
-        session: &Session,
+        session: &Arc<Session>,
         st: &mut State,
         bytes: &Bytes,
         hash: [u8; 32],
@@ -481,11 +602,16 @@ impl Node {
             .try_acquire_many_owned(held)
             .map_err(|_| files_unavailable())?;
         let last = st.part_hashes.len() + 1 == session.parts;
-        let sealed = off_workers(|| self.cut_part(session, st, bytes, last))
-            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        // The writer has advanced by the time a store fails: a retry would seal the part twice.
+        let sealed = off_workers(|| self.cut_part(session, st, bytes, last)).map_err(|e| {
+            self.end(session);
+            ApiError::internal(&e.to_string())
+        })?;
         st.segments.push(sealed);
         st.part_hashes.push(hash);
-        st.pushed.push(false);
+        (session.pushed.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(false);
         Ok(())
     }
 
@@ -524,6 +650,14 @@ impl Node {
         }
         let [segment] =
             <[_; 1]>::try_from(segments).map_err(|_| eyre::eyre!("a part makes one segment"))?;
+        #[cfg(feature = "testing")]
+        if self
+            .probes
+            .segment_store_fault
+            .swap(false, Ordering::Relaxed)
+        {
+            eyre::bail!("segment store failed (probe)");
+        }
         self.engine
             .put_segment(&hex::encode(segment.hash), &segment.bytes)?;
         Ok(segment.hash)
@@ -542,7 +676,7 @@ impl Node {
             return replayed(g, &key, account).await;
         };
         let st = session.state.lock().await;
-        if st.gone {
+        if session.ended.load(Ordering::SeqCst) {
             drop(st);
             return replayed(g, &key, account).await;
         }
@@ -554,6 +688,9 @@ impl Node {
                 st.acked,
             ));
         }
+        session
+            .wait_until(COMPLETE_WAIT, |pushed| pushed.iter().all(|p| *p))
+            .await?;
         self.finish_upload(g, &session, st, &key).await
     }
 
@@ -572,7 +709,7 @@ impl Node {
                 Ok(()) => st.charged = true,
                 Err(e) if e.status == 429 => {
                     drop(st);
-                    self.end_session(session).await;
+                    self.end(session);
                     return Err(e);
                 }
                 Err(e) => return Err(e),
@@ -585,18 +722,18 @@ impl Node {
         {
             Ok(up) => {
                 self.forget_session(session);
-                st.gone = true;
+                session.ended.store(true, Ordering::SeqCst);
                 serde_json::to_value(up).map_err(|e| ApiError::internal(&e.to_string()))
             }
             Err(Upload::Unknown(e)) => Err(e),
             Err(Upload::Elsewhere(_)) => {
                 self.forget_session(session);
-                st.gone = true;
+                session.ended.store(true, Ordering::SeqCst);
                 Err(unknown())
             }
             Err(Upload::Refused(e)) => {
                 self.forget_session(session);
-                st.gone = true;
+                session.ended.store(true, Ordering::SeqCst);
                 Err(e)
             }
         }
@@ -608,34 +745,32 @@ impl Node {
             .remove(&session.id);
     }
 
-    /// Ends `session` and deletes its segments where they were pushed; the bytes of a session
-    /// whose commit may yet land stay.
-    async fn end_session(&self, session: &Session) {
-        let mut st = session.state.lock().await;
-        if std::mem::replace(&mut st.gone, true) {
+    /// Ends `session`: it answers as unknown at once, and once its pushes stopped its segments
+    /// are deleted where they were pushed. The bytes of a session whose commit may yet land stay.
+    fn end(&self, session: &Arc<Session>) {
+        if session.ended.swap(true, Ordering::SeqCst) {
             return;
         }
         self.forget_session(session);
-        if !st.charged {
-            let segments = st.segments.iter().map(hex::encode).collect();
-            self.delete_files_later(
-                &session.app_id,
-                Stored {
-                    segments,
-                    ..Stored::default()
-                },
-            );
-        }
-    }
-
-    fn end_later(&self, session: &Arc<Session>) {
+        session.progress.notify_waiters();
         let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
             return;
         };
         let session = Arc::clone(session);
-        drop(tokio::spawn(
-            async move { node.end_session(&session).await },
-        ));
+        drop(tokio::spawn(async move {
+            let mut st = session.state.lock().await;
+            for task in std::mem::take(&mut st.tasks) {
+                let _stopped = task.await;
+            }
+            if !st.charged {
+                let segments = st.segments.iter().map(hex::encode).collect();
+                let stored = Stored {
+                    segments,
+                    ..Stored::default()
+                };
+                node.delete_files_later(&session.app_id, stored);
+            }
+        }));
     }
 
     /// Ends the sessions of `app_id`: this node no longer leads it.
@@ -647,7 +782,7 @@ impl Node {
             .cloned()
             .collect();
         for session in &held {
-            self.end_later(session);
+            self.end(session);
         }
     }
 
@@ -670,7 +805,7 @@ impl Node {
                     now,
                 )
             {
-                self.end_later(session);
+                self.end(session);
             }
         }
     }
@@ -751,6 +886,30 @@ mod tests {
         assert!(lapsed(0, 0, idle));
         assert!(!lapsed(0, ttl - 2, ttl - 1));
         assert!(lapsed(0, ttl, ttl), "busy to the end, but six hours old");
+    }
+
+    #[test]
+    fn only_the_ids_begin_mints_are_upload_ids() {
+        assert!(is_upload_id(&new_upload_id()));
+        for bad in [
+            "",
+            "..",
+            "../../x",
+            "a/b",
+            "a%2Fb",
+            &"a".repeat(UPLOAD_ID_LEN + 1),
+        ] {
+            assert!(!is_upload_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_peer_path_encodes_every_segment() {
+        let op = UploadOp::Abort {
+            upload: "../x".into(),
+        };
+        let (_, path, _) = op.request("app/1", "a b");
+        assert_eq!(path, "internal/upload/app%2F1/a%20b/..%2Fx");
     }
 
     #[test]

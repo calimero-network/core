@@ -449,14 +449,18 @@ impl FinalPlan {
     }
 }
 
-/// The path of an attempt on a job node: `{app}/{run}/{attempt}`, each id percent-encoded as one
-/// path segment.
-fn run_path(app: &str, run: &str, attempt: u32) -> String {
+/// A peer path of `segments`, each percent-encoded as one path segment.
+pub(super) fn path_of(segments: &[&str]) -> String {
     let mut url = url::Url::parse("http://job.invalid/").expect("a constant URL");
-    if let Ok(mut segments) = url.path_segments_mut() {
-        let _ = segments.extend([app, run, &attempt.to_string()]);
+    if let Ok(mut path) = url.path_segments_mut() {
+        let _ = path.extend(segments);
     }
     url.path().trim_start_matches('/').to_owned()
+}
+
+/// The path of an attempt on a job node: `{app}/{run}/{attempt}`.
+fn run_path(app: &str, run: &str, attempt: u32) -> String {
+    path_of(&[app, run, &attempt.to_string()])
 }
 
 /// The record of a run as the API shows it: no arguments, no keys, and the plaintext sizes and

@@ -642,6 +642,8 @@ pub enum PeerBlobs {
     Refuse,
     /// Stores, then answers `503`: a peer that holds the bytes but is not counted.
     StoreThenFail,
+    /// Waits this many milliseconds before it stores a segment: a slow replica.
+    Delay(u64),
 }
 
 /// How long a forwarded call or read waits for the leader before retrying.
@@ -2318,10 +2320,13 @@ impl Node {
         Ok(())
     }
 
-    /// The bytes of segment `hash` stored here; one that is not its hash is dropped.
+    /// The bytes of segment `hash` stored here, read off the async workers; one that is not its
+    /// hash is dropped.
     pub(crate) fn local_segment(&self, hash: &str) -> Option<Vec<u8>> {
-        match self.engine.get_segment(hash) {
-            Ok(Some(bytes)) if hex::encode(calimero_identity::sha256(&bytes)) == hash => {
+        match off_workers(|| self.engine.get_segment(hash)) {
+            Ok(Some(bytes))
+                if off_workers(|| hex::encode(calimero_identity::sha256(&bytes))) == hash =>
+            {
                 Some(bytes)
             }
             Ok(Some(_)) => {
@@ -3104,7 +3109,7 @@ fn cluster_secret(cluster_key: &[u8; 32], cluster: &str) -> String {
 /// `spawn_blocking` itself: it builds its proposal on the machine's read lock,
 /// under the group's proposal lock, from borrowed state. Elsewhere (a
 /// current-thread runtime, which `block_in_place` refuses) `f` runs in place.
-fn off_workers<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn off_workers<R>(f: impl FnOnce() -> R) -> R {
     match tokio::runtime::Handle::try_current() {
         Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(f)

@@ -203,6 +203,10 @@ pub(crate) struct Probes {
     pub pending_low: Arc<std::sync::atomic::AtomicUsize>,
     /// The fewest bytes the push budget had left.
     pub push_low: std::sync::atomic::AtomicUsize,
+    /// How many unpushed segments an upload session may hold.
+    pub upload_window: std::sync::atomic::AtomicUsize,
+    /// Fails the next segment an upload session stores.
+    pub segment_store_fault: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "testing")]
@@ -222,6 +226,8 @@ impl Default for Probes {
             system_outage: std::sync::atomic::AtomicBool::new(false),
             pending_low: Arc::new(std::sync::atomic::AtomicUsize::new(MAX_PENDING_FILE_BYTES)),
             push_low: std::sync::atomic::AtomicUsize::new(MAX_PUSH_BYTES),
+            upload_window: std::sync::atomic::AtomicUsize::new(super::uploads::UPLOAD_WINDOW),
+            segment_store_fault: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

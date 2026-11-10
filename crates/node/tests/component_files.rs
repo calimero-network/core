@@ -2212,6 +2212,42 @@ async fn an_aborted_upload_leaves_no_bytes_and_no_charge() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_id_that_is_not_one_begin_minted_is_unknown_on_every_route() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let via = (f.leader() + 1) % 3;
+    let plain = stream(1_000, 91);
+    for id in ["..%2F..%2Fx", "a%2Fb", "short"] {
+        let answers = [
+            f.put_part(via, id, 0, &plain).await,
+            f.upload_status(via, id).await,
+            f.complete(via, id).await,
+            f.abort(via, id).await,
+        ];
+        for answer in answers {
+            let (status, code, _) = refusal(answer.unwrap_err());
+            assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"), "{id}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_segment_store_ends_the_session_and_leaves_no_bytes() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let plain = stream(40 * MIB, 77);
+    let upload = f.begun(1, plain.len()).await;
+    let _next = f.put_part(1, &upload, 0, &plain).await.unwrap();
+
+    // The session lives on the app's leader, whichever node the client asked.
+    f.node(f.leader()).fail_next_segment_store();
+    let (status, _, _) = refusal(f.put_part(1, &upload, 1, &plain).await.unwrap_err());
+    assert!(status >= 500, "{status}");
+    let (status, code, _) = refusal(f.put_part(1, &upload, 1, &plain).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+    f.until_no_segments().await;
+    assert_eq!((f.charged().await, f.marks()), (0, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_upload_expires_and_leaves_no_bytes_and_no_charge() {
     let f = start_with(Cluster::start_with(3, more_time).await).await;
     let plain = stream(20 * MIB, 74);
@@ -2458,5 +2494,107 @@ async fn a_complete_whose_commit_failed_after_it_applied_succeeds() {
     assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
     f.until("the mark reaches every replica", || f.marks() == 3)
         .await;
+    assert_eq!(f.charged().await, plain.len() as u64);
+}
+
+/// How many of `hashes` node `i` stores.
+fn stored_of(f: &Fixture, i: usize, hashes: &[String]) -> usize {
+    let held = f.node(i).engine.list_segments().unwrap();
+    hashes.iter().filter(|h| held.contains(h)).count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parts_are_answered_before_a_slow_replica_has_them_and_complete_waits_for_a_majority() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let slow = (leader + 1) % 3;
+    f.node(slow).set_peer_blobs(PeerBlobs::Delay(3_000));
+    let plain = stream(40 * MIB, 85);
+    let upload = f.begun(leader, plain.len()).await;
+
+    f.put_all(leader, &upload, &plain).await;
+    assert_eq!(
+        f.node(slow).engine.list_segments().unwrap().len(),
+        0,
+        "the parts were answered before the slow replica took their segments"
+    );
+
+    let done = f.complete(leader, &upload).await.unwrap();
+    let id = done["id"].as_str().unwrap();
+    let _cached = f.find_segments(id);
+    assert!(f.holders(id).len() >= 2, "a majority holds every segment");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_the_window_full_the_next_parts_answer_waits_for_a_slot() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let slow = (leader + 1) % 3;
+    f.node(leader).set_upload_window(1);
+    f.node(slow).set_peer_blobs(PeerBlobs::Delay(2_000));
+    let plain = stream(40 * MIB, 86);
+    let upload = f.begun(leader, plain.len()).await;
+
+    let _next = f.put_part(leader, &upload, 0, &plain).await.unwrap();
+    let first: Vec<String> = f.node(leader).engine.list_segments().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        stored_of(&f, slow, &first),
+        0,
+        "part 0 answered while it is on the way"
+    );
+
+    let _next = f.put_part(leader, &upload, 1, &plain).await.unwrap();
+    assert_eq!(
+        stored_of(&f, slow, &first),
+        1,
+        "part 1 was answered once part 0 left the window"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_aborted_mid_pipeline_leaves_no_bytes_and_no_charge() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let slow = (leader + 1) % 3;
+    f.node(slow).set_peer_blobs(PeerBlobs::Delay(2_000));
+    let plain = stream(40 * MIB, 87);
+    let upload = f.begun(leader, plain.len()).await;
+    for k in 0..2 {
+        let _next = f.put_part(leader, &upload, k, &plain).await.unwrap();
+    }
+
+    assert_eq!(f.abort(leader, &upload).await.unwrap(), json!({}));
+    f.until_no_segments().await;
+    assert_eq!((f.charged().await, f.marks()), (0, 0));
+    let (status, code, _) = refusal(f.upload_status(leader, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_push_is_retried_and_complete_answers_503_until_it_lands() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    for i in (0..3).filter(|i| *i != leader) {
+        f.node(i).set_peer_blobs(PeerBlobs::Refuse);
+    }
+    let plain = stream(20 * MIB, 88);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    let (status, code, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (503, "FILES_UNAVAILABLE"));
+    assert_eq!(
+        (f.charged().await, f.marks()),
+        (0, 0),
+        "nothing before every segment is on a majority"
+    );
+
+    for i in (0..3).filter(|i| *i != leader) {
+        f.node(i).set_peer_blobs(PeerBlobs::Accept);
+    }
+    let done = f.complete(leader, &upload).await.unwrap();
+    assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
+    f.until("one mark on each replica", || f.marks() == 3).await;
     assert_eq!(f.charged().await, plain.len() as u64);
 }
