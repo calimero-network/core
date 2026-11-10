@@ -428,6 +428,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
                 secret, &key_id, statement
             )),
             release: None,
+            owner_in_org: true,
         })
         .unwrap()
     };
