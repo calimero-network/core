@@ -424,6 +424,42 @@ pub struct Team {
     /// when someone adds them again.
     #[serde(default)]
     pub removed: std::collections::BTreeSet<AccountId>,
+    /// Capabilities ([`caps`]) everyone in the team holds there on top of
+    /// their organization-wide ones, unless their row sets its own: "members
+    /// may invite others to this app". Absent in teams from before, and left
+    /// out when unset, so such a team reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_capabilities: Option<u32>,
+}
+
+impl Team {
+    /// The package this team is the app team of: `metadata.app.package` on a
+    /// top-level team ([`Org::app_team`]). One per package per organization.
+    #[must_use]
+    pub fn app_package(&self) -> Option<&str> {
+        if self.parent.is_some() {
+            return None;
+        }
+        self.metadata
+            .get("app")
+            .and_then(|a| a.get("package"))
+            .and_then(serde_json::Value::as_str)
+    }
+}
+
+/// How an organization holds its apps, derived from its app teams
+/// ([`Team::app_package`]), never stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OrgMode {
+    /// No app team: its apps use organization access, as every organization
+    /// made before app teams does. Behaves as standalone.
+    Legacy,
+    /// Every app team is open: everyone in the organization has its apps.
+    Standalone,
+    /// Some app team is closed: each app lists who is in it, and members see
+    /// only the people of the apps they are in.
+    Shared,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -568,15 +604,43 @@ impl Org {
         }
         match &t.parent {
             Some(p) => {
-                let parent_caps = self
-                    .teams
-                    .get(p)
-                    .and_then(|pt| pt.capabilities.get(account).copied())
-                    .unwrap_or_else(|| self.org_caps(account));
+                // The team's default counts only for those in it, which the
+                // recursion below requires anyway.
+                let parent_caps = self.teams.get(p).map_or_else(
+                    || self.org_caps(account),
+                    |pt| self.row_caps(pt, account, true),
+                );
                 parent_caps & caps::JOIN_OPEN_TEAMS != 0 && self.in_team_at(account, p, depth + 1)
             }
-            None => self.org_caps(account) & caps::JOIN_OPEN_TEAMS != 0,
+            // Where apps have app teams a guest has only the apps of the
+            // teams they are in: open teams are not theirs by inheritance.
+            None => !self.app_only(account) && self.org_caps(account) & caps::JOIN_OPEN_TEAMS != 0,
         }
+    }
+
+    /// What `account` holds in `t`: their row's own capabilities, else their
+    /// organization-wide ones with the team's default on top when they are in
+    /// it (`in_team`).
+    fn row_caps(&self, t: &Team, account: &str, in_team: bool) -> u32 {
+        if let Some(c) = t.capabilities.get(account) {
+            return *c;
+        }
+        let default = if in_team {
+            t.default_capabilities.unwrap_or(0)
+        } else {
+            0
+        };
+        self.org_caps(account) | default
+    }
+
+    /// The capabilities `account`'s row in `team` holds, or would hold
+    /// without one ([`Self::may`] below a lead).
+    #[must_use]
+    pub fn team_caps(&self, account: &str, team: &str) -> u32 {
+        self.teams.get(team).map_or_else(
+            || self.org_caps(account),
+            |t| self.row_caps(t, account, self.in_team(account, team)),
+        )
     }
 
     /// `account`'s direct row in `team`, if any.
@@ -621,21 +685,78 @@ impl Org {
     }
 
     /// Whether `account` holds `cap` for `team` (a team they manage, or their
-    /// row's capabilities there), or organization-wide when `team` is `None`.
+    /// row's capabilities there, else the team's default while they are in it
+    /// on top of their organization-wide ones), or organization-wide when
+    /// `team` is `None`.
     #[must_use]
     pub fn may(&self, account: &str, team: Option<&str>, cap: u32) -> bool {
         match team {
             Some(t) if self.manages_team(account, t) => true,
-            Some(t) => {
-                self.teams
-                    .get(t)
-                    .and_then(|tt| tt.capabilities.get(account).copied())
-                    .unwrap_or_else(|| self.org_caps(account))
-                    & cap
-                    != 0
-            }
+            Some(t) => self.team_caps(account, t) & cap != 0,
             None => self.org_caps(account) & cap != 0,
         }
+    }
+
+    /// Whether `account` is a guest of an organization whose apps have app
+    /// teams: they reach only the apps of the teams they have a row in (no
+    /// organization-access app, no open top-level team). In a legacy
+    /// organization, the organization is its one app, and a guest reaches its
+    /// organization-access apps as before.
+    #[must_use]
+    pub fn app_only(&self, account: &str) -> bool {
+        self.role(account) == Some(OrgRole::Guest) && self.mode() != OrgMode::Legacy
+    }
+
+    /// The app team of `package` here, if it has one.
+    #[must_use]
+    pub fn app_team(&self, package: &str) -> Option<&Team> {
+        self.teams
+            .values()
+            .find(|t| t.app_package() == Some(package))
+    }
+
+    /// The organization's mode, from its app teams.
+    #[must_use]
+    pub fn mode(&self) -> OrgMode {
+        let mut apps = self.teams.values().filter(|t| t.app_package().is_some());
+        let Some(first) = apps.next() else {
+            return OrgMode::Legacy;
+        };
+        if std::iter::once(first)
+            .chain(apps)
+            .any(|t| t.join == TeamJoin::Invite)
+        {
+            OrgMode::Shared
+        } else {
+            OrgMode::Standalone
+        }
+    }
+
+    /// Whether `viewer` sees `other` in the organization's member directory
+    /// (`GET /orgs/{org}`): admins and the owner see everyone; a member sees
+    /// everyone unless the organization is shared, and then the people of the
+    /// teams they are in and its admins; a guest, who has only the apps of
+    /// their teams, sees only the people of those teams. Everyone sees
+    /// themselves.
+    #[must_use]
+    pub fn sees_member(&self, viewer: &str, other: &str) -> bool {
+        let Some(role) = self.role(viewer) else {
+            return false;
+        };
+        if viewer == other || role >= OrgRole::Admin {
+            return true;
+        }
+        if role >= OrgRole::Member {
+            if self.mode() != OrgMode::Shared {
+                return true;
+            }
+            if self.role(other).is_some_and(|r| r >= OrgRole::Admin) {
+                return true;
+            }
+        }
+        self.teams
+            .keys()
+            .any(|t| self.in_team(viewer, t) && self.in_team(other, t))
     }
 
     /// `team` and every team below it.
@@ -689,6 +810,22 @@ pub struct Invite {
     pub teams: Vec<TeamId>,
     pub expires_at: u64,
     pub uses_left: u32,
+    /// Who made it: `CreateInvite`'s actor, set where it applies. Empty in
+    /// invites from before, and left out then, so they write as they did.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created_by: AccountId,
+    /// When it was made (Unix seconds, the creating node's clock); 0 and left
+    /// out in invites from before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub created_at: u64,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Who receives an event (R9). Resolved when the event is sent to a

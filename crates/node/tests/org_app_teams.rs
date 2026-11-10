@@ -1,0 +1,687 @@
+//! One organization, many apps, separate access: app teams (a top-level team
+//! whose `metadata.app.package` names the app's package, one per package),
+//! `POST /orgs/{org}/app-teams` (`ScopeApps`) to give apps their own access
+//! lists in one step, `GET /orgs/{org}/app-teams`, the invite list and revoke
+//! (`GET /orgs/{org}/invites`, `DELETE /orgs/{org}/invites/{key}`), team
+//! default capabilities, who changes an app's access, and what a member and a
+//! guest see of the organization's people.
+//!
+//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! (see `harness/cluster.rs`).
+
+#![allow(
+    clippy::result_large_err,
+    reason = "the helpers pass on calimero_client::Error as the client returns it"
+)]
+
+use calimero_client::{Client, Error};
+use calimero_identity::testing::SoftAuthenticator;
+use serde_json::{json, Value};
+
+#[path = "harness/cluster.rs"]
+#[allow(
+    dead_code,
+    reason = "shared with tests/cluster.rs, which uses the parts this test does not"
+)]
+mod harness;
+
+use harness::{kv_wasm, signed_up, Cluster};
+
+const CHAT: &str = "com.test.chat";
+const BLOCKS: &str = "com.test.blocks";
+const NOTES: &str = "com.test.notes";
+const INVITE_MEMBERS: u32 = 1 << 1;
+const CREATE_APP: u32 = 1 << 0;
+
+/// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
+/// package ships its own.
+fn release(package: &str) -> Vec<u8> {
+    use sha2::Digest;
+    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
+        path: path.to_owned(),
+        hash: hex::encode(sha2::Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let mut wasm = kv_wasm();
+    let tag = package.as_bytes();
+    wasm.extend([
+        0,
+        u8::try_from(1 + tag.len()).unwrap(),
+        u8::try_from(tag.len()).unwrap(),
+    ]);
+    wasm.extend_from_slice(tag);
+    let manifest = calimero_bundle::BundleManifest {
+        version: "1.0".to_owned(),
+        package: package.to_owned(),
+        app_version: "1.0.0".to_owned(),
+        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
+            key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
+        metadata: None,
+        handlers: None,
+        build_info: None,
+        interfaces: None,
+        wasm: Some(artifact("app.wasm", wasm.as_slice())),
+        compute: None,
+        abi: None,
+        links: None,
+        frontend: None,
+        frontend_aliases: Vec::new(),
+        upgrades: None,
+        outbound: Vec::new(),
+        services: None,
+        signature: None,
+    };
+    let mut manifest = serde_json::to_value(&manifest).unwrap();
+    calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    for (name, bytes) in [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("app.wasm", wasm),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+fn s(v: &Value) -> String {
+    v.as_str()
+        .unwrap_or_else(|| panic!("not a string: {v}"))
+        .to_owned()
+}
+
+async fn id(c: &Client) -> String {
+    s(&c.me().await.unwrap()["accountId"])
+}
+
+fn refused(e: &Error, why: &str) {
+    let e = e.to_string();
+    assert!(e.contains(why), "{e}");
+}
+
+async fn new_org(owner: &Client) -> String {
+    s(&owner.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"])
+}
+
+/// An invite into `org` at `role`, naming `teams`, made with `pk`: its token.
+async fn invite(
+    by: &Client,
+    pk: &mut SoftAuthenticator,
+    org: &str,
+    role: &str,
+    teams: &[&str],
+) -> Result<String, Error> {
+    let v = by
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": role, "teams": teams }),
+            pk,
+        )
+        .await?;
+    Ok(s(&v["token"]))
+}
+
+async fn join(c: &Client, token: &str) {
+    let _r = c
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+}
+
+/// An instance of `package` in `org` (`access` as `POST /apps` takes it).
+async fn instance(c: &Client, org: &str, package: &str, access: Value) -> Result<String, Error> {
+    let mut opts = json!({ "org": org });
+    if !access.is_null() {
+        opts["access"] = access;
+    }
+    c.create_app_from_package(package, package, None, None, opts)
+        .await
+}
+
+/// The apps of `org` that `c` reaches, as `GET /orgs/{org}/apps` lists them.
+async fn reaches(c: &Client, org: &str) -> Vec<String> {
+    let v = c.get(&format!("orgs/{org}/apps")).await.unwrap();
+    v["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| s(&a["app"]))
+        .collect()
+}
+
+/// The accounts `c` sees in `org`'s member directory (`GET /orgs/{org}`).
+async fn directory(c: &Client, org: &str) -> Vec<String> {
+    let v = c.get(&format!("orgs/{org}")).await.unwrap();
+    v["members"].as_object().unwrap().keys().cloned().collect()
+}
+
+async fn new_team(c: &Client, org: &str, name: &str) -> String {
+    s(&c.post(
+        &format!("orgs/{org}/teams"),
+        json!({ "name": name, "join": "invite" }),
+    )
+    .await
+    .unwrap()["teamId"])
+}
+
+/// The invites of `org` that `c` sees (`GET /orgs/{org}/invites`).
+async fn invites_of(c: &Client, org: &str) -> Vec<Value> {
+    c.get(&format!("orgs/{org}/invites")).await.unwrap()["invites"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+async fn scope(
+    c: &Client,
+    pk: &mut SoftAuthenticator,
+    org: &str,
+    body: Value,
+) -> Result<Value, Error> {
+    c.post_confirmed(&format!("orgs/{org}/app-teams"), body, pk)
+        .await
+}
+
+/// The app team of `package` in `org`, as `GET /orgs/{org}/app-teams` lists it.
+async fn app_team(c: &Client, org: &str, package: &str) -> Value {
+    let v = c.get(&format!("orgs/{org}/app-teams")).await.unwrap();
+    v["appTeams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["package"] == package)
+        .cloned()
+        .unwrap_or_else(|| panic!("no app team of {package} in {v}"))
+}
+
+/// G1: an app's access is changed by its owner, an organization admin, or
+/// whoever manages its team's apps (`MANAGE_APPLICATION` there, a lead) and,
+/// for another team, that team's too; organization-wide access needs it
+/// organization-wide. A plain member never.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (bob_id, carol_id) = (id(&bob).await, id(&carol).await);
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": CREATE_APP }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    // Bob's app, reached by the organization.
+    let app = bob
+        .create_app("b", &bundle, json!({ "org": org }))
+        .await
+        .unwrap();
+    let (t1, t2) = (
+        new_team(&alice, &org, "one").await,
+        new_team(&alice, &org, "two").await,
+    );
+    let access = |t: &str| json!({ "access": { "kind": "team", "team": t } });
+
+    // A plain member is refused; an admin (not the app's owner) is not.
+    refused(
+        &carol
+            .post(&format!("apps/{app}/access"), access(&t1))
+            .await
+            .unwrap_err(),
+        "MANAGE_APPLICATION",
+    );
+    let _ok = alice
+        .post(&format!("apps/{app}/access"), access(&t1))
+        .await
+        .unwrap();
+
+    // Carol leads team one: she moves its app only to a team she manages too,
+    // and never to organization-wide access.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{t1}/members"),
+            json!({ "account": carol_id, "lead": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    refused(
+        &carol
+            .post(&format!("apps/{app}/access"), access(&t2))
+            .await
+            .unwrap_err(),
+        "MANAGE_APPLICATION",
+    );
+    refused(
+        &carol
+            .post(
+                &format!("apps/{app}/access"),
+                json!({ "access": { "kind": "org" } }),
+            )
+            .await
+            .unwrap_err(),
+        "MANAGE_APPLICATION",
+    );
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{t2}/members"),
+            json!({ "account": carol_id, "lead": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let _ok = carol
+        .post(&format!("apps/{app}/access"), access(&t2))
+        .await
+        .unwrap();
+    // The owner still may, anywhere in the organization.
+    let _ok = bob
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "org" } }),
+        )
+        .await
+        .unwrap();
+}
+
+/// G2: pending invites are listed (key, terms, creator, creation time, never
+/// a token) to whoever may revoke them: an admin all, a team's lead those
+/// naming only their teams, a creator their own; a revoked invite redeems no
+/// more. Revoking takes the actor's passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn invites_are_listed_and_revoked_by_whoever_may_see_them() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (alice_id, bob_id) = (id(&alice).await, id(&bob).await);
+    let team = s(&alice
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "design", "join": "invite" }),
+        )
+        .await
+        .unwrap()["teamId"]);
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{team}/members"),
+            json!({ "account": bob_id, "lead": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let alices = invite(&alice, &mut a, &org, "member", &[]).await.unwrap();
+    let bobs = invite(&bob, &mut b, &org, "member", &[&team])
+        .await
+        .unwrap();
+
+    let all = invites_of(&alice, &org).await;
+    assert_eq!(all.len(), 2, "{all:?}");
+    let of_bob = all.iter().find(|i| i["createdBy"] == bob_id).unwrap();
+    assert_eq!(of_bob["teams"], json!([team]), "{of_bob}");
+    assert_eq!(of_bob["role"], "member", "{of_bob}");
+    assert_eq!(of_bob["usesLeft"], 1, "{of_bob}");
+    assert!(of_bob["createdAt"].as_u64().unwrap() > 0, "{of_bob}");
+    assert!(of_bob["inviteKey"].is_string(), "{of_bob}");
+    assert!(
+        !serde_json::to_string(&all).unwrap().contains(&bobs),
+        "a token is never listed"
+    );
+    assert!(all.iter().any(|i| i["createdBy"] == alice_id));
+    let bob_sees = invites_of(&bob, &org).await;
+    assert_eq!(bob_sees.len(), 1, "{bob_sees:?}");
+    assert_eq!(bob_sees[0]["createdBy"], bob_id);
+    assert!(invites_of(&carol, &org).await.is_empty());
+    let outside = dave.get(&format!("orgs/{org}/invites")).await.unwrap_err();
+    assert!(outside.to_string().starts_with("404"), "{outside}");
+
+    // Carol may not revoke Bob's (it reads as no invite); Bob may, with his
+    // passkey, and its token then redeems nothing.
+    let bob_key = s(&of_bob["inviteKey"]);
+    let gone = carol
+        .delete_confirmed(&format!("orgs/{org}/invites/{bob_key}"), &mut cpk)
+        .await
+        .unwrap_err();
+    assert!(gone.to_string().starts_with("404"), "{gone}");
+    let _ok = bob
+        .delete_confirmed(&format!("orgs/{org}/invites/{bob_key}"), &mut b)
+        .await
+        .unwrap();
+    refused(
+        &dave
+            .post(&format!("invites/{bobs}/redeem"), json!({}))
+            .await
+            .unwrap_err(),
+        "used up, revoked or never existed",
+    );
+    assert!(invites_of(&bob, &org).await.is_empty());
+    // The admin revokes any, and the one left still works until then.
+    let alice_key = s(&invites_of(&alice, &org).await[0]["inviteKey"]);
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/invites/{alice_key}"), &mut a)
+        .await
+        .unwrap();
+    assert!(invites_of(&alice, &org).await.is_empty());
+    refused(
+        &dave
+            .post(&format!("invites/{alices}/redeem"), json!({}))
+            .await
+            .unwrap_err(),
+        "used up, revoked or never existed",
+    );
+}
+
+/// G3, G9 and who installs: an admin converts an organization whose apps
+/// use organization access into app teams in one step; everyone who reached
+/// an app keeps it, two apps make the organization shared (every app team
+/// closed), a package has one app team, and only an admin installs a new
+/// app or changes app teams. A member of a shared organization sees the
+/// people of the apps they are in (and its admins); an admin everyone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    for p in [CHAT, BLOCKS, NOTES] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (alice_id, bob_id, carol_id) = (id(&alice).await, id(&bob).await, id(&carol).await);
+    // Legacy: organization access, every member reaches both apps.
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    assert_eq!(
+        alice.get(&format!("orgs/{org}")).await.unwrap()["mode"],
+        "legacy"
+    );
+    for p in [&bob, &carol] {
+        let r = reaches(p, &org).await;
+        assert!(r.contains(&chat) && r.contains(&blocks), "{r:?}");
+    }
+
+    // Only an admin scopes, with a passkey.
+    refused(
+        &scope(&bob, &mut b, &org, json!({})).await.unwrap_err(),
+        "only the organization's owner and admins",
+    );
+    let done = scope(&alice, &mut a, &org, json!({})).await.unwrap();
+    assert_eq!(done["mode"], "shared", "{done}");
+    assert_eq!(done["teams"].as_array().unwrap().len(), 2, "{done}");
+    let chat_team = app_team(&bob, &org, CHAT).await;
+    let blocks_team = app_team(&bob, &org, BLOCKS).await;
+    assert_eq!(chat_team["join"], "invite", "{chat_team}");
+    assert_eq!(chat_team["memberCount"], 3, "{chat_team}");
+    assert_eq!(chat_team["member"], true, "{chat_team}");
+    assert_eq!(chat_team["manages"], false, "{chat_team}");
+    let (chat_team, blocks_team) = (s(&chat_team["teamId"]), s(&blocks_team["teamId"]));
+    let app = alice.get(&format!("apps/{chat}")).await.unwrap();
+    assert_eq!(
+        app["access"],
+        json!({ "kind": "team", "team": chat_team }),
+        "{app}"
+    );
+    // Nobody lost an app.
+    for p in [&bob, &carol] {
+        let r = reaches(p, &org).await;
+        assert!(r.contains(&chat) && r.contains(&blocks), "{r:?}");
+    }
+    // Scoping again changes nothing: the packages' teams are found.
+    let again = scope(
+        &alice,
+        &mut a,
+        &org,
+        json!({ "apps": [{ "package": CHAT }] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["teams"][0]["teamId"], chat_team, "{again}");
+    assert_eq!(again["teams"][0]["created"], false, "{again}");
+
+    // Carol leaves Blocks: she keeps Chat only. Dave joins with an invite to
+    // Blocks only: he gets Blocks only, as the org's new member.
+    let _ok = alice
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{blocks_team}/members/{carol_id}"),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reaches(&carol, &org).await, vec![chat.clone()]);
+    join(
+        &dave,
+        &invite(&alice, &mut a, &org, "member", &[&blocks_team])
+            .await
+            .unwrap(),
+    )
+    .await;
+    let dave_id = id(&dave).await;
+    assert_eq!(reaches(&dave, &org).await, vec![blocks.clone()]);
+
+    // Directory: Dave (Blocks) sees Bob (Blocks) and Alice (the owner), not
+    // Carol (Chat only); Carol sees no Dave; the owner sees everyone.
+    let seen = directory(&dave, &org).await;
+    assert!(
+        seen.contains(&bob_id) && seen.contains(&alice_id),
+        "{seen:?}"
+    );
+    assert!(!seen.contains(&carol_id), "{seen:?}");
+    assert!(!directory(&carol, &org).await.contains(&dave_id));
+    assert_eq!(directory(&alice, &org).await.len(), 4);
+    let full = dave.get(&format!("orgs/{org}")).await.unwrap();
+    assert!(
+        !serde_json::to_string(&full).unwrap().contains(&carol_id),
+        "{full}"
+    );
+
+    // One app team per package; only an admin marks or unmarks one.
+    let other = s(&alice
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "chat 2", "join": "invite" }),
+        )
+        .await
+        .unwrap()["teamId"]);
+    refused(
+        &alice
+            .post(
+                &format!("orgs/{org}/teams/{other}"),
+                json!({ "metadata": { "app": { "package": CHAT } } }),
+            )
+            .await
+            .unwrap_err(),
+        "has an app team in this organization already",
+    );
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members"),
+            json!({ "account": bob_id, "lead": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    refused(
+        &bob.post(
+            &format!("orgs/{org}/teams/{chat_team}"),
+            json!({ "metadata": { "color": "red" } }),
+        )
+        .await
+        .unwrap_err(),
+        "only the organization's owner and admins",
+    );
+    // Bob, Chat's lead with CREATE_APP everywhere, makes Chat instances, but
+    // installing Notes, a package with no app team here, is an admin's.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": CREATE_APP }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let _second = instance(
+        &bob,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": chat_team }),
+    )
+    .await
+    .unwrap();
+    refused(
+        &instance(&bob, &org, NOTES, Value::Null).await.unwrap_err(),
+        "only the organization's owner and admins",
+    );
+    let _notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+}
+
+/// G6 and the guest role: in a standalone organization (one open app team)
+/// its members invite others to the app; once the organization is shared
+/// only leads and admins do, until an admin turns on the team's default
+/// capability. Where apps have app teams, a guest reaches only the apps of
+/// the teams they are in; a guest sees only those teams' people.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (eve, _e) = signed_up(&c, 2, "eve").await;
+    let (gail, _g) = signed_up(&c, 0, "gail").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let bob_id = id(&bob).await;
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+
+    // Standalone: one open app team, whose members may invite to it.
+    let done = scope(&alice, &mut a, &org, json!({})).await.unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let chat_team = s(&done["teams"][0]["teamId"]);
+    let t = app_team(&bob, &org, CHAT).await;
+    assert_eq!(t["join"], "everyone", "{t}");
+    assert_eq!(t["defaultCapabilities"], INVITE_MEMBERS, "{t}");
+    assert!(reaches(&bob, &org).await.contains(&chat));
+    // A guest is not in an open team by inheritance, reaches no
+    // organization-access app here, and sees no one but themselves.
+    let _legacy = instance(&alice, &org, CHAT, json!({ "kind": "org" }))
+        .await
+        .unwrap();
+    join(
+        &eve,
+        &invite(&alice, &mut a, &org, "guest", &[]).await.unwrap(),
+    )
+    .await;
+    let eve_id = id(&eve).await;
+    assert!(reaches(&eve, &org).await.is_empty());
+    assert_eq!(directory(&eve, &org).await, vec![eve_id.clone()]);
+    let to_chat = invite(&bob, &mut b, &org, "member", &[&chat_team])
+        .await
+        .unwrap();
+    join(&gail, &to_chat).await;
+    assert!(reaches(&gail, &org).await.contains(&chat));
+    // Never organization-wide, never above member.
+    refused(
+        &invite(&bob, &mut b, &org, "member", &[]).await.unwrap_err(),
+        "INVITE_MEMBERS",
+    );
+
+    // Shared: Blocks connects; Chat closes, everyone kept, and members
+    // invite no more until an admin says so for Chat.
+    let _blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    let done = scope(
+        &alice,
+        &mut a,
+        &org,
+        json!({ "apps": [{ "package": BLOCKS }] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done["mode"], "shared", "{done}");
+    assert!(reaches(&bob, &org).await.contains(&chat));
+    assert!(reaches(&gail, &org).await.contains(&chat));
+    refused(
+        &invite(&bob, &mut b, &org, "member", &[&chat_team])
+            .await
+            .unwrap_err(),
+        "INVITE_MEMBERS",
+    );
+    refused(
+        &bob.post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
+            &mut b,
+        )
+        .await
+        .unwrap_err(),
+        "not allowed to manage this team",
+    );
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let _again = invite(&bob, &mut b, &org, "member", &[&chat_team])
+        .await
+        .unwrap();
+    let team = alice
+        .get(&format!("orgs/{org}/teams/{chat_team}"))
+        .await
+        .unwrap();
+    assert_eq!(team["package"], CHAT, "{team}");
+    assert_eq!(team["defaultCapabilities"], INVITE_MEMBERS, "{team}");
+
+    // The guest, invited to Chat, has Chat and its people only.
+    let eve_chat = invite(&alice, &mut a, &org, "guest", &[&chat_team])
+        .await
+        .unwrap();
+    join(&eve, &eve_chat).await;
+    assert_eq!(reaches(&eve, &org).await, vec![chat.clone()]);
+    assert!(directory(&eve, &org).await.contains(&bob_id));
+    let teams = eve.get(&format!("orgs/{org}/app-teams")).await.unwrap();
+    assert_eq!(teams["appTeams"].as_array().unwrap().len(), 1, "{teams}");
+}

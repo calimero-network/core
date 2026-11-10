@@ -5001,10 +5001,29 @@ async fn org_get(
     if o.role(&account).is_none() {
         return Err(ApiError::not_found("no such organization"));
     }
-    // Teams a member does not see are left out, as if they did not exist.
+    // Teams a member does not see are left out, as if they did not exist,
+    // and so are the people they do not see (`Org::sees_member`): in a shared
+    // organization a member has the people of their apps, a guest always.
     let mut v = serde_json::to_value(&o).unwrap_or_default();
     if let Some(teams) = v.get_mut("teams").and_then(Value::as_object_mut) {
         teams.retain(|id, _| o.sees_team(&account, id));
+        for team in teams.values_mut() {
+            for field in ["members", "capabilities"] {
+                if let Some(m) = team.get_mut(field).and_then(Value::as_object_mut) {
+                    m.retain(|a, _| o.sees_member(&account, a));
+                }
+            }
+            for field in ["readOnly", "removed"] {
+                if let Some(m) = team.get_mut(field).and_then(Value::as_array_mut) {
+                    m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
+                }
+            }
+        }
+    }
+    for field in ["members", "capabilities", "memberMetadata"] {
+        if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
+            m.retain(|a, _| o.sees_member(&account, a));
+        }
     }
     // Who may approve its releases, the keys it publishes, and whether a
     // passed deadline has stopped new work on its own set (`null`: it has
@@ -5021,6 +5040,7 @@ async fn org_get(
         )
     });
     if let Some(obj) = v.as_object_mut() {
+        let _prev = obj.insert("mode".into(), json!(o.mode()));
         let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
         let _prev = obj.insert("publishes".into(), json!(publishes));
         let _prev = obj.insert(
@@ -5360,7 +5380,7 @@ fn team_view(
             json!({
                 "account": a,
                 "role": o.team_role(a, team),
-                "capabilities": t.capabilities.get(a).copied().unwrap_or(o.default_capabilities),
+                "capabilities": o.team_caps(a, team),
             })
         })
         .collect();
@@ -5385,6 +5405,8 @@ fn team_view(
         "parent": t.parent,
         "join": t.join,
         "metadata": t.metadata,
+        "package": t.app_package(),
+        "defaultCapabilities": t.default_capabilities,
         "members": members,
         "children": children,
         "apps": apps,
@@ -5471,8 +5493,9 @@ struct CapabilitiesBody {
 }
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
-/// without an account, the organization's default; approved with the
-/// actor's passkey (412 first).
+/// without an account, the default: the organization's, or with `team` what
+/// everyone in that team holds there on top of their own (G6); approved with
+/// the actor's passkey (412 first).
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5498,11 +5521,13 @@ async fn org_capabilities(
             }
         }
         None => {
-            let args = json!({ "capabilities": body.capabilities });
+            let args =
+                crate::system::default_capabilities_args(body.team.as_deref(), body.capabilities);
             let method = "__set_default_capabilities";
             let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
             SystemCmd::SetDefaultCapabilities {
                 org,
+                team: body.team,
                 capabilities: body.capabilities,
                 actor,
                 consent,
@@ -5571,6 +5596,8 @@ async fn invite_create(
         teams: body.teams,
         expires_at: now_secs() + body.ttl_secs.unwrap_or(7 * 24 * 3600),
         uses_left: body.uses.unwrap_or(1).max(1),
+        created_by: actor.clone(),
+        created_at: now_secs(),
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
@@ -5638,6 +5665,180 @@ async fn invite_redeem(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// An organization invite as its list shows it: its key and terms, never a
+/// token (the log never had one).
+fn invite_json(key: &str, inv: &Invite, now: u64) -> Value {
+    json!({
+        "inviteKey": key,
+        "role": inv.role,
+        "teams": inv.teams,
+        "usesLeft": inv.uses_left,
+        "expiresAt": inv.expires_at,
+        "expired": inv.expires_at <= now,
+        "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
+        "createdAt": (inv.created_at != 0).then_some(inv.created_at),
+    })
+}
+
+/// The organization's pending invites the caller may see and revoke
+/// (`SystemState::sees_invite`): every one for an admin, those naming only
+/// teams they manage for a team's manager, and their own; `404` to anyone
+/// outside the organization.
+async fn invite_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let now = now_secs();
+    let v = node
+        .sys(|s| {
+            s.orgs.get(&org)?.role(&account)?;
+            let invites: Vec<Value> = s
+                .invites
+                .iter()
+                .filter(|(_, i)| i.org == org && s.sees_invite(i, &account))
+                .map(|(k, i)| invite_json(k, i, now))
+                .collect();
+            Some(json!({ "invites": invites }))
+        })
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    Ok(Json(v))
+}
+
+/// Withdraw an invite (its key, from [`invite_list`]): whoever may see it,
+/// with their passkey (412 first; the retry's JSON body carries `confirm`).
+async fn invite_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, key)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let visible = node.sys(|s| {
+        s.invites
+            .get(&key)
+            .is_some_and(|i| i.org == org && s.sees_invite(i, &actor))
+    });
+    if !visible {
+        return Err(ApiError::not_found(crate::system::INVITE_GONE));
+    }
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let args = json!({ "inviteKey": key });
+    let consent = org_consent(&node, &p, &org, "__revoke_invite", &args, confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::RevokeInvite {
+            org,
+            invite_key: key,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// The organization's app teams (one per package) and its mode, for any
+/// member: each team's package, id, name, whether it is open, how many people
+/// are in it, and whether the caller is in it or manages it. A guest sees
+/// only the app teams they are in. Names only: a team's people are read
+/// where the caller sees them (`GET /orgs/{org}/teams/{team}`).
+async fn app_team_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let v = node
+        .sys(|s| {
+            let o = s.orgs.get(&org)?;
+            let role = o.role(&account)?;
+            let teams: Vec<Value> = o
+                .teams
+                .values()
+                .filter_map(|t| Some((t.app_package()?, t)))
+                .filter(|(_, t)| role >= OrgRole::Member || o.in_team(&account, &t.team_id))
+                .map(|(package, t)| {
+                    let count = o
+                        .members
+                        .keys()
+                        .filter(|m| o.in_team(m, &t.team_id))
+                        .count();
+                    json!({
+                        "package": package,
+                        "teamId": t.team_id,
+                        "name": t.name,
+                        "join": t.join,
+                        "memberCount": count,
+                        "defaultCapabilities": t.default_capabilities,
+                        "member": o.in_team(&account, &t.team_id),
+                        "manages": o.manages_team(&account, &t.team_id),
+                    })
+                })
+                .collect();
+            Some(json!({ "mode": o.mode(), "appTeams": teams }))
+        })
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScopeAppsBody {
+    /// The packages to give app teams (absent: every package with an
+    /// organization-access instance here).
+    #[serde(default)]
+    apps: Option<Vec<crate::system::ScopeApp>>,
+    /// Close every app team (absent: when the organization then holds two
+    /// or more).
+    #[serde(default)]
+    shared: Option<bool>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Give apps their own access lists in one step (`SystemCmd::ScopeApps`):
+/// an admin's, with their passkey (412 first). Answers each package's team,
+/// whether it was made, the instances moved and the rows added, and the
+/// organization's mode after.
+async fn app_teams_scope(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<ScopeAppsBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    if body
+        .apps
+        .as_ref()
+        .is_some_and(|a| a.len() > crate::system::MAX_SCOPE_PACKAGES)
+    {
+        return Err(ApiError::bad_request(
+            "TOO_MANY_PACKAGES",
+            "too many packages in one step",
+        ));
+    }
+    let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
+    let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::ScopeApps {
+            org,
+            apps: body.apps,
+            shared: body.shared,
+            nonce: b64url(&random::<16>()),
+            actor,
+            consent,
+        })
+        .await?,
+    ))
 }
 
 // ---------------------------------------------------------------- recovery
@@ -9454,7 +9655,9 @@ pub fn router(node: Arc<Node>) -> Router {
             "/orgs/{org}/teams/{team}/members/{account}",
             delete(team_remove_member),
         )
-        .route("/orgs/{org}/invites", post(invite_create))
+        .route("/orgs/{org}/invites", post(invite_create).get(invite_list))
+        .route("/orgs/{org}/invites/{key}", delete(invite_revoke))
+        .route("/orgs/{org}/app-teams", get(app_team_list).post(app_teams_scope))
         .route("/orgs/{org}/recovery", post(recovery_set))
         .route("/orgs/{org}/recovery/start", post(recovery_start))
         .route("/orgs/{org}/recovery/cancel", post(recovery_cancel))
