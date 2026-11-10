@@ -1294,6 +1294,18 @@ impl Client {
         .await
     }
 
+    /// Each member's lockout risk, for the organization's owner and admins
+    /// (`GET /orgs/{org}/members?detail=security`): `{ orgId, members: [{
+    /// account, name, role, teams, passkeys, recoveryCode, lastActiveDay,
+    /// sessions }] }`, `passkeys` being `1`, `2` or `"3+"`.
+    pub async fn org_members_security(&self, org: &str) -> Result<Value> {
+        self.get(&format!(
+            "orgs/{}/members?detail=security",
+            path_segment(org)
+        ))
+        .await
+    }
+
     /// Set a member's metadata (theirs, or an admin's); `null` clears it.
     pub async fn set_member_metadata(
         &self,

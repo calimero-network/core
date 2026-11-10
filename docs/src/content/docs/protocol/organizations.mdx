@@ -103,6 +103,28 @@ there with the release each runs and its last upgrade (who, of which kind),
 the releases that govern each app, and the releases the cluster's nodes run
 ([Reading the approvals](/protocol/governance/#reading-the-approvals)).
 
+### Members' security
+
+The owner and admins read what tells them a member may be locked out, with
+`GET /orgs/{org}/members?detail=security` (their own session on the
+cluster's origin; never an API key or a package-bound session). For each
+member: the self-set `name` (`memberMetadata.name`), `role`, the `teams` they
+are in, `passkeys` (`1`, `2` or `"3+"`: whether they have a backup, not how
+many devices they own), `recoveryCode` (set or not), `lastActiveDay` (the UTC
+day of their latest sign-in or session exchange; `null` when the node knows
+neither) and `sessions` (how many live sessions they hold).
+
+| Reader | Sees | Never |
+| --- | --- | --- |
+| The account holder | Everything about their own account: passkeys with labels and times, sessions, activity (`/auth/me`, `/auth/sessions`, `/auth/activity`) | - |
+| The organization's owner and admins, about its members | The fields above | Credential ids, passkey labels (names people choose for their devices), sign counts and times, sessions, origins, activity, a recovery under way |
+| A member below admin | Nothing new (`403`) | as above |
+| A deployment's managers, about customer organizations | `memberCount` and `activeMembers30d` per organization (`GET /deployments/{id}/orgs`) | Any account, name or per-member fact |
+| The operator | Nothing new: the Ops API has no read path into accounts | Anything per account |
+
+A removed member leaves the listing at once, and someone outside the
+organization is answered as if it did not exist (`404`).
+
 ## Teams
 
 Teams (`types::Team`; `meroctl`'s *groups*) nest (`parent`), move

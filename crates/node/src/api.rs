@@ -2033,6 +2033,140 @@ async fn session_revoke(
     Ok(Json(json!({})))
 }
 
+/// How recently, in seconds, a member counts as active in a deployment's
+/// customer counts (`activeMembers30d`): 30 days.
+const ACTIVE_WINDOW_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// What the node knows of each account's use, from its live sessions: how
+/// many it holds and when the latest was last exchanged
+/// (`expires_at - REFRESH_TTL`), by account. One pass over the refresh
+/// records, each session counted once.
+fn session_use(s: &SystemState, now: u64) -> BTreeMap<&str, (usize, u64)> {
+    let mut seen: BTreeMap<&str, (&str, u64)> = BTreeMap::new();
+    for r in s.refresh.values() {
+        if r.expires_at <= now || s.revoked_sessions.contains(&r.session) {
+            continue;
+        }
+        let at = r.expires_at.saturating_sub(REFRESH_TTL);
+        let _prev = seen
+            .entry(r.session.as_str())
+            .and_modify(|(_, t)| *t = (*t).max(at))
+            .or_insert((r.account.as_str(), at));
+    }
+    let mut out: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+    for (account, at) in seen.into_values() {
+        let e = out.entry(account).or_insert((0, 0));
+        e.0 += 1;
+        e.1 = e.1.max(at);
+    }
+    out
+}
+
+/// When `account` was last active, as far as the node knows (Unix seconds):
+/// its passkeys' latest sign-in or its sessions' latest exchange
+/// ([`session_use`]); `None` when it knows neither.
+fn last_active(s: &SystemState, account: &str, used: &BTreeMap<&str, (usize, u64)>) -> Option<u64> {
+    let signed_in = s.accounts.get(account).and_then(|a| {
+        a.passkey_times
+            .values()
+            .filter_map(|t| t.last_sign_in_at)
+            .max()
+    });
+    let exchanged = used.get(account).map(|u| u.1).filter(|t| *t > 0);
+    signed_in.max(exchanged)
+}
+
+/// A Unix time's UTC day, `YYYY-MM-DD`.
+fn utc_day(secs: u64) -> Option<String> {
+    let secs = i64::try_from(secs).ok()?;
+    chrono::DateTime::from_timestamp(secs, 0).map(|t| t.format("%Y-%m-%d").to_string())
+}
+
+/// The most passkeys `GET /orgs/{org}/members?detail=security` counts before
+/// it answers `"3+"`: an admin learns whether a member has a backup, not how
+/// many devices they own.
+const PASSKEYS_COUNTED: usize = 3;
+
+#[derive(Deserialize)]
+struct MembersQuery {
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+/// `GET /orgs/{org}/members?detail=security`: for the organization's owner
+/// and admins, the lockout risk of each member they see (`Org::sees_member`,
+/// everyone for them): their self-set name, role and teams, how many
+/// passkeys they hold (`1`, `2`, or `"3+"`), whether a recovery code is set,
+/// the UTC day they were last active and how many live sessions they hold.
+/// Never a credential id, a passkey's label or times, a session, an origin,
+/// a recovery under way or an activity entry: those are the account
+/// holder's alone (`/auth/me`, `/auth/sessions`, `/auth/activity`). A member
+/// below admin is refused (`403`); someone outside the organization is
+/// answered as if it did not exist (`404`). The admin's own session on the
+/// cluster's origin only: never an API key or a package-bound session.
+async fn org_members(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Query(q): Query<MembersQuery>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    if q.detail.as_deref() != Some("security") {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "the member listing is `?detail=security`",
+        ));
+    }
+    node.sys_fresh_from(p.sys_index).await;
+    let now = now_secs();
+    node.sys(|s| {
+        let o = s
+            .orgs
+            .get(&org)
+            .filter(|o| o.role(&account).is_some())
+            .ok_or_else(|| ApiError::not_found("no such organization"))?;
+        if !s.is_org_admin(&org, &account) {
+            return Err(ApiError::forbidden(
+                "only the organization's owner and admins see its members' security",
+            ));
+        }
+        let used = session_use(s, now);
+        let members: Vec<Value> = o
+            .members
+            .iter()
+            .filter(|(m, _)| o.sees_member(&account, m))
+            .map(|(m, role)| {
+                let acc = s.accounts.get(m);
+                let passkeys = acc.map_or(0, |a| a.passkeys.len());
+                json!({
+                    "account": m,
+                    "name": o
+                        .member_metadata
+                        .get(m)
+                        .and_then(|v| v.get("name"))
+                        .and_then(Value::as_str),
+                    "role": role,
+                    "teams": o
+                        .teams
+                        .keys()
+                        .filter(|t| o.in_team(m, t))
+                        .collect::<Vec<_>>(),
+                    "passkeys": if passkeys >= PASSKEYS_COUNTED {
+                        json!(format!("{PASSKEYS_COUNTED}+"))
+                    } else {
+                        json!(passkeys)
+                    },
+                    "recoveryCode": s.recovery_keys.values().any(|a| a == m),
+                    "lastActiveDay": last_active(s, m, &used).and_then(utc_day),
+                    "sessions": used.get(m.as_str()).map_or(0, |u| u.0),
+                })
+            })
+            .collect();
+        Ok(Json(json!({ "orgId": org, "members": members })))
+    })
+}
+
 #[derive(Deserialize)]
 struct ActivityQuery {
     /// Only entries after this time (Unix seconds).
@@ -9993,9 +10127,10 @@ struct Customer<'a> {
 /// The organizations with instances created from the deployment, for its
 /// managers, on fresh state: each organization's id and name, how many
 /// instances it has from here, which of the deployment's apps they are and
-/// the releases they run, and when its first was created. Never members,
-/// teams, instance names or app data; instances outside an organization are
-/// counted only (`outsideOrgs`).
+/// the releases they run, when its first was created, and how many members
+/// it has and how many of them were active in the last 30 days. Never who
+/// the members are, teams, instance names or app data; instances outside an
+/// organization are counted only (`outsideOrgs`).
 async fn deployment_orgs(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -10004,7 +10139,9 @@ async fn deployment_orgs(
     let p = signed_in(&node, &headers).await?;
     p.unbound()?;
     let d = managed_deployment(&node, &p, &id).await?;
+    let now = now_secs();
     Ok(Json(node.sys(|s| {
+        let used = session_use(s, now);
         let mut orgs: BTreeMap<&str, Customer<'_>> = BTreeMap::new();
         let mut outside = 0u64;
         for a in s
@@ -10037,9 +10174,19 @@ async fn deployment_orgs(
         let orgs: Vec<Value> = orgs
             .into_iter()
             .map(|(org, c)| {
+                // Counts only: how many people, and how many were active in
+                // the last 30 days; never who.
+                let members = s.orgs.get(org).map(|o| o.members.keys());
+                let (count, active) = members.into_iter().flatten().fold((0, 0), |(n, a), m| {
+                    let recent =
+                        last_active(s, m, &used).is_some_and(|t| t + ACTIVE_WINDOW_SECS > now);
+                    (n + 1, a + u64::from(recent))
+                });
                 json!({
                     "orgId": org,
                     "name": s.orgs.get(org).map(|o| o.name.clone()),
+                    "memberCount": count,
+                    "activeMembers30d": active,
                     "instances": c.instances,
                     "apps": c.apps.iter().map(|(app, version)| json!({
                         "app": app, "version": version,
@@ -10424,7 +10571,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))
         .route("/orgs/{org}/upgrades/{run}/retry", post(org_upgrade_retry))
         .route("/orgs/{org}/members/{account}/metadata", post(member_metadata))
-        .route("/orgs/{org}/members", post(org_set_member))
+        .route("/orgs/{org}/members", get(org_members).post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
         .route("/orgs/{org}/teams", post(team_create))
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))

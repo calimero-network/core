@@ -55,6 +55,18 @@
   them unknown on every replica. In a rolling upgrade a node on the earlier
   release ignores the new fields and keeps no times; the sessions route
   answers `404` there.
+- **Members' lockout risk, for organization admins**: `GET
+  /orgs/{org}/members?detail=security` gives an organization's owner and
+  admins, per member, `{ account, name, role, teams, passkeys, recoveryCode,
+  lastActiveDay, sessions }`: the passkey count capped at `"3+"`, whether a
+  recovery code is set, the UTC day of the latest sign-in or session exchange
+  and the number of live sessions. Never a credential id, a passkey label or
+  time, a session, an origin or an activity entry. A member below admin gets
+  `403`, anyone outside the organization `404`; an API key or a
+  package-bound session is refused. `GET /deployments/{id}/orgs` adds
+  `memberCount` and `activeMembers30d` per customer organization (counts
+  only). `meroctl namespace members list --security`. No stored format
+  changes: everything is read from state the node already keeps.
 - **An account's activity**: `GET /auth/activity[?after=T]` lists what the
   caller's passkeys did, newest first, the last 100 entries: `{ activity: [{
   at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"` is

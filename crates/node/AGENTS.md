@@ -805,6 +805,16 @@ is its command line.
   `passkey_and_session_times_come_from_their_entries`,
   `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`,
   `tests/old_datadir.rs`.
+- **Members' security** (owner and admins): `GET /orgs/{org}/members?detail=security`
+  (`api::org_members`, `holder`, `SystemState::is_org_admin`, filtered by
+  `Org::sees_member`) answers per member the passkey count capped at
+  `PASSKEYS_COUNTED` (`"3+"`), `recoveryCode` (a `recovery_keys` entry),
+  `lastActiveDay` (`api::last_active`: the latest `PasskeyTimes::last_sign_in_at`
+  or live session exchange, `api::session_use`, as a UTC day) and `sessions`
+  (live, unrevoked, each session once). Nothing the holder alone sees (ids,
+  labels, sessions, origins, activity). `deployment_orgs` adds counts only,
+  `memberCount` and `activeMembers30d` (`ACTIVE_WINDOW_SECS`). Regressions:
+  `tests/org_member_security.rs`, `deployments_of_one_release_are_independent`.
 - **Activity** (the account holder's alone): `SystemState::activity` (by
   account, beside `accounts` so `account_args` is unchanged), the last
   `types::ACTIVITY_KEPT` `ActivityEntry { at, passkey, kind }`, `kind`
