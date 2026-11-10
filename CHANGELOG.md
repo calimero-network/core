@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Every app has an OpenAPI document, typed clients and a breaking-change check**
+  (`calimero-app-abi`). `GET /apps/{app}/openapi.json` (the access of
+  `GET /apps/{app}/abi`) answers the ABI of the bundle the app runs as OpenAPI
+  3.1: one `POST /apps/{app}/methods/{name}` per method a client calls, typed
+  from its params and result, its errors as `422 APP_ERROR`, the `412
+  CONFIRM_REQUIRED` step-up of `confirm` methods, and the event stream. That
+  route is new too: it runs as `/apps/{app}/views` for a view the ABI declares
+  (without `confirm`) and as `/apps/{app}/intents` otherwise, with the same gate,
+  step-up and limits; its body is theirs without `method` (unknown fields are
+  refused). `/intents` and `/views` are unchanged. `calimero-client` gains
+  `app_openapi` and `call_method`. `mero-app-build codegen --abi <wasm|mpk|json>
+  --lang ts|python|openapi` writes the document and a thin typed client over
+  mero-js or calimero-client-py; `mero-app-build abi-diff <old> <new>` lists
+  what changed and exits 1 on a change that breaks callers; `mero-sign sign
+  --previous <last release>` (and `pack-component.py --previous`) prints the
+  same before signing and refuses a state field removed or changed in kind
+  without a state version bump. The type mapping: [App interface](docs/src/content/docs/build/app-abi.mdx#types).
+
 ### Security
 
 - **Closing a team takes the channel rows of whoever loses it.** An open

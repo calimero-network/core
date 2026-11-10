@@ -158,6 +158,7 @@ the release fetches and verifies it again.
 | `DELETE /apps/{app}` | session | Delete (owner or org admin) | `context delete` |
 | `POST /apps/{app}/intents` | app access | `{ method, args, idempotencyKey?, confirm? }`: a call. A confirm method answers `412` first. | `call` |
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
+| `POST /apps/{app}/methods/{method}` | app access | The body of `/intents` or `/views` without `method`: runs as `/views` for a view the ABI declares (without `confirm`), else as `/intents`, with the same gate, step-up and limits | |
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
 | `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member, and in the app's team for an app on a team, or an organization admin, with a passkey step-up; an organization's app only to a member) | `context transfer` |
@@ -167,6 +168,7 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `context storage` |
 | `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
+| `GET /apps/{app}/openapi.json` | app access | The ABI as an OpenAPI 3.1 document ([App interface](/core/build/app-abi/#as-openapi)) | |
 | `GET /apps/{app}/runs/{run}` | app access | A compute run's record without its arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (with plaintext sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` (percent, step) as the app's leader last polled it | - |
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |

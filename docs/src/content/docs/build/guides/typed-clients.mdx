@@ -1,0 +1,127 @@
+---
+title: Typed clients for your app
+description: Generate your app's OpenAPI document and a typed TypeScript or Python client from its ABI with mero-app-build codegen, and check a new version for breaking changes before you publish it.
+sidebar:
+  order: 10
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** call your app's methods from a frontend or a script with types checked
+by the compiler, and find out before publishing whether a new version breaks
+the clients already out there.
+
+Every app embeds its [ABI](/core/build/app-abi/): its methods, their parameters
+and results, its errors and events. `mero-app-build codegen` turns it into an
+OpenAPI 3.1 document and a thin typed client over the client you already use:
+mero-js's `CalimeroClient` or calimero-client-py's `Client`. They keep doing the
+work (the attested, sealed channel, sessions, passkey step-ups, retries); the
+generated code only adds the method names and types.
+
+## Generate a client
+
+Put `mero-app-build` on PATH once (`scripts/install-mero-app-build.sh`), build
+the app, then point `codegen` at the component, the `.mpk` bundle or an ABI JSON
+file (`meroctl context abi` saves an installed app's):
+
+```bash
+mero-app-build apps/kv-store --out kv-store.wasm
+mero-app-build codegen --abi kv-store.wasm --lang ts -o src/generated
+```
+
+```
+wrote src/generated/openapi.json
+wrote src/generated/client.ts
+```
+
+`--lang` is `ts`, `python` or `openapi` (the document alone). Every language
+writes `openapi.json` beside the client. The client class is named after
+`--name`, else the package of an `.mpk` or the file's name (`kv-store.wasm` gives
+`KvStoreClient`). A multi-service bundle writes one directory per service;
+`--service <name>` picks one.
+
+## Use it from TypeScript
+
+```ts
+import { CalimeroClient } from '@calimero-network/mero-js';
+import { KvStoreClient, type AppEvent } from './generated/client';
+
+const client = /* a signed-in CalimeroClient */;
+const kv = new KvStoreClient(client, appId);
+
+await kv.set({ key: 'greeting', value: 'hello' });
+const value: string | null = await kv.get({ key: 'greeting' });
+const count: string = await kv.len(); // u64: a decimal string
+
+for await (const event of kv.events()) {
+  if (event.kind === 'Inserted') console.log(event.data.key, event.data.value);
+}
+```
+
+A call takes `{ idempotencyKey }` as its last argument, a view `{ stale,
+minIndex }`. A `confirm` method takes the passkey that approves it:
+`await rooms.adminRelease({ id, reason }, passkey)`.
+
+## Use it from Python
+
+```python
+from calimero import Client
+from generated.client import KvStoreClient
+
+kv = KvStoreClient(client, app_id)  # a signed-in calimero Client
+kv.set("greeting", "hello")
+assert kv.get("greeting") == "hello"
+```
+
+Arguments are keyword arguments in snake_case (`room_id=`); errors and events
+are `TypedDict`s (`NotFoundError`, `InsertedEvent`).
+
+## How the types come out
+
+`u64` and `i64` are decimal strings and `bytes` base64url strings, as on the
+wire; `option<T>` is `T | null` (`Optional[T]`) and an optional argument may be
+left out. The full table is in [App interface](/core/build/app-abi/#types).
+
+<Aside type="caution">
+  ABI version 1 names your own types (a record, a serde struct or enum) without
+  their fields, so the client types them `unknown` (`Any`): cast or validate the
+  value where you use it.
+</Aside>
+
+## Use any OpenAPI tool
+
+`openapi.json` is a standard OpenAPI 3.1 document: each method is `POST
+/apps/{app}/methods/{name}`, and its body is `{ args, idempotencyKey? }` for a
+call or `{ args, consistency?, minIndex? }` for a view. A running node serves the
+same document for an installed app at `GET /apps/{app}/openapi.json`. Generators
+and validators read it as they read any other; give the generated code mero-js
+or calimero-client-py as its transport, since the node answers only inside the
+sealed channel.
+
+## Check a new version before publishing
+
+Compare the new build with the last release:
+
+```bash
+mero-app-build abi-diff dist/kv-store-1.0.0.mpk kv-store.wasm
+```
+
+```
+breaking   method get: result changed: option<string> -> string
+compatible method count: added (view)
+```
+
+It exits `1` when a change breaks existing callers, so it can gate CI. The rules
+are in [App interface](/core/build/app-abi/#check-a-new-version-against-the-last).
+Signing runs the same check when you name the last release:
+
+```bash
+mero-sign sign manifest.json --key release.key --previous dist/kv-store-1.0.0.mpk
+python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.kv-store \
+  --app-version 1.1.0 --previous dist/kv-store-1.0.0.mpk --out dist/kv-store-1.1.0.mpk
+```
+
+Breaking changes are printed as a warning. A state field removed or changed in
+kind while the state version stayed the same is refused: bump
+`#[app::state(version = N)]` and migrate the data
+([Upgrades & state](/core/build/migrations/)).

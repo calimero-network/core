@@ -3,7 +3,7 @@
 Rust client for Calimero nodes: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
 signs in with a `Passkey` (feature `testing`: `SoftAuthenticator`) or an API key,
-and calls `/apps/{app}/{intents,views,events}`.
+and calls `/apps/{app}/{intents,views,events}` (and `methods/{method}`, `openapi.json`).
 
 The attestation check (`attest::verify`) is the one place clients and peers decide
 trust: quote genuine (or an allowed mock), report data =
