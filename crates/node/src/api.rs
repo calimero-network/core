@@ -5903,6 +5903,7 @@ async fn team_update(
             metadata: body.metadata,
             actor,
             all_apps_rows: true,
+            close_drops_below: true,
         })
         .await?;
     Ok(Json(json!({})))

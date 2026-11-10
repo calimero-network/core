@@ -2166,16 +2166,7 @@ impl SystemState {
                         .filter(|m| !o.in_team(m, &team_id))
                         .collect();
                     dropped = gone.len();
-                    let below: Vec<TeamId> = o.subtree(&team_id).into_iter().skip(1).collect();
-                    for id in &below {
-                        if let Some(t) = o.teams.get_mut(id) {
-                            for a in &gone {
-                                let _prev = t.members.remove(a);
-                                let _was = t.read_only.remove(a);
-                                let _caps = t.capabilities.remove(a);
-                            }
-                        }
-                    }
+                    o.drop_rows_below(&team_id, &gone);
                 }
                 Some(TeamJoin::Everyone) => t.join = TeamJoin::Everyone,
                 None => {}
@@ -4964,6 +4955,14 @@ pub enum SystemCmd {
         /// release logged, which replays adding no rows, as it did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all_apps_rows: bool,
+        /// Closing the team (`join: invite`) takes, from whoever loses it
+        /// then (someone in it by inheritance alone), their direct rows in
+        /// the teams below it, as a removal from the team does, so a private
+        /// channel below does not keep them in. The API always sets it;
+        /// absent (`false`) in an entry an earlier release logged, which
+        /// replays keeping those rows.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        close_drops_below: bool,
     },
     /// Delete a team, the teams below it and their apps.
     DeleteTeam {
@@ -7288,6 +7287,7 @@ impl SystemMachine {
                 metadata,
                 actor,
                 all_apps_rows,
+                close_drops_below,
             } => {
                 let o = self.org_mut(&org)?;
                 if !o.teams.contains_key(&team) {
@@ -7359,6 +7359,18 @@ impl SystemMachine {
                     } else {
                         Vec::new()
                     };
+                // Who is in it before a close: those who lose it go from the
+                // teams below too.
+                let closing = close_drops_below && join == Some(TeamJoin::Invite);
+                let inside: Vec<AccountId> = if closing {
+                    o.members
+                        .keys()
+                        .filter(|m| o.in_team(m, &team))
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let t = o.teams.get_mut(&team).ok_or("no such team")?;
                 for a in all_apps {
                     if !t.removed.contains(&a) {
@@ -7377,6 +7389,11 @@ impl SystemMachine {
                 if let Some(m) = metadata {
                     t.metadata = m;
                 }
+                let gone: Vec<AccountId> = inside
+                    .into_iter()
+                    .filter(|m| !o.in_team(m, &team))
+                    .collect();
+                o.drop_rows_below(&team, &gone);
                 Ok(Value::Null)
             }
             SystemCmd::DeleteTeam {
@@ -8341,6 +8358,7 @@ mod tests {
             metadata: None,
             actor: "a".into(),
             all_apps_rows: true,
+            close_drops_below: true,
         };
         let round = |cmd: &SystemCmd| -> SystemCmd {
             serde_json::from_slice(&serde_json::to_vec(cmd).unwrap()).unwrap()
@@ -10456,6 +10474,7 @@ mod tests {
             metadata: Some(json!({ "app": { "package": "com.notes" } })),
             actor: "alice".into(),
             all_apps_rows: flag,
+            close_drops_below: true,
         };
         for flag in [true, false] {
             let mut m = fresh();
@@ -10624,6 +10643,76 @@ mod tests {
             .unwrap();
         let o = &m.state.orgs["org"];
         assert!(!o.in_team("bob", "dm") && !o.manages_team("bob", "dm"));
+    }
+
+    /// Closing an open team with a plain `UpdateTeam` takes, from whoever
+    /// loses it (in it by inheritance alone), their rows in the teams below
+    /// it, as a removal from the team does; whoever keeps it (a direct row)
+    /// keeps them. An `UpdateTeam` an earlier release logged (no
+    /// `close_drops_below`) replays keeping every row, as it did.
+    #[test]
+    fn closing_a_team_takes_the_rows_below_of_whoever_loses_it() {
+        let fresh = || {
+            let (mut m, _alice, _bob, _carol) = proven_cluster();
+            let o = m.state.orgs.get_mut("org").unwrap();
+            let _prev = o.members.insert("carol".into(), OrgRole::Member);
+            let _prev = o.teams.insert(
+                "chat".into(),
+                serde_json::from_value(json!({
+                    "teamId": "chat", "name": "Chat", "join": "everyone",
+                    "members": { "alice": true, "bob": false }
+                }))
+                .unwrap(),
+            );
+            // Carol, in Chat by inheritance, leads a private channel below
+            // it that Bob is in.
+            let _prev = o.teams.insert(
+                "dm".into(),
+                serde_json::from_value(json!({
+                    "teamId": "dm", "name": "dm", "join": "invite", "parent": "chat",
+                    "members": { "carol": true, "bob": false }
+                }))
+                .unwrap(),
+            );
+            m
+        };
+        let close = |flag: bool| SystemCmd::UpdateTeam {
+            org: "org".into(),
+            team: "chat".into(),
+            name: None,
+            join: Some(TeamJoin::Invite),
+            parent: None,
+            metadata: None,
+            actor: "alice".into(),
+            all_apps_rows: true,
+            close_drops_below: flag,
+        };
+        let mut m = fresh();
+        assert!(m.state.orgs["org"].in_team("carol", "chat"));
+        let _ok = m.run_authorized(close(true)).unwrap();
+        let o = &m.state.orgs["org"];
+        assert!(!o.in_team("carol", "chat"));
+        assert!(!o.in_team("carol", "dm") && !o.manages_team("carol", "dm"));
+        assert!(o.in_team("bob", "dm"), "Bob keeps Chat, and the channel");
+        assert!(!o.teams["chat"].removed.contains("carol"), "not barred");
+
+        // As logged before: the rows below stay.
+        let mut m = fresh();
+        let _ok = m.run_authorized(close(false)).unwrap();
+        let o = &m.state.orgs["org"];
+        assert!(!o.in_team("carol", "chat") && o.in_team("carol", "dm"));
+        let logged: SystemCmd = serde_json::from_value(json!({
+            "op": "updateTeam", "org": "org", "team": "chat", "join": "invite",
+            "actor": "alice"
+        }))
+        .unwrap();
+        assert!(matches!(
+            logged,
+            SystemCmd::UpdateTeam {
+                close_drops_below: false,
+                ..
+            }
+        ));
     }
 
     // ------------------------------------- an org app's owner, while a member
