@@ -27,14 +27,19 @@ any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 | `owner` (default outside an organization) | The owner only |
 | `accounts { accounts }` | The owner and these accounts |
 | `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
-| `team { team }` | The team's members (direct rows, and inheritance into an open team) |
+| `team { team }` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
 | `public` | Anyone, signed in or not (as `Caller::Public` when not) |
 
 The owner always reaches their app, except that an organization's app is
 reached only by the organization's current members: its owner and the accounts
 an `accounts` rule lists stop reaching it, and receiving its events, once they
 leave or are removed (the rule keeps their names, so being added back to the
-organization restores it). A caller who does not reach it gets `404`,
+organization restores it). An app on a team is reached by its owner only while
+they are in that team, as `owner_in_org` asks of the organization: an owner who
+leaves the team, is removed from it, or loses it when an open team is closed
+without them, stops reaching it (a person removed from Chat's app team no
+longer reaches the channels they created), and has it back once they are in
+the team again. A caller who does not reach it gets `404`,
 so its existence is not disclosed; with no credential, `401`. The check reads
 fresh system state, so removing someone from an organization or team holds on
 every node before their next request ([Reads of the system
@@ -49,11 +54,16 @@ or deleting it, upgrading it or making an upgrade key for it, uploading files
 to it or deleting its blobs. The organization's admins (and its owner) still
 transfer it to a member or delete it, so an organization cleans up an app whose
 owner left; `POST /apps/{app}/transfer` is open to them too, with their own
-passkey. A personal app (no organization) stays its owner's alone. The rule is
-judged where each command applies; `SetAccess`, `SetAppMetadata`,
+passkey. A personal app (no organization) stays its owner's alone. Likewise, an app on
+a team is managed by its owner only while they are in that team: out of it,
+they keep their name on it and none of the powers above, and the
+organization's admins (or whoever manages the team's apps) transfer it. The
+rules are judged where each command applies; `SetAccess`, `SetAppMetadata`,
 `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` entries an earlier
 release logged replay as that release judged them (ownership alone, and no
-admin transfer); the API marks new ones (`owner_in_org`).
+admin transfer, without `owner_in_org`; the owner without the team, without
+`owner_in_team`), as do `ScopeApps` entries, which find who reaches an
+instance; the API marks new ones.
 
 A member whose **direct row** in the app's team is **read-only** still reaches
 the app, but only its views run for them: any other call is refused with `403`
