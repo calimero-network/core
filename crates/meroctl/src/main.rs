@@ -206,6 +206,14 @@ fn print(v: &Value) -> eyre::Result<()> {
     Ok(())
 }
 
+/// A call's refusal with the node's `details` (an app error's `code` and `fields`), when it sent any.
+fn detailed(e: calimero_client::Error) -> eyre::Report {
+    match e.details() {
+        Some(d) if !d.is_null() => eyre::eyre!("{e} {d}"),
+        _ => e.into(),
+    }
+}
+
 fn trust(cli: &Cli, saved_mock: bool) -> Trust {
     Trust {
         allow_mock: cli.allow_mock || saved_mock,
@@ -357,7 +365,12 @@ async fn main() -> eyre::Result<()> {
                     Some(min_index) => Consistency::Stale { min_index },
                     None => Consistency::Strong,
                 };
-                serde_json::to_value(env.client.view(&app, &method, args, consistency).await?)?
+                serde_json::to_value(
+                    env.client
+                        .view(&app, &method, args, consistency)
+                        .await
+                        .map_err(detailed)?,
+                )?
             } else if let Some(file) = dev_passkey {
                 let mut pk = load_dev_passkey(&file)?;
                 let out = env
@@ -365,12 +378,13 @@ async fn main() -> eyre::Result<()> {
                     .call_confirmed(&app, &method, args, &mut pk)
                     .await;
                 save_passkey(&file, &pk)?;
-                serde_json::to_value(out?)?
+                serde_json::to_value(out.map_err(detailed)?)?
             } else {
                 serde_json::to_value(
                     env.client
                         .call(&app, &method, args, idempotency_key.as_deref())
-                        .await?,
+                        .await
+                        .map_err(detailed)?,
                 )?
             }
         }

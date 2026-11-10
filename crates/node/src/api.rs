@@ -2569,11 +2569,16 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
             "this node takes signed packages only (POST /packages); raw WASM is for development",
         ));
     }
-    if body.len() > 16 * 1024 * 1024 {
+    // The package limit: a raw bundle may be as large as the WASM a signed package
+    // carries (componentize-py builds are ~18 MiB uncompressed).
+    if body.len() > crate::packages::MAX_MPK_BYTES {
         return Err(ApiError::new(
             413,
             "TOO_LARGE",
-            "bundles are limited to 16 MiB",
+            &format!(
+                "bundles are limited to {} MiB",
+                crate::packages::MAX_MPK_BYTES >> 20
+            ),
         ));
     }
     let hash = hex::encode(sha256(&body));

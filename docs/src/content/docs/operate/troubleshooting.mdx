@@ -68,7 +68,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `403` "read-only in this team: the call would write" | A read-only team member's call that writes | Change their role, or call a view. |
 | `422 APP_ERROR` | The app's method returned an error | The app's own logic; see `message` and `details`. |
 | `413 ARGS_TOO_LARGE` | A call's arguments over the node's argument cap, refused before the call runs | Send less per call; pass large content as a blob and its id. |
-| `413 TOO_LARGE` | A call's log entry over 1 MiB, or a bundle over 16 MiB | Write less per call; keep large content in blobs. |
+| `413 TOO_LARGE` | A call's log entry over 1 MiB, or a bundle over 47 MiB | Write less per call; keep large content in blobs. |
 | `429 RATE_LIMITED` on events | The node has 4096 open streams | Use another node, or close idle streams. |
 
 ## Installs, apps and upgrades

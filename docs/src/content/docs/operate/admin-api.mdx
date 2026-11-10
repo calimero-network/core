@@ -82,7 +82,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
 | 409 | `CONFLICT` | The state does not allow it now. |
 | 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
-| 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
+| 413 | `TOO_LARGE` | Over a size limit (a bundle over 47 MiB, a log entry over 1 MiB). |
 | 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
 | 422 | `INIT_FAILED`, `APP_ERROR`, `UPGRADE_FAILED` | The app's code refused. |
 | 429 | `QUOTA_EXCEEDED`, `RATE_LIMITED` | An account quota, or a node's limit on open streams or ceremonies. |
@@ -130,7 +130,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
+| `POST /bundles` | installer | Upload raw WASM (47 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
 | `POST /packages` | installer | Upload a signed `.mpk`. Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk` |
 | `POST /packages/install` | installer | `{ package, version }` from the registry | `app install P@V` |
 | `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `app list` |

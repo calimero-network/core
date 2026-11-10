@@ -716,7 +716,10 @@ impl Node {
             .unwrap_or_default();
         match HostCore::new(app_id, state, applied, invocation, directory) {
             Ok(host) => {
-                let host = host.with_blobs(blobs).with_files(Arc::new(files));
+                let host = host
+                    .with_blobs(blobs)
+                    .with_files(Arc::new(files))
+                    .with_collections(&prepared.abi);
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
@@ -736,6 +739,10 @@ impl Node {
                     None => host,
                 };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
+                // PoC: an app's log lines (the SDK's host-collections guest-path lines among them).
+                for line in &out.logs {
+                    debug!(app = app_id, "app log: {line}");
+                }
                 let mut blobs: Vec<Blob> = out
                     .new_files
                     .iter_mut()

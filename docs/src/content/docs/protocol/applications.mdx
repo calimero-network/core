@@ -174,7 +174,7 @@ previous release still list every package to everyone.
 
 ## Development bundles
 
-`POST /bundles` takes raw WASM (at most 16 MiB) with no publisher signature. It
+`POST /bundles` takes raw WASM (at most 47 MiB, the package limit) with no publisher signature. It
 is refused unless the node allows unsigned bundles (`--dev`, or
 `allow_unsigned_bundles`). The node checks the WASM compiles, stores it on a
 majority of nodes, then records `PutBundle { hash, size }`. Raw bundles have no
