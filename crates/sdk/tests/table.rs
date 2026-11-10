@@ -4,7 +4,7 @@ use calimero_sdk::collections::{Counter, UnorderedMap};
 use calimero_sdk::encoding::value;
 use calimero_sdk::table::FieldSet;
 use calimero_sdk::{
-    FindOpts, KeyPart, MemStore, Record, StorageError, Store, Table, TableError, ToKey,
+    FindOpts, KeyPart, MemStore, RangeCursor, Record, StorageError, Store, Table, TableError, ToKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -531,4 +531,69 @@ fn a_record_may_hold_a_list_field() {
     let mut table: Table<Poll, MemStore> = Table::with_store("polls", MemStore::new());
     table.insert(poll.clone()).unwrap();
     assert_eq!(table.get("p1").unwrap(), Some(poll));
+}
+
+fn dump(store: &MemStore) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut cursor = store.range(&[], &[0xFF; 8], false);
+    let mut out = Vec::new();
+    loop {
+        let batch = RangeCursor::next(&mut cursor, 1_000);
+        if batch.is_empty() {
+            return out;
+        }
+        out.extend(batch);
+    }
+}
+
+/// `upsert_many` leaves what the upserts one by one leave and counts the keys that were
+/// new, a key repeated in the batch once.
+#[test]
+fn upsert_many_is_the_upserts_in_order() {
+    let (mut many, many_store) = table();
+    let (mut single, single_store) = table();
+    for t in [&mut many, &mut single] {
+        t.insert(contact("1", "a@x", "ada", "a", "lead")).unwrap();
+    }
+    let batch = vec![
+        contact("1", "b@x", "bob", "a", "won"),
+        contact("2", "a@x", "ada", "b", "lead"),
+        contact("3", "c@x", "cy", "c", "lead"),
+        contact("3", "d@x", "cy", "c", "won"),
+        contact("4", "c@x", "dee", "d", "lead"),
+    ];
+    assert_eq!(many.upsert_many(batch.clone()).unwrap(), 3);
+    for record in batch {
+        single.upsert(record).unwrap();
+    }
+    assert_eq!(dump(&many_store), dump(&single_store));
+    assert_eq!(many.upsert_many(Vec::new()).unwrap(), 0);
+}
+
+/// A unique clash between two records of the batch, or with a stored one, is `Duplicate`
+/// and writes nothing of the batch.
+#[test]
+fn upsert_many_is_all_or_nothing() {
+    let (mut t, store) = table();
+    t.insert(contact("1", "a@x", "ada", "a", "lead")).unwrap();
+    let before = dump(&store);
+    let writes = store.writes();
+    for batch in [
+        [
+            contact("2", "same@x", "bob", "b", "lead"),
+            contact("3", "same@x", "cy", "c", "lead"),
+        ],
+        [
+            contact("2", "b@x", "bob", "b", "lead"),
+            contact("3", "a@x", "cy", "c", "lead"),
+        ],
+    ] {
+        assert_eq!(
+            t.upsert_many(batch).unwrap_err(),
+            TableError::Duplicate {
+                index: "email".into()
+            }
+        );
+        assert_eq!(store.writes(), writes, "nothing written");
+        assert_eq!(dump(&store), before);
+    }
 }

@@ -3,11 +3,13 @@
 //! denial and generations apply unchanged. Each call is one-to-one with a WIT function of
 //! `calimero:app/collections`: the inner `Result` is the WIT `coll-error`, the outer a trap.
 
+use std::collections::BTreeMap;
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ciborium::Value;
 
-use super::{HostCore, MAX_RANGE_BATCH};
+use super::{HostCore, MAX_RANGE_BATCH, MAX_WRITES, TOO_MANY_WRITES};
 use crate::collections::{
     camel, canonical, check_wit_key, collection_fuel, decode_key, encode_key, encoded_len,
     field_part, read_value, record_in, record_out, value_in, value_out, write_value, CollEntry,
@@ -38,6 +40,18 @@ struct Entries {
     uniques: Vec<(String, Vec<u8>)>,
     counts: Vec<Vec<u8>>,
 }
+
+/// One record write checked and ready: its canonical bytes and the entries it owns before
+/// (`None`: a new key) and after.
+struct Planned {
+    bytes: Vec<u8>,
+    old: Option<Entries>,
+    new: Entries,
+}
+
+/// What the records checked so far in one call will write, by storage key (`None`: deleted):
+/// the record and unique keys a later record of the same batch reads.
+type Pending = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 
 fn str_part(s: &str) -> KeyPart {
     KeyPart::Str(s.to_owned())
@@ -231,6 +245,21 @@ impl HostCore {
     pub fn table_upsert(&mut self, table: &str, record: &str) -> Answer<()> {
         let bytes = input(&[Some(table)], &[]).saturating_add(record.len());
         self.metered(true, bytes, |host| host.put_record(table, record, true))
+    }
+
+    /// Upsert every record of `records` (each as [`Self::table_upsert`]) in one call, all or
+    /// nothing: each is converted and checked against the state the ones before it leave
+    /// (so two records clashing on a unique entry are `Duplicate`) before any is written.
+    /// Answers how many records had a key that was not there yet. Charged as the upserts
+    /// one by one would be, but [`crate::COLLECTION_BASE_FUEL`] once.
+    pub fn table_upsert_many(&mut self, table: &str, records: &[String]) -> Answer<u32> {
+        // Each record with the table name, as its own upsert's input; the name once if none.
+        let bytes = records
+            .iter()
+            .map(|record| table.len().saturating_add(record.len()))
+            .fold(0, usize::saturating_add)
+            .max(table.len());
+        self.metered(true, bytes, |host| host.upsert_many(table, records))
     }
 
     /// The record with this key, as JSON.
@@ -519,26 +548,81 @@ impl HostCore {
 
     fn put_record(&mut self, table: &str, record: &str, upsert: bool) -> Answer<()> {
         let schema = soft!(self.table_schema(table));
-        let (bytes, fields) = soft!(parse_record(&schema, record));
-        let new = soft!(entries(table, &schema, &fields));
-        let old = match self.coll_get(&new.record)? {
+        let planned = soft!(self.plan_put(table, &schema, record, upsert, &mut Pending::new())?);
+        self.apply(&planned)?;
+        Ok(Ok(()))
+    }
+
+    fn upsert_many(&mut self, table: &str, records: &[String]) -> Answer<u32> {
+        let schema = soft!(self.table_schema(table));
+        // Every record writes at least its own key: a batch that cannot fit the run's
+        // remaining writes is refused before any record is parsed.
+        if records.len() > MAX_WRITES.saturating_sub(self.writes) as usize {
+            return Err(HostDenied::new(TOO_MANY_WRITES));
+        }
+        let mut pending = Pending::new();
+        let mut planned = Vec::with_capacity(records.len());
+        for record in records {
+            planned.push(soft!(self.plan_put(
+                table,
+                &schema,
+                record,
+                true,
+                &mut pending
+            )?));
+        }
+        let mut added = 0u32;
+        for record in &planned {
+            if record.old.is_none() {
+                added += 1;
+            }
+            self.apply(record)?;
+        }
+        Ok(Ok(added))
+    }
+
+    /// Converts and checks one record write against the state seen through `pending` (the
+    /// writes of the records before it in the same call), then adds its own record and
+    /// unique keys to `pending`. Reads and meters exactly what the write alone would.
+    fn plan_put(
+        &mut self,
+        table: &str,
+        schema: &TableSchema,
+        record: &str,
+        upsert: bool,
+        pending: &mut Pending,
+    ) -> Answer<Planned> {
+        let (bytes, fields) = soft!(parse_record(schema, record));
+        let new = soft!(entries(table, schema, &fields));
+        let old = match self.pending_get(pending, &new.record)? {
             Some(_) if !upsert => return Ok(Err(CollError::Duplicate("key".into()))),
             Some(stored) => {
                 let (_, old_fields) = soft!(parse_stored(&stored));
-                Some(soft!(entries(table, &schema, &old_fields)))
+                Some(soft!(entries(table, schema, &old_fields)))
             }
             None => None,
         };
         for (name, key) in &new.uniques {
-            if let Some(owner) = self.coll_get(key)? {
+            if let Some(owner) = self.pending_get(pending, key)? {
                 if owner != new.record {
                     return Ok(Err(CollError::Duplicate(name.clone())));
                 }
             }
         }
-        self.coll_put(&new.record, &bytes)?;
-        self.reindex(old.as_ref(), Some(&new))?;
-        Ok(Ok(()))
+        pending.insert(new.record.clone(), Some(bytes.clone()));
+        for (_, key) in old.iter().flat_map(|old| &old.uniques) {
+            pending.insert(key.clone(), None);
+        }
+        for (_, key) in &new.uniques {
+            pending.insert(key.clone(), Some(new.record.clone()));
+        }
+        Ok(Ok(Planned { bytes, old, new }))
+    }
+
+    /// Writes a checked record and moves its index, unique and count entries.
+    fn apply(&mut self, planned: &Planned) -> Result<(), HostDenied> {
+        self.coll_put(&planned.new.record, &planned.bytes)?;
+        self.reindex(planned.old.as_ref(), Some(&planned.new))
     }
 
     /// Move the index, unique and count entries from `old` to `new` (as `Table::reindex`).
@@ -627,6 +711,19 @@ impl HostCore {
     fn measure(&mut self, bytes: usize, entries: usize) {
         self.meter.0 = self.meter.0.saturating_add(bytes);
         self.meter.1 = self.meter.1.saturating_add(entries);
+    }
+
+    /// [`Self::coll_get`] of a key `pending` may hold, metered alike either way.
+    fn pending_get(
+        &mut self,
+        pending: &Pending,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, HostDenied> {
+        let Some(written) = pending.get(key) else {
+            return self.coll_get(key);
+        };
+        self.measure(key.len() + written.as_ref().map_or(0, Vec::len), 1);
+        Ok(written.clone())
     }
 
     fn coll_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {

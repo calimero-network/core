@@ -320,6 +320,12 @@ pub(crate) fn table_put(table: &str, record: &str, upsert: bool) -> Host<(), Tab
     served(table, answer)
 }
 
+/// Upsert every record (JSON, [`to_json`]) in one call, all or nothing; how many were new.
+pub(crate) fn table_upsert_many(table: &str, records: &[String]) -> Host<u32, TableError> {
+    served_by_host!(table);
+    served(table, wit::table_upsert_many(table, records))
+}
+
 /// The record at `key`, as JSON.
 pub(crate) fn table_get(table: &str, key: &[KeyPart]) -> Host<Option<String>> {
     served_by_host!(table);

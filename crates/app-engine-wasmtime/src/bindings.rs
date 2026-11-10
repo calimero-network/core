@@ -553,6 +553,10 @@ impl collections::Host for StoreData {
         self.collection(|h| h.table_upsert(&table, &record))
     }
 
+    fn table_upsert_many(&mut self, table: String, records: Vec<String>) -> CollAnswer<u32> {
+        self.collection(|h| h.table_upsert_many(&table, &records))
+    }
+
     fn table_get(&mut self, table: String, k: collections::Key) -> CollAnswer<Option<String>> {
         self.collection(|h| h.table_get(&table, &key(k)))
     }

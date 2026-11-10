@@ -8,6 +8,7 @@
 //! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add` (D47).
 
 use core::marker::PhantomData;
+use std::collections::BTreeMap;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -292,6 +293,63 @@ impl<T: Record, S: Store> Table<T, S> {
         self.store.put(&new.record, &bytes);
         self.reindex(old.as_ref(), Some(&new));
         Ok(())
+    }
+
+    /// [`Self::upsert`] every record, in order, all or nothing: every record is encoded and
+    /// checked against the state the ones before it leave (a unique clash between two of
+    /// them is `Duplicate` too) before any is written. Answers how many records had a key
+    /// that was not there yet; a key repeated in the batch counts once. On the host, one
+    /// `table-upsert-many` call; the guest path writes the same keys and bytes.
+    pub fn upsert_many(&mut self, records: impl IntoIterator<Item = T>) -> Result<u32, TableError> {
+        let records: Vec<T> = records.into_iter().collect();
+        via_host!(S, {
+            let json = records
+                .iter()
+                .map(crate::host_collections::to_json)
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::host_collections::table_upsert_many(&self.name, &json)
+        });
+        // Records and unique entries the records before have written, by storage key
+        // (`None`: deleted), read before the store.
+        let mut pending: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+        let mut planned = Vec::with_capacity(records.len());
+        for record in &records {
+            let new = self.entries(record)?;
+            let bytes = value::to_vec(record)?;
+            let current = |key: &Vec<u8>| match pending.get(key) {
+                Some(written) => written.clone(),
+                None => self.store.get(key),
+            };
+            for (name, key) in &new.uniques {
+                if current(key).is_some_and(|owner| owner != new.record) {
+                    return Err(TableError::Duplicate {
+                        index: (*name).into(),
+                    });
+                }
+            }
+            let old = current(&new.record)
+                .map(|stored| value::from_slice::<T>(&stored))
+                .transpose()?
+                .map(|old| self.entries(&old))
+                .transpose()?;
+            pending.insert(new.record.clone(), Some(bytes.clone()));
+            for (_, key) in old.iter().flat_map(|old| &old.uniques) {
+                pending.insert(key.clone(), None);
+            }
+            for (_, key) in &new.uniques {
+                pending.insert(key.clone(), Some(new.record.clone()));
+            }
+            planned.push((bytes, old, new));
+        }
+        let mut added = 0;
+        for (bytes, old, new) in &planned {
+            if old.is_none() {
+                added += 1;
+            }
+            self.store.put(&new.record, bytes);
+            self.reindex(old.as_ref(), Some(new));
+        }
+        Ok(added)
     }
 
     /// The record with this key.

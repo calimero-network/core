@@ -116,6 +116,33 @@ impl HostTable {
         Ok(())
     }
 
+    /// `upsert_many` of one record per id (email by position, owner and note shared): how
+    /// many were new. With `catch`, a refusal is answered instead of failing the call, so the
+    /// run keeps whatever the batch wrote (nothing, all or nothing).
+    pub fn upsert_many(
+        &mut self,
+        item_ids: Vec<u32>,
+        emails: Vec<Option<String>>,
+        owner_name: String,
+        note: String,
+        catch: bool,
+    ) -> app::Result<Value> {
+        let records = item_ids
+            .into_iter()
+            .zip(emails)
+            .map(|(item_id, email)| Item {
+                item_id: item_id.into(),
+                owner_name: owner_name.clone(),
+                email,
+                note: note.clone(),
+            });
+        match self.shop_items.upsert_many(records) {
+            Ok(added) => Ok(json!({ "added": added })),
+            Err(error) if catch => Ok(json!({ "refused": format!("{error:?}") })),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     #[app::view]
     pub fn get(&self, item_id: u64) -> app::Result<Option<Value>> {
         Ok(self.shop_items.get(&item_id)?.as_ref().map(item))

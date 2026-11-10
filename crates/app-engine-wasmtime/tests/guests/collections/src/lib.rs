@@ -92,6 +92,34 @@ impl Coll {
         Ok(())
     }
 
+    /// One host `table-upsert-many` of records `0..n` and record 0 again: how many were new.
+    pub fn host_upsert_many(&mut self, n: u32) -> app::Result<u32> {
+        let records = (0..n)
+            .chain((n > 0).then_some(0))
+            .map(|id| json(&item(id)))
+            .collect::<app::Result<Vec<_>>>()?;
+        Ok(coll::table_upsert_many("mirror", &records).map_err(soft)?)
+    }
+
+    /// The same batch from a view: the host refuses it.
+    #[app::view]
+    pub fn view_upsert_many(&self) -> app::Result<u32> {
+        Ok(coll::table_upsert_many("mirror", &[json(&item(1))?]).map_err(soft)?)
+    }
+
+    /// A host `table-upsert-many` of a good record and one of the wrong type: the soft
+    /// error, the good record not written.
+    pub fn bad_batch(&mut self) -> app::Result<String> {
+        let records = [json(&item(1))?, r#"{"id":"x"}"#.to_owned()];
+        match coll::table_upsert_many("mirror", &records) {
+            Err(coll::CollError::BadRecord(why)) => Ok(why),
+            other => Err(AppError::with_fields(
+                "NotBadRecord",
+                serde_json::json!({ "answer": format!("{other:?}") }),
+            )),
+        }
+    }
+
     /// `n` host `map-insert`s of new keys.
     pub fn map_inserts(&mut self, n: u32) -> app::Result<()> {
         for i in 0..n {

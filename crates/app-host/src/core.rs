@@ -57,6 +57,8 @@ pub const MAX_RUN_BYTES: usize = 1024 * 1024;
 pub const ENTRY_TOO_LARGE: &str = "entry too large";
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
 pub const MAX_WRITES: u32 = 10_000;
+/// The refusal of a write past [`MAX_WRITES`].
+const TOO_MANY_WRITES: &str = "more than 10,000 writes in one run";
 /// Entries one `range_next` returns at most.
 pub const MAX_RANGE_BATCH: u32 = 1_000;
 /// Range cursors one run may hold open at once.
@@ -1177,7 +1179,7 @@ impl HostCore {
             return Err(self.denied("storage writes"));
         }
         if self.writes >= MAX_WRITES {
-            return Err(HostDenied::new("more than 10,000 writes in one run"));
+            return Err(HostDenied::new(TOO_MANY_WRITES));
         }
         Ok(())
     }

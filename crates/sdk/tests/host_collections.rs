@@ -492,6 +492,82 @@ fn same_state_with_and_without_host_collections() {
     assert_eq!(off.export_state(), on.export_state(), "the same state");
 }
 
+/// `Table::upsert_many` answers and stores the same on both builds (the host's one
+/// `table-upsert-many` call, the guest path's loop): new, existing and repeated keys, a
+/// unique clash inside the batch and with a stored record (caught, so the run commits and
+/// shows the batch wrote nothing), and the batch is cheaper on the host.
+#[test]
+fn upsert_many_is_the_same_on_both_builds() {
+    let mut off = TestApp::new(host_table(false), Org::new(), T0);
+    let mut on = TestApp::new(host_table(true), Org::new(), T0);
+    let batch = |r: &mut Run<'_>, ids: &[u32], emails: &[Option<&str>], catch: bool| {
+        r.call(
+            "upsertMany",
+            json!({"itemIds": ids, "emails": emails, "ownerName": "ann", "note": "b", "catch": catch}),
+        )
+    };
+    let scenario = |r: &mut Run<'_>| {
+        let _ = r.call(
+            "insert",
+            json!({"itemId": "1", "ownerName": "bob_two", "email": "a@x", "note": "x"}),
+        );
+        // 1 exists (its email moves), 3 repeats (once new); 4 takes the email 3 gave up.
+        let _ = batch(
+            r,
+            &[1, 2, 3, 3, 4],
+            &[
+                Some("b@x"),
+                Some("a@x"),
+                Some("c@x"),
+                Some("d@x"),
+                Some("c@x"),
+            ],
+            false,
+        );
+        // Clashes, inside the batch and with a stored record: caught, nothing written.
+        let _ = batch(r, &[5, 6], &[Some("e@x"), Some("e@x")], true);
+        let _ = batch(r, &[7, 8], &[None, Some("a@x")], true);
+        let _ = batch(r, &[], &[], false);
+        reads(r);
+    };
+    let a = steps(&mut off, scenario);
+    let b = steps(&mut on, scenario);
+    assert_same("upsert_many", &a, &b);
+    assert_served_by_host("upsert_many", &a, &b);
+    assert_eq!(a[1].1, Ok(json!({"added": 3})));
+    for step in [&a[2], &a[3]] {
+        let refused = step.1.as_ref().unwrap()["refused"].as_str().unwrap();
+        assert!(refused.contains("byEmail"), "{refused}");
+    }
+    assert_eq!(a[4].1, Ok(json!({"added": 0})));
+    assert_on_cheaper(
+        &a,
+        &b,
+        "call upsertMany {\"catch\":false,\"emails\":[\"b@x\"",
+    );
+    assert_eq!(off.export_state(), on.export_state(), "the same state");
+    let ids = |t: &mut TestApp| {
+        let page = t
+            .as_("owner")
+            .view(
+                "scan",
+                json!({"cursor": null, "limit": 100, "reverse": false}),
+            )
+            .unwrap();
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["itemId"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&mut on),
+        ["1", "2", "3", "4"],
+        "the refused batches wrote nothing"
+    );
+}
+
 #[test]
 fn guest_written_state_reads_back_through_host_collections() {
     assert!(imports_collections(host_table(true)));

@@ -1624,6 +1624,39 @@ fn records_cross_the_interface_as_json() {
     assert_eq!(texts, [record, record, "false"]);
 }
 
+/// `table-upsert-many` writes a batch in one crossing and answers how many keys were new
+/// (a key repeated in the batch is not); one bad record refuses the batch, nothing written.
+#[test]
+fn a_batch_upsert_crosses_once() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let out = coll_run(&fx, &app, "hostUpsertMany", r#"{"n":50}"#, heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let added: u32 = serde_json::from_slice(&out.result).unwrap();
+    assert_eq!(added, 50, "record 0 sent twice is new once");
+    assert_eq!(
+        out.diff.len(),
+        101,
+        "50 records, 50 index entries and the count"
+    );
+
+    let out = coll_run(&fx, &app, "badBatch", "", heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert!(out.diff.is_empty(), "nothing of the batch written");
+    let why: String = serde_json::from_slice(&out.result).unwrap();
+    assert!(why.contains("field `id`"), "{why}");
+
+    // A view may not write: the batch traps.
+    let host = coll_host(&app, InvocationKind::View, "viewUpsertMany", "");
+    let out = fx.engine.invoke(&app, host, heavy());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+}
+
 /// The fuel calibration: the same 3-field insert with one index and one count, through the
 /// SDK's `Table` and through `table-insert`. Prints the numbers the constants' doc cites.
 #[test]

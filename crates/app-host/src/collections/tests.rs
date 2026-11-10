@@ -20,9 +20,10 @@ use super::{
 };
 use crate::abi::Abi;
 use crate::core::HostCore;
-use crate::core::MAX_RUN_BYTES;
+use crate::core::{MAX_RUN_BYTES, MAX_WRITES};
 use crate::state::{KeyValue, GENERATION};
 use crate::types::{Caller, Directory, HostDenied, Invocation, InvocationKind, OrgRole};
+use crate::COLLECTION_BASE_FUEL;
 
 #[derive(calimero_sdk::Record, Clone, Debug, PartialEq)]
 #[table(
@@ -949,6 +950,10 @@ fn writes_in_a_view_are_denied() {
     let key = [s("o1"), KeyPart::Int(1)];
     assert!(host.table_insert(TABLE, &record).is_err());
     assert!(host.table_upsert(TABLE, &record).is_err());
+    assert!(host
+        .table_upsert_many(TABLE, std::slice::from_ref(&record))
+        .is_err());
+    assert!(host.table_upsert_many(TABLE, &[]).is_err());
     assert!(host.table_remove(TABLE, &key).is_err());
     assert!(host.map_insert(MAP, &key, "\"v\"").is_err());
     assert!(host.map_remove(MAP, &key).is_err());
@@ -975,6 +980,9 @@ fn collections_in_migrate_are_denied() {
     let key = [s("o1"), KeyPart::Int(1)];
     assert!(host.table_insert(TABLE, &record).is_err());
     assert!(host.table_upsert(TABLE, &record).is_err());
+    assert!(host
+        .table_upsert_many(TABLE, std::slice::from_ref(&record))
+        .is_err());
     assert!(host.table_get(TABLE, &key).is_err());
     assert!(host.table_remove(TABLE, &key).is_err());
     assert!(host.table_find(TABLE, None, &[], None, 1, false).is_err());
@@ -1229,4 +1237,164 @@ fn an_index_entry_not_holding_a_record_key_is_refused() {
             "an index entry not holding a record key of this table".into()
         )))
     );
+}
+
+fn texts(records: &[Member]) -> Vec<String> {
+    records.iter().map(json_of).collect()
+}
+
+/// A batch of new keys, existing keys and a key repeated in the batch answers the new ones
+/// and leaves what the single upserts (on the host and in the SDK) leave, charged as those
+/// upserts but for one base fee.
+#[test]
+fn table_upsert_many_stores_what_single_upserts_would() {
+    let store = MemStore::new();
+    let mut table: Members = Table::with_store(TABLE, store.clone());
+    let sdk_many_store = MemStore::new();
+    let mut sdk_many: Members = Table::with_store(TABLE, sdk_many_store.clone());
+    let mut many = call();
+    let mut single = call();
+    let first = [
+        member("o1", 1, "ann", Some("a@x")),
+        member("o1", 2, "ann", None),
+    ];
+    for record in &first {
+        table.insert(record.clone()).unwrap();
+        sdk_many.insert(record.clone()).unwrap();
+        ok(many.table_insert(TABLE, &json_of(record)));
+        ok(single.table_insert(TABLE, &json_of(record)));
+    }
+    let batch = [
+        // Existing: the owner (index, count) and the email (unique) move.
+        member("o1", 1, "bob", Some("b@x")),
+        // New, taking the email the record before gave up.
+        member("o1", 3, "cyd", Some("a@x")),
+        // New, then again in the same batch: counted once, the last one stays.
+        member("o2", 1, "dee", Some("d@x")),
+        member("o2", 1, "eve", Some("e@x")),
+        // Existing, unchanged.
+        member("o1", 2, "ann", None),
+        // New, taking the email the repeated record gave up within the batch.
+        member("o2", 2, "fay", Some("d@x")),
+    ];
+    let (fuel_many, fuel_single) = (many.host_fuel(), single.host_fuel());
+    assert_eq!(ok(many.table_upsert_many(TABLE, &texts(&batch))), 3);
+    assert_eq!(sdk_many.upsert_many(batch.clone()).unwrap(), 3);
+    for record in &batch {
+        ok(single.table_upsert(TABLE, &json_of(record)));
+        table.upsert(record.clone()).unwrap();
+    }
+    assert_eq!(dump(&mut many), dump(&mut single), "as the single upserts");
+    assert_eq!(dump(&mut many), sdk_dump(&store), "as the SDK");
+    assert_eq!(
+        dump(&mut many),
+        sdk_dump(&sdk_many_store),
+        "as the SDK's upsert_many"
+    );
+    assert_eq!(many.write_count(), single.write_count());
+    let (fuel_many, fuel_single) = (
+        many.host_fuel() - fuel_many,
+        single.host_fuel() - fuel_single,
+    );
+    let n = batch.len() as u64;
+    assert_eq!(
+        fuel_many,
+        fuel_single - (n - 1) * COLLECTION_BASE_FUEL,
+        "the single upserts' charge but one base fee"
+    );
+    // An empty batch writes nothing and answers 0, for its base fee and the table name.
+    let (before, writes) = (many.host_fuel(), many.write_count());
+    assert_eq!(ok(many.table_upsert_many(TABLE, &[])), 0);
+    assert_eq!(many.write_count(), writes);
+    assert_eq!(many.host_fuel() - before, collection_fuel(TABLE.len(), 0));
+}
+
+/// One record not of its declared types refuses the batch: nothing of it is written, the
+/// records before it included.
+#[test]
+fn table_upsert_many_with_a_bad_record_writes_nothing() {
+    let mut host = call();
+    ok(host.table_insert(TABLE, &json_of(&member("o1", 1, "ann", Some("a@x")))));
+    let before = dump(&mut host);
+    let writes = host.write_count();
+    let mut records = texts(&[
+        member("o1", 1, "bob", None),
+        member("o1", 2, "cyd", Some("c@x")),
+    ]);
+    records.push(r#"{"org":"o1"}"#.to_owned());
+    records.push(json_of(&member("o1", 3, "dee", None)));
+    assert!(matches!(
+        host.table_upsert_many(TABLE, &records),
+        Ok(Err(CollError::BadRecord(_)))
+    ));
+    assert_eq!(host.write_count(), writes, "nothing written");
+    assert_eq!(dump(&mut host), before);
+}
+
+/// Two records of one batch taking the same unique entry clash with each other: `duplicate`,
+/// and nothing of the batch is written. So does one taking an entry another record holds.
+#[test]
+fn table_upsert_many_refuses_a_unique_clash_within_the_batch() {
+    let mut host = call();
+    ok(host.table_insert(TABLE, &json_of(&member("o1", 1, "ann", Some("a@x")))));
+    let before = dump(&mut host);
+    let writes = host.write_count();
+    for batch in [
+        [
+            member("o1", 2, "bob", Some("same@x")),
+            member("o1", 3, "cyd", Some("same@x")),
+        ],
+        [
+            member("o1", 2, "bob", Some("b@x")),
+            member("o1", 3, "cyd", Some("a@x")),
+        ],
+    ] {
+        assert_eq!(
+            host.table_upsert_many(TABLE, &texts(&batch)),
+            Ok(Err(CollError::Duplicate("byEmail".into())))
+        );
+        assert_eq!(host.write_count(), writes, "nothing written");
+        assert_eq!(dump(&mut host), before);
+    }
+    // The same key twice is not a clash with itself.
+    let twice = [
+        member("o1", 2, "bob", Some("b@x")),
+        member("o1", 2, "bob", Some("b@x")),
+    ];
+    assert_eq!(ok(host.table_upsert_many(TABLE, &texts(&twice))), 1);
+}
+
+/// One batch of N records costs more than one upsert and less than N of them.
+#[test]
+fn a_batch_costs_less_than_its_single_upserts() {
+    const N: u64 = 20;
+    let records: Vec<Member> = (0..N)
+        .map(|i| member("o1", i, "ann", Some(&format!("{i}@x"))))
+        .collect();
+    let mut singles = call();
+    for record in &records {
+        ok(singles.table_upsert(TABLE, &json_of(record)));
+    }
+    let mut one = call();
+    ok(one.table_upsert(TABLE, &json_of(&records[0])));
+    let mut batch = call();
+    assert_eq!(ok(batch.table_upsert_many(TABLE, &texts(&records))), 20);
+    let (one, singles, batch) = (one.host_fuel(), singles.host_fuel(), batch.host_fuel());
+    println!("one upsert {one}; {N} single upserts {singles}; one batch of {N} {batch}");
+    assert!(
+        batch > one && batch < singles,
+        "{one} < {batch} < {singles}"
+    );
+    assert_eq!(batch, singles - (N - 1) * COLLECTION_BASE_FUEL);
+}
+
+/// A batch that could not fit the run's remaining writes (each record writes its key at
+/// least) is refused before any record is parsed.
+#[test]
+fn a_batch_past_the_write_cap_is_denied() {
+    let mut host = call();
+    let records = vec![String::new(); MAX_WRITES as usize + 1];
+    let denied = host.table_upsert_many(TABLE, &records).unwrap_err();
+    assert!(denied.0.contains("10,000 writes"), "{denied:?}");
+    assert_eq!(host.write_count(), 0);
 }
