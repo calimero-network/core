@@ -171,6 +171,33 @@ refreshToken }`.
   Only the account's own credentials read them: no operator, organization or
   deployment route shows them.
 
+### Activity
+
+`GET /auth/activity` (`meroctl account activity`) answers what the account's
+passkeys did, newest first: `{ activity: [{ at, passkey, kind, app, origin,
+method, subject }] }`. Every key is present; the ones an entry's kind does
+not have are `null`.
+
+- `kind: "signIn"`: a sign-up, a sign-in or a recovery's finish with
+  `passkey`, at `at` (Unix seconds). `app` and `origin` are the package and
+  registered origin the session is bound to (`null`: the cluster's own
+  origin). A refresh is no sign-in, and a sign-in that repeats the newest
+  entry (same passkey, app and origin) only moves its `at`.
+- `kind: "approval"`: a change `passkey` approved with a step-up (`412
+  CONFIRM_REQUIRED`), with the `method` (`__add_passkey`, `__create_api_key`,
+  `__upgrade`, `__create_invite`, ...) and `subject` (an app id,
+  `org:<id>`, `account:<id>`, ...) its consent states; never its arguments.
+  Approvals inside an app (an app's own confirm methods) are the app's, and
+  are not listed.
+
+The account keeps the last 100 entries; the oldest goes first. A removed
+passkey's entries stay. `?after=T` answers only entries after `T`. Entries
+are kept from 1.0.0-rc.15: what a release before did is not listed (its log
+entries carry no time, and replaying them adds nothing). The route takes the
+account holder's own session on the cluster's origin, as `GET /auth/sessions`
+does: never an API key or a package-bound session (`403`). No operator,
+organization or deployment route shows any entry.
+
 ## API keys
 
 Created by an account holder with a passkey session and approved with a
