@@ -25,6 +25,11 @@ this one API.
 - A node started with `--dev` also accepts plain requests; a TDX node refuses
   them.
 - Requests are limited to 64 MiB.
+- The path carries no version: the API changes additively, and a route on its
+  way out answers with a `Deprecation` header (RFC 9745, the day it was
+  deprecated) and a `Link` (`rel="deprecation"`) to
+  [Compatibility](/operate/compatibility/), which says how long it stays
+  (`crates/node/api-deprecations.toml` lists them).
 
 Use a client that does this: `meroctl`, `calimero-client` (Rust), mero-js
 `CalimeroClient`, or calimero-client-py `CloudClient`. A hand-written `curl`

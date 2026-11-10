@@ -18,11 +18,13 @@ A confidential cloud for collaborative apps. Apps are written in Rust or JavaScr
 
 - **Reproduce first**: write the failing test at the layer a user hits the bug and watch it go red before changing code.
 - **Blind spot**: scenarios and the process suite run one build on fresh state, so they never test backward compatibility; an on-disk or wire format change needs its own migration test.
+- **Old shapes**: a stored or replicated shape (row, log entry, snapshot, sealed file record) changes by raising its format version (`STORE_FORMAT`, `SNAPSHOT_FORMAT`, `ENTRY_FORMAT`) and keeping a reader for the old one, with a test that reads data written in the old shape ([Compatibility](docs/src/content/docs/operate/compatibility.mdx), "Changing a stored format").
 
 ## Definition of Done
 
 - **Gates**: run `./scripts/check-like-ci.py` before opening a PR; it reads `.github/workflows/ci-checks.yml` and runs every job the required `Rust` check waits on (`--list` shows them, `--only <name>` runs a subset).
   Run clippy by hand with `-D warnings`, as CI does; `-A warnings` allows every lint and can only pass.
+- **Compatibility**: a route or JSON field of the API is removed only after its `[[deprecated]]` entry in `crates/node/api-deprecations.toml` reaches `remove_after` (3 releases), and a WIT change bumps `calimero:app`'s version (`Compatibility` in ci-checks); a PR whose `Door:` is one-way names its `Reader:` or declares `Hard cutover:` with a CHANGELOG line, the `[[cutover]]` entry and mdma's `CUTOVERS` line ([Compatibility](docs/src/content/docs/operate/compatibility.mdx)).
 - **Proof**: a bug fix's PR description shows the reproduction (test, command or scenario file) and its before and after output; the reproducing test stays as the regression test.
 - **Docs**: update the README, `AGENTS.md`, crate docs or `docs/` page the change makes stale, no later than one day after merge.
 - **Merge**: a PR merges when CI is green, every meroreviewer and Cursor Bugbot thread is fixed or answered and resolved, and branch protection's human review is approved.

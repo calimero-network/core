@@ -83,6 +83,13 @@ WORKFLOWS = {
             "scripts/tests/pack-component-test.py",
             "scripts/install-mero-app-build.sh",
             "scripts/install-mero-compute.sh",
+            "scripts/check-api-compat.py",
+            "scripts/tests/check-api-compat-test.py",
+            "scripts/check-compat-door.py",
+            "scripts/check-trust-boundary.py",
+            "scripts/tests/check-compat-door-test.py",
+            "scripts/fetch-release-app.py",
+            ".github/upgrade-from",
         ),
     ),
     "release": (

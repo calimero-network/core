@@ -41,6 +41,24 @@ sdk-ref: <your-mero-js-branch>
 py-ref: <your-calimero-client-py-branch>
 ```
 
+## Compatibility
+
+What this PR does to earlier releases' data, peers, apps and clients
+([docs/.../operate/compatibility.mdx](https://github.com/calimero-network/core/blob/master/docs/src/content/docs/operate/compatibility.mdx)).
+A two-way door: anything it writes, the release before reads, and it removes
+nothing earlier releases rely on. A one-way door names its reader, or declares
+the hard cutover (with a "Hard cutover" line in CHANGELOG.md, a `[[cutover]]`
+entry in `crates/node/api-deprecations.toml` for an API, WIT or ABI removal, and
+mdma's `CUTOVERS` line). The `Compatibility door` check reads this block, and
+requires it when the PR moves a format version.
+
+**Door:** two-way
+
+For a one-way door, add a line of one of these shapes:
+
+- a `Reader:` line naming the migration step or decoder for the old shape, and the test that reads it;
+- a `Hard cutover:` line saying what breaks, and for whom.
+
 ## Trust boundary
 
 Required when this PR touches a path in `TRUST_BOUNDARY_PATHS` in `scripts/check-trust-boundary.py`; CI fails if an item is missing or unanswered.

@@ -125,6 +125,7 @@ without saying why; a stale or reasonless entry fails too.
 | `SCENARIO_TIMEOUT_SECS` | `600` | A scenario still running after this, plus its own fuzzing (each `fuzzy_test` step's `SCENARIO_FUZZY_SECONDS`), fails |
 | `SCENARIO_REPEAT_CAP` | none | Most iterations of a `repeat` step |
 | `CORE_WASM_DIR` | `$CARGO_TARGET_DIR/workflow-wasm` | Where `{{env.CORE_WASM_DIR}}` fixtures live |
+| `SCENARIO_FILES` | none | Comma-separated cluster scenario files to run instead of the discovered ones (`crates/node/tests/previous-release/kv-store.json`, which needs the previous release's bundle in `PREVIOUS_RELEASE_DIR`: `scripts/fetch-release-app.py`) |
 
 After each `call` the runner waits, up to 10 s, until every replica has applied
 it. A call that does not settle
@@ -550,7 +551,10 @@ every node in the process suite (its rolling upgrade moves to a copy of the
 same binary unless `--upgrade-merod` names another), so neither tests data
 written by an older version. A change to an on-disk or wire format
 needs its own migration test, as `calimero-log`'s `migration_tests.rs` does for
-the `log.redb` store.
+the `log.redb` store. What does test across releases, and what a change that
+breaks one declares, is in [Compatibility](/operate/compatibility/): ci-checks'
+`Compatibility` job (no route, field, WIT or ABI version dropped) and `Apps of
+the previous release` (the last release's kv bundle on this tree's node).
 
 ## Proving a fix
 

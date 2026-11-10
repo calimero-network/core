@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Compatibility, written down and checked**. The policy and
+  matrix of what each release keeps for the releases, apps, clients and data before
+  it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
+  ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
+  the API removed unless `crates/node/api-deprecations.toml` deprecated it 3
+  releases before or declares a cutover; no WIT change without its version; no ABI
+  version dropped) and `Apps of the previous release` (the last release's signed
+  kv bundle installed, run and upgraded on this tree's node). A route the file
+  deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
+  policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
+  checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
+
 ## [1.0.0-rc.15] - 2026-11-10
 
 ### Added
