@@ -2823,6 +2823,7 @@ fn package_json(
             "size": v.mpk_size,
             "source": v.source,
             "services": v.services,
+            "components": v.components,
             "metadata": v.metadata,
             "outbound": v.outbound,
             "installedBy": v.installed_by,
@@ -3034,7 +3035,7 @@ async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     let r = s.offered_release(o)?;
-                    Some((o.version.clone(), r.services.clone(), r.compute.clone()))
+                    Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
             releases.sort_by(|a, b| a.0.cmp(&b.0));
@@ -3212,6 +3213,7 @@ async fn app_create(
     }
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
+    let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org
     } else {
@@ -3236,13 +3238,14 @@ async fn app_create(
                 last_upgrade: None,
                 deployment: body.deployment,
                 compute_bundle,
+                components,
                 release,
             }),
         })
         .await?;
-    // Wait for the app's first entry (init) to commit somewhere.
+    // Wait for the app's first entry (init) to commit somewhere; a compute-only app has none.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
+    while components.is_app() {
         match app_ready(&node, &app_id).await {
             Some(Ok(())) => break,
             Some(Err(error)) => {
@@ -3762,6 +3765,7 @@ async fn component_intents(
     p: Principal,
     body: IntentBody,
 ) -> Result<Response, ApiError> {
+    app.require_app_component()?;
     let app_id = app.app_id.clone();
     let method = node
         .prepared_for(&node.running_bundle(app))
@@ -4406,6 +4410,13 @@ async fn run_upgrade(
                 "an app whose owner upgrades it is not moved to a release its publisher upgrades",
             ));
         }
+        if s.components_of(release.as_ref()) != a.components {
+            return Some(ApiError::new(
+                409,
+                "COMPONENTS_CHANGED",
+                "an app keeps the components it was made with: its package cannot gain or lose its app component in an upgrade",
+            ));
+        }
         s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
             .map(|stall| crate::node::stalled(&stall))
     });
@@ -4414,15 +4425,30 @@ async fn run_upgrade(
         note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
         return Err(e);
     }
-    let applied = match node
-        .call(&CallRequest::host(
+    // A compute-only app has no group state to switch: the directory record is all there is.
+    let compute_only = node.sys(|s| !s.components_of(release.as_ref()).is_app());
+    if compute_only && migrate.is_some() {
+        return Err(ApiError::no_app_component());
+    }
+    let ran = if compute_only {
+        Ok(crate::app::Applied {
+            index: 0,
+            status: Status::Ok,
+            result: Value::Null,
+            error: Value::Null,
+            events: Vec::new(),
+            conflict: false,
+        })
+    } else {
+        node.call(&CallRequest::host(
             app_id.clone(),
             "__upgrade",
             json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate }),
             who.caller.clone(),
         ))
         .await
-    {
+    };
+    let applied = match ran {
         Ok(a) => a,
         Err(e) => {
             let error = json!({ "code": e.code, "message": e.message });
@@ -4581,7 +4607,7 @@ fn target_bundle(
         if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
             return None;
         }
-        let bundle = v.services.get(&service).cloned()?;
+        let bundle = v.app_parts().get(&service).cloned()?;
         Some(Target {
             bundle,
             compute_bundle: v.compute.get(&service).cloned(),
@@ -9904,7 +9930,7 @@ async fn deployment_orgs(
                 let version = s.packages.get(&o.package).and_then(|p| {
                     p.versions
                         .values()
-                        .find(|v| v.services.values().any(|h| *h == a.bundle))
+                        .find(|v| v.app_parts().values().any(|h| *h == a.bundle))
                 });
                 if let Some(v) = version {
                     let _new = entry.apps.insert((app.as_str(), v.version.as_str()));
@@ -10145,7 +10171,7 @@ async fn ops_upgrade(
                     .and_then(|p| p.versions.get(&version))
                     .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
                     .and_then(|v| {
-                        let bundle = v.services.get(&service).cloned()?;
+                        let bundle = v.app_parts().get(&service).cloned()?;
                         Some(Target {
                             bundle,
                             compute_bundle: v.compute.get(&service).cloned(),

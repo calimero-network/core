@@ -330,7 +330,8 @@ fn take_artifact(found: &HashMap<&str, Arc<[u8]>>, path: &str) -> eyre::Result<A
 pub struct VerifiedWasm {
     /// Service name. `None` for single-service bundles.
     pub name: Option<String>,
-    pub bytes: Arc<[u8]>,
+    /// The app component; `None` for a compute-only service.
+    pub bytes: Option<Arc<[u8]>>,
     /// The service's compute component, when the manifest declares one.
     pub compute: Option<Arc<[u8]>>,
 }
@@ -411,7 +412,9 @@ impl VerifiedBundle {
         let frontend_files = frontend.map_or(&[][..], |f| &f.files[..]);
         let mut wanted = BTreeMap::new();
         for artifact in &artifacts {
-            let _ = wanted.insert(artifact.wasm.path.as_str(), u64::MAX);
+            if let Some(wasm) = artifact.wasm {
+                let _ = wanted.insert(wasm.path.as_str(), u64::MAX);
+            }
             if let Some(compute) = artifact.compute {
                 let _ = wanted.insert(compute.path.as_str(), u64::MAX);
             }
@@ -424,10 +427,16 @@ impl VerifiedBundle {
 
         let mut wasm = Vec::new();
         for artifact in &artifacts {
-            let bytes = take_artifact(&found, &artifact.wasm.path)?;
             // Per artifact, never per read: two services may declare different
             // digests for one path, and sharing the bytes must not share the check.
-            verify_artifact_digest(artifact.wasm, &bytes)?;
+            let bytes = artifact
+                .wasm
+                .map(|w| {
+                    let bytes = take_artifact(&found, &w.path)?;
+                    verify_artifact_digest(w, &bytes)?;
+                    Ok::<_, eyre::Report>(bytes)
+                })
+                .transpose()?;
             let compute = artifact
                 .compute
                 .map(|c| {
@@ -462,7 +471,7 @@ impl VerifiedBundle {
                 .wasm_artifacts()
                 .into_iter()
                 .find(|a| a.name == Some(name))
-                .map(|a| a.wasm)
+                .and_then(|a| a.wasm)
                 .ok_or_else(|| eyre::eyre!("service '{}' not found in bundle manifest", name)),
             None => self
                 .manifest

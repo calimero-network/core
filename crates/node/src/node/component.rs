@@ -1049,6 +1049,7 @@ impl Node {
         g: &Group<AppMachine>,
         app: &AppRecord,
     ) -> Result<crate::app::Applied, ApiError> {
+        app.require_app_component()?;
         // A component the engine refuses fails `init` for good (reported as
         // INIT_FAILED); anything else is retried by `reconcile`.
         // The bundle the group names if an upgrade gave it one before init applied
@@ -1214,6 +1215,10 @@ impl Node {
     /// Propose the latest due slot of each of the app's timers not yet applied
     /// (one catch-up tick for a gap). Nothing runs before the app is initialized.
     async fn tick_app(&self, g: &Arc<Group<AppMachine>>) {
+        let id = g.read_local(|m, _| m.app_id.clone());
+        if self.sys(|s| s.apps.get(&id).is_none_or(|a| !a.components.is_app())) {
+            return;
+        }
         let Some((app_id, bundle, install, applied)) = g.read_local(|m, _| {
             let bundle = m.state.bundle.clone().filter(|_| m.state.initialized)?;
             Some((
@@ -1860,6 +1865,7 @@ impl Node {
             return Err(args_too_large());
         }
         let app = self.app(&req.app_id).await?;
+        app.require_app_component()?;
         if !came_keyed {
             self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
                 .await?;

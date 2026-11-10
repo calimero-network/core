@@ -198,6 +198,12 @@ is its command line.
   each with the same caps, and `400 BAD_BUNDLE` when it imports outside the compute world or
   its ABI is not the compute world's.
   A release without one installs and its app runs calls; it cannot run compute.
+  A single-service package may ship the compute component alone (no `wasm`): `PackageVersion::components` is `ComputeOnly`, `services` is empty and `compute[""]` holds the hash.
+  Install skips the ABI agreement and instead needs at least one compute method (`400 NO_COMPUTE_METHODS`).
+  It is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`, `require_upgraded_nodes`): an older node drops `components` and would apply it as an app's release.
+  Every app-level lookup reads `PackageVersion::app_parts` (the services, or the compute map when compute-only), so a compute-only app's `bundle` and `compute_bundle` are both the compute hash.
+  Such an app has `AppRecord::components = ComputeOnly`: it has no app group state, and a call, view, intent, init or tick is `422 NO_APP_COMPONENT` (`AppRecord::require_app_component`).
+  An upgrade between compute-only releases only moves the directory record; one that adds or drops the app component is `409 COMPONENTS_CHANGED`.
   `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
   `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.

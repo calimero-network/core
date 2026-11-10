@@ -618,7 +618,7 @@ fn instance_release(s: &SystemState, node: &Node, package: &str, rest: &str) -> 
         .get(package)?
         .versions
         .values()
-        .filter(|v| v.services.values().any(|h| *h == a.bundle))
+        .filter(|v| v.app_parts().values().any(|h| *h == a.bundle))
         .map(|v| v.version.as_str())
         .max_by(|a, b| compare_versions(a, b))?;
     Some(format!("/{version}/{tail}"))

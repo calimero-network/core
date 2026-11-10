@@ -336,7 +336,8 @@ pub struct BundleManifest {
 pub struct WasmArtifact<'a> {
     /// Service name. `None` for single-service bundles.
     pub name: Option<&'a str>,
-    pub wasm: &'a BundleArtifact,
+    /// The app component; `None` for a single-service bundle that ships only a compute component.
+    pub wasm: Option<&'a BundleArtifact>,
     pub compute: Option<&'a BundleArtifact>,
 }
 
@@ -366,21 +367,16 @@ impl BundleManifest {
                 .iter()
                 .map(|s| WasmArtifact {
                     name: Some(&s.name),
-                    wasm: &s.wasm,
+                    wasm: Some(&s.wasm),
                     compute: s.compute.as_ref(),
                 })
                 .collect(),
-            _ => self
-                .wasm
-                .as_ref()
-                .map(|w| {
-                    vec![WasmArtifact {
-                        name: None,
-                        wasm: w,
-                        compute: self.compute.as_ref(),
-                    }]
-                })
-                .unwrap_or_default(),
+            _ if self.wasm.is_some() || self.compute.is_some() => vec![WasmArtifact {
+                name: None,
+                wasm: self.wasm.as_ref(),
+                compute: self.compute.as_ref(),
+            }],
+            _ => Vec::new(),
         }
     }
 

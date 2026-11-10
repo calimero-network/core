@@ -17,11 +17,12 @@ SCRIPT = Path(__file__).resolve().parent.parent / "pack-component.py"
 COMPONENT = b"\0asm\x0d\0\x01\0"
 
 
-def pack(tmp, *extra):
+def pack(tmp, *extra, with_app=True):
     app, out = Path(tmp) / "app.wasm", Path(tmp) / "out.mpk"
     app.write_bytes(COMPONENT + b"app")
+    wasm = ["--wasm", str(app)] if with_app else []
     # `true` stands in for the signer: the script only reads the manifest back.
-    subprocess.run([sys.executable, "-I", str(SCRIPT), "--wasm", str(app), "--package", "p", "--app-version", "1.0.0",
+    subprocess.run([sys.executable, "-I", str(SCRIPT), *wasm, "--package", "p", "--app-version", "1.0.0",
                     "--mero-sign", "true", "--out", str(out), *extra], check=True, capture_output=True)
     with tarfile.open(fileobj=io.BytesIO(out.read_bytes())) as tar:
         return {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
@@ -43,6 +44,21 @@ class PackComponent(unittest.TestCase):
         declared = json.loads(files["manifest.json"])["compute"]
         self.assertEqual(declared["path"], "compute.wasm")
         self.assertEqual(declared["size"], len(files["compute.wasm"]))
+
+    def test_compute_without_wasm_packs_a_compute_only_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compute = Path(tmp) / "compute.component.wasm"
+            compute.write_bytes(COMPONENT + b"compute")
+            files = pack(tmp, "--compute", str(compute), with_app=False)
+        self.assertEqual(sorted(files), ["compute.wasm", "manifest.json"])
+        manifest = json.loads(files["manifest.json"])
+        self.assertNotIn("wasm", manifest)
+        self.assertEqual(manifest["compute"]["size"], len(files["compute.wasm"]))
+
+    def test_neither_wasm_nor_compute_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(subprocess.CalledProcessError):
+                pack(tmp, with_app=False)
 
     def test_a_compute_file_that_is_not_a_component_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

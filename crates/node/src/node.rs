@@ -2035,6 +2035,7 @@ impl Node {
             // may be given a bundle by an upgrade before its init applied (its init
             // timed out), and still needs its init then, on that bundle.
             let needs_init = app.executor == Kind::Component
+                && app.components.is_app()
                 && g.read_local(|m, _| {
                     !m.state.initialized
                         && (m.state.bundle.is_none()
@@ -2115,7 +2116,7 @@ impl Node {
     }
 
     /// A bundle's WASM: from this node's blob store, else from a peer.
-    pub(crate) async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
+    pub async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
         if let Some(w) = self
             .engine
             .get_blob(hash)
@@ -3010,6 +3011,7 @@ impl Node {
             return Err(ApiError::unsupported_engine());
         }
         if !req.host {
+            app.require_app_component()?;
             let a = self.call_here_component(&app, req).await?;
             return serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()));
         }
@@ -3057,6 +3059,7 @@ impl Node {
         if app.executor == Kind::Wasmer {
             return Err(ApiError::unsupported_engine());
         }
+        app.require_app_component()?;
         if req.method != component::RUN_VIEW {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;

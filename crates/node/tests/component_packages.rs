@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
-use calimero_node::types::Executor;
-use common::{mpk_with, signed_up, Cluster, PUBLISHER};
+use calimero_node::types::{Components, Executor};
+use common::{mpk_parts, mpk_with, signed_up, Cluster, PUBLISHER};
 use serde_json::{json, Value};
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
@@ -433,4 +433,202 @@ async fn a_release_that_changes_only_compute_code_gives_its_app_its_own_compute_
         Some(sha256_hex(&job2)),
         "upgraded to the second release"
     );
+}
+
+async fn install_compute_only(
+    owner: &Client,
+    version: &str,
+    compute: &[u8],
+) -> Result<Value, Box<calimero_client::Error>> {
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    owner
+        .upload_package(mpk_parts(
+            "com.test.job",
+            version,
+            None,
+            Some(compute),
+            &key,
+        ))
+        .await
+        .map_err(Box::new)
+}
+
+async fn create_compute_only(owner: &Client, version: &str) -> String {
+    let org = owner.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = owner
+        .post(
+            "apps",
+            json!({ "name": "job", "package": "com.test.job", "version": version, "org": org }),
+        )
+        .await
+        .unwrap();
+    created["appId"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_only_package_installs() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let job = common::components("compute").compute.clone().unwrap();
+    install_compute_only(&owner, "1.0.0", &job).await.unwrap();
+
+    let job_hash = sha256_hex(&job);
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    node.sys(|s| {
+        let release = &s.packages["com.test.job"].versions["1.0.0"];
+        assert_eq!(release.components, Components::ComputeOnly);
+        assert!(release.services.is_empty(), "{:?}", release.services);
+        assert_eq!(release.compute[""], job_hash);
+        assert!(s.bundles[&job_hash].package.as_ref().unwrap().compute);
+    });
+
+    let app = create_compute_only(&owner, "1.0.0").await;
+    let record = node.app(&app).await.unwrap();
+    assert_eq!(record.components, Components::ComputeOnly);
+    assert_eq!(record.bundle, job_hash);
+    assert_eq!(record.compute_bundle.as_deref(), Some(job_hash.as_str()));
+    assert_eq!(node.bundle_wasm(&record.bundle).await.unwrap(), job);
+}
+
+/// An older node would drop `components` and apply a compute-only release as an app's,
+/// so such a release is installed only once every node runs this release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_only_package_waits_until_every_node_runs_this_release() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.allow_unsigned_bundles = false;
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let (owner, _pk) = signed_up(&c, 0, "owner").await;
+    let job = common::components("compute").compute.clone().unwrap();
+    let e = install_compute_only(&owner, "1.0.0", &job)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CLUSTER_NOT_UPGRADED"), "{e}");
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    assert!(node.sys(|s| !s.packages.contains_key("com.test.job")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_only_package_with_no_compute_methods_is_refused() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let job = common::components("compute").compute.clone().unwrap();
+    let none = patched(&job, |a| a["methods"] = json!({}));
+    let e = install_compute_only(&owner, "1.0.0", &none)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_COMPUTE_METHODS"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let job = common::components("compute").compute.clone().unwrap();
+    install_compute_only(&owner, "1.0.0", &job).await.unwrap();
+    let app = create_compute_only(&owner, "1.0.0").await;
+
+    let e = owner
+        .call(&app, "digest", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
+    let e = owner
+        .view(&app, "done", json!({}), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
+    // Init never ran: the app group holds no app bundle.
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let group = node.hosted(&app).expect("hosted on node 0");
+    assert!(group.read_local(|m, _| m.state.bundle.is_none() && !m.state.initialized));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_package_installs_exactly_as_before() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    install(&owner, "1.0.0", &both.app, both.compute.as_deref()).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    node.sys(|s| {
+        let release = &s.packages["com.test.compute"].versions["1.0.0"];
+        assert_eq!(release.components, Components::App);
+        assert_eq!(release.services[""], sha256_hex(&both.app));
+        // A record of an app release reads and writes as before: no new field.
+        assert!(serde_json::to_value(release)
+            .unwrap()
+            .get("components")
+            .is_none());
+    });
+    let app = create(&owner, "1.0.0").await;
+    let record = node.app(&app).await.unwrap();
+    assert_eq!(record.components, Components::App);
+    assert!(serde_json::to_value(&record)
+        .unwrap()
+        .get("components")
+        .is_none());
+    let done = owner
+        .view(&app, "done", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(done.result, json!("0"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn switching_components_on_upgrade_is_refused() {
+    let (c, owner, mut pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let job2 = patched(&job, |a| a["build"] = json!(2));
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let publish = |version: &str, wasm: Option<&[u8]>, compute: &[u8]| {
+        owner.upload_package(mpk_parts(
+            "com.test.job",
+            version,
+            wasm,
+            Some(compute),
+            &key,
+        ))
+    };
+    let _ = publish("1.0.0", None, &job).await.unwrap();
+    let _ = publish("1.1.0", None, &job2).await.unwrap();
+    let _ = publish("2.0.0", Some(&both.app), &job).await.unwrap();
+    let node = &c.nodes[0].as_ref().unwrap().node;
+
+    // Compute-only to compute-only moves the directory record.
+    let app = create_compute_only(&owner, "1.0.0").await;
+    let up = owner
+        .upgrade_app(&app, json!({ "version": "1.1.0" }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    let record = node.app(&app).await.unwrap();
+    assert_eq!(record.bundle, sha256_hex(&job2));
+    assert_eq!(record.compute_bundle, Some(sha256_hex(&job2)));
+
+    // Compute-only to a release with an app component is refused.
+    let e = owner
+        .upgrade_app(&app, json!({ "version": "2.0.0" }), &mut pk)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("COMPONENTS_CHANGED"), "{e}");
+    assert_eq!(node.app(&app).await.unwrap().bundle, sha256_hex(&job2));
+
+    // And the other way.
+    let with_app = owner
+        .post(
+            "apps",
+            json!({ "name": "both", "package": "com.test.job", "version": "2.0.0" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let e = owner
+        .upgrade_app(&with_app, json!({ "version": "1.0.0" }), &mut pk)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("COMPONENTS_CHANGED"), "{e}");
 }

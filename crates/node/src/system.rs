@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
-    NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Invite,
+    NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
@@ -128,6 +128,12 @@ const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with th
 /// The refusal when an app names a release that does not ship its bundle.
 const RELEASE_NOT_SHIPPED: &str = "that release does not ship the app's bundle";
 
+/// The refusal when an upgrade would add or drop an app's app component.
+const COMPONENTS_CHANGED: &str = "an app keeps the components it was made with";
+
+/// The refusal when an app's components differ from its release's.
+const COMPONENTS_NOT_RELEASES: &str = "the app's components are not its release's";
+
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
@@ -192,6 +198,10 @@ pub struct PackageVersion {
     pub source: BundleSource,
     /// Service name (`""` for a single-service bundle) -> the WASM's bundle hash.
     pub services: BTreeMap<String, String>,
+    /// Which components the release has. `ComputeOnly`: `services` is empty and `compute`
+    /// holds the single-service bundle's component under `""`.
+    #[serde(default, skip_serializing_if = "Components::is_app")]
+    pub components: Components,
     /// Service name -> its compute component's bundle hash, for the services that ship one.
     /// Never a service: no app runs it, and only job nodes do.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -221,6 +231,16 @@ pub struct PackageVersion {
 }
 
 impl PackageVersion {
+    /// Service name -> the bundle an app of this release runs: the app component, or the
+    /// compute component when that is all the release has.
+    #[must_use]
+    pub fn app_parts(&self) -> &BTreeMap<String, String> {
+        match self.components {
+            Components::App => &self.services,
+            Components::ComputeOnly => &self.compute,
+        }
+    }
+
     /// Every WASM the release records under `package`, with the part of the release it is:
     /// each service, then each service's compute component.
     fn parts<'a>(&'a self, package: &'a str) -> impl Iterator<Item = (&'a str, PackageRef)> {
@@ -1047,7 +1067,7 @@ impl SystemState {
         });
         shares_org
             || self.apps.values().any(|a| {
-                v.services.values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
+                v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
             })
     }
 
@@ -1071,6 +1091,13 @@ impl SystemState {
             .is_some_and(|at| at.compute)
     }
 
+    /// The components of the release `r` names; an app from a raw upload has an app component.
+    #[must_use]
+    pub fn components_of(&self, r: Option<&PackageRef>) -> Components {
+        r.and_then(|r| self.packages.get(&r.package)?.versions.get(&r.version))
+            .map_or(Components::App, |v| v.components)
+    }
+
     /// Whether `r` names an installed release whose service `r.service` is
     /// `bundle`: what an app recorded as running `r` must run.
     #[must_use]
@@ -1081,7 +1108,7 @@ impl SystemState {
                 .packages
                 .get(&r.package)
                 .and_then(|p| p.versions.get(&r.version))
-                .and_then(|v| v.services.get(service))
+                .and_then(|v| v.app_parts().get(service))
                 .is_some_and(|h| h == bundle)
     }
 
@@ -1097,7 +1124,7 @@ impl SystemState {
             .values()
             .flat_map(|p| p.versions.values())
             .any(|v| {
-                v.services.iter().any(|(service, main)| {
+                v.app_parts().iter().any(|(service, main)| {
                     main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
                 })
             })
@@ -1112,7 +1139,7 @@ impl SystemState {
             .flat_map(|p| p.versions.values())
             .filter(|v| self.sees_release(v, who))
             .flat_map(|v| {
-                v.services
+                v.app_parts()
                     .iter()
                     .filter(|(_, main)| *main == bundle)
                     .map(|(service, _)| v.compute.get(service))
@@ -1139,7 +1166,7 @@ impl SystemState {
             .packages
             .values()
             .flat_map(|p| p.versions.values())
-            .filter(|v| v.services.values().any(|h| h == hash))
+            .filter(|v| v.app_parts().values().any(|h| h == hash))
             .peekable();
         shipped.peek().is_none()
             || b.uploaded_by == who
@@ -1407,7 +1434,7 @@ impl SystemState {
         self.packages.get(package).is_some_and(|p| {
             p.versions
                 .values()
-                .any(|v| v.services.values().any(|h| h == bundle))
+                .any(|v| v.app_parts().values().any(|h| h == bundle))
         })
     }
 
@@ -1426,7 +1453,7 @@ impl SystemState {
     pub fn offers_bundle(&self, d: &Deployment, bundle: &str) -> bool {
         d.apps.values().any(|o| {
             self.offered_release(o)
-                .is_some_and(|v| v.services.values().any(|h| h == bundle))
+                .is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
         })
     }
 
@@ -1516,7 +1543,7 @@ impl SystemState {
         if !package
             .versions
             .values()
-            .any(|v| v.services.values().any(|h| h == bundle))
+            .any(|v| v.app_parts().values().any(|h| h == bundle))
         {
             return Err("this API key upgrades only to signed releases of its package");
         }
@@ -1564,7 +1591,7 @@ impl SystemState {
         let runs = package
             .versions
             .values()
-            .any(|v| v.services.values().any(|h| *h == app.bundle));
+            .any(|v| v.app_parts().values().any(|h| *h == app.bundle));
         if !runs {
             return Err("the app does not run a release of that package");
         }
@@ -2355,7 +2382,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             if r.by != by
                 || r.finished
                 || !r.apps.contains(app_id)
-                || !release.is_some_and(|v| v.services.values().any(|h| h == bundle))
+                || !release.is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
                 || target
                     .as_ref()
                     .is_some_and(|t| t.package != r.package || t.version != r.version)
@@ -4586,7 +4613,7 @@ impl SystemMachine {
                 if !s.bundles.contains_key(&app.bundle) {
                     return Err("unknown bundle");
                 }
-                if s.is_compute_bundle(&app.bundle) {
+                if app.components.is_app() && s.is_compute_bundle(&app.bundle) {
                     return Err(COMPUTE_NOT_AN_APP);
                 }
                 if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
@@ -4598,6 +4625,9 @@ impl SystemMachine {
                     .is_some_and(|r| !s.release_ships(r, &app.bundle))
                 {
                     return Err(RELEASE_NOT_SHIPPED);
+                }
+                if s.components_of(app.release.as_ref()) != app.components {
+                    return Err(COMPONENTS_NOT_RELEASES);
                 }
                 let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
                 if owned >= s.quotas.max_apps_per_account as usize {
@@ -4672,7 +4702,8 @@ impl SystemMachine {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
                 }
-                if s.is_compute_bundle(&bundle) {
+                let components = s.components_of(release.as_ref());
+                if components.is_app() && s.is_compute_bundle(&bundle) {
                     return Err(COMPUTE_NOT_AN_APP);
                 }
                 if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
@@ -4683,6 +4714,12 @@ impl SystemMachine {
                     .is_some_and(|r| !s.release_ships(r, &bundle))
                 {
                     return Err(RELEASE_NOT_SHIPPED);
+                }
+                if s.apps
+                    .get(&app_id)
+                    .is_some_and(|a| a.components != components)
+                {
+                    return Err(COMPONENTS_CHANGED);
                 }
                 let operator = s.governance().app_upgrades == Authority::Operator;
                 let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
@@ -7308,6 +7345,7 @@ mod tests {
             package: "p".into(),
             signer_id: "did:key:z".into(),
             release: PackageVersion {
+                components: Default::default(),
                 version: version.into(),
                 mpk: format!("mpk{version}"),
                 mpk_size: 1,
@@ -7400,6 +7438,7 @@ mod tests {
             package: "p".into(),
             signer_id: "did:key:z".into(),
             release: PackageVersion {
+                components: Default::default(),
                 version: version.into(),
                 mpk: format!("mpk{version}"),
                 mpk_size: 40,
@@ -7437,6 +7476,7 @@ mod tests {
             package: "p".into(),
             signer_id: "did:key:z".into(),
             release: PackageVersion {
+                components: Default::default(),
                 version: version.into(),
                 mpk: format!("mpk{version}"),
                 mpk_size: 1,

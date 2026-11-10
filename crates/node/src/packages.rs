@@ -28,7 +28,7 @@ use crate::node::Node;
 use crate::system::{
     compare_versions, BundleSource, PackageRef, PackageVersion, SystemCmd, SystemState,
 };
-use crate::types::now_secs;
+use crate::types::{now_secs, Components};
 
 /// The largest `.mpk` a node takes, uploaded or fetched: it is kept as a blob,
 /// so the blob limit (v1 allowed 512 MiB; a blob here must reach a
@@ -62,10 +62,14 @@ pub struct Verified {
 pub struct Service {
     /// `""` for a single-service bundle.
     pub name: String,
-    pub wasm: Vec<u8>,
+    /// The app component; `None` for a compute-only single-service bundle.
+    pub wasm: Option<Vec<u8>>,
     /// Its compute component, when the release ships one.
     pub compute: Option<Vec<u8>>,
 }
+
+/// The refusal when a compute-only package's component declares no compute method.
+pub const NO_COMPUTE_METHODS: &str = "NO_COMPUTE_METHODS";
 
 /// The refusal when a compute component's methods or caps differ from the main ABI's.
 pub const COMPUTE_ABI_MISMATCH: &str = "COMPUTE_ABI_MISMATCH";
@@ -95,7 +99,7 @@ pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError
         .into_iter()
         .map(|w| Service {
             name: w.name.unwrap_or_default(),
-            wasm: w.bytes.to_vec(),
+            wasm: w.bytes.map(|b| b.to_vec()),
             compute: w.compute.map(|c| c.to_vec()),
         })
         .collect();
@@ -261,12 +265,46 @@ impl Node {
         let mut compute = BTreeMap::new();
         let mut wasm_by_hash = BTreeMap::new();
         let mut part_sizes = BTreeMap::new();
+        let mut only_compute = false;
         for Service {
             name: service,
             wasm: bytes,
             compute: job,
         } in wasm
         {
+            let Some(bytes) = bytes else {
+                only_compute = true;
+                let job = job.ok_or_else(|| {
+                    ApiError::bad_request("BAD_PACKAGE", "the package ships no WASM")
+                })?;
+                let job_hash = hex::encode(calimero_identity::sha256(&job));
+                let prepared = {
+                    use calimero_app_host::Engine as _;
+                    self.compute_engine()
+                        .prepare(&job_hash, &job)
+                        .map_err(|e| {
+                            ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string())
+                                .with_details(
+                                    serde_json::json!({ "service": service, "compute": true }),
+                                )
+                        })?
+                };
+                if !prepared
+                    .abi
+                    .methods
+                    .values()
+                    .any(|m| matches!(m.kind, MethodKind::Compute(_)))
+                {
+                    return Err(ApiError::bad_request(
+                        NO_COMPUTE_METHODS,
+                        "a package with only a compute component must declare at least one compute method",
+                    ));
+                }
+                let _prev = compute.insert(service, job_hash.clone());
+                let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
+                let _prev = wasm_by_hash.insert(job_hash, job);
+                continue;
+            };
             let hash = hex::encode(calimero_identity::sha256(&bytes));
             // Refuse what no app could run before anything is recorded: a core
             // module (an SDK 0.12 service) is `400 UNSUPPORTED_BUNDLE`, a component
@@ -328,6 +366,11 @@ impl Node {
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
                 upgrades,
+                components: if only_compute {
+                    Components::ComputeOnly
+                } else {
+                    Components::App
+                },
             },
             wasm: wasm_by_hash,
         })
@@ -341,6 +384,10 @@ impl Node {
         upload: Option<Arc<[u8]>>,
     ) -> Result<Value, ApiError> {
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
+        // An older node drops `components` and would apply the release as an app's.
+        if !v.release.components.is_app() {
+            self.require_upgraded_nodes().await?;
+        }
         for (hash, bytes) in &v.wasm {
             self.engine
                 .put_blob(hash, bytes)
@@ -418,13 +465,7 @@ impl Node {
         let bytes = wasm
             .into_iter()
             .find(|s| s.name == service)
-            .and_then(|s| {
-                if r.at.compute {
-                    s.compute
-                } else {
-                    Some(s.wasm)
-                }
-            })
+            .and_then(|s| if r.at.compute { s.compute } else { s.wasm })
             .ok_or_else(|| {
                 ApiError::internal("the release lacks the service it was recorded with")
             })?;
@@ -526,7 +567,7 @@ impl Node {
                 .get(package)
                 .and_then(|p| p.versions.get(&version))
                 .filter(|v| frontend || s.sees_release(v, actor))
-                .map(|v| (v.services.clone(), v.compute.clone()))
+                .map(|v| (v.app_parts().clone(), v.compute.clone()))
         };
         let (services, compute) = match self.sys(seen) {
             Some(s) => s,

@@ -115,7 +115,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
             .packages
             .get(&r.package)
             .and_then(|p| p.versions.get(&r.version))
-            .is_some_and(|v| v.services.values().any(|h| h == hash) && s.sees_release(v, who));
+            .is_some_and(|v| v.app_parts().values().any(|h| h == hash) && s.sees_release(v, who));
         if visible {
             return Some(ReleaseName {
                 package: r.package.clone(),
@@ -129,7 +129,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
         .flat_map(|p| p.versions.values().map(move |v| (p, v)))
         .filter(|(_, v)| s.sees_release(v, who))
         .filter_map(|(p, v)| {
-            let service = v.services.iter().find(|(_, h)| *h == hash)?.0;
+            let service = v.app_parts().iter().find(|(_, h)| *h == hash)?.0;
             Some((p, v, service))
         })
         .max_by(|a, b| compare_versions(&a.1.version, &b.1.version))
@@ -150,7 +150,7 @@ fn newer_versions(s: &SystemState, current: &ReleaseName, account: &str) -> Vec<
     let service = current.service.clone().unwrap_or_default();
     let mut newer: Vec<&str> = s
         .visible_versions(p, account)
-        .filter(|v| v.services.contains_key(&service))
+        .filter(|v| v.app_parts().contains_key(&service))
         .filter(|v| compare_versions(&v.version, &current.version).is_gt())
         .map(|v| v.version.as_str())
         .collect();

@@ -386,6 +386,17 @@ pub fn mpk_with(
     compute: Option<&[u8]>,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
+    mpk_parts(package, version, Some(wasm), compute, key)
+}
+
+/// A signed single-service `.mpk` that may ship only its compute component.
+pub fn mpk_parts(
+    package: &str,
+    version: &str,
+    wasm: Option<&[u8]>,
+    compute: Option<&[u8]>,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
         path: path.to_owned(),
@@ -404,7 +415,7 @@ pub fn mpk_with(
         handlers: None,
         build_info: None,
         interfaces: None,
-        wasm: Some(artifact("app.wasm", wasm)),
+        wasm: wasm.map(|w| artifact("app.wasm", w)),
         abi: None,
         compute: compute.map(|c| artifact("compute.wasm", c)),
         links: None,
@@ -421,10 +432,8 @@ pub fn mpk_with(
         Vec::new(),
         flate2::Compression::default(),
     ));
-    let mut entries = vec![
-        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
-        ("app.wasm", wasm.to_vec()),
-    ];
+    let mut entries = vec![("manifest.json", serde_json::to_vec(&manifest).unwrap())];
+    entries.extend(wasm.map(|w| ("app.wasm", w.to_vec())));
     entries.extend(compute.map(|c| ("compute.wasm", c.to_vec())));
     for (name, bytes) in entries {
         let mut header = tar::Header::new_gnu();
