@@ -204,11 +204,19 @@ impl Rig {
         }
     }
 
+    /// The app's leader, or during an election any live node hosting it: callers poll or route.
     fn leader(&self) -> &Node {
-        &self.c.nodes[self.c.app_leader(&self.app).unwrap()]
-            .as_ref()
-            .unwrap()
-            .node
+        let hosting = |i: &usize| {
+            self.c.nodes[*i]
+                .as_ref()
+                .is_some_and(|r| r.node.hosted(&self.app).is_some())
+        };
+        let i = self
+            .c
+            .app_leader(&self.app)
+            .or_else(|| (0..self.c.nodes.len()).find(hosting))
+            .expect("a live node hosts the app");
+        &self.c.nodes[i].as_ref().unwrap().node
     }
 
     async fn upload(&self, plain: &[u8]) -> String {
@@ -665,12 +673,9 @@ async fn cancel_stops_a_running_pipeline() {
     assert_eq!(done["steps"]["a"]["reason"], "cancelled", "{done}");
     assert_eq!(done["steps"]["b"]["status"], "cancelled", "{done}");
     assert_eq!(rig.all_records().len(), 1, "step b never started");
-    let again = rig
-        .alice
-        .cancel_pipeline_run(&rig.app, &run)
-        .await
-        .unwrap_err();
-    assert_eq!(again.code(), Some("NOT_FOUND"), "{again}");
+    // A cancel repeated after the run ended (a retry whose first answer was lost) still succeeds.
+    let _again = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+    assert_eq!(rig.run(&run).await["state"], "cancelled");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

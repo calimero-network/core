@@ -435,8 +435,15 @@ impl AppMachine {
         if !well_formed {
             return no_op(BAD_START);
         }
-        if head.active_pipelines.contains(&entry.id) || Self::read_pipeline(tx, &entry.id).is_some()
-        {
+        if let Some(known) = Self::read_pipeline(tx, &entry.id) {
+            // A start the leader re-proposed after losing its answer is the same run: say so.
+            return if same_start(&known, entry) {
+                host_answer(index, true, "")
+            } else {
+                no_op(KNOWN)
+            };
+        }
+        if head.active_pipelines.contains(&entry.id) {
             return no_op(KNOWN);
         }
         if head.active_pipelines.len() >= MAX_ACTIVE_PIPELINE_RUNS {
@@ -801,6 +808,9 @@ impl AppMachine {
         let Some(mut pipeline) = Self::read_pipeline(tx, &entry.run) else {
             return host_answer(index, false, NOT_RUNNING);
         };
+        if pipeline.cancel_requested {
+            return host_answer(index, true, "");
+        }
         if pipeline.state != PipelineState::Running {
             return host_answer(index, false, NOT_RUNNING);
         }
@@ -1074,4 +1084,20 @@ fn wave_slots<'a>(
                 .map(|r| Slot::Run(i, r)),
         })
         .collect()
+}
+
+/// Whether `known` is the run `entry` starts: everything the caller chose and the leader pinned.
+fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
+    known.pipeline == entry.pipeline
+        && known.version == entry.version
+        && known.hash == entry.hash
+        && known.compute_bundle == entry.compute_bundle
+        && known.inputs == entry.inputs
+        && known.params == entry.params
+        && known.caller == entry.caller
+        && known.fail_fast == entry.fail_fast
+        && known
+            .steps
+            .keys()
+            .eq(entry.steps.iter().collect::<BTreeSet<_>>())
 }

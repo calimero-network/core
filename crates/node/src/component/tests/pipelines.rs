@@ -357,6 +357,41 @@ fn a_cancel_flags_the_running_runs_and_refuses_new_starts() {
     assert_eq!(p.state, PipelineState::Cancelled);
 }
 
+/// The leader re-proposes a start or cancel whose answer was lost: the repeat answers as the
+/// first did and changes nothing, so the caller never hears "not started" for a started run.
+#[test]
+fn a_repeated_start_or_cancel_of_the_same_run_answers_ok_and_changes_nothing() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let held = refs(&w, INPUT);
+    let again = begin(&mut w, PIPE, &["a", "b"]);
+    assert!(again.status == Status::Ok, "{again:?}");
+    assert_eq!(refs(&w, INPUT), held);
+    assert_eq!(w.r.machine.active_pipelines(), vec![PIPE.to_owned()]);
+
+    let cancel = |w: &mut World| {
+        w.push(&ComponentCmd::PipelineCancel(Box::new(
+            PipelineCancelEntry {
+                run: PIPE.into(),
+                ts_ms: 7,
+            },
+        )))
+    };
+    assert!(cancel(&mut w).status == Status::Ok);
+    let repeat = cancel(&mut w);
+    assert!(repeat.status == Status::Ok, "{repeat:?}");
+    assert!(pipeline(&w, PIPE).cancel_requested);
+    let _a = decide(&mut w, PIPE, "a", StepVerdict::Cancelled);
+    let _b = decide(&mut w, PIPE, "b", StepVerdict::Cancelled);
+    let ended = pipeline(&w, PIPE);
+    assert_eq!(ended.state, PipelineState::Cancelled);
+    // The run ended: a repeat of its cancel or its start still answers as the first did.
+    assert!(cancel(&mut w).status == Status::Ok);
+    assert!(begin(&mut w, PIPE, &["a", "b"]).status == Status::Ok);
+    assert_eq!(pipeline(&w, PIPE).end_ts_ms, ended.end_ts_ms);
+    assert!(w.r.machine.active_pipelines().is_empty());
+}
+
 #[test]
 fn a_cancel_of_an_unknown_or_ended_run_changes_nothing() {
     let mut w = World::new();
