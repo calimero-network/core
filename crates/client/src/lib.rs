@@ -1265,6 +1265,25 @@ impl Client {
         .await
     }
 
+    /// Move an app to another organization (`to_org`), its data where it
+    /// is: whoever manages it now, as an admin of the target, approved with
+    /// their passkey. `bring_members` brings the people of its organization
+    /// who reach it along.
+    pub async fn move_app(
+        &self,
+        app: &str,
+        to_org: &str,
+        bring_members: bool,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("apps/{}/move", path_segment(app)),
+            json!({ "toOrg": to_org, "bringMembers": bring_members }),
+            passkey,
+        )
+        .await
+    }
+
     /// Set an organization's metadata (an admin's, or a holder of
     /// `MANAGE_METADATA`).
     pub async fn set_org_metadata(&self, org: &str, metadata: Value) -> Result<Value> {
@@ -1272,6 +1291,18 @@ impl Client {
             &format!("orgs/{}/metadata", path_segment(org)),
             json!({ "metadata": metadata }),
         )
+        .await
+    }
+
+    /// Each member's lockout risk, for the organization's owner and admins
+    /// (`GET /orgs/{org}/members?detail=security`): `{ orgId, members: [{
+    /// account, name, role, teams, passkeys, recoveryCode, lastActiveDay,
+    /// sessions }] }`, `passkeys` being `1`, `2` or `"3+"`.
+    pub async fn org_members_security(&self, org: &str) -> Result<Value> {
+        self.get(&format!(
+            "orgs/{}/members?detail=security",
+            path_segment(org)
+        ))
         .await
     }
 

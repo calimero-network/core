@@ -128,6 +128,7 @@ App instances.
 | `context list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
 | `context get CONTEXT` | `GET /apps/{app}` | One context. |
 | `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
+| `context move CONTEXT NAMESPACE [--bring-members] [--dev-passkey F]` | `POST /apps/{app}/move` | Move the context to another org, its data where it is (whoever manages it now, as an admin of the target org, with a passkey); `--bring-members` adds the members who reach it. |
 | `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, or for an org's context its owner while a member or an org admin, with a passkey; an org's context only to a member of the org). |
 | `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
 | `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
@@ -217,7 +218,7 @@ or `restricted` (only the members added).
 | `namespace leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
 | `namespace groups ORG` | `GET /orgs/{org}` | The organization's teams. |
 | `namespace create-group ORG NAME [--parent TEAM] [--join JOIN]` | `POST /orgs/{org}/teams` | Create a team; `--join` defaults to `restricted`. |
-| `namespace members list ORG` (`ls`) | `GET /orgs/{org}` | Its members. |
+| `namespace members list ORG [--security]` (`ls`) | `GET /orgs/{org}` | Its members. `--security` (owners and admins, `GET /orgs/{org}/members?detail=security`): each member's passkeys held (to `3+`), recovery code set, last active day and live sessions. |
 | `namespace members add ORG ACCOUNT [--role ROLE]` (`set-role`) | `POST /orgs/{org}/members` | Add a member or change their role (default `member`). `owner` moves ownership. |
 | `namespace members remove ORG ACCOUNT` (`rm`) | `DELETE /orgs/{org}/members/{account}` | Remove a member. |
 | `namespace metadata get ORG` | `GET /orgs/{org}` | The organization's metadata. |

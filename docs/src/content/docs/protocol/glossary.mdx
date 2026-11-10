@@ -130,7 +130,13 @@ on it. Open, everyone in the organization has the app; closed (restricted),
 only its rows do, and an admin closes or opens one app team alone. See
 [Organizations](/protocol/organizations/#app-teams).
 
-**Capability** — A bit granting a member an action beyond their role. See
+**Move** — Taking an app instance to another organization (`MoveApp`,
+`POST /apps/{app}/move`): its data stays on its replicas; its organization,
+payer, quotas and access change. Not a **transfer**, which changes its owner
+within its organization. See [Organizations](/protocol/organizations/#moving-an-app).
+
+**Capability** — A bit granting a member an action beyond their role (an app
+team's default lets its members make private channels, `CREATE_CHILD_TEAM`). See
 [Organizations](/protocol/organizations/#capabilities).
 
 **Access rule** — Who reaches an app: `owner`, `accounts`, `org`, `team`,

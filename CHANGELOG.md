@@ -4,6 +4,35 @@
 
 ### Added
 
+- **Members make private channels under an app's team.** Only a parent
+  team's leads and the organization's admins created a team below it, so an
+  app could not make a private channel a child team of its app team. A member
+  who writes a team and holds the new `CREATE_CHILD_TEAM` capability (`1 <<
+  11`) there now creates a restricted team below it and leads it (`POST
+  /orgs/{org}/teams { parent, join: invite }`); never an open one. A new app
+  team's default capabilities hold it (`ScopeApps`), so it is on for app teams
+  unless an admin turns it off; app teams made before keep their default. As
+  before, removing someone from a team, or their leaving it, takes their rows
+  in the teams below it. `CreateTeam` and `ScopeApps` carry
+  `member_child_teams` (serde default false), so entries an earlier release
+  logged replay as they did.
+
+- **Move an app to another organization**: `POST /apps/{app}/move { toOrg,
+  bringMembers?, confirm? }` (`SystemCmd::MoveApp`, a passkey step-up over
+  `<app> / __move { toOrg, bringMembers }`; `meroctl context move`). Whoever
+  manages the app where it is now, as an admin or the owner of the target,
+  moves it; its data stays on its replicas. Its organization, file bytes,
+  compute runs and quotas go to the target (refused past the target's quota,
+  or when the target approves none of the releases holding it). `org` or
+  app-team access becomes the target's app team of its package (made when
+  missing, closed when every app team of the target is; `org` access in a
+  legacy target); an app on any other team, and one whose owner would not be
+  a member of the target, is refused. `bringMembers` adds the source's members who reach the app,
+  capped at `member`, with rows on the target's app team. The source's
+  invites into the team the app leaves are revoked once no app is on it. No
+  stored format changes: the new entry's optional fields default, and a node
+  on an earlier release answers the route `404`.
+
 - **Close or open one app's team alone**: `POST /orgs/{org}/app-teams` takes,
   per package, `join` (`invite` closes that app team, `everyone` opens it)
   and, on a close, `keep: [account, ...]`. Before, the only atomic close was
@@ -39,6 +68,18 @@
   them unknown on every replica. In a rolling upgrade a node on the earlier
   release ignores the new fields and keeps no times; the sessions route
   answers `404` there.
+- **Members' lockout risk, for organization admins**: `GET
+  /orgs/{org}/members?detail=security` gives an organization's owner and
+  admins, per member, `{ account, name, role, teams, passkeys, recoveryCode,
+  lastActiveDay, sessions }`: the passkey count capped at `"3+"`, whether a
+  recovery code is set, the UTC day of the latest sign-in or session exchange
+  and the number of live sessions. Never a credential id, a passkey label or
+  time, a session, an origin or an activity entry. A member below admin gets
+  `403`, anyone outside the organization `404`; an API key or a
+  package-bound session is refused. `GET /deployments/{id}/orgs` adds
+  `memberCount` and `activeMembers30d` per customer organization (counts
+  only). `meroctl namespace members list --security`. No stored format
+  changes: everything is read from state the node already keeps.
 - **An account's activity**: `GET /auth/activity[?after=T]` lists what the
   caller's passkeys did, newest first, the last 100 entries: `{ activity: [{
   at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"` is

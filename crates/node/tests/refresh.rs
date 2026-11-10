@@ -29,14 +29,24 @@ fn refresh_hash(token: &str) -> String {
     calimero_identity::b64url(&calimero_identity::sha256(token.as_bytes()))
 }
 
-/// Whether every node holds `token` as live and never exchanged: no
-/// `UseRefresh` applied for it anywhere.
-fn held_unexchanged(c: &Cluster, token: &str) -> bool {
+/// Whether every node comes to hold `token` as live and never exchanged: no
+/// `UseRefresh` applied for it anywhere. A replica applies a write the leader
+/// committed a beat later, so each node is waited for.
+async fn held_unexchanged(c: &Cluster, token: &str) -> bool {
     let hash = refresh_hash(token);
-    c.nodes.iter().flatten().all(|r| {
-        r.node
-            .sys(|s| s.refresh.contains_key(&hash) && !s.rotated_refresh.contains_key(&hash))
-    })
+    let held = || {
+        c.nodes.iter().flatten().all(|r| {
+            r.node
+                .sys(|s| s.refresh.contains_key(&hash) && !s.rotated_refresh.contains_key(&hash))
+        })
+    };
+    for _ in 0..200 {
+        if held() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
 }
 
 /// A client on node `i` holding `session`.
@@ -71,7 +81,7 @@ async fn a_young_refresh_token_refreshes_on_every_node_without_a_system_write() 
             assert_eq!(other.me().await.unwrap()["accountId"], json!(s.account_id));
         }
     }
-    assert!(held_unexchanged(&c, &first.refresh_token));
+    assert!(held_unexchanged(&c, &first.refresh_token).await);
 }
 
 /// A sign-out, a sign-out everywhere and a passkey removal, each made through
@@ -85,7 +95,7 @@ async fn revocations_end_a_kept_refresh_token_on_every_node() {
     let other = c.client(1);
     let _s = other.sign_in(&mut pk).await.unwrap();
     let kept = laptop.refresh().await.unwrap();
-    assert!(held_unexchanged(&c, &kept.refresh_token));
+    assert!(held_unexchanged(&c, &kept.refresh_token).await);
     let _ok = laptop.post("auth/logout", json!({})).await.unwrap();
     for i in 0..3 {
         let holder = holding(&c, i, kept.clone()).await;
@@ -116,7 +126,7 @@ async fn revocations_end_a_kept_refresh_token_on_every_node() {
     let phone = c.client(1);
     let _s = phone.sign_in(&mut phone_key).await.unwrap();
     let phones = phone.refresh().await.unwrap();
-    assert!(held_unexchanged(&c, &phones.refresh_token));
+    assert!(held_unexchanged(&c, &phones.refresh_token).await);
     let _ok = device
         .delete_confirmed(&format!("auth/passkeys/{phone_cred}"), &mut pk)
         .await
@@ -146,7 +156,7 @@ async fn a_recovery_ends_a_kept_refresh_token() {
         .unwrap()
         .to_owned();
     let kept = alice.refresh().await.unwrap();
-    assert!(held_unexchanged(&c, &kept.refresh_token));
+    assert!(held_unexchanged(&c, &kept.refresh_token).await);
 
     let rescuer = c.client(1);
     let mut laptop = SoftAuthenticator::new("localhost", ORIGIN);
@@ -190,7 +200,7 @@ async fn an_old_refresh_token_is_exchanged_and_its_reuse_revokes_the_session() {
     let (owner, _pk) = signed_up(&c, 0, "owner").await;
     let young = owner.refresh().await.unwrap();
     let first = young.refresh_token.clone();
-    assert!(held_unexchanged(&c, &first));
+    assert!(held_unexchanged(&c, &first).await);
 
     tokio::time::sleep(rotate + Duration::from_millis(1100)).await;
     let rotated = owner.refresh().await.unwrap();

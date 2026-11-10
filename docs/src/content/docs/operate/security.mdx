@@ -35,6 +35,14 @@ apps."
 An app a person deploys outside any organization has no admin: only its
 owner reaches it.
 
+About the members themselves, admins and owners see what tells them someone
+may be locked out, and nothing more: a passkey count capped at "3+", whether
+a recovery code is set, the UTC day of their last activity and how many live
+sessions they hold. Device labels, credential ids, sessions, origins and the
+activity log stay the account holder's alone, and a deployment's managers
+see only counts of their customers' members
+([Members' security](/protocol/organizations/#members-security)).
+
 ## Recovering an organization
 
 An owner who loses every passkey gets their organization back only with its

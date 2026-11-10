@@ -800,6 +800,16 @@ fn scenario(root: &Path, url: &str) {
     );
     assert_eq!(proven["governance"]["appUpgrades"], "owner");
 
+    // A personal context moves into an organization its owner administers,
+    // with the owner's passkey; the node asks for it first.
+    let asked = alice
+        .try_run(&["context", "move", "notes", &org])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let moved = alice.run(&["context", "move", "notes", &org, "--dev-passkey", pk]);
+    assert_eq!(moved["org"], org, "{moved}");
+    assert_eq!(alice.run(&["context", "get", "notes"])["org"], org);
+
     // Clean up: an organization goes with its contexts; logout forgets the session.
     // Without a file passkey the request still goes out: the node asks for the
     // owner's approval, which on a real cluster is given in the console.

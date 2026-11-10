@@ -592,6 +592,7 @@ is its command line.
   A cancel whose poll gets no answer ends from the held report if any (while that report only waits on the leader's own writes the run stays open, up to the run ceiling), else cancelled with no usage, without a delete.
   `GET /apps/{app}/runs/{run}` and `GET /apps/{app}/runs?limit=&before=` (`AppMachine::runs_page`, newest `startTsMs` first, ties by run id descending, `limit` 1 to 100, a `before` cursor of `startTsMs:run` bounded by `MAX_RUNS_CURSOR_BYTES`, at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` records read per page) are the reserved view `__run` answered by the leader (`Node::run_view`), one shared `run_json` for both; they show plaintext sizes and hashes of files only to those who may list the files.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
+- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas. `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`). `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs`, `tests/move_app.rs`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
@@ -804,6 +805,16 @@ is its command line.
   `passkey_and_session_times_come_from_their_entries`,
   `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`,
   `tests/old_datadir.rs`.
+- **Members' security** (owner and admins): `GET /orgs/{org}/members?detail=security`
+  (`api::org_members`, `holder`, `SystemState::is_org_admin`, filtered by
+  `Org::sees_member`) answers per member the passkey count capped at
+  `PASSKEYS_COUNTED` (`"3+"`), `recoveryCode` (a `recovery_keys` entry),
+  `lastActiveDay` (`api::last_active`: the latest `PasskeyTimes::last_sign_in_at`
+  or live session exchange, `api::session_use`, as a UTC day) and `sessions`
+  (live, unrevoked, each session once). Nothing the holder alone sees (ids,
+  labels, sessions, origins, activity). `deployment_orgs` adds counts only,
+  `memberCount` and `activeMembers30d` (`ACTIVE_WINDOW_SECS`). Regressions:
+  `tests/org_member_security.rs`, `deployments_of_one_release_are_independent`.
 - **Activity** (the account holder's alone): `SystemState::activity` (by
   account, beside `accounts` so `account_args` is unchanged), the last
   `types::ACTIVITY_KEPT` `ActivityEntry { at, passkey, kind }`, `kind`
