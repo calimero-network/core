@@ -198,13 +198,21 @@ impl JobClient {
         }
     }
 
-    /// The output's ciphertext and data key.
+    /// The output's ciphertext, segment by segment, and its data key.
     async fn output(&self, a: &Assignment, token: &str, i: usize) -> (Vec<u8>, [u8; 32]) {
         let base = format!("job/runs/{}/outputs/{i}", run_path(a));
-        let (status, ciphertext) = self
-            .request(Method::GET, &base, Some(token), Vec::new())
-            .await;
-        assert_eq!(status, 200);
+        let mut ciphertext = Vec::new();
+        for k in 0.. {
+            let (status, segment) = self
+                .request(Method::GET, &format!("{base}/{k}"), Some(token), Vec::new())
+                .await;
+            if status == 404 {
+                break;
+            }
+            assert_eq!(status, 200);
+            assert!(segment.len() <= SEGMENT_BYTES);
+            ciphertext.extend(segment);
+        }
         let (status, key) = self
             .json(Method::GET, &format!("{base}/key"), Some(token), Vec::new())
             .await;
@@ -608,7 +616,7 @@ async fn a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_t
         (409, Some("RUN_CONFLICT"))
     );
     // Outputs are the run's only: another index, and a key before the end.
-    let path = format!("job/runs/{}/outputs/1", run_path(&a));
+    let path = format!("job/runs/{}/outputs/1/0", run_path(&a));
     assert_eq!(
         job_a
             .json(Method::GET, &path, Some(&token_a), Vec::new())
@@ -678,6 +686,44 @@ async fn the_segments_of_an_input_arrive_in_any_order_and_a_wrong_one_is_refused
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_retry_after_a_failed_input_finish_completes_the_input() {
+    let rig = Rig::start().await;
+    let (node, job) = rig.job(JOB_A).await;
+    let input = rig.input_len(20 * MIB, 23).await;
+    assert_eq!(input.segments.len(), 2);
+    let a = rig.assignment(&job, "finish1", 1, "digest", DIGEST, &[&input]);
+    assert_eq!(rig.push(&job).await.0, 200);
+    assert_eq!(job.post(&a).await.0, 200);
+    let token = rig.token(&a);
+    let segment = |k: usize| input.ciphertext.chunks(SEGMENT_BYTES).nth(k).unwrap();
+
+    assert_eq!(job.put_segment(&a, 0, 0, &token, segment(0)).await.0, 200);
+    node.running.fail_next_input_finish();
+    assert_eq!(job.put_segment(&a, 0, 1, &token, segment(1)).await.0, 500);
+    let (status, answer) = job.put_segment(&a, 0, 1, &token, segment(1)).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_ne!(answer["state"], "awaiting", "the input never completed");
+    let done = report(&job.finish(&a, &token).await, &job, &a);
+    assert_eq!(done.status, ReportStatus::Done);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_assignment_whose_segment_count_does_not_fit_its_size_is_refused_not_a_panic() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let input = rig.input_len(40 * MIB, 24).await;
+    let mut a = rig.assignment(&job, "mismatch", 1, "digest", DIGEST, &[&input]);
+    a.inputs[0].size = 1;
+    a.signature = rig.leader().sign_assignment(&a).unwrap();
+    assert_eq!(rig.push(&job).await.0, 200);
+    assert_eq!(job.post(&a).await.0, 200);
+    let token = rig.token(&a);
+    let last = input.ciphertext.chunks(SEGMENT_BYTES).nth(2).unwrap();
+    let (status, e) = job.put_segment(&a, 0, 2, &token, last).await;
+    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_SEGMENT")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn segments_that_match_their_list_but_not_the_declared_file_end_the_run_as_integrity() {
     let rig = Rig::start().await;
     let (_a, job) = rig.job(JOB_A).await;
@@ -688,6 +734,42 @@ async fn segments_that_match_their_list_but_not_the_declared_file_end_the_run_as
     let a = rig.assignment(&job, "tamper3", 1, "digest", DIGEST, &[&tampered]);
     let answer = rig.run(&job, &a, &[&tampered]).await;
     failed(&answer, &job, &a, FailReason::Integrity);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_output_is_served_one_segment_per_request_by_range() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let input = rig.input_len(40 * MIB, 23).await;
+    let a = rig.assignment(&job, "outsegs", 1, "digest", DIGEST, &[&input]);
+    let answer = rig.run(&job, &a, &[&input]).await;
+    let done = report(&answer, &job, &a);
+    let out = &done.outputs[0];
+    assert_eq!(out.segments.len(), 3);
+    let token = rig.token(&a);
+    let base = format!("job/runs/{}/outputs/0", run_path(&a));
+    for (k, hash) in out.segments.iter().enumerate() {
+        let (status, bytes) = job
+            .request(
+                Method::GET,
+                &format!("{base}/{k}"),
+                Some(&token),
+                Vec::new(),
+            )
+            .await;
+        assert_eq!(status, 200, "segment {k}");
+        assert!(bytes.len() <= SEGMENT_BYTES);
+        assert_eq!(&sha256_hex(&bytes), hash);
+    }
+    let (status, _) = job
+        .request(Method::GET, &format!("{base}/3"), Some(&token), Vec::new())
+        .await;
+    assert_eq!(status, 404);
+    // The whole-output route is gone.
+    let (status, _) = job
+        .request(Method::GET, &base, Some(&token), Vec::new())
+        .await;
+    assert_eq!(status, 404);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -968,7 +1050,7 @@ async fn a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_
             (404, "UNKNOWN_RUN".into())
         );
     }
-    let path = format!("job/runs/{}/outputs/0", run_path(&good));
+    let path = format!("job/runs/{}/outputs/0/0", run_path(&good));
     assert_eq!(
         job_a.json(Method::GET, &path, None, Vec::new()).await.0,
         404

@@ -13,7 +13,9 @@ use zeroize::Zeroizing;
 use super::{run_path, Drive};
 use crate::component::blobs::Blobs;
 use crate::component::{Attempt, RunRecord};
-use crate::files::{noise_seed, run_token, unwrap_key, wrap_for_job_derived, JobWrap, WrapKind};
+use crate::files::{
+    noise_seed, run_token, unwrap_key, wrap_for_job_derived, JobWrap, WrapKind, SEGMENT_BYTES,
+};
 use crate::job_node::{NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN};
 use crate::job_wire::{
     assignment_digest, hash_bytes, verify_report, Assignment, Report, RunBudget, RunInput,
@@ -433,32 +435,22 @@ impl Drive<'_> {
             .is_some_and(|a| a.node == peer.id && self.report_is_valid(a, report, signature))
     }
 
-    /// One output's ciphertext and data key, fetched from the job node.
-    pub(super) async fn fetch_output(
+    /// Output `i`'s data key, fetched from the job node.
+    pub(super) async fn fetch_output_key(
         &self,
         peer: &JobPeer,
         attempt: u32,
         i: usize,
-        sealed_len: u64,
-    ) -> eyre::Result<(Vec<u8>, Zeroizing<[u8; 32]>)> {
+    ) -> eyre::Result<Zeroizing<[u8; 32]>> {
         let token = self.token(attempt);
-        let base = format!("{}/outputs/{i}", self.path(attempt));
-        let headers = [(TOKEN_HEADER, token.as_str())];
-        let cap = usize::try_from(sealed_len)?;
-        let body = self
-            .node
-            .job_transfer(peer, Method::GET, &base, &headers, Vec::new(), cap)
-            .await?;
-        if body.status != 200 {
-            eyre::bail!("the job node answered {} for output {i}", body.status);
-        }
+        let path = format!("{}/outputs/{i}/key", self.path(attempt));
         let key = self
             .node
             .job_call(
                 peer,
                 Method::GET,
-                &format!("{base}/key"),
-                &headers,
+                &path,
+                &[(TOKEN_HEADER, token.as_str())],
                 Vec::new(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -468,7 +460,37 @@ impl Drive<'_> {
             .as_slice()
             .try_into()
             .map_err(|_| eyre::eyre!("an output key is 32 bytes"))?;
-        Ok((body.body, Zeroizing::new(key)))
+        Ok(Zeroizing::new(key))
+    }
+
+    /// Segment `k` of output `i`, at most one segment, fetched from the job node.
+    pub(super) async fn fetch_output_segment(
+        &self,
+        peer: &JobPeer,
+        attempt: u32,
+        i: usize,
+        k: usize,
+    ) -> eyre::Result<Vec<u8>> {
+        let token = self.token(attempt);
+        let path = format!("{}/outputs/{i}/{k}", self.path(attempt));
+        let answer = self
+            .node
+            .job_transfer(
+                peer,
+                Method::GET,
+                &path,
+                &[(TOKEN_HEADER, token.as_str())],
+                Vec::new(),
+                SEGMENT_BYTES,
+            )
+            .await?;
+        if answer.status != 200 {
+            eyre::bail!(
+                "the job node answered {} for segment {k} of output {i}",
+                answer.status
+            );
+        }
+        Ok(answer.body)
     }
 }
 

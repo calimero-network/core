@@ -16,6 +16,7 @@ use calimero_app_host::{
     MAX_COMPUTE_WALL_SECS, MAX_FILE_BYTES,
 };
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use tracing::warn;
 use zeroize::Zeroizing;
@@ -23,9 +24,7 @@ use zeroize::Zeroizing;
 use super::admission::{admit_assignment, token_matches};
 use super::{exec, locked, JobNode, RUNS_PER_JOB_NODE};
 use crate::error::ApiError;
-use crate::files::{
-    file_id, sealed_len, segment_hash, unwrap_for_job, JobWrap, WrapKind, SEGMENT_BYTES,
-};
+use crate::files::{file_id, sealed_len, unwrap_for_job, JobWrap, WrapKind, SEGMENT_BYTES};
 use crate::job_wire::{assignment_message, is_hash, Assignment, Report, RunInput, SHA256_LEN};
 use crate::node::MAX_ARGS_BYTES;
 
@@ -533,14 +532,14 @@ pub(super) async fn put_segment(
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_SEGMENT", "the input has no such segment"))?;
     let last = (hashes.len() - 1) as u64;
     let expected = if k as u64 == last {
-        sealed_len(input.size) - last * SEGMENT_BYTES as u64
+        sealed_len(input.size).checked_sub(last * SEGMENT_BYTES as u64)
     } else {
-        SEGMENT_BYTES as u64
+        Some(SEGMENT_BYTES as u64)
     };
     let want = *want;
     let held = body.clone();
-    let named = body.len() as u64 == expected
-        && tokio::task::spawn_blocking(move || segment_hash(&held) == want)
+    let named = expected == Some(body.len() as u64)
+        && tokio::task::spawn_blocking(move || calimero_identity::sha256(&held) == want)
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !named {
@@ -565,9 +564,11 @@ pub(super) async fn put_segment(
             "cannot store the segment: {e}"
         )));
     }
-    let _new = received.insert((i, k));
-    let have = |n: usize| received.range((n, 0)..=(n, usize::MAX)).count();
-    if have(i) < hashes.len() {
+    // Counted only once stored, and for the last segment of an input once it is also finished: a
+    // retry after a failed finish must run it again.
+    let in_so_far = received.range((i, 0)..=(i, usize::MAX)).count();
+    if in_so_far + 1 < hashes.len() {
+        let _new = received.insert((i, k));
         return Ok(Json(run.status()));
     }
     let key = locked(&run.keys)
@@ -587,12 +588,22 @@ pub(super) async fn put_segment(
         exec::fail_integrity(&job, &run);
         return Ok(Json(run.status()));
     }
-    if let Err(e) = exec::finish_input(&run.dir, i).await {
+    #[cfg(feature = "testing")]
+    let finished = if job.finish_input_fails.swap(false, Ordering::Relaxed) {
+        Err(std::io::Error::other("input finish failed (probe)"))
+    } else {
+        exec::finish_input(&run.dir, i).await
+    };
+    #[cfg(not(feature = "testing"))]
+    let finished = exec::finish_input(&run.dir, i).await;
+    if let Err(e) = finished {
         if e.kind() == std::io::ErrorKind::NotFound {
             return Err(not_awaiting());
         }
         return Err(ApiError::internal(&format!("cannot store the input: {e}")));
     }
+    let _new = received.insert((i, k));
+    let have = |n: usize| received.range((n, 0)..=(n, usize::MAX)).count();
     let complete = (0..run.assignment.inputs.len()).all(|n| {
         let total = run.assignment.inputs[n].segments.len();
         have(n) == total
@@ -641,15 +652,16 @@ fn output_of<T>(run: &Run, i: usize, read: impl FnOnce(&OutputFile) -> T) -> Res
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_OUTPUT", "the run wrote no such output"))
 }
 
-/// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}`: the output's ciphertext.
-pub(super) async fn output(
+/// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}/{k}`: segment `k` of the output's ciphertext,
+/// read by range from the scratch file.
+pub(super) async fn output_segment(
     State(job): State<Arc<JobNode>>,
-    Path((app, run, attempt, i)): Path<(String, String, u32, usize)>,
+    Path((app, run, attempt, i, k)): Path<(String, String, u32, usize, usize)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
     #[cfg(feature = "testing")]
-    if job.outputs_fail.load(Ordering::Relaxed) {
+    if job.outputs_fail.load(Ordering::Relaxed) || output_cut(&job) {
         return Err(ApiError::internal("outputs are failing"));
     }
     #[cfg(feature = "testing")]
@@ -668,10 +680,53 @@ pub(super) async fn output(
         return Err(ApiError::internal("outputs are failing slowly"));
     }
     let path = output_of(&run, i, |o| o.path.clone())?;
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|e| ApiError::internal(&format!("cannot read the output: {e}")))?;
+    let bytes = read_segment(&path, k).await?;
+    #[cfg(feature = "testing")]
+    {
+        let mut log = locked(&job.output_log);
+        log.0.push((i, k));
+        log.1 = log.1.max(bytes.len());
+    }
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
+}
+
+/// Whether a test cut this answer.
+#[cfg(feature = "testing")]
+fn output_cut(job: &JobNode) -> bool {
+    let left = job.output_cut.load(Ordering::Relaxed);
+    match left {
+        usize::MAX => false,
+        0 => {
+            job.output_cut.store(usize::MAX, Ordering::Relaxed);
+            true
+        }
+        n => {
+            job.output_cut.store(n - 1, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
+/// Segment `k` of the file at `path`: one segment in memory, never the whole file.
+async fn read_segment(path: &std::path::Path, k: usize) -> Result<Vec<u8>, ApiError> {
+    let unreadable =
+        |e: std::io::Error| ApiError::internal(&format!("cannot read the output: {e}"));
+    let mut file = tokio::fs::File::open(path).await.map_err(unreadable)?;
+    let len = file.metadata().await.map_err(unreadable)?.len();
+    let start = (k as u64).saturating_mul(SEGMENT_BYTES as u64);
+    if start >= len && !(len == 0 && k == 0) {
+        return Err(ApiError::new(
+            404,
+            "NO_SUCH_SEGMENT",
+            "the output has no such segment",
+        ));
+    }
+    let mut bytes = vec![0; (len - start).min(SEGMENT_BYTES as u64) as usize];
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(unreadable)?;
+    file.read_exact(&mut bytes).await.map_err(unreadable)?;
+    Ok(bytes)
 }
 
 /// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}/key`: the output's data key, hex. It travels

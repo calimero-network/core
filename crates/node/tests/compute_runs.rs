@@ -1019,6 +1019,29 @@ async fn a_held_report_survives_the_leaders_failing_writes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_forty_mib_output_is_fetched_a_segment_at_a_time_and_a_cut_fetch_resumes() {
+    use calimero_node::files::SEGMENT_BYTES;
+
+    let rig = Rig::start(&[JOB_A]).await;
+    let plain: Vec<u8> = (0..40 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let file = rig.upload(&plain).await;
+    // The first segment arrives, the second request fails once, and the fetch goes on from it.
+    rig.jobs[0].running.cut_outputs_after(1);
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let outcome = rig.outcome_within(&run, 150).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    let seed = noise_seed(&rig.leader().app_file_key(&rig.app), &run);
+    assert_eq!(
+        outcome["sha256"],
+        json!(sha256_hex(&expected_output(&plain, seed)))
+    );
+    let served = rig.jobs[0].running.served_output_segments();
+    assert_eq!(served, [(0, 0), (0, 1), (0, 2)], "no segment fetched twice");
+    assert!(rig.jobs[0].running.largest_output_answer() <= SEGMENT_BYTES);
+    assert_eq!(rig.record(&run).attempts.len(), 1, "no attempt was lost");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_the_run_open() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {

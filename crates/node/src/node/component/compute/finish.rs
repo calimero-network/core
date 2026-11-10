@@ -12,9 +12,7 @@ use tracing::warn;
 use super::{stored_of, Blob, Drive, FinalPlan, Stored, Watch};
 use crate::app::AppMachine;
 use crate::component::{Attempt, FailedReason, FileMark, FinalOutcome, RunRecord, RunState};
-use crate::files::{
-    file_id, sealed_len, segments_match, wrap_key, FileOpener, CHUNK_BYTES, SEGMENT_BYTES,
-};
+use crate::files::{file_id, sealed_len, wrap_key, SegmentReader, SEGMENT_BYTES};
 use crate::job_wire::{hash_bytes, FailReason, Report, ReportStatus};
 use crate::node::job::busy_here;
 use crate::node::{JobPeer, QUOTA_EXCEEDED, REJECTED};
@@ -171,7 +169,9 @@ impl Drive<'_> {
         };
         let mut marks: Vec<FileMark> = Vec::new();
         for i in 0..report.outputs.len() {
-            let step = self.store_output(&peer, attempt.attempt, report, i).await;
+            let step = self
+                .store_output(&peer, attempt.attempt, report, i, watch)
+                .await;
             match step {
                 Ok(mark) => marks.push(mark),
                 Err(staging) => {
@@ -182,6 +182,8 @@ impl Drive<'_> {
                             ..stored_of(&marks)
                         },
                     );
+                    // The finished outputs were undone; the stored segments of this one stay.
+                    watch.fetched.retain(|n, _| *n == i);
                     return staging;
                 }
             }
@@ -190,67 +192,72 @@ impl Drive<'_> {
         Staging::Ready(marks)
     }
 
-    /// Output `i` of `report`: fetched, checked against the hash and the size the job signed,
-    /// opened with its key, stored on the replicas and described as a sealed file for the final to register.
+    /// Output `i` of `report`, fetched segment by segment: each checked against the signed list and
+    /// stored on the replicas, then the whole opened to prove size and hash; a cut fetch resumes.
     async fn store_output(
         &self,
         peer: &JobPeer,
         attempt: u32,
         report: &Report,
         i: usize,
+        watch: &mut Watch,
     ) -> Result<FileMark, Staging> {
         let out = &report.outputs[i];
-        let len = sealed_len(out.size);
         let Ok(plain_hash) = hash_bytes(&out.sha256) else {
             return Err(Staging::Lost);
         };
-        let (ciphertext, key) = self
-            .fetch_output(peer, attempt, i, len)
-            .await
-            .map_err(|e| {
-                if busy_here(&e) {
-                    Staging::Wait
-                } else {
-                    Staging::Retry
-                }
-            })?;
-        let (size, id) = (out.size, out.id.clone());
-        let mark_segments = out.segments.clone();
-        let opened = tokio::task::spawn_blocking(move || {
-            let hashes: Vec<[u8; 32]> = (mark_segments.iter())
-                .map(|s| hash_bytes(s).ok())
-                .collect::<Option<_>>()?;
-            let intact = ciphertext.len() as u64 == len
-                && hex::encode(file_id(&hashes)) == id
-                && segments_match(&ciphertext, &hashes);
-            if !intact {
-                return None;
-            }
-            let mut opener = FileOpener::new(&key);
-            for chunk in ciphertext.chunks(CHUNK_BYTES) {
-                opener.push(chunk).ok()?;
-            }
-            opener.finish_expecting(size, &plain_hash).ok()?;
-            Some((ciphertext, key))
-        })
-        .await
-        .map_err(|_| Staging::Retry)?;
-        let Some((ciphertext, key)) = opened else {
+        let hashes: Option<Vec<[u8; 32]>> =
+            out.segments.iter().map(|s| hash_bytes(s).ok()).collect();
+        let Some(hashes) = hashes.filter(|h| {
+            hex::encode(file_id(h)) == out.id
+                && h.len() as u64 == sealed_len(out.size).div_ceil(SEGMENT_BYTES as u64)
+        }) else {
             return Err(Staging::Lost);
         };
+        let cut = |e: eyre::Report| {
+            if busy_here(&e) {
+                Staging::Wait
+            } else {
+                Staging::Retry
+            }
+        };
+        let key = self.fetch_output_key(peer, attempt, i).await.map_err(cut)?;
+        let mut reader = SegmentReader::new(&key, hashes.clone());
+        let mut next = watch.fetched.get(&i).copied().unwrap_or(0);
+        for k in 0..next {
+            let held = self.node.local_segment(&out.segments[k]);
+            if held.is_none_or(|bytes| reader.push(&bytes).is_err()) {
+                // A stored segment went missing: start this output over.
+                reader = SegmentReader::new(&key, hashes);
+                next = 0;
+                break;
+            }
+        }
+        for k in next..out.segments.len() {
+            let bytes = self
+                .fetch_output_segment(peer, attempt, i, k)
+                .await
+                .map_err(cut)?;
+            watch.saw();
+            if reader.push(&bytes).is_err() {
+                return Err(Staging::Lost);
+            }
+            let blob = Blob {
+                id: out.segments[k].clone(),
+                bytes: bytes.into(),
+                segment: true,
+            };
+            self.node
+                .push_files(&self.app.app_id, &[blob], true)
+                .await
+                .map_err(|_| Staging::Wait)?;
+            watch.fetched.insert(i, k + 1);
+        }
+        if reader.finish_expecting(out.size, &plain_hash).is_err() {
+            return Err(Staging::Lost);
+        }
         let file_key = crate::backup::file_key(&self.node.cluster_key, &self.app.app_id);
         let wrapped = wrap_key(&file_key, &self.app.app_id, &key).map_err(|_| Staging::Lost)?;
-        let blobs: Vec<Blob> = (ciphertext.chunks(SEGMENT_BYTES).zip(&out.segments))
-            .map(|(bytes, hash)| Blob {
-                id: hash.clone(),
-                bytes: axum::body::Bytes::copy_from_slice(bytes),
-                segment: true,
-            })
-            .collect();
-        self.node
-            .push_files(&self.app.app_id, &blobs, true)
-            .await
-            .map_err(|_| Staging::Wait)?;
         Ok(FileMark {
             id: out.id.clone(),
             size: out.size,

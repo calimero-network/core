@@ -104,6 +104,8 @@ pub(super) struct Watch {
     progress: Option<(u8, String)>,
     /// The outputs of the attempt's report, stored on the replicas and charged, not yet committed.
     staged: Option<Vec<FileMark>>,
+    /// How many segments of an output being fetched are stored already, by output index.
+    fetched: HashMap<usize, usize>,
     /// The run ended: nothing is kept of it.
     finished: bool,
     /// The finals this leader proposed whose answer is unknown, by entry ids, and whether a job
@@ -135,6 +137,7 @@ impl Watch {
             sent: false,
             progress: None,
             staged: None,
+            fetched: HashMap::new(),
             finished: false,
             proposed: Vec::new(),
             refused: None,
@@ -281,6 +284,7 @@ impl ComputeState {
         let mut fresh = Watch::new(term, attempt);
         if old.attempt == attempt {
             fresh.staged = old.staged;
+            fresh.fetched = old.fetched;
             (fresh, None)
         } else {
             (fresh, old.staged)
