@@ -1564,7 +1564,7 @@ impl SystemState {
         record: &ApiKeyRecord,
         scope: &crate::types::UpgradeScope,
     ) -> Result<(), &'static str> {
-        self.upgrade_key_fits_as_logged(record, scope, true)
+        self.upgrade_key_fits_as_logged(record, scope, OwnerRule::CURRENT)
     }
 
     /// [`Self::upgrade_key_fits`], with the app's owner judged as
@@ -1573,7 +1573,7 @@ impl SystemState {
         &self,
         record: &ApiKeyRecord,
         scope: &crate::types::UpgradeScope,
-        owner_in_org: bool,
+        rule: OwnerRule,
     ) -> Result<(), &'static str> {
         if record.apps.is_some()
             || record.methods.is_some()
@@ -1583,7 +1583,7 @@ impl SystemState {
             return Err("an upgrade key has no other scope");
         }
         let app = self.apps.get(&scope.app).ok_or("no such app")?;
-        if !self.may_upgrade_as_logged(app, &record.account, owner_in_org) {
+        if !self.may_upgrade_as_logged(app, &record.account, rule) {
             return Err("an upgrade key needs an account that may upgrade the app");
         }
         let package = self.packages.get(&scope.package).ok_or("no such package")?;
@@ -1602,18 +1602,13 @@ impl SystemState {
 
     #[must_use]
     pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
-        self.may_upgrade_as_logged(app, account, true)
+        self.may_upgrade_as_logged(app, account, OwnerRule::CURRENT)
     }
 
-    /// [`Self::may_upgrade`], or, for a command an earlier release logged
-    /// (`owner_in_org: false`), with the owner judged by ownership alone.
+    /// [`Self::may_upgrade`], with the owner judged as the release that
+    /// logged the command did ([`OwnerRule`]).
     #[must_use]
-    pub fn may_upgrade_as_logged(
-        &self,
-        app: &AppRecord,
-        account: &str,
-        owner_in_org: bool,
-    ) -> bool {
+    pub fn may_upgrade_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
         if !self.upgrades_of(&app.bundle).is_owner() {
             return self
                 .upgraded_by_publisher(&app.bundle)
@@ -1623,7 +1618,7 @@ impl SystemState {
             Access::Team { team } => Some(team.as_str()),
             _ => None,
         };
-        self.owner_acts_as_logged(app, account, owner_in_org)
+        self.owner_acts_as_logged(app, account, rule)
             || app
                 .org
                 .as_ref()
@@ -1659,29 +1654,47 @@ impl SystemState {
 
     /// Whether `account` holds `app`'s owner powers: it owns the app and, for
     /// an organization's app, is a member of that organization (`member` or
-    /// above, as owning an app there takes). An owner who left, was removed
-    /// or was made a guest keeps the name on the record but none of its
+    /// above, as owning an app there takes) and, for an app on a team (an
+    /// app team, a private channel under it), in that team. An owner who
+    /// left, was removed or was made a guest, or who left or was removed
+    /// from the app's team, keeps the name on the record but none of its
     /// powers (its access, metadata, transfer, deletion, upgrades, upgrade
-    /// keys, files and blobs). A personal app is its owner's alone.
+    /// keys, files and blobs), as [`Self::may_reach`] no longer lets them
+    /// reach it. A personal app is its owner's alone.
     #[must_use]
     pub fn owner_acts(&self, app: &AppRecord, account: &str) -> bool {
-        app.owner == account
-            && app.org.as_deref().is_none_or(|o| {
-                self.orgs
-                    .get(o)
-                    .and_then(|o| o.role(account))
-                    .is_some_and(|r| r >= OrgRole::Member)
-            })
+        self.owner_acts_as_logged(app, account, OwnerRule::CURRENT)
     }
 
-    /// [`Self::owner_acts`], or, for a command an earlier release logged
-    /// (`owner_in_org: false`), ownership alone, as that release judged it.
-    fn owner_acts_as_logged(&self, app: &AppRecord, account: &str, owner_in_org: bool) -> bool {
-        if owner_in_org {
-            self.owner_acts(app, account)
-        } else {
-            app.owner == account
+    /// [`Self::owner_acts`], as the release that logged the command judged
+    /// it ([`OwnerRule`]).
+    fn owner_acts_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
+        if app.owner != account {
+            return false;
         }
+        let Some(org) = app.org.as_deref() else {
+            return true;
+        };
+        if rule == OwnerRule::Ownership {
+            return true;
+        }
+        let Some(o) = self.orgs.get(org) else {
+            return false;
+        };
+        o.role(account).is_some_and(|r| r >= OrgRole::Member)
+            && (rule == OwnerRule::InOrg || self.owner_in_team(app, account))
+    }
+
+    /// Whether `app`'s team, if it is on one, holds `owner`: an owner reaches
+    /// and manages an app on a team only while they are in it.
+    fn owner_in_team(&self, app: &AppRecord, owner: &str) -> bool {
+        let Access::Team { team } = &app.access else {
+            return true;
+        };
+        app.org
+            .as_deref()
+            .and_then(|o| self.orgs.get(o))
+            .is_some_and(|o| o.in_team(owner, team))
     }
 
     /// Whether `account` manages `app` as a whole (transfers or deletes it,
@@ -1690,7 +1703,13 @@ impl SystemState {
     /// organization cleans up the app of an owner who left.
     #[must_use]
     pub fn manages_app(&self, app: &AppRecord, account: &str) -> bool {
-        self.owner_acts(app, account)
+        self.manages_app_as_logged(app, account, OwnerRule::CURRENT)
+    }
+
+    /// [`Self::manages_app`], with the owner judged as the release that
+    /// logged the command did ([`OwnerRule`]).
+    fn manages_app_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
+        self.owner_acts_as_logged(app, account, rule)
             || app
                 .org
                 .as_deref()
@@ -1728,6 +1747,7 @@ impl SystemState {
         shared: Option<bool>,
         nonce: &str,
         actor: &str,
+        owner_in_team: bool,
     ) -> Result<Value, &'static str> {
         use crate::types::caps;
 
@@ -1839,7 +1859,7 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| self.may_reach(a, Some(m.as_str())))
+                        .filter(|m| self.may_reach_as_logged(a, Some(m.as_str()), owner_in_team))
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -2036,7 +2056,9 @@ impl SystemState {
     ///   ([`MOVE_NEEDS_APP_TEAM`]): its rows are grants of the source.
     /// - **Owner:** stays, and must be a member of the target once the move
     ///   is done ([`MOVE_OWNER_NOT_IN_TARGET`]); nobody's ownership changes
-    ///   without its own consented transfer.
+    ///   without its own consented transfer. An owner who reaches the app now
+    ///   gets a row on the target's app team, so they keep reaching and
+    ///   managing it there (an owner does so only while in its team).
     /// - **Members:** with `bring_members`, every member of the source who
     ///   reaches the app joins the target at their role there, capped at
     ///   member (a guest stays a guest, an admin comes in as a member: the
@@ -2099,6 +2121,12 @@ impl SystemState {
                 .collect(),
             _ => Vec::new(),
         };
+        // An owner who reaches the app now keeps reaching it on the target's
+        // app team (an owner reaches an app on a team only while in it), so
+        // a move never takes their app away without their consent.
+        let owner_keeps = self
+            .may_reach(app, Some(app.owner.as_str()))
+            .then(|| app.owner.clone());
         let joins: Vec<(AccountId, OrgRole)> = reached
             .iter()
             .filter(|(m, _)| target.role(m).is_none())
@@ -2221,7 +2249,7 @@ impl SystemState {
                 }
             };
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
-            for (m, _) in &reached {
+            for m in reached.iter().map(|(m, _)| m).chain(owner_keeps.iter()) {
                 let _back = t.removed.remove(m);
                 let _row = t.members.entry(m.clone()).or_insert(false);
             }
@@ -2487,9 +2515,24 @@ impl SystemState {
     /// reached only by its current members, whatever names the account: its
     /// owner, or an `Accounts` list, stop reaching it once they leave or are
     /// removed (the organization itself gone: nobody but a public app's
-    /// callers).
+    /// callers). An app on a team is reached only by that team, its owner
+    /// included: an owner who leaves or is removed from the team (an app's
+    /// team, a private channel) stops reaching it, as they stop managing it
+    /// ([`Self::owner_acts`]).
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
+        self.may_reach_as_logged(app, account, true)
+    }
+
+    /// [`Self::may_reach`], or, for a command an earlier release logged
+    /// (`owner_in_team: false`), with an app on a team reached by its owner
+    /// whatever the team holds, as that release judged it.
+    fn may_reach_as_logged(
+        &self,
+        app: &AppRecord,
+        account: Option<&str>,
+        owner_in_team: bool,
+    ) -> bool {
         if let (Some(org), Some(a)) = (&app.org, account) {
             let member = self.orgs.get(org).and_then(|o| o.role(a)).is_some();
             if !member && app.access != Access::Public {
@@ -2499,7 +2542,15 @@ impl SystemState {
         match (&app.access, account) {
             (Access::Public, _) => true,
             (_, None) => false,
-            (_, Some(a)) if a == app.owner => true,
+            // On a team, the owner too is judged by the team (below).
+            (access, Some(a))
+                if a == app.owner
+                    && (!owner_in_team
+                        || app.org.is_none()
+                        || !matches!(access, Access::Team { .. })) =>
+            {
+                true
+            }
             (Access::Owner, Some(_)) => false,
             (Access::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
             // Where apps have app teams, a guest has only the apps of the
@@ -3742,6 +3793,33 @@ pub const MAX_SCOPE_KEEP: usize = 1024;
 /// The longest app team name, in characters.
 pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
 
+/// How a logged command judges an app's owner ([`SystemState::owner_acts`]),
+/// by the flags the release that logged it set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerRule {
+    /// Ownership alone: entries from before `owner_in_org`.
+    Ownership,
+    /// While a member of the app's organization: `owner_in_org` alone.
+    InOrg,
+    /// And, for an app on a team, while in that team: `owner_in_team` too.
+    InTeam,
+}
+
+impl OwnerRule {
+    /// The rule this release judges by, and logs.
+    pub const CURRENT: Self = Self::InTeam;
+
+    /// The rule a command's flags name.
+    #[must_use]
+    pub const fn logged(owner_in_org: bool, owner_in_team: bool) -> Self {
+        match (owner_in_org, owner_in_team) {
+            (false, _) => Self::Ownership,
+            (true, false) => Self::InOrg,
+            (true, true) => Self::InTeam,
+        }
+    }
+}
+
 /// One package of a [`SystemCmd::ScopeApps`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3876,6 +3954,12 @@ pub enum SystemCmd {
         /// release logged, which replays judging ownership alone.
         #[serde(default)]
         owner_in_org: bool,
+        /// An app on a team is reached and managed by its owner only while
+        /// they are in that team ([`SystemState::owner_acts`]). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging the owner without the team.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     TransferApp {
         app_id: AppId,
@@ -3892,6 +3976,12 @@ pub enum SystemCmd {
         /// owner alone, member or not, and no admin.
         #[serde(default)]
         owner_in_org: bool,
+        /// An app on a team is reached and managed by its owner only while
+        /// they are in that team ([`SystemState::owner_acts`]). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging the owner without the team.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     /// Move an app instance to another organization, its data where it is:
     /// whoever manages it where it is now ([`SystemState::manages_app`]; a
@@ -3926,6 +4016,12 @@ pub enum SystemCmd {
         /// release logged, which replays judging ownership alone.
         #[serde(default)]
         owner_in_org: bool,
+        /// An app on a team is reached and managed by its owner only while
+        /// they are in that team ([`SystemState::owner_acts`]). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging the owner without the team.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     /// Counts `delta` bytes more (less, when negative) of files against an app's payer. A
     /// charge past `Quotas::max_file_bytes_per_org` is refused; a refund stops at zero.
@@ -3966,6 +4062,12 @@ pub enum SystemCmd {
         /// release logged, which replays judging ownership alone.
         #[serde(default)]
         owner_in_org: bool,
+        /// An app on a team is reached and managed by its owner only while
+        /// they are in that team ([`SystemState::owner_acts`]). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging the owner without the team.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     /// A new account, with the session its sign-up opens. Carries the new
     /// passkey's assertion over [`account_args`] (`account:<id> /
@@ -4045,6 +4147,12 @@ pub enum SystemCmd {
         /// judging ownership alone.
         #[serde(default)]
         owner_in_org: bool,
+        /// An app on a team is reached and managed by its owner only while
+        /// they are in that team ([`SystemState::owner_acts`]). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging the owner without the team.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     RevokeApiKey {
         key_id: String,
@@ -4426,6 +4534,12 @@ pub enum SystemCmd {
         /// release logged, which replays judging ownership alone.
         #[serde(default)]
         owner_in_org: bool,
+        /// An app on a team is reached and managed by its owner only while
+        /// they are in that team ([`SystemState::owner_acts`]). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging the owner without the team.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     SetPasskeyLabel {
         account: AccountId,
@@ -4644,6 +4758,12 @@ pub enum SystemCmd {
         nonce: String,
         actor: AccountId,
         consent: Value,
+        /// Who reaches an instance now is judged with an app on a team
+        /// reached by its owner only while in it ([`SystemState::may_reach`]).
+        /// The API always sets it; absent (`false`) in an entry an earlier
+        /// release logged, which replays as that release judged it.
+        #[serde(default)]
+        owner_in_team: bool,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
     /// key: the owner's, with their passkey consent (`org:<org> /
@@ -5164,6 +5284,7 @@ impl SystemMachine {
                 consent,
                 release,
                 owner_in_org,
+                owner_in_team,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
@@ -5197,9 +5318,13 @@ impl SystemMachine {
                 let allowed = if by_operator {
                     s.apps.contains_key(&app_id)
                 } else {
-                    s.apps
-                        .get(&app_id)
-                        .is_some_and(|a| s.may_upgrade_as_logged(a, &actor, owner_in_org))
+                    s.apps.get(&app_id).is_some_and(|a| {
+                        s.may_upgrade_as_logged(
+                            a,
+                            &actor,
+                            OwnerRule::logged(owner_in_org, owner_in_team),
+                        )
+                    })
                 };
                 if !allowed {
                     return Err(
@@ -5316,6 +5441,7 @@ impl SystemMachine {
                 to,
                 actor,
                 owner_in_org,
+                owner_in_team,
                 ..
             } => {
                 if !s.accounts.contains_key(&to) {
@@ -5333,7 +5459,9 @@ impl SystemMachine {
                 if !owner_in_org && app.owner != actor {
                     return Err("only the owner may transfer");
                 }
-                if owner_in_org && !s.manages_app(app, &actor) {
+                if owner_in_org
+                    && !s.manages_app_as_logged(app, &actor, OwnerRule::logged(true, owner_in_team))
+                {
                     return Err(ONLY_MANAGERS_TRANSFER);
                 }
                 // A personal app's files move to the new owner's quota.
@@ -5370,10 +5498,16 @@ impl SystemMachine {
                 app_id,
                 actor,
                 owner_in_org,
+                owner_in_team,
             } => {
                 let app = s.apps.get(&app_id).ok_or("no such app")?;
                 let admin = app.org.as_ref().is_some_and(|o| s.is_org_admin(o, &actor));
-                if !s.owner_acts_as_logged(app, &actor, owner_in_org) && !admin {
+                if !s.owner_acts_as_logged(
+                    app,
+                    &actor,
+                    OwnerRule::logged(owner_in_org, owner_in_team),
+                ) && !admin
+                {
                     return Err("only the owner or an org admin may delete");
                 }
                 s.remove_app(&app_id);
@@ -5483,10 +5617,14 @@ impl SystemMachine {
                 access,
                 actor,
                 owner_in_org,
+                owner_in_team,
             } => {
                 let app = s.apps.get(&app_id).ok_or("no such app")?;
-                if !s.owner_acts_as_logged(app, &actor, owner_in_org)
-                    && !s.may_set_access(app, &access, &actor)
+                if !s.owner_acts_as_logged(
+                    app,
+                    &actor,
+                    OwnerRule::logged(owner_in_org, owner_in_team),
+                ) && !s.may_set_access(app, &access, &actor)
                 {
                     return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access");
                 }
@@ -5685,13 +5823,18 @@ impl SystemMachine {
                 hash,
                 record,
                 owner_in_org,
+                owner_in_team,
                 ..
             } => {
                 if !s.accounts.contains_key(&record.account) {
                     return Err("unknown account");
                 }
                 if let Some(scope) = &record.upgrades {
-                    s.upgrade_key_fits_as_logged(&record, scope, owner_in_org)?;
+                    s.upgrade_key_fits_as_logged(
+                        &record,
+                        scope,
+                        OwnerRule::logged(owner_in_org, owner_in_team),
+                    )?;
                 }
                 let keys = s
                     .api_keys
@@ -6503,11 +6646,17 @@ impl SystemMachine {
                 metadata,
                 actor,
                 owner_in_org,
+                owner_in_team,
             } => {
                 metadata_fits(&metadata)?;
                 let app = s.apps.get(&app_id).ok_or("no such app")?;
                 let admin = app.org.as_ref().is_some_and(|o| s.is_org_admin(o, &actor));
-                if !s.owner_acts_as_logged(app, &actor, owner_in_org) && !admin {
+                if !s.owner_acts_as_logged(
+                    app,
+                    &actor,
+                    OwnerRule::logged(owner_in_org, owner_in_team),
+                ) && !admin
+                {
                     return Err("only the owner or an org admin sets an app's metadata");
                 }
                 if let Some(a) = s.apps.get_mut(&app_id) {
@@ -6989,8 +7138,9 @@ impl SystemMachine {
                 shared,
                 nonce,
                 actor,
+                owner_in_team,
                 ..
-            } => s.scope_apps(&org, apps, shared, &nonce, &actor),
+            } => s.scope_apps(&org, apps, shared, &nonce, &actor, owner_in_team),
             SystemCmd::SetRecoveryKey {
                 org,
                 public_key,
@@ -7522,6 +7672,7 @@ mod tests {
             consent: serde_json::Value::Null,
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         };
         for (app, actor, may) in [
             ("in-org", "bob", true),
@@ -7628,6 +7779,7 @@ mod tests {
             consent: serde_json::Value::Null,
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         };
         let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
         let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
@@ -7882,6 +8034,7 @@ mod tests {
             consent: Value::Null,
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         };
         let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
         assert!(e.contains("compute component"), "{e}");
@@ -8145,6 +8298,7 @@ mod tests {
             consent,
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         };
         assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
         let c = consent(
@@ -8362,6 +8516,7 @@ mod tests {
             record: record.clone(),
             consent,
             owner_in_org: true,
+            owner_in_team: true,
         };
         // Another key's hash under the same consent: refused.
         let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
@@ -8371,6 +8526,7 @@ mod tests {
                 record: record.clone(),
                 consent: c,
                 owner_in_org: true,
+                owner_in_team: true,
             })
             .is_err());
         needs_consent(
@@ -9559,7 +9715,10 @@ mod tests {
 
     // ------------------------------------- an org app's owner, while a member
 
-    use crate::types::Access;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::OwnerRule;
+    use crate::types::{Access, Team, TeamJoin};
 
     /// `proven_cluster` with carol a member too and an app `oa` of the
     /// organization that bob owns.
@@ -9584,6 +9743,7 @@ mod tests {
             access: Access::Public,
             actor: actor.into(),
             owner_in_org: true,
+            owner_in_team: true,
         }
     }
 
@@ -9593,6 +9753,7 @@ mod tests {
             metadata: json!({ "pinned": true }),
             actor: actor.into(),
             owner_in_org: true,
+            owner_in_team: true,
         }
     }
 
@@ -9601,6 +9762,7 @@ mod tests {
             app_id: app.into(),
             actor: actor.into(),
             owner_in_org: true,
+            owner_in_team: true,
         }
     }
 
@@ -9611,6 +9773,7 @@ mod tests {
             actor: actor.into(),
             consent: consent(pk, app, "__transfer", &json!({ "to": to })),
             owner_in_org: true,
+            owner_in_team: true,
         }
     }
 
@@ -9805,6 +9968,25 @@ mod tests {
         assert_eq!(s.orgs["new"].role("carol"), None);
         assert!(!s.may_reach(&s.apps["oa"], Some("carol")));
         assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+
+        // Into a target whose app teams are all closed, without its people:
+        // the owner still reaches (and manages) it, with a row of their own.
+        let (mut m, _alice, _bob) = moving();
+        let target = m.state.orgs.get_mut("new").unwrap();
+        target.teams.get_mut("qt").unwrap().join = crate::types::TeamJoin::Invite;
+        let _prev = target.members.insert("bob".into(), OrgRole::Member);
+        let out = m
+            .run_unproven(move_app("oa", "new", "alice", false, Value::Null))
+            .unwrap();
+        let team = out["access"]["team"].as_str().unwrap().to_owned();
+        let s = &m.state;
+        assert_eq!(
+            s.orgs["new"].teams[&team].join,
+            crate::types::TeamJoin::Invite
+        );
+        assert_eq!(s.orgs["new"].teams[&team].members.get("bob"), Some(&false));
+        assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+        assert!(s.owner_acts(&s.apps["oa"], "bob"));
     }
 
     /// Who moves: the app's manager where it is now, as an admin of the
@@ -10150,6 +10332,81 @@ mod tests {
         assert_eq!((app.owner.as_str(), &app.access), ("bob", &Access::Owner));
     }
 
+    /// An app on a team is reached and managed by its owner only while they
+    /// are in that team: an owner removed from it, who left it, or who lost
+    /// it when it closed, reaches it, changes it, deletes it and upgrades it
+    /// no more, and the organization's admins transfer it. Back in the team,
+    /// they own it again. An entry an earlier release logged (no
+    /// `owner_in_team`) replays judging the owner without the team.
+    #[test]
+    fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
+        let (mut m, mut alice, mut bob) = org_app_of_bob();
+        let team = |members: &[&str], join: TeamJoin| Team {
+            team_id: "t".into(),
+            name: "chat".into(),
+            parent: None,
+            join,
+            members: members.iter().map(|a| ((*a).to_owned(), false)).collect(),
+            read_only: BTreeSet::new(),
+            capabilities: BTreeMap::new(),
+            metadata: json!({ "app": { "package": "com.chat" } }),
+            removed: BTreeSet::new(),
+            default_capabilities: None,
+        };
+        let set = |m: &mut SystemMachine, t: Team| {
+            let _prev = m
+                .state
+                .orgs
+                .get_mut("org")
+                .unwrap()
+                .teams
+                .insert("t".into(), t);
+        };
+        set(&mut m, team(&["bob"], TeamJoin::Invite));
+        m.state.apps.get_mut("oa").unwrap().access = Access::Team { team: "t".into() };
+        let app = m.state.apps["oa"].clone();
+        assert!(m.state.may_reach(&app, Some("bob")));
+        assert!(m.state.owner_acts(&app, "bob"));
+        let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
+
+        // Kicked or left (no row), closed without them (no row, no longer
+        // open), or barred from the open team (`removed`).
+        let mut barred = team(&[], TeamJoin::Everyone);
+        let _new = barred.removed.insert("bob".into());
+        for out in [team(&[], TeamJoin::Invite), barred] {
+            set(&mut m, out);
+            let app = &m.state.apps["oa"];
+            assert!(!m.state.may_reach(app, Some("bob")));
+            assert!(!m.state.owner_acts(app, "bob"));
+            assert!(!m.state.manages_app(app, "bob"));
+            assert!(!m.state.may_upgrade(app, "bob"));
+            assert!(m.run(set_access("oa", "bob")).is_err());
+            assert!(m.run(set_app_metadata("oa", "bob")).is_err());
+            assert!(m.run(delete_app("oa", "bob")).is_err());
+            assert!(m.run(transfer_app(&mut bob, "oa", "bob", "carol")).is_err());
+        }
+        // An entry an earlier release logged replays as it judged it.
+        let old = |cmd: SystemCmd| {
+            let mut v = serde_json::to_value(cmd).unwrap();
+            assert_eq!(v["owner_in_team"], json!(true), "{v}");
+            let _flag = v.as_object_mut().unwrap().remove("owner_in_team");
+            serde_json::from_value::<SystemCmd>(v).unwrap()
+        };
+        assert!(m
+            .state
+            .may_upgrade_as_logged(&m.state.apps["oa"], "bob", OwnerRule::InOrg));
+        let _ok = m.run(old(set_app_metadata("oa", "bob"))).unwrap();
+        // Open to the organization again: Bob, a member, is in it.
+        set(&mut m, team(&[], TeamJoin::Everyone));
+        assert!(m.state.may_reach(&m.state.apps["oa"], Some("bob")));
+        assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
+        set(&mut m, team(&["carol"], TeamJoin::Invite));
+        let _ok = m
+            .run(transfer_app(&mut alice, "oa", "alice", "carol"))
+            .unwrap();
+        assert!(m.state.owner_acts(&m.state.apps["oa"], "carol"));
+    }
+
     /// The organization's admins clean up an app whose owner left: they
     /// transfer it to a member or delete it. A member who neither owns nor
     /// administers it does neither.
@@ -10211,12 +10468,13 @@ mod tests {
             let mut v = serde_json::to_value(cmd).unwrap();
             assert_eq!(v["owner_in_org"], json!(true), "{v}");
             let _flag = v.as_object_mut().unwrap().remove("owner_in_org");
+            let _flag = v.as_object_mut().unwrap().remove("owner_in_team");
             serde_json::from_value::<SystemCmd>(v).unwrap()
         };
         assert!(!m.state.may_upgrade(&m.state.apps["oa"], "bob"));
         assert!(m
             .state
-            .may_upgrade_as_logged(&m.state.apps["oa"], "bob", false));
+            .may_upgrade_as_logged(&m.state.apps["oa"], "bob", OwnerRule::Ownership));
         let refused = m
             .run(old(transfer_app(&mut alice, "oa", "alice", "carol")))
             .unwrap_err();
@@ -10984,6 +11242,7 @@ mod tests {
             consent: serde_json::Value::Null,
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         };
         let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
             package: "p".into(),
@@ -11356,6 +11615,7 @@ mod tests {
                 consent: json!(crate::proof::sign_key_upgrade(secret, "k1", statement)),
                 release: None,
                 owner_in_org: true,
+                owner_in_team: true,
             }
         };
         let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
@@ -11455,6 +11715,7 @@ mod tests {
             consent: serde_json::Value::Null,
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         };
         assert!(
             m.run_unproven(upgrade("cora", "b2")).is_err(),
@@ -12289,6 +12550,7 @@ mod tests {
                 app_id: "a".into(),
                 actor: "alice".into(),
                 owner_in_org: true,
+                owner_in_team: true,
             })
             .unwrap();
         assert_eq!(m.state.file_bytes("org"), 10);
@@ -12367,6 +12629,7 @@ mod tests {
                 actor: "alice".into(),
                 consent: serde_json::Value::Null,
                 owner_in_org: true,
+                owner_in_team: true,
             })
             .unwrap();
         assert_totals_are_sums(&m.state);
@@ -12377,6 +12640,7 @@ mod tests {
                 app_id: "a".into(),
                 actor: "alice".into(),
                 owner_in_org: true,
+                owner_in_team: true,
             })
             .unwrap();
         assert_totals_are_sums(&m.state);
@@ -12400,6 +12664,7 @@ mod tests {
             actor: "alice".into(),
             consent: serde_json::Value::Null,
             owner_in_org: true,
+            owner_in_team: true,
         };
         let refused = m.run_unproven(transfer.clone()).unwrap_err();
         assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");

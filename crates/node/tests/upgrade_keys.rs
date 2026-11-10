@@ -429,6 +429,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
             )),
             release: None,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .unwrap()
     };
