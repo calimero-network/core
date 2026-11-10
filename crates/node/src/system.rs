@@ -526,6 +526,26 @@ pub const ONLY_ADMINS_INSTALL: &str =
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
+/// What `MoveApp` answers to someone who does not manage the app where it is
+/// now ([`SystemState::manages_app`]).
+pub const ONLY_MANAGERS_MOVE: &str =
+    "only the app's owner, while a member of its organization, or an organization admin may move it";
+/// What `MoveApp` answers to someone who is not an admin or the owner of the
+/// organization the app would move to.
+pub const ONLY_ADMINS_MOVE_IN: &str =
+    "only an admin or the owner of the target organization may move an app into it";
+/// What `MoveApp` answers when the app's access is a team other than its
+/// package's app team: that team's leads, read-only rows and capabilities are
+/// grants of the organization it is in, which the target's admins never saw.
+pub const MOVE_NEEDS_APP_TEAM: &str = "the app's access is a team other than its package's app team; give it organization or app-team access first";
+/// What `MoveApp` answers when the app's owner would not be a member of the
+/// target organization: an organization's app is owned by one of its members.
+pub const MOVE_OWNER_NOT_IN_TARGET: &str = "the app's owner is not a member of the target organization; invite them, transfer the app to a member, or bring the members along";
+/// What `MoveApp` answers when the target approves none of the releases that
+/// hold the app now: its replicas would be sent none of its data.
+pub const MOVE_RELEASES_DISJOINT: &str =
+    "the target organization approves none of the releases that hold this app; approve one first";
+
 /// How many cluster sign-up invites a cluster keeps at once.
 pub const MAX_SIGN_UP_INVITES: usize = 10_000;
 
@@ -2039,6 +2059,265 @@ impl SystemState {
         Ok(json!({ "mode": mode, "teams": report }))
     }
 
+    /// [`SystemCmd::MoveApp`], judged and applied as one step: every rule is
+    /// checked, and everyone it brings is found, before anything changes.
+    ///
+    /// - **Who:** the actor manages the app where it is now
+    ///   ([`Self::manages_app`]: a personal app's owner, an organization's
+    ///   app's owner while a member, or an admin there) and is an admin or the
+    ///   owner of `to_org`.
+    /// - **Access:** organization or app-team access becomes team access on
+    ///   the target's app team of the app's package, made when missing: open,
+    ///   unless every app team of the target is closed (shared), where it is
+    ///   closed like the rest; an app team closed alone leaves it open. A legacy target (no app team) and a raw upload
+    ///   (no package) keep organization access, so moving an app in never
+    ///   changes how the target holds its other apps. Owner, public and
+    ///   accounts access stay as they are. Any other team is refused
+    ///   ([`MOVE_NEEDS_APP_TEAM`]): its rows are grants of the source.
+    /// - **Owner:** stays, and must be a member of the target once the move
+    ///   is done ([`MOVE_OWNER_NOT_IN_TARGET`]); nobody's ownership changes
+    ///   without its own consented transfer. An owner who reaches the app now
+    ///   gets a row on the target's app team, so they keep reaching and
+    ///   managing it there (an owner does so only while in its team).
+    /// - **Members:** with `bring_members`, every member of the source who
+    ///   reaches the app joins the target at their role there, capped at
+    ///   member (a guest stays a guest, an admin comes in as a member: the
+    ///   target's admins grant more themselves), and gets a row in the target
+    ///   app team. Someone already in the target keeps their role.
+    /// - **Payer:** its file bytes and compute runs go to the target, within
+    ///   the target's quotas (`quota exceeded: ...` otherwise).
+    /// - **Releases:** refused when the target approves none of the releases
+    ///   that hold the app now ([`MOVE_RELEASES_DISJOINT`]).
+    /// - **Invites:** the source's invites naming the team the app leaves are
+    ///   revoked once no app of the source is on that team.
+    fn move_app(
+        &mut self,
+        app_id: &str,
+        to_org: &str,
+        bring_members: bool,
+        nonce: &str,
+        actor: &str,
+    ) -> Result<Value, &'static str> {
+        use crate::types::{caps, OrgMode};
+
+        let app = self.apps.get(app_id).ok_or("no such app")?;
+        let from = app.org.clone();
+        if from.as_deref() == Some(to_org) {
+            return Err("the app is in that organization already");
+        }
+        if !self.manages_app(app, actor) {
+            return Err(ONLY_MANAGERS_MOVE);
+        }
+        let target = self.orgs.get(to_org).ok_or("no such organization")?;
+        if !target.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
+            return Err(ONLY_ADMINS_MOVE_IN);
+        }
+        let source = from.as_deref().and_then(|o| self.orgs.get(o));
+        let package = self.package_of(app).map(str::to_owned);
+        let source_team = match &app.access {
+            Access::Team { team } => {
+                let app_team = source
+                    .and_then(|o| o.teams.get(team))
+                    .and_then(Team::app_package)
+                    .is_some_and(|p| package.as_deref() == Some(p));
+                if !app_team {
+                    return Err(MOVE_NEEDS_APP_TEAM);
+                }
+                Some(team.clone())
+            }
+            _ => None,
+        };
+        let to_app_team = matches!(app.access, Access::Org | Access::Team { .. })
+            && package.is_some()
+            && target.mode() != OrgMode::Legacy;
+
+        // Who comes along: the source's members who reach the app now.
+        let reached: Vec<(AccountId, OrgRole)> = match source {
+            Some(o) if bring_members => o
+                .members
+                .iter()
+                .filter(|(m, _)| self.may_reach(app, Some(m.as_str())))
+                .map(|(m, r)| (m.clone(), *r))
+                .collect(),
+            _ => Vec::new(),
+        };
+        // An owner who reaches the app now keeps reaching it on the target's
+        // app team (an owner reaches an app on a team only while in it), so
+        // a move never takes their app away without their consent.
+        let owner_keeps = self
+            .may_reach(app, Some(app.owner.as_str()))
+            .then(|| app.owner.clone());
+        let joins: Vec<(AccountId, OrgRole)> = reached
+            .iter()
+            .filter(|(m, _)| target.role(m).is_none())
+            .map(|(m, r)| (m.clone(), (*r).min(OrgRole::Member)))
+            .collect();
+        let owner_role = target
+            .role(&app.owner)
+            .or_else(|| joins.iter().find(|(m, _)| *m == app.owner).map(|(_, r)| *r));
+        if !owner_role.is_some_and(|r| r >= OrgRole::Member) {
+            return Err(MOVE_OWNER_NOT_IN_TARGET);
+        }
+
+        let before = self.approved_for_bundle(&app.bundle, from.as_deref(), &app.owner);
+        let after = self.approved_for_bundle(&app.bundle, Some(to_org), &app.owner);
+        if let (Some(b), Some(a)) = (before, after) {
+            if b.is_disjoint(a) {
+                return Err(MOVE_RELEASES_DISJOINT);
+            }
+        }
+
+        // The target pays from here on: its quotas hold what the app holds.
+        let held = self.app_file_bytes.get(app_id).copied().unwrap_or(0);
+        if self.file_bytes(to_org).saturating_add(held) > self.quotas.max_file_bytes_per_org {
+            return Err("quota exceeded: file bytes");
+        }
+        let granted = |slots: &mut dyn Iterator<Item = &RunSlot>| {
+            slots
+                .filter(|slot| slot.granted)
+                .fold((0u32, 0u64), |(n, f), slot| {
+                    (n.saturating_add(1), f.saturating_add(slot.fuel))
+                })
+        };
+        let (runs, fuel) = self
+            .compute
+            .get(app_id)
+            .map_or((0, 0), |r| granted(&mut r.values()));
+        let (target_runs, target_fuel) = granted(
+            &mut self
+                .compute
+                .values()
+                .flat_map(BTreeMap::values)
+                .filter(|slot| slot.payer == to_org),
+        );
+        if runs > 0
+            && (target_runs.saturating_add(runs) > self.quotas.max_concurrent_runs_per_org
+                || target_fuel.saturating_add(fuel) > self.quotas.compute_fuel_per_org)
+        {
+            return Err("quota exceeded: compute runs");
+        }
+
+        // The team whose invites lose their reason once the app leaves it.
+        let leaves_team = source_team.or_else(|| {
+            package
+                .as_deref()
+                .and_then(|p| source?.app_team(p))
+                .map(|t| t.team_id.clone())
+        });
+        let team_name = package.as_deref().map(|p| {
+            let name = self
+                .packages
+                .get(p)
+                .and_then(PackageRecord::latest)
+                .and_then(|v| v.metadata.get("name"))
+                .and_then(Value::as_str)
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or(p);
+            name.chars()
+                .take(MAX_APP_TEAM_NAME_CHARS)
+                .collect::<String>()
+        });
+        // Closed like the rest only where every app team is closed: an app
+        // team an admin closed alone (`ScopeApp::join`) leaves the others,
+        // and so the one made here, open.
+        let shared = target.mode() == OrgMode::Shared
+            && target
+                .teams
+                .values()
+                .filter(|t| t.app_package().is_some())
+                .all(|t| t.join == TeamJoin::Invite);
+        // App-team access without an app team to go to: the organization's.
+        let mut access = match &app.access {
+            Access::Team { .. } => Access::Org,
+            other => other.clone(),
+        };
+
+        // Everything is judged: apply.
+        let o = self.orgs.get_mut(to_org).ok_or("no such organization")?;
+        for (m, r) in &joins {
+            let _prev = o.members.insert(m.clone(), *r);
+        }
+        let mut created = false;
+        if let (true, Some(package), Some(name)) = (to_app_team, package, team_name) {
+            let team_id = match o.app_team(&package) {
+                Some(t) => t.team_id.clone(),
+                None => {
+                    let id = app_team_id(o, nonce, &package);
+                    let mut members = BTreeMap::new();
+                    let _lead = members.insert(actor.to_owned(), true);
+                    let _prev = o.teams.insert(
+                        id.clone(),
+                        Team {
+                            team_id: id.clone(),
+                            name: name.clone(),
+                            parent: None,
+                            join: if shared {
+                                TeamJoin::Invite
+                            } else {
+                                TeamJoin::Everyone
+                            },
+                            members,
+                            read_only: BTreeSet::new(),
+                            capabilities: BTreeMap::new(),
+                            metadata: json!({ "app": { "package": package, "name": name } }),
+                            removed: BTreeSet::new(),
+                            // As `ScopeApps` makes one: its members make
+                            // private channels below it, and invite while
+                            // it is open.
+                            default_capabilities: Some(if shared {
+                                caps::CREATE_CHILD_TEAM
+                            } else {
+                                caps::INVITE_MEMBERS | caps::CREATE_CHILD_TEAM
+                            }),
+                        },
+                    );
+                    created = true;
+                    id
+                }
+            };
+            let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+            for m in reached.iter().map(|(m, _)| m).chain(owner_keeps.iter()) {
+                let _back = t.removed.remove(m);
+                let _row = t.members.entry(m.clone()).or_insert(false);
+            }
+            access = Access::Team { team: team_id };
+        }
+        self.set_app_file_bytes(app_id, 0);
+        if let Some(a) = self.apps.get_mut(app_id) {
+            a.org = Some(to_org.to_owned());
+            a.access = access.clone();
+        }
+        self.set_app_file_bytes(app_id, held);
+        if let Some(slots) = self.compute.get_mut(app_id) {
+            for slot in slots.values_mut() {
+                to_org.clone_into(&mut slot.payer);
+            }
+            self.grant_runs();
+        }
+        let mut revoked = 0usize;
+        if let (Some(from), Some(team)) = (from.as_deref(), leaves_team.as_deref()) {
+            let still = self.apps.values().any(|a| {
+                a.org.as_deref() == Some(from)
+                    && matches!(&a.access, Access::Team { team: t } if t == team)
+            });
+            if !still {
+                let before = self.invites.len();
+                self.invites
+                    .retain(|_, i| !(i.org == from && i.teams.iter().any(|t| t == team)));
+                revoked = before - self.invites.len();
+            }
+        }
+        Ok(json!({
+            "appId": app_id,
+            "from": from,
+            "org": to_org,
+            "access": access,
+            "created": created,
+            "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
+            "revokedInvites": revoked,
+        }))
+    }
+
     /// `MANAGE_APPLICATION`: whether `account` may upgrade `org`'s apps
     /// (on `team`, or org-wide when `None`) and approve its outbound hosts.
     /// The owner, an admin, a team's lead, or a member holding the capability
@@ -2587,6 +2866,19 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
         } => {
             let (st, used) = fresh(consent_of(actor, consent)?)?;
             states(&st, app_id, "__transfer", &|a| a["to"] == json!(to))?;
+            Ok(Some(used))
+        }
+        SystemCmd::MoveApp {
+            app_id,
+            to_org,
+            actor,
+            consent,
+            bring_members,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = move_app_args(to_org, *bring_members);
+            states(&st, app_id, "__move", &|a| *a == args)?;
             Ok(Some(used))
         }
         SystemCmd::SetReleaseApproval {
@@ -3591,7 +3883,14 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
     json!({ "apps": apps, "shared": shared })
 }
 
-/// The id a `ScopeApps` with `nonce` gives a new app team of `package`: the
+/// What a person consents to when moving an app to another organization
+/// (`<app> / __move`).
+#[must_use]
+pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
+    json!({ "toOrg": to_org, "bringMembers": bring_members })
+}
+
+/// The id a `ScopeApps` (or a `MoveApp`) with `nonce` gives a new app team of `package`: the
 /// first of a short series not taken in `org` and not starting with `-`.
 fn app_team_id(org: &Org, nonce: &str, package: &str) -> TeamId {
     (0u32..)
@@ -3710,6 +4009,30 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+    },
+    /// Move an app instance to another organization, its data where it is:
+    /// whoever manages it where it is now ([`SystemState::manages_app`]; a
+    /// personal app's owner) and is an admin or the owner of `to_org`, with
+    /// their passkey consent (`<app> / __move` / [`move_app_args`]). Its
+    /// files, compute runs and quotas go to the target's payer; its access to
+    /// the target's app team of its package (organization access in a legacy
+    /// target); `bring_members` adds the people of its organization who
+    /// reach it to the target too. [`SystemState::move_app`] has the rules.
+    MoveApp {
+        app_id: AppId,
+        to_org: OrgId,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+        /// Bring the source organization's members who reach the app: into
+        /// the target (at their role there, capped at member), and into the
+        /// target app team. Absent: `false`.
+        #[serde(default)]
+        bring_members: bool,
+        /// Random, from the API: a new app team's id derives from it
+        /// ([`app_team_id`]), so every replica makes the same one.
+        #[serde(default)]
+        nonce: String,
     },
     DeleteApp {
         app_id: AppId,
@@ -5203,6 +5526,14 @@ impl SystemMachine {
                 }
                 Ok(Value::Null)
             }
+            SystemCmd::MoveApp {
+                app_id,
+                to_org,
+                actor,
+                bring_members,
+                nonce,
+                ..
+            } => s.move_app(&app_id, &to_org, bring_members, &nonce, &actor),
             SystemCmd::DeleteApp {
                 app_id,
                 actor,
@@ -9597,6 +9928,529 @@ mod tests {
             owner_in_org: true,
             owner_in_team: true,
         }
+    }
+
+    // ------------------------------------------ moving an app to another organization
+
+    /// `proven_cluster` with a package `p` (bundle `b1`), carol a guest of
+    /// `org`, the app team `pt` of `p` there (closed) with bob and carol in
+    /// it, an app `oa` of `p` that bob owns on it, and a second organization
+    /// `new` that alice owns, holding an open app team of another package
+    /// (so it is standalone).
+    fn moving() -> (SystemMachine, Soft, Soft) {
+        let (mut m, alice, bob, _carol) = proven_cluster();
+        let s = &mut m.state;
+        let _prev = s.packages.insert(
+            "p".into(),
+            serde_json::from_value(json!({
+                "name": "p", "signerId": "did:key:zp", "owner": "alice",
+                "versions": { "1.0.0": {
+                    "version": "1.0.0", "mpk": "00", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "metadata": { "name": "Pad" },
+                    "installedBy": "alice", "installedAt": 0
+                } }
+            }))
+            .unwrap(),
+        );
+        let _prev = s.bundles.insert(
+            "b1".into(),
+            serde_json::from_value(json!({
+                "hash": "b1", "size": 1, "uploadedBy": "alice",
+                "package": { "package": "p", "version": "1.0.0" }
+            }))
+            .unwrap(),
+        );
+        let o = s.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("carol".into(), OrgRole::Guest);
+        let _prev = o.teams.insert(
+            "pt".into(),
+            serde_json::from_value(json!({
+                "teamId": "pt", "name": "Pad", "join": "invite",
+                "members": { "bob": false, "carol": false },
+                "metadata": { "app": { "package": "p", "name": "Pad" } }
+            }))
+            .unwrap(),
+        );
+        let _prev = s.orgs.insert(
+            "new".into(),
+            serde_json::from_value(json!({
+                "orgId": "new", "name": "New", "members": { "alice": "owner" },
+                "teams": { "qt": {
+                    "teamId": "qt", "name": "Q", "join": "everyone", "members": {},
+                    "metadata": { "app": { "package": "q", "name": "Q" } }
+                } }
+            }))
+            .unwrap(),
+        );
+        let _prev = s.apps.insert(
+            "oa".into(),
+            serde_json::from_value(json!({
+                "appId": "oa", "name": "oa", "group": 5, "bundle": "b1", "owner": "bob",
+                "org": "org", "access": { "kind": "team", "team": "pt" },
+                "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap(),
+        );
+        (m, alice, bob)
+    }
+
+    fn move_app(app: &str, to: &str, actor: &str, bring: bool, consent: Value) -> SystemCmd {
+        SystemCmd::MoveApp {
+            app_id: app.into(),
+            to_org: to.into(),
+            actor: actor.into(),
+            consent,
+            bring_members: bring,
+            nonce: "n".into(),
+        }
+    }
+
+    fn granted_run(payer: &str) -> std::collections::BTreeMap<String, super::RunSlot> {
+        std::collections::BTreeMap::from([(
+            "r".to_owned(),
+            super::RunSlot {
+                payer: payer.into(),
+                fuel: 1,
+                seq: 1,
+                granted: true,
+                refused: false,
+            },
+        )])
+    }
+
+    /// A move takes its manager's passkey consent over exactly its target
+    /// and whether members come along, once.
+    #[test]
+    fn moving_an_app_needs_its_managers_consent_over_the_target() {
+        let (mut m, mut alice, _bob) = moving();
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("oa", "__move"),
+            &super::move_app_args("new", true),
+            &super::move_app_args("new", false),
+            |c| move_app("oa", "new", "alice", true, c),
+        );
+        assert_eq!(m.state.apps["oa"].org.as_deref(), Some("new"));
+    }
+
+    /// The app moves with its data's bill, its access and the people who
+    /// reach it: the target pays its files and runs, a new open app team of
+    /// its package holds it (alice, who moved it, leads it), bob comes in as
+    /// a member and carol, a guest, as a guest, each with a row there, and
+    /// the invites into the team it left are revoked once no app of the
+    /// source is on it; an organization-wide invite stays.
+    #[test]
+    fn a_moved_app_takes_its_payer_access_and_people_to_the_target() {
+        let (mut m, mut alice, _bob) = moving();
+        m.state.set_app_file_bytes("oa", 100);
+        let _prev = m.state.compute.insert("oa".into(), granted_run("org"));
+        keep_invite(&mut m, "into-pad", "member", &["pt"], 1);
+        keep_invite(&mut m, "org-wide", "member", &[], 1);
+
+        let args = super::move_app_args("new", true);
+        let out = m
+            .run(move_app(
+                "oa",
+                "new",
+                "alice",
+                true,
+                consent(&mut alice, "oa", "__move", &args),
+            ))
+            .unwrap();
+        assert_eq!(out["created"], true, "{out}");
+        assert_eq!(out["added"], json!(["bob", "carol"]), "{out}");
+        assert_eq!(out["revokedInvites"], 1, "{out}");
+        let s = &m.state;
+        let app = &s.apps["oa"];
+        assert_eq!(app.org.as_deref(), Some("new"));
+        let crate::types::Access::Team { team } = &app.access else {
+            panic!("{:?}", app.access);
+        };
+        let o = &s.orgs["new"];
+        let t = &o.teams[team];
+        assert_eq!(t.app_package(), Some("p"));
+        assert_eq!(t.name, "Pad");
+        assert_eq!(t.join, crate::types::TeamJoin::Everyone);
+        assert_eq!(t.members.get("alice"), Some(&true));
+        assert_eq!(t.members.get("bob"), Some(&false));
+        assert_eq!(t.members.get("carol"), Some(&false));
+        assert_eq!(o.role("alice"), Some(OrgRole::Owner));
+        assert_eq!(o.role("bob"), Some(OrgRole::Member));
+        assert_eq!(o.role("carol"), Some(OrgRole::Guest));
+        for who in ["alice", "bob", "carol"] {
+            assert!(s.may_reach(app, Some(who)), "{who}");
+        }
+        assert_eq!((s.file_bytes("org"), s.file_bytes("new")), (0, 100));
+        assert_eq!(s.compute["oa"]["r"].payer, "new");
+        assert!(!s
+            .invites
+            .contains_key(&crate::proof::invite_key("into-pad")));
+        assert!(s
+            .invites
+            .contains_key(&crate::proof::invite_key("org-wide")));
+        // Its source keeps its own team and people.
+        assert!(s.orgs["org"].teams.contains_key("pt"));
+        assert_eq!(s.orgs["org"].role("bob"), Some(OrgRole::Member));
+    }
+
+    /// Without `bring_members` nobody joins the target, so an app whose
+    /// owner is not a member there is refused: an organization's app is owned
+    /// by one of its members, and only the owner's own consented transfer
+    /// changes who that is. Once the owner is a member it moves, and those
+    /// outside the target stop reaching it.
+    #[test]
+    fn an_app_moves_without_its_people_only_to_where_its_owner_is() {
+        let (mut m, _alice, _bob) = moving();
+        let e = m
+            .run_unproven(move_app("oa", "new", "alice", false, Value::Null))
+            .unwrap_err();
+        assert_eq!(e, super::MOVE_OWNER_NOT_IN_TARGET);
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Member);
+        let out = m
+            .run_unproven(move_app("oa", "new", "alice", false, Value::Null))
+            .unwrap();
+        assert_eq!(out["added"], json!([]), "{out}");
+        let s = &m.state;
+        assert_eq!(s.orgs["new"].role("carol"), None);
+        assert!(!s.may_reach(&s.apps["oa"], Some("carol")));
+        assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+
+        // Into a target whose app teams are all closed, without its people:
+        // the owner still reaches (and manages) it, with a row of their own.
+        let (mut m, _alice, _bob) = moving();
+        let target = m.state.orgs.get_mut("new").unwrap();
+        target.teams.get_mut("qt").unwrap().join = crate::types::TeamJoin::Invite;
+        let _prev = target.members.insert("bob".into(), OrgRole::Member);
+        let out = m
+            .run_unproven(move_app("oa", "new", "alice", false, Value::Null))
+            .unwrap();
+        let team = out["access"]["team"].as_str().unwrap().to_owned();
+        let s = &m.state;
+        assert_eq!(
+            s.orgs["new"].teams[&team].join,
+            crate::types::TeamJoin::Invite
+        );
+        assert_eq!(s.orgs["new"].teams[&team].members.get("bob"), Some(&false));
+        assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+        assert!(s.owner_acts(&s.apps["oa"], "bob"));
+    }
+
+    /// Who moves: the app's manager where it is now, as an admin of the
+    /// target. A guest, an owner removed from (or who left) the source, an
+    /// admin of the target demoted to member, and a member of the target
+    /// who manages nothing are each refused, on the state of the moment, and
+    /// the app stays where it was.
+    #[test]
+    fn only_the_apps_manager_as_the_targets_admin_moves_it() {
+        let (mut m, _alice, _bob) = moving();
+        let set_role = |m: &mut SystemMachine, org: &str, who: &str, role: Option<OrgRole>| {
+            let o = m.state.orgs.get_mut(org).unwrap();
+            match role {
+                Some(r) => {
+                    let _prev = o.members.insert(who.into(), r);
+                }
+                None => {
+                    let _gone = o.members.remove(who);
+                }
+            }
+        };
+        let refused = |m: &mut SystemMachine, actor: &str, why: &str| {
+            let e = m
+                .run_unproven(move_app("oa", "new", actor, true, Value::Null))
+                .unwrap_err();
+            assert_eq!(e, why, "{actor}");
+            assert_eq!(m.state.apps["oa"].org.as_deref(), Some("org"), "{actor}");
+        };
+        // Carol, a guest of the source, an admin of the target: no manager.
+        set_role(&mut m, "new", "carol", Some(OrgRole::Admin));
+        refused(&mut m, "carol", super::ONLY_MANAGERS_MOVE);
+        // Bob owns it, but is only a member of the target.
+        set_role(&mut m, "new", "bob", Some(OrgRole::Member));
+        refused(&mut m, "bob", super::ONLY_ADMINS_MOVE_IN);
+        // Made an admin there, then removed from the source (or gone of his
+        // own accord: the same row gone): no longer its owner in effect.
+        set_role(&mut m, "new", "bob", Some(OrgRole::Admin));
+        set_role(&mut m, "org", "bob", None);
+        refused(&mut m, "bob", super::ONLY_MANAGERS_MOVE);
+        // Back as a member: he moves it.
+        set_role(&mut m, "org", "bob", Some(OrgRole::Member));
+        let _ok = m
+            .run_unproven(move_app("oa", "new", "bob", true, Value::Null))
+            .unwrap();
+        assert_eq!(m.state.apps["oa"].org.as_deref(), Some("new"));
+        // Moving it to where it is is refused.
+        assert!(m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .is_err());
+    }
+
+    /// The target pays from the move on, so its quotas must hold what the
+    /// app holds: its files, and its granted runs (count and fuel). A move
+    /// past either is refused and changes nothing.
+    #[test]
+    fn a_move_past_the_targets_quota_is_refused() {
+        let (mut m, _alice, _bob) = moving();
+        m.state.quotas.max_file_bytes_per_org = 150;
+        m.state.set_app_file_bytes("oa", 100);
+        let _prev = m.state.apps.insert("na".into(), {
+            let mut a = m.state.apps["oa"].clone();
+            a.app_id = "na".into();
+            a.org = Some("new".into());
+            a.access = crate::types::Access::Org;
+            a.owner = "alice".into();
+            a
+        });
+        m.state.set_app_file_bytes("na", 60);
+        let e = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap_err();
+        assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+        m.state.set_app_file_bytes("na", 50);
+
+        m.state.quotas.max_concurrent_runs_per_org = 1;
+        let _prev = m.state.compute.insert("oa".into(), granted_run("org"));
+        let _prev = m.state.compute.insert("na".into(), granted_run("new"));
+        let e = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap_err();
+        assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+        let s = &m.state;
+        assert_eq!(s.apps["oa"].org.as_deref(), Some("org"));
+        assert_eq!((s.file_bytes("org"), s.file_bytes("new")), (100, 50));
+        assert_eq!(s.orgs["new"].role("bob"), None, "nobody joined");
+
+        m.state.quotas.max_concurrent_runs_per_org = 2;
+        let _ok = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap();
+        assert_eq!(m.state.file_bytes("new"), 150);
+    }
+
+    /// An app on a team other than its package's app team (a team below it,
+    /// or a plain team) is refused: those rows, leads and capabilities are
+    /// the source's grants, which the target's admins never saw. So is a
+    /// move to an organization that approves none of the releases holding
+    /// the app now.
+    #[test]
+    fn a_move_off_a_sub_team_or_onto_other_releases_is_refused() {
+        let (mut m, _alice, _bob) = moving();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.teams.insert(
+            "sub".into(),
+            serde_json::from_value(json!({
+                "teamId": "sub", "name": "Sub", "parent": "pt", "join": "invite",
+                "members": { "bob": true }
+            }))
+            .unwrap(),
+        );
+        for team in ["sub", "t"] {
+            m.state.apps.get_mut("oa").unwrap().access =
+                crate::types::Access::Team { team: team.into() };
+            let e = m
+                .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+                .unwrap_err();
+            assert_eq!(e, super::MOVE_NEEDS_APP_TEAM, "{team}");
+        }
+        m.state.apps.get_mut("oa").unwrap().access = crate::types::Access::Org;
+        m.state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .approved_releases
+            .insert("2.0.0".into());
+        m.state
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .approved_releases
+            .insert("3.0.0".into());
+        let e = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap_err();
+        assert_eq!(e, super::MOVE_RELEASES_DISJOINT);
+        m.state
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .approved_releases
+            .insert("2.0.0".into());
+        let _ok = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap();
+    }
+
+    /// The target's mode decides the access: a shared target (some app team
+    /// closed) gets a closed app team, as its others are; a legacy target
+    /// (no app team) keeps organization access and gets no team, so moving
+    /// an app in never changes how it holds its other apps; a target that
+    /// has the package's app team already uses it.
+    #[test]
+    fn a_moved_app_follows_the_targets_mode() {
+        let (mut m, _alice, _bob) = moving();
+        m.state
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .teams
+            .get_mut("qt")
+            .unwrap()
+            .join = crate::types::TeamJoin::Invite;
+        let out = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap();
+        let team = out["access"]["team"].as_str().unwrap().to_owned();
+        let t = &m.state.orgs["new"].teams[&team];
+        assert_eq!(t.join, crate::types::TeamJoin::Invite);
+        assert_eq!(
+            t.default_capabilities,
+            Some(crate::types::caps::CREATE_CHILD_TEAM)
+        );
+        assert!(m.state.may_reach(&m.state.apps["oa"], Some("bob")));
+
+        // A second instance goes onto the same team.
+        let _prev = m.state.apps.insert("ob".into(), {
+            let mut a = m.state.apps["oa"].clone();
+            a.app_id = "ob".into();
+            a.org = Some("org".into());
+            a.access = crate::types::Access::Team { team: "pt".into() };
+            a
+        });
+        let out = m
+            .run_unproven(move_app("ob", "new", "alice", true, Value::Null))
+            .unwrap();
+        assert_eq!(out["created"], false, "{out}");
+        assert_eq!(out["access"]["team"], team, "{out}");
+
+        // Into a legacy organization: organization access, no team.
+        let _prev = m.state.orgs.insert(
+            "leg".into(),
+            serde_json::from_value(json!({
+                "orgId": "leg", "name": "Leg", "members": { "alice": "owner" }, "teams": {}
+            }))
+            .unwrap(),
+        );
+        let out = m
+            .run_unproven(move_app("ob", "leg", "alice", true, Value::Null))
+            .unwrap();
+        assert_eq!(out["access"], json!({ "kind": "org" }), "{out}");
+        assert!(m.state.orgs["leg"].teams.is_empty());
+        assert!(m.state.may_reach(&m.state.apps["ob"], Some("bob")));
+
+        // One app team closed alone (another still open): the team made for
+        // the moved app is open, as the other apps' are.
+        let (mut m, _alice, _bob) = moving();
+        let target = m.state.orgs.get_mut("new").unwrap();
+        target.teams.get_mut("qt").unwrap().join = crate::types::TeamJoin::Invite;
+        let _prev = target.teams.insert(
+            "rt".into(),
+            serde_json::from_value(json!({
+                "teamId": "rt", "name": "R", "join": "everyone", "members": {},
+                "metadata": { "app": { "package": "r", "name": "R" } }
+            }))
+            .unwrap(),
+        );
+        let out = m
+            .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
+            .unwrap();
+        let team = out["access"]["team"].as_str().unwrap().to_owned();
+        let t = &m.state.orgs["new"].teams[&team];
+        assert_eq!(t.join, crate::types::TeamJoin::Everyone);
+        assert_eq!(
+            t.default_capabilities,
+            Some(crate::types::caps::INVITE_MEMBERS | crate::types::caps::CREATE_CHILD_TEAM)
+        );
+        assert_eq!(
+            m.state.orgs["new"].teams["rt"].join,
+            crate::types::TeamJoin::Everyone
+        );
+    }
+
+    /// A personal app moves into an organization its owner administers,
+    /// keeping its access, and its files go to the organization's bill. It
+    /// is its owner's alone to move, and only into an organization they
+    /// administer.
+    #[test]
+    fn a_personal_app_moves_into_an_organization_its_owner_administers() {
+        let (mut m, _alice, _bob) = moving();
+        m.state.set_app_file_bytes("app", 7);
+        let before = m.state.apps["app"].access.clone();
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Admin);
+        let e = m
+            .run_unproven(move_app("app", "new", "bob", false, Value::Null))
+            .unwrap_err();
+        assert_eq!(e, super::ONLY_MANAGERS_MOVE);
+        let e = m
+            .run_unproven(move_app("app", "org", "alice", false, Value::Null))
+            .map(|_| ());
+        assert!(e.is_ok(), "alice owns org: {e:?}");
+        assert_eq!(m.state.apps["app"].org.as_deref(), Some("org"));
+        assert_eq!(m.state.apps["app"].access, before);
+        assert_eq!(m.state.file_bytes("org"), 7);
+        assert_eq!(m.state.file_bytes("account:alice"), 0);
+
+        // Bob's own app, into an organization where he is only a member.
+        let _prev = m.state.apps.insert("bp".into(), {
+            let mut a = m.state.apps["app"].clone();
+            a.app_id = "bp".into();
+            a.org = None;
+            a.owner = "bob".into();
+            a
+        });
+        let e = m
+            .run_unproven(move_app("bp", "org", "bob", false, Value::Null))
+            .unwrap_err();
+        assert_eq!(e, super::ONLY_ADMINS_MOVE_IN);
+        let _ok = m
+            .run_unproven(move_app("bp", "new", "bob", false, Value::Null))
+            .unwrap();
+    }
+
+    /// A `MoveApp` entry that names neither `bring_members` nor `nonce`
+    /// reads as a move without members, and the state it applies to has no
+    /// new field: an app's record moved reads and writes as any other.
+    #[test]
+    fn a_move_entry_without_its_optional_fields_reads_as_a_plain_move() {
+        let cmd: SystemCmd = serde_json::from_value(json!({
+            "op": "moveApp", "app_id": "oa", "to_org": "new", "actor": "alice"
+        }))
+        .unwrap();
+        let SystemCmd::MoveApp {
+            bring_members,
+            nonce,
+            consent,
+            ..
+        } = &cmd
+        else {
+            panic!("{cmd:?}");
+        };
+        assert!(!bring_members);
+        assert!(nonce.is_empty());
+        assert!(consent.is_null());
+        let (mut m, _alice, _bob) = moving();
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Member);
+        let _ok = m.run_unproven(cmd).unwrap();
+        let record = serde_json::to_value(&m.state.apps["oa"]).unwrap();
+        let back: AppRecord = serde_json::from_value(record.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), record);
     }
 
     /// An organization's app is managed by its owner only while they are a

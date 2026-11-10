@@ -17,6 +17,22 @@
   `member_child_teams` (serde default false), so entries an earlier release
   logged replay as they did.
 
+- **Move an app to another organization**: `POST /apps/{app}/move { toOrg,
+  bringMembers?, confirm? }` (`SystemCmd::MoveApp`, a passkey step-up over
+  `<app> / __move { toOrg, bringMembers }`; `meroctl context move`). Whoever
+  manages the app where it is now, as an admin or the owner of the target,
+  moves it; its data stays on its replicas. Its organization, file bytes,
+  compute runs and quotas go to the target (refused past the target's quota,
+  or when the target approves none of the releases holding it). `org` or
+  app-team access becomes the target's app team of its package (made when
+  missing, closed when every app team of the target is; `org` access in a
+  legacy target); an app on any other team, and one whose owner would not be
+  a member of the target, is refused. `bringMembers` adds the source's members who reach the app,
+  capped at `member`, with rows on the target's app team. The source's
+  invites into the team the app leaves are revoked once no app is on it. No
+  stored format changes: the new entry's optional fields default, and a node
+  on an earlier release answers the route `404`.
+
 - **Close or open one app's team alone**: `POST /orgs/{org}/app-teams` takes,
   per package, `join` (`invite` closes that app team, `everyone` opens it)
   and, on a close, `keep: [account, ...]`. Before, the only atomic close was

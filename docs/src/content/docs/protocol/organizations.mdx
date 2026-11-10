@@ -215,6 +215,52 @@ portal that manages people, invites and apps across an organization, is one
 first-party package every cluster installs; it uses these routes and needs
 nothing else from the node.
 
+## Moving an app
+
+`POST /apps/{app}/move { toOrg, bringMembers? }` (`SystemCmd::MoveApp`, with a
+passkey: `<app> / __move { toOrg, bringMembers }`) moves an app instance to
+another organization in one log entry. Its data stays where it is: the same
+group, replicas and state. Calimero Home's "Merge organizations" moves every
+app of one organization into another this way.
+
+- **Who**: whoever manages the app where it is now (its owner while a member,
+  or an admin there; a personal app's owner), as an admin or the owner of the
+  target. Judged on the state of the moment, so a member removed from the
+  source, or an admin of the target demoted, is refused.
+- **Payer**: its file bytes, compute runs and quotas go to the target. A move
+  past the target's file or compute quota is refused (`429 QUOTA_EXCEEDED`),
+  as is one to a target that approves none of the releases holding the app now.
+- **Access**: `org` access, or `team` access on its package's app team,
+  becomes `team` access on the target's app team of the package. The target's
+  is used, or made when missing: open, unless every app team of the target
+  is restricted (`shared: true`), where it is restricted like its others; an
+  app team an admin closed alone leaves it open. The mover leads a new one,
+  whose default capabilities are any new app team's (`CREATE_CHILD_TEAM`, and
+  `INVITE_MEMBERS` while open). A `legacy` target, and a raw upload (no
+  package), get `org` access instead, so moving an app in never changes the
+  target's mode. `owner`, `accounts` and `public`
+  access stay as they are, though only the target's members reach a
+  non-public app from then on. An app on any other team (a restricted team
+  below the app team, a plain team) is refused: that team's leads, read-only
+  rows and capabilities are grants of the source, which the target's admins
+  never saw. Give it `org` or app-team access first.
+- **Owner**: stays, and must be a member of the target once the move is done,
+  or the move is refused: an organization's app is owned by one of its members,
+  and only a transfer the owner or an admin consents to changes who that is.
+  An owner who reaches the app now gets a row on the target's app team, as an
+  owner reaches and manages an app on a team only while in it.
+- **`bringMembers`**: every member of the source who reaches the app joins the
+  target at their role there, capped at `member` (a guest stays a guest; an
+  admin comes in as a member, and the target's admins grant more themselves),
+  and gets a row on the target's app team. Someone already in the target keeps
+  their role. A personal app brings nobody.
+- **Invites**: the source's invites naming the team the app leaves are revoked
+  once no app of the source is on that team.
+
+The answer is `{ appId, from, org, access, created, added, revokedInvites }`.
+A node from before this route answers `404`, which clients take as "not
+supported here".
+
 ## Capabilities
 
 Beyond their role, a member holds capability bits (`types::caps`, the
