@@ -6,7 +6,7 @@ attested Intel TDX nodes, reached through a sealed channel the client opens only
 after verifying the node's attestation, and signed into with passkeys. Nobody
 operating the nodes can read the apps' data.
 
-> **Full documentation**: <https://calimero-network.github.io/core/>, organized into **Cloud** (start here), **Build** (write apps), **Operate** (run a cluster), **Protocol Reference** and **Contribute** (work on core). Coming from the earlier peer-to-peer release? See [Coming from v1](https://calimero-network.github.io/core/cloud/coming-from-v1/).
+> **Full documentation**: <https://docs.calimero.network/>, organized into **Cloud** (start here), **Build** (write apps), **Operate** (run a cluster), **Protocol Reference** and **Contribute** (work on core). Coming from the earlier peer-to-peer release? See [Coming from v1](https://calimero-network.github.io/core/cloud/coming-from-v1/).
 
 ## Components
 
@@ -40,8 +40,8 @@ See [Install & first run](https://calimero-network.github.io/core/operate/instal
 
 | I want to… | Start here |
 |-------|------|
-| Understand Calimero and try it | [Cloud](https://calimero-network.github.io/core/cloud/overview/) — overview, quickstart, writing apps |
-| Write a Calimero app | [Build](https://calimero-network.github.io/core/build/) — SDK, collections, examples |
+| Understand Calimero and try it | [Cloud](https://calimero-network.github.io/core/cloud/overview/](https://docs.calimero.network/what-is-calimero/) — overview, quickstart, writing apps |
+| Write a Calimero app | [Build](https://calimero-network.github.io/core/build/](https://docs.calimero.network/build/) — SDK, collections, examples |
 | Run a cluster | [Operate](https://calimero-network.github.io/core/operate/) — install, deployment, `merod`/`meroctl`, configuration, the node API |
 | Understand the model | [Protocol Reference](https://calimero-network.github.io/core/protocol/overview/) |
 | Work on Calimero Core itself | [Contribute](https://calimero-network.github.io/core/contribute/) — architecture, crate guide, development, testing |
