@@ -62,7 +62,11 @@ class OpsState(DeepCase):
         org = new_org(person(w, "quin"), "Quota Org")
         w.fleet.operate("set-quotas", json.dumps({"maxApiKeysPerAccount": 49}))
         w.fleet.operate("set-quotas", json.dumps({"org": org, "maxConcurrentRuns": 2, "maxFileBytes": 123456789}))
-        w.fleet.operate("set-pools", json.dumps({"batch": {"runsPerNode": 2, "maxMemoryMib": 512}}))
+        # Defining pools takes the cluster off its one implicit pool: keep `standard` (where a
+        # job node with no pool serves, RUNS_PER_JOB_NODE runs each) the pool every run goes
+        # to (the smallest that fits), and add one beside it.
+        w.fleet.operate("set-pools", json.dumps({"standard": {"runsPerNode": 2, "maxMemoryMib": 1_000_000},
+                                                 "batch": {"runsPerNode": 1, "maxMemoryMib": 2_000_000}}))
         s = {"org": org}
         self._record(w, s)
         check(s["quotas"].get("maxApiKeysPerAccount") == 49 and org in json.dumps(s["quotas"].get("orgs")),
