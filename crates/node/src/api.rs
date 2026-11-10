@@ -5468,16 +5468,69 @@ async fn team_update(
     Ok(Json(json!({})))
 }
 
+/// Delete a team with the teams below it and their apps. When there are
+/// apps, with the actor's passkey over them (412 first, its details listing
+/// the `apps` that go; the retry's JSON body carries `confirm`).
 async fn team_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    // Only someone who may delete it learns which apps go (as `DeleteTeam`
+    // judges it again where it applies).
+    let (sees, may_delete) = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .filter(|o| o.teams.contains_key(&team))
+            .map_or((false, false), |o| {
+                let may = o.manages_team(&actor, &team)
+                    || o.may(&actor, None, crate::types::caps::DELETE_TEAM);
+                (may || o.sees_team(&actor, &team), may)
+            })
+    });
+    if !sees {
+        return Err(ApiError::not_found("no such team"));
+    }
+    if !may_delete {
+        return Err(ApiError::forbidden("not allowed to delete this team"));
+    }
+    let apps = node.sys(|s| s.team_apps(&org, &team));
+    let consent = if apps.is_empty() {
+        Value::Null
+    } else {
+        let args = json!({ "team": team, "apps": apps });
+        let confirm = body.and_then(|Json(b)| b.confirm);
+        org_consent(&node, &p, &org, "__delete_team", &args, confirm)
+            .await
+            .map_err(|e| match e.code.as_str() {
+                "CONFIRM_REQUIRED" => with_detail(e, "apps", json!(apps)),
+                _ => e,
+            })?
+    };
     let v = node
-        .sys_write(&SystemCmd::DeleteTeam { org, team, actor })
+        .sys_write(&SystemCmd::DeleteTeam {
+            org,
+            team,
+            actor,
+            consent,
+            apps_need_consent: true,
+        })
         .await?;
     Ok(Json(v))
+}
+
+/// `e` with `key` added to its details (an object, or made one).
+fn with_detail(mut e: ApiError, key: &str, value: Value) -> ApiError {
+    if !e.details.is_object() {
+        *e.details = json!({});
+    }
+    if let Some(d) = e.details.as_object_mut() {
+        let _prev = d.insert(key.to_owned(), value);
+    }
+    e
 }
 
 #[derive(Deserialize)]
@@ -5558,6 +5611,7 @@ async fn team_remove_member(
             account,
             actor,
             consent,
+            subtree: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5639,6 +5693,7 @@ async fn invite_create(
             invite,
             actor,
             consent: c.consent,
+            teams_seen: true,
         })
         .await?;
     Ok(Json(json!({ "token": token })))
