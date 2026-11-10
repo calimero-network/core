@@ -2,6 +2,7 @@
 //! blob targets, and attested by the leader's side before any work reaches them.
 
 mod common;
+use common::UploadBytes as _;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -718,7 +719,7 @@ async fn a_sealed_file_is_never_sent_to_a_job_node() {
     c.register_job_node(JOB, &addr).await;
 
     let bytes: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
-    let up = alice.upload_file(&app, bytes).await.unwrap();
+    let up = alice.upload_bytes(&app, bytes).await.unwrap();
     assert!(up["id"].is_string(), "{up}");
     let put = alice
         .call(

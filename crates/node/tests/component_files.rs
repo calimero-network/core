@@ -4,6 +4,7 @@
 //! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
 mod common;
+use common::UploadBytes as _;
 
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::files::{unwrap_key, FileOpener};
-use calimero_node::node::{CallRequest, PeerBlobs};
+use calimero_node::node::{CallRequest, PeerBlobs, SEGMENT_GRACE};
 use calimero_node::types::Caller;
 use common::{signed_up, Cluster};
 use serde_json::{json, Value};
@@ -216,9 +217,19 @@ impl Fixture {
         }
     }
 
+    /// Runs the sweep on every node once now and once after the grace.
+    fn sweep_past_grace(&self) {
+        let now = std::time::Instant::now();
+        for i in (0..self.c.nodes.len()).filter(|i| self.c.nodes[*i].is_some()) {
+            self.node(i).sweep_segments_at(now);
+            self.node(i)
+                .sweep_segments_at(now + SEGMENT_GRACE + Duration::from_secs(1));
+        }
+    }
+
     async fn wait_gone(&self, id: &str) {
         for _ in 0..100 {
-            self.sweep();
+            self.sweep_past_grace();
             if self.holders_of_any(id).is_empty() {
                 return;
             }
@@ -561,8 +572,11 @@ async fn a_call_fails_retryably_when_a_majority_cannot_take_the_files() {
     assert_eq!(e.code(), Some("FILES_UNAVAILABLE"), "{e}");
     assert_eq!(f.applied(), applied, "nothing was logged");
     // The bytes the peers took are removed again: no mark names them.
-    f.until("bytes of a failed call stay", || f.blob_counts() == before)
-        .await;
+    f.until("bytes of a failed call stay", || {
+        f.sweep_past_grace();
+        f.blob_counts() == before
+    })
+    .await;
 
     // The key was not spent: the same call goes through once the peers take blobs.
     for i in 0..3 {
@@ -718,8 +732,6 @@ async fn a_plain_blob_with_a_segments_hash_never_takes_the_segment_with_it() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn segments_no_app_lists_are_swept_after_the_grace_and_everything_else_stays() {
-    use calimero_node::node::SEGMENT_GRACE;
-
     let f = start_with(Cluster::start_with(3, more_time).await).await;
     let (id, _sha, _index) = f.put(20 * MIB, 72).await;
     let listed = f.segments_of(&id);
@@ -839,7 +851,7 @@ async fn as_node(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_segment_routes_judge_the_caller_the_hash_and_what_is_held() {
+async fn the_segment_routes_judge_the_caller_and_the_hash_and_offer_no_delete() {
     use calimero_node::files::SEGMENT_BYTES;
     use reqwest::Method;
 
@@ -885,48 +897,27 @@ async fn the_segment_routes_judge_the_caller_the_hash_and_what_is_held() {
         404
     );
 
-    // A delete is refused to a node not approved, for a listed segment and for a pending one.
-    let delete = |from: usize, hash: &str| {
-        let body = serde_json::to_vec(&json!({ "hash": hash })).unwrap();
-        as_node(
-            &f,
-            from,
-            leader,
-            Method::POST,
-            "internal/segment/delete",
-            body,
-        )
-    };
-    assert_eq!(delete(2, &segment).await, 403);
-    assert_eq!(delete(approved, &segment).await, 403);
-    assert!(f
-        .node(leader)
-        .engine
-        .get_segment(&segment)
-        .unwrap()
-        .is_some());
+    // There is no peer delete of a segment: the sweep alone removes them.
     let pending = vec![3u8; 500];
     let pending_hash = sha256_hex(&pending);
     f.node(leader)
         .engine
         .put_segment(&pending_hash, &pending)
         .unwrap();
-    let pin = f.node(leader).pin_segments(&[pending_hash.clone()]);
-    assert_eq!(delete(approved, &pending_hash).await, 403);
-    assert!(f
-        .node(leader)
-        .engine
-        .get_segment(&pending_hash)
-        .unwrap()
-        .is_some());
-    drop(pin);
-    assert_eq!(delete(approved, &pending_hash).await, 200);
-    assert!(f
-        .node(leader)
-        .engine
-        .get_segment(&pending_hash)
-        .unwrap()
-        .is_none());
+    for hash in [&segment, &pending_hash] {
+        let body = serde_json::to_vec(&json!({ "hash": hash })).unwrap();
+        let status = as_node(
+            &f,
+            approved,
+            leader,
+            Method::POST,
+            "internal/segment/delete",
+            body,
+        )
+        .await;
+        assert_eq!(status, 405);
+        assert!(f.node(leader).engine.get_segment(hash).unwrap().is_some());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -984,6 +975,7 @@ async fn a_conflicting_entry_removes_the_files_stored_for_it() {
     // The first run conflicts and its file is dropped; the call runs again.
     let (_id, _sha, _index) = f.put(100_000, 40).await;
     f.until("the conflicted run left its bytes behind", || {
+        f.sweep_past_grace();
         (0..3).all(|i| f.node(i).engine.blob_count().unwrap() <= before + 1)
             && f.node(leader).engine.blob_count().unwrap() == before + 1
     })
@@ -1327,7 +1319,7 @@ impl Fixture {
         seed: u64,
     ) -> Result<Value, Box<calimero_client::Error>> {
         let sent = self.clients[via]
-            .upload_file(&self.app, stream(len, seed))
+            .upload_bytes(&self.app, stream(len, seed))
             .await;
         if let Ok(up) = &sent {
             let _cached = self.find_segments(up["id"].as_str().unwrap());
@@ -1524,7 +1516,7 @@ async fn a_read_only_key_cannot_upload() {
     agent.use_api_key(&key).await;
     let before = (f.blob_counts(), f.marks(), f.charged().await);
     let e = agent
-        .upload_file(&f.app, stream(5000, 1))
+        .upload_bytes(&f.app, stream(5000, 1))
         .await
         .unwrap_err();
     assert_eq!(status(e), (403, "FORBIDDEN".to_owned()));
@@ -1669,6 +1661,7 @@ async fn an_upload_whose_commit_failed_before_it_applied_is_retried_without_leak
         .await;
     let held = f.holders(id).len() as u64;
     f.until("the first attempt's bytes are removed", || {
+        f.sweep_past_grace();
         f.blob_counts().iter().sum::<u64>() == before + held
     })
     .await;
@@ -1697,6 +1690,7 @@ async fn an_upload_that_meets_a_recorded_answer_for_its_key_returns_it_and_undoe
     assert_eq!(up["id"], json!(recorded), "the recorded answer");
     f.until_charged(0).await;
     f.until("the new file's bytes are removed", || {
+        f.sweep_past_grace();
         f.blob_counts().iter().sum::<u64>() == before
     })
     .await;
@@ -1765,16 +1759,16 @@ async fn only_members_and_above_upload_to_a_public_app_of_an_organization() {
     let f = start().await;
     let o = org_with_a_public_app(&f).await;
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        let e = c.upload_file(&o.app, stream(5_000, 1)).await.unwrap_err();
+        let e = c.upload_bytes(&o.app, stream(5_000, 1)).await.unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
     }
     let _ok = o
         .member
-        .upload_file(&o.app, stream(5_000, 2))
+        .upload_bytes(&o.app, stream(5_000, 2))
         .await
         .unwrap();
     let _ok = f.clients[0]
-        .upload_file(&o.app, stream(5_000, 3))
+        .upload_bytes(&o.app, stream(5_000, 3))
         .await
         .unwrap();
 }
@@ -1785,7 +1779,7 @@ async fn only_members_and_above_list_the_files_of_a_public_app_of_an_organizatio
     let o = org_with_a_public_app(&f).await;
     let plain = stream(5_000, 3);
     let up = f.clients[0]
-        .upload_file(&o.app, plain.clone())
+        .upload_bytes(&o.app, plain.clone())
         .await
         .unwrap();
     let id = up["id"].as_str().unwrap();
@@ -1814,7 +1808,7 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
     let o = org_with_a_public_app(&f).await;
     let plain = stream(5_000, 3);
     let up = f.clients[0]
-        .upload_file(&o.app, plain.clone())
+        .upload_bytes(&o.app, plain.clone())
         .await
         .unwrap();
     let id = up["id"].as_str().unwrap();
@@ -1870,7 +1864,7 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
     f.c.stop(follower).await;
     let owner = &f.clients[leader];
     let plain = owner.upload_blob(&f.app, stream(2_000, 7)).await.unwrap();
-    let file = owner.upload_file(&f.app, stream(4_000, 9)).await.unwrap();
+    let file = owner.upload_bytes(&f.app, stream(4_000, 9)).await.unwrap();
     let (plain, file) = (plain["id"].as_str().unwrap(), file["id"].as_str().unwrap());
     f.c.restart(follower, |_| {}).await;
     while f.node(follower).hosted(&f.app).is_none() {
@@ -2092,6 +2086,7 @@ impl Fixture {
 
     async fn until_no_segments(&self) {
         self.until("no node keeps a segment", || {
+            self.sweep_past_grace();
             self.stored_segments().is_empty()
         })
         .await;
@@ -2273,11 +2268,12 @@ async fn complete_after_the_quota_filled_is_429_with_no_bytes_and_no_charge() {
     f.put_all(1, &upload, &plain).await;
 
     // Another file takes the room the session's begin saw.
-    let other = f.upload(0, 15 * MIB, 76).await.unwrap();
-    let kept = f.segments_of(other["id"].as_str().unwrap());
+    let (other, _sha, _index) = f.put(15 * MIB, 76).await;
+    let kept = f.segments_of(&other);
     let (status, code, _) = refusal(f.complete(1, &upload).await.unwrap_err());
     assert_eq!((status, code.as_str()), (429, "QUOTA_EXCEEDED"));
     f.until("only the other file's segments remain", || {
+        f.sweep_past_grace();
         f.stored_segments().iter().all(|(_, h)| kept.contains(h))
     })
     .await;
@@ -2404,8 +2400,11 @@ async fn a_session_is_refused_past_the_file_cap_and_a_single_request_past_one_pa
     let over = calimero_app_host::MAX_FILE_BYTES as usize + 1;
     let (status, code, _) = refusal(f.begin(0, over).await.unwrap_err());
     assert_eq!((status, code.as_str()), (413, "TOO_LARGE"));
-    let e = f.upload(0, PART + 1, 79).await.unwrap_err();
-    let (status, code, _) = refusal(*e);
+    let e = f.clients[0]
+        .post_bytes(&format!("apps/{}/files", f.app), stream(PART + 1, 79))
+        .await
+        .unwrap_err();
+    let (status, code, _) = refusal(e);
     assert_eq!((status, code.as_str()), (413, "TOO_LARGE"));
     let ok = f.upload(1, PART, 80).await.unwrap();
     assert_eq!(ok["size"], json!(PART));
@@ -2416,7 +2415,7 @@ async fn files_are_listed_and_described_under_files_and_leave_the_blob_listing()
     let f = start().await;
     let plain = stream(5_000, 81);
     let file = f.clients[0]
-        .upload_file(&f.app, plain.clone())
+        .upload_bytes(&f.app, plain.clone())
         .await
         .unwrap();
     let id = file["id"].as_str().unwrap();
@@ -2479,6 +2478,51 @@ async fn a_complete_whose_commit_failed_before_it_applied_undoes_the_upload() {
     assert_eq!((f.charged().await, f.marks()), (0, 0));
     let (status, code, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
     assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_commit_that_never_landed_is_refunded_when_the_session_ends() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let plain = stream(20 * MIB, 92);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    f.node(leader).fail_next_mark_commit(1);
+    f.node(leader).fail_next_barrier();
+    let (status, _, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!(status, 503);
+    assert_eq!(
+        f.charged().await,
+        plain.len() as u64,
+        "charged until it ends"
+    );
+
+    assert_eq!(f.abort(leader, &upload).await.unwrap(), json!({}));
+    f.until_no_segments().await;
+    f.until_charged(0).await;
+    assert_eq!(f.marks(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_commit_that_landed_keeps_its_charge_and_segments_when_the_session_ends() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let plain = stream(20 * MIB, 93);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    f.node(leader).fail_next_mark_commit(2);
+    f.node(leader).fail_next_barrier();
+    let (status, _, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!(status, 503);
+
+    assert_eq!(f.abort(leader, &upload).await.unwrap(), json!({}));
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+    f.sweep_past_grace();
+    assert_eq!(f.charged().await, plain.len() as u64);
+    assert!(f.stored_segments().len() >= 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

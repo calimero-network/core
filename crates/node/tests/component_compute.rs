@@ -2,6 +2,7 @@
 //! fixture (`apps/v2-fixtures/compute`). No job node is registered, so a run stays queued.
 
 mod common;
+use common::UploadBytes as _;
 
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
@@ -89,7 +90,7 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
         )
         .await;
     assert!(refused.is_err(), "{refused:?}");
-    let up = alice.upload_file(&app, vec![7u8; 5000]).await.unwrap();
+    let up = alice.upload_bytes(&app, vec![7u8; 5000]).await.unwrap();
     let file = up["id"].as_str().unwrap().to_owned();
 
     let first = alice
@@ -176,7 +177,7 @@ async fn a_start_on_an_app_without_a_compute_component_is_refused_and_records_no
         .create_app("compute", &bundle, json!({}))
         .await
         .unwrap();
-    let up = alice.upload_file(&app, vec![7u8; 5000]).await.unwrap();
+    let up = alice.upload_bytes(&app, vec![7u8; 5000]).await.unwrap();
 
     let refused = alice
         .call(&app, "startDigest", json!({ "inputs": [up["id"]] }), None)
@@ -209,7 +210,7 @@ async fn a_run_keeps_the_compute_component_it_started_on_through_an_upgrade() {
         .await
         .unwrap();
     assert_eq!(up["status"], "ok", "{up}");
-    let file = owner.upload_file(&app, vec![7u8; 5000]).await.unwrap();
+    let file = owner.upload_bytes(&app, vec![7u8; 5000]).await.unwrap();
     let after = owner
         .call(&app, "startDigest", json!({ "inputs": [file["id"]] }), None)
         .await

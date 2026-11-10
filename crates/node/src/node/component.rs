@@ -437,6 +437,12 @@ impl Node {
         self.probes.commit_fault.store(mode, Ordering::Relaxed);
     }
 
+    /// Fails the next barrier a failed mark commit asks for here. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_barrier(&self) {
+        self.probes.barrier_fault.store(true, Ordering::Relaxed);
+    }
+
     /// Fails the next segment an upload session stores here. Tests only.
     #[cfg(feature = "testing")]
     pub fn fail_next_segment_store(&self) {

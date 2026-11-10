@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use url::Url;
 
 pub mod attest;
+mod files;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
 
@@ -788,18 +789,6 @@ impl Client {
     pub async fn upload_blob_as(&self, app: &str, mime: &str, bytes: Vec<u8>) -> Result<Value> {
         self.upload(&format!("apps/{app}/blobs"), mime.to_owned(), bytes)
             .await
-    }
-
-    /// Upload a sealed file of up to 16 MiB for component app `app` (its owner or an organization
-    /// member) in one request; answers `{ blobId, id, size, sha256, index }`, the size and
-    /// SHA-256 of the plaintext.
-    pub async fn upload_file(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
-        self.upload(
-            &format!("apps/{app}/files"),
-            "application/octet-stream",
-            bytes,
-        )
-        .await
     }
 
     /// Download a component app's blob with a grant one of its runs handed out

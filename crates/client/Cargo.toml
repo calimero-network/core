@@ -22,7 +22,7 @@ ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "io-util"] }
 url.workspace = true
 
 calimero-identity.workspace = true
@@ -31,7 +31,9 @@ calimero-tee-attestation.workspace = true
 calimero-tee-release.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "net"] }
+axum.workspace = true
+tower.workspace = true
 calimero-node.workspace = true
 # A verified-quote result without TDX, for the measurement checks' tests.
 calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }

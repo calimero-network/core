@@ -47,6 +47,8 @@ const PUSH_RETRY_MAX: Duration = Duration::from_secs(5);
 const PART_FORWARD_TIMEOUT: Duration = Duration::from_secs(25);
 /// Characters of an upload id: 16 random bytes in unpadded base64url.
 const UPLOAD_ID_LEN: usize = 22;
+/// The code of an answer about a session that does not exist.
+const UNKNOWN_CODE: &str = "UPLOAD_UNKNOWN";
 /// The idempotency key `complete` commits its mark under; a retried `complete` replays it.
 const COMPLETE_KEY: &str = "upload-";
 
@@ -212,7 +214,7 @@ fn is_upload_id(id: &str) -> bool {
 }
 
 fn unknown() -> ApiError {
-    ApiError::new(404, "UPLOAD_UNKNOWN", "no such upload: begin another")
+    ApiError::new(404, UNKNOWN_CODE, "no such upload: begin another")
 }
 
 fn refusal(status: u16, code: &str, message: &str, next: usize) -> ApiError {
@@ -319,6 +321,74 @@ impl Node {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
         Err(last)
+    }
+
+    /// A file of at most one part in one request: a session of one part, begun, filled and
+    /// completed. A leader change starts it over; a failure ends the session.
+    pub(crate) async fn upload_file(
+        &self,
+        app: &AppRecord,
+        bytes: Bytes,
+        account: &str,
+    ) -> Result<Uploaded, ApiError> {
+        if bytes.len() > PART_BYTES {
+            return Err(crate::node::part_too_large());
+        }
+        let deadline = Instant::now() + PART_FORWARD_TIMEOUT;
+        while Instant::now() < deadline {
+            let begin = UploadOp::Begin {
+                size: bytes.len() as u64,
+            };
+            let begun = self.upload_op(app, account, begin).await?;
+            let upload = begun["uploadId"].as_str().unwrap_or_default().to_owned();
+            match self
+                .upload_one_part(app, account, &upload, bytes.clone(), deadline)
+                .await
+            {
+                Err(e) if e.code == UNKNOWN_CODE => {}
+                done => {
+                    if done.is_err() {
+                        let abort = UploadOp::Abort { upload };
+                        let _ended = self.upload_op(app, account, abort).await;
+                    }
+                    return done;
+                }
+            }
+        }
+        Err(ApiError::unavailable("the app's leader kept changing"))
+    }
+
+    /// Sends the only part and completes, retrying a `complete` that answered `503` until `deadline`.
+    async fn upload_one_part(
+        &self,
+        app: &AppRecord,
+        account: &str,
+        upload: &str,
+        bytes: Bytes,
+        deadline: Instant,
+    ) -> Result<Uploaded, ApiError> {
+        let upload = upload.to_owned();
+        let part = UploadOp::Part {
+            upload: upload.clone(),
+            k: 0,
+            bytes,
+        };
+        let _next = self.upload_op(app, account, part).await?;
+        loop {
+            let complete = UploadOp::Complete {
+                upload: upload.clone(),
+            };
+            match self.upload_op(app, account, complete).await {
+                Err(e) if e.code == "UNAVAILABLE" && Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+                done => {
+                    return done.and_then(|v| {
+                        serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
+                    });
+                }
+            }
+        }
     }
 
     /// [`Self::upload_op`] as a peer asks it, one hop: a node that does not lead the app names
@@ -746,7 +816,7 @@ impl Node {
     }
 
     /// Ends `session`: it answers as unknown at once, and once its pushes stopped its segments
-    /// are deleted where they were pushed. The bytes of a session whose commit may yet land stay.
+    /// are deleted here; replicas sweep theirs. A charged session's go only if its mark is absent.
     fn end(&self, session: &Arc<Session>) {
         if session.ended.swap(true, Ordering::SeqCst) {
             return;
@@ -762,7 +832,9 @@ impl Node {
             for task in std::mem::take(&mut st.tasks) {
                 let _stopped = task.await;
             }
-            if !st.charged {
+            if st.charged {
+                node.undo_unmarked(&session, &st).await;
+            } else {
                 let segments = st.segments.iter().map(hex::encode).collect();
                 let stored = Stored {
                     segments,
@@ -771,6 +843,17 @@ impl Node {
                 node.delete_files_later(&session.app_id, stored);
             }
         }));
+    }
+
+    /// Undoes the charge and the segments of a charged session whose mark did not commit; when
+    /// that cannot be told, both stay.
+    async fn undo_unmarked(&self, session: &Session, st: &State) {
+        let (Ok(mark), Some(g)) = (mark_of(st), self.hosted(&session.app_id)) else {
+            return;
+        };
+        if let Some((false, _)) = self.marked_after_barrier(&g, &mark.id).await {
+            self.undo_upload(&session.app_id, &mark).await;
+        }
     }
 
     /// Ends the sessions of `app_id`: this node no longer leads it.

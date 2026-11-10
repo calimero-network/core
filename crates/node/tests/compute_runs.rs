@@ -3,6 +3,7 @@
 //! `compute` fixture (`apps/v2-fixtures/compute`).
 
 mod common;
+use common::UploadBytes as _;
 
 use std::time::{Duration, Instant};
 
@@ -96,7 +97,7 @@ impl Rig {
     async fn upload(&self, plain: &[u8]) -> String {
         let mut tries = 1;
         loop {
-            match self.alice.upload_file(&self.app, plain.to_vec()).await {
+            match self.alice.upload_bytes(&self.app, plain.to_vec()).await {
                 Ok(up) => return up["id"].as_str().unwrap().to_owned(),
                 Err(e) if e.code() == Some("FILES_UNAVAILABLE") && tries < UPLOAD_TRIES => {
                     tries += 1;
@@ -838,20 +839,7 @@ async fn the_bytes_of_a_registered_output_survive_every_cleanup() {
     rig.leader()
         .clean_up_outputs(&rig.app, segments.clone())
         .await;
-    // A peer's delete request: the replica itself refuses an id its app holds.
     let leader = rig.c.app_leader(&rig.app).unwrap();
-    for i in (0..3).filter(|i| *i != leader && holds(*i)) {
-        for hash in &segments {
-            let _ = rig
-                .leader()
-                .peer_post(
-                    &rig.c.urls[i],
-                    "internal/segment/delete",
-                    &json!({ "hash": hash }),
-                )
-                .await;
-        }
-    }
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
         (0..3).filter(|i| holds(*i)).count() >= 2,

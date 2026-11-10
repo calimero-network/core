@@ -22,6 +22,7 @@ mod blob;
 mod context;
 mod dev;
 mod env;
+mod file;
 mod group;
 mod namespace;
 mod node;
@@ -160,6 +161,9 @@ enum Cmd {
     /// A context's blobs: list, upload, download, info, delete.
     #[command(subcommand)]
     Blob(blob::BlobCmd),
+    /// A context's sealed files: upload.
+    #[command(subcommand)]
+    File(file::FileCmd),
     /// Organizations (v1's namespaces): members, invites, groups, metadata, approvals.
     #[command(subcommand, alias = "ns")]
     Namespace(namespace::NamespaceCmd),
@@ -375,6 +379,7 @@ async fn main() -> eyre::Result<()> {
             }
         }
         Cmd::Blob(cmd) => blob::run(cmd, &env).await?,
+        Cmd::File(cmd) => file::run(cmd, &env).await?,
         Cmd::Namespace(cmd) => namespace::run(cmd, &env).await?,
         Cmd::Group(cmd) => group::run(cmd, &env).await?,
         Cmd::Account(cmd) => account::run(cmd, &env).await?,

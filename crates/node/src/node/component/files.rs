@@ -24,15 +24,15 @@ use zeroize::Zeroizing;
 
 use crate::app::AppMachine;
 use crate::component::blobs::{BlobRecord, Blobs, FileSeal};
-use crate::component::{ComponentCmd, FileMark};
+use crate::component::{parse_hex32, ComponentCmd, FileMark};
 use crate::error::ApiError;
 use crate::files::{
     sealed_len, unwrap_key, wrap_key, Segment, SegmentReader, SegmentWriter, CHUNK_BYTES,
-    PART_BYTES, SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
+    SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };
 use crate::node::{off_workers, status_of, Node, FORWARD_TIMEOUT, MAX_BLOB_BYTES};
 use crate::system::SystemCmd;
-use crate::types::{AppRecord, Caller};
+use crate::types::Caller;
 
 /// The longest a run waits to fetch a file it does not hold from the app's replicas.
 const FETCH_WAIT: Duration = Duration::from_secs(5);
@@ -207,6 +207,8 @@ pub(crate) struct Probes {
     pub upload_window: std::sync::atomic::AtomicUsize,
     /// Fails the next segment an upload session stores.
     pub segment_store_fault: std::sync::atomic::AtomicBool,
+    /// Fails the next barrier a failed mark commit asks for, leaving its outcome unknown.
+    pub barrier_fault: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "testing")]
@@ -228,6 +230,7 @@ impl Default for Probes {
             push_low: std::sync::atomic::AtomicUsize::new(MAX_PUSH_BYTES),
             upload_window: std::sync::atomic::AtomicUsize::new(super::uploads::UPLOAD_WINDOW),
             segment_store_fault: std::sync::atomic::AtomicBool::new(false),
+            barrier_fault: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -953,11 +956,9 @@ impl Node {
                 futures_util::future::join_all(batch.iter().map(|id| self.delete_file(id, &peers)))
                     .await;
         }
-        for batch in stored.segments.chunks(MAX_DELETE_CONCURRENCY) {
-            let _all = futures_util::future::join_all(
-                batch.iter().map(|hash| self.delete_segment(hash, &peers)),
-            )
-            .await;
+        // Replicas' copies of the segments go with the sweep, after its grace.
+        for hash in &stored.segments {
+            self.delete_segment(hash);
         }
     }
 
@@ -977,20 +978,13 @@ impl Node {
         .await;
     }
 
-    async fn delete_segment(&self, hash: &str, peers: &[String]) {
+    fn delete_segment(&self, hash: &str) {
         if self.holds_segment(hash) {
             return;
         }
         if let Err(e) = self.engine.delete_segment(hash) {
             warn!(segment = %hash, error = %e, "file bytes not deleted");
         }
-        let body = json!({ "hash": hash });
-        let _sent = futures_util::future::join_all(
-            peers
-                .iter()
-                .map(|addr| self.peer_post(addr, "internal/segment/delete", &body)),
-        )
-        .await;
     }
 }
 
@@ -1076,182 +1070,6 @@ impl Node {
         }
     }
 
-    /// Seals `bytes` as a file of the app through the writer a run's files use, holding the
-    /// node-wide pending budget until the returned guard drops.
-    fn seal_upload(
-        &self,
-        app_id: &str,
-        bytes: &[u8],
-    ) -> Result<(NewFile, Arc<PendingBytes>), ApiError> {
-        let files = NodeFiles::new(self, app_id, Blobs::default(), InvocationKind::Call);
-        let sealed = files.create().and_then(|mut writer| {
-            writer.write(bytes)?;
-            writer.finish()
-        });
-        match sealed {
-            Ok(file) => Ok((file, files.pending())),
-            Err(e) => {
-                files.forget_made(&[]);
-                Err(match e {
-                    FileError::Unavailable => files_unavailable(),
-                    FileError::Failed(_) => ApiError::internal("the file could not be sealed"),
-                })
-            }
-        }
-    }
-
-    /// Stores an uploaded file for a component app. This node seals and stores nothing unless it
-    /// leads the app: the body goes to the leader, which seals it, counts it against the quota,
-    /// puts it on a majority of its group's voters and commits the mark. The key is per call, so
-    /// only a forward that is retried replays a committed upload.
-    pub(crate) async fn upload_file(
-        &self,
-        app: &AppRecord,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, ApiError> {
-        if bytes.len() > PART_BYTES {
-            return Err(crate::node::part_too_large());
-        }
-        let key = format!(
-            "{}{}",
-            crate::app::NODE_KEY_PREFIX,
-            calimero_identity::b64url(&calimero_identity::random::<16>())
-        );
-        let mut last = ApiError::unavailable("no replica of the app answered");
-        let mut leader: Option<String> = None;
-        for _attempt in 0..30 {
-            let done = if let Some(addr) = leader.take() {
-                self.forward_upload(&addr, &app.app_id, &key, bytes, uploader)
-                    .await
-            } else if let Some(g) = self.replica_group(app) {
-                match self
-                    .upload_local(&g, &app.app_id, &key, bytes, uploader)
-                    .await
-                {
-                    Ok(uploaded) => Ok(uploaded),
-                    Err(Upload::Refused(e) | Upload::Unknown(e)) => Err(e),
-                    Err(Upload::Elsewhere(addr)) => {
-                        leader = addr;
-                        continue;
-                    }
-                }
-            } else if let Some(addr) = self.other_replica(app) {
-                self.forward_upload(&addr, &app.app_id, &key, bytes, uploader)
-                    .await
-            } else {
-                Err(last.clone())
-            };
-            match done {
-                Err(e) if e.code == NOT_LEADER => {
-                    leader = e.details["leaderUrl"].as_str().map(str::to_owned);
-                    if leader.is_some() {
-                        continue;
-                    }
-                    last = e;
-                }
-                Err(e) if e.code == "UNAVAILABLE" => last = e,
-                done => return done,
-            }
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        }
-        Err(last)
-    }
-
-    /// [`Self::upload_file`] as a peer asks it, one hop: this node hosts the app, and if it is
-    /// not the leader it names it (`421`) instead of passing the body on again.
-    pub(crate) async fn upload_here(
-        &self,
-        app_id: &str,
-        key: &str,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, ApiError> {
-        if bytes.len() > PART_BYTES {
-            return Err(crate::node::part_too_large());
-        }
-        if !valid_uploader(uploader) {
-            return Err(ApiError::bad_request("BAD_REQUEST", "unusable uploader"));
-        }
-        let g = self
-            .hosted(app_id)
-            .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-        match self.upload_local(&g, app_id, key, bytes, uploader).await {
-            Ok(uploaded) => Ok(uploaded),
-            Err(Upload::Refused(e) | Upload::Unknown(e)) => Err(e),
-            Err(Upload::Elsewhere(Some(addr))) => {
-                Err(
-                    ApiError::new(421, NOT_LEADER, "send this to the app group's leader")
-                        .with_details(json!({ "leaderUrl": addr })),
-                )
-            }
-            Err(Upload::Elsewhere(None)) => Err(ApiError::unavailable("the app has no leader yet")),
-        }
-    }
-
-    async fn forward_upload(
-        &self,
-        addr: &str,
-        app_id: &str,
-        key: &str,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, ApiError> {
-        let body = json!({
-            "app": app_id,
-            "key": key,
-            "uploader": uploader,
-            "bytes": calimero_log::Bytes(bytes.to_vec()),
-        });
-        let answer = self
-            .peer_post(addr, "internal/file-upload", &body)
-            .await
-            .map_err(|e| {
-                e.downcast::<ApiError>()
-                    .unwrap_or_else(|e| ApiError::unavailable(&e.to_string()))
-            })?;
-        serde_json::from_value(answer).map_err(|e| ApiError::internal(&e.to_string()))
-    }
-
-    /// The upload on the app's leader; [`Upload::Elsewhere`] when this node is not it.
-    async fn upload_local(
-        &self,
-        g: &Group<AppMachine>,
-        app_id: &str,
-        key: &str,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, Upload> {
-        let status = g.status();
-        if !status.is_leader {
-            let leader = status
-                .leader
-                .and_then(|id| self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone())));
-            return Err(Upload::Elsewhere(leader));
-        }
-        // A retry of an upload that committed is its first answer.
-        if let Some(prev) = g.read_local(|m, _| m.component_replay(&Caller::System, key)) {
-            return uploaded(&prev)
-                .ok_or_else(|| Upload::Refused(ApiError::internal("bad record")));
-        }
-        let (mut file, _pending) =
-            off_workers(|| self.seal_upload(app_id, bytes)).map_err(Upload::Refused)?;
-        let size = file.size;
-        let delta = i64::try_from(size)
-            .map_err(|_| Upload::Refused(ApiError::internal("file too large")))?;
-        let blobs = blobs_of(&mut file);
-        if let Err(e) = self.count_file_bytes(app_id, delta).await {
-            self.forget_local(&blobs);
-            return Err(Upload::Refused(e));
-        }
-        if let Err(e) = self.push_files(app_id, &blobs, false).await {
-            self.refund_files(app_id, size).await;
-            return Err(Upload::Refused(e));
-        }
-        self.commit_mark(g, app_id, FileMark::from(file), key, uploader)
-            .await
-    }
-
     /// Commits the mark of a file whose bytes are stored. When the commit fails, the leader says
     /// whether the mark is there: if so the upload succeeded, if not its bytes and charge go.
     pub(super) async fn commit_mark(
@@ -1308,8 +1126,20 @@ impl Node {
     /// Whether the app holds file `id`, once the entry that failed cannot commit any more: a
     /// barrier entry committed through this leader commits every entry before it in its log and
     /// ends any other. `None` when no barrier could be committed (this node no longer leads).
-    async fn marked_after_barrier(&self, g: &Group<AppMachine>, id: &str) -> Option<(bool, u64)> {
-        let raw = hex::decode(id).ok()?.try_into().ok()?;
+    pub(super) async fn marked_after_barrier(
+        &self,
+        g: &Group<AppMachine>,
+        id: &str,
+    ) -> Option<(bool, u64)> {
+        let raw = parse_hex32(id)?;
+        #[cfg(feature = "testing")]
+        if self
+            .probes
+            .barrier_fault
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
         let barrier = serde_json::to_vec(&ComponentCmd::Barrier).unwrap_or_default();
         let _committed = g.write(barrier).await.ok()?;
         g.read_strong(|m, applied| (m.holds_blob(&raw), applied))
@@ -1317,7 +1147,7 @@ impl Node {
             .ok()
     }
 
-    async fn undo_upload(&self, app_id: &str, mark: &FileMark) {
+    pub(super) async fn undo_upload(&self, app_id: &str, mark: &FileMark) {
         self.refund_files(app_id, mark.size).await;
         let stored = Stored {
             segments: mark.segments.clone(),
@@ -1426,10 +1256,7 @@ pub(crate) fn valid_uploader(who: &str) -> bool {
 
 /// Whether the app holds the blob with hex id `id`: a file registered by a final or an upload.
 pub(super) fn holds_file(m: &AppMachine, id: &str) -> bool {
-    hex::decode(id)
-        .ok()
-        .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
-        .is_some_and(|raw| m.holds_blob(&raw))
+    parse_hex32(id).is_some_and(|raw| m.holds_blob(&raw))
 }
 
 /// Why an upload did not finish on this node.

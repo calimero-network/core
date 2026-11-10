@@ -129,9 +129,9 @@ A sealed file is a blob whose bytes the app can read only inside a compute run.
 A call or a view can ask a file's size and hash (`file.info()`), and `files::open` is refused there.
 The bytes leave only as a compute output you publish.
 
-A client uploads one with `POST /apps/{app}/files`, with the raw bytes, up to 16 MiB in one request; a larger file, up to 47 MiB, goes through an upload session, one 16 MiB part per request.
+A client uploads one through `/apps/{app}/files`: one request up to 16 MiB, else a session of parts that can be resumed.
 Only the app's owner and members of its organization may upload, and the answer carries the file's `id`, which a call takes as a `BlobRef`.
-`calimero-client`'s `Client::upload_file` does the single request.
+`calimero-client`'s `Client::upload_file` picks between the two and resumes a dropped upload, and `meroctl file upload` runs it on a file.
 `meroctl blob upload` uploads an ordinary blob, not a sealed file.
 
 The app sets the policy for who may start a run.

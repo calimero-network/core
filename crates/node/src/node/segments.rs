@@ -23,7 +23,7 @@ pub(super) struct Sweep {
 /// Segments an upload session or a pending entry holds, by the number of holders.
 pub(super) type Pinned = Arc<Mutex<HashMap<String, usize>>>;
 
-/// Keeps segments out of the sweep and the delete route until it drops.
+/// Keeps segments out of the sweep until it drops.
 pub struct SegmentPin {
     pinned: Pinned,
     hashes: Vec<String>,
@@ -47,7 +47,7 @@ impl Drop for SegmentPin {
 }
 
 impl Node {
-    /// Holds `hashes` out of the sweep and the delete route until the returned pin drops.
+    /// Holds `hashes` out of the sweep until the returned pin drops.
     pub fn pin_segments(&self, hashes: &[String]) -> SegmentPin {
         let mut pinned = self
             .pinned_segments

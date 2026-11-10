@@ -435,3 +435,24 @@ pub fn mpk_with(
     }
     tar.into_inner().unwrap().finish().unwrap()
 }
+
+/// Uploads in-memory bytes as a sealed file, through the client's session-or-single upload.
+pub trait UploadBytes {
+    fn upload_bytes(
+        &self,
+        app: &str,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = calimero_client::Result<serde_json::Value>> + Send;
+}
+
+impl UploadBytes for Client {
+    async fn upload_bytes(
+        &self,
+        app: &str,
+        bytes: Vec<u8>,
+    ) -> calimero_client::Result<serde_json::Value> {
+        let size = bytes.len() as u64;
+        self.upload_file(app, std::io::Cursor::new(bytes), size)
+            .await
+    }
+}

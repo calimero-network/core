@@ -6172,38 +6172,6 @@ async fn internal_segment_get(
         .into_response())
 }
 
-/// Delete a segment here, at the request of a node approved for an app hosted here; one a file of
-/// an app hosted here lists, or an upload or a pending entry holds, keeps its bytes.
-async fn internal_segment_delete(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    key: Option<Extension<calimero_sealed::PeerKey>>,
-    Json(body): Json<BlobBody>,
-) -> ApiResult {
-    let caller = peer(&node, &headers, key).await?;
-    if !crate::job_wire::is_hash(&body.hash) {
-        return Err(ApiError::bad_request("BAD_REQUEST", "not a segment hash"));
-    }
-    let hosted: Vec<crate::types::AppRecord> = node.sys(|s| s.apps.values().cloned().collect());
-    let approved = (hosted.iter())
-        .filter(|a| node.hosted(&a.app_id).is_some())
-        .any(|a| caller_may_hold(&node, &caller, a).is_ok());
-    if !approved {
-        return Err(ApiError::forbidden(
-            "the calling node's release is not approved for an app hosted here",
-        ));
-    }
-    if !hosted_segment_holders(&node, &body.hash).is_empty() || node.segment_pinned(&body.hash) {
-        return Err(ApiError::forbidden(
-            "an app here lists that segment or an upload holds it",
-        ));
-    }
-    node.engine
-        .delete_segment(&body.hash)
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
-    Ok(Json(json!({})))
-}
-
 /// A blob id as a client gives it: base58 (what apps print, `BlobId`) or hex.
 fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
     if let Ok(raw) = hex::decode(id) {
@@ -6527,7 +6495,7 @@ async fn files_upload(
 ) -> ApiResult {
     let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
     refuse_full_app(&node, &app).await?;
-    let up = node.upload_file(&app, &body, &account).await?;
+    let up = node.upload_file(&app, body, &account).await?;
     Ok(Json(uploaded_json(&up)?))
 }
 
@@ -6996,30 +6964,6 @@ async fn internal_last_write(
 #[serde(deny_unknown_fields)]
 struct LastWriteBody {
     app: String,
-}
-
-#[derive(Deserialize)]
-struct FileUploadBody {
-    app: String,
-    key: String,
-    /// The account the sending node authenticated for the upload.
-    uploader: String,
-    bytes: calimero_log::Bytes,
-}
-
-/// An upload another node received, for the app's leader (or a replica that passes it on).
-async fn internal_file_upload(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    key: Option<Extension<calimero_sealed::PeerKey>>,
-    Json(body): Json<FileUploadBody>,
-) -> ApiResult {
-    let caller = peer(&node, &headers, key).await?;
-    caller_may_hold_app(&node, &caller, &body.app).await?;
-    let up = node
-        .upload_here(&body.app, &body.key, &body.bytes.0, &body.uploader)
-        .await?;
-    Ok(Json(serde_json::to_value(up).unwrap_or_default()))
 }
 
 /// Delete a blob's bytes here, at the request of the node that collected it.
@@ -9721,7 +9665,6 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/call", post(internal_call))
-        .route("/internal/file-upload", post(internal_file_upload))
         .route(
             "/internal/upload-begin/{app}/{account}/{size}",
             post(internal_upload_begin),
@@ -9748,7 +9691,6 @@ pub fn router(node: Arc<Node>) -> Router {
             "/internal/segment/{hash}",
             put(internal_segment_put).get(internal_segment_get),
         )
-        .route("/internal/segment/delete", post(internal_segment_delete))
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))

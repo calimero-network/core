@@ -21,7 +21,7 @@ futures-util.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "time"] }
 url.workspace = true
 
 calimero-client = { workspace = true, features = ["testing"] }

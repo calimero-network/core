@@ -1361,7 +1361,7 @@ impl AppMachine {
 }
 
 /// A blob id as the host commands carry it (hex).
-fn parse_hex32(id: &str) -> Option<[u8; 32]> {
+pub(crate) fn parse_hex32(id: &str) -> Option<[u8; 32]> {
     let raw = <[u8; 32]>::try_from(hex::decode(id).ok()?).ok()?;
     (hex::encode(raw) == id).then_some(raw)
 }

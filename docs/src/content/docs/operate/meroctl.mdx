@@ -192,6 +192,14 @@ A context's blobs.
 | `blob delete ID -c CONTEXT` (`rm`) | `DELETE /apps/{app}/blobs/{id}` | Forget a blob (its owner or an org admin); its bytes go once no other context holds them. |
 | `blob revoke ID -c CONTEXT` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate the download grants made so far for a published blob (its owner or an org admin). |
 
+## file
+
+A context's sealed files.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `file upload FILE -c CONTEXT` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
+
 ## namespace
 
 Organizations. Alias: `ns`. `ROLE` is `guest`, `member`,

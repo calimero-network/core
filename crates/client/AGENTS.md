@@ -73,6 +73,16 @@ record. Confirm calls (`call_confirmed`) are not retried: their challenge is
 single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
 `crates/node/tests/cluster.rs`.
 
+Files are uploaded by `Client::upload_file(app, reader, size)` (`files.rs`, `meroctl file upload`):
+a file of at most one part (`FILE_PART_BYTES`, 16 MiB) is one `POST /apps/{app}/files`; a larger one
+begins a session (`POST .../files/uploads`) and sends each part with `PUT .../parts/{k}`, reading one
+part at a time from a seekable reader. A part that gets a `503` or a dropped connection is sent
+again, then the node's `next` (`GET .../uploads/{u}`) is asked for; `409 PART_OUT_OF_ORDER` moves to
+the `next` in its `details`; `404 UPLOAD_UNKNOWN` begins the session again once; `complete` is
+retried on `503` with backoff; any other refusal (`413`, `429`) aborts the session and is returned.
+Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
+the connection.
+
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash
