@@ -1202,6 +1202,8 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
+        // A sign-in: its activity entry comes from its session's opening.
+        at: 0,
     };
     let now = now_secs();
     let invite = invite.map(|token| crate::system::SignUpRedemption {
@@ -1347,6 +1349,8 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     let consent = crate::proof::Consent {
         statement,
         assertion: body.assertion.clone(),
+        // A sign-in: its activity entry comes from its session's opening.
+        at: 0,
     };
     new_session(
         &node,
@@ -2029,6 +2033,67 @@ async fn session_revoke(
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+struct ActivityQuery {
+    /// Only entries after this time (Unix seconds).
+    #[serde(default)]
+    after: u64,
+}
+
+/// `GET /auth/activity`: what the caller's passkeys did, newest first
+/// (`SystemState::activity`): each sign-in, with the package and origin
+/// its session is bound to, and each change a passkey approved, with the
+/// method and subject its consent states. The account holder's alone, as
+/// `GET /auth/sessions` is: never an API key or a package-bound session,
+/// which would learn the other apps the person signs in to and what they
+/// approve; no one else (operator, organization admin, deployment manager)
+/// has a route to it.
+async fn activity_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<ActivityQuery>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let activity = node.sys(|s| {
+        s.activity.get(&account).map_or_else(Vec::new, |a| {
+            a.iter()
+                .rev()
+                .filter(|e| e.at > q.after)
+                .map(activity_entry)
+                .collect::<Vec<_>>()
+        })
+    });
+    Ok(Json(json!({ "activity": activity })))
+}
+
+/// One activity entry as `GET /auth/activity` lists it: every key present,
+/// the ones its kind does not have `null`.
+fn activity_entry(e: &crate::types::ActivityEntry) -> Value {
+    use crate::types::Activity;
+    let (kind, app, origin, method, subject) = match &e.what {
+        Activity::SignIn { app, origin } => {
+            ("signIn", app.as_deref(), origin.as_deref(), None, None)
+        }
+        Activity::Approval { method, subject } => (
+            "approval",
+            None,
+            None,
+            Some(method.as_str()),
+            Some(subject.as_str()),
+        ),
+    };
+    json!({
+        "at": e.at,
+        "passkey": e.passkey,
+        "kind": kind,
+        "app": app,
+        "origin": origin,
+        "method": method,
+        "subject": subject,
+    })
+}
+
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
@@ -2471,6 +2536,8 @@ async fn account_recovery_finish(
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
+        // A sign-in: its activity entry comes from its session's opening.
+        at: 0,
     };
     let _ok = node
         .sys_write(&SystemCmd::FinishAccountRecovery {
@@ -3678,6 +3745,8 @@ async fn step_up(
             nonce,
         },
         assertion: confirm.assertion,
+        // When it was given: the account's activity entry for it.
+        at: now_secs(),
     };
     Ok(Consented {
         consent: serde_json::to_value(&consent).unwrap_or_default(),
@@ -10236,6 +10305,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/logout-all", post(logout_all))
         .route("/auth/sessions", get(sessions_list))
         .route("/auth/sessions/{session}", delete(session_revoke))
+        .route("/auth/activity", get(activity_list))
         .route("/auth/releases", post(account_release_approval))
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))

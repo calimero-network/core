@@ -90,6 +90,31 @@ pub struct Consent {
     #[serde(flatten)]
     pub statement: Statement,
     pub assertion: Assertion,
+    /// When the passkey gave it (Unix seconds, the clock of the node that
+    /// took the step-up): the time of the account's activity entry
+    /// (`types::Account::activity`). Outside what the passkey signs, so a
+    /// release that does not know it checks the same consent; 0 (a consent
+    /// an earlier release logged, or a sign-in's): no entry.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub at: u64,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if"
+)]
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Consent {
+    /// What marks this consent used, as [`verify_consent`] answers it.
+    ///
+    /// # Errors
+    /// When the nonce is not base64url.
+    pub fn used(&self) -> Result<String, &'static str> {
+        Ok(used(b"consent", &self.statement.challenge()?))
+    }
 }
 
 /// The operator's signature over a statement (Ed25519, hex).

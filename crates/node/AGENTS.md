@@ -803,6 +803,20 @@ is its command line.
   `passkey_and_session_times_come_from_their_entries`,
   `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`,
   `tests/old_datadir.rs`.
+- **Activity** (the account holder's alone): `SystemState::activity` (by
+  account, beside `accounts` so `account_args` is unchanged), the last
+  `types::ACTIVITY_KEPT` `ActivityEntry { at, passkey, kind }`, `kind`
+  `signIn { app, origin }` (from a session's opening record: `CreateRefresh`,
+  `CreateAccount`, `FinishAccountRecovery`, via `system::sign_in_of`) or
+  `approval { method, subject }` (one hook in `SystemMachine::run`:
+  `system::approval_of` finds the consent `authorize` verified, by its used
+  marker, before the command applies, and records it after). The time is the
+  step-up's `proof::Consent::at`, outside what the passkey signs; 0 (a
+  sign-in's consent, or an earlier release's) records nothing, so a replayed
+  old log adds nothing. `GET /auth/activity` (`api::activity_list`) is
+  `holder`. Regressions: `tests/activity.rs`,
+  `activity_records_sign_ins_and_step_ups_from_their_times`,
+  `tests/old_datadir.rs`.
 - **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
   "Passkeys are each cluster's own"): clusters share an rp-id, so a
   registration's `user.name`/`displayName` is `passkey_user_name` (person ·

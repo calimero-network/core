@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Close or open one app's team alone**: `POST /orgs/{org}/app-teams` takes,
+  per package, `join` (`invite` closes that app team, `everyone` opens it)
+  and, on a close, `keep: [account, ...]`. Before, the only atomic close was
+  `shared: true`, which closed every open app team at once; closing one with
+  `POST /orgs/{org}/teams/{team} { join: invite }` dropped everyone who
+  reached it by inheritance unless each had been added first. A close keeps
+  everyone who reaches the app then as a direct row, or, with `keep`, those
+  accounts and the team's leads: everyone else loses the app and their rows in
+  the teams below it, in the same log entry. A package that names `join`
+  leaves the other app teams alone unless `shared` is set. Answers each
+  team's `join` and how many people were `dropped`. Stored format: the new
+  fields are left out when absent, so entries from before replay as they did
+  and their passkey consent reads the same; a node on an earlier release
+  refuses a request naming them (`400`, unknown field).
+
 - **Passkey times and the account's sessions**: `GET /auth/me` gives each
   passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a passkey
   added, or last signed in, before this release). `GET /auth/sessions` lists
@@ -24,6 +39,21 @@
   them unknown on every replica. In a rolling upgrade a node on the earlier
   release ignores the new fields and keeps no times; the sessions route
   answers `404` there.
+- **An account's activity**: `GET /auth/activity[?after=T]` lists what the
+  caller's passkeys did, newest first, the last 100 entries: `{ activity: [{
+  at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"` is
+  a sign-up, sign-in or recovery finish, with the package and origin its
+  session is bound to (a refresh is none; a repeat of the newest sign-in only
+  moves its time); `kind: "approval"` is a change the passkey approved with a
+  step-up, with the method and subject its consent states, never its
+  arguments. The account holder's own session only, as `/auth/sessions`;
+  nothing is shown to operators, organization admins or deployment managers.
+  `meroctl account activity`. Stored formats: `SystemState.activity` (by
+  account) is left out when empty, and a step-up's consent carries its
+  time as `at` outside what the passkey signs (left out when 0), so state and entries from before read
+  and write as they did, and a node on the earlier release checks the same
+  consent and keeps no activity. An earlier release's entries carry no time
+  and add no activity when replayed.
 
 ### Security
 

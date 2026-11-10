@@ -164,7 +164,7 @@ derived from its app teams, never stored, and answered as `mode` on
 | `standalone` | Every app team open | Everyone in the organization has every app; members may invite to the app (the team's default `INVITE_MEMBERS`) |
 | `shared` | Some app team restricted | Each app lists its people; invites name the app team; only leads and admins invite unless an admin turns on the team's default |
 
-`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances? }], shared? }`
+`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances?, join?, keep? }], shared? }`
 (an owner or admin, with a passkey: `__scope_apps { apps, shared }`,
 `SystemCmd::ScopeApps`) gives apps their own access lists in one log entry.
 For each package (absent: every package with an `org`-access instance in the
@@ -174,6 +174,21 @@ instances (absent: every `org`-access instance of the package) to `access:
 team` on it. `shared` (absent: whether the organization then holds two app
 teams or more) closes every app team, everyone it held kept as a direct row,
 and takes `INVITE_MEMBERS` out of its default. Nobody loses an app.
+
+To keep one app apart and leave the others as they are, a package names its
+own `join` in the same request: `invite` closes that app team alone, in the
+same log entry that fills its rows, and `everyone` opens it again (`shared`,
+absent, then changes no other team; `shared: true` with an `everyone` is
+refused). A close keeps, by default, everyone who reaches the app then, each
+as a direct row. With `keep: [account, ...]` (members of the organization
+only) the team's leads and those accounts keep it, each with a row, and
+everyone else in it, by a row or by inheritance, loses it, together with their
+direct rows in the teams below the app team (its private channels), as a
+removal from the team takes them; they are not barred, so opening the team
+again lets them back in. Each package's answer names its team's `join` after the step and
+how many people it `dropped`. A single team also opens or closes with `POST
+/orgs/{org}/teams/{team} { join }` (`MANAGE_VISIBILITY`, an admin's anywhere),
+which fills no rows: closing that way, only the existing direct rows stay.
 `GET /orgs/{org}/app-teams` lists, to any member, each app team's package, id,
 name, `join`, member count, default capabilities and whether the caller is in
 it or manages it (a guest: only their own).
