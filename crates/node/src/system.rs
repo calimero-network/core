@@ -2244,7 +2244,11 @@ impl SystemState {
     ///   closed like the rest; an app team closed alone leaves it open. A legacy target (no app team) and a raw upload
     ///   (no package) keep organization access, so moving an app in never
     ///   changes how the target holds its other apps. Owner, public and
-    ///   accounts access stay as they are. Any other team is refused
+    ///   accounts access stay as they are; an accounts instance whose package
+    ///   has a closed app team in the target is reached there only through
+    ///   that team ([`Self::may_reach`]), so its owner and who it brings get
+    ///   a row on that team (`accounts_in_app_team`; none in an entry an
+    ///   earlier release logged). Any other team is refused
     ///   ([`MOVE_NEEDS_APP_TEAM`]): its rows are grants of the source.
     /// - **Owner:** stays, and must be a member of the target once the move
     ///   is done ([`MOVE_OWNER_NOT_IN_TARGET`]); nobody's ownership changes
@@ -2269,6 +2273,7 @@ impl SystemState {
         bring_members: bool,
         nonce: &str,
         actor: &str,
+        accounts_in_app_team: bool,
     ) -> Result<Value, &'static str> {
         use crate::types::{caps, OrgMode};
 
@@ -2398,6 +2403,17 @@ impl SystemState {
                 .values()
                 .filter(|t| t.app_package().is_some())
                 .all(|t| t.join == TeamJoin::Invite);
+        // An `Accounts` instance (a DM, a private list) of a package whose
+        // app team in the target is closed is reached there only by those in
+        // that team: who comes along, and its owner, get a row on it, as
+        // they would on the app team an `org` or `team` instance goes to.
+        let accounts_team = match (&app.access, package.as_deref()) {
+            (Access::Accounts { .. }, Some(p)) if accounts_in_app_team => target
+                .app_team(p)
+                .filter(|t| t.join == TeamJoin::Invite)
+                .map(|t| t.team_id.clone()),
+            _ => None,
+        };
         // App-team access without an app team to go to: the organization's.
         let mut access = match &app.access {
             Access::Team { .. } => Access::Org,
@@ -2453,6 +2469,13 @@ impl SystemState {
                 let _row = t.members.entry(m.clone()).or_insert(false);
             }
             access = Access::Team { team: team_id };
+        }
+        if let Some(team_id) = accounts_team {
+            let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+            for m in reached.iter().map(|(m, _)| m).chain(owner_keeps.iter()) {
+                let _back = t.removed.remove(m);
+                let _row = t.members.entry(m.clone()).or_insert(false);
+            }
         }
         self.set_app_file_bytes(app_id, 0);
         if let Some(a) = self.apps.get_mut(app_id) {
@@ -4258,6 +4281,14 @@ pub enum SystemCmd {
         /// ([`app_team_id`]), so every replica makes the same one.
         #[serde(default)]
         nonce: String,
+        /// An `Accounts` instance whose package has a closed app team in the
+        /// target is reached there only through that team
+        /// ([`SystemState::may_reach`]): who comes along with it, and its
+        /// owner, get a row on that team. The API always sets it; absent
+        /// (`false`) in an entry an earlier release logged, which replays
+        /// giving no such rows, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        accounts_in_app_team: bool,
     },
     DeleteApp {
         app_id: AppId,
@@ -5791,8 +5822,16 @@ impl SystemMachine {
                 actor,
                 bring_members,
                 nonce,
+                accounts_in_app_team,
                 ..
-            } => s.move_app(&app_id, &to_org, bring_members, &nonce, &actor),
+            } => s.move_app(
+                &app_id,
+                &to_org,
+                bring_members,
+                &nonce,
+                &actor,
+                accounts_in_app_team,
+            ),
             SystemCmd::DeleteApp {
                 app_id,
                 actor,
@@ -10610,6 +10649,7 @@ mod tests {
             consent,
             bring_members: bring,
             nonce: "n".into(),
+            accounts_in_app_team: true,
         }
     }
 
@@ -10979,6 +11019,102 @@ mod tests {
             m.state.orgs["new"].teams["rt"].join,
             crate::types::TeamJoin::Everyone
         );
+    }
+
+    /// An `Accounts` instance (a DM) of a package whose app team in the
+    /// target is closed is reached there only by those in that team: a move
+    /// with its people gives each one who reaches it now (bob, a member, and
+    /// carol, a guest) a plain row on that team, and they reach it after. A
+    /// move an earlier release logged gives none; an open team needs none.
+    #[test]
+    fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
+        let dm: AppRecord = serde_json::from_value(json!({
+            "appId": "dm", "name": "dm", "group": 6, "bundle": "b1", "owner": "bob",
+            "org": "org", "access": { "kind": "accounts", "accounts": ["bob", "carol"] },
+            "replicas": [1, 2, 3], "createdAt": 0
+        }))
+        .unwrap();
+        let np: Team = serde_json::from_value(json!({
+            "teamId": "np", "name": "Pad", "join": "invite", "members": { "alice": true },
+            "metadata": { "app": { "package": "p", "name": "Pad" } }
+        }))
+        .unwrap();
+        let (mut m, _alice, _bob) = moving();
+        let s = &mut m.state;
+        let _prev = s.apps.insert("dm".into(), dm.clone());
+        let _prev = s
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .teams
+            .insert("np".into(), np.clone());
+        let out = m
+            .run_unproven(move_app("dm", "new", "alice", true, Value::Null))
+            .unwrap();
+        assert_eq!(out["added"], json!(["bob", "carol"]), "{out}");
+        let s = &m.state;
+        let team = &s.orgs["new"].teams["np"];
+        assert_eq!(team.members.get("alice"), Some(&true));
+        assert_eq!(team.members.get("bob"), Some(&false));
+        assert_eq!(team.members.get("carol"), Some(&false));
+        for who in ["bob", "carol"] {
+            assert!(s.may_reach(&s.apps["dm"], Some(who)), "{who}");
+        }
+        assert!(s.owner_acts(&s.apps["dm"], "bob"));
+
+        // The same move as an earlier release logged it (no
+        // `accounts_in_app_team`) gives no such rows, as that release did,
+        // and the flag is left out of an entry when false.
+        let (mut m, _alice, _bob) = moving();
+        let s = &mut m.state;
+        let _prev = s.apps.insert("dm".into(), dm.clone());
+        let _prev = s
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .teams
+            .insert("np".into(), np.clone());
+        let mut cmd = move_app("dm", "new", "alice", true, Value::Null);
+        if let SystemCmd::MoveApp {
+            accounts_in_app_team,
+            ..
+        } = &mut cmd
+        {
+            *accounts_in_app_team = false;
+        }
+        let logged = serde_json::to_value(&cmd).unwrap();
+        assert!(logged.get("accounts_in_app_team").is_none(), "{logged}");
+        let _ok = m
+            .run_unproven(serde_json::from_value(logged).unwrap())
+            .unwrap();
+        let s = &m.state;
+        assert_eq!(
+            s.orgs["new"].teams["np"].members.keys().collect::<Vec<_>>(),
+            ["alice"]
+        );
+        assert!(!s.may_reach(&s.apps["dm"], Some("bob")));
+
+        // An open app team in the target: its members reach the DM already,
+        // and nothing is added.
+        let (mut m, _alice, _bob) = moving();
+        let s = &mut m.state;
+        let _prev = s.apps.insert("dm".into(), dm);
+        let open = Team {
+            join: TeamJoin::Everyone,
+            ..np
+        };
+        let _prev = s
+            .orgs
+            .get_mut("new")
+            .unwrap()
+            .teams
+            .insert("np".into(), open);
+        let _ok = m
+            .run_unproven(move_app("dm", "new", "alice", true, Value::Null))
+            .unwrap();
+        let s = &m.state;
+        assert_eq!(s.orgs["new"].teams["np"].members.len(), 1);
+        assert!(s.may_reach(&s.apps["dm"], Some("bob")));
     }
 
     /// A personal app moves into an organization its owner administers,
