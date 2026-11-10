@@ -155,6 +155,7 @@ export default defineConfig({
                 'operate/observability',
                 'operate/troubleshooting',
                 'operate/runbooks',
+                'operate/plain-http',
               ],
             },
             {

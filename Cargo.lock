@@ -3728,6 +3728,7 @@ dependencies = [
 name = "meroctl"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "calimero-app-build",
  "calimero-build-utils",
  "calimero-bundle",
@@ -3741,6 +3742,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.11.1",
