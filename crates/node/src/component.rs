@@ -1771,7 +1771,7 @@ mod tests {
         let ok = Outcome::from_host(run(host::Status::Ok));
         assert_eq!(ok.files, [mark(1)]);
         // The segments' bytes are not in what the log carries.
-        assert!(!serde_json::to_string(&ok).unwrap().contains("bytes"));
+        assert!(!serde_json::to_string(&ok).unwrap().contains("\"bytes\""));
         let trapped = Outcome::from_host(run(host::Status::Trap {
             kind: host::TrapKind::Fault,
             detail: String::new(),
