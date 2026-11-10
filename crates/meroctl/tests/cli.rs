@@ -337,6 +337,49 @@ fn scenario(root: &Path, url: &str) {
         "--view",
     ]);
     assert_eq!(view["result"], "1");
+    // `--watch`: the view now, then once more after a write to what it read (PoC).
+    let watcher = alice
+        .cmd()
+        .args([
+            "call",
+            "--context",
+            "notes",
+            "get",
+            "--args",
+            r#"{"key":"a"}"#,
+            "--view",
+            "--watch",
+            "--limit",
+            "1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let _ = alice.run(&[
+        "call",
+        "--context",
+        "notes",
+        "set",
+        "--args",
+        r#"{"key":"a","value":"2"}"#,
+    ]);
+    let out = watcher.wait_with_output().unwrap();
+    let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["result"], "1");
+    assert_eq!(lines[1]["result"], "2");
+    let _ = alice.run(&[
+        "call",
+        "--context",
+        "notes",
+        "set",
+        "--args",
+        r#"{"key":"a","value":"1"}"#,
+    ]);
     assert!(alice.run(&["context", "list"]).to_string().contains(&notes));
     assert_eq!(alice.run(&["context", "get", "notes"])["appId"], notes);
     assert_eq!(

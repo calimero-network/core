@@ -150,6 +150,13 @@ enum Cmd {
         /// A view from any replica at least this fresh, instead of the leader.
         #[arg(long, requires = "view")]
         min_index: Option<u64>,
+        /// Watch a subscribable view: print it now, then again (read at the notice's
+        /// index) each time something it read changes, one JSON line each (PoC).
+        #[arg(long, requires = "view", conflicts_with = "min_index")]
+        watch: bool,
+        /// With `--watch`: stop after this many re-reads.
+        #[arg(long, requires = "watch")]
+        limit: Option<usize>,
         /// Retries with the same key are answered once.
         #[arg(long)]
         idempotency_key: Option<String>,
@@ -207,6 +214,43 @@ fn print(v: &Value) -> eyre::Result<()> {
 }
 
 /// A call's refusal with the node's `details` (an app error's `code` and `fields`), when it sent any.
+/// `call --view --watch`: the view now (`{ index, result }`), then again at each notice's
+/// index (`{ notice, index, result }`), one JSON line each; `{ "ended": true }` when the node
+/// drops the watch.
+async fn watch_view(
+    client: &calimero_client::Client,
+    app: &str,
+    method: &str,
+    args: Value,
+    limit: Option<usize>,
+) -> eyre::Result<()> {
+    use futures_util::StreamExt;
+
+    let mut watch = client
+        .watch(app, method, args.clone())
+        .await
+        .map_err(detailed)?;
+    let read = |min_index| client.view(app, method, args.clone(), Consistency::Stale { min_index });
+    let now = read(watch.index).await.map_err(detailed)?;
+    println!("{}", json!({ "index": now.index, "result": now.result }));
+    let mut reads = 0;
+    while limit.is_none_or(|l| reads < l) {
+        match watch.notices.next().await {
+            Some(calimero_client::WatchNotice::Changed { index }) => {
+                let v = read(index).await.map_err(detailed)?;
+                let line = json!({ "notice": index, "index": v.index, "result": v.result });
+                println!("{line}");
+                reads += 1;
+            }
+            Some(calimero_client::WatchNotice::Ended) | None => {
+                println!("{}", json!({ "ended": true }));
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn detailed(e: calimero_client::Error) -> eyre::Report {
     match e.details() {
         Some(d) if !d.is_null() => eyre::eyre!("{e} {d}"),
@@ -355,11 +399,17 @@ async fn main() -> eyre::Result<()> {
             args,
             view,
             min_index,
+            watch,
+            limit,
             idempotency_key,
             dev_passkey,
         } => {
             let app = env.app(&context).await?;
             let args = json_arg(&args)?;
+            if watch {
+                watch_view(&env.client, &app, &method, args, limit).await?;
+                return Ok(());
+            }
             if view {
                 let consistency = match min_index {
                     Some(min_index) => Consistency::Stale { min_index },
