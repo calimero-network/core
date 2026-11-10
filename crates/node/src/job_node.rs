@@ -58,6 +58,8 @@ pub struct JobConfig {
     pub tee_profile: Option<String>,
     /// The cluster's identity key (`GET /ops/cluster`): work and components it did not sign are refused.
     pub cluster_identity: [u8; 32],
+    /// How many compute runs this node takes at once.
+    pub slots: usize,
 }
 
 impl JobConfig {
@@ -423,7 +425,7 @@ async fn load(State(job): State<Arc<JobNode>>) -> Json<Value> {
     }
     Json(json!({
         "running": job.runs.active(),
-        "capacity": RUNS_PER_JOB_NODE,
+        "capacity": job.config.slots,
     }))
 }
 

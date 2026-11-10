@@ -152,6 +152,7 @@ mod tests {
                     addr: String::new(),
                     zone: String::new(),
                     role,
+                    pool: String::new(),
                 },
             );
         }

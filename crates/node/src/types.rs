@@ -110,6 +110,9 @@ pub struct NodeRecord {
     pub zone: String,
     #[serde(default)]
     pub role: NodeRole,
+    /// The compute pool a job node serves; empty is [`crate::system::DEFAULT_POOL`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pool: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

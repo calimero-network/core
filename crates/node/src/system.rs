@@ -97,8 +97,27 @@ pub const RUN_FUEL_OVER_MAX: &str = "FUEL_OVER_RUN_MAX";
 pub const RUN_FUEL_OVER_QUOTA: &str = "FUEL_OVER_QUOTA";
 pub const RUN_RELEASED: &str = "RELEASED";
 pub const RUN_APP_QUEUE_FULL: &str = "APP_QUEUE_FULL";
+pub const RUN_NO_POOL: &str = "RUN_NO_POOL";
+/// The apply error that refuses removing a pool that still has job nodes or runs.
+pub const POOL_IN_USE: &str = "POOL_IN_USE: the pool still has job nodes or runs";
+/// The pool a job node with no pool, and a run on a cluster with no pools, belongs to.
+pub const DEFAULT_POOL: &str = "standard";
+pub const MAX_POOLS: usize = 32; // pools one cluster defines
+pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node's record
+/// The apply error for a pool set past `MAX_POOLS` or with an empty or too long name.
+pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 64 bytes";
 /// Released run ids kept per app, so a late `AcquireRun` for one is refused.
 pub const RELEASED_RUNS_KEPT: usize = 256;
+
+type WaitingRun = (u64, String, String, u64, String); // seq, app, run, fuel, pool
+
+/// A pool of job nodes: how many runs each takes and the largest run memory it admits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolConfig {
+    pub runs_per_node: u32,
+    pub max_memory_mib: u32,
+}
 
 /// A compute run waiting for, or holding, a place on a job node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +133,9 @@ pub struct RunSlot {
     /// leader ends it.
     #[serde(default)]
     pub refused: bool,
+    /// The pool the run was admitted to; empty on a cluster with no pools.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pool: String,
 }
 
 /// The prefix of every apply error that is a quota refusal.
@@ -300,6 +322,9 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemState {
+    /// Job node pools by name; left out when empty (one legacy pool).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pools: BTreeMap<String, PoolConfig>,
     pub nodes: BTreeMap<u64, NodeRecord>,
     /// Nodes the operator removed (`RemoveNode`): registered again only by
     /// the operator (`/ops/nodes`).
@@ -839,6 +864,65 @@ impl SystemState {
         self.nodes.values().filter(|n| n.role == NodeRole::Job)
     }
 
+    /// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits.
+    #[must_use]
+    pub fn pool_for(&self, memory_mib: u32) -> Option<String> {
+        if self.pools.is_empty() {
+            return Some(String::new());
+        }
+        self.pools
+            .iter()
+            .filter(|(_, p)| p.max_memory_mib >= memory_mib)
+            .min_by_key(|(name, p)| (p.max_memory_mib, name.as_str()))
+            .map(|(name, _)| name.clone())
+    }
+
+    /// The pool `slot` counts against (a slot from before pools belongs to the default one).
+    fn slot_pool<'a>(&self, slot: &'a RunSlot) -> &'a str {
+        match (self.pools.is_empty(), slot.pool.as_str()) {
+            (true, _) => "",
+            (false, "") => DEFAULT_POOL,
+            (false, pool) => pool,
+        }
+    }
+
+    /// The pool the leader dispatches run `run` of `app` to, as `grant_runs` counts it.
+    #[must_use]
+    pub fn dispatch_pool(&self, app: &str, run: &str) -> Option<String> {
+        self.run_slot(app, run)
+            .map(|slot| self.slot_pool(slot).to_owned())
+    }
+
+    /// Whether `node` serves `pool`; every job node does on a cluster with no pools.
+    #[must_use]
+    pub fn node_in_pool(&self, node: &NodeRecord, pool: &str) -> bool {
+        self.pools.is_empty() || Self::node_pool(node) == pool
+    }
+
+    fn node_pool(node: &NodeRecord) -> &str {
+        if node.pool.is_empty() {
+            DEFAULT_POOL
+        } else {
+            &node.pool
+        }
+    }
+
+    /// The runs `pool`'s job nodes take at once; a pool the cluster does not define has none.
+    #[must_use]
+    pub fn pool_capacity(&self, pool: &str) -> usize {
+        if self.pools.is_empty() {
+            return self.job_nodes().count() * RUNS_PER_JOB_NODE;
+        }
+        let Some(config) = self.pools.get(pool) else {
+            return 0;
+        };
+        let nodes = self
+            .job_nodes()
+            .filter(|n| Self::node_pool(n) == pool)
+            .count();
+        nodes * config.runs_per_node as usize
+    }
+
     /// Sets the file bytes an app holds, and its payer's total with it.
     fn set_app_file_bytes(&mut self, app_id: &str, now: u64) {
         let Some(app) = self.apps.get(app_id) else {
@@ -881,17 +965,18 @@ impl SystemState {
         for slot in self.compute.values_mut().flat_map(BTreeMap::values_mut) {
             slot.refused |= !slot.granted && slot.fuel > quota;
         }
-        let capacity = self.job_nodes().count() * RUNS_PER_JOB_NODE;
-        let mut granted_total = 0usize;
+        let mut granted_in: BTreeMap<String, usize> = BTreeMap::new();
         let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
-        let mut waiting: BTreeMap<String, Vec<(u64, String, String, u64)>> = BTreeMap::new();
+        let mut waiting: BTreeMap<String, Vec<WaitingRun>> = BTreeMap::new();
         for (app, runs) in &self.compute {
             for (run, slot) in runs {
                 if slot.refused {
                     continue;
                 }
                 if slot.granted {
-                    granted_total += 1;
+                    *granted_in
+                        .entry(self.slot_pool(slot).to_owned())
+                        .or_default() += 1;
                     let held = load.entry(slot.payer.clone()).or_default();
                     held.0 += 1;
                     held.1 = held.1.saturating_add(slot.fuel);
@@ -901,6 +986,7 @@ impl SystemState {
                         app.clone(),
                         run.clone(),
                         slot.fuel,
+                        self.slot_pool(slot).to_owned(),
                     ));
                 }
             }
@@ -914,7 +1000,7 @@ impl SystemState {
             .collect();
         let mut grants = Vec::new();
         let mut passed = BTreeSet::new();
-        while granted_total < capacity {
+        loop {
             let next = waiting
                 .iter()
                 .filter(|(payer, _)| !passed.contains(*payer))
@@ -924,17 +1010,23 @@ impl SystemState {
                 })
                 .min();
             let Some((_, _, payer)) = next else { break };
-            let Some((_, app, run, fuel)) = waiting.get_mut(&payer).and_then(VecDeque::pop_front)
+            let Some((_, app, run, fuel, pool)) =
+                waiting.get_mut(&payer).and_then(VecDeque::pop_front)
             else {
                 break;
             };
+            // A full pool stays full for this pass: the run waits, the payer's next may go.
+            let used = granted_in.entry(pool.clone()).or_default();
+            if *used >= self.pool_capacity(&pool) {
+                continue;
+            }
             let held = load.entry(payer.clone()).or_default();
             if held.0 < self.quotas.max_concurrent_runs_per_org
                 && held.1.saturating_add(fuel) <= self.quotas.compute_fuel_per_org
             {
                 held.0 += 1;
                 held.1 += fuel;
-                granted_total += 1;
+                *used += 1;
                 self.run_grants += 1;
                 let _prev = self.run_served.insert(payer, self.run_grants);
                 grants.push((app, run));
@@ -3200,6 +3292,9 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             if node.role != NodeRole::Replica {
                 args["role"] = json!(node.role);
             }
+            if !node.pool.is_empty() {
+                args["pool"] = json!(node.pool);
+            }
             states(&st, "cluster", "__register_node", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -3214,6 +3309,12 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             let (st, used) = fresh(operator(proof)?)?;
             let args = json!({ "quotas": quotas });
             states(&st, "cluster", "__set_quotas", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetPools { pools, proof } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "pools": pools });
+            states(&st, "cluster", "__set_pools", &|a| *a == args)?;
             Ok(Some(used))
         }
         SystemCmd::SetReplicas {
@@ -3503,6 +3604,9 @@ pub enum SystemCmd {
         run: String,
         payer: String,
         fuel: u64,
+        /// The run's memory cap, which picks its pool; absent (0) from a leader that sends none.
+        #[serde(default)]
+        memory_mib: u32,
     },
     /// Frees a run's place (finished, or never to run) and grants the next waiting runs.
     ReleaseRun {
@@ -3696,6 +3800,13 @@ pub enum SystemCmd {
     },
     SetQuotas {
         quotas: Quotas,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The operator sets the compute pools (`cluster / __set_pools / { pools }`).
+    SetPools {
+        pools: BTreeMap<String, PoolConfig>,
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,
@@ -4896,17 +5007,21 @@ impl SystemMachine {
                 run,
                 payer,
                 fuel,
+                memory_mib,
             } => {
                 let Some(record) = s.apps.get(&app) else {
                     return Ok(acquire_refused(RUN_NO_SUCH_APP, false));
                 };
                 if s.run_slot(&app, &run).is_none() {
+                    let pool = s.pool_for(memory_mib);
                     let refusal = if payer != crate::usage::payer(record) {
                         Some((RUN_NOT_PAYER, true))
                     } else if fuel > calimero_app_host::MAX_COMPUTE_FUEL {
                         Some((RUN_FUEL_OVER_MAX, false))
                     } else if fuel > s.quotas.compute_fuel_per_org {
                         Some((RUN_FUEL_OVER_QUOTA, false))
+                    } else if pool.is_none() {
+                        Some((RUN_NO_POOL, false))
                     } else if s.released_runs.get(&app).is_some_and(|r| r.contains(&run)) {
                         Some((RUN_RELEASED, false))
                     } else if s.compute.get(&app).map_or(0, BTreeMap::len)
@@ -4929,6 +5044,7 @@ impl SystemMachine {
                             seq,
                             granted: false,
                             refused: false,
+                            pool: pool.unwrap_or_default(),
                         },
                     );
                     s.grant_runs();
@@ -5409,6 +5525,33 @@ impl SystemMachine {
             }
             SystemCmd::SetQuotas { quotas, .. } => {
                 s.quotas = quotas;
+                s.grant_runs();
+                Ok(Value::Null)
+            }
+            SystemCmd::SetPools { pools, .. } => {
+                if pools.len() > MAX_POOLS
+                    || pools
+                        .keys()
+                        .any(|n| n.is_empty() || n.len() > MAX_POOL_NAME_BYTES)
+                {
+                    return Err(BAD_POOLS);
+                }
+                let in_use = s
+                    .pools
+                    .keys()
+                    .filter(|name| !pools.contains_key(*name))
+                    .find(|name| {
+                        s.job_nodes()
+                            .any(|n| SystemState::node_pool(n) == name.as_str())
+                            || s.compute
+                                .values()
+                                .flat_map(BTreeMap::values)
+                                .any(|r| s.slot_pool(r) == name.as_str())
+                    });
+                if in_use.is_some() {
+                    return Err(POOL_IN_USE);
+                }
+                s.pools = pools;
                 s.grant_runs();
                 Ok(Value::Null)
             }
@@ -7688,6 +7831,7 @@ mod tests {
                         addr: format!("http://n{id}/"),
                         zone: String::new(),
                         role: crate::types::NodeRole::Replica,
+                        pool: String::new(),
                     })
                     .to_vec(),
             })
@@ -9540,6 +9684,7 @@ mod tests {
             addr: "http://n9/".into(),
             zone: "z".into(),
             role: crate::types::NodeRole::Replica,
+            pool: String::new(),
         };
         needs_signature(
             &mut m,
@@ -9558,6 +9703,7 @@ mod tests {
             addr: "http://n10/".into(),
             zone: "z".into(),
             role: crate::types::NodeRole::Job,
+            pool: String::new(),
         };
         needs_signature(
             &mut m,

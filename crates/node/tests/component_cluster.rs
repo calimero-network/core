@@ -5207,3 +5207,47 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
     }
     fuel_limit_everywhere(&c, 1000).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pools_wait_until_every_node_runs_this_release() {
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    // A pool names the job nodes it is for: a replica given one is refused before anything
+    // is signed, so no older node is asked to read a field it drops.
+    let err = ops
+        .post(
+            "ops/nodes",
+            json!({ "id": 9, "addr": "http://127.0.0.1:1", "pool": "standard" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("POOL_FOR_JOB_NODES"), "{err}");
+    let pools = json!({ "pools": { "standard": { "runsPerNode": 2, "maxMemoryMib": 4096 } } });
+    let err = ops.post("ops/pools", pools.clone()).await.unwrap_err();
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 409, .. }),
+        "{err}"
+    );
+    c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match ops
+            .post_operator_signed("ops/pools", pools.clone(), &common::operator_sign)
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                assert!(std::time::Instant::now() < deadline, "still refused: {e}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    let shown = ops.get("ops/pools").await.unwrap();
+    assert_eq!(shown["pools"], pools["pools"]);
+    assert_eq!(shown["capacity"], json!({ "standard": 0 }));
+}

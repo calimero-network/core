@@ -438,6 +438,9 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
     if !dev && (args.tee_release.is_none() || args.tee_profile.is_none()) {
         eyre::bail!("a TDX job node needs MERO_TEE_VERSION and MERO_TEE_PROFILE to attest itself");
     }
+    if args.job_slots == Some(0) {
+        eyre::bail!("--job-slots must be at least 1");
+    }
     let config = calimero_node::JobConfig {
         node_id,
         listen: args.listen.unwrap_or_else(|| ([0, 0, 0, 0], 2528).into()),
@@ -449,6 +452,7 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
         cluster_identity: NodeArgs::parse_cluster_identity(identity)?,
+        slots: args.job_slots.unwrap_or(calimero_node::RUNS_PER_JOB_NODE),
     };
     let running = run_job(config).await?;
     tokio::signal::ctrl_c().await?;
@@ -462,6 +466,9 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     }
     if args.cluster_identity.is_some() {
         eyre::bail!("--cluster-identity is for --job-node only");
+    }
+    if args.job_slots.is_some() {
+        eyre::bail!("--job-slots is for --job-node only");
     }
     let node_id = args.node_id.ok_or_else(|| {
         eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")

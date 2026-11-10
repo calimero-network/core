@@ -22,7 +22,7 @@ use tracing::warn;
 use zeroize::Zeroizing;
 
 use super::admission::{admit_assignment, token_matches};
-use super::{exec, locked, JobNode, RUNS_PER_JOB_NODE};
+use super::{exec, locked, JobNode};
 use crate::error::ApiError;
 use crate::files::{file_id, sealed_len, unwrap_for_job, JobWrap, WrapKind, SEGMENT_BYTES};
 use crate::job_wire::{assignment_message, is_hash, Assignment, Report, RunInput, SHA256_LEN};
@@ -453,7 +453,7 @@ fn admit_run(
         }
         return Ok((Arc::clone(held), false));
     }
-    if active_count(&map) >= RUNS_PER_JOB_NODE {
+    if active_count(&map) >= job.config.slots {
         return Err(ApiError::new(
             503,
             "BUSY",
