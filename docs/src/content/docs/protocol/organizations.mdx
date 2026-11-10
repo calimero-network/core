@@ -40,6 +40,21 @@ fresh system state, so removing someone from an organization or team holds on
 every node before their next request ([Reads of the system
 state](/protocol/system-group/#reading-the-system-state)).
 
+An organization's app is **managed** by its owner only while they are a member
+of the organization (`member` or above, as owning an app there takes;
+`SystemState::owner_acts`). An owner who leaves, is removed or is made a guest
+keeps their name on the record but none of its powers: changing its access
+(so they cannot make it `public` to reach it again), its metadata, transferring
+or deleting it, upgrading it or making an upgrade key for it, uploading files
+to it or deleting its blobs. The organization's admins (and its owner) still
+transfer it to a member or delete it, so an organization cleans up an app whose
+owner left; `POST /apps/{app}/transfer` is open to them too, with their own
+passkey. A personal app (no organization) stays its owner's alone. The rule is
+judged where each command applies; `SetAccess`, `SetAppMetadata`,
+`TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` entries an earlier
+release logged replay as that release judged them (ownership alone, and no
+admin transfer); the API marks new ones (`owner_in_org`).
+
 A member whose **direct row** in the app's team is **read-only** still reaches
 the app, but only its views run for them: any other call is refused with `403`
 before it runs. A blob upload by them is refused

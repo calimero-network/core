@@ -23,6 +23,15 @@ fn machine() -> SystemMachine {
         .unwrap();
         let _prev = m.state.apps.insert(id.into(), app);
     }
+    for org in ["x", "y"] {
+        let _prev = m.state.orgs.insert(
+            org.into(),
+            serde_json::from_value(json!({
+                "orgId": org, "name": org, "members": { "alice": "owner" }, "teams": {}
+            }))
+            .unwrap(),
+        );
+    }
     m
 }
 
@@ -311,6 +320,7 @@ fn deleting_an_app_releases_its_runs_and_grants_the_next() {
     m.run(SystemCmd::DeleteApp {
         app_id: "a1".into(),
         actor: "alice".into(),
+        owner_in_org: true,
     })
     .unwrap();
     assert_eq!(granted(&m), pairs(&[("b1", "r3")]));
@@ -369,6 +379,7 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
         to: "bob".into(),
         actor: "alice".into(),
         consent: serde_json::Value::Null,
+        owner_in_org: true,
     })
     .unwrap();
     assert_eq!(m.state.run_slot("p", "r1").unwrap().payer, "account:bob");
@@ -429,6 +440,7 @@ fn deleting_an_app_forgets_its_released_ids() {
     m.run(SystemCmd::DeleteApp {
         app_id: "a1".into(),
         actor: "alice".into(),
+        owner_in_org: true,
     })
     .unwrap();
     assert!(m.state.released_runs.is_empty());

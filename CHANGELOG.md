@@ -25,6 +25,23 @@
   release ignores the new fields and keeps no times; the sessions route
   answers `404` there.
 
+### Security
+
+- **An organization's app is managed by its owner only while they are a
+  member.** Since #4891 an owner removed from the organization no longer
+  reached the app, but could still change it: make it `public` and reach it
+  again, transfer, delete or upgrade it, set its metadata, make an upgrade key
+  for it, upload files to it or delete its blobs. Owner powers over an
+  organization's app now hold only while the owner is a member (`member` or
+  above) of that organization; one who leaves, is removed or is made a guest
+  keeps their name on the app and none of the powers. The organization's
+  admins can now transfer such an app (`POST /apps/{app}/transfer`, with
+  their passkey) as well as delete it, so an organization cleans up an app
+  whose owner left. Personal apps are unchanged. Judged where the commands
+  apply; entries an earlier release logged replay as before (`owner_in_org`).
+  **Behaviour change**: an owner demoted to guest no longer manages their
+  organization app; make them a member again, or have an admin transfer it.
+
 ## [1.0.0-rc.14] - 2026-11-10
 
 ### Added
