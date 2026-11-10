@@ -10288,6 +10288,7 @@ mod tests {
                 seq: 1,
                 granted: true,
                 refused: false,
+                pool: String::new(),
             },
         )])
     }
