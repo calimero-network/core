@@ -1356,6 +1356,25 @@ impl Node {
             .collect()
     }
 
+    /// `409 UPGRADE_PENDING` while a registered node runs an older release: the gate for a
+    /// cluster-wide write (`what`) that only this release understands.
+    pub async fn require_current_release(&self, what: &str) -> Result<(), ApiError> {
+        let behind = self.nodes_behind_release().await;
+        if behind.is_empty() {
+            return Ok(());
+        }
+        let nodes: Vec<Value> = behind
+            .iter()
+            .map(|(id, release)| json!({ "node": id, "release": release }))
+            .collect();
+        Err(ApiError::new(
+            409,
+            crate::api::UPGRADE_PENDING,
+            &format!("{what} needs every node on this node's release or newer"),
+        )
+        .with_details(json!({ "release": self.own_release(), "nodes": nodes })))
+    }
+
     /// The release node `id` runs, as its verified attestation names it (this
     /// node's own for itself), attesting the node first if this one has not
     /// yet. `None` when it cannot be attested.
@@ -1993,6 +2012,7 @@ impl Node {
                         addr: addr.clone(),
                         zone: String::new(),
                         role: NodeRole::Replica,
+                        pool: String::new(),
                     })
                     .collect();
                 let _r = self

@@ -748,6 +748,7 @@ async fn a_slot_whose_run_is_not_active_is_released() {
             run: "ghost".into(),
             payer,
             fuel: 1,
+            memory_mib: 0,
         })
         .await
         .unwrap();

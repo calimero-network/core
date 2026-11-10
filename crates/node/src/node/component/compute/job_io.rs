@@ -494,15 +494,17 @@ impl Drive<'_> {
     }
 }
 
-/// The free job node of `surveyed` with the fewest runs (those being delivered to it counted),
-/// lowest id first; one of `avoid` only when no other is free.
+/// The free job node of `surveyed` in the run's pool (`in_pool`) with the fewest runs (those
+/// being delivered to it counted), lowest id first; one of `avoid` only when no other is free.
 pub(super) fn pick_job(
     surveyed: Vec<(usize, usize, JobPeer)>,
     avoid: &[NodeId],
     reserved: &HashMap<NodeId, usize>,
+    in_pool: &dyn Fn(NodeId) -> bool,
 ) -> Option<JobPeer> {
     let mut free: Vec<_> = surveyed
         .into_iter()
+        .filter(|(_, _, peer)| in_pool(peer.id))
         .map(|(running, capacity, peer)| {
             (
                 running + reserved.get(&peer.id).copied().unwrap_or(0),
@@ -519,4 +521,43 @@ pub(super) fn pick_job(
         .position(|(_, id, _)| !avoid.contains(id))
         .or_else(|| (!free.is_empty()).then_some(0))?;
     Some(free.swap_remove(pick).2)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn peer(id: NodeId) -> JobPeer {
+        let url = format!("http://127.0.0.1:{}", 1000 + id);
+        JobPeer {
+            id,
+            url: url.clone(),
+            transport_key: [0; 32],
+            job_key: [0; 32],
+            release: String::new(),
+            channel: Arc::new(calimero_sealed::client::SealedTransport::with_key(
+                url.parse().unwrap(),
+                reqwest::Client::new(),
+                [0; 32],
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_job_stays_in_the_slots_pool() {
+        let surveyed = || vec![(0, 2, peer(1)), (1, 2, peer(2)), (0, 2, peer(3))];
+        let none = HashMap::new();
+        let in_pool = |ids: &'static [NodeId]| move |id: NodeId| ids.contains(&id);
+        let pick =
+            |ids: &'static [NodeId]| pick_job(surveyed(), &[], &none, &in_pool(ids)).map(|p| p.id);
+        assert_eq!(pick(&[2, 3]), Some(3));
+        assert_eq!(pick(&[2]), Some(2));
+        assert_eq!(pick(&[]), None);
+        assert_eq!(
+            pick_job(surveyed(), &[], &none, &|_| true).map(|p| p.id),
+            Some(1)
+        );
+    }
 }

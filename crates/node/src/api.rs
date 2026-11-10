@@ -8545,6 +8545,8 @@ struct NodeBody {
     operator_proof: Option<OperatorProofBody>,
     #[serde(default)]
     role: NodeRole,
+    #[serde(default)]
+    pool: String,
 }
 
 /// Register a node: the operator's decision, signed
@@ -8593,12 +8595,28 @@ async fn ops_register_node(
             "another node has that address",
         ));
     }
+    // Only a job node has a pool, and registering one already waits for every node to upgrade.
+    if b.pool.len() > crate::system::MAX_POOL_NAME_BYTES {
+        return Err(ApiError::bad_request(
+            "BAD_POOL",
+            "a pool's name is at most 64 bytes",
+        ));
+    }
+    if b.role != NodeRole::Job && !b.pool.is_empty() {
+        return Err(ApiError::bad_request(
+            "POOL_FOR_JOB_NODES",
+            "only a job node is registered in a pool",
+        ));
+    }
     if b.role == NodeRole::Job {
         node.require_upgraded_nodes().await?;
     }
     let mut args = json!({ "id": b.id, "addr": b.addr, "zone": b.zone });
     if b.role != NodeRole::Replica {
         args["role"] = json!(b.role);
+    }
+    if !b.pool.is_empty() {
+        args["pool"] = json!(b.pool);
     }
     let proof = operator_proof(&node, "cluster", "__register_node", &args, b.operator_proof)?;
     let _ok = node
@@ -8608,6 +8626,7 @@ async fn ops_register_node(
                 addr: b.addr,
                 zone: b.zone,
                 role: b.role,
+                pool: b.pool,
             },
             proof,
         })
@@ -8870,6 +8889,47 @@ async fn move_replicas(
     Ok(Json(json!({ "status": g.status(), "unchanged": false })))
 }
 
+#[derive(Deserialize)]
+struct PoolsBody {
+    pools: std::collections::BTreeMap<String, crate::system::PoolConfig>,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// Set the compute pools: the operator's decision, signed (`cluster / __set_pools / { pools }`).
+async fn ops_pools_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(b): Json<PoolsBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    node.require_current_release("node pools").await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__set_pools",
+        &json!({ "pools": b.pools }),
+        b.operator_proof,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetPools {
+            pools: b.pools,
+            proof,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// The pools and the runs each takes at once.
+async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(node.sys(|s| {
+        let capacity: std::collections::BTreeMap<&String, usize> =
+            s.pools.keys().map(|p| (p, s.pool_capacity(p))).collect();
+        json!({ "pools": s.pools, "capacity": capacity })
+    })))
+}
+
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
     Ok(Json(
@@ -8917,19 +8977,7 @@ async fn ops_quotas_set(
     // older node drops the field, and its snapshots would bring the cap back to 0.
     // Judged before the operator is asked to sign, so a refused write is never signed.
     if quotas.max_fuel_per_developer_per_day != 0 {
-        let behind = node.nodes_behind_release().await;
-        if !behind.is_empty() {
-            let nodes: Vec<Value> = behind
-                .iter()
-                .map(|(id, release)| json!({ "node": id, "release": release }))
-                .collect();
-            return Err(ApiError::new(
-                409,
-                UPGRADE_PENDING,
-                "a fuel cap needs every node on this node's release or newer",
-            )
-            .with_details(json!({ "release": node.own_release(), "nodes": nodes })));
-        }
+        node.require_current_release("a fuel cap").await?;
     }
     // Signed over the whole merged limits (`cluster / __set_quotas /
     // { quotas }`, 428 first), so a change made in between is not signed
@@ -10696,6 +10744,7 @@ pub fn router(node: Arc<Node>) -> Router {
             delete(ops_package_version_uninstall),
         )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
+        .route("/ops/pools", get(ops_pools_get).post(ops_pools_set))
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.
         .route_layer(axum::middleware::from_fn(crate::metrics::track))

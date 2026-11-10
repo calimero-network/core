@@ -45,6 +45,9 @@ pub enum OpsCmd {
         zone: String,
         #[arg(long, value_enum, default_value_t = NodeRole::Replica)]
         role: NodeRole,
+        /// The compute pool of a job node (`ops set-pools`); none is the default pool.
+        #[arg(long, default_value = "")]
+        pool: String,
     },
     /// Remove a node from the cluster once no context keeps a replica on it
     /// (run against the system leader; another node names it).
@@ -59,6 +62,12 @@ pub enum OpsCmd {
     },
     /// Write encrypted snapshots of the contexts this node leads.
     Backup,
+    /// The compute pools and the runs each takes at once.
+    Pools,
+    /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib } }`.
+    SetPools {
+        pools: String,
+    },
     Quotas,
     /// Replace the quotas with this JSON.
     SetQuotas {
@@ -150,8 +159,12 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             addr,
             zone,
             role,
+            pool,
         } => {
-            let body = json!({ "id": id, "addr": addr, "zone": zone, "role": role });
+            let mut body = json!({ "id": id, "addr": addr, "zone": zone, "role": role });
+            if !pool.is_empty() {
+                body["pool"] = json!(pool);
+            }
             decide_at(env, client, Some(body), "ops/nodes").await?
         }
         OpsCmd::RemoveNode { id } => {
@@ -186,6 +199,11 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             }
         }
         OpsCmd::Backup => client.post("ops/backup", json!({})).await?,
+        OpsCmd::Pools => client.get("ops/pools").await?,
+        OpsCmd::SetPools { pools } => {
+            let body = json!({ "pools": json_arg(&pools)? });
+            decide_at(env, client, Some(body), "ops/pools").await?
+        }
         OpsCmd::Quotas => client.get("ops/quotas").await?,
         OpsCmd::SetQuotas { quotas } => {
             decide_at(env, client, Some(json_arg(&quotas)?), "ops/quotas").await?

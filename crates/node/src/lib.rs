@@ -45,7 +45,7 @@ pub mod testing;
 pub mod types;
 pub mod usage;
 
-pub use job_node::{run_job, JobConfig, RunningJob};
+pub use job_node::{run_job, JobConfig, RunningJob, RUNS_PER_JOB_NODE};
 pub use node::{Config, Node};
 
 /// The core release this build is: `[workspace.metadata.workspaces].version`

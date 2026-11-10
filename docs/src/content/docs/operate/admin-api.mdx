@@ -244,6 +244,7 @@ there.
 | `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
 | `POST /ops/sign-up`, `POST\|GET /ops/sign-up/invites`, `DELETE /ops/sign-up/invites/{key}` | Set the [sign-up policy](/operate/auth/#sign-up-policy) (`{ policy }`) and issue, list and withdraw cluster sign-up invites (`{ token, uses?, expiresAt }`); each change signed (`428` first), refused once the cluster's owner runs sign-up | |
 | `GET /ops/quotas`, `POST /ops/quotas` | Read or change the per-account quotas; a change is signed (`428` first, `cluster / __set_quotas / { quotas }` with every limit after the change; `operatorProof` sits beside the limits) | `ops quotas`, `ops set-quotas` |
+| `GET /ops/pools`, `POST /ops/pools` | Read the compute pools and the runs each takes, or set them (`{ pools: { name: { runsPerNode, maxMemoryMib } } }`); a change is signed (`428` first, `cluster / __set_pools / { pools }`) and refused `409 UPGRADE_PENDING` while a node runs an older release, `POOL_IN_USE` when a pool to remove still has job nodes or runs. `POST /ops/nodes` takes `pool` for a job node | |
 | `POST /ops/releases` | `{ version, approved }`, where the operator holds release approvals | `ops release` |
 | `POST /ops/outbound` | `{ package, prefixes, replace }`, where the operator holds outbound approvals | `ops outbound` |
 | `POST /ops/packages`, `POST /ops/packages/install`, `GET /ops/packages` | Install (upload or registry) and list the releases the operator upgrades to | `ops install`, `ops packages` |

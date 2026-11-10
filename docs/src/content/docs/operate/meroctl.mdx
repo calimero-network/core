@@ -41,7 +41,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move` and `ops set-quotas` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -298,12 +298,14 @@ node answers `403` for the others.
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
 | `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |
-| `ops add-node ID ADDR [--zone Z] [--role replica\|job]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
+| `ops add-node ID ADDR [--zone Z] [--role replica\|job] [--pool P]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
 | `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
 | `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |
 | `ops quotas` | `GET /ops/quotas` | The per-account quotas. |
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
+| `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
+| `ops set-pools JSON` | `POST /ops/pools` | Set the pools, `{ name: { runsPerNode, maxMemoryMib } }`; a job node joins one with `add-node --pool`. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
 | `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |

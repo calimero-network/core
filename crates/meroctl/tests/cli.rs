@@ -778,6 +778,21 @@ fn scenario(root: &Path, url: &str) {
         ])
         .unwrap_err();
     assert!(refused.contains("no operator key"), "{refused}");
+    // Pools: none set yet, and only a job node is registered in one.
+    assert_eq!(ops(&["pools"])["pools"], serde_json::json!({}));
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--pool",
+            "highmem",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("POOL_FOR_JOB_NODES"), "{refused}");
     // A node no context lives on, and one that does not exist.
     let unknown = alice
         .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])

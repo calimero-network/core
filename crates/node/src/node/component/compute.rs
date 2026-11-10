@@ -833,6 +833,7 @@ impl Drive<'_> {
             run: run.clone(),
             payer,
             fuel: self.rec.caps.fuel,
+            memory_mib: self.rec.caps.memory_mib,
         };
         let answer = match self.node.sys_write(&cmd).await {
             Ok(answer) => serde_json::from_value::<AcquireAnswer>(answer),
@@ -869,7 +870,15 @@ impl Drive<'_> {
             let peer = {
                 let _one = self.node.compute.assigning.lock().await;
                 let reserved = self.node.compute.reserved();
-                let Some(peer) = job_io::pick_job(surveyed, avoid, &reserved) else {
+                let pool = self.node.sys(|s| {
+                    s.dispatch_pool(&self.app.app_id, &self.rec.run)
+                        .unwrap_or_default()
+                });
+                let in_pool = |id: NodeId| {
+                    self.node
+                        .sys(|s| s.nodes.get(&id).is_some_and(|n| s.node_in_pool(n, &pool)))
+                };
+                let Some(peer) = job_io::pick_job(surveyed, avoid, &reserved, &in_pool) else {
                     return false;
                 };
                 self.node.compute.reserve(peer.id);
