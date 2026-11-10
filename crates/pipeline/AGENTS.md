@@ -1,6 +1,6 @@
 # calimero-pipeline - Pipeline Language
 
-The pure compiler for the pipeline YAML language: structural checks, canonical JSON, apply-time checks against a cluster's modules and pools, and the worst-case fuel bound.
+The pure compiler for the pipeline YAML language: structural checks, canonical JSON, apply-time checks against a cluster's modules and pools, and the worst-case fuel and cost bounds.
 It has no node dependency.
 
 ## Package Identity
@@ -23,6 +23,8 @@ cargo test -p calimero-pipeline
 | `canonical_json()` | fn | RFC 8785 bytes of a `Pipeline`; the form the API stores and the engine executes |
 | `check()` | fn | Apply-time checks of modules, methods, limits and pools against an `Env` |
 | `worst_case_fuel()` | fn | Sum over steps of fuel cap times maximum runs |
+| `worst_case_cost()`, `run_cost()` | fn | Upper bound of a pipeline, or of one run, priced by a `PriceTable` (u128, rounded up) |
+| `PriceTable` | struct | The operator's prices; `validate()` refuses a zero fuel rate (`BAD_PRICES`) |
 | `SpecError` | struct | `path`, `code`, `message`; codes are stable identifiers |
 
 ## Rules

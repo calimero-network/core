@@ -1,4 +1,4 @@
-use crate::model::{Caps, Env, Pipeline, SpecError, Step};
+use crate::model::{Caps, Env, Pipeline, PriceTable, SpecError, Step};
 
 fn module_of<'a>(p: &'a Pipeline, s: &'a Step, env: &'a Env) -> Option<&'a str> {
     s.module
@@ -109,6 +109,17 @@ pub fn check(p: &Pipeline, env: &Env) -> Result<(), Vec<SpecError>> {
     }
 }
 
+/// Runs a step makes at most: one, or the items of its `forEach` over its batch size.
+fn max_runs(s: &Step) -> u128 {
+    match s.for_each {
+        None => 1,
+        Some(_) => {
+            let items = u128::from(s.max_items.unwrap_or(0));
+            items.div_ceil(u128::from(s.batch.unwrap_or(1).max(1)))
+        }
+    }
+}
+
 /// Most fuel the pipeline can burn: each step's fuel cap times its maximum runs.
 /// A step whose module or method is unknown adds nothing; `check` rejects it.
 pub fn worst_case_fuel(p: &Pipeline, env: &Env) -> u128 {
@@ -117,14 +128,34 @@ pub fn worst_case_fuel(p: &Pipeline, env: &Env) -> u128 {
         .filter_map(|s| {
             let cap = caps_of(p, s, env)?;
             let fuel = s.limits.and_then(|l| l.fuel).unwrap_or(cap.fuel);
-            let runs = match s.for_each {
-                None => 1,
-                Some(_) => {
-                    let items = u128::from(s.max_items.unwrap_or(0));
-                    items.div_ceil(u128::from(s.batch.unwrap_or(1).max(1)))
-                }
-            };
-            Some(u128::from(fuel) * runs)
+            Some(u128::from(fuel) * max_runs(s))
         })
         .sum()
+}
+
+/// Upper bound for one run: vCPU-seconds from its fuel cap plus GiB-seconds of its memory and
+/// wall limits, each rounded up; saturates at `u128::MAX`. A zero fuel rate is read as 1; `PriceTable::validate` refuses it.
+pub fn run_cost(fuel: u64, memory_mib: u32, wall_secs: u32, t: &PriceTable) -> u128 {
+    let vcpu_secs = u128::from(fuel).div_ceil(u128::from(t.fuel_per_vcpu_second.max(1)));
+    let gib_secs = (u128::from(memory_mib) * u128::from(wall_secs)).div_ceil(1024);
+    (vcpu_secs * u128::from(t.vcpu_second)).saturating_add(gib_secs * u128::from(t.gib_second))
+}
+
+/// Most the pipeline can cost: each step's run cost at its limits (or the method's caps) times
+/// its maximum runs. A step whose module or method is unknown adds nothing.
+pub fn worst_case_cost(p: &Pipeline, env: &Env, t: &PriceTable) -> u128 {
+    p.steps
+        .values()
+        .filter_map(|s| {
+            let cap = caps_of(p, s, env)?;
+            let l = s.limits.unwrap_or_default();
+            let run = run_cost(
+                l.fuel.unwrap_or(cap.fuel),
+                l.memory_mib.unwrap_or(cap.memory_mib),
+                l.wall_secs.unwrap_or(cap.wall_secs),
+                t,
+            );
+            Some(run.saturating_mul(max_runs(s)))
+        })
+        .fold(0, u128::saturating_add)
 }

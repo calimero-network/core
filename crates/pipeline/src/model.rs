@@ -27,6 +27,36 @@ pub struct Env {
     pub pools: BTreeMap<String, u32>,
 }
 
+/// The operator's prices, in micro-units of the billing currency per unit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PriceTable {
+    /// Strictly increasing; a run records the version it was admitted under.
+    pub version: u64,
+    /// Fuel one vCPU-second is worth, about 1e9.
+    pub fuel_per_vcpu_second: u64,
+    pub vcpu_second: u64,
+    pub gib_second: u64,
+    /// Stored now, used once connectors exist.
+    pub connector_gib: u64,
+    pub storage_gib_month: u64,
+    pub egress_gib: u64,
+}
+
+impl PriceTable {
+    /// A table prices fuel in vCPU-seconds, so the rate cannot be zero.
+    pub fn validate(&self) -> Result<(), SpecError> {
+        if self.fuel_per_vcpu_second == 0 {
+            return Err(SpecError {
+                path: "fuelPerVcpuSecond".into(),
+                code: "BAD_PRICES",
+                message: "the fuel rate per vCPU-second is above zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Caps {
     pub fuel: u64,
