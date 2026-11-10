@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.13] - 2026-11-10
+
+### Changed
+
+- **An instance runs the release it was created at or upgraded to** (#4887):
+  every app instance records its release (`AppRecord.release`), set at create
+  and by every upgrade path, so a release that changes only the frontend is an
+  upgrade of its own. Its holder approves it like any other, and `/app/{app}/`
+  opens the instance's own release. Reports answer that release as the
+  instance's `package.version`, `availableVersions` start from it and include
+  same-WASM releases, and `lastUpgrade` names the releases it moved between.
+  `GET /apps/{app}` answers `release`. A record written before this keeps the
+  release guessed from its bundle until its next upgrade.
+
+### Fixed
+
+- **Served-frontend redirects keep the query** (#4886): `/`, `/app/{app}/` and
+  the deployment hosts' redirects carry the request's query, so an
+  `?invite=...` link opened at an app's link reaches the app. A query over
+  4 KiB is refused with `414`.
+- **A slow output fetch no longer counts as the job node's silence** (#4882).
+
+### Dependencies
+
+- `redb` 4.5.0 (#4830), `tdx_workload_attestation` 0.2.0 (#4832).
+
 ## [1.0.0-rc.12] - 2026-11-09
 
 ### Added
