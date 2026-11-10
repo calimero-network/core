@@ -17,6 +17,7 @@
 
 mod compute;
 mod files;
+mod uploads;
 
 #[cfg(feature = "testing")]
 pub use self::compute::ComputeLimits;
@@ -27,7 +28,9 @@ pub use self::compute::JOB_POLL;
 pub(crate) use self::compute::RUN_VIEW;
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
+pub(crate) use self::files::{valid_uploader, Uploaded};
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
+pub(crate) use self::uploads::{UploadOp, Uploads};
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};

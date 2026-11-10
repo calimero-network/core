@@ -120,12 +120,24 @@ The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer
 The app's blob record for the file holds the plaintext size and SHA-256 and the wrapped key, in the hidden rows the guest cannot reach.
 The log entry carries these marks and never the ciphertext.
 
-A client can also upload a file with `POST /apps/{app}/blobs?sealed=true` (the raw bytes, up to the same size cap as a blob).
-The answer is `{ id, blobId, size, sha256, sealed, index }` for the plaintext.
-Without the query the route uploads a blob, as before.
-A node that does not lead the app passes the upload to the leader.
-The leader seals it as a run's files are sealed, stores it on a majority of the app's voters, and then commits the blob record as a command of the node's own, which no `/intents` call can name.
+A client uploads a file with `POST /apps/{app}/files` (the raw bytes, up to one part of 16 MiB) or, for a larger file, through an upload session.
+The answer is `{ id, blobId, size, sha256, index }` for the plaintext.
+A node that does not lead the app passes the request to the leader.
+The leader seals the file as a run's files are sealed, stores it on a majority of the app's voters, and then commits the blob record as a command of the node's own, which no `/intents` call can name.
 Only the app's owner and the members (not guests) of its organization may upload and list files, even where the app is public.
+
+An upload session lives in the leader's memory, belongs to the account that began it, and takes the file one part per segment.
+`POST /apps/{app}/files/uploads { size }` answers `{ uploadId, partBytes, parts, expiresAt }` (`expiresAt` in Unix seconds).
+`PUT /apps/{app}/files/uploads/{uploadId}/parts/{k}` takes part `k` as raw bytes, exactly `partBytes` but for the last, and answers `{ next }` once the part's segment is on a majority of the voters.
+Parts go in order: a part ahead of `next` is `409 PART_OUT_OF_ORDER` naming `next`, a resent part answers its first answer, and a resent part with other bytes is `409 PART_CONFLICT`.
+`GET .../uploads/{uploadId}` answers `{ uploadId, size, partBytes, parts, next, expiresAt }`, for a client that resumes.
+`POST .../uploads/{uploadId}/complete` charges the quota, commits the mark and answers like the single request; before every part is in it is `409 UPLOAD_INCOMPLETE` naming `next`.
+It commits under the key `node:upload-{uploadId}`, so a retried `complete` answers the same file, even after a leader change.
+`DELETE .../uploads/{uploadId}` aborts the session and deletes what it stored.
+A session that is unknown, belongs to another account, has run out (no part for 15 minutes, or six hours old) or whose leader changed answers `404 UPLOAD_UNKNOWN`, and the client begins again.
+An app holds at most 4 sessions, a node 32, and a leader's open sessions declare at most 16 GiB together (`429 TOO_MANY_UPLOADS`).
+Nothing is charged before `complete`; a `complete` past the quota is `429 QUOTA_EXCEEDED` and deletes the bytes.
+`GET /apps/{app}/files` lists the files (`{ files: [{ id, blobId, size, sha256 }] }`) and `GET /apps/{app}/files/{id}` answers one, to the app's owner and its organization's members; `/apps/{app}/blobs` lists plain blobs only and answers `409 NOT_SUPPORTED` for a file id.
 The reason is that a file's SHA-256 is the plaintext's, and would let anyone confirm a guessed document.
 `GET /apps/{app}/blobs` lists the files after the blobs, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and SHA-256, to those people only.
 

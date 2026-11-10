@@ -651,6 +651,30 @@ impl Client {
 
     // ------------------------------------------------------------ apps
 
+    /// PUT raw bytes to `path`: one part of a file upload.
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn put_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.send_bytes(Method::PUT, path, bytes).await
+    }
+
+    /// POST raw bytes to `path`: a file small enough for one request.
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn post_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.send_bytes(Method::POST, path, bytes).await
+    }
+
+    async fn send_bytes(&self, method: Method, path: &str, bytes: Vec<u8>) -> Result<Value> {
+        let payload = Payload::Bytes {
+            content_type: "application/octet-stream".into(),
+            bytes: bytes.into(),
+        };
+        answer(self.send_payload(method, path, payload).await?).await
+    }
+
     /// POST raw bytes (a bundle or a package) to `path`.
     async fn upload(
         &self,
@@ -766,11 +790,12 @@ impl Client {
             .await
     }
 
-    /// Upload a sealed file for component app `app` (its owner or an organization member);
-    /// answers `{ blobId, id, size, sha256, index }`, the size and SHA-256 of the plaintext.
+    /// Upload a sealed file of up to 16 MiB for component app `app` (its owner or an organization
+    /// member) in one request; answers `{ blobId, id, size, sha256, index }`, the size and
+    /// SHA-256 of the plaintext.
     pub async fn upload_file(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
         self.upload(
-            &format!("apps/{app}/blobs?sealed=true"),
+            &format!("apps/{app}/files"),
             "application/octet-stream",
             bytes,
         )

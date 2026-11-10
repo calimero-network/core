@@ -38,6 +38,7 @@ pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
 };
+pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
 
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
@@ -432,6 +433,8 @@ pub struct Node {
     pinned_segments: segments::Pinned,
     /// What the segment sweep saw at its earlier runs.
     segment_sweep: Mutex<segments::Sweep>,
+    /// The upload sessions this node holds as an app leader.
+    uploads: component::Uploads,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -679,6 +682,28 @@ pub fn not_a_deployer() -> ApiError {
     ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
 }
 
+pub(crate) fn file_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "a file is limited to {} MiB",
+            calimero_app_host::MAX_FILE_BYTES >> 20
+        ),
+    )
+}
+
+pub(crate) fn part_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "one request holds a file of at most {} MiB: send a larger one in parts",
+            crate::files::PART_BYTES >> 20
+        ),
+    )
+}
+
 pub(crate) fn blob_too_large() -> ApiError {
     ApiError::new(
         413,
@@ -808,6 +833,7 @@ impl Node {
             )),
             pinned_segments: Arc::default(),
             segment_sweep: Mutex::default(),
+            uploads: component::Uploads::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -998,7 +1024,7 @@ impl Node {
     }
 
     /// A raw-body request to a peer's internal route; the refusal a peer answers is the error.
-    async fn peer_raw(
+    pub(crate) async fn peer_raw(
         &self,
         addr: &str,
         method: reqwest::Method,

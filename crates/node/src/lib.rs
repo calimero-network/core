@@ -241,6 +241,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.tick_timers();
+            node.expire_uploads();
         }
     }));
 

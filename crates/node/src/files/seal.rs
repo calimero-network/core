@@ -18,6 +18,8 @@ const SEGMENT_DOMAIN: &[u8] = b"calimero.file.segments.v1\0"; // prefix of a fil
 
 /// Sealed chunks in every segment but the last.
 pub const SEGMENT_CHUNKS: usize = 256;
+/// Plaintext bytes of a segment's worth of chunks: the part size of an upload.
+pub const PART_BYTES: usize = SEGMENT_CHUNKS * CHUNK_BYTES;
 /// Stored bytes of every segment but the last (16,781,312).
 pub const SEGMENT_BYTES: usize = SEGMENT_CHUNKS * SEALED_CHUNK_BYTES;
 
@@ -91,6 +93,16 @@ impl FileSealer {
     #[must_use]
     pub fn data_key(&self) -> &[u8; 32] {
         &self.key
+    }
+
+    /// [`Self::write`] for data after which more follows: a full chunk is sealed too, as it is
+    /// not the last.
+    pub fn write_more(&mut self, data: &[u8]) -> EyreResult<Vec<u8>> {
+        let mut out = self.write(data)?;
+        if self.buffer.len() == CHUNK_BYTES {
+            self.seal_buffer(false, &mut out)?;
+        }
+        Ok(out)
     }
 
     /// Take more plaintext; returns the ciphertext of every chunk it completed.
@@ -254,14 +266,6 @@ fn segment_of(bytes: Vec<u8>) -> Segment {
     }
 }
 
-/// Whether `ciphertext`, cut into segments, is exactly the segments `hashes` name.
-#[must_use]
-pub fn segments_match(ciphertext: &[u8], hashes: &[[u8; 32]]) -> bool {
-    !hashes.is_empty()
-        && ciphertext.chunks(SEGMENT_BYTES).count() == hashes.len()
-        && (ciphertext.chunks(SEGMENT_BYTES).zip(hashes)).all(|(s, h)| segment_hash(s) == *h)
-}
-
 /// Seals plaintext fed in any split and cuts the ciphertext into segments; holds at most one partial segment.
 pub struct SegmentWriter {
     sealer: FileSealer,
@@ -294,7 +298,18 @@ impl SegmentWriter {
     /// Take more plaintext; returns every segment it completed.
     pub fn write(&mut self, data: &[u8]) -> EyreResult<Vec<Segment>> {
         let sealed = self.sealer.write(data)?;
-        self.pending.extend_from_slice(&sealed);
+        Ok(self.cut(&sealed))
+    }
+
+    /// [`Self::write`] for a part after which more data follows: a full last chunk is sealed too,
+    /// so a part of whole chunks closes its segments at once.
+    pub fn write_more(&mut self, data: &[u8]) -> EyreResult<Vec<Segment>> {
+        let sealed = self.sealer.write_more(data)?;
+        Ok(self.cut(&sealed))
+    }
+
+    fn cut(&mut self, sealed: &[u8]) -> Vec<Segment> {
+        self.pending.extend_from_slice(sealed);
         let mut done = Vec::new();
         // The sealer withholds the file's last chunk, so a full segment here is never the last.
         let full = self.pending.len() / SEGMENT_BYTES * SEGMENT_BYTES;
@@ -304,7 +319,7 @@ impl SegmentWriter {
             done.push(segment);
         }
         self.pending.drain(..full);
-        Ok(done)
+        done
     }
 
     /// Seal the last chunk and close the last segment.
@@ -710,21 +725,6 @@ mod tests {
     }
 
     #[test]
-    fn a_joined_file_matches_its_segment_list_and_nothing_else() {
-        let made = make(&plaintext(SEGMENTED_LEN), 1 << 20);
-        let joined = made.segments.concat();
-        assert!(segments_match(&joined, &made.file.segments));
-        assert!(!segments_match(&joined, &made.file.segments[..2]));
-        assert!(!segments_match(
-            &joined[..joined.len() - 1],
-            &made.file.segments
-        ));
-        let mut flipped = joined.clone();
-        flipped[SEGMENT_BYTES + 5] ^= 1;
-        assert!(!segments_match(&flipped, &made.file.segments));
-    }
-
-    #[test]
     fn one_write_of_many_segments_makes_the_segments_many_small_writes_do() {
         let data = plaintext(SEGMENTED_LEN);
         let small = make(&data, 1 << 20);
@@ -732,11 +732,6 @@ mod tests {
         let lens = |m: &Made| m.segments.iter().map(Vec::len).collect::<Vec<_>>();
         assert_eq!(lens(&whole), lens(&small));
         assert_eq!(join(&whole, &whole.segments).unwrap(), data);
-    }
-
-    #[test]
-    fn an_empty_list_matches_nothing() {
-        assert!(!segments_match(&[], &[]));
     }
 
     #[test]
@@ -758,5 +753,33 @@ mod tests {
             writer.write(piece).unwrap();
             assert!(writer.pending.len() <= SEGMENT_BYTES);
         }
+    }
+
+    #[test]
+    fn a_full_part_closes_its_segment_and_the_file_is_the_one_a_single_write_makes() {
+        const PART: usize = SEGMENT_CHUNKS * CHUNK_BYTES;
+        let data = plaintext(2 * PART + 1000);
+        let writer = || SegmentWriter {
+            sealer: FileSealer::with_key([5; 32]),
+            ..SegmentWriter::new()
+        };
+        let mut parted = writer();
+        let mut segments = Vec::new();
+        for part in data[..2 * PART].chunks(PART) {
+            let done = parted.write_more(part).unwrap();
+            assert_eq!(done.len(), 1, "a full part closes one segment at once");
+            assert_eq!(done[0].bytes.len(), SEGMENT_BYTES);
+            assert_eq!(parted.buffered(), 0);
+            segments.extend(done.into_iter().map(|s| s.bytes));
+        }
+        assert!(parted.write(&data[2 * PART..]).unwrap().is_empty());
+        segments.push(parted.finish().unwrap().last.bytes);
+
+        let mut single = writer();
+        let mut whole: Vec<Vec<u8>> = (single.write(&data).unwrap().into_iter())
+            .map(|s| s.bytes)
+            .collect();
+        whole.push(single.finish().unwrap().last.bytes);
+        assert_eq!(segments, whole);
     }
 }

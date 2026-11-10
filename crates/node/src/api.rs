@@ -6241,7 +6241,6 @@ fn may_handle_files(
 fn file_json(id: &[u8; 32], size: u64, sha256: &[u8; 32]) -> Value {
     let mut out = blob_json(id, size);
     out["sha256"] = json!(hex::encode(sha256));
-    out["sealed"] = json!(true);
     out
 }
 
@@ -6266,62 +6265,35 @@ async fn refuse_sealed_file(
     }
 }
 
-/// `?sealed=true` on an upload: a file only the app's code reads, not a blob.
 #[derive(Deserialize)]
-struct BlobUpload {
-    #[serde(default)]
-    sealed: bool,
+struct BlobUploadQuery {
+    /// Files have their own route; an old client's `?sealed=` is refused, not ignored.
+    sealed: Option<bool>,
 }
 
 /// Upload a blob for an app: the body is its bytes. Anyone who may call the
-/// app may add one; its runs then open it by id. With `?sealed=true`, a component's file
-/// instead: sealed under a key of its own, which only the app's owner and its organization's
-/// members may add.
+/// app may add one; its runs then open it by id.
 async fn blob_upload(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-    Query(q): Query<BlobUpload>,
+    Query(q): Query<BlobUploadQuery>,
     body: axum::body::Bytes,
 ) -> ApiResult {
+    if q.sealed.is_some() {
+        return Err(ApiError::bad_request(
+            "USE_FILES_API",
+            &format!("upload files to /apps/{app_id}/files"),
+        ));
+    }
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
     }
-    let component = app.executor == crate::types::Executor::Component;
-    if q.sealed && !component {
-        return Err(ApiError::new(
-            409,
-            "NOT_SUPPORTED",
-            "only a component app holds sealed files",
-        ));
-    }
-    if q.sealed && !node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
-        return Err(ApiError::forbidden(
-            "only the app's owner and its organization's members upload files",
-        ));
-    }
-    // A component holds a bounded number of blobs and files (R8).
-    if component {
-        let stats = node.storage_stats(&app).await?;
-        if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
-            return Err(ApiError::new(
-                429,
-                "QUOTA_EXCEEDED",
-                "the app holds as many blobs as it may",
-            ));
-        }
-    }
-    if q.sealed {
-        let uploader = p.caller.account().unwrap_or_default();
-        let up = node.upload_file(&app, &body, uploader).await?;
-        let sha256 = <[u8; 32]>::try_from(up.mark.sha256.0.as_slice())
-            .map_err(|_| ApiError::internal("bad file mark"))?;
-        let mut out = file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256);
-        out["index"] = json!(up.index);
-        return Ok(Json(out));
+    if app.executor == crate::types::Executor::Component {
+        refuse_full_app(&node, &app).await?;
     }
     // A component records the upload's content type.
     let mime = blob_mime(&headers)?;
@@ -6345,6 +6317,19 @@ async fn blob_upload(
     let mut out = blob_json(&raw, size);
     out["index"] = json!(a.index);
     Ok(Json(out))
+}
+
+/// A component holds a bounded number of blobs and files (R8).
+async fn refuse_full_app(node: &Node, app: &crate::types::AppRecord) -> Result<(), ApiError> {
+    let stats = node.storage_stats(app).await?;
+    if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
+        return Err(ApiError::new(
+            429,
+            "QUOTA_EXCEEDED",
+            "the app holds as many blobs as it may",
+        ));
+    }
+    Ok(())
 }
 
 /// A blob's content type as the uploader gave it (`Content-Type`, default
@@ -6456,20 +6441,11 @@ async fn blob_list(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let p = gate(&node, &headers, &app, "__blob", false).await?;
+    let _p = gate(&node, &headers, &app, "__blob", false).await?;
     let stats = node.storage_stats_strong(&app).await?;
-    let mut blobs: Vec<Value> = (stats.blobs.iter())
+    let blobs: Vec<Value> = (stats.blobs.iter())
         .map(|(id, size)| blob_json(id, *size))
         .collect();
-    // A file's SHA-256 is the plaintext's: only those who may upload files see them.
-    if node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
-        blobs.extend(
-            stats
-                .files
-                .iter()
-                .map(|(id, size, h)| file_json(id, *size, h)),
-        );
-    }
     Ok(Json(json!({ "blobs": blobs })))
 }
 
@@ -6481,14 +6457,15 @@ async fn blob_info(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let p = gate(&node, &headers, &app, "__blob", false).await?;
+    let _p = gate(&node, &headers, &app, "__blob", false).await?;
     let raw = parse_blob_id(&id)?;
     let stats = node.storage_stats_strong(&app).await?;
-    // A file is no blob to one who may not list files: its hash is the plaintext's.
-    if let Some((_, size, sha256)) = stats.files.iter().find(|(f, ..)| *f == raw) {
-        if node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
-            return Ok(Json(file_json(&raw, *size, sha256)));
-        }
+    if stats.files.iter().any(|(f, ..)| *f == raw) {
+        return Err(ApiError::new(
+            409,
+            "NOT_SUPPORTED",
+            "a sealed file is read only by the app's code",
+        ));
     }
     let size = stats
         .blobs
@@ -6497,6 +6474,225 @@ async fn blob_info(
         .map(|(_, s)| *s)
         .ok_or_else(|| ApiError::not_found("no such blob in this app"))?;
     Ok(Json(blob_json(&raw, size)))
+}
+
+/// The app and signed-in account of a files route: a component app, and an account that may
+/// handle its files (its owner or an organization member).
+async fn files_gate(
+    node: &Node,
+    headers: &HeaderMap,
+    app_id: &str,
+    write: bool,
+) -> Result<(crate::types::AppRecord, String), ApiError> {
+    let app_id = node.canonical_app_id(app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(node, headers, &app, "__blob", write).await?;
+    let Some(account) = p.caller.account().map(str::to_owned) else {
+        return Err(ApiError::unauthenticated("sign in to use files"));
+    };
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::new(
+            409,
+            "NOT_SUPPORTED",
+            "only a component app holds files",
+        ));
+    }
+    if !node.sys(|s| may_handle_files(s, &app, Some(&account))) {
+        return Err(ApiError::forbidden(
+            "only the app's owner and its organization's members use its files",
+        ));
+    }
+    Ok((app, account))
+}
+
+/// A file a node committed, as the routes answer it.
+fn uploaded_json(up: &crate::node::Uploaded) -> Result<Value, ApiError> {
+    let sha256 = <[u8; 32]>::try_from(up.mark.sha256.0.as_slice())
+        .map_err(|_| ApiError::internal("bad file mark"))?;
+    let mut out = file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256);
+    out["index"] = json!(up.index);
+    Ok(out)
+}
+
+/// Upload a file of up to one part (16 MiB): the body is its bytes, sealed under a key of its own.
+async fn files_upload(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
+    refuse_full_app(&node, &app).await?;
+    let up = node.upload_file(&app, &body, &account).await?;
+    Ok(Json(uploaded_json(&up)?))
+}
+
+/// The app's files: size and plaintext SHA-256, never a key.
+async fn files_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let (app, _account) = files_gate(&node, &headers, &app_id, false).await?;
+    let stats = node.storage_stats_strong(&app).await?;
+    let files: Vec<Value> = (stats.files.iter())
+        .map(|(id, size, h)| file_json(id, *size, h))
+        .collect();
+    Ok(Json(json!({ "files": files })))
+}
+
+/// One file's size and plaintext SHA-256; 404 if the app has no such file.
+async fn file_info(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, id)): Path<(String, String)>,
+) -> ApiResult {
+    let (app, _account) = files_gate(&node, &headers, &app_id, false).await?;
+    let raw = parse_blob_id(&id)?;
+    let stats = node.storage_stats_strong(&app).await?;
+    let (_, size, sha256) = (stats.files.iter().find(|(f, ..)| *f == raw))
+        .ok_or_else(|| ApiError::not_found("no such file in this app"))?;
+    Ok(Json(file_json(&raw, *size, sha256)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginUpload {
+    size: u64,
+}
+
+/// Begin an upload session for a file of `size` bytes.
+async fn upload_begin(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<BeginUpload>,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
+    refuse_full_app(&node, &app).await?;
+    let op = crate::node::UploadOp::Begin { size: body.size };
+    Ok(Json(node.upload_op(&app, &account, op).await?))
+}
+
+/// Where an upload session is: the next part it takes.
+async fn upload_status(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, upload)): Path<(String, String)>,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, false).await?;
+    let op = crate::node::UploadOp::Status { upload };
+    Ok(Json(node.upload_op(&app, &account, op).await?))
+}
+
+/// Part `k` of an upload session: the raw bytes, exactly `partBytes` but for the last part.
+async fn upload_part(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, upload, k)): Path<(String, String, String)>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
+    let k = k
+        .parse()
+        .map_err(|_| ApiError::bad_request("BAD_REQUEST", "a part number is a whole number"))?;
+    let op = crate::node::UploadOp::Part {
+        upload,
+        k,
+        bytes: body,
+    };
+    Ok(Json(node.upload_op(&app, &account, op).await?))
+}
+
+/// Charge the file and commit it: every part must be in.
+async fn upload_complete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, upload)): Path<(String, String)>,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
+    let op = crate::node::UploadOp::Complete { upload };
+    let up = node.upload_op(&app, &account, op).await?;
+    let up = serde_json::from_value(up).map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(uploaded_json(&up)?))
+}
+
+/// End an upload session and drop its bytes.
+async fn upload_abort(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, upload)): Path<(String, String)>,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, true).await?;
+    let op = crate::node::UploadOp::Abort { upload };
+    Ok(Json(node.upload_op(&app, &account, op).await?))
+}
+
+/// An upload request another node received, for the app's leader.
+async fn internal_upload(
+    node: &Node,
+    headers: &HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    (app_id, account): (String, String),
+    op: crate::node::UploadOp,
+) -> ApiResult {
+    let caller = peer(node, headers, key).await?;
+    caller_may_hold_app(node, &caller, &app_id).await?;
+    if !crate::node::valid_uploader(&account) {
+        return Err(ApiError::bad_request("BAD_REQUEST", "unusable uploader"));
+    }
+    Ok(Json(node.upload_op_here(&app_id, &account, op).await?))
+}
+
+async fn internal_upload_begin(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path((app_id, account, size)): Path<(String, String, u64)>,
+) -> ApiResult {
+    let op = crate::node::UploadOp::Begin { size };
+    internal_upload(&node, &headers, key, (app_id, account), op).await
+}
+
+async fn internal_upload_part(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path((app_id, account, upload, k)): Path<(String, String, String, usize)>,
+    bytes: Body,
+) -> ApiResult {
+    let op = crate::node::UploadOp::Part { upload, k, bytes };
+    internal_upload(&node, &headers, key, (app_id, account), op).await
+}
+
+async fn internal_upload_status(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path((app_id, account, upload)): Path<(String, String, String)>,
+) -> ApiResult {
+    let op = crate::node::UploadOp::Status { upload };
+    internal_upload(&node, &headers, key, (app_id, account), op).await
+}
+
+async fn internal_upload_complete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path((app_id, account, upload)): Path<(String, String, String)>,
+) -> ApiResult {
+    let op = crate::node::UploadOp::Complete { upload };
+    internal_upload(&node, &headers, key, (app_id, account), op).await
+}
+
+async fn internal_upload_abort(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Path((app_id, account, upload)): Path<(String, String, String)>,
+) -> ApiResult {
+    let op = crate::node::UploadOp::Abort { upload };
+    internal_upload(&node, &headers, key, (app_id, account), op).await
 }
 
 /// Delete one of the app's blobs: its owner's or an org admin's. The app
@@ -9466,6 +9662,21 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))
         .route("/apps/{app}/blobs/{id}/revoke", post(blob_revoke))
+        .route("/apps/{app}/files", post(files_upload).get(files_list))
+        .route("/apps/{app}/files/uploads", post(upload_begin))
+        .route(
+            "/apps/{app}/files/uploads/{upload}",
+            get(upload_status).delete(upload_abort),
+        )
+        .route(
+            "/apps/{app}/files/uploads/{upload}/parts/{k}",
+            put(upload_part),
+        )
+        .route(
+            "/apps/{app}/files/uploads/{upload}/complete",
+            post(upload_complete),
+        )
+        .route("/apps/{app}/files/{id}", get(file_info))
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
@@ -9507,6 +9718,22 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/call", post(internal_call))
         .route("/internal/file-upload", post(internal_file_upload))
+        .route(
+            "/internal/upload-begin/{app}/{account}/{size}",
+            post(internal_upload_begin),
+        )
+        .route(
+            "/internal/upload/{app}/{account}/{upload}",
+            get(internal_upload_status).delete(internal_upload_abort),
+        )
+        .route(
+            "/internal/upload/{app}/{account}/{upload}/{k}",
+            put(internal_upload_part),
+        )
+        .route(
+            "/internal/upload/{app}/{account}/{upload}/complete",
+            post(internal_upload_complete),
+        )
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/challenge/take", post(internal_challenge_take))
         .route(

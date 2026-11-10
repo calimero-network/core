@@ -8,8 +8,8 @@ mod seal;
 mod wrap;
 
 pub use seal::{
-    file_id, segment_hash, segments_match, FileOpener, FileSealer, Sealed, Segment, SegmentReader,
-    SegmentWriter, SegmentedFile, CHUNK_BYTES, SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
+    file_id, FileOpener, FileSealer, Sealed, Segment, SegmentReader, SegmentWriter, SegmentedFile,
+    CHUNK_BYTES, PART_BYTES, SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };
 pub use wrap::{
     unwrap_for_job, unwrap_key, wrap_for_job, wrap_for_job_derived, wrap_key, JobWrap, WrapKind,

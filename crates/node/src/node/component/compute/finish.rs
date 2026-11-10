@@ -244,7 +244,7 @@ impl Drive<'_> {
             }
             let blob = Blob {
                 id: out.segments[k].clone(),
-                bytes: bytes.into(),
+                bytes: Some(bytes.into()),
                 segment: true,
             };
             self.node

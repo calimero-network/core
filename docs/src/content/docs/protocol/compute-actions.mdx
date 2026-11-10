@@ -91,10 +91,9 @@ A call, view, timer or `init` may create a file and ask for its size and hash, b
   Plaintext exists only in the memory of an attested node.
 - **Where they live.** On the app's replicas, not on every node: a file is stored locally and pushed to the other replicas over the node-to-node blob route, and a write succeeds once a majority of the app group's Raft voters hold it.
   A replica move hands the files over with the rest of the app.
-- **Uploads.** `POST /apps/{app}/blobs?sealed=true` with the raw bytes (through the sealed channel, like any request) uploads a file.
-  Without the query the route uploads an ordinary blob.
+- **Uploads.** `POST /apps/{app}/files` with the raw bytes (through the sealed channel, like any request) uploads a file of up to 16 MiB; a larger file goes through an upload session (`POST /apps/{app}/files/uploads`, one part per request; see Blobs).
   The receiving node passes the body to the app's leader, which seals it, charges the quota, stores it on a majority of the group's voters and commits the blob record.
-  An upload is at most 47 MiB (`MAX_FILE_BYTES`).
+  A file is at most 47 MiB (`MAX_FILE_BYTES`).
   The answer carries the file's `id` (the blob id, which an app and `runs.start` take as a `BlobRef`), its size and plaintext `sha256`.
   Only the app's owner and members of its organization (role `member` or above) may upload or list files, even on a public app, because the organization pays for the bytes.
 - **Who sees what.** `GET /apps/{app}/blobs` lists the files after the blobs, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and plaintext SHA-256, to the owner and the organization's members only.

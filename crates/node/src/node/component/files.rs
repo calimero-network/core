@@ -28,7 +28,7 @@ use crate::component::{ComponentCmd, FileMark};
 use crate::error::ApiError;
 use crate::files::{
     sealed_len, unwrap_key, wrap_key, Segment, SegmentReader, SegmentWriter, CHUNK_BYTES,
-    SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
+    PART_BYTES, SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };
 use crate::node::{off_workers, status_of, Node, FORWARD_TIMEOUT, MAX_BLOB_BYTES};
 use crate::system::SystemCmd;
@@ -66,7 +66,7 @@ const MAX_DELETE_CONCURRENCY: usize = 8;
 /// forward loop does not retry it, the client does, with its key.
 pub const FILES_UNAVAILABLE: &str = "FILES_UNAVAILABLE";
 /// The code of an answer that names the app's leader in `details.leaderUrl`.
-const NOT_LEADER: &str = "NOT_LEADER";
+pub(super) const NOT_LEADER: &str = "NOT_LEADER";
 
 const _: () = assert!(
     MAX_PENDING_FILE_BYTES
@@ -140,8 +140,8 @@ impl PendingBytes {
 #[derive(Clone)]
 pub struct Blob {
     pub id: String,
-    /// A segment a writer already stored here has none: it is read back to be pushed.
-    pub bytes: axum::body::Bytes,
+    /// `None` for a segment a writer already stored here: it is read back to be pushed.
+    pub bytes: Option<axum::body::Bytes>,
     pub segment: bool,
 }
 
@@ -150,7 +150,7 @@ impl Blob {
     pub fn plain(id: String, bytes: Vec<u8>) -> Self {
         Self {
             id,
-            bytes: bytes.into(),
+            bytes: Some(bytes.into()),
             segment: false,
         }
     }
@@ -232,7 +232,7 @@ fn block_on<T>(runtime: &Handle, fut: impl Future<Output = T>) -> Option<T> {
     (runtime.runtime_flavor() != RuntimeFlavor::CurrentThread).then(|| runtime.block_on(fut))
 }
 
-fn files_unavailable() -> ApiError {
+pub(super) fn files_unavailable() -> ApiError {
     ApiError::new(
         503,
         FILES_UNAVAILABLE,
@@ -735,7 +735,24 @@ impl Node {
             .probes
             .file_pushes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let deadline = Instant::now() + PUSH_WAIT;
+        match self.push_blobs(app_id, blobs, PUSH_WAIT).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // No entry registers these files, so no other run can need them.
+                self.discard_bytes(app_id, stored_of_blobs(blobs), outputs);
+                Err(e)
+            }
+        }
+    }
+
+    /// Puts `blobs` on a majority of the app group's voters within `wait`; what was stored stays.
+    pub(super) async fn push_blobs(
+        &self,
+        app_id: &str,
+        blobs: &[Blob],
+        wait: Duration,
+    ) -> Result<(), ApiError> {
+        let deadline = Instant::now() + wait;
         let push = async {
             let targets =
                 (self.push_targets(app_id, deadline).await).ok_or_else(files_unavailable)?;
@@ -749,12 +766,8 @@ impl Node {
             Ok::<(), ApiError>(())
         };
         match tokio::time::timeout_at(deadline, push).await {
-            Ok(Ok(_)) => Ok(()),
-            _ => {
-                // No entry registers these files, so no other run can need them.
-                self.discard_bytes(app_id, stored_of_blobs(blobs), outputs);
-                Err(files_unavailable())
-            }
+            Ok(done) => done,
+            Err(_) => Err(files_unavailable()),
         }
     }
 
@@ -802,10 +815,10 @@ impl Node {
     async fn stored_bytes(&self, blob: &Blob) -> Result<axum::body::Bytes, ApiError> {
         let engine = Arc::clone(&self.engine);
         let (id, held, segment) = (blob.id.clone(), blob.bytes.clone(), blob.segment);
-        let found = tokio::task::spawn_blocking(move || match (segment, held.is_empty()) {
-            (true, true) => engine.get_segment(&id),
-            (true, false) => engine.put_segment(&id, &held).map(|()| Some(held.to_vec())),
-            (false, _) => engine.put_blob(&id, &held).map(|()| Some(held.to_vec())),
+        let found = tokio::task::spawn_blocking(move || match held {
+            None => engine.get_segment(&id),
+            Some(held) if segment => engine.put_segment(&id, &held).map(|()| Some(held.to_vec())),
+            Some(held) => engine.put_blob(&id, &held).map(|()| Some(held.to_vec())),
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -818,11 +831,7 @@ impl Node {
     /// Stores `blob` here and on `targets`: a segment raw, a plain blob as JSON. Holds the push
     /// budget for the bytes it sends, one body shared by every target.
     async fn push_blob(&self, blob: &Blob, targets: &Targets) -> Result<(), ApiError> {
-        let held = if blob.bytes.is_empty() {
-            SEGMENT_BYTES
-        } else {
-            blob.bytes.len()
-        };
+        let held = blob.bytes.as_ref().map_or(SEGMENT_BYTES, |b| b.len());
         let _budget = Arc::clone(&self.push_bytes)
             .acquire_many_owned(u32::try_from(held).map_err(|_| files_unavailable())?)
             .await
@@ -1095,8 +1104,8 @@ impl Node {
         bytes: &[u8],
         uploader: &str,
     ) -> Result<Uploaded, ApiError> {
-        if bytes.len() > MAX_BLOB_BYTES {
-            return Err(crate::node::blob_too_large());
+        if bytes.len() > PART_BYTES {
+            return Err(crate::node::part_too_large());
         }
         let key = format!(
             "{}{}",
@@ -1115,7 +1124,7 @@ impl Node {
                     .await
                 {
                     Ok(uploaded) => Ok(uploaded),
-                    Err(Upload::Refused(e)) => Err(e),
+                    Err(Upload::Refused(e) | Upload::Unknown(e)) => Err(e),
                     Err(Upload::Elsewhere(addr)) => {
                         leader = addr;
                         continue;
@@ -1152,8 +1161,8 @@ impl Node {
         bytes: &[u8],
         uploader: &str,
     ) -> Result<Uploaded, ApiError> {
-        if bytes.len() > MAX_BLOB_BYTES {
-            return Err(crate::node::blob_too_large());
+        if bytes.len() > PART_BYTES {
+            return Err(crate::node::part_too_large());
         }
         if !valid_uploader(uploader) {
             return Err(ApiError::bad_request("BAD_REQUEST", "unusable uploader"));
@@ -1163,7 +1172,7 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
         match self.upload_local(&g, app_id, key, bytes, uploader).await {
             Ok(uploaded) => Ok(uploaded),
-            Err(Upload::Refused(e)) => Err(e),
+            Err(Upload::Refused(e) | Upload::Unknown(e)) => Err(e),
             Err(Upload::Elsewhere(Some(addr))) => {
                 Err(
                     ApiError::new(421, NOT_LEADER, "send this to the app group's leader")
@@ -1239,7 +1248,7 @@ impl Node {
 
     /// Commits the mark of a file whose bytes are stored. When the commit fails, the leader says
     /// whether the mark is there: if so the upload succeeded, if not its bytes and charge go.
-    async fn commit_mark(
+    pub(super) async fn commit_mark(
         &self,
         g: &Group<AppMachine>,
         app_id: &str,
@@ -1286,7 +1295,7 @@ impl Node {
                 Err(Upload::Refused(status_of(&error)))
             }
             // Unknown: the entry may yet commit, so the bytes and the charge stay.
-            None => Err(Upload::Refused(status_of(&error))),
+            None => Err(Upload::Unknown(status_of(&error))),
         }
     }
 
@@ -1367,12 +1376,23 @@ impl Node {
     }
 }
 
+/// A segment stored on this node, as a blob to push.
+pub(super) fn segment_blob(hash: &[u8; 32]) -> Blob {
+    Blob {
+        id: hex::encode(hash),
+        bytes: None,
+        segment: true,
+    }
+}
+
 /// The segments of `file` as pushable blobs, leaving the hashes in place.
 pub(super) fn blobs_of(file: &mut NewFile) -> Vec<Blob> {
     (file.segments.iter_mut())
         .map(|s| Blob {
             id: hex::encode(s.hash),
-            bytes: std::mem::take(&mut s.bytes).into(),
+            bytes: Some(std::mem::take(&mut s.bytes))
+                .filter(|b| !b.is_empty())
+                .map(Into::into),
             segment: true,
         })
         .collect()
@@ -1394,7 +1414,7 @@ pub(super) fn stored_of_blobs(blobs: &[Blob]) -> Stored {
 }
 
 /// Whether a peer's uploader is an account id: printable ASCII, at most [`MAX_UPLOADER_BYTES`].
-fn valid_uploader(who: &str) -> bool {
+pub(crate) fn valid_uploader(who: &str) -> bool {
     !who.is_empty() && who.len() <= MAX_UPLOADER_BYTES && who.bytes().all(|b| b.is_ascii_graphic())
 }
 
@@ -1407,14 +1427,16 @@ pub(super) fn holds_file(m: &AppMachine, id: &str) -> bool {
 }
 
 /// Why an upload did not finish on this node.
-enum Upload {
+pub(super) enum Upload {
     Refused(ApiError),
+    /// The commit may yet land: its bytes and charge stay.
+    Unknown(ApiError),
     /// This node does not lead the app; the leader's address, if known.
     Elsewhere(Option<String>),
 }
 
 /// An upload's answer as a command recorded: the mark it committed and the entry's index.
-fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
+pub(super) fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
     Some(Uploaded {
         mark: serde_json::from_value(answer.result["mark"].clone()).ok()?,
         index: answer.index,
