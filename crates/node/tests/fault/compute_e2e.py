@@ -66,6 +66,7 @@ KILL_AFTER = 0.4  # seconds a part runs before its job node is killed
 CANCEL_DEADLINE = 20  # the leader's wait for a job node to report a cancel
 SETTLE = 12  # poll rounds after a resume, in seconds
 UPLOAD_TRIES = 5  # FILES_UNAVAILABLE is retryable on an overloaded runner
+PART_BYTES = 16 << 20  # the most one upload request carries
 OPERATOR_SEED = "09" * 32  # the node tests' operator key (harness OPERATOR_SEED, [9; 32])
 OPERATOR_PUBLIC = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"  # its verify key
 IN_PROCESS = [
@@ -162,21 +163,49 @@ def cargo_tests():
 
 
 def upload(cl, key, app, mib=0, length=0, data=None):
-    """A sealed file of `data`, else of `mib` MiB (or `length` bytes): its blob id and plaintext SHA-256, as the answer gives them."""
+    """A sealed file of `data`, else of `mib` MiB (or `length` bytes): its blob id and plaintext SHA-256, as the answer gives them.
+    One request up to one part, else an upload session of parts."""
     piece = bytes((i * 7 + 3) % 251 for i in range(1 << 20))
     data = data if data is not None else piece * mib if mib else piece[:length]
-    req = urllib.request.Request(cl.url(1) + f"apps/{app}/blobs?sealed=true", data=data, method="POST",
-                                 headers={"authorization": f"Bearer {key}", "content-type": "application/octet-stream"})
+    base = cl.url(1) + f"apps/{app}/files"
+    auth = {"authorization": f"Bearer {key}"}
+    if len(data) <= PART_BYTES:
+        answer = _send(lambda: _raw("POST", base, data, auth))
+    else:
+        u = http("POST", base + "/uploads", {"size": len(data)}, headers=auth)
+        parts = f"{base}/uploads/{u['uploadId']}"
+        step = u["partBytes"]
+        for k in range(u["parts"]):
+            _send(lambda: _raw("PUT", f"{parts}/parts/{k}", data[k * step:(k + 1) * step], auth))
+        answer = _send(lambda: http("POST", parts + "/complete", {}, headers=auth, timeout=60))
+    assert answer["sha256"] == hashlib.sha256(data).hexdigest(), answer
+    return answer["id"], answer["sha256"]
+
+
+def _raw(method, url, data, auth):
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={**auth, "content-type": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = raw.decode(errors="replace")
+        raise HttpError(e.code, body) from None
+
+
+def _send(request):
+    """`request()`, sent again while the node answers `503 FILES_UNAVAILABLE` (a resent part or `complete` replays)."""
     for tries in range(1, UPLOAD_TRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
-                answer = json.loads(r.read())
-            assert answer["sha256"] == hashlib.sha256(data).hexdigest(), answer
-            return answer["id"], answer["sha256"]
-        except urllib.error.HTTPError as e:
-            body = e.read()
-            if e.code != 503 or tries == UPLOAD_TRIES or json.loads(body).get("error") != "FILES_UNAVAILABLE":
-                raise RuntimeError(f"upload refused: {e.code} {body[:300]!r}") from None
+            return request()
+        except HttpError as e:
+            unavailable = e.status == 503 and isinstance(e.body, dict) and e.body.get("error") == "FILES_UNAVAILABLE"
+            if not unavailable or tries == UPLOAD_TRIES:
+                raise RuntimeError(f"upload refused: {e.status} {str(e.body)[:300]!r}") from None
             time.sleep(1)
 
 
@@ -203,7 +232,7 @@ class Rig:
         return [o["id"] for o in (self.record(run).get("final") or {}).get("outputs", [])]
 
     def info(self, blob):
-        return http("GET", self.cl.url(1) + f"apps/{self.app}/blobs/{blob}/info", headers=self.client.h)
+        return http("GET", self.cl.url(1) + f"apps/{self.app}/files/{blob}", headers=self.client.h)
 
     def until_final(self, run, timeout=WAIT):
         return self.until(f"run {run} final", lambda: self.record(run)["state"] in ("done", "failed", "cancelled"), timeout)

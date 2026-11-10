@@ -7,7 +7,7 @@ sidebar:
 
 A **compute action** is an app method that runs outside the log, on a **job node**, over sealed input files, and writes sealed output files.
 A call cannot do this work: it stops at 2 s, its whole log entry stays under 1 MiB, and its result is copied to every replica.
-A compute run may take up to 15 minutes and 4 GiB, reads up to 64 input files (2 GiB in all), writes up to 2 GiB across its output files (each file at most 47 MiB), and leaves only a small result in the log.
+A compute run may take up to 15 minutes and 4 GiB, reads up to 64 input files (2 GiB in all), writes up to 2 GiB across its output files (each file at most 2 GiB), and leaves only a small result in the log.
 
 Raw data leaves the attested machines only where an app sends it out over outbound HTTP from a call or an action.
 Files are sealed at rest and in transit.
@@ -91,10 +91,9 @@ A call, view, timer or `init` may create a file and ask for its size and hash, b
   Plaintext exists only in the memory of an attested node.
 - **Where they live.** On the app's replicas, not on every node: a file is stored locally and pushed to the other replicas over the node-to-node blob route, and a write succeeds once a majority of the app group's Raft voters hold it.
   A replica move hands the files over with the rest of the app.
-- **Uploads.** `POST /apps/{app}/blobs?sealed=true` with the raw bytes (through the sealed channel, like any request) uploads a file.
-  Without the query the route uploads an ordinary blob.
+- **Uploads.** `POST /apps/{app}/files` with the raw bytes (through the sealed channel, like any request) uploads a file of up to 16 MiB; a larger file goes through an upload session (`POST /apps/{app}/files/uploads`, one part per request; see Blobs).
   The receiving node passes the body to the app's leader, which seals it, charges the quota, stores it on a majority of the group's voters and commits the blob record.
-  An upload is at most 47 MiB (`MAX_FILE_BYTES`).
+  A file is at most 47 MiB (`MAX_FILE_BYTES`).
   The answer carries the file's `id` (the blob id, which an app and `runs.start` take as a `BlobRef`), its size and plaintext `sha256`.
   Only the app's owner and members of its organization (role `member` or above) may upload or list files, even on a public app, because the organization pays for the bytes.
 - **Who sees what.** `GET /apps/{app}/blobs` lists the files after the blobs, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and plaintext SHA-256, to the owner and the organization's members only.
@@ -161,9 +160,9 @@ Wrapped keys travel only in the assignment, never in the log, and each wrap's ep
 <li>**The run.** The job node calls the compute component's `run` export deterministically, with no network, and writes its outputs as new sealed files.</li>
 <li>**Heartbeats by polling.** The leader polls `GET /job/runs/{app}/{run}/{attempt}` every `JOB_POLL` (2 s) with a token any replica can derive.
 The answer is the heartbeat and carries progress (percent and step), which the leader keeps in memory and serves from `GET /apps/{app}/runs/{run}`.</li>
-<li>**Signed report.** When the run ends, the job node signs a report with its job key over the app, run, attempt, status, result hash, every output (id, size, hash), usage and the digest of the assignment it ran.
+<li>**Signed report.** When the run ends, the job node signs a report with its job key over the app, run, attempt, status, result hash, every output (id, size, hash, segment hashes), usage and the digest of the assignment it ran.
 The leader checks the signature, then charges the outputs to the file quota (a refusal ends the run as failed with reason `quota`).
-It then fetches each output's ciphertext and key, checks the ciphertext hash against the report, opens the file against the reported size and hash, wraps the key under the app's file key and stores the file on a majority of the replicas.</li>
+It then fetches each output's ciphertext and key, checks each segment's hash and the file id against the report, opens the file against the reported size and hash, wraps the key under the app's file key and stores the file on a majority of the replicas.</li>
 <li>**Final entry.** The leader runs the result method inside the final entry, as `kind = call` with the system as caller, and proposes `computeFinal` carrying the report, the signature, the outputs, the usage and the result method's outcome in one atomic entry.
 The entry registers each output as a sealed file of the app before the result method's writes apply, so a `BlobRef` the result method stores is counted at once.
 Every replica verifies the signature against the job key and assignment digest of that attempt, and applies only the first final entry of a run's current attempt.
@@ -266,7 +265,7 @@ A job node exposes no usage series.
 | Fuel of a run | 10^12 | `MAX_COMPUTE_FUEL` |
 | Arguments of a start | 64 KiB | `MAX_COMPUTE_ARGS_BYTES` |
 | Inputs of a run | 64 files, 2 GiB in all | `MAX_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
-| One file (input or output) | 47 MiB | `MAX_FILE_BYTES` |
+| One file (input or output) | 2 GiB | `MAX_FILE_BYTES` |
 | All files written by one compute run | 2 GiB | `MAX_COMPUTE_FILE_BYTES` |
 | All files written by one call | 64 MiB | `MAX_RUN_FILE_BYTES` |
 | Open files in one run | 16 | `MAX_OPEN_FILES` |
@@ -304,7 +303,7 @@ Each row is one decision and the reason for it.
 | --- | --- | --- |
 | CA1 | The WIT package stays one package and moves additively to `calimero:app@0.5.1`, with new `files`, `runs` and `job` interfaces (a file is created, opened and read, never deleted) and no change to any existing type. The import check accepts `calimero:app/*@0.5.z` for `z` up to 1. | Components built against 0.5.0 keep linking, as wasmtime's semver matching within 0.5.z allows. |
 | CA2 | A compute run is a second component, world `calimero:app/compute`, whose `run` export the job node calls through the existing `action` kind. Its profile is fixed per method in the ABI of both components: `compute: { fuel, memoryMib, wallSecs, result }`. The result method is marked `computeResult`, runs as `kind = call` with the system as caller, and `/intents` refuses it. Host caps are 900 s, 4096 MiB and `MAX_COMPUTE_FUEL`. | One action kind with two profiles keeps the model small, and a result method no client can call means no client can forge an outcome. The result method stays on the app component, which is the one that may write state. |
-| CA3 | Files use a random 256-bit data key per file, 64 KiB AES-256-GCM chunks with the index in the nonce and a last-chunk flag in the authenticated data, and a per-app file key `HMAC-SHA256(K_c, "calimero.files.v1\|" \|\| app)` that wraps data keys with a fresh subkey per wrap. Opening checks the plaintext size and SHA-256 against the blob's record. The blob id is the SHA-256 of the ciphertext, so files share the blob id namespace. | The file key is separate from the app's TEE key, which is also a curve private key. A fresh subkey per wrap removes any random-nonce bound per key, and GCM does not commit to its key, so the recorded hash does. |
+| CA3 | Files use a random 256-bit data key per file, 64 KiB AES-256-GCM chunks with the index in the nonce and a last-chunk flag in the authenticated data, and a per-app file key `HMAC-SHA256(K_c, "calimero.files.v1\|" \|\| app)` that wraps data keys with a fresh subkey per wrap. Opening checks the plaintext size and SHA-256 against the blob's record. A file is a list of segments of 256 chunks, and its id is a domain-separated SHA-256 of the segment hashes, so it never equals a plain blob's content hash and files still share the blob id namespace. | The file key is separate from the app's TEE key, which is also a curve private key. A fresh subkey per wrap removes any random-nonce bound per key, and GCM does not commit to its key, so the recorded hash does. |
 | CA4 | Component files live on the app's replicas, pushed over the existing blob route and successful at a majority of those replicas. | A cluster-wide majority multiplies disk for large uploads. Replicas already survive a node loss and move with the app. |
 | CA5 | Uploads go through the sealed channel to `POST /apps/{app}/blobs`. The receiving node passes the body to the app's leader, which seals, charges, stores on a majority of the voters and commits the blob record; an upload is at most 47 MiB. A file cannot be downloaded or granted through the API: `GET` answers `409`. | Core publishes no app public key to seal to, and a per-file key is what a run's re-wrap needs. |
 | CA6 | A per-organization stored-file quota, `maxFileBytesPerOrg` (50 GB), is counted in the system group, charged before a file's record commits, and released when R8 collects the file or the app is deleted. | The organization pays for the bytes. The charge is not atomic with the app log, so a crash between them can leave a small over-count. |

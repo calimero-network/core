@@ -100,6 +100,15 @@ struct JobNode {
     /// How long a failing output request waits before it answers an error (feature `testing`).
     #[cfg(feature = "testing")]
     outputs_slow: AtomicU64,
+    /// Output segment answers left before one fails once; `usize::MAX` for never (feature `testing`).
+    #[cfg(feature = "testing")]
+    output_cut: std::sync::atomic::AtomicUsize,
+    /// While set, the next input finish fails once (feature `testing`).
+    #[cfg(feature = "testing")]
+    finish_input_fails: AtomicBool,
+    /// The output segments answered, as (output, segment), and the longest answer (feature `testing`).
+    #[cfg(feature = "testing")]
+    output_log: Mutex<(Vec<(usize, usize)>, usize)>,
 }
 
 impl JobNode {
@@ -166,6 +175,32 @@ impl RunningJob {
         let ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
         self.job.outputs_slow.store(ms, Ordering::Relaxed);
         self.job.outputs_failing.store(times, Ordering::Relaxed);
+    }
+
+    /// Makes one output segment request fail after `answers` more answers. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn cut_outputs_after(&self, answers: usize) {
+        self.job.output_cut.store(answers, Ordering::Relaxed);
+    }
+
+    /// Makes the next input a run finishes fail once, as a disk fault would. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_input_finish(&self) {
+        self.job.finish_input_fails.store(true, Ordering::Relaxed);
+    }
+
+    /// The output segments answered so far, as (output, segment). Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn served_output_segments(&self) -> Vec<(usize, usize)> {
+        locked(&self.job.output_log).0.clone()
+    }
+
+    /// The most bytes one output answer held. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn largest_output_answer(&self) -> usize {
+        locked(&self.job.output_log).1
     }
 
     /// The hashes of the components this node holds. Tests only.
@@ -236,6 +271,12 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         outputs_failing: std::sync::atomic::AtomicU32::new(0),
         #[cfg(feature = "testing")]
         outputs_slow: AtomicU64::new(0),
+        #[cfg(feature = "testing")]
+        output_cut: std::sync::atomic::AtomicUsize::new(usize::MAX),
+        #[cfg(feature = "testing")]
+        finish_input_fails: AtomicBool::new(false),
+        #[cfg(feature = "testing")]
+        output_log: Mutex::default(),
     });
     let router = Router::new()
         .route("/health", get(health))
@@ -251,12 +292,12 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
             get(runs::status).delete(runs::cancel),
         )
         .route(
-            "/job/runs/{app}/{run}/{attempt}/inputs/{i}",
-            put(runs::put_input),
+            "/job/runs/{app}/{run}/{attempt}/inputs/{i}/{k}",
+            put(runs::put_segment),
         )
         .route(
-            "/job/runs/{app}/{run}/{attempt}/outputs/{i}",
-            get(runs::output),
+            "/job/runs/{app}/{run}/{attempt}/outputs/{i}/{k}",
+            get(runs::output_segment),
         )
         .route(
             "/job/runs/{app}/{run}/{attempt}/outputs/{i}/key",

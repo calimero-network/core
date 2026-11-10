@@ -11,6 +11,7 @@ sealed; the node's quote is judged before anything is sent).
 | `context create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
 | `call` | `call --context C METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
 | `blob list/upload/download/info/delete` | a context's blobs | `/apps/{app}/blobs*` |
+| `file upload FILE -c CONTEXT` | a context's sealed files: one request up to 16 MiB, else resumable parts (`Client::upload_file`) | `/apps/{app}/files*` |
 | `namespace ...` | organizations: members, invites, groups, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |

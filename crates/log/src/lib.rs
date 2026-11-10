@@ -640,6 +640,26 @@ impl Engine {
         self.db.delete_blob(name)
     }
 
+    /// Store a file segment on this node (outside every log), with its index row.
+    pub fn put_segment(&self, hash: &str, bytes: &[u8]) -> eyre::Result<()> {
+        self.db.put_segment(hash, bytes)
+    }
+
+    /// Delete a segment stored on this node, with its index row.
+    pub fn delete_segment(&self, hash: &str) -> eyre::Result<()> {
+        self.db.delete_segment(hash)
+    }
+
+    /// Read a segment stored on this node.
+    pub fn get_segment(&self, hash: &str) -> eyre::Result<Option<Vec<u8>>> {
+        self.db.get_segment(hash)
+    }
+
+    /// The hash of every segment stored on this node.
+    pub fn list_segments(&self) -> eyre::Result<Vec<String>> {
+        self.db.list_segments()
+    }
+
     /// How many blobs this node stores (feature `testing`).
     #[cfg(feature = "testing")]
     pub fn blob_count(&self) -> eyre::Result<u64> {

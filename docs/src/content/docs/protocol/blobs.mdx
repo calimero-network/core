@@ -120,12 +120,24 @@ The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer
 The app's blob record for the file holds the plaintext size and SHA-256 and the wrapped key, in the hidden rows the guest cannot reach.
 The log entry carries these marks and never the ciphertext.
 
-A client can also upload a file with `POST /apps/{app}/blobs?sealed=true` (the raw bytes, up to the same size cap as a blob).
-The answer is `{ id, blobId, size, sha256, sealed, index }` for the plaintext.
-Without the query the route uploads a blob, as before.
-A node that does not lead the app passes the upload to the leader.
-The leader seals it as a run's files are sealed, stores it on a majority of the app's voters, and then commits the blob record as a command of the node's own, which no `/intents` call can name.
+A client uploads a file with `POST /apps/{app}/files` (the raw bytes, up to one part of 16 MiB) or, for a larger file, through an upload session.
+The answer is `{ id, blobId, size, sha256, index }` for the plaintext.
+A node that does not lead the app passes the request to the leader.
+The leader seals the file as a run's files are sealed, stores it on a majority of the app's voters, and then commits the blob record as a command of the node's own, which no `/intents` call can name.
 Only the app's owner and the members (not guests) of its organization may upload and list files, even where the app is public.
+
+An upload session lives in the leader's memory, belongs to the account that began it, and takes the file one part per segment.
+`POST /apps/{app}/files/uploads { size }` answers `{ uploadId, partBytes, parts, expiresAt }` (`expiresAt` in Unix seconds).
+`PUT /apps/{app}/files/uploads/{uploadId}/parts/{k}` takes part `k` as raw bytes, exactly `partBytes` but for the last, and answers `{ next }` once the part is sealed and stored; its segment is pushed to a majority of the voters in the background, at most four segments ahead (past that the answer waits for a slot, up to 20 seconds, then is `503 FILES_UNAVAILABLE` and the resent part replays its answer).
+Parts go in order: a part ahead of `next` is `409 PART_OUT_OF_ORDER` naming `next`, a resent part answers its first answer, and a resent part with other bytes is `409 PART_CONFLICT`.
+`GET .../uploads/{uploadId}` answers `{ uploadId, size, partBytes, parts, next, expiresAt }`, for a client that resumes.
+`POST .../uploads/{uploadId}/complete` waits up to 20 seconds for every segment to reach a majority (else `503 FILES_UNAVAILABLE`, and a retry resumes), charges the quota, commits the mark and answers like the single request; before every part is in it is `409 UPLOAD_INCOMPLETE` naming `next`.
+It commits under the key `node:upload-{uploadId}`, so a retried `complete` answers the same file, even after a leader change.
+`DELETE .../uploads/{uploadId}` aborts the session and deletes what it stored.
+A session that is unknown, belongs to another account, has run out (no part for 15 minutes, or six hours old) or whose leader changed answers `404 UPLOAD_UNKNOWN`, and the client begins again.
+An app holds at most 4 sessions, a node 32, and a leader's open sessions declare at most 16 GiB together (`429 TOO_MANY_UPLOADS`).
+Nothing is charged before `complete`; a `complete` past the quota is `429 QUOTA_EXCEEDED` and deletes the bytes.
+`GET /apps/{app}/files` lists the files (`{ files: [{ id, blobId, size, sha256 }] }`) and `GET /apps/{app}/files/{id}` answers one, to the app's owner and its organization's members; `/apps/{app}/blobs` lists plain blobs only and answers `409 NOT_SUPPORTED` for a file id.
 The reason is that a file's SHA-256 is the plaintext's, and would let anyone confirm a guessed document.
 `GET /apps/{app}/blobs` lists the files after the blobs, and `GET /apps/{app}/blobs/{id}/info` answers a file's size and SHA-256, to those people only.
 
@@ -147,7 +159,7 @@ The ciphertext lives on the app's replicas, not on every node.
 Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
 The call proceeds only once a majority of the app's voters hold every new file; otherwise it fails with a retryable `503`, nothing is logged, and its idempotency key is not spent.
 A node holds at most 256 MiB of new files' ciphertext across all runs until their entries are proposed; a call that cannot get its share fails with a retryable `503`, is not logged, and does not spend its idempotency key.
-A replica that misses a file fetches it from the other replicas when a run opens it.
+A file is stored as segments of 256 sealed chunks (16 MiB of plaintext), each under its own hash, and the file's id is the hash of that list; a replica that misses a segment fetches it from the other replicas when a run opens the file.
 If no replica can serve it, a call, tick or `init` is aborted with a retryable `503` and not logged, while a view is told the bytes are not available.
 A run reads a file by decrypting it as it goes, and the end of the stream checks the plaintext size and SHA-256 against the mark.
 A file that was altered or cut short fails the run with a trap, so no app can ignore it.
@@ -191,7 +203,7 @@ Otherwise it answers `NOT_A_RUN_OUTPUT` and changes nothing, so a leader cannot 
 The plaintext counts against the organization's file quota from the entry until retention collects it.
 Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
 Publishing an output the app already holds as a plain blob stores and charges nothing again.
-A run publishes at most 16 outputs, each at most 47 MiB and 64 MiB together.
+A run publishes at most 16 outputs, each at most 47 MiB (the plain blob it becomes; a larger output answers `file too large`) and 64 MiB together.
 Past that `publish` answers the soft error `run published too much` and records nothing.
 
 ## Limits

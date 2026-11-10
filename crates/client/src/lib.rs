@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use url::Url;
 
 pub mod attest;
+mod files;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
 
@@ -651,6 +652,30 @@ impl Client {
 
     // ------------------------------------------------------------ apps
 
+    /// PUT raw bytes to `path`: one part of a file upload.
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn put_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.send_bytes(Method::PUT, path, bytes).await
+    }
+
+    /// POST raw bytes to `path`: a file small enough for one request.
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    pub async fn post_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value> {
+        self.send_bytes(Method::POST, path, bytes).await
+    }
+
+    async fn send_bytes(&self, method: Method, path: &str, bytes: Vec<u8>) -> Result<Value> {
+        let payload = Payload::Bytes {
+            content_type: "application/octet-stream".into(),
+            bytes: bytes.into(),
+        };
+        answer(self.send_payload(method, path, payload).await?).await
+    }
+
     /// POST raw bytes (a bundle or a package) to `path`.
     async fn upload(
         &self,
@@ -764,17 +789,6 @@ impl Client {
     pub async fn upload_blob_as(&self, app: &str, mime: &str, bytes: Vec<u8>) -> Result<Value> {
         self.upload(&format!("apps/{app}/blobs"), mime.to_owned(), bytes)
             .await
-    }
-
-    /// Upload a sealed file for component app `app` (its owner or an organization member);
-    /// answers `{ blobId, id, size, sha256, index }`, the size and SHA-256 of the plaintext.
-    pub async fn upload_file(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
-        self.upload(
-            &format!("apps/{app}/blobs?sealed=true"),
-            "application/octet-stream",
-            bytes,
-        )
-        .await
     }
 
     /// Download a component app's blob with a grant one of its runs handed out

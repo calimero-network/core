@@ -670,7 +670,8 @@ impl AppMachine {
         let blobs = &self.state.component.blobs.records;
         let mut seen = BTreeSet::new();
         for output in &entry.outputs {
-            let Some(id) = parse_hex32(&output.id) else {
+            let Some(id) = parse_hex32(&output.id).filter(|_| output.segment_hashes().is_some())
+            else {
                 return Err(BAD_OUTPUT_ID);
             };
             if blobs.contains_key(&id) || !seen.insert(id) {
@@ -755,7 +756,10 @@ impl AppMachine {
         }
         let same_outputs = report.outputs.len() == entry.outputs.len()
             && report.outputs.iter().zip(&entry.outputs).all(|(r, o)| {
-                r.id == o.id && r.size == o.size && r.sha256 == hex::encode(&o.sha256.0)
+                r.id == o.id
+                    && r.size == o.size
+                    && r.sha256 == hex::encode(&o.sha256.0)
+                    && r.segments == o.segments
             });
         if !same_outputs {
             return Err(OUTPUTS_MISMATCH);

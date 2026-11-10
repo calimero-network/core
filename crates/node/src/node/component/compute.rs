@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
-use super::files::{holds_file, Stored};
+use super::files::{holds_file, Blob, Stored};
 use super::{entry_bytes, Node, Ran, RunExtras};
 use crate::app::{AppMachine, Status};
 use crate::component::{
@@ -104,6 +104,8 @@ pub(super) struct Watch {
     progress: Option<(u8, String)>,
     /// The outputs of the attempt's report, stored on the replicas and charged, not yet committed.
     staged: Option<Vec<FileMark>>,
+    /// How many segments of an output being fetched are stored already, by output index.
+    fetched: HashMap<usize, usize>,
     /// The run ended: nothing is kept of it.
     finished: bool,
     /// The finals this leader proposed whose answer is unknown, by entry ids, and whether a job
@@ -135,6 +137,7 @@ impl Watch {
             sent: false,
             progress: None,
             staged: None,
+            fetched: HashMap::new(),
             finished: false,
             proposed: Vec::new(),
             refused: None,
@@ -281,6 +284,7 @@ impl ComputeState {
         let mut fresh = Watch::new(term, attempt);
         if old.attempt == attempt {
             fresh.staged = old.staged;
+            fresh.fetched = old.fetched;
             (fresh, None)
         } else {
             (fresh, old.staged)
@@ -445,14 +449,18 @@ impl FinalPlan {
     }
 }
 
-/// The path of an attempt on a job node: `{app}/{run}/{attempt}`, each id percent-encoded as one
-/// path segment.
-fn run_path(app: &str, run: &str, attempt: u32) -> String {
+/// A peer path of `segments`, each percent-encoded as one path segment.
+pub(super) fn path_of(segments: &[&str]) -> String {
     let mut url = url::Url::parse("http://job.invalid/").expect("a constant URL");
-    if let Ok(mut segments) = url.path_segments_mut() {
-        let _ = segments.extend([app, run, &attempt.to_string()]);
+    if let Ok(mut path) = url.path_segments_mut() {
+        let _ = path.extend(segments);
     }
     url.path().trim_start_matches('/').to_owned()
+}
+
+/// The path of an attempt on a job node: `{app}/{run}/{attempt}`.
+fn run_path(app: &str, run: &str, attempt: u32) -> String {
+    path_of(&[app, run, &attempt.to_string()])
 }
 
 /// The record of a run as the API shows it: no arguments, no keys, and the plaintext sizes and
@@ -1410,10 +1418,10 @@ fn attempts_made(rec: &RunRecord) -> u32 {
 /// What a final's staged outputs hold on the replicas and in the quota.
 fn stored_of(marks: &[FileMark]) -> Stored {
     Stored {
-        ids: marks.iter().map(|m| m.id.clone()).collect(),
+        segments: marks.iter().flat_map(|m| m.segments.clone()).collect(),
         charged: marks.iter().map(|m| m.size).sum(),
         outputs: true,
-        pin: None,
+        ..Stored::default()
     }
 }
 
@@ -1503,6 +1511,7 @@ mod tests {
             size: 3,
             sha256: calimero_log::Bytes(vec![1; 32]),
             wrapped_key: calimero_log::Bytes(vec![2; 8]),
+            segments: vec!["cd".repeat(32)],
         }];
         let mut old = Watch::new(1, 1);
         old.staged = Some(marks.clone());

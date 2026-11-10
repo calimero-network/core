@@ -7,9 +7,10 @@ use calimero_app_host::{
     parse_blob_id, stored_key, Abi, Audience, Budget, Caller, ComputeCaps, ComputeCtx, Directory,
     Event, FileError, FileInfo, FileRead, FileWrite, Files, HostCore, HostDenied, HttpRequest,
     InvalidInvocation, Invocation, InvocationKind, MemoryFiles, MethodKind, NewFile, OrgRole,
-    PrepareError, ReadError, Status, TrapKind, Usage, FILE_CORRUPT, FILE_UNAVAILABLE, GENERATION,
-    MAX_COMPUTE_FILE_BYTES, MAX_COMPUTE_FUEL, MAX_COMPUTE_RESULT_BYTES, MAX_FILE_BYTES,
-    MAX_PROGRESS_STEP_BYTES, MAX_RUN_FILE_BYTES, RUN_WROTE_TOO_MUCH,
+    PrepareError, ReadError, Status, TrapKind, Usage, FILE_CORRUPT, FILE_FAILED, FILE_TOO_LARGE,
+    FILE_UNAVAILABLE, GENERATION, MAX_COMPUTE_FILE_BYTES, MAX_COMPUTE_FUEL,
+    MAX_COMPUTE_RESULT_BYTES, MAX_FILE_BYTES, MAX_PROGRESS_STEP_BYTES, MAX_RUN_FILE_BYTES,
+    RUN_WROTE_TOO_MUCH,
 };
 use serde_json::{json, Value};
 
@@ -191,7 +192,7 @@ fn a_run_creates_outputs_up_to_the_compute_cap_not_the_logged_one() {
     let piece = vec![0u8; 1024 * 1024];
     let mut written = 0u64;
     let mut files_made = 0;
-    // 47 MiB per file, so the 64 MiB logged-run cap would end this at the second file.
+    // 40 MiB per file, so the 64 MiB logged-run cap would end this at the second file.
     while written < MAX_RUN_FILE_BYTES * 2 {
         let w = if written == 0 {
             w
@@ -614,7 +615,7 @@ impl FileWrite for SinkWriter {
             size: self.0,
             sha256: Vec::new(),
             wrapped_key: Vec::new(),
-            ciphertext: Vec::new(),
+            segments: Vec::new(),
         })
     }
 }
@@ -629,6 +630,45 @@ impl Files for Sink {
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         Ok(Box::new(SinkWriter(0)))
     }
+}
+
+fn sink_run() -> HostCore {
+    HostCore::new(
+        "app",
+        Arc::new(BTreeMap::<Vec<u8>, Vec<u8>>::new()),
+        0,
+        inv(InvocationKind::Action, &[]),
+        Arc::new(NoDirectory),
+    )
+    .unwrap()
+    .with_files(Arc::new(Sink))
+}
+
+#[test]
+fn a_compute_run_writes_one_file_of_a_hundred_mib() {
+    let mut h = sink_run();
+    let w = h.files_create().unwrap().unwrap();
+    let piece = vec![0u8; 1024 * 1024];
+    for _ in 0..100 {
+        h.writer_write(w, &piece).unwrap().unwrap();
+    }
+    assert!(h.writer_finish(w).unwrap().is_ok());
+}
+
+#[test]
+fn a_file_over_the_per_file_cap_is_a_soft_error_and_writing_stops_there() {
+    let mut h = sink_run();
+    let w = h.files_create().unwrap().unwrap();
+    let chunk = vec![0u8; 1024 * 1024];
+    for _ in 0..MAX_FILE_BYTES / chunk.len() as u64 {
+        h.writer_write(w, &chunk).unwrap().unwrap();
+    }
+    assert_eq!(
+        h.writer_write(w, b"x").unwrap().unwrap_err(),
+        FILE_TOO_LARGE
+    );
+    assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_FAILED);
+    assert_eq!(h.writer_write(w, b"x").unwrap().unwrap_err(), FILE_FAILED);
 }
 
 #[test]

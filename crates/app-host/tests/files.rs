@@ -8,10 +8,10 @@ use calimero_app_host::{
     parse_blob_id, BlobHost, BlobInfo, Caller, ComputeCtx, Directory, FileError, FileInfo,
     FileRead, FileWrite, Files, HostCore, HostDenied, Invocation, InvocationKind, MemoryFiles,
     NewFile, OrgRole, Outcome, ReadError, ReaderId, Status, TimerCtx, TrapKind, Usage, WriterId,
-    FILES_DISABLED, FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW,
-    FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
-    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
-    NOT_A_RUN_OUTPUT, NO_SUCH_FILE, RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
+    FILES_DISABLED, FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_MANY_NEW,
+    FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_NEW_FILES, MAX_OPEN_FILES, MAX_PUBLISHED_BYTES,
+    MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NOT_A_RUN_OUTPUT, NO_SUCH_FILE,
+    RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
 
 struct NoDirectory;
@@ -53,7 +53,7 @@ impl FileWrite for CountingWriter {
             size: self.0,
             sha256: Vec::new(),
             wrapped_key: Vec::new(),
-            ciphertext: Vec::new(),
+            segments: Vec::new(),
         })
     }
 }
@@ -291,30 +291,10 @@ fn open_handles_are_capped_and_closing_frees_a_slot() {
 }
 
 #[test]
-fn a_file_over_the_per_file_cap_is_a_soft_error_and_writing_stops_there() {
-    let mut h = host(inv(InvocationKind::Call), Arc::new(CountingFiles));
-    let w = h.files_create().unwrap().unwrap();
-    let chunk = vec![0u8; 1024 * 1024];
-    let mib = MAX_FILE_BYTES / (1024 * 1024);
-    for _ in 0..mib {
-        h.writer_write(w, &chunk).unwrap().unwrap();
-    }
-    h.writer_write(w, &chunk[..(MAX_FILE_BYTES % (1024 * 1024)) as usize])
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        h.writer_write(w, b"x").unwrap().unwrap_err(),
-        FILE_TOO_LARGE
-    );
-    assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_FAILED);
-    assert_eq!(h.writer_write(w, b"x").unwrap().unwrap_err(), FILE_FAILED);
-}
-
-#[test]
 fn a_run_over_the_run_cap_is_a_soft_error() {
     let mut h = host(inv(InvocationKind::Call), Arc::new(CountingFiles));
     let chunk = vec![0u8; 1024 * 1024];
-    let per_file = MAX_FILE_BYTES / (1024 * 1024);
+    let per_file = 40; // MiB per file, so several files make a run
     let mut written = 0;
     let mut result = Ok(());
     while result.is_ok() {
@@ -340,7 +320,7 @@ fn a_write_refused_for_the_run_cap_fails_the_writer_so_finish_seals_nothing() {
     let mut last = None;
     while last.is_none() {
         let w = h.files_create().unwrap().unwrap();
-        for _ in 0..MAX_FILE_BYTES / (1024 * 1024) {
+        for _ in 0..40 {
             if let Err(reason) = h.writer_write(w, &chunk).unwrap() {
                 assert_eq!(reason, RUN_WROTE_TOO_MUCH);
                 last = Some(w);
@@ -459,14 +439,14 @@ fn a_refused_oversized_write_does_not_count_toward_the_run_cap() {
     let mut h = host(inv(InvocationKind::Call), Arc::new(CountingFiles));
     let chunk = vec![0u8; 1024 * 1024];
     let first = h.files_create().unwrap().unwrap();
-    for _ in 0..MAX_FILE_BYTES / (1024 * 1024) {
+    for _ in 0..MAX_RUN_FILE_BYTES / (1024 * 1024) - 1 {
         h.writer_write(first, &chunk).unwrap().unwrap();
     }
-    let rest = (MAX_FILE_BYTES % (1024 * 1024)) as usize;
-    h.writer_write(first, &chunk[..rest]).unwrap().unwrap();
+    // Two MiB do not fit in the one MiB left: refused, and the writer fails.
+    let two = vec![0u8; 2 * 1024 * 1024];
     assert_eq!(
-        h.writer_write(first, &chunk).unwrap().unwrap_err(),
-        FILE_TOO_LARGE
+        h.writer_write(first, &two).unwrap().unwrap_err(),
+        RUN_WROTE_TOO_MUCH
     );
     for _ in 0..8 {
         assert_eq!(
@@ -474,11 +454,9 @@ fn a_refused_oversized_write_does_not_count_toward_the_run_cap() {
             FILE_FAILED
         );
     }
+    // The refused write took none of the room: the last MiB is still there.
     let second = h.files_create().unwrap().unwrap();
-    let room = MAX_RUN_FILE_BYTES - MAX_FILE_BYTES;
-    for _ in 0..room / (1024 * 1024) {
-        h.writer_write(second, &chunk).unwrap().unwrap();
-    }
+    h.writer_write(second, &chunk).unwrap().unwrap();
     assert_eq!(
         h.writer_write(second, &chunk).unwrap().unwrap_err(),
         RUN_WROTE_TOO_MUCH
@@ -674,15 +652,19 @@ fn a_corrupt_file_traps_the_run_and_any_other_read_failure_ends_it_unavailable()
     let denied = h.reader_read(r, 10).unwrap_err();
     assert_eq!(denied, HostDenied(FILE_CORRUPT.to_owned()));
 
-    let failing = FailingFiles(ReadError::Failed("flaky".to_owned()));
-    let mut h = run_host(Arc::new(failing), &["f"]);
-    let r = h.files_open("f").unwrap().unwrap();
-    assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
-    assert_eq!(
-        h.reader_read(r, 10).unwrap_err(),
-        HostDenied(FILE_UNAVAILABLE.to_owned())
-    );
-    assert_unavailable(h);
+    for failure in [
+        ReadError::Failed("flaky".to_owned()),
+        ReadError::Unavailable,
+    ] {
+        let mut h = run_host(Arc::new(FailingFiles(failure)), &["f"]);
+        let r = h.files_open("f").unwrap().unwrap();
+        assert_eq!(h.reader_read(r, 10).unwrap().unwrap(), b"ab");
+        assert_eq!(
+            h.reader_read(r, 10).unwrap_err(),
+            HostDenied(FILE_UNAVAILABLE.to_owned())
+        );
+        assert_unavailable(h);
+    }
 }
 
 /// A provider that cannot get the bytes of any file now.

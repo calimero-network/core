@@ -296,7 +296,8 @@ impl HostCore {
                 break;
             }
             return match failure {
-                ReadError::Failed(_) if compute => Err(self.unavailable()),
+                ReadError::Failed(_) | ReadError::Unavailable if compute => Err(self.unavailable()),
+                ReadError::Unavailable => Ok(Err(FILE_UNAVAILABLE.to_owned())),
                 ReadError::Failed(reason) => Ok(Err(reason)),
                 ReadError::Corrupt => Err(HostDenied::new(FILE_CORRUPT)),
             };

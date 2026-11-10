@@ -10,8 +10,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use calimero_app_host::{
     parse_blob_id, FileError, FileInfo, FileRead, FileWrite, Files, InvocationKind, NewFile,
-    PublishedFile, ReadError, FILE_CORRUPT, FILE_FAILED, MAX_READ_CHUNK, NOT_A_RUN_OUTPUT,
-    NO_SUCH_FILE,
+    NewSegment, PublishedFile, ReadError, FILE_CORRUPT, FILE_FAILED, MAX_READ_CHUNK,
+    NOT_A_RUN_OUTPUT, NO_SUCH_FILE,
 };
 use calimero_log::{Group, NodeId, Proposal, WriteError};
 use serde::{Deserialize, Serialize};
@@ -24,15 +24,16 @@ use zeroize::Zeroizing;
 
 use crate::app::AppMachine;
 use crate::component::blobs::{BlobRecord, Blobs, FileSeal};
-use crate::component::{ComponentCmd, FileMark};
+use crate::component::{parse_hex32, ComponentCmd, FileMark};
 use crate::error::ApiError;
 use crate::files::{
-    sealed_len, unwrap_key, wrap_key, FileOpener, FileSealer, CHUNK_BYTES, TAG_BYTES,
+    sealed_len, unwrap_key, wrap_key, Segment, SegmentReader, SegmentWriter, CHUNK_BYTES,
+    SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };
 use crate::node::blob_guards::Pins;
 use crate::node::{off_workers, status_of, Node, FORWARD_TIMEOUT, MAX_BLOB_BYTES};
 use crate::system::SystemCmd;
-use crate::types::{AppRecord, Caller};
+use crate::types::Caller;
 
 /// The longest a run waits to fetch a file it does not hold from the app's replicas.
 const FETCH_WAIT: Duration = Duration::from_secs(5);
@@ -56,13 +57,17 @@ pub(in crate::node) const MAX_PENDING_FILE_BYTES: usize = 256 << 20;
 const MAX_UPLOADER_BYTES: usize = 128;
 /// The bytes being pushed to replicas at once, across all calls of the node.
 pub(in crate::node) const MAX_PUSH_BYTES: usize = 512 << 20;
+/// What an open reader holds at most: a segment's ciphertext and the plaintext it opens to.
+const OPEN_READER_BYTES: u64 = (SEGMENT_BYTES + SEGMENT_CHUNKS * CHUNK_BYTES) as u64;
+/// Segments or blobs of one push sent at once.
+const MAX_PUSHING_BLOBS: usize = 2;
 /// Files whose bytes a removal deletes at once.
 const MAX_DELETE_CONCURRENCY: usize = 8;
 /// The code of a call whose files did not reach a majority of the replicas; the leader's
 /// forward loop does not retry it, the client does, with its key.
 pub const FILES_UNAVAILABLE: &str = "FILES_UNAVAILABLE";
 /// The code of an answer that names the app's leader in `details.leaderUrl`.
-const NOT_LEADER: &str = "NOT_LEADER";
+pub(super) const NOT_LEADER: &str = "NOT_LEADER";
 
 const _: () = assert!(
     MAX_PENDING_FILE_BYTES
@@ -79,6 +84,8 @@ const _: () =
 pub(super) struct PendingBytes {
     node: Arc<Semaphore>,
     held: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+    #[cfg(feature = "testing")]
+    low: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl PendingBytes {
@@ -86,6 +93,19 @@ impl PendingBytes {
         Self {
             node,
             held: std::sync::Mutex::new(None),
+            #[cfg(feature = "testing")]
+            low: None,
+        }
+    }
+
+    /// Gives back `bytes` of what this run took.
+    fn release(&self, bytes: usize) {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(part) = held.as_mut().and_then(|total| total.split(bytes)) {
+            drop(part);
         }
     }
 
@@ -105,25 +125,54 @@ impl PendingBytes {
             Some(total) => total.merge(permit),
             None => *held = Some(permit),
         }
+        #[cfg(feature = "testing")]
+        if let Some(low) = &self.low {
+            let _was = low.fetch_min(
+                self.node.available_permits(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         true
     }
 }
 
-/// A file's ciphertext as the host core hands it over, with the blob id it is stored under.
-pub type Blob = (String, Vec<u8>);
+/// Bytes a run leaves to store: a published plain blob (named by its hex id) or a segment of a
+/// sealed file (named by its hex hash).
+#[derive(Clone)]
+pub struct Blob {
+    pub id: String,
+    /// `None` for a segment a writer already stored here: it is read back to be pushed.
+    pub bytes: Option<axum::body::Bytes>,
+    pub segment: bool,
+}
+
+impl Blob {
+    #[must_use]
+    pub fn plain(id: String, bytes: Vec<u8>) -> Self {
+        Self {
+            id,
+            bytes: Some(bytes.into()),
+            segment: false,
+        }
+    }
+}
 
 /// What a logged entry stored and counted against the quota: undone if it does not commit.
 #[derive(Default)]
 pub(super) struct Stored {
-    /// The ids of the files stored for the entry.
+    /// The ids of the plain blobs stored for the entry.
     pub ids: Vec<String>,
+    /// The hashes of the segments stored for the entry.
+    pub segments: Vec<String>,
     /// Plaintext bytes charged for them.
     pub charged: u64,
-    /// The ids are a compute run's outputs, which another leader may have registered under the
-    /// same ids: deleted only once the blob records are known ([`Node::delete_unmarked_outputs`]).
+    /// The segments are a compute run's outputs, which another leader may have registered: deleted
+    /// only once the blob records are known ([`Node::delete_unmarked_outputs`]).
     pub outputs: bool,
-    /// Keeps a collection from deleting the bytes until the entry commits or fails.
+    /// Keeps a collection from deleting the plain blobs until the entry commits or fails.
     pub pin: Option<Pins>,
+    /// Holds the entry's segments out of the sweep until the entry is decided.
+    pub _pin: Option<crate::node::SegmentPin>,
 }
 
 /// What an upload answers.
@@ -153,6 +202,16 @@ pub(crate) struct Probes {
     pub limits: std::sync::Mutex<crate::node::ComputeLimits>,
     /// While set, this node's system reads fail.
     pub system_outage: std::sync::atomic::AtomicBool,
+    /// The fewest bytes the pending budget had left.
+    pub pending_low: Arc<std::sync::atomic::AtomicUsize>,
+    /// The fewest bytes the push budget had left.
+    pub push_low: std::sync::atomic::AtomicUsize,
+    /// How many unpushed segments an upload session may hold.
+    pub upload_window: std::sync::atomic::AtomicUsize,
+    /// Fails the next segment an upload session stores.
+    pub segment_store_fault: std::sync::atomic::AtomicBool,
+    /// Fails the next barrier a failed mark commit asks for, leaving its outcome unknown.
+    pub barrier_fault: std::sync::atomic::AtomicBool,
     /// Holds the next push of files on this node after they are stored, before its entry commits.
     pub push_hold: std::sync::Mutex<Option<Hold>>,
     /// Holds the next blob deletion on this node between its checks and its delete.
@@ -201,6 +260,11 @@ impl Default for Probes {
             commit_fault: std::sync::atomic::AtomicU8::new(0),
             limits: std::sync::Mutex::new(crate::node::ComputeLimits::default()),
             system_outage: std::sync::atomic::AtomicBool::new(false),
+            pending_low: Arc::new(std::sync::atomic::AtomicUsize::new(MAX_PENDING_FILE_BYTES)),
+            push_low: std::sync::atomic::AtomicUsize::new(MAX_PUSH_BYTES),
+            upload_window: std::sync::atomic::AtomicUsize::new(super::uploads::UPLOAD_WINDOW),
+            segment_store_fault: std::sync::atomic::AtomicBool::new(false),
+            barrier_fault: std::sync::atomic::AtomicBool::new(false),
             push_hold: std::sync::Mutex::new(None),
             deletion_hold: std::sync::Mutex::new(None),
         }
@@ -213,7 +277,7 @@ fn block_on<T>(runtime: &Handle, fut: impl Future<Output = T>) -> Option<T> {
     (runtime.runtime_flavor() != RuntimeFlavor::CurrentThread).then(|| runtime.block_on(fut))
 }
 
-fn files_unavailable() -> ApiError {
+pub(super) fn files_unavailable() -> ApiError {
     ApiError::new(
         503,
         FILES_UNAVAILABLE,
@@ -276,8 +340,20 @@ pub(super) struct NodeFiles {
     node_open: Arc<Semaphore>,
     run_open: Arc<Semaphore>,
     pending: Arc<PendingBytes>,
+    /// The hashes of the segments this run's writers stored here.
+    made: Arc<std::sync::Mutex<Vec<String>>>,
     /// Logged runs wait a little for the node-wide budget; views do not.
     waits: bool,
+}
+
+fn pending_of(node: &Node) -> PendingBytes {
+    #[cfg_attr(not(feature = "testing"), allow(unused_mut))]
+    let mut pending = PendingBytes::new(Arc::clone(&node.pending_file_bytes));
+    #[cfg(feature = "testing")]
+    {
+        pending.low = Some(Arc::clone(&node.probes.pending_low));
+    }
+    pending
 }
 
 impl NodeFiles {
@@ -289,7 +365,8 @@ impl NodeFiles {
             blobs,
             node_open: Arc::clone(&node.open_file_bytes),
             run_open: Arc::new(Semaphore::new(node.run_open_cap())),
-            pending: Arc::new(PendingBytes::new(Arc::clone(&node.pending_file_bytes))),
+            pending: Arc::new(pending_of(node)),
+            made: Arc::default(),
             waits: !matches!(
                 kind,
                 InvocationKind::View | InvocationKind::Action | InvocationKind::Migrate
@@ -300,6 +377,25 @@ impl NodeFiles {
     /// The budget the new files of this run draw on; the caller keeps it while it holds their bytes.
     pub(super) fn pending(&self) -> Arc<PendingBytes> {
         Arc::clone(&self.pending)
+    }
+
+    /// Deletes the segments this run's writers stored, but those in `kept`: a file that no entry
+    /// will mark leaves no bytes here.
+    pub(super) fn forget_made(&self, kept: &[Blob]) {
+        let made = std::mem::take(
+            &mut *self
+                .made
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let Some(node) = self.node.upgrade() else {
+            return;
+        };
+        for hash in made {
+            if !kept.iter().any(|b| b.segment && b.id == hash) {
+                let _gone = node.engine.delete_segment(&hash);
+            }
+        }
     }
 
     /// The key the app's data keys are wrapped under, derived when a run touches a file.
@@ -332,22 +428,31 @@ impl NodeFiles {
         Some((record, record.file.as_ref()?))
     }
 
-    /// The ciphertext of `id`: this node's if it is the file, else the app's other replicas'.
-    fn ciphertext(&self, id: &str) -> Option<Vec<u8>> {
+    fn source(&self) -> SegmentSource {
+        SegmentSource {
+            node: self.node.clone(),
+            runtime: self.runtime.clone(),
+            app_id: self.app_id.clone(),
+        }
+    }
+}
+
+/// Where a reader gets segments: this node's store, else the app's other replicas.
+struct SegmentSource {
+    node: Weak<Node>,
+    runtime: Option<Handle>,
+    app_id: String,
+}
+
+impl SegmentSource {
+    fn get(&self, hash: &str) -> Option<Vec<u8>> {
         let node = self.node.upgrade()?;
-        match node.engine.get_blob(id) {
-            Ok(Some(bytes)) if hex::encode(calimero_identity::sha256(&bytes)) == id => {
-                return Some(bytes)
-            }
-            Ok(Some(_)) => {
-                warn!(file = %id, "a stored file is not its id; fetching it again");
-                let _dropped = node.engine.delete_blob(id);
-            }
-            _ => {}
+        if let Some(bytes) = node.local_segment(hash) {
+            return Some(bytes);
         }
         let app = node.sys(|s| s.apps.get(&self.app_id).cloned())?;
         let peers = node.other_replicas(&app);
-        let fetch = tokio::time::timeout(FETCH_WAIT, node.fetch_blob_from(id, &peers));
+        let fetch = tokio::time::timeout(FETCH_WAIT, node.segment_from(hash, &peers));
         block_on(self.runtime.as_ref()?, fetch)?.ok()?.ok()
     }
 }
@@ -357,12 +462,13 @@ impl Files for NodeFiles {
         let (raw, seal) = self
             .sealed(id)
             .ok_or_else(|| FileError::Failed(NO_SUCH_FILE.to_owned()))?;
-        let held = u32::try_from(sealed_len(raw.size)).map_err(|_| FileError::Unavailable)?;
+        let held = u32::try_from(sealed_len(raw.size).min(OPEN_READER_BYTES))
+            .map_err(|_| FileError::Unavailable)?;
         let permits = self.reserve(held).ok_or(FileError::Unavailable)?;
-        let ciphertext = self.ciphertext(id).ok_or(FileError::Unavailable)?;
         let file_key = self.file_key().ok_or(FileError::Unavailable)?;
+        let source = self.source();
         Ok(Box::new(SealedReader::new(
-            ciphertext,
+            Box::new(move |hash| source.get(hash)),
             raw.size,
             seal,
             &self.app_id,
@@ -389,11 +495,7 @@ impl Files for NodeFiles {
             .sealed(id)
             .filter(|(_, s)| s.output)
             .ok_or_else(not_an_output)?;
-        if record.size > calimero_app_host::MAX_FILE_BYTES {
-            return Err(FileError::Failed(
-                calimero_app_host::FILE_TOO_LARGE.to_owned(),
-            ));
-        }
+        publishable(record.size)?;
         Ok(PublishedFile {
             source: id.to_owned(),
             id: hex::encode(&seal.sha256.0),
@@ -405,9 +507,12 @@ impl Files for NodeFiles {
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         let file_key = self.file_key().ok_or(FileError::Unavailable)?;
         Ok(Box::new(SealedWriter {
-            sealer: Some(FileSealer::new()),
-            ciphertext: Vec::new(),
+            writer: Some(SegmentWriter::new()),
+            segments: Vec::new(),
+            node: self.node.clone(),
+            made: Arc::clone(&self.made),
             pending: Arc::clone(&self.pending),
+            reserved: 0,
             app_id: self.app_id.clone(),
             file_key,
         }))
@@ -427,6 +532,7 @@ impl NodeFiles {
         loop {
             let chunk = reader.read(MAX_READ_CHUNK as usize).map_err(|e| match e {
                 ReadError::Corrupt => FileError::Failed(FILE_CORRUPT.to_owned()),
+                ReadError::Unavailable => FileError::Unavailable,
                 ReadError::Failed(why) => FileError::Failed(why),
             })?;
             if chunk.is_empty() {
@@ -437,11 +543,28 @@ impl NodeFiles {
     }
 }
 
-/// Seals what the guest writes into memory; the node stores it when the run is logged.
+/// Whether a file of `size` plaintext bytes may be published: the plain blob it becomes must
+/// reach the other nodes in one request.
+fn publishable(size: u64) -> Result<(), FileError> {
+    if size > MAX_BLOB_BYTES as u64 {
+        return Err(FileError::Failed(
+            calimero_app_host::FILE_TOO_LARGE.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Seals what the guest writes and stores each segment here as it completes, so a writer holds
+/// at most its partial segment in memory, counted against the node's pending budget.
 struct SealedWriter {
-    sealer: Option<FileSealer>,
-    ciphertext: Vec<u8>,
+    writer: Option<SegmentWriter>,
+    /// The stored segments' hashes, without bytes.
+    segments: Vec<NewSegment>,
+    node: Weak<Node>,
+    made: Arc<std::sync::Mutex<Vec<String>>>,
     pending: Arc<PendingBytes>,
+    /// Bytes of the pending budget this writer holds now.
+    reserved: usize,
     app_id: String,
     file_key: Zeroizing<[u8; 32]>,
 }
@@ -451,80 +574,127 @@ impl SealedWriter {
         FileError::Failed(FILE_FAILED.to_owned())
     }
 
-    /// Appends sealed bytes if the node's budget has room for them: else the run is aborted
-    /// and retried, as for a file it cannot read.
-    fn keep(&mut self, sealed: &[u8]) -> Result<(), FileError> {
-        if !self.pending.reserve(sealed.len()) {
-            return Err(FileError::Unavailable);
+    /// Holds `to` bytes of the pending budget: else the run is aborted and retried, as for a file
+    /// it cannot read.
+    fn hold(&mut self, to: usize) -> Result<(), FileError> {
+        if to > self.reserved {
+            if !self.pending.reserve(to - self.reserved) {
+                return Err(FileError::Unavailable);
+            }
+        } else {
+            self.pending.release(self.reserved - to);
         }
-        self.ciphertext.extend_from_slice(sealed);
+        self.reserved = to;
         Ok(())
+    }
+
+    /// Stores a completed segment on this node and keeps its hash.
+    fn store(&mut self, segment: Segment) -> Result<(), FileError> {
+        let node = self.node.upgrade().ok_or(FileError::Unavailable)?;
+        let hash = hex::encode(segment.hash);
+        (node.engine.put_segment(&hash, &segment.bytes)).map_err(|_| FileError::Unavailable)?;
+        (self.made.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(hash);
+        self.segments.push(NewSegment {
+            hash: segment.hash,
+            bytes: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn buffered(&self) -> usize {
+        self.writer.as_ref().map_or(0, SegmentWriter::buffered)
+    }
+}
+
+impl Drop for SealedWriter {
+    fn drop(&mut self) {
+        self.pending.release(self.reserved);
     }
 }
 
 impl FileWrite for SealedWriter {
     fn write(&mut self, bytes: &[u8]) -> Result<(), FileError> {
-        let sealer = self.sealer.as_mut().ok_or_else(Self::failed)?;
-        let sealed = sealer.write(bytes).map_err(|_| Self::failed())?;
-        self.keep(&sealed)
+        self.hold(self.buffered() + bytes.len())?;
+        let done = (self.writer.as_mut())
+            .ok_or_else(Self::failed)?
+            .write(bytes)
+            .map_err(|_| Self::failed())?;
+        for segment in done {
+            self.store(segment)?;
+        }
+        self.hold(self.buffered())
     }
 
     fn finish(mut self: Box<Self>) -> Result<NewFile, FileError> {
-        let sealer = self.sealer.take().ok_or_else(Self::failed)?;
-        let data_key = Zeroizing::new(*sealer.data_key());
-        let sealed = sealer.finish().map_err(|_| Self::failed())?;
-        self.keep(&sealed.tail)?;
+        self.hold(self.buffered() + TAG_BYTES)?;
+        let writer = self.writer.take().ok_or_else(Self::failed)?;
+        let data_key = Zeroizing::new(*writer.data_key());
+        let sealed = writer.finish().map_err(|_| Self::failed())?;
+        self.store(sealed.last)?;
         let wrapped_key =
             wrap_key(&self.file_key, &self.app_id, &data_key).map_err(|_| Self::failed())?;
         Ok(NewFile {
-            id: hex::encode(calimero_identity::sha256(&self.ciphertext)),
+            id: hex::encode(sealed.id),
             size: sealed.size,
             sha256: sealed.sha256.to_vec(),
             wrapped_key,
-            ciphertext: std::mem::take(&mut self.ciphertext),
+            segments: std::mem::take(&mut self.segments),
         })
     }
 }
 
-/// Decrypts a file as the guest reads it, one chunk at a time. Any failure of the
-/// opener, including the one that ends the stream, is [`ReadError::Corrupt`].
+/// Gives a segment's bytes by its hex hash, or none when nobody can.
+type FetchSegment = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send>;
+
+/// Decrypts a file as the guest reads it, a segment at a time: an opener failure is
+/// [`ReadError::Corrupt`], a segment nobody can give [`ReadError::Unavailable`].
 struct SealedReader {
-    ciphertext: Vec<u8>,
-    at: usize,
+    fetch: FetchSegment,
+    segments: Vec<String>,
+    next: usize,
     /// `None` once the stream is proven, or when the mark's key does not open.
     check: Option<Check>,
     proven: bool,
     pending: Vec<u8>,
-    /// Count the ciphertext against the run's and the node's open-bytes budgets until the reader drops.
+    /// Count the file's bytes against the run's and the node's open-bytes budgets until the reader drops.
     _held: (OwnedSemaphorePermit, OwnedSemaphorePermit),
 }
 
 struct Check {
-    opener: FileOpener,
+    reader: SegmentReader,
     size: u64,
     sha256: [u8; 32],
 }
 
 impl SealedReader {
     fn new(
-        ciphertext: Vec<u8>,
+        fetch: FetchSegment,
         size: u64,
         seal: &FileSeal,
         app_id: &str,
         file_key: &[u8; 32],
         held: (OwnedSemaphorePermit, OwnedSemaphorePermit),
     ) -> Self {
+        let hashes: Option<Vec<[u8; 32]>> = seal
+            .segments
+            .iter()
+            .map(|s| hex::decode(s).ok()?.try_into().ok())
+            .collect();
         let check = unwrap_key(file_key, app_id, &seal.wrapped_key.0)
             .ok()
+            .zip(hashes)
             .zip(<[u8; 32]>::try_from(seal.sha256.0.as_slice()).ok())
-            .map(|(key, sha256)| Check {
-                opener: FileOpener::new(&key),
+            .map(|((key, hashes), sha256)| Check {
+                reader: SegmentReader::new(&key, hashes),
                 size,
                 sha256,
             });
         Self {
-            ciphertext,
-            at: 0,
+            fetch,
+            segments: seal.segments.clone(),
+            next: 0,
             check,
             proven: false,
             pending: Vec::new(),
@@ -532,18 +702,18 @@ impl SealedReader {
         }
     }
 
-    /// Opens the next piece of the stream into `pending`, or proves the end.
+    /// Opens the next segment into `pending`, or proves the end.
     fn advance(&mut self) -> Result<(), ReadError> {
         let check = self.check.as_mut().ok_or(ReadError::Corrupt)?;
-        if let Some(rest) = self.ciphertext.get(self.at..).filter(|r| !r.is_empty()) {
-            let piece = &rest[..rest.len().min(CHUNK_BYTES + TAG_BYTES)];
-            self.pending = check.opener.push(piece).map_err(|_| ReadError::Corrupt)?;
-            self.at += piece.len();
+        if let Some(hash) = self.segments.get(self.next) {
+            let bytes = (self.fetch)(hash).ok_or(ReadError::Unavailable)?;
+            self.pending = check.reader.push(&bytes).map_err(|_| ReadError::Corrupt)?;
+            self.next += 1;
             return Ok(());
         }
         let check = self.check.take().ok_or(ReadError::Corrupt)?;
         self.pending = check
-            .opener
+            .reader
             .finish_expecting(check.size, &check.sha256)
             .map_err(|_| ReadError::Corrupt)?;
         self.proven = true;
@@ -586,6 +756,13 @@ where
 }
 
 impl Node {
+    /// Deletes this node's copy of the segments of `blobs`: files no entry will mark.
+    pub(super) fn forget_local(&self, blobs: &[Blob]) {
+        for blob in blobs.iter().filter(|b| b.segment) {
+            let _gone = self.engine.delete_segment(&blob.id);
+        }
+    }
+
     /// Stores a run's new files here and on the app's replicas; `503 FILES_UNAVAILABLE` unless
     /// a majority of the voters hold every one, and then what was stored is removed.
     pub(super) fn persist_files(&self, app_id: &str, blobs: &[Blob]) -> Result<(), ApiError> {
@@ -610,39 +787,44 @@ impl Node {
             .probes
             .file_pushes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let deadline = Instant::now() + PUSH_WAIT;
-        let held: usize = blobs.iter().map(|(_, bytes)| bytes.len()).sum();
-        let held = u32::try_from(held).map_err(|_| files_unavailable())?;
+        match self.push_blobs(app_id, blobs, PUSH_WAIT).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // No entry registers these files, so no other run can need them.
+                self.discard_bytes(app_id, stored_of_blobs(blobs), outputs);
+                Err(e)
+            }
+        }
+    }
+
+    /// Puts `blobs` on a majority of the app group's voters within `wait`; what was stored stays.
+    pub(super) async fn push_blobs(
+        &self,
+        app_id: &str,
+        blobs: &[Blob],
+        wait: Duration,
+    ) -> Result<(), ApiError> {
+        let deadline = Instant::now() + wait;
         let push = async {
             let targets =
                 (self.push_targets(app_id, deadline).await).ok_or_else(files_unavailable)?;
-            let _budget = Arc::clone(&self.push_bytes)
-                .acquire_many_owned(held)
-                .await
-                .map_err(|_| files_unavailable())?;
-            let pushed = futures_util::future::join_all(
-                blobs
-                    .iter()
-                    .map(|(id, bytes)| self.push_blob(id, bytes, &targets)),
-            )
-            .await;
-            pushed.into_iter().collect::<Result<Vec<()>, ApiError>>()
+            for batch in blobs.chunks(MAX_PUSHING_BLOBS) {
+                let pushed = futures_util::future::join_all(
+                    batch.iter().map(|b| self.push_blob(b, &targets)),
+                )
+                .await;
+                pushed.into_iter().collect::<Result<Vec<()>, ApiError>>()?;
+            }
+            Ok::<(), ApiError>(())
         };
         match tokio::time::timeout_at(deadline, push).await {
-            Ok(Ok(_)) => {
+            Ok(Ok(())) => {
                 #[cfg(feature = "testing")]
                 self.push_checkpoint().await;
                 Ok(())
             }
-            _ => {
-                // No entry registers these files, so no other run can need them.
-                self.discard_bytes(
-                    app_id,
-                    blobs.iter().map(|(id, _)| id.clone()).collect(),
-                    outputs,
-                );
-                Err(files_unavailable())
-            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(files_unavailable()),
         }
     }
 
@@ -669,26 +851,64 @@ impl Node {
         ))
     }
 
-    async fn push_blob(&self, id: &str, bytes: &[u8], targets: &Targets) -> Result<(), ApiError> {
-        self.blob_guards
-            .put(id, || self.engine.put_blob(id, bytes))
-            .map_err(|e| ApiError::internal(&e.to_string()))?;
+    async fn put_on(
+        &self,
+        addr: &str,
+        hash: &str,
+        bytes: axum::body::Bytes,
+        segment: bool,
+    ) -> eyre::Result<()> {
+        if segment {
+            return self.put_segment_on(addr, hash, bytes).await;
+        }
         let body = BlobPut {
-            hash: id,
-            wasm: STANDARD.encode(bytes),
+            hash,
+            wasm: STANDARD.encode(&bytes),
         };
+        self.peer_post(addr, "internal/blob", &body).await.map(drop)
+    }
+
+    /// The bytes of `blob`, stored here: a segment a writer stored is read back.
+    async fn stored_bytes(&self, blob: &Blob) -> Result<axum::body::Bytes, ApiError> {
+        let engine = Arc::clone(&self.engine);
+        let guards = Arc::clone(&self.blob_guards);
+        let (id, held, segment) = (blob.id.clone(), blob.bytes.clone(), blob.segment);
+        let found = tokio::task::spawn_blocking(move || match held {
+            None => engine.get_segment(&id),
+            Some(held) if segment => engine.put_segment(&id, &held).map(|()| Some(held.to_vec())),
+            Some(held) => guards
+                .put(&id, || engine.put_blob(&id, &held))
+                .map(|()| Some(held.to_vec())),
+        })
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+        found
+            .map(axum::body::Bytes::from)
+            .ok_or_else(files_unavailable)
+    }
+
+    /// Stores `blob` here and on `targets`: a segment raw, a plain blob as JSON. Holds the push
+    /// budget for the bytes it sends, one body shared by every target.
+    async fn push_blob(&self, blob: &Blob, targets: &Targets) -> Result<(), ApiError> {
+        let held = blob.bytes.as_ref().map_or(SEGMENT_BYTES, |b| b.len());
+        let _budget = Arc::clone(&self.push_bytes)
+            .acquire_many_owned(u32::try_from(held).map_err(|_| files_unavailable())?)
+            .await
+            .map_err(|_| files_unavailable())?;
+        #[cfg(feature = "testing")]
+        let _was = self.probes.push_low.fetch_min(
+            self.push_bytes.available_permits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let bytes = self.stored_bytes(blob).await?;
+        let (id, segment) = (blob.id.as_str(), blob.segment);
         let (voters, _learners) = futures_util::future::join(
             futures_util::future::join_all(
-                targets
-                    .voters
-                    .iter()
-                    .map(|addr| self.peer_post(addr, "internal/blob", &body)),
+                (targets.voters.iter()).map(|a| self.put_on(a, id, bytes.clone(), segment)),
             ),
             futures_util::future::join_all(
-                targets
-                    .learners
-                    .iter()
-                    .map(|addr| self.peer_post(addr, "internal/blob", &body)),
+                (targets.learners.iter()).map(|a| self.put_on(a, id, bytes.clone(), segment)),
             ),
         )
         .await;
@@ -699,11 +919,11 @@ impl Node {
         }
     }
 
-    /// [`Self::delete_files_later`] for ids no entry registers; a compute run's outputs only after
-    /// the app's blob records were read through its leader.
-    fn discard_bytes(&self, app_id: &str, ids: Vec<String>, outputs: bool) {
+    /// [`Self::delete_files_later`] for segments no entry registers; a compute run's outputs only
+    /// after the app's blob records were read through its leader.
+    fn discard_bytes(&self, app_id: &str, stored: Stored, outputs: bool) {
         if !outputs {
-            self.delete_files_later(app_id, ids);
+            self.delete_files_later(app_id, stored);
             return;
         }
         let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
@@ -711,13 +931,13 @@ impl Node {
         };
         let app_id = app_id.to_owned();
         drop(tokio::spawn(async move {
-            node.delete_unmarked_outputs(&app_id, ids).await;
+            node.delete_unmarked_outputs(&app_id, stored.segments).await;
         }));
     }
 
-    /// Deletes compute outputs the app holds no blob for, judged after a leader barrier and a strong
-    /// read. Without the barrier the bytes stay: orphaned bytes, never a record without its bytes.
-    pub(super) async fn delete_unmarked_outputs(&self, app_id: &str, ids: Vec<String>) {
+    /// Deletes compute-output segments no file of the app lists, judged after a leader barrier and
+    /// a strong read; without the barrier they stay.
+    pub(super) async fn delete_unmarked_outputs(&self, app_id: &str, segments: Vec<String>) {
         let Some(g) = self.hosted(app_id) else {
             return;
         };
@@ -727,42 +947,69 @@ impl Node {
         }
         let unmarked = g
             .read_strong(|m, _| {
-                ids.iter()
-                    .filter(|id| !holds_file(m, id))
+                segments
+                    .iter()
+                    .filter(|hash| !m.holds_segment(hash))
                     .cloned()
                     .collect::<Vec<_>>()
             })
             .await;
         if let Ok(unmarked) = unmarked {
-            self.delete_files(&unmarked).await;
+            let stored = Stored {
+                segments: unmarked,
+                ..Stored::default()
+            };
+            self.delete_files(&stored).await;
         }
     }
 
-    /// Removes the bytes of `ids` on this node and the app's other replicas, in a task of
-    /// its own: nobody waits for it. A replica that misses it keeps unreachable bytes.
-    pub(super) fn delete_files_later(&self, app_id: &str, ids: Vec<String>) {
+    /// Whether a component app hosted here lists `hash` as a segment of one of its files; true
+    /// when the apps cannot be read, so nothing is deleted on a guess.
+    pub(crate) fn holds_segment(&self, hash: &str) -> bool {
+        self.apps.read().map_or(true, |apps| {
+            apps.values()
+                .any(|g| g.read_local(|m, _| m.holds_segment(hash)))
+        })
+    }
+
+    /// Removes the plain blobs and segments of `stored` here and on the app's other replicas, in
+    /// a task of its own: nobody waits for it. A replica that misses it keeps unreachable bytes.
+    pub(super) fn delete_files_later(&self, app_id: &str, stored: Stored) {
         let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
             return;
         };
         let app_id = app_id.to_owned();
         drop(tokio::spawn(async move {
-            let removal = node.delete_files(&ids);
+            let removal = node.delete_files(&stored);
             if tokio::time::timeout(DELETE_WAIT, removal).await.is_err() {
                 warn!(app = %app_id, "file bytes not deleted everywhere in time");
             }
         }));
     }
 
-    async fn delete_files(&self, ids: &[String]) {
-        for batch in ids.chunks(MAX_DELETE_CONCURRENCY) {
+    async fn delete_files(&self, stored: &Stored) {
+        for batch in stored.ids.chunks(MAX_DELETE_CONCURRENCY) {
             let _all =
                 futures_util::future::join_all(batch.iter().map(|id| self.delete_file(id))).await;
+        }
+        // Replicas' copies of the segments go with the sweep, after its grace.
+        for hash in &stored.segments {
+            self.delete_segment(hash);
         }
     }
 
     async fn delete_file(&self, id: &str) {
         if let Some(raw) = parse_blob_id(id) {
             self.collect_blob(&raw).await;
+        }
+    }
+
+    fn delete_segment(&self, hash: &str) {
+        if self.holds_segment(hash) {
+            return;
+        }
+        if let Err(e) = self.engine.delete_segment(hash) {
+            warn!(segment = %hash, error = %e, "file bytes not deleted");
         }
     }
 }
@@ -839,195 +1086,20 @@ impl Node {
     }
 
     /// Undoes what a logged entry that did not commit stored and counted.
-    pub(super) fn discard(&self, app_id: &str, stored: Stored) {
-        let Stored {
-            ids,
-            charged,
-            outputs,
-            pin,
-        } = stored;
-        drop(pin);
-        if !ids.is_empty() {
-            self.discard_bytes(app_id, ids, outputs);
+    pub(super) fn discard(&self, app_id: &str, mut stored: Stored) {
+        drop(stored.pin.take());
+        let (charged, outputs) = (stored.charged, stored.outputs);
+        if !stored.ids.is_empty() || !stored.segments.is_empty() {
+            self.discard_bytes(app_id, stored, outputs);
         }
         if charged > 0 {
             self.refund_files_later(app_id, charged);
         }
     }
 
-    /// Seals `bytes` as a file of the app through the writer a run's files use, holding the
-    /// node-wide pending budget until the returned guard drops.
-    fn seal_upload(
-        &self,
-        app_id: &str,
-        bytes: &[u8],
-    ) -> Result<(NewFile, Arc<PendingBytes>), ApiError> {
-        let files = NodeFiles::new(self, app_id, Blobs::default(), InvocationKind::Call);
-        let sealed = files.create().and_then(|mut writer| {
-            writer.write(bytes)?;
-            writer.finish()
-        });
-        match sealed {
-            Ok(file) => Ok((file, files.pending())),
-            Err(FileError::Unavailable) => Err(files_unavailable()),
-            Err(FileError::Failed(_)) => Err(ApiError::internal("the file could not be sealed")),
-        }
-    }
-
-    /// Stores an uploaded file for a component app. This node seals and stores nothing unless it
-    /// leads the app: the body goes to the leader, which seals it, counts it against the quota,
-    /// puts it on a majority of its group's voters and commits the mark. The key is per call, so
-    /// only a forward that is retried replays a committed upload.
-    pub(crate) async fn upload_file(
-        &self,
-        app: &AppRecord,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, ApiError> {
-        if bytes.len() > MAX_BLOB_BYTES {
-            return Err(crate::node::blob_too_large());
-        }
-        let key = format!(
-            "{}{}",
-            crate::app::NODE_KEY_PREFIX,
-            calimero_identity::b64url(&calimero_identity::random::<16>())
-        );
-        let mut last = ApiError::unavailable("no replica of the app answered");
-        let mut leader: Option<String> = None;
-        for _attempt in 0..30 {
-            let done = if let Some(addr) = leader.take() {
-                self.forward_upload(&addr, &app.app_id, &key, bytes, uploader)
-                    .await
-            } else if let Some(g) = self.replica_group(app) {
-                match self
-                    .upload_local(&g, &app.app_id, &key, bytes, uploader)
-                    .await
-                {
-                    Ok(uploaded) => Ok(uploaded),
-                    Err(Upload::Refused(e)) => Err(e),
-                    Err(Upload::Elsewhere(addr)) => {
-                        leader = addr;
-                        continue;
-                    }
-                }
-            } else if let Some(addr) = self.other_replica(app) {
-                self.forward_upload(&addr, &app.app_id, &key, bytes, uploader)
-                    .await
-            } else {
-                Err(last.clone())
-            };
-            match done {
-                Err(e) if e.code == NOT_LEADER => {
-                    leader = e.details["leaderUrl"].as_str().map(str::to_owned);
-                    if leader.is_some() {
-                        continue;
-                    }
-                    last = e;
-                }
-                Err(e) if e.code == "UNAVAILABLE" => last = e,
-                done => return done,
-            }
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        }
-        Err(last)
-    }
-
-    /// [`Self::upload_file`] as a peer asks it, one hop: this node hosts the app, and if it is
-    /// not the leader it names it (`421`) instead of passing the body on again.
-    pub(crate) async fn upload_here(
-        &self,
-        app_id: &str,
-        key: &str,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, ApiError> {
-        if bytes.len() > MAX_BLOB_BYTES {
-            return Err(crate::node::blob_too_large());
-        }
-        if !valid_uploader(uploader) {
-            return Err(ApiError::bad_request("BAD_REQUEST", "unusable uploader"));
-        }
-        let g = self
-            .hosted(app_id)
-            .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-        match self.upload_local(&g, app_id, key, bytes, uploader).await {
-            Ok(uploaded) => Ok(uploaded),
-            Err(Upload::Refused(e)) => Err(e),
-            Err(Upload::Elsewhere(Some(addr))) => {
-                Err(
-                    ApiError::new(421, NOT_LEADER, "send this to the app group's leader")
-                        .with_details(json!({ "leaderUrl": addr })),
-                )
-            }
-            Err(Upload::Elsewhere(None)) => Err(ApiError::unavailable("the app has no leader yet")),
-        }
-    }
-
-    async fn forward_upload(
-        &self,
-        addr: &str,
-        app_id: &str,
-        key: &str,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, ApiError> {
-        let body = json!({
-            "app": app_id,
-            "key": key,
-            "uploader": uploader,
-            "bytes": calimero_log::Bytes(bytes.to_vec()),
-        });
-        let answer = self
-            .peer_post(addr, "internal/file-upload", &body)
-            .await
-            .map_err(|e| {
-                e.downcast::<ApiError>()
-                    .unwrap_or_else(|e| ApiError::unavailable(&e.to_string()))
-            })?;
-        serde_json::from_value(answer).map_err(|e| ApiError::internal(&e.to_string()))
-    }
-
-    /// The upload on the app's leader; [`Upload::Elsewhere`] when this node is not it.
-    async fn upload_local(
-        &self,
-        g: &Group<AppMachine>,
-        app_id: &str,
-        key: &str,
-        bytes: &[u8],
-        uploader: &str,
-    ) -> Result<Uploaded, Upload> {
-        let status = g.status();
-        if !status.is_leader {
-            let leader = status
-                .leader
-                .and_then(|id| self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone())));
-            return Err(Upload::Elsewhere(leader));
-        }
-        // A retry of an upload that committed is its first answer.
-        if let Some(prev) = g.read_local(|m, _| m.component_replay(&Caller::System, key)) {
-            return uploaded(&prev)
-                .ok_or_else(|| Upload::Refused(ApiError::internal("bad record")));
-        }
-        let (mut file, _pending) =
-            off_workers(|| self.seal_upload(app_id, bytes)).map_err(Upload::Refused)?;
-        let size = file.size;
-        let delta = i64::try_from(size)
-            .map_err(|_| Upload::Refused(ApiError::internal("file too large")))?;
-        self.count_file_bytes(app_id, delta)
-            .await
-            .map_err(Upload::Refused)?;
-        let blob = (file.id.clone(), std::mem::take(&mut file.ciphertext));
-        if let Err(e) = self.push_files(app_id, &[blob], false).await {
-            self.refund_files(app_id, size).await;
-            return Err(Upload::Refused(e));
-        }
-        self.commit_mark(g, app_id, FileMark::from(file), key, uploader)
-            .await
-    }
-
     /// Commits the mark of a file whose bytes are stored. When the commit fails, the leader says
     /// whether the mark is there: if so the upload succeeded, if not its bytes and charge go.
-    async fn commit_mark(
+    pub(super) async fn commit_mark(
         &self,
         g: &Group<AppMachine>,
         app_id: &str,
@@ -1074,15 +1146,27 @@ impl Node {
                 Err(Upload::Refused(status_of(&error)))
             }
             // Unknown: the entry may yet commit, so the bytes and the charge stay.
-            None => Err(Upload::Refused(status_of(&error))),
+            None => Err(Upload::Unknown(status_of(&error))),
         }
     }
 
     /// Whether the app holds file `id`, once the entry that failed cannot commit any more: a
     /// barrier entry committed through this leader commits every entry before it in its log and
     /// ends any other. `None` when no barrier could be committed (this node no longer leads).
-    async fn marked_after_barrier(&self, g: &Group<AppMachine>, id: &str) -> Option<(bool, u64)> {
-        let raw = hex::decode(id).ok()?.try_into().ok()?;
+    pub(super) async fn marked_after_barrier(
+        &self,
+        g: &Group<AppMachine>,
+        id: &str,
+    ) -> Option<(bool, u64)> {
+        let raw = parse_hex32(id)?;
+        #[cfg(feature = "testing")]
+        if self
+            .probes
+            .barrier_fault
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
         let barrier = serde_json::to_vec(&ComponentCmd::Barrier).unwrap_or_default();
         let _committed = g.write(barrier).await.ok()?;
         g.read_strong(|m, applied| (m.holds_blob(&raw), applied))
@@ -1090,9 +1174,13 @@ impl Node {
             .ok()
     }
 
-    async fn undo_upload(&self, app_id: &str, mark: &FileMark) {
+    pub(super) async fn undo_upload(&self, app_id: &str, mark: &FileMark) {
         self.refund_files(app_id, mark.size).await;
-        self.delete_files_later(app_id, vec![mark.id.clone()]);
+        let stored = Stored {
+            segments: mark.segments.clone(),
+            ..Stored::default()
+        };
+        self.delete_files_later(app_id, stored);
     }
 
     /// Appends the upload's mark to the app's log, or answers the one recorded for `key`.
@@ -1116,7 +1204,8 @@ impl Node {
         if fault == 3 {
             // Another upload commits under this key first.
             let mut other = mark.clone();
-            other.id = "ab".repeat(32);
+            other.segments = vec!["ab".repeat(32)];
+            other.id = hex::encode(crate::files::file_id(&[[0xab; 32]]));
             let _ = self.append_mark(g, &other, key, uploader).await;
         }
         let proposed = self.append_mark(g, mark, key, uploader).await?;
@@ -1150,28 +1239,64 @@ impl Node {
     }
 }
 
+/// A segment stored on this node, as a blob to push.
+pub(super) fn segment_blob(hash: &[u8; 32]) -> Blob {
+    Blob {
+        id: hex::encode(hash),
+        bytes: None,
+        segment: true,
+    }
+}
+
+/// The segments of `file` as pushable blobs, leaving the hashes in place.
+pub(super) fn blobs_of(file: &mut NewFile) -> Vec<Blob> {
+    (file.segments.iter_mut())
+        .map(|s| Blob {
+            id: hex::encode(s.hash),
+            bytes: Some(std::mem::take(&mut s.bytes))
+                .filter(|b| !b.is_empty())
+                .map(Into::into),
+            segment: true,
+        })
+        .collect()
+}
+
+/// What `blobs` hold, by name, as a [`Stored`] to delete.
+pub(super) fn stored_of_blobs(blobs: &[Blob]) -> Stored {
+    let named = |segment| {
+        (blobs.iter())
+            .filter(|b| b.segment == segment)
+            .map(|b| b.id.clone())
+            .collect()
+    };
+    Stored {
+        ids: named(false),
+        segments: named(true),
+        ..Stored::default()
+    }
+}
+
 /// Whether a peer's uploader is an account id: printable ASCII, at most [`MAX_UPLOADER_BYTES`].
-fn valid_uploader(who: &str) -> bool {
+pub(crate) fn valid_uploader(who: &str) -> bool {
     !who.is_empty() && who.len() <= MAX_UPLOADER_BYTES && who.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// Whether the app holds the blob with hex id `id`: a file registered by a final or an upload.
 pub(super) fn holds_file(m: &AppMachine, id: &str) -> bool {
-    hex::decode(id)
-        .ok()
-        .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
-        .is_some_and(|raw| m.holds_blob(&raw))
+    parse_hex32(id).is_some_and(|raw| m.holds_blob(&raw))
 }
 
 /// Why an upload did not finish on this node.
-enum Upload {
+pub(super) enum Upload {
     Refused(ApiError),
+    /// The commit may yet land: its bytes and charge stay.
+    Unknown(ApiError),
     /// This node does not lead the app; the leader's address, if known.
     Elsewhere(Option<String>),
 }
 
 /// An upload's answer as a command recorded: the mark it committed and the entry's index.
-fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
+pub(super) fn uploaded(answer: &crate::component::Applied) -> Option<Uploaded> {
     Some(Uploaded {
         mark: serde_json::from_value(answer.result["mark"].clone()).ok()?,
         index: answer.index,
@@ -1202,6 +1327,7 @@ impl Node {
             loop {
                 let chunk = readers[0].read(1 << 20).map_err(|e| match e {
                     ReadError::Failed(reason) => reason,
+                    ReadError::Unavailable => calimero_app_host::FILE_UNAVAILABLE.to_owned(),
                     ReadError::Corrupt => calimero_app_host::FILE_CORRUPT.to_owned(),
                 })?;
                 if chunk.is_empty() {
@@ -1214,10 +1340,60 @@ impl Node {
 }
 
 impl Node {
-    /// Runs the cleanup of compute outputs `ids` as a losing leader would. Tests only.
+    /// Writes `count` files of `len` bytes through the writers a run's files use, all at once in
+    /// small pieces, and answers their ids. Tests only.
     #[cfg(feature = "testing")]
-    pub async fn clean_up_outputs(&self, app_id: &str, ids: Vec<String>) {
-        self.delete_unmarked_outputs(app_id, ids).await;
+    pub fn write_test_files(
+        &self,
+        app_id: &str,
+        count: usize,
+        len: usize,
+    ) -> Result<Vec<String>, String> {
+        let failed = |e: FileError| format!("{e:?}");
+        off_workers(|| {
+            let files = NodeFiles::new(self, app_id, Blobs::default(), InvocationKind::Call);
+            let mut writers = (0..count)
+                .map(|_| files.create())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(failed)?;
+            let piece = vec![7u8; 64 * 1024];
+            for _ in 0..len / piece.len() {
+                for writer in &mut writers {
+                    writer.write(&piece).map_err(failed)?;
+                }
+            }
+            (writers.into_iter())
+                .map(|w| w.finish().map(|f| f.id).map_err(failed))
+                .collect()
+        })
+    }
+
+    /// The most bytes pushes to replicas held at once. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn push_bytes_peak(&self) -> usize {
+        MAX_PUSH_BYTES
+            - self
+                .probes
+                .push_low
+                .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The most bytes the new files of runs held at once. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn pending_file_bytes_peak(&self) -> usize {
+        MAX_PENDING_FILE_BYTES
+            - self
+                .probes
+                .pending_low
+                .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Runs the cleanup of compute output segments `hashes` as a losing leader would. Tests only.
+    #[cfg(feature = "testing")]
+    pub async fn clean_up_outputs(&self, app_id: &str, hashes: Vec<String>) {
+        self.delete_unmarked_outputs(app_id, hashes).await;
     }
 }
 
@@ -1225,6 +1401,19 @@ impl Node {
 mod tests {
     use super::*;
     use crate::component::FileMark;
+    use crate::files::CHUNK_BYTES;
+
+    #[test]
+    fn a_file_over_the_blob_cap_is_too_large_to_publish() {
+        let cap = MAX_BLOB_BYTES as u64;
+        assert!(publishable(cap).is_ok());
+        assert_eq!(
+            publishable(cap + 1),
+            Err(FileError::Failed(
+                calimero_app_host::FILE_TOO_LARGE.to_owned()
+            ))
+        );
+    }
 
     #[test]
     fn an_uploader_a_peer_names_is_an_account_id_not_free_text() {
@@ -1330,25 +1519,31 @@ mod tests {
         assert_eq!(done, Some(1));
     }
 
-    /// A sealed file and the mark that describes it.
-    fn sealed(plain: &[u8]) -> (Vec<u8>, FileMark, [u8; 32]) {
+    /// A sealed file as its segments, and the mark that describes it.
+    fn sealed(plain: &[u8]) -> (Vec<Vec<u8>>, FileMark, [u8; 32]) {
         let file_key = [7u8; 32];
-        let mut sealer = FileSealer::new();
-        let mut ciphertext = sealer.write(plain).unwrap();
-        let data_key = *sealer.data_key();
-        let done = sealer.finish().unwrap();
-        ciphertext.extend_from_slice(&done.tail);
+        let mut writer = SegmentWriter::new();
+        let mut segments: Vec<Vec<u8>> = writer
+            .write(plain)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.bytes)
+            .collect();
+        let data_key = *writer.data_key();
+        let done = writer.finish().unwrap();
+        segments.push(done.last.bytes);
         let mark = FileMark {
-            id: String::new(),
+            id: hex::encode(done.id),
             size: done.size,
             sha256: calimero_log::Bytes(done.sha256.to_vec()),
             wrapped_key: calimero_log::Bytes(wrap_key(&file_key, "app", &data_key).unwrap()),
+            segments: done.segments.iter().map(hex::encode).collect(),
         };
-        (ciphertext, mark, file_key)
+        (segments, mark, file_key)
     }
 
     fn read_all(
-        ciphertext: Vec<u8>,
+        segments: Vec<Vec<u8>>,
         mark: &FileMark,
         file_key: &[u8; 32],
     ) -> Result<Vec<u8>, ReadError> {
@@ -1356,11 +1551,13 @@ mod tests {
         let seal = FileSeal {
             sha256: mark.sha256.clone(),
             wrapped_key: mark.wrapped_key.clone(),
+            segments: mark.segments.clone(),
             output: false,
             uploader: None,
         };
+        let held: HashMap<String, Vec<u8>> = mark.segments.iter().cloned().zip(segments).collect();
         let mut reader = SealedReader::new(
-            ciphertext,
+            Box::new(move |hash| held.get(hash).cloned()),
             mark.size,
             &seal,
             "app",
@@ -1379,17 +1576,31 @@ mod tests {
 
     #[test]
     fn a_reader_returns_the_file_and_traps_on_any_alteration() {
-        let plain: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
-        let (ciphertext, mark, key) = sealed(&plain);
-        assert_eq!(read_all(ciphertext.clone(), &mark, &key).unwrap(), plain);
+        let plain: Vec<u8> = (0..crate::files::SEGMENT_CHUNKS * CHUNK_BYTES + 100)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let (segments, mark, key) = sealed(&plain);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(read_all(segments.clone(), &mark, &key).unwrap(), plain);
 
-        let mut altered = ciphertext.clone();
-        altered[ciphertext.len() / 2] ^= 1;
+        let mut altered = segments.clone();
+        altered[1][5] ^= 1;
         assert_eq!(read_all(altered, &mark, &key), Err(ReadError::Corrupt));
 
-        // Cut on a chunk boundary: every chunk opens, the stream ends too early.
-        let cut = ciphertext[..CHUNK_BYTES + TAG_BYTES].to_vec();
-        assert_eq!(read_all(cut, &mark, &key), Err(ReadError::Corrupt));
+        // A segment nobody can give is unavailable, not corrupt.
+        assert_eq!(
+            read_all(segments[..1].to_vec(), &mark, &key),
+            Err(ReadError::Unavailable)
+        );
+        // A list that ends early: every segment opens, the stream ends too early.
+        let short = FileMark {
+            segments: mark.segments[..1].to_vec(),
+            ..mark.clone()
+        };
+        assert_eq!(
+            read_all(segments.clone(), &short, &key),
+            Err(ReadError::Corrupt)
+        );
 
         let (other, _other_mark, _) = sealed(&plain);
         assert_eq!(read_all(other, &mark, &key), Err(ReadError::Corrupt));
@@ -1399,12 +1610,9 @@ mod tests {
             ..mark.clone()
         };
         assert_eq!(
-            read_all(ciphertext.clone(), &wrong_hash, &key),
+            read_all(segments.clone(), &wrong_hash, &key),
             Err(ReadError::Corrupt)
         );
-        assert_eq!(
-            read_all(ciphertext, &mark, &[8; 32]),
-            Err(ReadError::Corrupt)
-        );
+        assert_eq!(read_all(segments, &mark, &[8; 32]), Err(ReadError::Corrupt));
     }
 }

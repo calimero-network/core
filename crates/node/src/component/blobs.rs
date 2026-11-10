@@ -15,7 +15,7 @@
 //! The records are host-owned (D39): hidden rows of the group (`rows::CBLOB`) and, in
 //! memory, an ordered map shared with runs as their view of the app's blobs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use calimero_app_host::{BlobHost, BlobInfo};
@@ -76,10 +76,11 @@ fn is_zero(n: &u32) -> bool {
 
 impl BlobRecord {
     /// The record of the sealed file `mark` names, unreferenced and idle from `ts_ms`, and its
-    /// id; none when the mark's id is not a blob id.
+    /// id; none when the mark's id is not the hash of its segment list.
     #[must_use]
     pub fn sealed(mark: &FileMark, ts_ms: u64) -> Option<([u8; 32], Self)> {
         let id = <[u8; 32]>::try_from(hex::decode(&mark.id).ok()?).ok()?;
+        mark.segment_hashes()?;
         let record = Self {
             size: mark.size,
             mime: String::new(),
@@ -88,6 +89,7 @@ impl BlobRecord {
             file: Some(FileSeal {
                 sha256: mark.sha256.clone(),
                 wrapped_key: mark.wrapped_key.clone(),
+                segments: mark.segments.clone(),
                 output: false,
                 uploader: None,
             }),
@@ -106,6 +108,8 @@ pub struct FileSeal {
     pub sha256: Bytes,
     /// The data key, wrapped under the app's file key.
     pub wrapped_key: Bytes,
+    /// Hex SHA-256 of each segment of the ciphertext, in order.
+    pub segments: Vec<String>,
     /// Set when the file is an output of a done compute run: the only kind of file that
     /// can be published.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -115,6 +119,9 @@ pub struct FileSeal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uploader: Option<String>,
 }
+
+/// A blob forgotten by retention: its id, the quota it held, and the segments of a sealed file.
+pub type Expired = ([u8; 32], Option<u64>);
 
 /// A component app's blobs, by SHA-256.
 pub type Blobs = Arc<BTreeMap<[u8; 32], BlobRecord>>;
@@ -128,9 +135,34 @@ pub struct BlobTable {
     /// Above the epoch of every grantable blob forgotten so far: a record made again starts
     /// here, so a grant of a forgotten blob never holds for its successor.
     floor: u32,
+    /// The segments the sealed files list, by hash, to the file: rebuilt from the records on load.
+    segments: HashMap<String, [u8; 32]>,
 }
 
 impl BlobTable {
+    /// Whether a sealed file of the app lists segment `hash`.
+    #[must_use]
+    pub fn holds_segment(&self, hash: &str) -> bool {
+        self.segments.contains_key(hash)
+    }
+
+    fn index_segments(&mut self, id: &[u8; 32], record: &BlobRecord) {
+        for hash in record.file.iter().flat_map(|f| &f.segments) {
+            let _prev = self.segments.insert(hash.clone(), *id);
+        }
+    }
+
+    fn unindex_segments(&mut self, id: &[u8; 32]) {
+        let Some(file) = self.records.get(id).and_then(|r| r.file.as_ref()) else {
+            return;
+        };
+        for hash in &file.segments {
+            if self.segments.get(hash) == Some(id) {
+                let _gone = self.segments.remove(hash);
+            }
+        }
+    }
+
     /// Read the records from the group's rows (a restart, a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
         let mut records = BTreeMap::new();
@@ -151,6 +183,14 @@ impl BlobTable {
             .iter()
             .filter(|(_, r)| r.refs == 0)
             .map(|(id, r)| (r.idle_since_ms, *id))
+            .collect();
+        self.segments = (records.iter())
+            .flat_map(|(id, r)| {
+                r.file
+                    .iter()
+                    .flat_map(|f| &f.segments)
+                    .map(|h| (h.clone(), *id))
+            })
             .collect();
         self.records = Arc::new(records);
         self.floor = floor;
@@ -230,6 +270,9 @@ impl BlobTable {
         let Some((id, mut record)) = BlobRecord::sealed(mark, ts_ms) else {
             return;
         };
+        if self.records.get(&id).is_some_and(|r| r.file.is_none()) {
+            return;
+        }
         if let Some(seal) = record.file.as_mut() {
             tag(seal);
         }
@@ -289,6 +332,7 @@ impl BlobTable {
 
     /// Forget a blob; whether the app held it.
     pub fn forget(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
+        self.unindex_segments(id);
         let Some(prev) = Arc::make_mut(&mut self.records).remove(id) else {
             return false;
         };
@@ -334,8 +378,8 @@ impl BlobTable {
 
     /// Forget the blobs idle for [`BLOB_IDLE_MS`] at `now_ms`, at most [`BLOB_EXPIRY_STEP`];
     /// returns them, with the size of each that was charged to the quota (a sealed file or a
-    /// published blob).
-    pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<([u8; 32], Option<u64>)> {
+    /// published blob) and the segments of a sealed file.
+    pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<Expired> {
         let due: Vec<(u64, [u8; 32])> = self
             .idle
             .iter()
@@ -345,10 +389,9 @@ impl BlobTable {
             .collect();
         due.into_iter()
             .filter_map(|(_, id)| {
-                let charged = self
-                    .records
-                    .get(&id)
-                    .and_then(|r| (r.file.is_some() || r.charged).then_some(r.size));
+                let record = self.records.get(&id);
+                let charged =
+                    record.and_then(|r| (r.file.is_some() || r.charged).then_some(r.size));
                 self.forget(tx, &id).then_some((id, charged))
             })
             .collect()
@@ -359,6 +402,8 @@ impl BlobTable {
             Ok(v) => tx.put_hidden(rows::CBLOB, &id, &v),
             Err(e) => tx.fail(e),
         }
+        self.unindex_segments(&id);
+        self.index_segments(&id, &record);
         let _prev = Arc::make_mut(&mut self.records).insert(id, record);
     }
 }
@@ -544,6 +589,7 @@ mod tests {
             file: file.then(|| FileSeal {
                 sha256: Bytes(vec![9; 32]),
                 wrapped_key: Bytes(vec![8; 60]),
+                segments: vec![hex::encode([7; 32])],
                 output: false,
                 uploader: None,
             }),

@@ -16,6 +16,7 @@ use calimero_app_host::{
     MAX_COMPUTE_WALL_SECS, MAX_FILE_BYTES,
 };
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use tracing::warn;
 use zeroize::Zeroizing;
@@ -23,8 +24,8 @@ use zeroize::Zeroizing;
 use super::admission::{admit_assignment, token_matches};
 use super::{exec, locked, JobNode, RUNS_PER_JOB_NODE};
 use crate::error::ApiError;
-use crate::files::{sealed_len, unwrap_for_job, JobWrap, WrapKind};
-use crate::job_wire::{assignment_message, is_hash, Assignment, Report, SHA256_LEN};
+use crate::files::{file_id, sealed_len, unwrap_for_job, JobWrap, WrapKind, SEGMENT_BYTES};
+use crate::job_wire::{assignment_message, is_hash, Assignment, Report, RunInput, SHA256_LEN};
 use crate::node::MAX_ARGS_BYTES;
 
 const JOB_RESULT_TTL: Duration = Duration::from_secs(60 * 60); // how long a finished or lost run is kept for its leader to collect
@@ -84,7 +85,7 @@ pub(super) struct Run {
     pub dir: PathBuf,
     pub cancel: Arc<AtomicBool>,
     created: Instant,
-    received: tokio::sync::Mutex<BTreeSet<usize>>,
+    received: tokio::sync::Mutex<BTreeSet<(usize, usize)>>,
     pub state: Mutex<RunState>,
     /// Becomes true when the run ends.
     pub finished: watch::Sender<bool>,
@@ -293,7 +294,16 @@ fn has_room(held: u64, reserved: u64) -> bool {
 }
 
 pub(super) fn hash_hex(field: &str) -> Option<[u8; SHA256_LEN]> {
-    hex::decode(field).ok()?.try_into().ok()
+    let raw: [u8; SHA256_LEN] = hex::decode(field).ok()?.try_into().ok()?;
+    (hex::encode(raw) == field).then_some(raw)
+}
+
+/// The segment hashes of `input`, when the list is not empty and hashes to the input's id.
+fn input_segments(input: &RunInput) -> Option<Vec<[u8; SHA256_LEN]>> {
+    let hashes: Vec<[u8; SHA256_LEN]> = (input.segments.iter())
+        .map(|s| hash_hex(s))
+        .collect::<Option<_>>()?;
+    (!hashes.is_empty() && hex::encode(file_id(&hashes)) == input.id).then_some(hashes)
 }
 
 /// The refusals that need nothing but the assignment itself.
@@ -336,10 +346,13 @@ fn check_shape(a: &Assignment) -> Result<(), ApiError> {
     }
     let mut total = 0u64;
     for input in &a.inputs {
-        if !is_hash(&input.id) || hash_hex(&input.sha256).is_none() {
+        if !is_hash(&input.id)
+            || hash_hex(&input.sha256).is_none()
+            || input_segments(input).is_none()
+        {
             return Err(ApiError::bad_request(
                 "BAD_ASSIGNMENT",
-                "an input is named by the hex SHA-256 of its ciphertext and has a plaintext hash",
+                "an input is named by the hash of its segment list and has a plaintext hash",
             ));
         }
         if a.inputs.iter().filter(|other| other.id == input.id).count() > 1 {
@@ -499,10 +512,11 @@ fn find(
     Ok(run)
 }
 
-/// `PUT /job/runs/{app}/{run}/{attempt}/inputs/{i}`: the i-th input's ciphertext.
-pub(super) async fn put_input(
+/// `PUT /job/runs/{app}/{run}/{attempt}/inputs/{i}/{k}`: segment `k` of the i-th input's
+/// ciphertext, in any order. The input is proved from disk when its last segment is in.
+pub(super) async fn put_segment(
     State(job): State<Arc<JobNode>>,
-    Path((app, run, attempt, i)): Path<(String, String, u32, usize)>,
+    Path((app, run, attempt, i, k)): Path<(String, String, u32, usize, usize)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
@@ -512,29 +526,50 @@ pub(super) async fn put_input(
         .inputs
         .get(i)
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_INPUT", "the run has no such input"))?;
-    if body.len() as u64 != sealed_len(input.size) {
-        return Err(ApiError::bad_request(
-            "BAD_INPUT_SIZE",
-            "the ciphertext is not the size the input declares",
-        ));
-    }
-    let (held, id) = (body.clone(), input.id.clone());
-    let named =
-        tokio::task::spawn_blocking(move || hex::encode(calimero_identity::sha256(&held)) == id)
+    let hashes = input_segments(input).unwrap_or_default();
+    let want = hashes
+        .get(k)
+        .ok_or_else(|| ApiError::new(404, "NO_SUCH_SEGMENT", "the input has no such segment"))?;
+    let last = (hashes.len() - 1) as u64;
+    let expected = if k as u64 == last {
+        sealed_len(input.size).checked_sub(last * SEGMENT_BYTES as u64)
+    } else {
+        Some(SEGMENT_BYTES as u64)
+    };
+    let want = *want;
+    let held = body.clone();
+    let named = expected == Some(body.len() as u64)
+        && tokio::task::spawn_blocking(move || calimero_identity::sha256(&held) == want)
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !named {
         return Err(ApiError::bad_request(
-            "BAD_INPUT_ID",
-            "the ciphertext is not the file the input names",
+            "BAD_SEGMENT",
+            "the bytes are not the segment the input lists",
         ));
     }
     let mut received = run.received.lock().await;
-    if received.contains(&i) {
+    if received.contains(&(i, k)) {
         return Ok(Json(run.status()));
     }
     if !matches!(locked(&run.state).phase, Phase::Awaiting) {
         return Err(not_awaiting());
+    }
+    if let Err(e) = exec::store_segment(&run.dir, i, k, &body).await {
+        // A cancel removed the run's directory under this request.
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(not_awaiting());
+        }
+        return Err(ApiError::internal(&format!(
+            "cannot store the segment: {e}"
+        )));
+    }
+    // Counted only once stored, and for the last segment of an input once it is also finished: a
+    // retry after a failed finish must run it again.
+    let in_so_far = received.range((i, 0)..=(i, usize::MAX)).count();
+    if in_so_far + 1 < hashes.len() {
+        let _new = received.insert((i, k));
+        return Ok(Json(run.status()));
     }
     let key = locked(&run.keys)
         .as_ref()
@@ -543,9 +578,9 @@ pub(super) async fn put_input(
     let (Some(key), Some(sha256)) = (key, sha256) else {
         return Err(not_awaiting());
     };
-    let held = body.clone();
+    let part = exec::input_part(&run.dir, i);
     let matches =
-        tokio::task::spawn_blocking(move || exec::input_matches(&held, &key, size, &sha256))
+        tokio::task::spawn_blocking(move || exec::input_matches(&part, &key, size, &sha256))
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !matches {
@@ -553,15 +588,26 @@ pub(super) async fn put_input(
         exec::fail_integrity(&job, &run);
         return Ok(Json(run.status()));
     }
-    if let Err(e) = exec::store_input(&run.dir, i, &body).await {
-        // A cancel removed the run's directory under this request.
+    #[cfg(feature = "testing")]
+    let finished = if job.finish_input_fails.swap(false, Ordering::Relaxed) {
+        Err(std::io::Error::other("input finish failed (probe)"))
+    } else {
+        exec::finish_input(&run.dir, i).await
+    };
+    #[cfg(not(feature = "testing"))]
+    let finished = exec::finish_input(&run.dir, i).await;
+    if let Err(e) = finished {
         if e.kind() == std::io::ErrorKind::NotFound {
             return Err(not_awaiting());
         }
         return Err(ApiError::internal(&format!("cannot store the input: {e}")));
     }
-    let _new = received.insert(i);
-    let complete = received.len() == run.assignment.inputs.len();
+    let _new = received.insert((i, k));
+    let have = |n: usize| received.range((n, 0)..=(n, usize::MAX)).count();
+    let complete = (0..run.assignment.inputs.len()).all(|n| {
+        let total = run.assignment.inputs[n].segments.len();
+        have(n) == total
+    });
     drop(received);
     if complete {
         exec::start(&job, &run);
@@ -606,15 +652,16 @@ fn output_of<T>(run: &Run, i: usize, read: impl FnOnce(&OutputFile) -> T) -> Res
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_OUTPUT", "the run wrote no such output"))
 }
 
-/// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}`: the output's ciphertext.
-pub(super) async fn output(
+/// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}/{k}`: segment `k` of the output's ciphertext,
+/// read by range from the scratch file.
+pub(super) async fn output_segment(
     State(job): State<Arc<JobNode>>,
-    Path((app, run, attempt, i)): Path<(String, String, u32, usize)>,
+    Path((app, run, attempt, i, k)): Path<(String, String, u32, usize, usize)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
     #[cfg(feature = "testing")]
-    if job.outputs_fail.load(Ordering::Relaxed) {
+    if job.outputs_fail.load(Ordering::Relaxed) || output_cut(&job) {
         return Err(ApiError::internal("outputs are failing"));
     }
     #[cfg(feature = "testing")]
@@ -633,10 +680,53 @@ pub(super) async fn output(
         return Err(ApiError::internal("outputs are failing slowly"));
     }
     let path = output_of(&run, i, |o| o.path.clone())?;
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|e| ApiError::internal(&format!("cannot read the output: {e}")))?;
+    let bytes = read_segment(&path, k).await?;
+    #[cfg(feature = "testing")]
+    {
+        let mut log = locked(&job.output_log);
+        log.0.push((i, k));
+        log.1 = log.1.max(bytes.len());
+    }
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
+}
+
+/// Whether a test cut this answer.
+#[cfg(feature = "testing")]
+fn output_cut(job: &JobNode) -> bool {
+    let left = job.output_cut.load(Ordering::Relaxed);
+    match left {
+        usize::MAX => false,
+        0 => {
+            job.output_cut.store(usize::MAX, Ordering::Relaxed);
+            true
+        }
+        n => {
+            job.output_cut.store(n - 1, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
+/// Segment `k` of the file at `path`: one segment in memory, never the whole file.
+async fn read_segment(path: &std::path::Path, k: usize) -> Result<Vec<u8>, ApiError> {
+    let unreadable =
+        |e: std::io::Error| ApiError::internal(&format!("cannot read the output: {e}"));
+    let mut file = tokio::fs::File::open(path).await.map_err(unreadable)?;
+    let len = file.metadata().await.map_err(unreadable)?.len();
+    let start = (k as u64).saturating_mul(SEGMENT_BYTES as u64);
+    if start >= len && !(len == 0 && k == 0) {
+        return Err(ApiError::new(
+            404,
+            "NO_SUCH_SEGMENT",
+            "the output has no such segment",
+        ));
+    }
+    let mut bytes = vec![0; (len - start).min(SEGMENT_BYTES as u64) as usize];
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(unreadable)?;
+    file.read_exact(&mut bytes).await.map_err(unreadable)?;
+    Ok(bytes)
 }
 
 /// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}/key`: the output's data key, hex. It travels
@@ -686,6 +776,16 @@ mod tests {
 
     use super::*;
     use crate::job_wire::sample_assignment;
+
+    #[test]
+    fn an_input_listing_uppercase_hex_is_not_well_formed() {
+        let mut input = sample_assignment().inputs.remove(0);
+        input.segments = vec![hex::encode([0xabu8; 32])];
+        input.id = hex::encode(file_id(&[[0xabu8; 32]]));
+        assert!(input_segments(&input).is_some());
+        input.segments[0] = input.segments[0].to_uppercase();
+        assert!(input_segments(&input).is_none());
+    }
 
     fn run(name: &str) -> Arc<Run> {
         let mut a = sample_assignment();

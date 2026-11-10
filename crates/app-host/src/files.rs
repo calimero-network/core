@@ -9,8 +9,8 @@ pub use memory::MemoryFiles;
 
 /// Open files (readers and writers) one run may hold at once.
 pub const MAX_OPEN_FILES: usize = 16;
-/// Plaintext bytes of one file; at most the node's blob cap (a node test pins it).
-pub const MAX_FILE_BYTES: u64 = 47 * 1024 * 1024;
+/// Plaintext bytes of one file: a compute run may write that much, a logged run is held to its own cap.
+pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Plaintext bytes one run may write across all its files; the node holds a logged run's new
 /// ciphertext in memory until its entry is proposed.
 pub const MAX_RUN_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -51,15 +51,23 @@ pub struct FileInfo {
     pub sha256: Vec<u8>,
 }
 
-/// A file a run finished: its id is the hash of the ciphertext, which the node keeps in
-/// memory until the entry that marks it is proposed.
+/// One segment of a finished file: its SHA-256, and its bytes unless the provider stored them
+/// itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewSegment {
+    pub hash: [u8; 32],
+    pub bytes: Vec<u8>,
+}
+
+/// A file a run finished: its id is the hash of its segment list, and the node keeps the
+/// segments' bytes in memory until the entry that marks it is proposed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewFile {
     pub id: String,
     pub size: u64,
     pub sha256: Vec<u8>,
     pub wrapped_key: Vec<u8>,
-    pub ciphertext: Vec<u8>,
+    pub segments: Vec<NewSegment>,
 }
 
 /// A compute output a logged run published: the plaintext, to be stored as a plain blob.
@@ -88,6 +96,9 @@ pub enum FileError {
 pub enum ReadError {
     /// The guest is told (the WIT `result<_, string>`).
     Failed(String),
+    /// A segment of the file is held by no reachable node: a logged run is aborted and
+    /// retried, a view gets `FILE_UNAVAILABLE`.
+    Unavailable,
     /// The stored bytes are altered or cut short: the run traps, so no guest can ignore it.
     Corrupt,
 }

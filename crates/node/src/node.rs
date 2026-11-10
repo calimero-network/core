@@ -26,6 +26,9 @@ use crate::usage::{Meter, Usage};
 pub(crate) mod blob_guards;
 mod component;
 mod job;
+mod segments;
+
+pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 
 #[cfg(feature = "testing")]
 pub use component::ComputeLimits;
@@ -36,6 +39,7 @@ pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
+pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
 
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
@@ -426,6 +430,12 @@ pub struct Node {
     push_bytes: Arc<tokio::sync::Semaphore>,
     /// The ciphertext of new files that runs hold until their entries are proposed.
     pending_file_bytes: Arc<tokio::sync::Semaphore>,
+    /// Segments upload sessions and pending entries hold, which no sweep or delete may take.
+    pinned_segments: segments::Pinned,
+    /// What the segment sweep saw at its earlier runs.
+    segment_sweep: Mutex<segments::Sweep>,
+    /// The upload sessions this node holds as an app leader.
+    uploads: component::Uploads,
     /// Pins on blobs an entry stored but did not commit, and deletions in flight.
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
     /// Knobs and counters for tests (feature `testing`).
@@ -638,6 +648,8 @@ pub enum PeerBlobs {
     Refuse,
     /// Stores, then answers `503`: a peer that holds the bytes but is not counted.
     StoreThenFail,
+    /// Waits this many milliseconds before it stores a segment: a slow replica.
+    Delay(u64),
 }
 
 /// How long a forwarded call or read waits for the leader before retrying.
@@ -687,6 +699,28 @@ pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
 /// An install refused for want of a deployer grant: `403 DEPLOY_NOT_GRANTED`.
 pub fn not_a_deployer() -> ApiError {
     ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
+}
+
+pub(crate) fn file_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "a file is limited to {} MiB",
+            calimero_app_host::MAX_FILE_BYTES >> 20
+        ),
+    )
+}
+
+pub(crate) fn part_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "one request holds a file of at most {} MiB: send a larger one in parts",
+            crate::files::PART_BYTES >> 20
+        ),
+    )
 }
 
 pub(crate) fn blob_too_large() -> ApiError {
@@ -816,6 +850,9 @@ impl Node {
             pending_file_bytes: Arc::new(tokio::sync::Semaphore::new(
                 component::MAX_PENDING_FILE_BYTES,
             )),
+            pinned_segments: Arc::default(),
+            segment_sweep: Mutex::default(),
+            uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
@@ -1005,6 +1042,33 @@ impl Node {
             return Err(err.into());
         }
         Ok(v)
+    }
+
+    /// A raw-body request to a peer's internal route; the refusal a peer answers is the error.
+    pub(crate) async fn peer_raw(
+        &self,
+        addr: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<axum::body::Bytes>,
+    ) -> eyre::Result<reqwest::Response> {
+        let peer = self.connected(addr).await?;
+        let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
+        let mut req = (self.http.request(method, url))
+            .header("x-cluster-auth", &self.cluster_secret)
+            .header(PEER_NODE_HEADER, self.config.node_id.to_string());
+        if let Some(body) = body {
+            req = req.body(body);
+        }
+        let resp = peer.execute(req.build()?).await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        let v: Value = resp.json().await.unwrap_or(Value::Null);
+        let err: ApiError = serde_json::from_value(v)
+            .unwrap_or_else(|_| ApiError::unavailable(&format!("peer answered {status}")));
+        Err(err.into())
     }
 
     /// [`Self::peer_post`] for a request a peer should answer quickly: a call or
@@ -2198,15 +2262,15 @@ impl Node {
     /// Removes this node's bytes of the sealed files of an app that was deleted. Files are per
     /// app and never shared; plain blobs are content-addressed and may be another app's.
     fn drop_deleted_files(&self, g: &Group<AppMachine>) {
-        let files: Vec<String> = g.read_local(|m, _| {
-            (m.state.component.blobs.records.iter())
-                .filter(|(_, r)| r.file.is_some())
-                .map(|(id, _)| hex::encode(id))
+        let segments: Vec<String> = g.read_local(|m, _| {
+            (m.state.component.blobs.records.values())
+                .filter_map(|r| r.file.as_ref())
+                .flat_map(|f| f.segments.clone())
                 .collect()
         });
-        for id in files.iter().filter(|id| !self.is_code_blob(id)) {
-            if let Err(e) = self.engine.delete_blob(id) {
-                warn!(file = %id, error = %e, "file bytes not deleted");
+        for hash in &segments {
+            if let Err(e) = self.engine.delete_segment(hash) {
+                warn!(segment = %hash, error = %e, "file bytes not deleted");
             }
         }
     }
@@ -2246,17 +2310,16 @@ impl Node {
             let wasm = self.bundle_wasm(&bundle).await?;
             self.hand_to(&bundle, wasm, to).await?;
         }
-        // One blob in memory at a time: an app may hold many large ones.
-        let ids: Vec<String> = g.read_local(|m, _| {
-            let mut ids: Vec<String> = (m.storage_stats().blobs.iter())
+        // One blob or segment in memory at a time: an app may hold many large ones.
+        let (ids, segments): (Vec<String>, Vec<String>) = g.read_local(|m, _| {
+            let ids = (m.storage_stats().blobs.iter())
                 .map(|(id, _)| hex::encode(id))
                 .collect();
-            ids.extend(
-                (m.state.component.blobs.records.iter())
-                    .filter(|(_, r)| r.file.is_some())
-                    .map(|(id, _)| hex::encode(id)),
-            );
-            ids
+            let segments = (m.state.component.blobs.records.values())
+                .filter_map(|r| r.file.as_ref())
+                .flat_map(|f| f.segments.clone())
+                .collect();
+            (ids, segments)
         });
         for id in ids {
             if !now.insert(id.clone()) {
@@ -2271,6 +2334,20 @@ impl Node {
                 None => self.fetch_blob(&id).await?,
             };
             self.hand_to(&id, bytes, to).await?;
+        }
+        for hash in segments {
+            if !now.insert(hash.clone()) {
+                continue;
+            }
+            let bytes =
+                axum::body::Bytes::from(self.segment_from(&hash, &self.other_nodes()).await?);
+            for (id, addr) in to {
+                if let Err(e) = self.put_segment_on(addr, &hash, bytes.clone()).await {
+                    return Err(ApiError::unavailable(&format!(
+                        "node {id} could not take the app's bytes: {e}"
+                    )));
+                }
+            }
         }
         Ok(now)
     }
@@ -2290,6 +2367,78 @@ impl Node {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// The bytes of segment `hash` stored here, read off the async workers; one that is not its
+    /// hash is dropped.
+    pub(crate) fn local_segment(&self, hash: &str) -> Option<Vec<u8>> {
+        match off_workers(|| self.engine.get_segment(hash)) {
+            Ok(Some(bytes))
+                if off_workers(|| hex::encode(calimero_identity::sha256(&bytes))) == hash =>
+            {
+                Some(bytes)
+            }
+            Ok(Some(_)) => {
+                warn!(segment = %hash, "a stored segment is not its hash; dropping it");
+                let _dropped = self.engine.delete_segment(hash);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Segment `hash` from this node, else from `peers`, kept here after.
+    pub(crate) async fn segment_from(
+        &self,
+        hash: &str,
+        peers: &[String],
+    ) -> Result<Vec<u8>, ApiError> {
+        if let Some(bytes) = self.local_segment(hash) {
+            return Ok(bytes);
+        }
+        for addr in peers {
+            let path = format!("internal/segment/{hash}");
+            let Ok(resp) = self.peer_raw(addr, reqwest::Method::GET, &path, None).await else {
+                continue;
+            };
+            let Ok(bytes) =
+                calimero_sealed::client::read_body_capped(resp, crate::files::SEGMENT_BYTES).await
+            else {
+                continue;
+            };
+            if hex::encode(calimero_identity::sha256(&bytes)) == hash {
+                return self.keep_segment(hash, bytes).await;
+            }
+        }
+        Err(ApiError::unavailable("no peer holds the segment"))
+    }
+
+    /// Stores segment `hash` on this node, off the async workers: a synced write of up to a segment.
+    pub(crate) async fn keep_segment<B>(&self, hash: &str, bytes: B) -> Result<B, ApiError>
+    where
+        B: AsRef<[u8]> + Send + 'static,
+    {
+        let (engine, hash) = (Arc::clone(&self.engine), hash.to_owned());
+        tokio::task::spawn_blocking(move || {
+            engine.put_segment(&hash, bytes.as_ref()).map(|()| bytes)
+        })
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .map_err(|e| ApiError::internal(&e.to_string()))
+    }
+
+    /// Store segment `hash` on the node at `addr`, raw.
+    pub(crate) async fn put_segment_on(
+        &self,
+        addr: &str,
+        hash: &str,
+        bytes: axum::body::Bytes,
+    ) -> eyre::Result<()> {
+        let path = format!("internal/segment/{hash}");
+        let _ok = self
+            .peer_raw(addr, reqwest::Method::PUT, &path, Some(bytes))
+            .await?;
         Ok(())
     }
 
@@ -3069,7 +3218,7 @@ fn cluster_secret(cluster_key: &[u8; 32], cluster: &str) -> String {
 /// `spawn_blocking` itself: it builds its proposal on the machine's read lock,
 /// under the group's proposal lock, from borrowed state. Elsewhere (a
 /// current-thread runtime, which `block_in_place` refuses) `f` runs in place.
-fn off_workers<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn off_workers<R>(f: impl FnOnce() -> R) -> R {
     match tokio::runtime::Handle::try_current() {
         Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(f)

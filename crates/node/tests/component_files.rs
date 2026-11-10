@@ -4,14 +4,18 @@
 //! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
 mod common;
+use common::UploadBytes as _;
 
 use std::time::Duration;
 
-use calimero_client::{Client, Consistency};
+use std::sync::Arc;
+
+use calimero_client::attest::HttpAttestor;
+use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::files::{unwrap_key, FileOpener};
-use calimero_node::node::{CallRequest, PeerBlobs};
+use calimero_node::node::{CallRequest, PeerBlobs, SEGMENT_GRACE};
 use calimero_node::types::Caller;
 use common::{signed_up, Cluster};
 use serde_json::{json, Value};
@@ -46,6 +50,8 @@ struct Fixture {
     app: String,
     /// Alice's passkey, which approves her API keys.
     passkey: tokio::sync::Mutex<SoftAuthenticator>,
+    /// The segments of each file a test saw, which outlive the file's record.
+    seen: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
 }
 
 /// Hashing megabytes in the guest costs more fuel than the default call budget.
@@ -78,7 +84,8 @@ async fn start_with(c: Cluster) -> Fixture {
     let mut clients = vec![alice];
     for i in 1..c.nodes.len() {
         let client = c.client(i);
-        let _s = client.sign_in(&mut pk).await.unwrap();
+        // A node on a release the owner has not approved takes no sign-in.
+        let _s = client.sign_in(&mut pk).await;
         clients.push(client);
     }
     let passkey = tokio::sync::Mutex::new(pk);
@@ -87,6 +94,7 @@ async fn start_with(c: Cluster) -> Fixture {
         clients,
         app,
         passkey,
+        seen: std::sync::Mutex::default(),
     }
 }
 
@@ -104,7 +112,37 @@ impl Fixture {
             .await
             .unwrap();
         let id = r.result["id"].as_str().unwrap().to_owned();
+        let _cached = self.segments_of(&id);
         (id, r.result["sha256"].as_str().unwrap().to_owned(), r.index)
+    }
+
+    /// The hashes of file `id`'s segments, from any node's record, or as a test saw them before
+    /// the file was forgotten.
+    fn segments_of(&self, id: &str) -> Vec<String> {
+        self.find_segments(id).expect("a file this test never saw")
+    }
+
+    fn find_segments(&self, id: &str) -> Option<Vec<String>> {
+        let found = (0..self.c.nodes.len())
+            .filter(|i| self.c.nodes[*i].is_some())
+            .find_map(|i| self.mark(i, id))
+            .and_then(|r| r.file)
+            .map(|f| f.segments);
+        let mut seen = self.seen.lock().unwrap();
+        match found {
+            Some(segments) => {
+                let _prev = seen.insert(id.to_owned(), segments.clone());
+                Some(segments)
+            }
+            None => seen.get(id).cloned(),
+        }
+    }
+
+    /// The ciphertext of file `id` as node `i` stores it: its segments, joined.
+    fn stored(&self, i: usize, id: &str) -> Vec<u8> {
+        (self.segments_of(id).iter())
+            .flat_map(|h| self.node(i).engine.get_segment(h).unwrap().unwrap())
+            .collect()
     }
 
     /// The size and SHA-256 of file `id` as node `i` reads it once it applied entry `index`.
@@ -125,10 +163,25 @@ impl Fixture {
         g.read_local(|m, _| m.state.component.blobs.records.get(&raw).cloned())
     }
 
+    /// The nodes that store every segment of file `id`.
     fn holders(&self, id: &str) -> Vec<usize> {
+        let segments = self.segments_of(id);
         (0..self.c.nodes.len())
             .filter(|i| self.c.nodes[*i].is_some())
-            .filter(|i| self.node(*i).engine.get_blob(id).unwrap().is_some())
+            .filter(|i| {
+                (segments.iter()).all(|h| self.node(*i).engine.get_segment(h).unwrap().is_some())
+            })
+            .collect()
+    }
+
+    /// The nodes that store any segment of file `id`.
+    fn holders_of_any(&self, id: &str) -> Vec<usize> {
+        let segments = self.segments_of(id);
+        (0..self.c.nodes.len())
+            .filter(|i| self.c.nodes[*i].is_some())
+            .filter(|i| {
+                (segments.iter()).any(|h| self.node(*i).engine.get_segment(h).unwrap().is_some())
+            })
             .collect()
     }
 
@@ -157,14 +210,35 @@ impl Fixture {
         panic!("{what}");
     }
 
+    /// Runs the segment sweep on every node now.
+    fn sweep(&self) {
+        for i in (0..self.c.nodes.len()).filter(|i| self.c.nodes[*i].is_some()) {
+            self.node(i).sweep_segments();
+        }
+    }
+
+    /// Runs the sweep on every node once now and once after the grace.
+    fn sweep_past_grace(&self) {
+        let now = std::time::Instant::now();
+        for i in (0..self.c.nodes.len()).filter(|i| self.c.nodes[*i].is_some()) {
+            self.node(i).sweep_segments_at(now);
+            self.node(i)
+                .sweep_segments_at(now + SEGMENT_GRACE + Duration::from_secs(1));
+        }
+    }
+
     async fn wait_gone(&self, id: &str) {
         for _ in 0..100 {
-            if self.holders(id).is_empty() {
+            self.sweep_past_grace();
+            if self.holders_of_any(id).is_empty() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("the bytes of {id} are still on {:?}", self.holders(id));
+        panic!(
+            "the bytes of {id} are still on {:?}",
+            self.holders_of_any(id)
+        );
     }
 }
 
@@ -188,6 +262,70 @@ async fn a_large_file_reads_back_identically_on_every_replica() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forty_mib_file_is_stored_as_three_segments_and_no_whole_file_row() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let rows_before = f.blob_counts();
+    let (id, sha, index) = f.put(40 * MIB, 61).await;
+    assert_eq!(sha, sha256_hex(&stream(40 * MIB, 61)));
+    let segments = f.segments_of(&id);
+    assert_eq!(segments.len(), 3, "{segments:?}");
+
+    let holders = f.holders(&id);
+    assert!(holders.len() >= 2, "held by {holders:?}");
+    for i in holders {
+        let node = f.node(i);
+        let mut index_rows = node.engine.list_segments().unwrap();
+        index_rows.sort();
+        let mut want = segments.clone();
+        want.sort();
+        assert_eq!(index_rows, want, "node {i}: one index row per segment");
+        assert_eq!(
+            node.engine.blob_count().unwrap(),
+            rows_before[i] + 3,
+            "node {i}: three segment rows and nothing else"
+        );
+        assert!(node.engine.get_blob(&id).unwrap().is_none(), "node {i}");
+        for hash in &segments {
+            let segment = node.engine.get_segment(hash).unwrap().unwrap();
+            assert_eq!(&sha256_hex(&segment), hash);
+            assert!(segment.len() <= calimero_node::files::SEGMENT_BYTES);
+        }
+    }
+
+    // A replica that lost a segment reads the file by fetching it again.
+    let lost = (f.leader() + 1) % 3;
+    f.node(lost).engine.delete_segment(&segments[1]).unwrap();
+    assert_eq!(f.read_on(lost, &id, index).await.unwrap()["sha256"], sha);
+    assert!(f
+        .node(lost)
+        .engine
+        .get_segment(&segments[1])
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_writers_hold_one_segment_each_and_store_the_rest() {
+    use calimero_node::files::{CHUNK_BYTES, SEGMENT_BYTES};
+
+    let f = start().await;
+    let node = f.node(f.leader());
+    let stored_before = node.engine.list_segments().unwrap().len();
+    node.write_test_files(&f.app, 3, 20 * MIB).unwrap();
+    let (peak, bound) = (
+        node.pending_file_bytes_peak(),
+        3 * (SEGMENT_BYTES + 2 * CHUNK_BYTES),
+    );
+    assert!(
+        peak <= bound,
+        "writers held {peak} bytes, more than {bound}"
+    );
+    // Two segments per file, each stored the moment it was complete.
+    let stored = node.engine.list_segments().unwrap().len();
+    assert_eq!(stored - stored_before, 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_stored_bytes_are_ciphertext_that_only_the_marks_key_opens() {
     let f = start().await;
     let (id, sha, index) = f.put(LEN, 11).await;
@@ -196,11 +334,16 @@ async fn the_stored_bytes_are_ciphertext_that_only_the_marks_key_opens() {
     f.read_on(2, &id, index).await.unwrap();
 
     for i in f.holders(&id) {
-        let stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
+        let stored = f.stored(i, &id);
+        let segments = f.segments_of(&id);
+        let hashes: Vec<[u8; 32]> = segments
+            .iter()
+            .map(|h| hex::decode(h).unwrap().try_into().unwrap())
+            .collect();
         assert_eq!(
-            sha256_hex(&stored),
             id,
-            "the id is the hash of the ciphertext"
+            hex::encode(calimero_node::files::file_id(&hashes)),
+            "the id is the hash of the segment list"
         );
         assert!(stored.len() > LEN);
         assert!(
@@ -343,10 +486,13 @@ async fn a_replica_that_misses_the_bytes_fetches_them() {
     let f = start().await;
     let (id, sha, index) = f.put(500_000, 5).await;
     f.read_on(2, &id, index).await.unwrap();
-    f.node(2).engine.delete_blob(&id).unwrap();
+    for h in f.segments_of(&id) {
+        f.node(2).engine.delete_segment(&h).unwrap();
+    }
+    assert!(!f.holders(&id).contains(&2));
     let read = f.read_on(2, &id, index).await.unwrap();
     assert_eq!(read["sha256"], sha);
-    assert!(f.node(2).engine.get_blob(&id).unwrap().is_some());
+    assert!(f.holders(&id).contains(&2));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -355,7 +501,9 @@ async fn a_file_no_replica_holds_cannot_be_read() {
     let (id, _sha, index) = f.put(100_000, 5).await;
     f.read_on(0, &id, index).await.unwrap();
     for i in 0..3 {
-        f.node(i).engine.delete_blob(&id).unwrap();
+        for h in f.segments_of(&id) {
+            f.node(i).engine.delete_segment(&h).unwrap();
+        }
     }
     let e = f.read_on(1, &id, index).await.unwrap_err();
     assert!(e.contains("not available"), "{e}");
@@ -385,11 +533,12 @@ async fn a_corrupt_copy_is_dropped_and_healed_from_a_replica() {
     let (id, sha, index) = f.put(LEN, 9).await;
     let leader = f.leader();
     let follower = (leader + 1) % 3;
+    let segments = f.segments_of(&id);
     for i in [follower, leader] {
-        let mut stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
+        let mut stored = f.node(i).engine.get_segment(&segments[0]).unwrap().unwrap();
         let at = stored.len() / 2;
         stored[at] ^= 1;
-        f.node(i).engine.put_blob(&id, &stored).unwrap();
+        f.node(i).engine.put_segment(&segments[0], &stored).unwrap();
     }
     // The follower and the leader each find their copy is not the file, and read it from the
     // replica that still holds it.
@@ -397,8 +546,12 @@ async fn a_corrupt_copy_is_dropped_and_healed_from_a_replica() {
         assert_eq!(f.read_on(i, &id, index).await.unwrap()["sha256"], sha);
     }
     for i in [follower, leader] {
-        let healed = f.node(i).engine.get_blob(&id).unwrap().unwrap();
-        assert_eq!(sha256_hex(&healed), id, "node {i} keeps a corrupt copy");
+        let healed = f.node(i).engine.get_segment(&segments[0]).unwrap().unwrap();
+        assert_eq!(
+            sha256_hex(&healed),
+            segments[0],
+            "node {i} keeps a corrupt copy"
+        );
     }
 }
 
@@ -419,8 +572,11 @@ async fn a_call_fails_retryably_when_a_majority_cannot_take_the_files() {
     assert_eq!(e.code(), Some("FILES_UNAVAILABLE"), "{e}");
     assert_eq!(f.applied(), applied, "nothing was logged");
     // The bytes the peers took are removed again: no mark names them.
-    f.until("bytes of a failed call stay", || f.blob_counts() == before)
-        .await;
+    f.until("bytes of a failed call stay", || {
+        f.sweep_past_grace();
+        f.blob_counts() == before
+    })
+    .await;
 
     // The key was not spent: the same call goes through once the peers take blobs.
     for i in 0..3 {
@@ -522,12 +678,280 @@ async fn a_blob_swapped_for_another_files_ciphertext_is_never_read() {
     let (a, _sha, index) = f.put(100_000, 20).await;
     let (b, _sha, index_b) = f.put(100_000, 21).await;
     f.read_on(2, &a, index).await.unwrap();
-    let other = f.node(0).engine.get_blob(&b).unwrap().unwrap();
+    let other = f.stored(0, &b);
+    let a_segments = f.segments_of(&a);
     for i in 0..3 {
-        f.node(i).engine.put_blob(&a, &other).unwrap();
+        f.node(i)
+            .engine
+            .put_segment(&a_segments[0], &other)
+            .unwrap();
     }
     let e = f.read_on(2, &a, index_b).await.unwrap_err();
     assert!(e.contains("not available"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_push_of_three_segments_to_two_replicas_holds_two_segments_at_most() {
+    use calimero_node::files::SEGMENT_BYTES;
+
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let _file = f.put(40 * MIB, 63).await;
+    let peak = f.node(f.leader()).push_bytes_peak();
+    assert!(peak > 0, "the push took no budget");
+    assert!(peak <= 2 * SEGMENT_BYTES, "a push held {peak} bytes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_blob_with_a_segments_hash_never_takes_the_segment_with_it() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 71).await;
+    let segment = f.segments_of(&id)[0].clone();
+    let bytes = (f.node(f.leader()).engine.get_segment(&segment))
+        .unwrap()
+        .unwrap();
+    // The same bytes as a plain blob have the segment's hash as their id.
+    let blob = f.clients[0].upload_blob(&f.app, bytes).await.unwrap();
+    assert_eq!(blob["id"].as_str().unwrap(), segment);
+    let _deleted = f.clients[0].delete_blob(&f.app, &segment).await.unwrap();
+    f.until("the blob is deleted everywhere", || {
+        (0..3).all(|i| f.node(i).engine.get_blob(&segment).unwrap().is_none())
+    })
+    .await;
+    for i in f.holders(&id) {
+        assert!(f.node(i).engine.get_segment(&segment).unwrap().is_some());
+    }
+    assert!(
+        f.node(f.leader())
+            .engine
+            .get_segment(&segment)
+            .unwrap()
+            .is_some(),
+        "the segment went with the blob"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn segments_no_app_lists_are_swept_after_the_grace_and_everything_else_stays() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 72).await;
+    let listed = f.segments_of(&id);
+    // What a leader that crashed mid-upload leaves: segments on every node no entry lists.
+    let orphan = vec![9u8; 5_000];
+    let orphan_hash = sha256_hex(&orphan);
+    for i in 0..3 {
+        f.node(i).engine.put_segment(&orphan_hash, &orphan).unwrap();
+    }
+    // A plain blob as old as the orphans.
+    let plain = f.clients[0]
+        .upload_blob(&f.app, stream(3_000, 4))
+        .await
+        .unwrap();
+    let plain = plain["id"].as_str().unwrap().to_owned();
+
+    let first = std::time::Instant::now();
+    for i in 0..3 {
+        f.node(i).sweep_segments_at(first);
+    }
+    let orphans_on = || {
+        (0..3)
+            .filter(|i| {
+                f.node(*i)
+                    .engine
+                    .get_segment(&orphan_hash)
+                    .unwrap()
+                    .is_some()
+            })
+            .count()
+    };
+    assert_eq!(orphans_on(), 3, "swept at first sight");
+    let later = first + SEGMENT_GRACE + Duration::from_secs(1);
+    for i in 0..3 {
+        f.node(i).sweep_segments_at(later);
+    }
+    assert_eq!(orphans_on(), 0, "the orphans outlived the grace");
+    assert!(f.holders(&id).len() >= 2, "a listed segment was swept");
+    for h in &listed {
+        assert!(f.node(f.leader()).engine.get_segment(h).unwrap().is_some());
+    }
+    assert!(f
+        .node(f.leader())
+        .engine
+        .get_blob(&plain)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_whose_pin_dropped_before_its_entry_applied_waits_out_the_grace() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let bytes = vec![6u8; 2_000];
+    let hash = sha256_hex(&bytes);
+    f.node(0).engine.put_segment(&hash, &bytes).unwrap();
+    let present = || f.node(0).engine.get_segment(&hash).unwrap().is_some();
+    let first = std::time::Instant::now();
+    let pin = f.node(0).pin_segments(std::slice::from_ref(&hash));
+    f.node(0).sweep_segments_at(first);
+    drop(pin);
+    f.node(0).sweep_segments_at(first + Duration::from_secs(1));
+    assert!(present(), "deleted at once, before the grace");
+    f.node(0)
+        .sweep_segments_at(first + SEGMENT_GRACE + Duration::from_secs(2));
+    assert!(!present(), "kept past the grace");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_a_node_got_before_it_applied_the_entry_survives_the_next_sweep() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let handed = vec![5u8; 2_000];
+    let hash = sha256_hex(&handed);
+    f.node(0).engine.put_segment(&hash, &handed).unwrap();
+    f.sweep();
+    f.sweep();
+    assert!(f.node(0).engine.get_segment(&hash).unwrap().is_some());
+}
+
+/// The status of a raw request to node `to`'s internal route, sent as node `from` over its own
+/// sealed channel.
+async fn as_node(
+    f: &Fixture,
+    from: usize,
+    to: usize,
+    method: reqwest::Method,
+    path: &str,
+    body: Vec<u8>,
+) -> u16 {
+    let channel = calimero_sealed::client::SealedTransport::identified_as(
+        f.c.urls[to].parse().unwrap(),
+        reqwest::Client::new(),
+        Arc::new(HttpAttestor {
+            policy: Policy {
+                allow_mock: true,
+                ..Policy::default()
+            },
+            seen_release: Arc::default(),
+        }),
+        f.node(from).transport.static_key(),
+    );
+    let mut request = reqwest::Client::new()
+        .request(method.clone(), format!("{}{path}", f.c.urls[to]))
+        .header("x-cluster-auth", f.node(0).cluster_secret())
+        .header("x-calimero-node", (from as u64 + 1).to_string());
+    if method == reqwest::Method::POST {
+        request = request.header("content-type", "application/json");
+    }
+    if !body.is_empty() {
+        request = request.body(body);
+    }
+    channel
+        .execute(request.build().unwrap())
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_segment_routes_judge_the_caller_and_the_hash_and_offer_no_delete() {
+    use calimero_node::files::SEGMENT_BYTES;
+    use reqwest::Method;
+
+    // Node 3 runs a release nobody approved, so it hosts nothing and may hold nothing.
+    let c = Cluster::start_with(3, |cfg| {
+        more_time(cfg);
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    let f = start_with(c).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 73).await;
+    let leader = f.leader();
+    let approved = (0..2).find(|i| *i != leader).unwrap();
+    let segment = f.segments_of(&id)[0].clone();
+    let path = format!("internal/segment/{segment}");
+
+    // A put is judged by its bytes: another hash, and more than a segment.
+    let bad = format!("internal/segment/{}", sha256_hex(b"other"));
+    assert_eq!(
+        as_node(&f, approved, leader, Method::PUT, &bad, b"nope".to_vec()).await,
+        400
+    );
+    let big = vec![1u8; SEGMENT_BYTES + 1];
+    let big_path = format!("internal/segment/{}", sha256_hex(&big));
+    assert_eq!(
+        as_node(&f, approved, leader, Method::PUT, &big_path, big).await,
+        400
+    );
+
+    // A get is answered to an approved node, refused to one that is not, and a hash nobody lists
+    // is unknown.
+    assert_eq!(
+        as_node(&f, approved, leader, Method::GET, &path, Vec::new()).await,
+        200
+    );
+    assert_eq!(
+        as_node(&f, 2, leader, Method::GET, &path, Vec::new()).await,
+        403
+    );
+    let unknown = format!("internal/segment/{}", sha256_hex(b"nobody lists this"));
+    assert_eq!(
+        as_node(&f, approved, leader, Method::GET, &unknown, Vec::new()).await,
+        404
+    );
+
+    // There is no peer delete of a segment: the sweep alone removes them.
+    let pending = vec![3u8; 500];
+    let pending_hash = sha256_hex(&pending);
+    f.node(leader)
+        .engine
+        .put_segment(&pending_hash, &pending)
+        .unwrap();
+    for hash in [&segment, &pending_hash] {
+        let body = serde_json::to_vec(&json!({ "hash": hash })).unwrap();
+        let status = as_node(
+            &f,
+            approved,
+            leader,
+            Method::POST,
+            "internal/segment/delete",
+            body,
+        )
+        .await;
+        assert_eq!(status, 405);
+        assert!(f.node(leader).engine.get_segment(hash).unwrap().is_some());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_blob_routes_refuse_a_name_that_is_not_a_hash() {
+    use reqwest::Method;
+
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 74).await;
+    let leader = f.leader();
+    let peer = (0..3).find(|i| *i != leader).unwrap();
+    let segment = f.segments_of(&id)[0].clone();
+    for route in ["internal/blob/delete", "internal/blob/get"] {
+        for name in [format!("seg.{segment}"), segment.to_uppercase()] {
+            let body = serde_json::to_vec(&json!({ "hash": name })).unwrap();
+            let status = as_node(&f, peer, leader, Method::POST, route, body).await;
+            assert_eq!(status, 400, "{route} {name}");
+        }
+    }
+    assert!(f
+        .node(leader)
+        .engine
+        .get_segment(&segment)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reader_holds_one_segment_so_a_larger_file_opens_under_a_small_cap() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, sha, index) = f.put(40 * MIB, 62).await;
+    let leader = f.leader();
+    // A segment and its plaintext fit in 34 MiB, the whole file does not.
+    f.node(leader).limit_run_open_bytes(34 * MIB);
+    assert_eq!(f.read_on(leader, &id, index).await.unwrap()["sha256"], sha);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -549,10 +973,10 @@ async fn a_conflicting_entry_removes_the_files_stored_for_it() {
     let before = f.node(leader).engine.blob_count().unwrap();
     f.node(leader).conflict_next_call();
     // The first run conflicts and its file is dropped; the call runs again.
-    let (id, _sha, _index) = f.put(100_000, 40).await;
+    let (_id, _sha, _index) = f.put(100_000, 40).await;
     f.until("the conflicted run left its bytes behind", || {
+        f.sweep_past_grace();
         (0..3).all(|i| f.node(i).engine.blob_count().unwrap() <= before + 1)
-            && f.node(leader).engine.get_blob(&id).unwrap().is_some()
             && f.node(leader).engine.blob_count().unwrap() == before + 1
     })
     .await;
@@ -667,7 +1091,9 @@ async fn a_replica_move_hands_the_files_to_the_joining_node() {
         .await
         .unwrap();
     let joined = f.c.nodes[spare as usize - 1].as_ref().unwrap();
-    assert!(joined.node.engine.get_blob(&id).unwrap().is_some());
+    for h in f.segments_of(&id) {
+        assert!(joined.node.engine.get_segment(&h).unwrap().is_some());
+    }
     // The bundle at upload, then the bundle and the file handed over once: the second
     // hand-over sends nothing the node already holds.
     assert_eq!(joined.node.blob_puts_seen(), 3);
@@ -803,17 +1229,23 @@ async fn the_blob_routes_refuse_a_file_id() {
         f.clients[2].download_blob(&f.app, &id).await.unwrap_err(),
         "download",
     );
-    // The ciphertext uploaded as a blob would claim the file's id.
-    let ciphertext = f.node(f.leader()).engine.get_blob(&id).unwrap().unwrap();
+    refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
+    // The preimage of the id, uploaded as a blob, would claim the file's id.
+    let mut preimage = b"calimero.file.segments.v1\0".to_vec();
+    let hashes = f.segments_of(&id);
+    preimage.extend_from_slice(&u32::try_from(hashes.len()).unwrap().to_be_bytes());
+    for h in &hashes {
+        preimage.extend_from_slice(&hex::decode(h).unwrap());
+    }
+    assert_eq!(sha256_hex(&preimage), id);
     refused(
-        alice.upload_blob(&f.app, ciphertext).await.unwrap_err(),
+        alice.upload_blob(&f.app, preimage).await.unwrap_err(),
         "upload",
     );
-    refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
-    // The owner sees the file in the listing, as a sealed file and not as a blob.
-    let listed = alice.list_blobs(&f.app).await.unwrap();
-    assert_eq!(listed["blobs"].as_array().unwrap().len(), 1, "{listed}");
-    assert_eq!(listed["blobs"][0]["sealed"], json!(true));
+    // The owner sees the file in the file listing and not in the blob listing.
+    let listed = alice.get(&format!("apps/{}/files", f.app)).await.unwrap();
+    assert_eq!(listed["files"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(alice.list_blobs(&f.app).await.unwrap()["blobs"], json!([]));
     for i in 0..3 {
         assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()), "node {i}");
     }
@@ -887,8 +1319,11 @@ impl Fixture {
         seed: u64,
     ) -> Result<Value, Box<calimero_client::Error>> {
         let sent = self.clients[via]
-            .upload_file(&self.app, stream(len, seed))
+            .upload_bytes(&self.app, stream(len, seed))
             .await;
+        if let Ok(up) = &sent {
+            let _cached = self.find_segments(up["id"].as_str().unwrap());
+        }
         sent.map_err(Box::new)
     }
 
@@ -957,8 +1392,7 @@ async fn an_uploaded_file_is_read_by_the_app_and_stored_sealed() {
     assert!(f.holders(&id).len() >= 2, "held by {:?}", f.holders(&id));
     let window = &plain[LEN / 2..LEN / 2 + 32];
     for i in f.holders(&id) {
-        let stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
-        assert_eq!(sha256_hex(&stored), id);
+        let stored = f.stored(i, &id);
         assert!(
             !stored.windows(window.len()).any(|w| w == window),
             "node {i}"
@@ -966,10 +1400,13 @@ async fn an_uploaded_file_is_read_by_the_app_and_stored_sealed() {
         assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()));
     }
 
-    let listed = f.clients[0].list_blobs(&f.app).await.unwrap();
-    assert_eq!(listed["blobs"].as_array().unwrap().len(), 1, "{listed}");
-    assert_eq!(listed["blobs"][0]["id"], json!(id));
-    assert_eq!(listed["blobs"][0]["sha256"], json!(sha256_hex(&plain)));
+    let listed = f.clients[0]
+        .get(&format!("apps/{}/files", f.app))
+        .await
+        .unwrap();
+    assert_eq!(listed["files"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["files"][0]["id"], json!(id));
+    assert_eq!(listed["files"][0]["sha256"], json!(sha256_hex(&plain)));
     assert_eq!(f.charged().await, LEN as u64);
 }
 
@@ -1079,7 +1516,7 @@ async fn a_read_only_key_cannot_upload() {
     agent.use_api_key(&key).await;
     let before = (f.blob_counts(), f.marks(), f.charged().await);
     let e = agent
-        .upload_file(&f.app, stream(5000, 1))
+        .upload_bytes(&f.app, stream(5000, 1))
         .await
         .unwrap_err();
     assert_eq!(status(e), (403, "FORBIDDEN".to_owned()));
@@ -1156,6 +1593,25 @@ async fn an_unreferenced_file_is_forgotten_after_the_idle_time_and_releases_its_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_an_app_stops_listing_survives_the_next_sweep_and_goes_after_the_grace() {
+    let f = start().await;
+    let up = f.upload(0, 30_000, 8).await.unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    let _cached = f.segments_of(&id);
+    f.sweep();
+    let _index = f.pass_the_idle_time().await;
+    f.until("the app forgets the file", || !f.recorded_anywhere(&id))
+        .await;
+    f.sweep();
+    f.sweep();
+    assert!(
+        !f.holders_of_any(&id).is_empty(),
+        "a segment no app lists went before the grace"
+    );
+    f.wait_gone(&id).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_collection_releases_only_what_it_collected() {
     let f = start().await;
     let first = f.upload(0, 30_000, 1).await.unwrap();
@@ -1205,6 +1661,7 @@ async fn an_upload_whose_commit_failed_before_it_applied_is_retried_without_leak
         .await;
     let held = f.holders(id).len() as u64;
     f.until("the first attempt's bytes are removed", || {
+        f.sweep_past_grace();
         f.blob_counts().iter().sum::<u64>() == before + held
     })
     .await;
@@ -1229,9 +1686,11 @@ async fn an_upload_that_meets_a_recorded_answer_for_its_key_returns_it_and_undoe
     f.node(f.leader()).fail_next_mark_commit(3);
     let before: u64 = f.blob_counts().iter().sum();
     let up = f.upload(f.leader(), 20_000, 1).await.unwrap();
-    assert_eq!(up["id"], json!("ab".repeat(32)), "the recorded answer");
+    let recorded = hex::encode(calimero_node::files::file_id(&[[0xab; 32]]));
+    assert_eq!(up["id"], json!(recorded), "the recorded answer");
     f.until_charged(0).await;
     f.until("the new file's bytes are removed", || {
+        f.sweep_past_grace();
         f.blob_counts().iter().sum::<u64>() == before
     })
     .await;
@@ -1300,16 +1759,16 @@ async fn only_members_and_above_upload_to_a_public_app_of_an_organization() {
     let f = start().await;
     let o = org_with_a_public_app(&f).await;
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        let e = c.upload_file(&o.app, stream(5_000, 1)).await.unwrap_err();
+        let e = c.upload_bytes(&o.app, stream(5_000, 1)).await.unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
     }
     let _ok = o
         .member
-        .upload_file(&o.app, stream(5_000, 2))
+        .upload_bytes(&o.app, stream(5_000, 2))
         .await
         .unwrap();
     let _ok = f.clients[0]
-        .upload_file(&o.app, stream(5_000, 3))
+        .upload_bytes(&o.app, stream(5_000, 3))
         .await
         .unwrap();
 }
@@ -1320,24 +1779,22 @@ async fn only_members_and_above_list_the_files_of_a_public_app_of_an_organizatio
     let o = org_with_a_public_app(&f).await;
     let plain = stream(5_000, 3);
     let up = f.clients[0]
-        .upload_file(&o.app, plain.clone())
+        .upload_bytes(&o.app, plain.clone())
         .await
         .unwrap();
     let id = up["id"].as_str().unwrap();
 
-    // Others may list the app's blobs, but a file's hash is the plaintext's: they see none.
+    // A file's hash is the plaintext's: others may not list the files.
+    let path = format!("apps/{}/files", o.app);
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        assert_eq!(
-            c.list_blobs(&o.app).await.unwrap()["blobs"],
-            json!([]),
-            "{who}"
-        );
+        let e = c.get(&path).await.unwrap_err();
+        assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
     }
     for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
-        let listed = c.list_blobs(&o.app).await.unwrap();
-        assert_eq!(listed["blobs"][0]["id"], json!(id), "{who}");
+        let listed = c.get(&path).await.unwrap();
+        assert_eq!(listed["files"][0]["id"], json!(id), "{who}");
         assert_eq!(
-            listed["blobs"][0]["sha256"],
+            listed["files"][0]["sha256"],
             json!(sha256_hex(&plain)),
             "{who}"
         );
@@ -1351,7 +1808,7 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
     let o = org_with_a_public_app(&f).await;
     let plain = stream(5_000, 3);
     let up = f.clients[0]
-        .upload_file(&o.app, plain.clone())
+        .upload_bytes(&o.app, plain.clone())
         .await
         .unwrap();
     let id = up["id"].as_str().unwrap();
@@ -1363,20 +1820,24 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
     })
     .await;
 
+    let path = format!("apps/{}/files/{id}", o.app);
     for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
-        let info = c.blob_info(&o.app, id).await.unwrap();
+        let info = c.get(&path).await.unwrap();
         assert_eq!(info["size"], json!(5_000), "{who}");
         assert_eq!(info["sha256"], json!(sha256_hex(&plain)), "{who}");
         // Never the key or any content.
         let mut keys: Vec<_> = info.as_object().unwrap().keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, ["blobId", "id", "sealed", "sha256", "size"], "{who}");
+        assert_eq!(keys, ["blobId", "id", "sha256", "size"], "{who}");
     }
-    // A caller who may call the app but not list its files learns nothing of the file.
+    // A caller who may call the app but not list its files may not ask for one either.
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        let e = c.blob_info(&o.app, id).await.unwrap_err();
-        assert_eq!(status(e), (404, "NOT_FOUND".to_owned()), "{who}");
+        let e = c.get(&path).await.unwrap_err();
+        assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
     }
+    let unknown = format!("apps/{}/files/{}", o.app, "11".repeat(32));
+    let e = o.member.get(&unknown).await.unwrap_err();
+    assert_eq!(status(e), (404, "NOT_FOUND".to_owned()));
     // Downloading it stays refused to everyone.
     for c in [&o.member, &f.clients[0]] {
         let e = c.download_blob(&o.app, id).await.unwrap_err();
@@ -1403,7 +1864,7 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
     f.c.stop(follower).await;
     let owner = &f.clients[leader];
     let plain = owner.upload_blob(&f.app, stream(2_000, 7)).await.unwrap();
-    let file = owner.upload_file(&f.app, stream(4_000, 9)).await.unwrap();
+    let file = owner.upload_bytes(&f.app, stream(4_000, 9)).await.unwrap();
     let (plain, file) = (plain["id"].as_str().unwrap(), file["id"].as_str().unwrap());
     f.c.restart(follower, |_| {}).await;
     while f.node(follower).hosted(&f.app).is_none() {
@@ -1542,4 +2003,642 @@ async fn a_deleted_apps_sealed_files_leave_every_replica_and_the_quota() {
     f.wait_gone(&uploaded).await;
     f.wait_gone(&made).await;
     assert_eq!(f.charged().await, 0);
+}
+
+const PART: usize = 16 * MIB;
+
+/// The error an upload route answered: status, code and details.
+fn refusal(e: impl Into<Box<calimero_client::Error>>) -> (u16, String, Value) {
+    match *e.into() {
+        calimero_client::Error::Api {
+            status,
+            code,
+            details,
+            ..
+        } => (status, code, details),
+        other => panic!("{other:?}"),
+    }
+}
+
+type Answer = Result<Value, Box<calimero_client::Error>>;
+
+/// The upload session routes, as a client calls them through node `via`.
+impl Fixture {
+    fn session_path(&self, tail: &str) -> String {
+        format!("apps/{}/files/uploads{tail}", self.app)
+    }
+
+    async fn begin(&self, via: usize, size: usize) -> Answer {
+        let path = self.session_path("");
+        self.clients[via]
+            .post(&path, json!({ "size": size }))
+            .await
+            .map_err(Box::new)
+    }
+
+    async fn begun(&self, via: usize, size: usize) -> String {
+        let begun = self.begin(via, size).await.unwrap();
+        begun["uploadId"].as_str().unwrap().to_owned()
+    }
+
+    async fn put_part(&self, via: usize, upload: &str, k: usize, plain: &[u8]) -> Answer {
+        let part = &plain[(k * PART).min(plain.len())..((k + 1) * PART).min(plain.len())];
+        let path = self.session_path(&format!("/{upload}/parts/{k}"));
+        self.clients[via]
+            .put_bytes(&path, part.to_vec())
+            .await
+            .map_err(Box::new)
+    }
+
+    async fn put_all(&self, via: usize, upload: &str, plain: &[u8]) {
+        for k in 0..plain.len().div_ceil(PART).max(1) {
+            let answer = self.put_part(via, upload, k, plain).await.unwrap();
+            assert_eq!(answer, json!({ "next": k + 1 }));
+        }
+    }
+
+    async fn upload_status(&self, via: usize, upload: &str) -> Answer {
+        let path = self.session_path(&format!("/{upload}"));
+        self.clients[via].get(&path).await.map_err(Box::new)
+    }
+
+    async fn complete(&self, via: usize, upload: &str) -> Answer {
+        let path = self.session_path(&format!("/{upload}/complete"));
+        self.clients[via]
+            .post(&path, json!({}))
+            .await
+            .map_err(Box::new)
+    }
+
+    async fn abort(&self, via: usize, upload: &str) -> Answer {
+        let path = self.session_path(&format!("/{upload}"));
+        self.clients[via].delete(&path).await.map_err(Box::new)
+    }
+
+    /// Every segment any running node stores.
+    fn stored_segments(&self) -> Vec<(usize, String)> {
+        let mut all = Vec::new();
+        for i in (0..self.c.nodes.len()).filter(|i| self.c.nodes[*i].is_some()) {
+            all.extend((self.node(i).engine.list_segments().unwrap().into_iter()).map(|h| (i, h)));
+        }
+        all
+    }
+
+    async fn until_no_segments(&self) {
+        self.until("no node keeps a segment", || {
+            self.sweep_past_grace();
+            self.stored_segments().is_empty()
+        })
+        .await;
+    }
+
+    async fn until_leader_is_not(&self, old: usize) -> usize {
+        for _ in 0..200 {
+            if let Some(i) = self.c.app_leader(&self.app).filter(|i| *i != old) {
+                return i;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("no new leader");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_three_part_upload_commits_one_mark_at_one_index() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let via = (f.leader() + 1) % 3;
+    let plain = stream(40 * MIB, 71);
+    let begun = f.begin(via, plain.len()).await.unwrap();
+    assert_eq!(begun["partBytes"], json!(PART));
+    assert_eq!(begun["parts"], json!(3));
+    assert!(begun["expiresAt"].is_number(), "{begun}");
+    let upload = begun["uploadId"].as_str().unwrap().to_owned();
+
+    f.put_all(via, &upload, &plain).await;
+    let status = f.upload_status(via, &upload).await.unwrap();
+    assert_eq!(status["next"], json!(3), "{status}");
+    assert_eq!(
+        (f.marks(), f.charged().await),
+        (0, 0),
+        "nothing before complete"
+    );
+
+    let done = f.complete(via, &upload).await.unwrap();
+    let id = done["id"].as_str().unwrap().to_owned();
+    assert_eq!(done["size"], json!(plain.len()));
+    assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
+    let index = done["index"].as_u64().unwrap();
+    let _cached = f.find_segments(&id);
+    f.until("one mark on each replica", || f.marks() == 3).await;
+    assert_eq!(f.charged().await, plain.len() as u64);
+    assert_eq!(f.segments_of(&id).len(), 3);
+    assert!(f.holders(&id).len() >= 2, "{:?}", f.holders(&id));
+    assert_eq!(
+        f.read_on(via, &id, index).await.unwrap()["sha256"],
+        done["sha256"]
+    );
+
+    // A retried complete is the first answer, and marks nothing twice.
+    assert_eq!(f.complete(via, &upload).await.unwrap(), done);
+    assert_eq!(f.marks(), 3);
+    assert_eq!(f.charged().await, plain.len() as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parts_go_in_order_and_a_resent_part_replays_its_answer() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let plain = stream(20 * MIB, 72);
+    let upload = f.begun(1, plain.len()).await;
+
+    let (status, code, details) = refusal(f.put_part(1, &upload, 1, &plain).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (409, "PART_OUT_OF_ORDER"));
+    assert_eq!(details["next"], json!(0));
+
+    assert_eq!(
+        f.put_part(1, &upload, 0, &plain).await.unwrap(),
+        json!({ "next": 1 })
+    );
+    assert_eq!(
+        f.put_part(2, &upload, 0, &plain).await.unwrap(),
+        json!({ "next": 1 })
+    );
+    let mut other = plain.clone();
+    other[100] ^= 1;
+    let (status, code, _) = refusal(f.put_part(1, &upload, 0, &other).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (409, "PART_CONFLICT"));
+    let (status, code, _) = refusal(f.put_part(1, &upload, 1, &plain[..PART]).await.unwrap_err());
+    assert_eq!(
+        (status, code.as_str()),
+        (400, "BAD_PART"),
+        "a last part of the wrong length"
+    );
+
+    let (status, code, details) = refusal(f.complete(1, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (409, "UPLOAD_INCOMPLETE"));
+    assert_eq!(details["next"], json!(1));
+
+    assert_eq!(
+        f.put_part(1, &upload, 1, &plain).await.unwrap(),
+        json!({ "next": 2 })
+    );
+    let done = f.complete(0, &upload).await.unwrap();
+    assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_aborted_upload_leaves_no_bytes_and_no_charge() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let plain = stream(40 * MIB, 73);
+    let upload = f.begun(1, plain.len()).await;
+    for k in 0..2 {
+        let _next = f.put_part(1, &upload, k, &plain).await.unwrap();
+    }
+    assert!(
+        !f.stored_segments().is_empty(),
+        "parts are stored as they arrive"
+    );
+    assert_eq!(f.charged().await, 0);
+
+    assert_eq!(f.abort(2, &upload).await.unwrap(), json!({}));
+    f.until_no_segments().await;
+    assert_eq!((f.charged().await, f.marks()), (0, 0));
+    let (status, code, _) = refusal(f.upload_status(1, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_id_that_is_not_one_begin_minted_is_unknown_on_every_route() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let via = (f.leader() + 1) % 3;
+    let plain = stream(1_000, 91);
+    for id in ["..%2F..%2Fx", "a%2Fb", "short"] {
+        let answers = [
+            f.put_part(via, id, 0, &plain).await,
+            f.upload_status(via, id).await,
+            f.complete(via, id).await,
+            f.abort(via, id).await,
+        ];
+        for answer in answers {
+            let (status, code, _) = refusal(answer.unwrap_err());
+            assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"), "{id}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_segment_store_ends_the_session_and_leaves_no_bytes() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let plain = stream(40 * MIB, 77);
+    let upload = f.begun(1, plain.len()).await;
+    let _next = f.put_part(1, &upload, 0, &plain).await.unwrap();
+
+    // The session lives on the app's leader, whichever node the client asked.
+    f.node(f.leader()).fail_next_segment_store();
+    let (status, _, _) = refusal(f.put_part(1, &upload, 1, &plain).await.unwrap_err());
+    assert!(status >= 500, "{status}");
+    let (status, code, _) = refusal(f.put_part(1, &upload, 1, &plain).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+    f.until_no_segments().await;
+    assert_eq!((f.charged().await, f.marks()), (0, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_upload_expires_and_leaves_no_bytes_and_no_charge() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let plain = stream(20 * MIB, 74);
+    let upload = f.begun(1, plain.len()).await;
+    let _next = f.put_part(1, &upload, 0, &plain).await.unwrap();
+    assert!(!f.stored_segments().is_empty());
+
+    f.c.advance_all(15 * 60 * 1000 + 1_000);
+    f.until_no_segments().await;
+    assert_eq!(f.charged().await, 0);
+    let (status, code, _) = refusal(f.upload_status(1, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+    let (status, code, _) = refusal(f.put_part(1, &upload, 1, &plain).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn complete_after_the_quota_filled_is_429_with_no_bytes_and_no_charge() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    f.set_file_quota(30 * MIB as u64).await;
+    let plain = stream(20 * MIB, 75);
+    let upload = f.begun(1, plain.len()).await;
+    f.put_all(1, &upload, &plain).await;
+
+    // Another file takes the room the session's begin saw.
+    let (other, _sha, _index) = f.put(15 * MIB, 76).await;
+    let kept = f.segments_of(&other);
+    let (status, code, _) = refusal(f.complete(1, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (429, "QUOTA_EXCEEDED"));
+    f.until("only the other file's segments remain", || {
+        f.sweep_past_grace();
+        f.stored_segments().iter().all(|(_, h)| kept.contains(h))
+    })
+    .await;
+    assert_eq!(f.charged().await, 15 * MIB as u64);
+    f.until("one file, marked on three replicas", || f.marks() == 3)
+        .await;
+    let (status, code, _) = refusal(f.upload_status(1, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_change_mid_upload_ends_the_session() {
+    let mut f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let via = (leader + 1) % 3;
+    let plain = stream(40 * MIB, 77);
+    let upload = f.begun(via, plain.len()).await;
+    let _next = f.put_part(via, &upload, 0, &plain).await.unwrap();
+
+    f.c.stop(leader).await;
+    let _new = f.until_leader_is_not(leader).await;
+    let (status, code, _) = refusal(f.put_part(via, &upload, 1, &plain).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+    let (status, code, _) = refusal(f.upload_status(via, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
+    let mut f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let via = (leader + 1) % 3;
+    let plain = stream(20 * MIB, 78);
+    let upload = f.begun(via, plain.len()).await;
+    f.put_all(via, &upload, &plain).await;
+    let done = f.complete(via, &upload).await.unwrap();
+
+    f.c.stop(leader).await;
+    let _new = f.until_leader_is_not(leader).await;
+    assert_eq!(f.complete(via, &upload).await.unwrap(), done);
+    let me = f.clients[via].me().await.unwrap();
+    let payer = format!("account:{}", me["accountId"].as_str().unwrap());
+    let mut charged = 0;
+    for _ in 0..100 {
+        charged = used(&f.clients[via].usage().await.unwrap(), &payer);
+        if charged == plain.len() as u64 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(charged, plain.len() as u64, "charged once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_belongs_to_the_account_that_began_it() {
+    let f = start().await;
+    let o = org_with_a_public_app(&f).await;
+    let path = |tail: &str| format!("apps/{}/files/uploads{tail}", o.app);
+    let begun = f.clients[0]
+        .post(&path(""), json!({ "size": 1_000 }))
+        .await
+        .unwrap();
+    let upload = begun["uploadId"].as_str().unwrap().to_owned();
+
+    let unknown = |e: calimero_client::Error| {
+        let (status, code, _) = refusal(e);
+        assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+    };
+    unknown(
+        o.member
+            .get(&path(&format!("/{upload}")))
+            .await
+            .unwrap_err(),
+    );
+    unknown(
+        (o.member
+            .put_bytes(&path(&format!("/{upload}/parts/0")), vec![1; 1_000]))
+        .await
+        .unwrap_err(),
+    );
+    unknown(
+        (o.member
+            .post(&path(&format!("/{upload}/complete")), json!({})))
+        .await
+        .unwrap_err(),
+    );
+    unknown(
+        o.member
+            .delete(&path(&format!("/{upload}")))
+            .await
+            .unwrap_err(),
+    );
+    for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
+        let e = c
+            .post(&path(""), json!({ "size": 1_000 }))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal(e).0, 403, "{who}");
+    }
+    // Still the owner's, untouched.
+    let ok = f.clients[0]
+        .get(&path(&format!("/{upload}")))
+        .await
+        .unwrap();
+    assert_eq!(ok["next"], json!(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_holds_four_sessions_at_once() {
+    let f = start().await;
+    let mut open = Vec::new();
+    for _ in 0..4 {
+        open.push(f.begun(1, 1_000).await);
+    }
+    let (status, code, _) = refusal(f.begin(1, 1_000).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (429, "TOO_MANY_UPLOADS"));
+    let _gone = f.abort(1, &open[0]).await.unwrap();
+    let _again = f.begun(2, 1_000).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_is_refused_past_the_file_cap_and_a_single_request_past_one_part() {
+    let f = start().await;
+    let over = calimero_app_host::MAX_FILE_BYTES as usize + 1;
+    let (status, code, _) = refusal(f.begin(0, over).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (413, "TOO_LARGE"));
+    let e = f.clients[0]
+        .post_bytes(&format!("apps/{}/files", f.app), stream(PART + 1, 79))
+        .await
+        .unwrap_err();
+    let (status, code, _) = refusal(e);
+    assert_eq!((status, code.as_str()), (413, "TOO_LARGE"));
+    let ok = f.upload(1, PART, 80).await.unwrap();
+    assert_eq!(ok["size"], json!(PART));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn files_are_listed_and_described_under_files_and_leave_the_blob_listing() {
+    let f = start().await;
+    let plain = stream(5_000, 81);
+    let file = f.clients[0]
+        .upload_bytes(&f.app, plain.clone())
+        .await
+        .unwrap();
+    let id = file["id"].as_str().unwrap();
+    let mut keys: Vec<_> = file.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["blobId", "id", "index", "sha256", "size"]);
+    let blob = f.clients[0]
+        .upload_blob(&f.app, vec![9; 300])
+        .await
+        .unwrap();
+
+    let listed = f.clients[1]
+        .get(&format!("apps/{}/files", f.app))
+        .await
+        .unwrap();
+    assert_eq!(listed["files"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["files"][0]["id"], json!(id));
+    assert_eq!(listed["files"][0]["sha256"], json!(sha256_hex(&plain)));
+    let info = (f.clients[2].get(&format!("apps/{}/files/{id}", f.app)))
+        .await
+        .unwrap();
+    assert_eq!(info["size"], json!(5_000));
+    assert_eq!(info["sha256"], json!(sha256_hex(&plain)));
+
+    let blobs = f.clients[0].list_blobs(&f.app).await.unwrap();
+    assert_eq!(blobs["blobs"].as_array().unwrap().len(), 1, "{blobs}");
+    assert_eq!(blobs["blobs"][0]["id"], blob["id"]);
+    let e = f.clients[0].blob_info(&f.app, id).await.unwrap_err();
+    assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sealed_query_is_refused_and_stores_nothing() {
+    let f = start().await;
+    let bytes = stream(5_000, 82);
+    let path = format!("apps/{}/blobs?sealed=true", f.app);
+    let e = f.clients[0].post_bytes(&path, bytes).await.unwrap_err();
+    assert_eq!(status(e), (400, "USE_FILES_API".to_owned()));
+    let blobs = f.clients[0].list_blobs(&f.app).await.unwrap();
+    assert_eq!(blobs["blobs"], json!([]));
+    let files = f.clients[0]
+        .get(&format!("apps/{}/files", f.app))
+        .await
+        .unwrap();
+    assert_eq!(files["files"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_complete_whose_commit_failed_before_it_applied_undoes_the_upload() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let plain = stream(20 * MIB, 83);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    f.node(leader).fail_next_mark_commit(1);
+    let (status, code, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (503, "UNAVAILABLE"));
+    f.until_no_segments().await;
+    assert_eq!((f.charged().await, f.marks()), (0, 0));
+    let (status, code, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_commit_that_never_landed_is_refunded_when_the_session_ends() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let plain = stream(20 * MIB, 92);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    f.node(leader).fail_next_mark_commit(1);
+    f.node(leader).fail_next_barrier();
+    let (status, _, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!(status, 503);
+    assert_eq!(
+        f.charged().await,
+        plain.len() as u64,
+        "charged until it ends"
+    );
+
+    assert_eq!(f.abort(leader, &upload).await.unwrap(), json!({}));
+    f.until_no_segments().await;
+    f.until_charged(0).await;
+    assert_eq!(f.marks(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_commit_that_landed_keeps_its_charge_and_segments_when_the_session_ends() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let plain = stream(20 * MIB, 93);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    f.node(leader).fail_next_mark_commit(2);
+    f.node(leader).fail_next_barrier();
+    let (status, _, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!(status, 503);
+
+    assert_eq!(f.abort(leader, &upload).await.unwrap(), json!({}));
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+    f.sweep_past_grace();
+    assert_eq!(f.charged().await, plain.len() as u64);
+    assert!(f.stored_segments().len() >= 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_complete_whose_commit_failed_after_it_applied_succeeds() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let plain = stream(20 * MIB, 84);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    f.node(leader).fail_next_mark_commit(2);
+    let done = f.complete(leader, &upload).await.unwrap();
+    assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+    assert_eq!(f.charged().await, plain.len() as u64);
+}
+
+/// How many of `hashes` node `i` stores.
+fn stored_of(f: &Fixture, i: usize, hashes: &[String]) -> usize {
+    let held = f.node(i).engine.list_segments().unwrap();
+    hashes.iter().filter(|h| held.contains(h)).count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parts_are_answered_before_a_slow_replica_has_them_and_complete_waits_for_a_majority() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let slow = (leader + 1) % 3;
+    f.node(slow).set_peer_blobs(PeerBlobs::Delay(3_000));
+    let plain = stream(40 * MIB, 85);
+    let upload = f.begun(leader, plain.len()).await;
+
+    f.put_all(leader, &upload, &plain).await;
+    assert_eq!(
+        f.node(slow).engine.list_segments().unwrap().len(),
+        0,
+        "the parts were answered before the slow replica took their segments"
+    );
+
+    let done = f.complete(leader, &upload).await.unwrap();
+    let id = done["id"].as_str().unwrap();
+    let _cached = f.find_segments(id);
+    assert!(f.holders(id).len() >= 2, "a majority holds every segment");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_the_window_full_the_next_parts_answer_waits_for_a_slot() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let slow = (leader + 1) % 3;
+    f.node(leader).set_upload_window(1);
+    f.node(slow).set_peer_blobs(PeerBlobs::Delay(2_000));
+    let plain = stream(40 * MIB, 86);
+    let upload = f.begun(leader, plain.len()).await;
+
+    let _next = f.put_part(leader, &upload, 0, &plain).await.unwrap();
+    let first: Vec<String> = f.node(leader).engine.list_segments().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        stored_of(&f, slow, &first),
+        0,
+        "part 0 answered while it is on the way"
+    );
+
+    let _next = f.put_part(leader, &upload, 1, &plain).await.unwrap();
+    assert_eq!(
+        stored_of(&f, slow, &first),
+        1,
+        "part 1 was answered once part 0 left the window"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_aborted_mid_pipeline_leaves_no_bytes_and_no_charge() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    let slow = (leader + 1) % 3;
+    f.node(slow).set_peer_blobs(PeerBlobs::Delay(2_000));
+    let plain = stream(40 * MIB, 87);
+    let upload = f.begun(leader, plain.len()).await;
+    for k in 0..2 {
+        let _next = f.put_part(leader, &upload, k, &plain).await.unwrap();
+    }
+
+    assert_eq!(f.abort(leader, &upload).await.unwrap(), json!({}));
+    f.until_no_segments().await;
+    assert_eq!((f.charged().await, f.marks()), (0, 0));
+    let (status, code, _) = refusal(f.upload_status(leader, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (404, "UPLOAD_UNKNOWN"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_push_is_retried_and_complete_answers_503_until_it_lands() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let leader = f.leader();
+    for i in (0..3).filter(|i| *i != leader) {
+        f.node(i).set_peer_blobs(PeerBlobs::Refuse);
+    }
+    let plain = stream(20 * MIB, 88);
+    let upload = f.begun(leader, plain.len()).await;
+    f.put_all(leader, &upload, &plain).await;
+
+    let (status, code, _) = refusal(f.complete(leader, &upload).await.unwrap_err());
+    assert_eq!((status, code.as_str()), (503, "FILES_UNAVAILABLE"));
+    assert_eq!(
+        (f.charged().await, f.marks()),
+        (0, 0),
+        "nothing before every segment is on a majority"
+    );
+
+    for i in (0..3).filter(|i| *i != leader) {
+        f.node(i).set_peer_blobs(PeerBlobs::Accept);
+    }
+    let done = f.complete(leader, &upload).await.unwrap();
+    assert_eq!(done["sha256"], json!(sha256_hex(&plain)));
+    f.until("one mark on each replica", || f.marks() == 3).await;
+    assert_eq!(f.charged().await, plain.len() as u64);
 }

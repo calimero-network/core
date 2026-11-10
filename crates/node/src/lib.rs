@@ -241,6 +241,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.tick_timers();
+            node.expire_uploads();
         }
     }));
 
@@ -302,6 +303,21 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             // Each scan reads an app's whole state: off the async workers.
             if let Err(e) = tokio::task::spawn_blocking(move || node.sample_usage()).await {
                 warn!(error = %e, "usage sample failed");
+            }
+        }
+    }));
+
+    // Every node deletes the segments no app lists.
+    let (weak, stop) = (Arc::downgrade(&node), shutdown.clone());
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(crate::node::SWEEP_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            if let Err(e) = tokio::task::spawn_blocking(move || node.sweep_segments()).await {
+                warn!(error = %e, "segment sweep failed");
             }
         }
     }));

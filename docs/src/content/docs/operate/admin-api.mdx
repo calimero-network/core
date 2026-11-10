@@ -167,10 +167,16 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
 | `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `context presence stream` |
-| `POST /apps/{app}/blobs` | app access | Upload a blob; with `?sealed=true`, a component's sealed file (the app's owner and its organization's members) | `blob upload` |
-| `GET /apps/{app}/blobs` | app access | List blobs, and a component's files for the app's owner and its organization's members | `blob list` |
+| `POST /apps/{app}/blobs` | app access | Upload a blob | `blob upload` |
+| `GET /apps/{app}/blobs` | app access | List blobs (plain blobs only) | `blob list` |
+| `POST /apps/{app}/files` | owner, org member | Upload a sealed file of up to 16 MiB: `{ id, blobId, size, sha256, index }` | `file upload` |
+| `GET /apps/{app}/files`, `GET /apps/{app}/files/{id}` | owner, org member | List a component's files; one file's size and plaintext SHA-256 | - |
+| `POST /apps/{app}/files/uploads` | owner, org member | Begin an upload session for `{ size }`: `{ uploadId, partBytes, parts, expiresAt }` | `file upload` |
+| `PUT /apps/{app}/files/uploads/{upload}/parts/{k}` | session's account | One part, raw bytes: `{ next }` | `file upload` |
+| `GET /apps/{app}/files/uploads/{upload}`, `DELETE ...` | session's account | Where the session is (`next`); abort it | `file upload` |
+| `POST /apps/{app}/files/uploads/{upload}/complete` | session's account | Charge and commit the file; a retry answers the same file | `file upload` |
 | `GET /apps/{app}/blobs/{id}` | app access | Download (id base58 or hex) | `blob download` |
-| `GET /apps/{app}/blobs/{id}/info` | app access | Size, and a file's plaintext SHA-256 for the app's owner and its organization's members | `blob info` |
+| `GET /apps/{app}/blobs/{id}/info` | app access | A blob's size | `blob info` |
 | `DELETE /apps/{app}/blobs/{id}` | app access | Forget (owner or org admin) | `blob delete` |
 | `POST /apps/{app}/blobs/{id}/revoke` | app access | Invalidate the grants made so far for a published blob (owner or org admin) | `blob revoke` |
 

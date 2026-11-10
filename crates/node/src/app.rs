@@ -389,6 +389,12 @@ impl AppMachine {
         self.is_component() && self.state.component.blobs.records.contains_key(id)
     }
 
+    /// Whether a sealed file of this app lists the segment with hex hash `hash`.
+    #[must_use]
+    pub fn holds_segment(&self, hash: &str) -> bool {
+        self.is_component() && self.state.component.blobs.holds_segment(hash)
+    }
+
     /// The account that uploaded the sealed file `id`; none for a file a call or a run made.
     #[must_use]
     pub fn file_uploader(&self, id: &[u8; 32]) -> Option<String> {

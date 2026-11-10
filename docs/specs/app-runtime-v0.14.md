@@ -504,7 +504,7 @@ There is no `delete`: dropping the reference is the delete, as for blobs.
 So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 A `BlobRef` to a file the app holds, or finished earlier in the same run, may be stored.
 A file exists only once the run that finished it commits.
-A run holds at most 16 open readers and writers, writes at most 47 MiB to a file and 64 MiB in all, and reads at most 1 MiB per `read`.
+A run holds at most 16 open readers and writers, writes at most 2 GiB to a file and 64 MiB in all, and reads at most 1 MiB per `read`.
 Every refusal that is not a policy violation is a fixed soft error string: `no such file`, `files are not enabled`, `too many open files`, `file too large`, `run wrote too much`, `file already finished`, `file write failed`.
 A write refused for either size cap, or failed inside the provider, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
 A storage failure inside the provider is passed through as an opaque soft error.
@@ -517,7 +517,7 @@ An id that is not an output of a done run of this app (an uploaded file, a file 
 The platform enforces only that rule: each app decides who may publish, in the method that calls `publish`.
 The answer is the plain blob's id, the SHA-256 of the plaintext, which the app stores as a `BlobRef` to keep it (R8, like any blob).
 A result method cannot publish an output of the run that is ending, because the entry that registers it is the one the method runs in: it stores the `BlobRef` and a later call publishes.
-A run publishes at most 16 outputs, each at most 47 MiB and 64 MiB together (`run published too much`), and the output stays publishable while the app holds it.
+A run publishes at most 16 outputs, each at most 47 MiB (the plain blob it becomes, `file too large` past it) and 64 MiB together (`run published too much`), and the output stays publishable while the app holds it.
 A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
 
 ### Compute methods
@@ -543,7 +543,7 @@ The leader sends a job node only the run's compute component (`RunRecord.compute
 Usage is billed to the app component that started the run, and the result method runs on the replicas' app component.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
 A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `job.inputs`, which are blob ids.
-It may create files, 2 GiB in all and 47 MiB each; this cap replaces the 64 MiB per-run cap of a logged run.
+It may create files, 2 GiB in all and 2 GiB each; this cap replaces the 64 MiB per-run cap of a logged run.
 There is no delete: a file is a sealed blob, and dropping the reference is the delete.
 The outputs of a run are sealed blobs, and the run's result method, which receives one typed outcome carrying the output ids, keeps them with R8: a `BlobRef` to an output that the result method stores is retained, and an output it does not store is collected.
 `storage_put` in the result method accepts a `BlobRef` to a blob the app holds or to an output of the run, and refuses any other id.
