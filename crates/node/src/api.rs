@@ -5491,6 +5491,7 @@ async fn app_move(
             bring_members: body.bring_members,
             nonce: b64url(&random::<16>()),
             all_apps_rows: true,
+            accounts_in_app_team: true,
         })
         .await?,
     ))
