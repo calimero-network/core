@@ -1730,11 +1730,19 @@ impl SystemState {
                     package: package.to_owned(),
                     name: None,
                     instances: None,
+                    join: None,
+                    keep: None,
                 })
                 .collect(),
         };
         if specs.len() > MAX_SCOPE_PACKAGES {
             return Err("too many packages in one step");
+        }
+        // A package's own `join` decides its team and no other: `shared`
+        // then closes nothing more unless asked, and never one opened here.
+        let per_app = specs.iter().any(|a| a.join.is_some());
+        if shared == Some(true) && specs.iter().any(|a| a.join == Some(TeamJoin::Everyone)) {
+            return Err("an app team cannot open while the step closes every app team");
         }
         // Each package: its team (found, or to make), name, instances, and
         // who reaches those instances now.
@@ -1744,6 +1752,8 @@ impl SystemState {
             name: String,
             instances: Vec<AppId>,
             reach: BTreeSet<AccountId>,
+            join: Option<TeamJoin>,
+            keep: Option<BTreeSet<AccountId>>,
         }
         let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
         for spec in specs {
@@ -1763,6 +1773,21 @@ impl SystemState {
             if name.trim().is_empty() || name.chars().count() > MAX_APP_TEAM_NAME_CHARS {
                 return Err("an app team's name is 1 to 64 characters");
             }
+            let keep = match spec.keep {
+                None => None,
+                Some(_) if spec.join != Some(TeamJoin::Invite) => {
+                    return Err("only closing an app team (join: invite) names who keeps it");
+                }
+                Some(list) => {
+                    if list.len() > MAX_SCOPE_KEEP {
+                        return Err("too many accounts kept in one step");
+                    }
+                    if list.iter().any(|a| o.role(a).is_none()) {
+                        return Err("only members of the organization keep an app");
+                    }
+                    Some(list.into_iter().collect::<BTreeSet<_>>())
+                }
+            };
             let of_package = |a: &AppRecord| self.package_of(a) == Some(spec.package.as_str());
             let instances: Vec<AppId> = match spec.instances {
                 Some(ids) => {
@@ -1805,6 +1830,8 @@ impl SystemState {
                 name,
                 instances,
                 reach,
+                join: spec.join,
+                keep,
             });
         }
         let app_teams = o
@@ -1813,7 +1840,7 @@ impl SystemState {
             .filter(|t| t.app_package().is_some())
             .count()
             + plans.iter().filter(|p| p.team.is_none()).count();
-        let shared = shared.unwrap_or(app_teams >= 2);
+        let shared = shared.unwrap_or(!per_app && app_teams >= 2);
 
         let o = self.orgs.get_mut(org).ok_or("no such organization")?;
         let mut report = Vec::with_capacity(plans.len());
@@ -1846,21 +1873,87 @@ impl SystemState {
                     id
                 }
             };
+            // Closing with a list: the people the admin keeps, whoever
+            // reaches the moved instances or not (the other rows go below).
+            // Otherwise everyone who reaches them, and, closing, everyone in
+            // the team now.
+            let seed: BTreeSet<AccountId> = match (&plan.keep, plan.join) {
+                (Some(keep), _) => keep.clone(),
+                (None, Some(TeamJoin::Invite)) => {
+                    let mut all = plan.reach.clone();
+                    all.extend(o.members.keys().filter(|m| o.in_team(m, &team_id)).cloned());
+                    all
+                }
+                (None, _) => plan.reach.clone(),
+            };
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
             let mut added = 0usize;
-            for a in &plan.reach {
+            for a in &seed {
                 let _back = t.removed.remove(a);
                 if !t.members.contains_key(a) {
                     let _prev = t.members.insert(a.clone(), false);
                     added += 1;
                 }
             }
+            let mut dropped = 0usize;
+            match plan.join {
+                Some(TeamJoin::Invite) => {
+                    let inside: Vec<AccountId> = o
+                        .members
+                        .keys()
+                        .filter(|m| o.in_team(m, &team_id))
+                        .cloned()
+                        .collect();
+                    let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+                    // A list names everyone but the leads who keeps it: the
+                    // other rows go (not barred: opening it again lets them
+                    // back in, as it does everyone).
+                    if let Some(keep) = &plan.keep {
+                        let out: Vec<AccountId> = t
+                            .members
+                            .iter()
+                            .filter(|(a, lead)| !**lead && !keep.contains(*a))
+                            .map(|(a, _)| a.clone())
+                            .collect();
+                        for a in &out {
+                            let _prev = t.members.remove(a);
+                            let _was = t.read_only.remove(a);
+                            let _caps = t.capabilities.remove(a);
+                        }
+                    }
+                    t.join = TeamJoin::Invite;
+                    t.default_capabilities =
+                        t.default_capabilities.map(|c| c & !caps::INVITE_MEMBERS);
+                    // Who lost it leaves the teams below it too: a row there
+                    // would keep them in its private channels.
+                    let gone: Vec<AccountId> = inside
+                        .into_iter()
+                        .filter(|m| !o.in_team(m, &team_id))
+                        .collect();
+                    dropped = gone.len();
+                    let below: Vec<TeamId> = o.subtree(&team_id).into_iter().skip(1).collect();
+                    for id in &below {
+                        if let Some(t) = o.teams.get_mut(id) {
+                            for a in &gone {
+                                let _prev = t.members.remove(a);
+                                let _was = t.read_only.remove(a);
+                                let _caps = t.capabilities.remove(a);
+                            }
+                        }
+                    }
+                }
+                Some(TeamJoin::Everyone) => t.join = TeamJoin::Everyone,
+                None => {}
+            }
+            let join = o.teams.get(&team_id).map(|t| t.join);
             report.push(json!({
                 "package": plan.package,
                 "teamId": team_id,
                 "created": created,
                 "apps": plan.instances,
                 "added": added,
+                "join": join,
+                "dropped": dropped,
             }));
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
@@ -3367,6 +3460,8 @@ pub fn default_capabilities_args(team: Option<&str>, capabilities: u32) -> Value
 pub const MAX_SCOPE_PACKAGES: usize = 64;
 /// The most instances one package of a `ScopeApps` names.
 pub const MAX_SCOPE_INSTANCES: usize = 1024;
+/// The most accounts one package of a `ScopeApps` keeps on a close.
+pub const MAX_SCOPE_KEEP: usize = 1024;
 /// The longest app team name, in characters.
 pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
 
@@ -3383,6 +3478,20 @@ pub struct ScopeApp {
     /// the package here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instances: Option<Vec<AppId>>,
+    /// Open (`everyone`) or close (`invite`) this package's app team in this
+    /// step, and no other team (absent: as the step's `shared` says). Naming
+    /// it on any package leaves `shared` unset to mean "no other team".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<TeamJoin>,
+    /// Closing (`join: invite`) only: who keeps the app. Absent: everyone
+    /// who reaches it now gets a row of their own, so nobody loses it. A
+    /// list: the team's leads and those accounts (members of the
+    /// organization) keep it, each with a row, and everyone else in it, by
+    /// a row or by inheritance, loses it, with their rows in the teams below
+    /// it (a private channel under the app's team), as a removal from the
+    /// team takes them. They are not barred: opening it again lets them in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<Vec<AccountId>>,
 }
 
 /// What an admin consents to when scoping apps (`org:<org> / __scope_apps`):
@@ -4211,8 +4320,11 @@ pub enum SystemCmd {
     /// give every person who reaches its instances now a row there, and move
     /// the instances to `Access::Team` on it. `shared` (absent: whether the
     /// organization then holds two app teams or more) closes every app team,
-    /// rows filled in first, so nobody loses an app. An admin's, with their
-    /// passkey consent over [`scope_apps_args`].
+    /// rows filled in first, so nobody loses an app. A package's own `join`
+    /// opens or closes its team alone ([`ScopeApp::join`], `shared` absent
+    /// then means no other team changes), a close keeping everyone who
+    /// reaches it or only the accounts named ([`ScopeApp::keep`]). An
+    /// admin's, with their passkey consent over [`scope_apps_args`].
     ScopeApps {
         org: OrgId,
         #[serde(default)]
@@ -11895,6 +12007,25 @@ mod tests {
         assert_eq!(
             super::default_capabilities_args(None, 4),
             json!({ "capabilities": 4 })
+        );
+    }
+
+    #[test]
+    fn a_scope_apps_from_before_a_per_app_join_reads_writes_and_consents_as_before() {
+        let cmd = json!({
+            "op": "scopeApps", "org": "o", "apps": [{ "package": "com.chat" }],
+            "shared": true, "nonce": "n", "actor": "a", "consent": null
+        });
+        let read: SystemCmd = serde_json::from_value(cmd.clone()).unwrap();
+        let SystemCmd::ScopeApps { apps, shared, .. } = &read else {
+            panic!("{read:?}");
+        };
+        let apps = apps.as_deref().unwrap();
+        assert_eq!((apps[0].join, apps[0].keep.as_ref()), (None, None));
+        assert_eq!(serde_json::to_value(&read).unwrap(), cmd);
+        assert_eq!(
+            super::scope_apps_args(Some(apps), *shared),
+            json!({ "apps": [{ "package": "com.chat" }], "shared": true })
         );
     }
 
