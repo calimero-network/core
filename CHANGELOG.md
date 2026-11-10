@@ -19,6 +19,17 @@
 - **`GET /apps/{app}/xcalls` from a node without a replica** answered `503 "ask
   a node that hosts the app"`; it now asks a replica (`internal/xcalls`), as
   the other app routes do.
+- **A DM moved with its people into a closed app team keeps them.** Since
+  #4905, an `accounts` instance (a DM, a private channel) of a
+  package with an app team in its organization is reached only by those in
+  that team. `MoveApp` with `bringMembers` added the source's people to the
+  target but gave them no row on the target's app team of the package, so
+  where that team is closed they lost the DM they were brought for. Such a
+  move now gives the people it brings, and the instance's owner, a plain row
+  on that team (never more than member; an open team needs none, and the
+  owner must still be a member of the target). `MoveApp` carries
+  `accounts_in_app_team`, which the API always sets; an entry an earlier
+  release logged replays giving no such rows.
 
 ### Security
 
