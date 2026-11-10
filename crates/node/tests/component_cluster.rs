@@ -5356,6 +5356,49 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn org_quotas_wait_for_the_release_then_merge_and_clear() {
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let err = ops
+        .post("ops/quotas", json!({ "org": "x", "maxConcurrentRuns": 1 }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
+    c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
+    let set = |body: serde_json::Value| {
+        let ops = &ops;
+        async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                match ops
+                    .post_operator_signed("ops/quotas", body.clone(), &common::operator_sign)
+                    .await
+                {
+                    Ok(_) => return,
+                    Err(e) => {
+                        assert!(std::time::Instant::now() < deadline, "still refused: {e}");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+    };
+    set(json!({ "org": "x", "maxConcurrentRuns": 1 })).await;
+    set(json!({ "org": "x", "computeFuel": "99" })).await;
+    let shown = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(
+        shown["orgs"],
+        json!({ "x": { "maxConcurrentRuns": 1, "computeFuel": "99" } })
+    );
+    set(json!({ "org": "x", "maxConcurrentRuns": null, "computeFuel": null })).await;
+    assert_eq!(ops.get("ops/quotas").await.unwrap()["orgs"], json!({}));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pools_wait_until_every_node_runs_this_release() {
     let mut c = Cluster::start_with(3, |cfg| {
         cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();

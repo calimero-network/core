@@ -8932,9 +8932,60 @@ async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
 
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
-    Ok(Json(
-        serde_json::to_value(node.sys(|s| s.quotas.clone())).unwrap_or_default(),
-    ))
+    let (quotas, orgs) = node.sys(|s| (s.quotas.clone(), s.org_quotas.clone()));
+    let mut shown = serde_json::to_value(quotas).unwrap_or_default();
+    shown["orgs"] = serde_json::to_value(orgs).unwrap_or_default();
+    Ok(Json(shown))
+}
+
+/// `POST /ops/quotas` with `org`: change the limits named for one payer; a field set to `null`
+/// goes back to the cluster's. Signed (`cluster / __set_org_quotas / { payer, quotas }`).
+async fn ops_org_quotas_set(
+    node: &Node,
+    payer: &str,
+    changes: serde_json::Map<String, Value>,
+    given: Option<OperatorProofBody>,
+) -> ApiResult {
+    node.require_current_release("org quotas").await?;
+    node.sys_fresh().await;
+    let mut merged = serde_json::to_value(
+        node.sys(|s| s.org_quotas.get(payer).cloned())
+            .unwrap_or_default(),
+    )
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let limits = merged
+        .as_object_mut()
+        .ok_or_else(|| ApiError::internal("quotas are not an object"))?;
+    for (k, v) in changes {
+        if !["maxConcurrentRuns", "computeFuel", "maxFileBytes"].contains(&k.as_str()) {
+            return Err(ApiError::bad_request(
+                "UNKNOWN_QUOTA",
+                &format!("no org quota named {k}"),
+            ));
+        }
+        if v.is_null() {
+            let _gone = limits.remove(&k);
+        } else {
+            let _prev = limits.insert(k, v);
+        }
+    }
+    let quotas: crate::system::OrgQuotas = serde_json::from_value(merged)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    let proof = operator_proof(
+        node,
+        "cluster",
+        "__set_org_quotas",
+        &json!({ "payer": payer, "quotas": quotas }),
+        given,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetOrgQuotas {
+            payer: payer.to_owned(),
+            quotas,
+            proof,
+        })
+        .await?;
+    Ok(Json(json!({})))
 }
 
 /// `409`: a write that only this release, or a newer one, understands, refused while
@@ -8956,6 +9007,16 @@ async fn ops_quotas_set(
         .map(serde_json::from_value)
         .transpose()
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // `orgs` is what GET answers; a read-modify-write of that answer leaves the overrides alone.
+    let _read_only = changes.remove("orgs");
+    if let Some(org) = changes.remove("org") {
+        let payer = org
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "org is a payer id"))?
+            .to_owned();
+        return ops_org_quotas_set(&node, &payer, changes, given).await;
+    }
     node.sys_fresh().await;
     let mut merged = serde_json::to_value(node.sys(|s| s.quotas.clone()))
         .map_err(|e| ApiError::internal(&e.to_string()))?;

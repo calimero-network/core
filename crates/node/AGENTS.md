@@ -117,7 +117,7 @@ is its command line.
   `an_owner_opening_their_own_invite_leaves_it_for_the_invitee`). The fleet
   carries the operator's signature (`cluster /
   __register_node { id, addr, zone }`, `__remove_node { id }`,
-  `__set_quotas { quotas }`, `__set_pools { pools }`; `<app> / __set_replicas { replicas }`, one
+  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one
   signature for both of a move's writes: the union applies with it unspent,
   the target spends it). The configured peers come with `Genesis { nodes }`;
   `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
@@ -532,7 +532,9 @@ is its command line.
   `SetPools` refuses removing a pool that still has job nodes or runs (`POOL_IN_USE`).
   With no pools it is the legacy single pool: registered job nodes times `RUNS_PER_JOB_NODE` (2).
   Whether a node is reachable or runs a release an org approved is the leader's attested view, not replicated state, so `apply` cannot count it and the leader bounds a run's wait instead.
-  Free places go to the payers in turn: the one served longest ago (`run_served`, a count of grants, kept only for payers that still have runs), then the one whose oldest waiting run has the smallest `seq`; and a payer at `maxConcurrentRunsPerOrg` (4) or over `computeFuelPerOrg` (10 x `MAX_COMPUTE_FUEL`) is passed over for the pass.
+  A payer's limits (`SystemState::payer_quotas`: runs, fuel, file bytes) are its override in `SystemState::org_quotas` where it has one (`POST /ops/quotas` with `org`: a field set to `null` clears it; operator-signed `cluster / __set_org_quotas / { payer, quotas }`, refused `409 UPGRADE_PENDING` while a node is behind; all fields cleared removes the entry), else the cluster's.
+  `grant_runs`, the `AcquireRun` fuel refusal, the refused marking and the file-bytes charges read them; lowering an override never revokes a granted run, new grants wait.
+  Free places go to the payers in turn: the one served longest ago (`run_served`, a count of grants, kept only for payers that still have runs), then the one whose oldest waiting run has the smallest `seq`; and a payer at `maxConcurrentRunsPerOrg` (4) or over `computeFuelPerOrg` (10 x `MAX_COMPUTE_FUEL`), or its override, is passed over for the pass.
   `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetPools`, `TransferApp` (a personal app's payer moves) and `remove_app` (`DeleteApp`, `DeleteOrg`, `DeleteTeam`) re-run it, and a granted run is never taken back.
   `AcquireRun` answers `{ state: granted | queued | refused, code, retryable }`.
   Retryable codes are `NOT_PAYER` and `APP_QUEUE_FULL`; permanent ones are `NO_SUCH_APP`, `FUEL_OVER_RUN_MAX`, `FUEL_OVER_QUOTA`, `RUN_NO_POOL` and `RELEASED`.

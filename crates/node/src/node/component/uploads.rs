@@ -523,7 +523,7 @@ impl Node {
             return Err(crate::node::file_too_large());
         }
         let payer = crate::usage::payer(app);
-        let (used, quota) = self.sys(|s| (s.file_bytes(&payer), s.quotas.max_file_bytes_per_org));
+        let (used, quota) = self.sys(|s| (s.file_bytes(&payer), s.payer_quotas(&payer).2));
         let mut open = self
             .uploads
             .0
