@@ -58,8 +58,8 @@ for await (const event of kv.events()) {
 }
 ```
 
-A call takes `{ idempotencyKey }` as its last argument, a view `{ stale,
-minIndex }`. A `confirm` method takes the passkey that approves it:
+A call takes `{ idempotencyKey }` as its last argument, a view
+`{ stale, minIndex }`. A `confirm` method takes the passkey that approves it:
 `await rooms.adminRelease({ id, reason }, passkey)`.
 
 ## Use it from Python
@@ -90,8 +90,8 @@ left out. The full table is in [App interface](/core/build/app-abi/#types).
 
 ## Use any OpenAPI tool
 
-`openapi.json` is a standard OpenAPI 3.1 document: each method is `POST
-/apps/{app}/methods/{name}`, and its body is `{ args, idempotencyKey? }` for a
+`openapi.json` is a standard OpenAPI 3.1 document: each method is
+`POST /apps/{app}/methods/{name}`, and its body is `{ args, idempotencyKey? }` for a
 call or `{ args, consistency?, minIndex? }` for a view. A running node serves the
 same document for an installed app at `GET /apps/{app}/openapi.json`. Generators
 and validators read it as they read any other; give the generated code mero-js

@@ -158,7 +158,7 @@ change; `--json` prints it as JSON. Parameters may widen and results narrow:
 | Breaking | Compatible |
 | --- | --- |
 | A method a client, the node or another app calls is removed or renamed (a rename is named) | A method added |
-| `kind` changed (`call` <-> `view`, ...) | An `option<..>` parameter added |
+| `kind` changed (a call becomes a view, ...) | An `option<..>` parameter added |
 | A parameter removed, added without `option<..>`, or changed to a type that does not hold the old values (`u32` -> `u64` moves from a number to a string) | A parameter widened (`u16` -> `u32`, `T` -> `option<T>`, `char` -> `string`) |
 | A result changed to a type outside the old one (`T` -> `option<T>`, `u16` -> `u32`) | A result narrowed (`option<T>` -> `T`), or a method that returned nothing now returns a value |
 | `confirm` added; `public`, `allowSystem` or an `allowApps` entry removed; `allow(action)` added | The reverse of each; parameters reordered (JSON passes them by name); `rate`, `every` or compute caps changed |
@@ -166,8 +166,8 @@ change; `--json` prints it as JSON. Parameters may widen and results narrow:
 | `abiVersion` changed; `world` moved to another minor | `world` moved to another patch |
 | A state field removed or its collection kind changed; the state version going down or up by more than one | A state field added; the state version up by one (the upgrade runs its `#[app::migrate]` edge); search fields changed |
 
-`mero-sign sign --previous <last release>` (and `scripts/pack-component.py
---previous`) runs the same check before signing: it prints the changes, warns
+`mero-sign sign --previous <last release>` (and
+`scripts/pack-component.py --previous`) runs the same check before signing: it prints the changes, warns
 about breaking ones, and **refuses to sign** when a state field was removed or
 changed kind while `#[app::state(version = N)]` stayed the same, since the
 upgrade to that release would leave the app's data unreadable
