@@ -750,6 +750,16 @@ impl Client {
             .await
     }
 
+    /// The pipelines a release registers: name to hash, worst-case fuel and canonical JSON.
+    pub async fn package_pipelines(&self, package: &str, version: &str) -> Result<Value> {
+        self.get(&format!(
+            "packages/{}/{}/pipelines",
+            path_segment(package),
+            path_segment(version)
+        ))
+        .await
+    }
+
     /// Uninstall one version of a package, or all of it.
     pub async fn uninstall_package(&self, package: &str, version: Option<&str>) -> Result<Value> {
         match version {

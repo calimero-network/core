@@ -30,6 +30,8 @@ use crate::system::{
 };
 use crate::types::{now_secs, Components};
 
+mod pipelines;
+
 /// The largest `.mpk` a node takes, uploaded or fetched: it is kept as a blob,
 /// so the blob limit (v1 allowed 512 MiB; a blob here must reach a
 /// majority inside one sealed request).
@@ -62,6 +64,8 @@ pub struct Verified {
 pub struct Service {
     /// `""` for a single-service bundle.
     pub name: String,
+    /// The service's pipeline files by archive path.
+    pub pipelines: Vec<(String, Vec<u8>)>,
     /// The app component; `None` for a compute-only single-service bundle.
     pub wasm: Option<Vec<u8>>,
     /// Its compute component, when the release ships one.
@@ -101,6 +105,11 @@ pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError
             name: w.name.unwrap_or_default(),
             wasm: w.bytes.map(|b| b.to_vec()),
             compute: w.compute.map(|c| c.to_vec()),
+            pipelines: w
+                .pipelines
+                .into_iter()
+                .map(|(path, bytes)| (path, bytes.to_vec()))
+                .collect(),
         })
         .collect();
     Ok((bundle, wasm))
@@ -266,10 +275,12 @@ impl Node {
         let mut wasm_by_hash = BTreeMap::new();
         let mut part_sizes = BTreeMap::new();
         let mut only_compute = false;
+        let mut service_pipelines = Vec::new();
         for Service {
             name: service,
             wasm: bytes,
             compute: job,
+            pipelines: files,
         } in wasm
         {
             let Some(bytes) = bytes else {
@@ -300,6 +311,7 @@ impl Node {
                         "a package with only a compute component must declare at least one compute method",
                     ));
                 }
+                service_pipelines.push((files, Some(pipelines::compute_caps(&prepared.abi))));
                 let _prev = compute.insert(service, job_hash.clone());
                 let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
                 let _prev = wasm_by_hash.insert(job_hash, job);
@@ -319,6 +331,7 @@ impl Node {
                     .prepare(&hash, &bytes)
                     .map_err(|e| ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string()))?
             };
+            let mut job_caps = None;
             if let Some(job) = job {
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
                 let prepared = {
@@ -336,13 +349,26 @@ impl Node {
                     ApiError::bad_request(COMPUTE_ABI_MISMATCH, &why)
                         .with_details(serde_json::json!({ "service": service }))
                 })?;
+                job_caps = Some(pipelines::compute_caps(&prepared.abi));
                 let _prev = compute.insert(service.clone(), job_hash.clone());
                 let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
                 let _prev = wasm_by_hash.insert(job_hash, job);
             }
+            service_pipelines.push((files, job_caps));
             let _prev = services.insert(service, hash.clone());
             let _prev = part_sizes.insert(hash.clone(), bytes.len() as u64);
             let _prev = wasm_by_hash.insert(hash, bytes);
+        }
+        let pools = self.sys(|s| {
+            s.pools
+                .iter()
+                .map(|(name, p)| (name.clone(), p.max_memory_mib))
+                .collect()
+        });
+        let mut pipeline_refs = BTreeMap::new();
+        for (compiled, record) in pipelines::register(&service_pipelines, &pools)? {
+            let _prev = wasm_by_hash.insert(compiled.hash, compiled.canonical);
+            let _prev = pipeline_refs.insert(compiled.name, record);
         }
         let metadata = manifest
             .metadata
@@ -359,6 +385,7 @@ impl Node {
                 source,
                 services,
                 compute,
+                pipelines: pipeline_refs,
                 part_sizes,
                 metadata,
                 outbound: manifest.outbound.clone(),
@@ -384,8 +411,9 @@ impl Node {
         upload: Option<Arc<[u8]>>,
     ) -> Result<Value, ApiError> {
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
-        // An older node drops `components` and would apply the release as an app's.
-        if !v.release.components.is_app() {
+        // An older node drops `components` and would apply the release as an app's, and drops
+        // `pipelines` and would hold none.
+        if !v.release.components.is_app() || !v.release.pipelines.is_empty() {
             self.require_upgraded_nodes().await?;
         }
         for (hash, bytes) in &v.wasm {

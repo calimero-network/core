@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::{
     verify_frontend_file, verify_manifest_signature, BundleArtifact, BundleManifest, FrontendError,
-    ManifestVerification, MAX_MANIFEST_BYTES,
+    ManifestVerification, MAX_MANIFEST_BYTES, MAX_PIPELINES_PER_PACKAGE, MAX_PIPELINE_BYTES,
 };
 use eyre::bail;
 use flate2::read::GzDecoder;
@@ -191,6 +191,7 @@ pub fn extract_bundle_manifest(
             for (field, artifact) in manifest.artifacts() {
                 validate_artifact_path(&artifact.path, &format!("{field}.path"))?;
             }
+            validate_pipelines(&manifest)?;
 
             let current_runtime_version = runtime_version;
             let min_runtime_version =
@@ -215,6 +216,28 @@ pub fn extract_bundle_manifest(
     }
 
     bail!("manifest.json not found in bundle")
+}
+
+/// The manifest's pipeline bounds: how many, and how large each file may be.
+fn validate_pipelines(manifest: &BundleManifest) -> eyre::Result<()> {
+    let files: Vec<_> = manifest
+        .wasm_artifacts()
+        .into_iter()
+        .flat_map(|a| a.pipelines)
+        .collect();
+    if files.len() > MAX_PIPELINES_PER_PACKAGE {
+        bail!(
+            "bundle declares {} pipelines, at most {MAX_PIPELINES_PER_PACKAGE} are allowed",
+            files.len()
+        );
+    }
+    if let Some(big) = files.iter().find(|f| f.size > MAX_PIPELINE_BYTES) {
+        bail!(
+            "pipeline '{}' exceeds the {MAX_PIPELINE_BYTES} byte cap",
+            big.path
+        );
+    }
+    Ok(())
 }
 
 /// Whether a blob is a bundle archive: a tar entry at `manifest.json`.
@@ -334,6 +357,8 @@ pub struct VerifiedWasm {
     pub bytes: Option<Arc<[u8]>>,
     /// The service's compute component, when the manifest declares one.
     pub compute: Option<Arc<[u8]>>,
+    /// The service's pipeline files by archive path, in manifest order.
+    pub pipelines: Vec<(String, Arc<[u8]>)>,
 }
 
 /// Everything a [`VerifiedBundle`] ships, digest-checked: the wasm per service
@@ -418,6 +443,10 @@ impl VerifiedBundle {
             if let Some(compute) = artifact.compute {
                 let _ = wanted.insert(compute.path.as_str(), u64::MAX);
             }
+            for file in artifact.pipelines {
+                let bound = wanted.entry(file.path.as_str()).or_insert(0);
+                *bound = (*bound).max(file.size);
+            }
         }
         for file in frontend_files {
             let bound = wanted.entry(file.path.as_str()).or_insert(0);
@@ -445,10 +474,20 @@ impl VerifiedBundle {
                     Ok::<_, eyre::Report>(bytes)
                 })
                 .transpose()?;
+            let pipelines = artifact
+                .pipelines
+                .iter()
+                .map(|f| {
+                    let bytes = take_artifact(&found, &f.path)?;
+                    verify_artifact_digest(f, &bytes)?;
+                    Ok::<_, eyre::Report>((f.path.clone(), bytes))
+                })
+                .collect::<Result<_, _>>()?;
             wasm.push(VerifiedWasm {
                 name: artifact.name.map(str::to_owned),
                 bytes,
                 compute,
+                pipelines,
             });
         }
 
@@ -514,5 +553,7 @@ pub mod fuzz_api {
 
 #[cfg(test)]
 mod compute_tests;
+#[cfg(test)]
+mod pipeline_tests;
 #[cfg(test)]
 mod sparse_entry_tests;

@@ -28,5 +28,6 @@ cargo test -p calimero-pipeline
 ## Rules
 
 - `when`, `runIf`, `uses` and loop or variable fields are refused with `NOT_IN_V1`; they are never ignored.
+- A step with no module and no pipeline module runs in `Env::default_module`; with none either, `check` answers `MISSING_MODULE`.
 - A reference to a step adds it to `needs` in the compiled pipeline, so the canonical form always lists every arrow.
 - Every bound is a named constant at the top of `src/compile.rs`.

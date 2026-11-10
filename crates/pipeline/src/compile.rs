@@ -433,13 +433,6 @@ fn validate_step(
     let at = |field: &str| join(path, field);
     let fan_out = s.for_each.is_some();
 
-    if s.module.is_none() && p.module.is_none() {
-        errs.push(err(
-            at("module"),
-            "MISSING_MODULE",
-            "no step module and no pipeline module",
-        ));
-    }
     for n in &s.needs {
         if p.steps.contains_key(n) {
             deps.insert(n.clone());

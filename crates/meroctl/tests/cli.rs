@@ -86,6 +86,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -280,6 +281,8 @@ fn scenario(root: &Path, url: &str) {
         alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"
     );
+    // A release without pipelines registers none; the newest version is the default.
+    assert_eq!(alice.run(&["app", "pipelines", "com.test.kv"]), json!({}));
 
     // Web origins: the first installer manages them, with a passkey per change.
     let site = "https://kv.example.com";

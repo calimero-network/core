@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::{Components, Executor};
-use common::{mpk_parts, mpk_with, signed_up, Cluster, PUBLISHER};
+use common::{mpk_parts, mpk_with, mpk_with_pipelines, signed_up, Cluster, PUBLISHER};
 use serde_json::{json, Value};
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
@@ -556,10 +556,9 @@ async fn an_app_package_installs_exactly_as_before() {
         assert_eq!(release.components, Components::App);
         assert_eq!(release.services[""], sha256_hex(&both.app));
         // A record of an app release reads and writes as before: no new field.
-        assert!(serde_json::to_value(release)
-            .unwrap()
-            .get("components")
-            .is_none());
+        let stored = serde_json::to_value(release).unwrap();
+        assert!(stored.get("components").is_none());
+        assert!(stored.get("pipelines").is_none());
     });
     let app = create(&owner, "1.0.0").await;
     let record = node.app(&app).await.unwrap();
@@ -631,4 +630,175 @@ async fn switching_components_on_upgrade_is_refused() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("COMPONENTS_CHANGED"), "{e}");
+}
+
+const PIPELINE: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: p1
+inputs:
+  docs: { kind: files }
+steps:
+  first: { method: digest, inputs: [inputs.docs] }
+  second: { method: burn, needs: [first] }
+";
+
+async fn install_with_pipelines(
+    owner: &Client,
+    pipelines: &[(&str, &str)],
+) -> Result<Value, Box<calimero_client::Error>> {
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let job = common::components("compute").compute.clone().unwrap();
+    owner
+        .upload_package(mpk_with_pipelines(
+            "com.test.job",
+            "1.0.0",
+            None,
+            Some(&job),
+            pipelines,
+            &key,
+        ))
+        .await
+        .map_err(Box::new)
+}
+
+fn bad_pipeline(e: &calimero_client::Error) -> Vec<Value> {
+    assert_eq!(e.code(), Some("BAD_PIPELINE"), "{e}");
+    e.details().unwrap().as_array().unwrap().clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_only_package_with_a_pipeline_installs_and_lists_it() {
+    let (c, owner, _pk) = compute_cluster().await;
+    install_with_pipelines(&owner, &[("pipelines/p1.yaml", PIPELINE)])
+        .await
+        .unwrap();
+
+    let canonical =
+        calimero_pipeline::canonical_json(&calimero_pipeline::compile(PIPELINE).unwrap());
+    let listed = owner
+        .get("packages/com.test.job/1.0.0/pipelines")
+        .await
+        .unwrap();
+    let p1 = &listed["p1"];
+    assert_eq!(p1["hash"], sha256_hex(&canonical));
+    assert_eq!(p1["worstCaseFuel"], "20001000000");
+    assert_eq!(p1["pipeline"]["name"], "p1");
+    assert_eq!(p1["pipeline"]["steps"]["second"]["needs"], json!(["first"]));
+
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    assert_eq!(
+        node.pipeline_json(&sha256_hex(&canonical)).await.unwrap(),
+        canonical
+    );
+    // A node that lost the part recompiles it from the release.
+    node.engine.delete_blob(&sha256_hex(&canonical)).unwrap();
+    assert_eq!(
+        node.pipeline_json(&sha256_hex(&canonical)).await.unwrap(),
+        canonical
+    );
+    let none = owner.get("packages/com.test.job/9.9.9/pipelines").await;
+    assert_eq!(none.unwrap_err().code(), Some("NOT_FOUND"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pipeline_naming_an_unknown_method_is_refused_with_its_path() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let bad = PIPELINE.replace("method: burn", "method: ghost");
+    let e = install_with_pipelines(&owner, &[("pipelines/p1.yaml", &bad)])
+        .await
+        .unwrap_err();
+    let details = bad_pipeline(&e);
+    assert_eq!(details.len(), 1, "{details:?}");
+    assert_eq!(details[0]["file"], "pipelines/p1.yaml");
+    assert_eq!(details[0]["path"], "steps.second.method");
+    assert_eq!(details[0]["code"], "UNKNOWN_METHOD");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pipeline_on_another_module_is_refused() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let other = PIPELINE.replace("name: p1\n", "name: p1\nmodule: calimero/pdf-extract@1\n");
+    let e = install_with_pipelines(&owner, &[("pipelines/p1.yaml", &other)])
+        .await
+        .unwrap_err();
+    assert!(bad_pipeline(&e)
+        .iter()
+        .all(|d| d["code"] == "UNKNOWN_MODULE"));
+    let step = PIPELINE.replace("method: burn", "module: other, method: burn");
+    let e = install_with_pipelines(&owner, &[("pipelines/p1.yaml", &step)])
+        .await
+        .unwrap_err();
+    assert_eq!(bad_pipeline(&e)[0]["path"], "steps.second.module");
+    // `self` is the package's own component.
+    let own = PIPELINE.replace("name: p1\n", "name: p1\nmodule: self\n");
+    install_with_pipelines(&owner, &[("pipelines/p1.yaml", &own)])
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn pipelines_are_refused_when_malformed_duplicated_or_without_a_compute_component() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let broken =
+        "apiVersion: compute.calimero.network/v1\nkind: Pipeline\nname: Bad Name\nsteps: {}\n";
+    let e = install_with_pipelines(&owner, &[("pipelines/bad.yaml", broken)])
+        .await
+        .unwrap_err();
+    assert!(!bad_pipeline(&e).is_empty());
+
+    let e = install_with_pipelines(
+        &owner,
+        &[
+            ("pipelines/a.yaml", PIPELINE),
+            ("pipelines/b.yaml", PIPELINE),
+        ],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(bad_pipeline(&e)[0]["code"], "DUPLICATE_NAME");
+
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let both = common::components("compute");
+    let e = owner
+        .upload_package(mpk_with_pipelines(
+            "com.test.job",
+            "1.0.0",
+            Some(&both.app),
+            None,
+            &[("pipelines/p1.yaml", PIPELINE)],
+            &key,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(bad_pipeline(&e)[0]["code"], "NO_COMPUTE");
+}
+
+/// An older node drops `pipelines` and would run a release's pipelines as none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_package_with_pipelines_waits_until_every_node_runs_this_release() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.allow_unsigned_bundles = false;
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let (owner, _pk) = signed_up(&c, 0, "owner").await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let both = common::components("compute");
+    let with_app = |pipelines: &[(&str, &str)]| {
+        mpk_with_pipelines(
+            "com.test.compute",
+            "1.0.0",
+            Some(&both.app),
+            both.compute.as_deref(),
+            pipelines,
+            &key,
+        )
+    };
+    let e = owner
+        .upload_package(with_app(&[("pipelines/p1.yaml", PIPELINE)]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CLUSTER_NOT_UPGRADED"), "{e}");
+    // A release without pipelines installs as before.
+    owner.upload_package(with_app(&[])).await.unwrap();
 }

@@ -256,6 +256,16 @@ pub struct PackageRecord {
     pub versions: BTreeMap<String, PackageVersion>,
 }
 
+/// A pipeline a release registers: the SHA-256 of its canonical JSON, a content-addressed
+/// part of the release, and the most fuel one run of it can burn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRef {
+    pub hash: String,
+    /// Decimal `u128`: JSON numbers do not hold one.
+    pub worst_case_fuel: String,
+}
+
 /// One release of a package, as its signed manifest describes it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -279,6 +289,10 @@ pub struct PackageVersion {
     /// Absent in releases from before: every part then counts the whole `.mpk`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub part_sizes: BTreeMap<String, u64>,
+    /// Pipeline name -> its registered form. Left out when empty, so a record of a release
+    /// without pipelines reads and writes as it did; an older node ignores the field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pipelines: BTreeMap<String, PipelineRef>,
     /// The manifest's display metadata (name, description, icon, ...).
     #[serde(default)]
     pub metadata: Value,
@@ -8310,6 +8324,7 @@ mod tests {
             signer_id: "did:key:z".into(),
             release: PackageVersion {
                 components: Default::default(),
+                pipelines: Default::default(),
                 version: version.into(),
                 mpk: format!("mpk{version}"),
                 mpk_size: 1,
@@ -8404,6 +8419,7 @@ mod tests {
             signer_id: "did:key:z".into(),
             release: PackageVersion {
                 components: Default::default(),
+                pipelines: Default::default(),
                 version: version.into(),
                 mpk: format!("mpk{version}"),
                 mpk_size: 40,
@@ -8442,6 +8458,7 @@ mod tests {
             signer_id: "did:key:z".into(),
             release: PackageVersion {
                 components: Default::default(),
+                pipelines: Default::default(),
                 version: version.into(),
                 mpk: format!("mpk{version}"),
                 mpk_size: 1,

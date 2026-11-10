@@ -26,6 +26,7 @@ fn env(pools: &[(&str, u32)]) -> Env {
             ]),
         )]),
         pools: pools.iter().map(|(n, m)| (n.to_string(), *m)).collect(),
+        ..Env::default()
     }
 }
 
@@ -161,4 +162,19 @@ fn worst_case_fuel_cannot_overflow_and_skips_unknown_methods() {
         "  a: { method: max, forEach: inputs.x, maxItems: 10000 }\n  b: { method: max, forEach: inputs.x, maxItems: 10000 }\n  c: { method: ghost }\n",
     );
     assert_eq!(worst_case_fuel(&p, &e), 2 * u128::from(u64::MAX) * 10_000);
+}
+
+#[test]
+fn a_step_without_any_module_is_missing_one_unless_the_env_has_a_default() {
+    let source = "apiVersion: compute.calimero.network/v1\nkind: Pipeline\nname: p\nsteps:\n  a: { method: run }\n";
+    let p = compile(source).unwrap();
+    let mut e = env(&[]);
+    let errs = check(&p, &e).unwrap_err();
+    assert_eq!(
+        (errs[0].code, errs[0].path.as_str()),
+        ("MISSING_MODULE", "steps.a.module")
+    );
+    e.default_module = Some("m".into());
+    check(&p, &e).unwrap();
+    assert_eq!(worst_case_fuel(&p, &e), 1_000);
 }

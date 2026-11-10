@@ -3070,6 +3070,25 @@ async fn package_get(
         .ok_or_else(|| ApiError::not_found("no such package"))
 }
 
+/// A release's registered pipelines: name to hash, worst-case fuel and canonical JSON.
+async fn package_pipelines(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((package, version)): Path<(String, String)>,
+) -> ApiResult {
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
+    let frontend = principal.bound_app() == Some(package.as_str());
+    node.sys_fresh_from(principal.sys_index).await;
+    let refs = node
+        .sys(|s| {
+            let v = s.packages.get(&package)?.versions.get(&version)?;
+            (frontend || s.sees_release(v, &account)).then(|| v.pipelines.clone())
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    Ok(Json(node.release_pipelines(&refs).await?))
+}
+
 async fn package_uninstall(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -10658,6 +10677,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/packages/install", post(package_install))
         .route("/packages/{package}", get(package_get).delete(package_uninstall))
         .route("/packages/{package}/{version}", delete(package_version_uninstall))
+        .route("/packages/{package}/{version}/pipelines", get(package_pipelines))
         .route(
             "/package-origins/{package}",
             get(origins::list).post(origins::add).delete(origins::remove),

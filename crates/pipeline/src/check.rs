@@ -1,11 +1,14 @@
 use crate::model::{Caps, Env, Pipeline, SpecError, Step};
 
-fn module_of<'a>(p: &'a Pipeline, s: &'a Step) -> Option<&'a str> {
-    s.module.as_deref().or(p.module.as_deref())
+fn module_of<'a>(p: &'a Pipeline, s: &'a Step, env: &'a Env) -> Option<&'a str> {
+    s.module
+        .as_deref()
+        .or(p.module.as_deref())
+        .or(env.default_module.as_deref())
 }
 
 fn caps_of<'a>(p: &Pipeline, s: &Step, env: &'a Env) -> Option<&'a Caps> {
-    env.modules.get(module_of(p, s)?)?.get(&s.method)
+    env.modules.get(module_of(p, s, env)?)?.get(&s.method)
 }
 
 /// Apply-time checks: modules, methods, limits against caps, pools and their memory.
@@ -20,14 +23,20 @@ pub fn check(p: &Pipeline, env: &Env) -> Result<(), Vec<SpecError>> {
                 message,
             });
         };
-        let caps = match module_of(p, s).and_then(|m| env.modules.get(m).map(|ms| (m, ms))) {
+        let caps = match module_of(p, s, env).and_then(|m| env.modules.get(m).map(|ms| (m, ms))) {
             None => {
-                let m = module_of(p, s).unwrap_or("");
-                push(
-                    "module",
-                    "UNKNOWN_MODULE",
-                    format!("module `{m}` is not available"),
-                );
+                match module_of(p, s, env) {
+                    Some(m) => push(
+                        "module",
+                        "UNKNOWN_MODULE",
+                        format!("module `{m}` is not available"),
+                    ),
+                    None => push(
+                        "module",
+                        "MISSING_MODULE",
+                        "no step module, no pipeline module and no default".into(),
+                    ),
+                }
                 None
             }
             Some((m, methods)) => match methods.get(&s.method) {
