@@ -149,7 +149,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
 fn newer_versions<'s>(
     s: &'s SystemState,
     current: &ReleaseName,
-    account: &str,
+    account: &'s str,
 ) -> Vec<&'s PackageVersion> {
     let Some(p) = s.packages.get(&current.package) else {
         return Vec::new();
