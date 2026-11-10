@@ -3465,9 +3465,10 @@ async fn app_create(
             }),
         })
         .await?;
-    // Wait for the app's first entry (init) to commit somewhere; a compute-only app has none.
+    // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,
+    // but its group cannot take a pipeline start before it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while components.is_app() {
+    loop {
         match app_ready(&node, &app_id).await {
             Some(Ok(())) => break,
             Some(Err(error)) => {

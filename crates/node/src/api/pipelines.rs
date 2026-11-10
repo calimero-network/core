@@ -211,7 +211,10 @@ pub(super) async fn start(
             BAD_INPUTS,
             "an input is not a file of this app",
         )),
-        _ => Err(ApiError::conflict("the pipeline run was not started")),
+        (status, why) => Err(ApiError::conflict(&format!(
+            "the pipeline run was not started ({status:?}: {})",
+            why.unwrap_or("no reason")
+        ))),
     }
 }
 
