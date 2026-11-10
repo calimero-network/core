@@ -489,6 +489,7 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
     let args = json!({ "credentialId": credential.id, "publicKey": credential.public_key });
     let subject = format!("account:{alice}");
     let add = |consent: Value| SystemCmd::AddPasskey {
+        at: 0,
         account: alice.clone(),
         credential: credential.clone(),
         consent,

@@ -237,6 +237,25 @@ fn scenario(root: &Path, url: &str) {
     );
     assert!(alice.run(&["account", "usage"]).is_object());
 
+    // account session: the account's own sessions, the current one marked;
+    // the others end one at a time.
+    let sessions = alice.run(&["account", "session", "list"]);
+    let listed = sessions["sessions"].as_array().unwrap().clone();
+    let current: Vec<&Value> = listed.iter().filter(|x| x["current"] == true).collect();
+    assert_eq!(current.len(), 1, "{sessions}");
+    assert_eq!(s(&current[0]["passkey"]), device);
+    assert!(current[0]["openedAt"].is_u64(), "{sessions}");
+    for other in listed.iter().filter(|x| x["current"] != true) {
+        let _ = alice.run(&["account", "session", "revoke", &s(&other["session"])]);
+    }
+    assert_eq!(
+        alice.run(&["account", "session", "list"])["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
     // app: v1's applications are signed packages.
     let installed = alice.run(&["app", "install", "--path", path(&kv_1_0)]);
     assert_eq!(installed["package"], "com.test.kv");

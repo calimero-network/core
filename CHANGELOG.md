@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Passkey times and the account's sessions**: `GET /auth/me` gives each
+  passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a passkey
+  added, or last signed in, before this release). `GET /auth/sessions` lists
+  the caller's own live sessions, `{ sessions: [{ session, passkey, app,
+  origin, openedAt, lastActiveAt, current }] }` (latest active first, at most
+  256; `openedAt` is `null` for a session opened before this release;
+  `lastActiveAt` is when its refresh token was last exchanged, so the session
+  may have been used up to about 1 h 15 min after it), and `DELETE
+  /auth/sessions/{session}` ends one of them (`404` for any session the
+  account does not hold live, another account's included). Both take the
+  account holder's own session, as `/auth/logout-all` does: never an API key
+  or a package-bound session; nothing new is shown to operators, organization
+  admins or deployment managers. `meroctl account session list|revoke`. Stored
+  formats: `Account.passkeyTimes`, `RefreshRecord.openedAt` and the `at` of
+  `createAccount`/`addPasskey` entries are left out when empty, so state and
+  entries from before read and write as they did; times come only from the
+  entries that carry them, so an earlier release's entries, replayed, leave
+  them unknown on every replica. In a rolling upgrade a node on the earlier
+  release ignores the new fields and keeps no times; the sessions route
+  answers `404` there.
+
 ### Security
 
 - **An organization's app is managed by its owner only while they are a

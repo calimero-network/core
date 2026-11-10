@@ -278,6 +278,39 @@ pub struct Account {
     /// The account's own names for apps (aliases): alias -> app id.
     #[serde(default)]
     pub aliases: std::collections::BTreeMap<String, AppId>,
+    /// When each passkey was added and last signed in, by credential id,
+    /// shown to the account holder alone (`/auth/me`). Written at apply from
+    /// the times the log entries carry; a passkey with no entry, or a time
+    /// absent, was added or signed in before this was kept and reads as
+    /// unknown. Left out when empty, so accounts from before, and the
+    /// account a sign-up's passkey signs (`system::account_args`), read and
+    /// write as they did.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub passkey_times: std::collections::BTreeMap<String, PasskeyTimes>,
+}
+
+/// When one passkey was added and last signed in (Unix seconds, as the node
+/// that took the ceremony read its clock). `None`: not known, because it
+/// happened before the node kept it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyTimes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
+    /// The last sign-in with it (a sign-up, a sign-in or a recovery's
+    /// finish): the log entry each already writes. Refreshes do not move it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sign_in_at: Option<u64>,
+}
+
+impl PasskeyTimes {
+    /// Records a sign-in at `at` (0: unknown, nothing changes); the latest
+    /// wins, whatever order sign-ins committed in.
+    pub fn signed_in(&mut self, at: u64) {
+        if at > 0 {
+            self.last_sign_in_at = Some(self.last_sign_in_at.map_or(at, |t| t.max(at)));
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -338,6 +371,13 @@ pub struct RefreshRecord {
     /// exchanged, and their holders sign in again.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
+    /// When the session was opened (Unix seconds), carried by every exchange
+    /// of its token (`UseRefresh`). 0: opened before this was kept, unknown.
+    /// Left out when 0, so the records from before, and the record a
+    /// sign-up's passkey signs (`system::account_args`), read and write as
+    /// they did.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub opened_at: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

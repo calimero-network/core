@@ -147,7 +147,29 @@ refreshToken }`.
   on every other node while it is down. A removed or replaced node's sessions
   answer `401`; clients refresh on any node.
 - **Ending sessions:** `POST /auth/logout` ends one; `POST /auth/logout-all`
-  (`meroctl logout --all`) ends every session of the account.
+  (`meroctl logout --all`) ends every session of the account; `DELETE
+  /auth/sessions/{session}` (`meroctl account session revoke`) ends one of
+  the account's sessions from another (`404` for any session the account
+  does not hold live, another account's included).
+- **Listing sessions:** `GET /auth/sessions` (`meroctl account session
+  list`) answers the account's live sessions, latest active first, at most
+  256: `{ session, passkey, app, origin, openedAt, lastActiveAt, current }`.
+  `passkey` is the device it was opened with, `app` and `origin` the package
+  and registered origin it is bound to (`null`: the cluster's own origin),
+  `openedAt` when it opened (`null`: before the node kept it), and `current`
+  marks the caller's own. `lastActiveAt` is when its refresh token was last
+  exchanged: a token younger than an hour refreshes without a write, and a
+  session token lives 15 minutes, so the session may have been used up to
+  about 1 h 15 min later. Both routes take the account holder's own session
+  on the cluster's origin, as sign-out everywhere does, never an API key or a
+  package-bound session (`403`), and ask no passkey: ending one session does
+  less than ending all of them.
+- **Passkey times:** `/auth/me` gives each passkey `addedAt` and
+  `lastSignInAt` (Unix seconds): a sign-up, a sign-in and a recovery's
+  finish move the last sign-in; a refresh does not. `null` means it happened
+  on a release that kept no times (1.0.0-rc.14 and earlier).
+  Only the account's own credentials read them: no operator, organization or
+  deployment route shows them.
 
 ## API keys
 

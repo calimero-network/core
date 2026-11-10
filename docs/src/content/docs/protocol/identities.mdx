@@ -153,8 +153,15 @@ another node.
 ## Devices
 
 There are no device keys. A device is a passkey; `/auth/me` reports which one
-the current session was opened with (`passkeyId`), and removing a passkey ends
-that device's sessions. Inside an app, `env::caller()` is the account, whichever
+the current session was opened with (`passkeyId`), when each was added and last
+signed in with (`addedAt`, `lastSignInAt`), and removing a passkey ends that
+device's sessions. `GET /auth/sessions` lists the account's sessions, the
+passkey each was opened with and the package and origin it is bound to, and
+`DELETE /auth/sessions/{session}` ends one ([Sessions](/operate/auth/#sessions)).
+These are the account holder's alone: the times come from the log entries a
+sign-up, a sign-in, an added passkey and a recovery already write (each carries
+its time; a refresh writes none), and no route shows them to operators,
+organization admins or deployment managers. Inside an app, `env::caller()` is the account, whichever
 of its devices made the call ([Who a run acts as](/protocol/authorship/)). Presence keeps one entry per device: the session's
 passkey, or the API key.
 

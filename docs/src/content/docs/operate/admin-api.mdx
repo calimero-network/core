@@ -115,7 +115,9 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and the refresh token to use next (the same one until it is an hour old) | (automatic) |
 | `POST /auth/logout` | session | End this session | |
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
-| `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
+| `GET /auth/sessions` | account holder | The account's live sessions, latest active first (at most 256): `{ sessions: [{ session, passkey, app, origin, openedAt, lastActiveAt, current }] }` ([Sessions](/operate/auth/#sessions)) | `account session list` |
+| `DELETE /auth/sessions/{session}` | account holder | End one of the account's sessions; `404` for one it does not hold live | `account session revoke` |
+| `GET /auth/me` | signed in | The account, passkeys (each with `addedAt` and `lastSignInAt`), `passkeyId`, organizations, approvals, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The account's own apps (outside any organization; a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, each app's release, newer releases it may upgrade to, last upgrade, replicas' releases and `lastWriteAt` (as in `GET /ops/apps`) ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
 | `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `developerFuelToday` and `developerWritesToday`: what today's runs of the apps the account is the developer of used (D76, D78). `bundleBytes`, `developerFuelToday` and `developerWritesToday` are decimal strings | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |

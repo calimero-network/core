@@ -1000,6 +1000,18 @@ impl Client {
         self.post("auth/logout-all", json!({})).await
     }
 
+    /// This account's live sessions (`GET /auth/sessions`): `{ sessions:
+    /// [{ session, passkey, app, origin, openedAt, lastActiveAt, current }] }`.
+    pub async fn sessions(&self) -> Result<Value> {
+        self.get("auth/sessions").await
+    }
+
+    /// End one of this account's sessions (`DELETE /auth/sessions/{id}`).
+    pub async fn revoke_session(&self, session: &str) -> Result<Value> {
+        self.delete(&format!("auth/sessions/{}", path_segment(session)))
+            .await
+    }
+
     /// DELETE `path`, answering a `412 CONFIRM_REQUIRED` as
     /// [`Self::post_confirmed`] does.
     pub async fn delete_confirmed(&self, path: &str, passkey: &mut dyn Passkey) -> Result<Value> {
