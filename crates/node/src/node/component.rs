@@ -478,6 +478,33 @@ impl Node {
             .store(true, Ordering::Relaxed);
     }
 
+    /// Holds the next push of files or of a plain blob on this node once their bytes are stored, until the second
+    /// notify is notified; the first is notified on arrival. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn hold_next_file_push(&self) -> files::Hold {
+        files::set_hold(&self.probes.push_hold)
+    }
+
+    /// Holds the next blob deletion on this node after its checks, before it deletes. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn hold_next_deletion(&self) -> files::Hold {
+        files::set_hold(&self.probes.deletion_hold)
+    }
+
+    /// Stops at the hold a test set for a push of bytes.
+    #[cfg(feature = "testing")]
+    pub(crate) async fn push_checkpoint(&self) {
+        files::checkpoint(&self.probes.push_hold).await;
+    }
+
+    /// Stops at the hold a test set for a blob deletion. Tests only.
+    #[cfg(feature = "testing")]
+    pub(crate) async fn deletion_checkpoint(&self) {
+        files::checkpoint(&self.probes.deletion_hold).await;
+    }
+
     /// Leaves only `leave` places for transfers to job nodes, node-wide. Tests only.
     #[cfg(feature = "testing")]
     pub fn limit_job_transfers(&self, leave: usize) {
@@ -895,21 +922,23 @@ impl Node {
         if charged > 0 {
             self.charge_files(app_id, charged)?;
         }
+        let ids: Vec<String> = blobs.iter().map(|(id, _)| id.clone()).collect();
+        let pin = self.blob_guards.pin(ids.clone());
         if let Err(e) = self.persist_files(app_id, blobs) {
             self.discard(
                 app_id,
                 Stored {
-                    ids: Vec::new(),
                     charged,
-                    outputs: false,
+                    ..Stored::default()
                 },
             );
             return Err(e);
         }
         let stored = Stored {
-            ids: blobs.iter().map(|(id, _)| id.clone()).collect(),
+            ids,
             charged,
             outputs: false,
+            pin: Some(pin),
         };
         Ok((bytes, stored))
     }

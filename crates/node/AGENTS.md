@@ -52,7 +52,7 @@ is its command line.
   (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
-  refused while a hosted app marks the blob; `raft` needs `rpc.sender()` = the
+  refused while a hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs `rpc.sender()` = the
   caller and, for an app group, an approved release and membership (replicas or
   the group's voters/learners): openraft itself never checks (F4). Outbound,
   blobs (`spread_blob`) and presence go only to peers `may_send` allows.
@@ -803,8 +803,22 @@ is its command line.
   `Node::collect_blob` deletes the bytes on every node (`internal/blob/delete`) unless
   another app still holds the same content (asked of each app's leader; an app whose
   leader does not answer counts as holding it) or it is a bundle or a release `.mpk`.
-  Known window: the same content uploaded to another app between that check and the
-  deletion loses its bytes. A blob past `MAX_BLOB_BYTES` (47 MiB) is refused
+  Every path that stores bytes before their record commits pins the ids on the app's leader first,
+  and holds the pin until the record commits or fails (`node/blob_guards.rs`): `logged_entry` (a
+  publish, a call's files, a run's outputs; it runs on the leader) and the plain upload
+  (`Node::pin_on_leader`: locally on the leader, else through `internal/blob/pin`, a lease
+  that expires after `LEASE_TTL` if the receiving node never releases it). Every deletion of bytes
+  (`collect_blob`, which the owner's delete, the queued collection and discarded files call, and a
+  peer's `internal/blob/delete`) asks `Node::blob_in_use`: held or pinned, as each app's leader
+  answers, unknown counting as in use. A put of an id (`BlobGuards::put`) also stops a deletion of
+  that id that was between its checks and its delete, here and on every peer. Regressions:
+  `compute_runs.rs` (`a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it`, a
+  matrix over the kind stored, the node it goes through and the node the delete goes through;
+  `a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes`,
+  `a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_the_bytes`,
+  `a_peers_delete_that_checked_before_a_publish_stored_its_bytes_keeps_them`).
+  A leader change between the pin and the commit is not covered: the pin stays on the old leader.
+  A blob past `MAX_BLOB_BYTES` (47 MiB) is refused
   `413 TOO_LARGE` by the node, one past the sealed cap (64 MiB) by the envelope, in the
   clear; the client reports both as `TOO_LARGE`. Regressions:
   `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
