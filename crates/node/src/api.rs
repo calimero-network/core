@@ -6860,10 +6860,18 @@ async fn app_runs(
     Ok(Json(answer.result))
 }
 
-/// What the caller's account uses, against the cluster's quotas.
+/// What the caller's account uses, against the cluster's quotas, and what today's
+/// runs of the apps it is the developer of used (Q20, D76, D78): fuel and writes,
+/// summed over the component apps billed to `account:{id}` as their developer
+/// (`usage::developer`), on the UTC day of the node's app time. An organization's
+/// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
+/// decimal strings (D20): `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
-    Ok(Json(node.sys(|s| {
+    let today = node
+        .developer_usage_today(&crate::usage::account_payer(&account))
+        .await;
+    let mut out = node.sys(|s| {
         json!({
             "apps": s.apps.values().filter(|a| a.owner == account).count(),
             "bundleBytes": s
@@ -6871,7 +6879,8 @@ async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
                 .values()
                 .filter(|b| b.uploaded_by == account)
                 .map(|b| b.size)
-                .sum::<u64>(),
+                .sum::<u64>()
+                .to_string(),
             "apiKeys": s.api_keys.values().filter(|k| k.account == account).count(),
             "orgsOwned": s
                 .orgs
@@ -6891,7 +6900,125 @@ async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
                 .collect::<std::collections::BTreeMap<_, _>>(),
             "quotas": s.quotas,
         })
+    });
+    out["developerFuelToday"] = json!(today.fuel.to_string());
+    out["developerWritesToday"] = json!(today.writes.to_string());
+    Ok(Json(out))
+}
+
+/// What today's runs of the apps an organization is the developer of used (Q20, D76,
+/// D78): fuel and writes, summed over the component apps billed to it as their
+/// developer (`usage::developer`: instances of its deployments, and its own apps made
+/// from a release), on the UTC day of the node's app time, with the quotas; for its
+/// admins and owner only, judged on fresh system state like `GET /orgs/{org}`. One
+/// who is not a member learns nothing of it (404); a member below admin gets 403.
+async fn org_usage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    node.sys_fresh().await;
+    let (role, apps, quotas) = node.sys(|s| {
+        (
+            s.orgs.get(&org).and_then(|o| o.role(&account)),
+            s.apps
+                .values()
+                .filter(|a| crate::usage::Billed::of(s, a).developer == org)
+                .count(),
+            s.quotas.clone(),
+        )
+    });
+    match role {
+        None => return Err(ApiError::not_found("no such organization")),
+        Some(r) if r < OrgRole::Admin => {
+            return Err(ApiError::forbidden(
+                "only the organization's admins read its usage",
+            ))
+        }
+        Some(_) => {}
+    }
+    let today = node.developer_usage_today(&org).await;
+    Ok(Json(json!({
+        "apps": apps,
+        "developerFuelToday": today.fuel.to_string(),
+        "developerWritesToday": today.writes.to_string(),
+        "quotas": quotas,
     })))
+}
+
+/// One day of an app's usage book on the wire: every figure a decimal string (D20).
+/// `wallMs` is for information only; the quota counts fuel (D76).
+fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
+    json!({
+        "date": crate::component::utc_date(day),
+        "runs": u.runs.to_string(),
+        "fuel": u.fuel.to_string(),
+        "wallMs": u.wall_ms.to_string(),
+        "writes": u.writes.to_string(),
+        "bytesWritten": u.bytes_written.to_string(),
+        "events": u.events.to_string(),
+    })
+}
+
+/// What an app's runs used (Q20), for its owner and the admins of its organization
+/// only: `today` and `days`, the last 30 days before it (oldest first), each UTC on
+/// the node's app time; a day nothing ran is zeros, and so is every day of an app
+/// recorded before components (SDK 0.12, no longer run).
+async fn app_usage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its usage",
+        ));
+    }
+    let book = node.app_usage(&app).await?;
+    let today = crate::component::utc_day(node.app_clock().now_ms());
+    let day = |d: u64| usage_day(d, &book.on(d));
+    let first = today.saturating_sub(crate::component::USAGE_DAYS - 1);
+    Ok(Json(json!({
+        "today": day(today),
+        "days": (first..today).map(day).collect::<Vec<_>>(),
+    })))
+}
+
+/// An app's usage book on this replica, for a peer ([`Node::app_usage`]): only
+/// from a node that is one of the app's replicas, never from a group it still has
+/// after the app moved away.
+async fn internal_usage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let app_id = body["app"].as_str().unwrap_or_default();
+    let g = node
+        .sys(|s| s.apps.get(app_id).cloned())
+        .and_then(|app| node.replica_group(&app))
+        .ok_or_else(|| ApiError::unavailable("not a replica of the app"))?;
+    let book = g.read_local(|m, _| m.state.component.head.usage.clone());
+    Ok(Json(json!({ "usage": book })))
+}
+
+/// What every component app this node replicates used on `{ day }`, by app id, for
+/// a peer's fuel-cap refresh ([`Node::refresh_usage`]).
+async fn internal_usage_today(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let day = body["day"]
+        .as_u64()
+        .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "day is a number"))?;
+    Ok(Json(json!(node.replicas_usage_on(day))))
 }
 
 async fn internal_storage(
@@ -7998,6 +8125,12 @@ async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Ap
     ))
 }
 
+/// `409`: a write that only this release, or a newer one, understands, refused while
+/// a registered node runs an older release or could not be attested
+/// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerDeveloperPerDay`. One
+/// code for every such gate, so the version gate on new entry shapes can share it.
+pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
 async fn ops_quotas_set(
@@ -8028,6 +8161,24 @@ async fn ops_quotas_set(
     }
     let quotas: crate::system::Quotas = serde_json::from_value(merged)
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // A fuel cap is written only once every node runs a release that knows it: an
+    // older node drops the field, and its snapshots would bring the cap back to 0.
+    // Judged before the operator is asked to sign, so a refused write is never signed.
+    if quotas.max_fuel_per_developer_per_day != 0 {
+        let behind = node.nodes_behind_release().await;
+        if !behind.is_empty() {
+            let nodes: Vec<Value> = behind
+                .iter()
+                .map(|(id, release)| json!({ "node": id, "release": release }))
+                .collect();
+            return Err(ApiError::new(
+                409,
+                UPGRADE_PENDING,
+                "a fuel cap needs every node on this node's release or newer",
+            )
+            .with_details(json!({ "release": node.own_release(), "nodes": nodes })));
+        }
+    }
     // Signed over the whole merged limits (`cluster / __set_quotas /
     // { quotas }`, 428 first), so a change made in between is not signed
     // over by mistake: the retry merges again and must match.
@@ -9612,6 +9763,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
+        .route("/apps/{app}/usage", get(app_usage))
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
@@ -9632,6 +9784,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
         .route("/orgs/{org}/metadata", post(org_metadata))
+        .route("/orgs/{org}/usage", get(org_usage))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))
         .route("/orgs/{org}/upgrades/{run}/retry", post(org_upgrade_retry))
@@ -9681,6 +9834,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))
         .route("/internal/storage", post(internal_storage))
+        .route("/internal/usage", post(internal_usage))
+        .route("/internal/usage/today", post(internal_usage_today))
         .route("/internal/last-write", post(internal_last_write))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))

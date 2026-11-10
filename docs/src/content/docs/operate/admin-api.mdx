@@ -80,7 +80,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 401 | `PASSKEY_UNKNOWN_HERE` | A sign-in or step-up with a passkey no account of this cluster has: one from another cluster under the same rp-id, or a removed one. |
 | 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
-| 409 | `CONFLICT` | The state does not allow it now. |
+| 409 | `CONFLICT`, `UPGRADE_PENDING` | The state does not allow it now; a fuel cap waits for every node to run this release. |
 | 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
 | 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
 | 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
@@ -117,7 +117,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
 | `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The account's own apps (outside any organization; a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, each app's release, newer releases it may upgrade to, last upgrade, replicas' releases and `lastWriteAt` (as in `GET /ops/apps`) ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
-| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas | `account usage` |
+| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `developerFuelToday` and `developerWritesToday`: what today's runs of the apps the account is the developer of used (D76, D78). `bundleBytes`, `developerFuelToday` and `developerWritesToday` are decimal strings | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
 | `POST /auth/apikeys` | account holder (a passkey session) | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs?, confirm? }` → `{ keyId, key }`, approved with a passkey (`412` first) | `account api-key create` |
@@ -161,6 +161,7 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `context storage` |
+| `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
 | `GET /apps/{app}/runs/{run}` | app access | A compute run's record without its arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (with plaintext sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` (percent, step) as the app's leader last polled it | - |
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
@@ -184,6 +185,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
+| `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas (D78); a member gets `403` | |
 | `POST /orgs/{org}/members` | session | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
 | `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
@@ -249,6 +251,7 @@ its value):
 | `maxFileBytesPerOrg` | `50000000000` (50 GB) |
 | `maxConcurrentRunsPerOrg` | `4` |
 | `computeFuelPerOrg` | `10000000000000` |
+| `maxFuelPerDeveloperPerDay` | `"0"` (a decimal string, D20; no limit; per developer: a deployment's owner for its instances, else the app's org or owner, D78; `409 UPGRADE_PENDING` until every node runs this release) |
 
 ## Internal
 

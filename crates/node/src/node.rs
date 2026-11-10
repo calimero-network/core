@@ -33,7 +33,7 @@ pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 pub(crate) use component::RUN_VIEW;
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
-    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
+    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 
 /// The system group's id.
@@ -436,6 +436,9 @@ pub struct Node {
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
+    /// What each peer's replicas last said its apps used today, for the fuel cap
+    /// (`component::USAGE_REFRESH`).
+    peer_usage: Mutex<component::PeerUsage>,
     /// Outbox messages this node failed to deliver as a source's leader (D29): per
     /// (source app, seq), the attempts and the app time of the next one.
     xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
@@ -804,6 +807,7 @@ impl Node {
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
+            peer_usage: Mutex::default(),
             xcall_retry: Mutex::new(HashMap::new()),
             actions_running: Mutex::new(HashSet::new()),
             action_retry: Mutex::new(HashMap::new()),
@@ -1131,7 +1135,7 @@ impl Node {
     /// The app's group, if this node is one of its replicas. A node the app
     /// moved off may still hold the group until reconcile drops it; it must
     /// forward instead of answering from a group it no longer belongs to.
-    fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
+    pub(crate) fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
         if !app.replicas.contains(&self.config.node_id) {
             return None;
         }
@@ -1242,6 +1246,35 @@ impl Node {
                 .and_then(|v| v["index"].as_u64()),
             Err(_) => None,
         }
+    }
+
+    /// The registered nodes whose attested release is older than this node's own,
+    /// or that could not be attested, with what each named (`None`): until there are
+    /// none, a setting only this release knows is not written, as D71 gates
+    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// from what it applies, and its snapshots would bring it back to its default.
+    pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
+        let own = self.own_release();
+        let ids: Vec<NodeId> = self.sys(|s| {
+            s.nodes
+                .keys()
+                .filter(|id| !s.removed_nodes.contains(id))
+                .copied()
+                .collect()
+        });
+        let releases = futures_util::future::join_all(
+            ids.iter()
+                .map(|id| async move { (*id, self.release_of_node(*id).await) }),
+        )
+        .await;
+        releases
+            .into_iter()
+            .filter(|(_, r)| {
+                r.as_deref().is_none_or(|r| {
+                    crate::system::compare_versions(r, &own) == std::cmp::Ordering::Less
+                })
+            })
+            .collect()
     }
 
     /// The release node `id` runs, as its verified attestation names it (this

@@ -76,9 +76,13 @@ impl Kind {
 /// app `account:{owner}` (`:` is not base64url, so the two never collide).
 #[must_use]
 pub fn payer(app: &AppRecord) -> String {
-    app.org
-        .clone()
-        .unwrap_or_else(|| format!("account:{}", app.owner))
+    app.org.clone().unwrap_or_else(|| account_payer(&app.owner))
+}
+
+/// The payer of an account's personal apps: `account:{account}` ([`payer`]).
+#[must_use]
+pub fn account_payer(account: &str) -> String {
+    format!("account:{account}")
 }
 
 /// Who is billed for an app's usage on Calimero Cloud: the owner of the
@@ -87,8 +91,9 @@ pub fn payer(app: &AppRecord) -> String {
 /// `account:{id}`); for an app made from a release directly, its [`payer`].
 /// `deployment` is the [`Deployment`] the app names, if it still exists.
 ///
-/// Unlike [`payer`] this moves no quota: file bytes and limits stay the
-/// owning organization's or account's.
+/// Unlike [`payer`] this moves no quota but one: file bytes and limits stay
+/// the owning organization's or account's, while the daily fuel cap
+/// (`Quotas::max_fuel_per_developer_per_day`, D76, D78) follows the developer.
 ///
 /// [`Deployment`]: crate::system::Deployment
 #[must_use]

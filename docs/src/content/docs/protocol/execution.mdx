@@ -81,9 +81,9 @@ one; they are gone with that SDK.)
 Before a run's outcome becomes an entry, the node applies these host-side
 rules:
 
-- **Read-only team members**: a call by a member whose row in the app's team is
-  read-only still runs, but if it would write anything the node answers `403`
-  instead of appending it.
+- **Read-only team members**: a member whose row in the app's team is read-only
+  reaches the app's views only: a call to any other method is refused with `403`
+  before it runs, so no run burns the developer's fuel uncounted.
 - **Entry size**: an entry over the log's cap is logged trapped (`HostDenied`),
   and arguments over 512 KiB are `413 ARGS_TOO_LARGE`.
 - **Conflicts**: a run built on a state another entry has since moved past, or

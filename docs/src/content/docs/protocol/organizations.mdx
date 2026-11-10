@@ -37,8 +37,8 @@ every node before their next request ([Reads of the system
 state](/protocol/system-group/#reading-the-system-state)).
 
 A member whose **direct row** in the app's team is **read-only** still reaches
-the app and its calls run, but a call that would write anything is refused with
-`403`. A blob upload by them is refused
+the app, but only its views run for them: any other call is refused with `403`
+before it runs. A blob upload by them is refused
 before it starts.
 
 ## Organizations

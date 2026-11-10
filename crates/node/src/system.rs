@@ -37,6 +37,41 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
+    /// Fuel a developer's apps may burn per UTC day, summed over its component apps
+    /// (Q20, D76, D78); 0 (the default) is no limit. The developer is the one usage
+    /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
+    /// was created from, else the app's organization or owner. Over it, a client's
+    /// call or an xcall delivery to any of the developer's apps is refused before it
+    /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
+    /// count. Checked where the call runs, against the apps' usage books, not at
+    /// apply: those live in the app groups. A decimal string in JSON (D20); a number
+    /// is refused. Written only once every node runs a release that knows it
+    /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
+    #[serde(with = "decimal_u64")]
+    pub max_fuel_per_developer_per_day: u64,
+}
+
+/// A `u64` as a decimal string in JSON (D20): digits only, no sign, no leading zero.
+/// A JSON number is refused, so a client never sends a cap a JavaScript number has
+/// already rounded.
+mod decimal_u64 {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(v)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let s = String::deserialize(d)?;
+        let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        if !digits || (s.len() > 1 && s.starts_with('0')) {
+            return Err(D::Error::custom(format!(
+                "{s:?} is not a decimal string (D20)"
+            )));
+        }
+        s.parse().map_err(D::Error::custom)
+    }
 }
 
 impl Default for Quotas {
@@ -50,6 +85,7 @@ impl Default for Quotas {
             max_file_bytes_per_org: 50_000_000_000,
             max_concurrent_runs_per_org: 4,
             compute_fuel_per_org: 10 * calimero_app_host::MAX_COMPUTE_FUEL,
+            max_fuel_per_developer_per_day: 0,
         }
     }
 }

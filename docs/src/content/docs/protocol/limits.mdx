@@ -105,6 +105,18 @@ Per account, set by the operator (`POST /ops/quotas`), checked at apply
 | Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
 | Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
 | Reserved compute fuel per organization (`computeFuelPerOrg`) | 10 times `MAX_COMPUTE_FUEL` |
+| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner, D78) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count (D76) |
+
+The fuel cap is approximate by at most one refresh interval (5 s). A call never
+asks a peer: the node reads the apps it replicates from its own replicas, and the
+others from what every peer answered at its last refresh, which asks all peers at
+once every 5 s while a cap is set. A developer can so run past its cap for up to one
+interval. A peer that stops answering keeps the figures it last reported. An app no
+peer has reported yet counts as nothing, so the cap fails open rather than closed:
+refusing every call to all of a developer's apps whenever one replica of one of them
+is unreachable would be worse than a developer briefly exceeding a daily cap. The cap is a
+decimal string in JSON (D20); a node writes a non-zero cap only once every node runs
+its release or newer (`409 UPGRADE_PENDING`).
 
 ## Roles and capabilities
 
