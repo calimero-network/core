@@ -75,8 +75,11 @@ the request verifies the release (`Node::verify_release`):
    publisher key (`did:key`); a release signed by any other key is refused.
 4. Each service's WASM compiles.
 5. A registry install got the package and version it asked for.
+6. No WASM it ships (a service or a compute component) ships in a release of
+   another package (`409`): a WASM belongs to one package, and so to one
+   signer, whose releases alone may name it.
 
-`apply` checks the signer pin again, refuses a version already installed with
+`apply` checks the signer pin and the one-package rule again, refuses a version already installed with
 other contents (the same release again changes nothing but who installed it:
 the new installer is added to the release's `installers`), and charges the `.mpk`'s
 size to the installer's bundle quota (the operator's installs count against no

@@ -55,7 +55,20 @@ Releases may share a WASM: one that changes only the frontend is still an
 upgrade, approved by whoever holds the app's upgrades exactly as above, and
 afterwards the instance runs, is reported at, and is served the frontend of the
 new release. An instance recorded before releases were kept (or running a raw
-development bundle) is taken to run the release its bundle ships in.
+development bundle) is taken to run the release its bundle ships in, if that
+release was installed by the time the instance took the bundle.
+
+**Who may upgrade follows the release it runs.** Its `upgrades`, its publisher
+and so its approved releases are those of `AppRecord::release`
+(`SystemState::governing_release`), not of whichever release first shipped the
+same WASM: an instance of an `owner` release stays its owners' even where a
+`publisher` release of the package ships the same WASM, and a release installed
+after an instance took a raw upload of the same WASM takes nothing from its
+owner. A WASM belongs to one package: a release of another package that ships
+it is refused at install. A cluster begun before this rule replays what it
+logged then as it applied it: the first system leader on a release that judges
+by the release writes `AttributeByRelease`, and the rule holds from that entry
+on.
 
 **What the passkey signs.** The challenge's arguments are
 `{ bundle, migrate, manifest }`: the target WASM's hash and the target

@@ -2033,6 +2033,13 @@ impl Node {
             }) {
                 let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
+            // Apps are judged by the release they run from here on; what was
+            // logged before applies as it did (`AttributeByRelease`).
+            if self.sys(|s| {
+                !s.attributes_by_release && (s.governance.is_some() || !s.accounts.is_empty())
+            }) {
+                let _r = self.sys_write(&SystemCmd::AttributeByRelease).await;
+            }
             self.admit_registered_nodes();
             self.promote_learners();
         }

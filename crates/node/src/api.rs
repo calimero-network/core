@@ -3394,16 +3394,18 @@ async fn app_create(
     let confirm_methods: Vec<String> = Vec::new();
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
-    if let Some(stall) =
-        node.sys(|s| s.stalled_for_bundle(&bundle, body.org.as_deref(), &owner, now))
-    {
+    if let Some(stall) = node.sys(|s| {
+        let governing = s.governing(release.as_ref(), &bundle, now);
+        s.stalled_for_release(governing, body.org.as_deref(), &owner, now)
+    }) {
         return Err(crate::node::stalled(&stall));
     }
     // Only nodes on an approved release (the publisher's, the owner's for an
     // unbound package, or the operator's where the deployment gave it
     // release approvals) may hold the app.
     let approved = node.sys(|s| {
-        s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
+        let governing = s.governing(release.as_ref(), &bundle, now);
+        s.approved_for_release(governing, body.org.as_deref(), &owner)
             .cloned()
     });
     let replicas = node.place(approved.as_ref(), now).await;
@@ -4442,12 +4444,7 @@ pub(crate) async fn upgrade_app(
     // their own passkey: new code reads the app's data.
     let app = node.app(&app_id).await?;
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
-    let (may, unbound) = node.sys(|s| {
-        (
-            s.may_upgrade(&app, &account),
-            !s.upgrades_of(&app.bundle).is_owner() && s.publisher_of(&app.bundle).is_none(),
-        )
-    });
+    let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, &account), s.upgrades_unbound(&app)));
     if unbound {
         return Err(ApiError::conflict(
             "this app's package is upgraded by its publisher, and no organization has bound its key yet",
@@ -4486,12 +4483,16 @@ pub(crate) async fn upgrade_app(
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
-    if !node.sys(|s| s.upgrade_keeps_authority(&app.bundle, &bundle)) {
+    let now = now_secs();
+    if !node.sys(|s| {
+        let to = s.governing(release.as_ref(), &bundle, now);
+        s.upgrade_keeps_authority(s.governing_release(&app), to)
+    }) {
         return Err(ApiError::forbidden(
             "an app whose owner upgrades it is not moved to a release its publisher upgrades",
         ));
     }
-    refuse_stalled(node, &app, &bundle, now_secs())?;
+    refuse_stalled(node, &app, &bundle, release.as_ref(), now)?;
     // What the publisher signed for the target: the WASM hash alone would let
     // another manifest (other outbound prefixes, frontend origins) under the
     // same version and WASM pass for the one approved.
@@ -4606,12 +4607,13 @@ async fn run_upgrade(
                 "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
             ));
         }
-        if !who.by_operator && !s.upgrade_keeps_authority(&a.bundle, &bundle) {
+        let to = s.governing(release.as_ref(), &bundle, begun);
+        if !who.by_operator && !s.upgrade_keeps_authority(s.governing_release(a), to) {
             return Some(ApiError::forbidden(
                 "an app whose owner upgrades it is not moved to a release its publisher upgrades",
             ));
         }
-        s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
+        s.stalled_for_release(to, a.org.as_deref(), &a.owner, begun)
             .map(|stall| crate::node::stalled(&stall))
     });
     if let Some(e) = refusal {
@@ -4679,15 +4681,20 @@ async fn run_upgrade(
     })))
 }
 
-/// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
-/// no new work at `now` ([`crate::system::SystemState::stalled_for_bundle`]).
+/// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle` of
+/// `release`, may start no new work at `now`
+/// ([`crate::system::SystemState::stalled_for_release`]).
 pub(crate) fn refuse_stalled(
     node: &Node,
     app: &crate::types::AppRecord,
     bundle: &str,
+    release: Option<&PackageRef>,
     now: u64,
 ) -> Result<(), ApiError> {
-    match node.sys(|s| s.stalled_for_bundle(bundle, app.org.as_deref(), &app.owner, now)) {
+    match node.sys(|s| {
+        let to = s.governing(release, bundle, now);
+        s.stalled_for_release(to, app.org.as_deref(), &app.owner, now)
+    }) {
         Some(stall) => Err(crate::node::stalled(&stall)),
         None => Ok(()),
     }
