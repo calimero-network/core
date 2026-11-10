@@ -5488,6 +5488,7 @@ async fn app_move(
             consent,
             bring_members: body.bring_members,
             nonce: b64url(&random::<16>()),
+            accounts_in_app_team: true,
         })
         .await?,
     ))
