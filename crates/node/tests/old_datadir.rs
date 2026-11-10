@@ -201,6 +201,7 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
             consent: Value::Null,
             bring_members: false,
             nonce: String::new(),
+            accounts_in_app_team: true,
         })
         .await
         .unwrap_err();
