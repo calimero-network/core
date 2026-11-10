@@ -704,6 +704,146 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     assert_eq!(teams["appTeams"].as_array().unwrap().len(), 1, "{teams}");
 }
 
+/// `c` writes `app` (the kv fixture's `set`): `Ok` when it reaches it.
+async fn writes(c: &Client, app: &str) -> Result<(), Error> {
+    c.call(app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .map(drop)
+}
+
+/// Where an app has an app team, its `accounts` instances (DMs, private
+/// channels) are reached only by those in the app team, their owner too:
+/// someone kicked from Chat's team, who left it, who lost it when it closed,
+/// or who was removed from the organization is out of Chat's DMs, though
+/// listed in them; back in the team they have them again. A package with no
+/// app team keeps its lists alone, and nobody outside the organization
+/// reaches any.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _cpk) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    let (frank, _f) = signed_up(&c, 1, "frank").await;
+    let (erin, _e) = signed_up(&c, 2, "erin").await;
+    for p in [CHAT, NOTES] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol, &frank] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (bob_id, carol_id, frank_id) = (id(&bob).await, id(&carol).await, id(&frank).await);
+    let _chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    // Chat's team, open: everyone here now gets a row.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&done["teams"][0]["teamId"]);
+    // Dave joins after: in Chat by inheritance only.
+    join(
+        &dave,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let dave_id = id(&dave).await;
+    let everyone = json!([bob_id, carol_id, dave_id, frank_id]);
+    let listing = |ids: &Value| json!({ "kind": "accounts", "accounts": ids });
+    let dm = instance(&alice, &org, CHAT, listing(&everyone))
+        .await
+        .unwrap();
+    let notes = instance(&alice, &org, NOTES, listing(&everyone))
+        .await
+        .unwrap();
+    // Carol's own DM with Bob.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": carol_id, "capabilities": CREATE_APP | 1 << 2 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let carols = instance(&carol, &org, CHAT, listing(&json!([bob_id])))
+        .await
+        .unwrap();
+    for (who, app) in [
+        (&bob, &dm),
+        (&carol, &dm),
+        (&dave, &dm),
+        (&frank, &dm),
+        (&carol, &carols),
+        (&bob, &carols),
+    ] {
+        writes(who, app).await.unwrap();
+    }
+
+    // Carol is kicked from Chat; Bob stays; Frank is removed from the
+    // organization.
+    let _ok = alice
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{carol_id}"),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{frank_id}"), &mut a)
+        .await
+        .unwrap();
+    // Chat closes: Dave, with no row, is out.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{chat_team}"),
+            json!({ "join": "invite" }),
+        )
+        .await
+        .unwrap();
+    for (who, app) in [
+        (&carol, &dm),
+        (&carol, &carols),
+        (&dave, &dm),
+        (&frank, &dm),
+        (&erin, &dm),
+    ] {
+        let err = writes(who, app).await.unwrap_err();
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: {err}");
+    }
+    writes(&bob, &dm).await.unwrap();
+    writes(&bob, &carols).await.unwrap();
+    // Notes has no app team: its list alone decides.
+    writes(&carol, &notes).await.unwrap();
+    writes(&dave, &notes).await.unwrap();
+
+    // Bob leaves Chat himself.
+    let _ok = bob
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{bob_id}"),
+            &mut b,
+        )
+        .await
+        .unwrap();
+    let err = writes(&bob, &dm).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+
+    // Back in Chat, Carol has both DMs again.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members"),
+            json!({ "account": carol_id, "role": "member" }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    writes(&carol, &dm).await.unwrap();
+    writes(&carol, &carols).await.unwrap();
+}
+
 /// Any member of an app team makes a private channel below it (a restricted
 /// child team, `CREATE_CHILD_TEAM` in the app team's default) and leads it;
 /// never an open one. Someone out of the app team (kicked, never in it, of

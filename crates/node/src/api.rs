@@ -6276,6 +6276,7 @@ async fn app_teams_scope(
             actor,
             consent,
             owner_in_team: true,
+            accounts_in_app_team: true,
             member_child_teams: true,
         })
         .await?,

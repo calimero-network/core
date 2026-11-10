@@ -98,6 +98,19 @@
 
 ### Security
 
+- **An `accounts` instance of an app with an app team is reached only through
+  that team.** Private channels and DMs (`accounts` access) checked
+  organization membership alone, so someone removed from Chat's app team
+  stayed in every private channel listing them, which the person who removed
+  them could not edit. Now, where an instance's package has an app team in its
+  organization, its owner and listed accounts reach it (and receive its
+  events) only while they are in that app team; a package with no app team
+  keeps its lists alone. `ScopeApps`, which finds who reaches an instance,
+  carries `accounts_in_app_team`, which the API always sets; an entry an
+  earlier release logged replays as that release judged it. In a rolling
+  upgrade a node on the earlier release judges reads by the list alone until
+  it is upgraded.
+
 - **An app on a team is reached and managed by its owner only while they are
   in that team.** An owner always reached their own app, so a person removed
   from an app's team (Chat's, say) kept every channel they had created on it,

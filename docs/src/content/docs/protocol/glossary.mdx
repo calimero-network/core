@@ -140,7 +140,8 @@ team's default lets its members make private channels, `CREATE_CHILD_TEAM`). See
 [Organizations](/protocol/organizations/#capabilities).
 
 **Access rule** — Who reaches an app: `owner`, `accounts`, `org`, `team`,
-`public`.
+`public`. In an organization, only its members; an `accounts` instance of a
+package with an app team, only those in the app team.
 
 **Governance** — Who holds release approvals, app upgrades and outbound
 approvals, `owner` or `operator`, fixed at genesis. See

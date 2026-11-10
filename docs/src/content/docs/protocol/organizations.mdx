@@ -25,7 +25,7 @@ any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 | Rule | Who reaches the app |
 | --- | --- |
 | `owner` (default outside an organization) | The owner only |
-| `accounts { accounts }` | The owner and these accounts |
+| `accounts { accounts }` | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team |
 | `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
 | `team { team }` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
 | `public` | Anyone, signed in or not (as `Caller::Public` when not) |
@@ -39,7 +39,15 @@ they are in that team, as `owner_in_org` asks of the organization: an owner who
 leaves the team, is removed from it, or loses it when an open team is closed
 without them, stops reaching it (a person removed from Chat's app team no
 longer reaches the channels they created), and has it back once they are in
-the team again. A caller who does not reach it gets `404`,
+the team again. Likewise an `accounts` instance (a DM, a private channel) of a
+package that has an app team in its organization is reached only by those of
+its owner and list who are in that app team (`SystemState::app_team_of`):
+someone removed from Chat's team, who leaves it, or who loses it when it
+closes, is out of Chat's DMs too, and has them back once in the team again. An
+instance of a package with no app team there keeps its list alone. `ScopeApps`
+entries an earlier release logged (without `owner_in_team` or
+`accounts_in_app_team`) find who reaches an instance as that release did. A
+caller who does not reach it gets `404`,
 so its existence is not disclosed; with no credential, `401`. The check reads
 fresh system state, so removing someone from an organization or team holds on
 every node before their next request ([Reads of the system
