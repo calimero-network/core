@@ -68,7 +68,7 @@ polished product. Grouped by theme; check items off as they land.
 - [ ] 52. How-to: ship v2 (migrations) with troubleshooting.
 
 ## G · Operate track content
-- [ ] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
+- [x] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
 - [ ] 54. Generate the merod/meroctl CLI reference from `--help` (hand-written from the clap definitions).
 - [x] 55. Production deployment guide (TDX, mero-kms, forming the cluster, TLS front).
 - [x] 56. Networking guide (listener, peer URLs, CORS, app domains, egress); v1's NAT/relay/bootstrap guide retired.
@@ -111,7 +111,7 @@ polished product. Grouped by theme; check items off as they land.
 
 ## K · Automation & sustain
 - [ ] 87. Generate the config reference from the config structs.
-- [ ] 88. Generate the node API reference from OpenAPI.
+- [x] 88. Generate the node API reference from OpenAPI. (`docs/public/openapi.json`, from the registry in `crates/node/src/api/openapi.rs`.)
 - [ ] 89. Generate the CLI reference from clap `--help`.
 - [ ] 90. Generate the SDK reference from rustdoc JSON.
 - [ ] 91. CI accessibility/contrast check (axe/pa11y).
@@ -158,7 +158,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R20. Peer/connection state-machine diagram.
 
 ## Operate depth
-- [ ] R21. Node API reference with request/response schemas (OpenAPI); requests must be sealed, so a collection needs a sealing client.
+- [x] R21. Node API reference with request/response schemas (OpenAPI); requests must be sealed, so a collection needs a sealing client.
 - [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
 - [ ] R23. Sample Grafana dashboard JSON (the metrics catalog is in `operate/observability`).
 - [ ] R24. Kubernetes/Helm deployment guide + manifests.

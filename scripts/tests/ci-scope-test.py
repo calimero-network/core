@@ -30,6 +30,7 @@ CASES = [
     ("a crate README is inert", ["crates/meroctl/README.md"], set()),
     ("AGENTS.md and its CLAUDE.md link are inert", ["crates/log/AGENTS.md", "crates/node/CLAUDE.md"], set()),
     ("site docs are inert", ["docs/src/content/docs/protocol/sync.mdx"], set()),
+    ("the OpenAPI document a node test checks runs the workspace jobs", ["docs/public/openapi.json"], R),
     ("an app's guide is inert unless code reads it", ["apps/kv-store/GUIDE.md"], set()),
     ("docs beside code do not hide the code", ["crates/log/AGENTS.md", "crates/log/src/lib.rs"], ALL),
     ("the lockfile reaches every job", ["Cargo.lock"], ALL),

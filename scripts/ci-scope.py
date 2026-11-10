@@ -83,6 +83,8 @@ WORKFLOWS = {
             "scripts/tests/pack-component-test.py",
             "scripts/install-mero-app-build.sh",
             "scripts/install-mero-compute.sh",
+            # calimero-node's openapi test compares it with what the registry builds.
+            "docs/public/openapi.json",
         ),
     ),
     "release": (

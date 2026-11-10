@@ -64,6 +64,8 @@ const AMBIGUOUS_COMPUTE: &str = "AMBIGUOUS_COMPUTE";
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod account_proof;
+#[cfg(test)]
+mod openapi;
 mod origins;
 mod passkeys;
 

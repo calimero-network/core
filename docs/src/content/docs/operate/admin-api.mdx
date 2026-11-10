@@ -13,6 +13,13 @@ A `merod` node serves one HTTP API on its `--listen` address. The route table is
 Calls, reads, events (server-sent events) and administration are all routes of
 this one API.
 
+Each route's request and response schemas and error codes are in the
+[Node API reference (OpenAPI)](/core/operate/api-reference/), rendered from
+[`openapi.json`](/core/openapi.json), an OpenAPI 3.1 document generated from the
+code and checked against the router on every CI run. Its requests are sealed
+like every other client's, so a tool built from it needs a sealing client
+underneath (see [Transport](#transport)).
+
 ## Transport
 
 - **In the clear:** only `GET /health` and `GET /attestation`.
