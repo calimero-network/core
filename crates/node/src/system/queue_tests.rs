@@ -321,6 +321,7 @@ fn deleting_an_app_releases_its_runs_and_grants_the_next() {
         app_id: "a1".into(),
         actor: "alice".into(),
         owner_in_org: true,
+        owner_in_team: true,
     })
     .unwrap();
     assert_eq!(granted(&m), pairs(&[("b1", "r3")]));
@@ -380,6 +381,7 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
         actor: "alice".into(),
         consent: serde_json::Value::Null,
         owner_in_org: true,
+        owner_in_team: true,
     })
     .unwrap();
     assert_eq!(m.state.run_slot("p", "r1").unwrap().payer, "account:bob");
@@ -441,6 +443,7 @@ fn deleting_an_app_forgets_its_released_ids() {
         app_id: "a1".into(),
         actor: "alice".into(),
         owner_in_org: true,
+        owner_in_team: true,
     })
     .unwrap();
     assert!(m.state.released_runs.is_empty());
