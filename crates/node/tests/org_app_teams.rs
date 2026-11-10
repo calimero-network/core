@@ -294,12 +294,25 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .post(&format!("apps/{app}/access"), access(&t2))
         .await
         .unwrap();
-    // The owner still may, anywhere in the organization.
-    let _ok = bob
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "org" } }),
+    // The owner, not in team two, holds no owner powers over an app on it;
+    // once in it, they may change its access anywhere in the organization.
+    let to_org = json!({ "access": { "kind": "org" } });
+    refused(
+        &bob.post(&format!("apps/{app}/access"), to_org.clone())
+            .await
+            .unwrap_err(),
+        "MANAGE_APPLICATION",
+    );
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{t2}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+            &mut a,
         )
+        .await
+        .unwrap();
+    let _ok = bob
+        .post(&format!("apps/{app}/access"), to_org)
         .await
         .unwrap();
 }
