@@ -354,6 +354,16 @@ impl PackageRecord {
     }
 }
 
+/// The rows a `MoveApp` gives, by the flags its entry carries (an entry an
+/// earlier release logged leaves them out, and replays without those rows).
+#[derive(Clone, Copy, Debug)]
+struct MoveRows {
+    /// A new app team gives its members who get every app added later a row.
+    all_apps_rows: bool,
+    /// An `Accounts` instance's people get a row on its closed app team.
+    accounts_in_app_team: bool,
+}
+
 /// Semver order, falling back to the strings for a version that does not parse.
 #[must_use]
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
@@ -2267,10 +2277,14 @@ impl SystemState {
         bring_members: bool,
         nonce: &str,
         actor: &str,
-        all_apps_rows: bool,
-        accounts_in_app_team: bool,
+        rows: MoveRows,
     ) -> Result<Value, &'static str> {
         use crate::types::{caps, OrgMode};
+
+        let MoveRows {
+            all_apps_rows,
+            accounts_in_app_team,
+        } = rows;
 
         let app = self.apps.get(app_id).ok_or("no such app")?;
         let from = app.org.clone();
@@ -5889,8 +5903,10 @@ impl SystemMachine {
                 bring_members,
                 &nonce,
                 &actor,
-                all_apps_rows,
-                accounts_in_app_team,
+                MoveRows {
+                    all_apps_rows,
+                    accounts_in_app_team,
+                },
             ),
             SystemCmd::DeleteApp {
                 app_id,
