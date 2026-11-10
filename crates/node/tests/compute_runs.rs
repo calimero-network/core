@@ -1013,6 +1013,23 @@ async fn an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fe
     assert_eq!(rig.record(&run).attempts.len(), 1, "no new attempt");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers() {
+    let rig = Rig::start(&[JOB_A]).await;
+    rig.limits(ComputeLimits {
+        lost_after: Duration::from_secs(7),
+        ..ComputeLimits::default()
+    });
+    rig.jobs[0]
+        .running
+        .fail_outputs_slowly(Duration::from_secs(8), 4);
+    let file = rig.upload(&input()).await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let outcome = rig.outcome_within(&run, 90).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert_eq!(rig.record(&run).attempts.len(), 1);
+}
+
 async fn until_ended(rig: &Rig, run: &str, secs: u64) -> RunRecord {
     let started = Instant::now();
     loop {

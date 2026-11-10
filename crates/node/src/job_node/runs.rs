@@ -622,6 +622,16 @@ pub(super) async fn output(
         job.outputs_delay_ms.load(Ordering::Relaxed),
     ))
     .await;
+    #[cfg(feature = "testing")]
+    if job
+        .outputs_failing
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+        .is_ok()
+    {
+        let ms = job.outputs_slow.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        return Err(ApiError::internal("outputs are failing slowly"));
+    }
     let path = output_of(&run, i, |o| o.path.clone())?;
     let bytes = tokio::fs::read(path)
         .await

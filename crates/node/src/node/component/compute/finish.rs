@@ -1,6 +1,8 @@
 //! Ending a run from a job node's signed report: checking it, fetching and storing the outputs,
 //! and the arguments the result method receives.
 
+use std::time::Instant;
+
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use calimero_log::Bytes;
@@ -89,6 +91,7 @@ impl Drive<'_> {
         watch: &mut Watch,
     ) -> bool {
         watch.leader_wait = false;
+        let started = Instant::now();
         let acceptable = self.report_is_valid(attempt, &report, &signature)
             && AppMachine::check_usage(&self.rec.caps, &report.usage).is_ok()
             && (report.reason != Some(FailReason::Cancelled) || self.rec.cancel_requested);
@@ -101,7 +104,10 @@ impl Drive<'_> {
         let plan = if report.status == ReportStatus::Done {
             match self.stage(attempt, &report, watch).await {
                 Staging::Ready(outputs) => FinalPlan::reported(report, signature, outputs),
-                Staging::Retry => return true,
+                Staging::Retry => {
+                    watch.credit(started.elapsed());
+                    return true;
+                }
                 Staging::Wait => {
                     watch.leader_wait = true;
                     watch.saw();
