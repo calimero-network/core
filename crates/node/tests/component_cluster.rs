@@ -979,6 +979,298 @@ async fn teams_work_like_v1_subgroups() {
     assert!(alice.get(&format!("apps/{child_app}")).await.is_err());
 }
 
+/// An organization with `alice` as owner and the others as members (redeemed
+/// invites); answers the org id and each member's account id.
+async fn org_with(
+    alice: &Client,
+    a: &mut SoftAuthenticator,
+    members: &[&Client],
+) -> (String, Vec<String>) {
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice.post("orgs", json!({ "name": "Acme" })).await.unwrap(),
+        "orgId",
+    );
+    let mut ids = Vec::new();
+    for m in members {
+        let token = s(
+            alice
+                .post_confirmed(
+                    &format!("orgs/{org}/invites"),
+                    json!({ "role": "member" }),
+                    a,
+                )
+                .await
+                .unwrap(),
+            "token",
+        );
+        let _r = m
+            .post(&format!("invites/{token}/redeem"), json!({}))
+            .await
+            .unwrap();
+        ids.push(s(m.me().await.unwrap(), "accountId"));
+    }
+    (org, ids)
+}
+
+/// Every replica has applied the system log as it stands.
+async fn all_applied(c: &Cluster) {
+    for r in c.nodes.iter().flatten() {
+        let applied = r.node.system.status().last_log.unwrap_or(0);
+        assert!(
+            r.node
+                .system
+                .wait_applied(applied, Duration::from_secs(5))
+                .await
+        );
+    }
+}
+
+/// Removed from an organization, a person reaches none of its apps: not one
+/// that lists their account (a private channel, a DM), not one they created,
+/// and they receive none of its events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn removal_from_an_organization_ends_account_listed_access() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (org, ids) = org_with(&alice, &mut a, &[&bob]).await;
+    let bob_id = ids[0].clone();
+    // Bob may create apps here (CREATE_APP | JOIN_OPEN_TEAMS).
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": 5 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let listed = alice
+        .create_app(
+            "dm",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        )
+        .await
+        .unwrap();
+    let bundle_b = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let own = bob
+        .create_app(
+            "mine",
+            &bundle_b,
+            json!({ "org": org, "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    set(&bob, &listed, "in").await.unwrap();
+    set(&bob, &own, "in").await.unwrap();
+    let mut bob_events = bob.events(&listed, 0).await.unwrap();
+
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    for app in [&listed, &own] {
+        let err = set(&bob, app, "after").await.unwrap_err();
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: {err}");
+    }
+    set(&alice, &listed, "alice").await.unwrap();
+    let mut got = Vec::new();
+    while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(2), bob_events.next()).await {
+        got.push(e);
+    }
+    // The stream may still hold the event of Bob's own write before the removal.
+    assert!(
+        got.iter()
+            .all(|(_id, _kind, data)| data["value"] != "alice"),
+        "a removed member still received {got:?}"
+    );
+}
+
+/// Removing someone from a team removes their direct rows in the teams below
+/// it too (a private channel under an app's team).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn removal_from_a_team_reaches_its_sub_teams() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (org, ids) = org_with(&alice, &mut a, &[&bob]).await;
+    let bob_id = ids[0].clone();
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let team = |name: &str, parent: Option<&str>| {
+        let body = json!({ "name": name, "join": "invite", "parent": parent });
+        let (alice, org) = (&alice, &org);
+        async move {
+            s(
+                alice
+                    .post(&format!("orgs/{org}/teams"), body)
+                    .await
+                    .unwrap(),
+                "teamId",
+            )
+        }
+    };
+    let chat = team("Chat", None).await;
+    let private = team("design", Some(&chat)).await;
+    for t in [&chat, &private] {
+        let _ok = alice
+            .post_confirmed(
+                &format!("orgs/{org}/teams/{t}/members"),
+                json!({ "account": bob_id, "role": "member" }),
+                &mut a,
+            )
+            .await
+            .unwrap();
+    }
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let channel = alice
+        .create_app(
+            "design",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "team", "team": private } }),
+        )
+        .await
+        .unwrap();
+    set(&bob, &channel, "in").await.unwrap();
+
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/teams/{chat}/members/{bob_id}"), &mut a)
+        .await
+        .unwrap();
+    let err = set(&bob, &channel, "after").await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .unwrap();
+    assert!(
+        !view.to_string().contains(&bob_id),
+        "a row is left below: {view}"
+    );
+}
+
+/// An inviter below admin names only teams they see: holding INVITE_MEMBERS
+/// organization-wide does not open a restricted team they are not in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_invite_names_only_teams_the_inviter_sees() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (org, ids) = org_with(&alice, &mut a, &[&bob]).await;
+    let bob_id = ids[0].clone();
+    // INVITE_MEMBERS | JOIN_OPEN_TEAMS, organization-wide.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": 6 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let team = |name: &str, join: &str| {
+        let body = json!({ "name": name, "join": join });
+        let (alice, org) = (&alice, &org);
+        async move {
+            s(
+                alice
+                    .post(&format!("orgs/{org}/teams"), body)
+                    .await
+                    .unwrap(),
+                "teamId",
+            )
+        }
+    };
+    let open = team("Open", "everyone").await;
+    let secret = team("Secret", "invite").await;
+    let _ok = invite(&bob, &org, json!([]), &mut b).await.unwrap();
+    let _ok = invite(&bob, &org, json!([open]), &mut b).await.unwrap();
+    let err = invite(&bob, &org, json!([secret]), &mut b)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "{err}");
+    let err = invite(&bob, &org, json!([open, secret]), &mut b)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "{err}");
+}
+
+/// `who` mints a member invite into `org` naming `teams`, with their passkey.
+async fn invite(
+    who: &Client,
+    org: &str,
+    teams: Value,
+    pk: &mut SoftAuthenticator,
+) -> Result<Value, calimero_client::Error> {
+    who.post_confirmed(
+        &format!("orgs/{org}/invites"),
+        json!({ "role": "member", "teams": teams }),
+        pk,
+    )
+    .await
+}
+
+/// Deleting a team that holds apps takes the deleter's passkey, and the
+/// request names the apps that go with it; an empty team goes without one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice.post("orgs", json!({ "name": "Acme" })).await.unwrap(),
+        "orgId",
+    );
+    let team = |name: &str, parent: Option<&str>| {
+        let body = json!({ "name": name, "join": "invite", "parent": parent });
+        let (alice, org) = (&alice, &org);
+        async move {
+            s(
+                alice
+                    .post(&format!("orgs/{org}/teams"), body)
+                    .await
+                    .unwrap(),
+                "teamId",
+            )
+        }
+    };
+    let empty = team("Empty", None).await;
+    let gone = alice
+        .delete(&format!("orgs/{org}/teams/{empty}"))
+        .await
+        .unwrap();
+    assert_eq!(gone["apps"], json!([]), "{gone}");
+
+    let chat = team("Chat", None).await;
+    let private = team("design", Some(&chat)).await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let channel = alice
+        .create_app(
+            "design",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "team", "team": private } }),
+        )
+        .await
+        .unwrap();
+    let err = alice
+        .delete(&format!("orgs/{org}/teams/{chat}"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("CONFIRM_REQUIRED"), "{err}");
+    assert_eq!(err.details().unwrap()["apps"], json!([channel]), "{err}");
+    assert!(alice.get(&format!("apps/{channel}")).await.is_ok());
+
+    let gone = alice
+        .delete_confirmed(&format!("orgs/{org}/teams/{chat}"), &mut a)
+        .await
+        .unwrap();
+    assert_eq!(gone["apps"], json!([channel]), "{gone}");
+    assert!(alice.get(&format!("apps/{channel}")).await.is_err());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_passkey_is_another_device_of_the_same_account() {
     let c = Cluster::start(3).await;
