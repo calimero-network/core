@@ -1,7 +1,7 @@
 //! `POST /apps/{app}/pipelines/{name}/runs`, `GET /apps/{app}/pipeline-runs[/{run}]` and
 //! `POST /apps/{app}/pipeline-runs/{run}/cancel`: starting, reading and cancelling a pipeline
-//! run of the release the app runs. Who may call the app starts and cancels; who may reach it
-//! reads. A start is judged against the pinned pipeline before anything is logged.
+//! run of the release the app runs. Those who may handle the app's files start, cancel and
+//! retry; who may reach it reads. A start is judged against the pinned pipeline first.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -174,6 +174,25 @@ pub fn check_params(
     Ok(out)
 }
 
+/// A run reads the app's sealed files and spends its payer's compute: only those who may handle
+/// the app's files start, cancel or retry one, and never from a read-only team row.
+async fn may_run(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    account: &str,
+    sys_index: Option<u64>,
+) -> Result<(), ApiError> {
+    if !node.sys(|s| may_handle_files(s, app, Some(account))) {
+        return Err(ApiError::forbidden(
+            "only the app's owner and its organization's members run its pipelines",
+        ));
+    }
+    if read_only_in(node, app, Some(account), sys_index).await {
+        return Err(ApiError::forbidden("read-only in this team"));
+    }
+    Ok(())
+}
+
 async fn component_app(node: &Node, app_id: &str) -> Result<crate::types::AppRecord, ApiError> {
     let app = node.app(app_id).await?;
     if app.executor != Executor::Component {
@@ -195,9 +214,7 @@ pub(super) async fn start(
     let Some(account) = p.caller.account() else {
         return Err(ApiError::unauthenticated("sign in to start a pipeline run"));
     };
-    if read_only_in(&node, &app, Some(account), p.sys_index).await {
-        return Err(ApiError::forbidden("read-only in this team"));
-    }
+    may_run(&node, &app, account, p.sys_index).await?;
     node.require_upgraded_nodes().await?;
     let no_pipeline = || {
         ApiError::new(
@@ -414,9 +431,7 @@ pub(super) async fn retry(
     let Some(account) = p.caller.account() else {
         return Err(ApiError::unauthenticated("sign in to retry a pipeline run"));
     };
-    if read_only_in(&node, &app, Some(account), p.sys_index).await {
-        return Err(ApiError::forbidden("read-only in this team"));
-    }
+    may_run(&node, &app, account, p.sys_index).await?;
     node.require_upgraded_nodes().await?;
     let answer = node
         .view(&crate::node::ViewRequest {
@@ -543,9 +558,7 @@ pub(super) async fn cancel(
             "sign in to cancel a pipeline run",
         ));
     };
-    if read_only_in(&node, &app, Some(account), p.sys_index).await {
-        return Err(ApiError::forbidden("read-only in this team"));
-    }
+    may_run(&node, &app, account, p.sys_index).await?;
     let a = node
         .cancel_pipeline_run(&app, &run, p.caller, p.sys_index)
         .await?;

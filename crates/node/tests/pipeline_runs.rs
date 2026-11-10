@@ -709,6 +709,65 @@ async fn killing_the_leader_mid_fan_out_creates_no_run_index_twice() {
     }
 }
 
+/// A pipeline reads the app's sealed files and spends its payer's compute, so only those who may
+/// handle the app's files start, cancel or retry one, even on a public app; anyone may read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let public = rig
+        .alice
+        .create_app_from_package(
+            "open",
+            "com.test.job",
+            Some("1.0.0"),
+            None,
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let doc = rig
+        .alice
+        .upload_bytes(&public, b"private".to_vec())
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inputs = json!({ "docs": [doc] });
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+
+    let e = bob
+        .start_pipeline_run(&public, "chain", inputs.clone(), json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+
+    let run = rig
+        .alice
+        .start_pipeline_run(&public, "chain", inputs, json!({}))
+        .await
+        .unwrap()["run"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let e = bob.cancel_pipeline_run(&public, &run).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let seen = bob.pipeline_run(&public, &run).await.unwrap();
+    assert!(seen["steps"]["c"]["result"].is_null(), "{seen}");
+    let _c = rig.alice.cancel_pipeline_run(&public, &run).await.unwrap();
+    let mut waited = 0;
+    while bob.pipeline_run(&public, &run).await.unwrap()["state"] == "running" {
+        waited += 1;
+        assert!(waited < 300, "the cancelled run never ended");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let e = bob
+        .retry_pipeline_run(&public, &run, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn cancel_stops_a_running_pipeline() {
     let rig = Rig::start(&[JOB_A]).await;
