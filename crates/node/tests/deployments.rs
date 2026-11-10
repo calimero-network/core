@@ -1005,6 +1005,158 @@ async fn each_deployment_serves_its_frontend_on_its_own_host() {
     );
 }
 
+/// Every redirect a frontend host answers keeps the request's query: an
+/// invite link (`/?invite=...`) still carries its token once it lands on
+/// the release, after the `deployment` a `/d/` link adds. An empty query adds
+/// nothing; one past the bound is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn frontend_redirects_keep_the_query() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let _ok = alice
+        .upload_package(mpk(
+            "com.test.site",
+            "1.0.0",
+            &variant(&kv_wasm(), "1.0.0"),
+            &[("frontend/index.html", b"<p>one")],
+        ))
+        .await
+        .unwrap();
+    let d = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(&alice, &mut alice_pk, &d, "site", "com.test.site", "1.0.0")
+        .await
+        .unwrap();
+    let app = instance(&alice, &d, "com.test.site", None, None)
+        .await
+        .unwrap();
+
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let package_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::label("com.test.site")
+    );
+    let deployment_host = format!(
+        "{}.localhost",
+        calimero_node::app_host::deployment_label(&d)
+    );
+    let location = |host: String, path: String| async move {
+        let r = reqwest::Client::builder()
+            .resolve(&host, ([127, 0, 0, 1], port).into())
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(format!("http://{host}:{port}{path}"))
+            .header("accept", "text/html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 302, "{path}: {r:?}");
+        r.headers()["location"].to_str().unwrap().to_owned()
+    };
+    let cases = [
+        (
+            &package_host,
+            "/?invite=t0k".to_owned(),
+            "/1.0.0/?invite=t0k".to_owned(),
+        ),
+        (&package_host, "/".to_owned(), "/1.0.0/".to_owned()),
+        (&package_host, "/?".to_owned(), "/1.0.0/".to_owned()),
+        (
+            &package_host,
+            format!("/app/{app}/join?invite=t0k&x=1"),
+            "/1.0.0/join?invite=t0k&x=1".to_owned(),
+        ),
+        (
+            &package_host,
+            format!("/d/{d}/?invite=t0k"),
+            format!("/1.0.0/?deployment={d}&invite=t0k"),
+        ),
+        (
+            &deployment_host,
+            "/?invite=t0k".to_owned(),
+            format!("/1.0.0/?deployment={d}&invite=t0k"),
+        ),
+        (
+            &deployment_host,
+            format!("/app/{app}/?invite=t0k"),
+            "/1.0.0/?invite=t0k".to_owned(),
+        ),
+    ];
+    for (host, path, want) in cases {
+        assert_eq!(location(host.clone(), path.clone()).await, want, "{path}");
+    }
+    // A query past the bound is refused, not carried on.
+    let long = reqwest::Client::builder()
+        .resolve(&package_host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!(
+            "http://{package_host}:{port}/?invite={}",
+            "a".repeat(5000)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(long.status(), 414);
+}
+
+/// `/app/{app}/` opens the newest release (by version, not by the version's
+/// string) of those shipping the instance's WASM, when several do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instance_link_opens_the_newest_release_shipping_its_wasm() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _alice_pk) = signed_up(&c, 0, "alice").await;
+    // One WASM in three releases; by string "1.0.0" < "10.0.0" < "9.0.0".
+    let wasm = variant(&kv_wasm(), "shared");
+    for version in ["1.0.0", "9.0.0", "10.0.0"] {
+        let _ok = alice
+            .upload_package(mpk(
+                "com.test.site",
+                version,
+                &wasm,
+                &[("frontend/index.html", b"<p>site")],
+            ))
+            .await
+            .unwrap();
+    }
+    let app = alice
+        .post(
+            "apps",
+            json!({ "name": "s", "package": "com.test.site", "version": "1.0.0" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let host = format!(
+        "{}.localhost",
+        calimero_node::app_host::label("com.test.site")
+    );
+    let r = reqwest::Client::builder()
+        .resolve(&host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("http://{host}:{port}/app/{app}/"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302, "{r:?}");
+    assert_eq!(r.headers()["location"], "/10.0.0/");
+}
+
 /// Where deployments are granted, creating a deployment and offering an app
 /// need a live deployer grant (refused at the API and where it applies); a
 /// customer without one still creates instances from the offers.
