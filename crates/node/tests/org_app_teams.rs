@@ -1184,3 +1184,96 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
         .unwrap();
     assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
 }
+
+/// Closing an open app team with the plain team update (`POST
+/// /orgs/{org}/teams/{team} { join: invite }`) takes, from whoever loses it
+/// (in it by inheritance alone), their rows in the private channels below it,
+/// as a removal from the team does: they no longer reach a channel's apps,
+/// even one they made. Whoever keeps the team (a row of their own) keeps the
+/// channels.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (dave, mut d) = signed_up(&c, 2, "dave").await;
+    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let bob_id = id(&bob).await;
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    // Chat's team, open: Alice and Bob get rows.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&done["teams"][0]["teamId"]);
+    // Dave joins after: in Chat by inheritance alone.
+    join(
+        &dave,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let dave_id = id(&dave).await;
+    // Dave makes a private channel below Chat, adds Bob, and puts an
+    // instance in it.
+    let channel = s(&dave
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "design", "join": "invite", "parent": chat_team }),
+        )
+        .await
+        .unwrap()["teamId"]);
+    let _ok = dave
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{channel}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+            &mut d,
+        )
+        .await
+        .unwrap();
+    let private = instance(
+        &dave,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": channel }),
+    )
+    .await
+    .unwrap();
+    for p in [&dave, &bob] {
+        let r = reaches(p, &org).await;
+        assert!(r.contains(&chat) && r.contains(&private), "{r:?}");
+    }
+
+    // Alice closes Chat with the plain team update: Dave, with no row in
+    // it, loses Chat and the channel below it; Bob keeps both.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{chat_team}"),
+            json!({ "join": "invite" }),
+        )
+        .await
+        .unwrap();
+    let r = reaches(&dave, &org).await;
+    assert!(!r.contains(&chat) && !r.contains(&private), "{r:?}");
+    let err = writes(&dave, &private).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    assert!(dave
+        .get(&format!("orgs/{org}/teams/{channel}"))
+        .await
+        .is_err());
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{channel}"))
+        .await
+        .unwrap();
+    assert!(
+        !view.to_string().contains(&dave_id),
+        "a row is left below: {view}"
+    );
+    let r = reaches(&bob, &org).await;
+    assert!(r.contains(&chat) && r.contains(&private), "{r:?}");
+    writes(&bob, &private).await.unwrap();
+}
