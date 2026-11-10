@@ -35,6 +35,12 @@ absent from every other document) shares `verify_report`: report data =
 (text length-prefixed), so swapping any of them breaks it. It answers `(transport_key, job_key)`; only nodes use it
 (the leader checking a job node), mero-js needs nothing.
 
+`verify_orchestrator` (`purpose=orchestrator`, any replica of a cluster; `AttestationDoc::cluster_identity`) shares `verify_report`: report data =
+`nonce || SHA-256("calimero.tee-attest.orchestrator.v1" || x25519 transport key || ed25519 cluster identity)`
+(`orchestrator_report_data`, one function for node and client), so a quote of another purpose never verifies as it.
+The caller passes the identity it expects (`GET /ops/cluster`) and gets the transport key back; a job node answers `404`.
+mero-js has no counterpart yet; the vector is `the_orchestrator_binding_matches_the_published_vector`.
+
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data
 `nonce || SHA-256("calimero.tee-attest.release.v1" || u32-BE-length-prefixed merodVersion,
