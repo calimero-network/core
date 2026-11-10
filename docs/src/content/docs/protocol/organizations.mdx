@@ -170,7 +170,12 @@ it (`member_child_teams`).
 
 - Removing someone from a team, or their leaving it, also removes their direct
   rows in every team below it, so a restricted child team (a private channel
-  under an app's team) does not keep them in.
+  under an app's team) does not keep them in. Closing an open team (`POST
+  /orgs/{org}/teams/{team} { join: invite }`) does the same for whoever loses
+  it then, being in it by inheritance alone: their rows below it go, and they
+  are not barred, so opening it again lets them back into the team (not into
+  the channels). An `UpdateTeam` an earlier release logged replays keeping
+  those rows (`close_drops_below`).
 - A member who leaves a team, or whom a manager removes, does not come back by
   inheritance (`Team::removed`), so
   leaving an open team sticks. They return only when a manager adds them again
@@ -242,7 +247,8 @@ removal from the team takes them; they are not barred, so opening the team
 again lets them back in. Each package's answer names its team's `join` after the step and
 how many people it `dropped`. A single team also opens or closes with `POST
 /orgs/{org}/teams/{team} { join }` (`MANAGE_VISIBILITY`, an admin's anywhere),
-which fills no rows: closing that way, only the existing direct rows stay.
+which fills no rows: closing that way, only the existing direct rows stay, and
+whoever loses the team loses their rows in the teams below it too.
 `GET /orgs/{org}/app-teams` lists, to any member, each app team's package, id,
 name, `join`, member count, default capabilities and whether the caller is in
 it or manages it (a guest: only their own).
