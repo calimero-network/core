@@ -11,12 +11,13 @@ use std::time::{Duration, Instant};
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
-use calimero_node::component::{RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
+use calimero_node::component::{FailedReason, FinalOutcome, RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
 use calimero_node::Node;
 use common::{mpk_with_pipelines, signed_up, Cluster, JobNode, PUBLISHER};
 use serde_json::{json, Value};
 
 const JOB_A: u64 = 4;
+const JOB_B: u64 = 5;
 const WAIT: Duration = Duration::from_secs(180);
 const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 
@@ -139,6 +140,45 @@ steps:
   each: { method: check, forEach: inputs.docs, maxItems: 20 }
 ";
 
+const RAISE: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: raise
+inputs:
+  docs: { kind: files }
+steps:
+  each: { method: digest, forEach: inputs.docs, maxItems: 20, allowFailures: 2, limits: { fuel: 50000000 } }
+";
+
+const STRICT: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: strict
+inputs:
+  docs: { kind: files }
+steps:
+  a: { method: digest, inputs: [inputs.docs], limits: { fuel: 50000000 } }
+";
+
+const METERED: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: metered
+inputs:
+  docs: { kind: files }
+steps:
+  a: { method: digest, inputs: [inputs.docs] }
+";
+
+const CHAIN_V2: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: chain
+inputs:
+  docs: { kind: files }
+steps:
+  a: { method: digest, inputs: [inputs.docs] }
+  b: { method: digest, inputs: [a.outputs] }
+  c: { method: echo, args: { value: b.result } }
+  d: { method: echo, needs: [c] }
+";
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(bytes))
@@ -150,7 +190,7 @@ struct Rig {
     pk: SoftAuthenticator,
     app: String,
     compute: Vec<u8>,
-    _jobs: Vec<JobNode>,
+    jobs: Vec<JobNode>,
 }
 
 impl Rig {
@@ -181,6 +221,9 @@ impl Rig {
             ("pipelines/partial.yaml", PARTIAL),
             ("pipelines/fresh.yaml", FRESH),
             ("pipelines/costed.yaml", COSTED),
+            ("pipelines/raise.yaml", RAISE),
+            ("pipelines/strict.yaml", STRICT),
+            ("pipelines/metered.yaml", METERED),
         ];
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
@@ -210,7 +253,7 @@ impl Rig {
             pk,
             app,
             compute,
-            _jobs: jobs,
+            jobs,
         }
     }
 
@@ -590,6 +633,8 @@ async fn a_pipeline_whose_definition_is_gone_fails() {
         payer: "account:alice".into(),
         fail_fast: false,
         cost: None,
+        retry_of: None,
+        limits: Default::default(),
         ts_ms: 0,
     };
     let req = CallRequest::host(
@@ -1033,4 +1078,275 @@ async fn a_run_stops_admitting_before_it_crosses_its_cost_cap() {
     assert_eq!(done["cost"]["maxCost"], json!(max_cost.to_string()));
     assert_eq!(done["cost"]["priceVersion"], 1);
     assert_eq!(done["steps"]["each"]["cost"], done["costSoFar"], "{done}");
+}
+
+/// The compute runs a pipeline run made, by item index.
+fn runs_of(rig: &Rig, run: &str) -> Vec<(u32, RunRecord)> {
+    let mut runs: Vec<(u32, RunRecord)> = rig
+        .all_records()
+        .into_iter()
+        .filter_map(|r| {
+            let link = r.pipeline.clone()?;
+            (link.run == run).then_some((link.index, r))
+        })
+        .collect();
+    runs.sort_by_key(|(i, _)| *i);
+    runs
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_retry_with_raised_limits_reruns_only_the_failed_items() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let mut files = Vec::new();
+    for i in 0..4 {
+        files.push(rig.upload(format!("small {i}").as_bytes()).await);
+    }
+    for i in 1..=2u8 {
+        files.push(rig.upload(&vec![i; 1024 * 1024]).await);
+    }
+    // 50M of fuel is plenty for a few bytes and short of a mebibyte (about 100M).
+    let first = rig
+        .start_run("raise", json!({ "docs": files }), json!({}))
+        .await;
+    let done = rig.ended(&first).await;
+    assert_eq!(done["state"], "succeededWithFailures", "{done}");
+    assert_eq!(done["steps"]["each"]["failedItems"], 2, "{done}");
+    let made = runs_of(&rig, &first);
+    assert_eq!(made.len(), 6);
+    let failed: Vec<u32> = made
+        .iter()
+        .filter(|(_, r)| {
+            matches!(
+                r.final_.as_ref().map(|f| f.outcome),
+                Some(FinalOutcome::Failed { .. })
+            )
+        })
+        .map(|(i, _)| *i)
+        .collect();
+    assert_eq!(failed, [4, 5]);
+
+    let retried = rig
+        .alice
+        .retry_pipeline_run(
+            &rig.app,
+            &first,
+            json!({ "limits": { "each": { "fuel": 400_000_000u64 } } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried["retryOf"], json!(first));
+    let second = retried["run"].as_str().unwrap().to_owned();
+    let done = rig.ended(&second).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(done["retryOf"], json!(first), "{done}");
+    assert_eq!(done["steps"]["each"]["cachedItems"], 4, "{done}");
+    let again: Vec<u32> = runs_of(&rig, &second).iter().map(|(i, _)| *i).collect();
+    assert_eq!(again, [4, 5], "only the failed items ran again");
+    assert_eq!(
+        done["steps"]["each"]["outputs"].as_array().unwrap().len(),
+        6
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fuel_failure_is_not_retried_automatically() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![3u8; 1024 * 1024]).await;
+    let run = rig
+        .start_run("strict", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "failed", "{done}");
+    let record = rig.record(&step_run(&done, "a"));
+    assert_eq!(record.attempts.len(), 1, "one attempt");
+    assert_eq!(
+        record.final_.as_ref().map(|f| f.outcome),
+        Some(FinalOutcome::Failed {
+            reason: FailedReason::Fuel
+        })
+    );
+    assert_eq!(runs_of(&rig, &run).len(), 1, "and no second run");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_lost_item_is_retried_and_billed_once() {
+    let mut rig = Rig::start(&[JOB_A, JOB_B]).await;
+    set_prices(&rig).await;
+    let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
+    let body = json!({ "inputs": { "docs": [file] }, "maxCost": "1000000000" });
+    let started = rig
+        .alice
+        .start_pipeline_run_with(&rig.app, "metered", body)
+        .await
+        .unwrap();
+    let run = started["run"].as_str().unwrap().to_owned();
+    let item = format!("{run}.a.0");
+    rig.until("an attempt is assigned", async || {
+        let records = rig.all_records();
+        records
+            .iter()
+            .any(|r| r.run == item && !r.attempts.is_empty())
+    })
+    .await;
+    let first = rig.record(&item).attempts[0].node;
+    let at = rig.jobs.iter().position(|j| j.id == first).unwrap();
+    rig.jobs.remove(at).running.stop().await;
+
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    let record = rig.record(&item);
+    assert_eq!(
+        record.attempts.len(),
+        2,
+        "a second attempt on the other node"
+    );
+    assert_ne!(record.attempts[1].node, first);
+    assert_eq!(runs_of(&rig, &run).len(), 1, "one run for the item");
+    let usage = record.final_.as_ref().unwrap().usage;
+    let table = calimero_pipeline::PriceTable {
+        version: 1,
+        fuel_per_vcpu_second: 1_000_000_000,
+        vcpu_second: 100,
+        gib_second: 10,
+        connector_gib: 0,
+        storage_gib_month: 0,
+        egress_gib: 0,
+    };
+    let caps = calimero_pipeline::Caps {
+        fuel: record.caps.fuel,
+        memory_mib: record.caps.memory_mib,
+        wall_secs: record.caps.wall_secs,
+    };
+    let once = calimero_pipeline::priced_cost(
+        usage.fuel,
+        usage.gib_micros,
+        usage.cpu_micros,
+        caps,
+        &table,
+    );
+    assert!(once > 0);
+    assert_eq!(
+        done["costSoFar"],
+        json!(once.to_string()),
+        "billed once: {done}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn retrying_a_running_run_is_refused() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let err = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &run, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("STILL_RUNNING"), "{err}");
+    assert!(matches!(
+        err,
+        calimero_client::Error::Api { status: 409, .. }
+    ));
+    let _ok = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+    let _ended = rig.ended(&run).await;
+    let err = rig
+        .alice
+        .retry_pipeline_run(&rig.app, "nope", json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 404, .. }),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn limits_a_retry_may_not_take_are_refused() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![3u8; 1024 * 1024]).await;
+    let run = rig
+        .start_run("strict", json!({ "docs": [file] }), json!({}))
+        .await;
+    let _done = rig.ended(&run).await;
+    for (limits, code) in [
+        (
+            json!({ "a": { "fuel": 20_000_000_001u64 } }),
+            "LIMIT_EXCEEDS_CAP",
+        ),
+        (json!({ "a": { "wallSecs": 61 } }), "LIMIT_EXCEEDS_CAP"),
+        (json!({ "zz": { "fuel": 1 } }), "BAD_LIMITS"),
+        (json!({ "a": { "fuel": 0 } }), "BAD_LIMITS"),
+    ] {
+        let err = rig
+            .alice
+            .retry_pipeline_run(&rig.app, &run, json!({ "limits": limits }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(code), "{limits}: {err}");
+        assert!(matches!(
+            err,
+            calimero_client::Error::Api { status: 400, .. }
+        ));
+    }
+    assert_eq!(
+        rig.alice.pipeline_runs(&rig.app).await.unwrap()["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_retry_keeps_the_original_release_after_an_upgrade() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![5u8; 4096]).await;
+    let first = rig
+        .start_run("chain", json!({ "docs": [file] }), json!({}))
+        .await;
+    let original = rig.ended(&first).await;
+    assert_eq!(original["state"], "succeeded", "{original}");
+
+    let pipelines = [("pipelines/chain.yaml", CHAIN_V2)];
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let mpk = mpk_with_pipelines(
+        "com.test.job",
+        "1.0.1",
+        None,
+        Some(&rig.compute),
+        &pipelines,
+        &key,
+    );
+    rig.alice.upload_package(mpk).await.unwrap();
+    rig.alice
+        .upgrade_app(&rig.app, json!({ "version": "1.0.1" }), &mut rig.pk)
+        .await
+        .unwrap();
+    let fresh = rig
+        .start_run("chain", json!({ "docs": [file] }), json!({}))
+        .await;
+    let now = rig.ended(&fresh).await;
+    assert_eq!(
+        now["version"], "1.0.1",
+        "a new start uses the upgraded release: {now}"
+    );
+    assert!(now["steps"].get("d").is_some(), "{now}");
+
+    let retried = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &first, json!({}))
+        .await
+        .unwrap();
+    let second = retried["run"].as_str().unwrap();
+    let done = rig.ended(second).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(done["version"], "1.0.0", "{done}");
+    assert_eq!(done["hash"], original["hash"], "{done}");
+    assert!(
+        done["steps"].get("d").is_none(),
+        "the old definition: {done}"
+    );
+    assert_eq!(
+        done["steps"]["a"]["cached"], true,
+        "nothing ran again: {done}"
+    );
 }

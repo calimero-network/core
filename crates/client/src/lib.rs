@@ -811,6 +811,20 @@ impl Client {
             .await
     }
 
+    /// Starts a new run of an ended pipeline run's pipeline, release, inputs and params; `body` is
+    /// `{ limits?, maxCost? }`.
+    pub async fn retry_pipeline_run(&self, app: &str, run: &str, body: Value) -> Result<Value> {
+        self.post(
+            &format!(
+                "apps/{}/pipeline-runs/{}/retry",
+                path_segment(app),
+                path_segment(run)
+            ),
+            body,
+        )
+        .await
+    }
+
     /// Cancels a pipeline run.
     pub async fn cancel_pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
         self.post(

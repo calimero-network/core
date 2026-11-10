@@ -9,7 +9,7 @@ use calimero_log::{Bytes, StateTx};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::runs::{RunCaps, RunInputRef};
+use super::runs::RunInputRef;
 use crate::app::{rows, AppMachine};
 
 /// Entries per app; past it the oldest go.
@@ -42,20 +42,15 @@ pub struct CachedRun {
 
 /// The key of a step run: what it computes, with its input files named by content.
 /// `input_hashes` are the plaintext SHA-256s of the inputs in order.
+/// Caps are not part of it: a deterministic module gives the same output under any caps that let
+/// it finish, so raising a step's limits on a retry must not miss the items that already succeeded.
 #[must_use]
-pub fn cache_key(
-    bundle: &str,
-    method: &str,
-    args: &[u8],
-    input_hashes: &[String],
-    caps: RunCaps,
-) -> String {
+pub fn cache_key(bundle: &str, method: &str, args: &[u8], input_hashes: &[String]) -> String {
     let doc = json!({
         "bundle": bundle,
         "method": method,
         "args": hex::encode(calimero_identity::sha256(args)),
         "inputs": input_hashes,
-        "caps": { "fuel": caps.fuel.to_string(), "memoryMib": caps.memory_mib, "wallSecs": caps.wall_secs },
     });
     let bytes = serde_json_canonicalizer::to_vec(&doc).unwrap_or_default();
     hex::encode(calimero_identity::sha256(&bytes))

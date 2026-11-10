@@ -137,6 +137,27 @@ fn the_table_is_camel_case_json_and_refuses_unknown_fields() {
 }
 
 #[test]
+fn limits_override_field_by_field() {
+    use calimero_pipeline::Limits;
+    let own = Limits {
+        fuel: Some(7),
+        memory_mib: None,
+        wall_secs: Some(9),
+    };
+    let over = Limits {
+        fuel: Some(70),
+        memory_mib: Some(128),
+        wall_secs: None,
+    };
+    let merged = own.overridden_by(over);
+    assert_eq!(
+        (merged.fuel, merged.memory_mib, merged.wall_secs),
+        (Some(70), Some(128), Some(9))
+    );
+    assert_eq!(own.overridden_by(Limits::default()), own);
+}
+
+#[test]
 fn priced_cost_rounds_up_and_never_passes_the_caps() {
     let c = caps(2_000_000_000, 1024, 60);
     // fuel 1 -> 1 vCPU-second (100); 1 GiB-microsecond -> 1 GiB-second (10)

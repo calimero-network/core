@@ -437,6 +437,14 @@ fn scenario(root: &Path, url: &str) {
         .try_run(&["pipeline", "cancel", "notes", "nope"])
         .unwrap_err();
     assert!(unbound.contains("NOT_FOUND"), "{unbound}");
+    let retry = alice
+        .try_run(&["pipeline", "retry", "notes", "nope", "--limit", "a.fuel=9"])
+        .unwrap_err();
+    assert!(retry.contains("NOT_FOUND"), "{retry}");
+    let bad_limit = alice
+        .try_run(&["pipeline", "retry", "notes", "nope", "--limit", "fuel=9"])
+        .unwrap_err();
+    assert!(bad_limit.contains("STEP.FIELD"), "{bad_limit}");
     let bad = alice
         .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs"])
         .unwrap_err();
