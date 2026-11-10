@@ -55,6 +55,12 @@ impl Compute {
         digest_inputs()
     }
 
+    /// Returns its argument, so a pipeline test sees what a step was given.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn echo(value: Vec<String>) -> app::Result<Vec<String>> {
+        Ok(value)
+    }
+
     /// Loops until the wall clock ends it.
     #[app::compute(fuel = 1_000_000_000_000, memory_mib = 64, wall_secs = 2, result = "on_done")]
     pub fn spin() -> app::Result<()> {

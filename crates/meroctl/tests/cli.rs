@@ -423,6 +423,25 @@ fn scenario(root: &Path, url: &str) {
     assert_eq!(std::fs::read(&out).unwrap(), b"hello blob");
     let _ = alice.run(&["blob", "delete", &blob, "--context", "notes"]);
 
+    // pipeline: a release without pipelines has none to run; its list is empty.
+    let none = alice
+        .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs=ab"])
+        .unwrap_err();
+    assert!(none.contains("NO_SUCH_PIPELINE"), "{none}");
+    assert_eq!(alice.run(&["pipeline", "runs", "notes"])["runs"], json!([]));
+    let unknown = alice
+        .try_run(&["pipeline", "get", "notes", "nope"])
+        .unwrap_err();
+    assert!(unknown.contains("NOT_FOUND"), "{unknown}");
+    let unbound = alice
+        .try_run(&["pipeline", "cancel", "notes", "nope"])
+        .unwrap_err();
+    assert!(unbound.contains("NOT_FOUND"), "{unbound}");
+    let bad = alice
+        .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs"])
+        .unwrap_err();
+    assert!(bad.contains("NAME=VALUE"), "{bad}");
+
     // context update: to the next release, approved with the owner's passkey.
     let _ = alice.run(&[
         "context",

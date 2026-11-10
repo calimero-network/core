@@ -317,14 +317,16 @@ fn validate_param(name: &str, p: &crate::model::Param, errs: &mut Vec<SpecError>
     }
 }
 
-enum Ref<'a> {
+/// What a reference string points at.
+pub enum Ref<'a> {
     Input(&'a str),
     Param(&'a str),
     Item,
     Step(&'a str, &'a str),
 }
 
-fn parse_ref(s: &str) -> Option<Ref<'_>> {
+/// The reference `s` is shaped like, if any: an input, a param, `item` or a step's field.
+pub fn parse_ref(s: &str) -> Option<Ref<'_>> {
     if s == "item" {
         return Some(Ref::Item);
     }

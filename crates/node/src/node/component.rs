@@ -25,7 +25,7 @@ pub use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeState;
 pub use self::compute::JOB_POLL;
-pub(crate) use self::compute::RUN_VIEW;
+pub(crate) use self::compute::{PIPELINE_VIEW, RUN_VIEW};
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
@@ -296,6 +296,9 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         ComponentCmd::ComputeFinal(entry) => entry.result = entry.result.denied(DENIED),
         ComponentCmd::Upgrade { .. }
         | ComponentCmd::ComputeAttempt(_)
+        | ComponentCmd::PipelineStart(_)
+        | ComponentCmd::PipelineStep(_)
+        | ComponentCmd::PipelineCancel(_)
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
         | ComponentCmd::BlobRevoke { .. }
@@ -1049,7 +1052,9 @@ impl Node {
         g: &Group<AppMachine>,
         app: &AppRecord,
     ) -> Result<crate::app::Applied, ApiError> {
-        app.require_app_component()?;
+        if !app.components.is_app() {
+            return self.init_compute_only(g, app).await;
+        }
         // A component the engine refuses fails `init` for good (reported as
         // INIT_FAILED); anything else is retried by `reconcile`.
         // The bundle the group names if an upgrade gave it one before init applied
@@ -1171,6 +1176,41 @@ impl Node {
             self.usage.called(&meter, RunKind::Mutation);
         }
         Ok(a)
+    }
+
+    /// The first entry of a compute-only app's group: it names no app component, so nothing runs;
+    /// the entry only gives the group its executor, which holds files and pipeline runs.
+    async fn init_compute_only(
+        &self,
+        g: &Group<AppMachine>,
+        app: &AppRecord,
+    ) -> Result<crate::app::Applied, ApiError> {
+        let p = g
+            .propose_led(|m, _, leadership| {
+                if m.state.initialized || m.state.init_error.is_some() {
+                    return Proposal::Reply(Vec::new());
+                }
+                let (id_term, id_seq) =
+                    self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
+                let mut cmd = ComponentCmd::Init {
+                    bundle: app.bundle.clone(),
+                    compute_bundle: app.compute_bundle.clone(),
+                    base_index: m.state.last_index,
+                    ts_ms: self.stamp(m),
+                    id_term,
+                    id_seq,
+                    outcome: Box::default(),
+                };
+                Proposal::Append(entry_bytes(&mut cmd).0)
+            })
+            .await
+            .map_err(|e| status_of(&e))?;
+        if !p.appended {
+            return Err(ApiError::conflict("already initialized"));
+        }
+        let a: Applied =
+            serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
+        Ok(to_host_applied(a))
     }
 
     /// One round of timer ticks (D34), every [`TIMER_POLL`]: for each component
@@ -1960,6 +2000,9 @@ impl Node {
     ) -> Result<ViewAnswer, ApiError> {
         if req.method == RUN_VIEW {
             return self.run_view(g, req);
+        }
+        if req.method == PIPELINE_VIEW {
+            return self.pipeline_view(g, req);
         }
         let bundle = g
             .read_local(|m, _| m.component_bundle())

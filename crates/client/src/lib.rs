@@ -760,6 +760,55 @@ impl Client {
         .await
     }
 
+    /// Starts a run of the pipeline `name` of the release `app` runs: `inputs` binds each declared
+    /// input to file ids, `params` gives its params. Answers `{ run }`.
+    pub async fn start_pipeline_run(
+        &self,
+        app: &str,
+        name: &str,
+        inputs: Value,
+        params: Value,
+    ) -> Result<Value> {
+        self.post(
+            &format!(
+                "apps/{}/pipelines/{}/runs",
+                path_segment(app),
+                path_segment(name)
+            ),
+            serde_json::json!({ "inputs": inputs, "params": params }),
+        )
+        .await
+    }
+
+    /// One pipeline run: its state and each step's status, runs, outputs and reason.
+    pub async fn pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
+        self.get(&format!(
+            "apps/{}/pipeline-runs/{}",
+            path_segment(app),
+            path_segment(run)
+        ))
+        .await
+    }
+
+    /// The app's recent pipeline runs, newest first.
+    pub async fn pipeline_runs(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/pipeline-runs", path_segment(app)))
+            .await
+    }
+
+    /// Cancels a pipeline run.
+    pub async fn cancel_pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
+        self.post(
+            &format!(
+                "apps/{}/pipeline-runs/{}/cancel",
+                path_segment(app),
+                path_segment(run)
+            ),
+            serde_json::json!({}),
+        )
+        .await
+    }
+
     /// Uninstall one version of a package, or all of it.
     pub async fn uninstall_package(&self, package: &str, version: Option<&str>) -> Result<Value> {
         match version {

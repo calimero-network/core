@@ -66,6 +66,7 @@ type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 mod account_proof;
 mod origins;
 mod passkeys;
+mod pipelines;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
@@ -10690,6 +10691,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
+        .route("/apps/{app}/pipelines/{name}/runs", post(pipelines::start))
+        .route("/apps/{app}/pipeline-runs", get(pipelines::list))
+        .route("/apps/{app}/pipeline-runs/{run}", get(pipelines::get))
+        .route("/apps/{app}/pipeline-runs/{run}/cancel", post(pipelines::cancel))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
         .route("/apps/{app}/presence/stream", get(presence_stream))
         .route("/apps/{app}/intents", post(intents))

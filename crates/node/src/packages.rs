@@ -30,7 +30,7 @@ use crate::system::{
 };
 use crate::types::{now_secs, Components};
 
-mod pipelines;
+pub(crate) mod pipelines;
 
 /// The largest `.mpk` a node takes, uploaded or fetched: it is kept as a blob,
 /// so the blob limit (v1 allowed 512 MiB; a blob here must reach a
