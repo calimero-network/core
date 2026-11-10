@@ -39,6 +39,9 @@ pub const NOT_NEXT_VERSION: &str =
     "a policy is the next version of the current one, chained to its hash";
 /// A refusal: this actor approved already.
 pub const ALREADY_APPROVED: &str = "that account approved this data policy already";
+/// A refusal: the current signers can still approve, so the recovery key may not.
+pub const SIGNERS_CAN_APPROVE: &str =
+    "the current policy's signers can still approve its successor";
 /// A refusal: recovery approval needs a recovery key on the organization.
 pub const NO_POLICY_RECOVERY: &str =
     "a first policy for an organization with fewer than two admins needs its recovery key";
@@ -280,14 +283,26 @@ impl OrgDataPolicy {
         Ok(self.adopt_if_approved(org))
     }
 
-    /// Adopt the pending `hash` on the recovery key's say-so alone.
+    /// Adopt the pending `hash` on the recovery key's say-so alone: the first version, or a
+    /// later one whose current signers still admins cannot reach its threshold.
     ///
     /// # Errors
-    /// No such pending policy.
-    pub fn approve_by_recovery(&mut self, hash: &str) -> Result<(), &'static str> {
+    /// No such pending policy, or signers who can still approve it.
+    pub fn approve_by_recovery(
+        &mut self,
+        hash: &str,
+        org: &OrgView<'_>,
+    ) -> Result<(), &'static str> {
         let pending = self.pending.as_ref().ok_or(NO_PENDING_POLICY)?;
         if pending.hash != hash {
             return Err(OTHER_POLICY);
+        }
+        // After the first version the key only breaks a lockout, never outvotes live signers.
+        if let Some(c) = &self.current {
+            let live = c.signers.iter().filter(|s| org.admins.contains(*s)).count();
+            if live >= c.threshold as usize {
+                return Err(SIGNERS_CAN_APPROVE);
+            }
         }
         self.adopt();
         Ok(())

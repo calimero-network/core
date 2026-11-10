@@ -7596,8 +7596,8 @@ impl SystemMachine {
                 Ok(json!({ "adopted": adopted }))
             }),
             SystemCmd::ApproveDataPolicyByRecovery { org, hash, .. } => {
-                data_policy_step(org_mut(s, &org)?, |dp, _| {
-                    dp.approve_by_recovery(&hash)?;
+                data_policy_step(org_mut(s, &org)?, |dp, view| {
+                    dp.approve_by_recovery(&hash, view)?;
                     Ok(json!({ "adopted": true }))
                 })
             }
@@ -14244,6 +14244,44 @@ mod tests {
             .unwrap_err(),
             NO_RECOVERY_KEY
         );
+    }
+
+    /// After the first version, the recovery key adopts a policy only when the
+    /// current signers who are still admins can no longer reach its threshold.
+    #[test]
+    fn the_recovery_key_replaces_a_later_policy_only_when_its_signers_cannot() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        m.state.orgs.get_mut("org").unwrap().recovery = Some(crate::types::OrgRecovery {
+            public_key: public(&SEED),
+            set_at: 1,
+            pending: None,
+        });
+        let v1 = dp_policy(1, None, &["alice", "bob"], 2);
+        let h1 = v1.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &v1).unwrap();
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h1).unwrap();
+        assert_eq!(dp_current(&m), Some(1));
+
+        let v2 = dp_policy(2, Some(h1), &["alice", "bob"], 2);
+        let h2 = v2.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &v2).unwrap();
+        let by_key = |h: &str| dp_by_recovery(&SEED, "org", crate::policy::RECOVERY_SUBJECT, h);
+        assert_eq!(
+            m.run(by_key(&h2)).unwrap_err(),
+            crate::policy::SIGNERS_CAN_APPROVE
+        );
+        assert_eq!(dp_current(&m), Some(1));
+
+        // Bob is no longer an admin: alice alone cannot reach 2, so the key may.
+        let _p = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), crate::types::OrgRole::Member);
+        let _ok = m.run(by_key(&h2)).unwrap();
+        assert_eq!(dp_current(&m), Some(2));
     }
 
     #[test]

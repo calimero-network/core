@@ -6420,6 +6420,7 @@ fn policy_error(e: &'static str) -> ApiError {
             ApiError::new(409, "DATA_POLICY_CONFLICT", e)
         }
         p::NO_POLICY_RECOVERY => ApiError::bad_request("DATA_POLICY_NEEDS_RECOVERY", e),
+        p::SIGNERS_CAN_APPROVE => ApiError::new(409, "DATA_POLICY_SIGNERS_CAN_APPROVE", e),
         _ => ApiError::bad_request("BAD_DATA_POLICY", e),
     }
 }
@@ -6637,6 +6638,11 @@ async fn data_policy_recovery_approve(
             "the approval is not signed with this organization's recovery key",
         ));
     }
+    policy_dry_run(&node, &org, |dp, view| {
+        dp.approve_by_recovery(&body.hash, view)
+            .map(|()| Value::Null)
+    })
+    .await?;
     let v = node
         .sys_write(&SystemCmd::ApproveDataPolicyByRecovery {
             org,

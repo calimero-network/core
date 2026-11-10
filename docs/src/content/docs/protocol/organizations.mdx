@@ -392,4 +392,5 @@ The proposer must be an admin and, after the first version, one of the current s
 Each write is refused `409 UPGRADE_PENDING` while a node runs an older release, before any signature is asked for.
 
 An organization with fewer than two admins cannot reach two approvals: its first policy needs the organization's recovery key, which approves the pending hash alone (`POST /orgs/{org}/data-policy/recovery-approve { hash, signature }`).
+After the first version the recovery key adopts a pending policy only when the current policy's signers who are still admins can no longer reach its threshold (`409 DATA_POLICY_SIGNERS_CAN_APPROVE` otherwise), so it breaks a lockout but never outvotes the signers.
 The signature is the recovery key's over the organization recovery message with the account `data-policy:approve` and the hash as nonce, so a signature made for a recovery start or another hash is refused, and each is accepted once.
