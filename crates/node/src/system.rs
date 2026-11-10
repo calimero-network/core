@@ -1699,6 +1699,7 @@ impl SystemState {
         shared: Option<bool>,
         nonce: &str,
         actor: &str,
+        accounts_in_app_team: bool,
     ) -> Result<Value, &'static str> {
         use crate::types::caps;
 
@@ -1785,7 +1786,9 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| self.may_reach(a, Some(m.as_str())))
+                        .filter(|m| {
+                            self.may_reach_as_logged(a, Some(m.as_str()), accounts_in_app_team)
+                        })
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -2121,13 +2124,37 @@ impl SystemState {
     /// reached only by its current members, whatever names the account: its
     /// owner, or an `Accounts` list, stop reaching it once they leave or are
     /// removed (the organization itself gone: nobody but a public app's
-    /// callers).
+    /// callers). An `Accounts` instance of a package with an app team in its
+    /// organization (a private channel, a DM) is reached only by those who
+    /// reach that app team, its owner included ([`Self::app_team_of`]): a
+    /// person removed from the app is out of its private channels too.
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
+        self.may_reach_as_logged(app, account, true)
+    }
+
+    /// [`Self::may_reach`], or, for a command an earlier release logged
+    /// (`accounts_in_app_team: false`), with an `Accounts` instance reached
+    /// by its list whatever its app team holds, as that release judged it.
+    fn may_reach_as_logged(
+        &self,
+        app: &AppRecord,
+        account: Option<&str>,
+        accounts_in_app_team: bool,
+    ) -> bool {
         if let (Some(org), Some(a)) = (&app.org, account) {
             let member = self.orgs.get(org).and_then(|o| o.role(a)).is_some();
             if !member && app.access != Access::Public {
                 return false;
+            }
+        }
+        if let (Access::Accounts { .. }, Some(a), true) =
+            (&app.access, account, accounts_in_app_team)
+        {
+            if let Some((o, team)) = self.app_team_of(app) {
+                if !o.in_team(a, &team.team_id) {
+                    return false;
+                }
             }
         }
         match (&app.access, account) {
@@ -2149,6 +2176,15 @@ impl SystemState {
                 .and_then(|o| self.orgs.get(o))
                 .is_some_and(|o| o.in_team(a, team)),
         }
+    }
+
+    /// The app team of `app`'s package in `app`'s organization, with the
+    /// organization, if both are there.
+    #[must_use]
+    pub fn app_team_of(&self, app: &AppRecord) -> Option<(&Org, &Team)> {
+        let o = self.orgs.get(app.org.as_deref()?)?;
+        let team = o.app_team(self.package_of(app)?)?;
+        Some((o, team))
     }
 
     /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
@@ -4204,6 +4240,13 @@ pub enum SystemCmd {
         nonce: String,
         actor: AccountId,
         consent: Value,
+        /// Who reaches an instance now is judged with an `Accounts` instance
+        /// reached only through its package's app team
+        /// ([`SystemState::may_reach`]). The API always sets it; absent
+        /// (`false`) in an entry an earlier release logged, which replays as
+        /// that release judged it.
+        #[serde(default)]
+        accounts_in_app_team: bool,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
     /// key: the owner's, with their passkey consent (`org:<org> /
@@ -6473,8 +6516,9 @@ impl SystemMachine {
                 shared,
                 nonce,
                 actor,
+                accounts_in_app_team,
                 ..
-            } => s.scope_apps(&org, apps, shared, &nonce, &actor),
+            } => s.scope_apps(&org, apps, shared, &nonce, &actor, accounts_in_app_team),
             SystemCmd::SetRecoveryKey {
                 org,
                 public_key,
@@ -8893,6 +8937,110 @@ mod tests {
             ..listed
         };
         assert!(m.state.may_reach(&personal, Some("carol")));
+    }
+
+    /// An `Accounts` instance (a DM, a private channel) of a package with an
+    /// app team in its organization is reached only by those who reach the
+    /// app team, its owner too: a person out of Chat is out of its DMs. An
+    /// instance of a package with no app team there keeps its list alone. A
+    /// `ScopeApps` an earlier release logged (no `accounts_in_app_team`)
+    /// finds who reaches such an instance as that release did.
+    #[test]
+    fn an_accounts_instance_is_reached_only_through_its_app_team() {
+        let dm = |id: &str, bundle: &str| -> AppRecord {
+            serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 7, "bundle": bundle, "owner": "carol",
+                "org": "org",
+                "access": { "kind": "accounts", "accounts": ["alice", "bob", "carol", "dave"] },
+                "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap()
+        };
+        let fresh = || {
+            let (mut m, _alice, _bob, _carol) = proven_cluster();
+            chat_org(&mut m);
+            let _prev = m.state.apps.insert("dm".into(), dm("dm", "bc"));
+            m
+        };
+        let m = fresh();
+        let chat = m.state.apps["dm"].clone();
+        let s = &m.state;
+        assert!(s.may_reach(&chat, Some("alice")) && s.may_reach(&chat, Some("bob")));
+        assert!(!s.may_reach(&chat, Some("carol")), "the owner, out of Chat");
+        assert!(!s.may_reach(&chat, Some("dave")), "listed, out of Chat");
+        assert!(!s.receives(&chat, &Audience::All, Some("bob"), Some("dave")));
+        assert!(s.may_reach_as_logged(&chat, Some("dave"), false));
+        // No app team for its package: the list alone, as before.
+        let raw = dm("raw", "b1");
+        assert!(s.may_reach(&raw, Some("carol")) && s.may_reach(&raw, Some("dave")));
+
+        // Moving the DM onto Chat's team gives rows to who reaches it: now
+        // Alice and Bob; as logged before, Carol and Dave too.
+        let scope = |flag: bool| SystemCmd::ScopeApps {
+            org: "org".into(),
+            apps: Some(vec![super::ScopeApp {
+                package: "com.chat".into(),
+                name: None,
+                instances: Some(vec!["dm".into()]),
+            }]),
+            shared: None,
+            nonce: "n".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            accounts_in_app_team: flag,
+        };
+        let rows = |m: &SystemMachine| -> Vec<String> {
+            m.state.orgs["org"].teams["chat"]
+                .members
+                .keys()
+                .cloned()
+                .collect()
+        };
+        for (flag, want) in [
+            (true, &["alice", "bob"][..]),
+            (false, &["alice", "bob", "carol", "dave"][..]),
+        ] {
+            let mut m = fresh();
+            let _ok = m.run_authorized(scope(flag)).unwrap();
+            assert_eq!(rows(&m), want, "{flag}");
+        }
+    }
+
+    /// `org` (alice its owner, bob, carol and dave members) with Chat's
+    /// restricted app team (alice its lead, bob in it) and a release of
+    /// `com.chat` whose WASM is `bc`.
+    fn chat_org(m: &mut SystemMachine) {
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("carol".into(), OrgRole::Member);
+        let _prev = o.members.insert("dave".into(), OrgRole::Member);
+        let _prev = o.teams.insert(
+            "chat".into(),
+            serde_json::from_value(json!({
+                "teamId": "chat", "name": "Chat", "join": "invite",
+                "members": { "alice": true, "bob": false },
+                "metadata": { "app": { "package": "com.chat" } }
+            }))
+            .unwrap(),
+        );
+        let _prev = m.state.bundles.insert(
+            "bc".into(),
+            serde_json::from_value(json!({
+                "hash": "bc", "size": 1, "uploadedBy": "alice",
+                "package": { "package": "com.chat", "version": "1.0.0" }
+            }))
+            .unwrap(),
+        );
+        let _prev = m.state.packages.insert(
+            "com.chat".into(),
+            serde_json::from_value(json!({
+                "name": "com.chat", "signerId": "did:key:zC", "owner": "alice",
+                "versions": { "1.0.0": {
+                    "version": "1.0.0", "mpk": "00", "mpkSize": 1, "source": "upload",
+                    "services": { "": "bc" }, "installedBy": "alice", "installedAt": 0
+                } }
+            }))
+            .unwrap(),
+        );
     }
 
     // ------------------------------------- an org app's owner, while a member

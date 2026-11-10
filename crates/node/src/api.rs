@@ -6018,6 +6018,7 @@ async fn app_teams_scope(
             nonce: b64url(&random::<16>()),
             actor,
             consent,
+            accounts_in_app_team: true,
         })
         .await?,
     ))
