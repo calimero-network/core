@@ -32,6 +32,11 @@ const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
 /// Fields that move on their own and say nothing about the replayed state.
 const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
 
+/// Log positions an answer was served at. The replaying node elects itself
+/// leader of each group in a new term, which appends a blank entry, so these
+/// only move forward from what the release answered.
+const LOG_POSITIONS: &[&str] = &["index"];
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -98,6 +103,14 @@ fn holds(got: &Value, want: &Value, path: &str) -> Result<(), String> {
                 let Some(gv) = g.get(k) else {
                     return Err(format!("{at} is gone"));
                 };
+                if LOG_POSITIONS.contains(&k.as_str()) {
+                    if let (Some(gn), Some(wn)) = (gv.as_u64(), v.as_u64()) {
+                        if gn < wn {
+                            return Err(format!("{at} is {gn}, behind {wn}"));
+                        }
+                        continue;
+                    }
+                }
                 holds(gv, v, &at)?;
             }
             Ok(())
