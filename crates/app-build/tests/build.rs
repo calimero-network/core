@@ -207,3 +207,14 @@ fn a_crate_with_a_cdylib_dependency_packages_its_own_component() {
     let methods = abi["methods"].as_object().expect("methods");
     assert_eq!(methods.keys().collect::<Vec<_>>(), ["top_only"]);
 }
+
+/// A crate that builds only an rlib makes no component, whatever its dependencies made.
+#[test]
+fn a_crate_that_builds_no_wasm_is_refused_by_name() {
+    let target = tempfile::tempdir().expect("tempdir");
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/chain/no-wasm");
+    let Err(e) = build_component(&crate_dir, target.path()) else {
+        panic!("a crate with no wasm artifact built a component");
+    };
+    assert!(e.to_string().contains("produced no .wasm artifact"), "{e}");
+}
