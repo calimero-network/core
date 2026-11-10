@@ -266,6 +266,64 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     assert_eq!(left[0]["teams"], json!([]), "{left:?}");
 }
 
+/// A DM (an `accounts` instance) moved with its people into an organization
+/// whose app team of its package is closed: its people join the target and
+/// get a row on that app team, so they still reach it there; someone the DM
+/// does not list gets neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let src = new_org(&alice, "Source").await;
+    for p in [&bob, &carol, &dave] {
+        join(&alice, &mut a, &src, p, "member").await;
+    }
+    let (bob_id, carol_id, dave_id) = (id(&bob).await, id(&carol).await, id(&dave).await);
+    let dm = alice
+        .create_app_from_package(
+            CHAT,
+            CHAT,
+            None,
+            None,
+            json!({ "org": src, "access": { "kind": "accounts", "accounts": [bob_id, carol_id] } }),
+        )
+        .await
+        .unwrap();
+    // The target keeps Chat apart: its app team is closed, alice alone in it.
+    let dst = new_org(&alice, "Target").await;
+    let _chat = instance(&alice, Some(&dst), CHAT).await;
+    let _scoped = alice
+        .post_confirmed(
+            &format!("orgs/{dst}/app-teams"),
+            json!({ "apps": [{ "package": CHAT, "join": "invite" }] }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+
+    let out = move_app(&alice, &mut a, &dm, &dst, true).await.unwrap();
+    assert_eq!(out["access"]["kind"], "accounts", "{out}");
+    let mut added: Vec<String> = out["added"].as_array().unwrap().iter().map(s).collect();
+    added.sort();
+    let mut expected = vec![bob_id.clone(), carol_id.clone()];
+    expected.sort();
+    assert_eq!(added, expected, "{out}");
+    for p in [&bob, &carol] {
+        let _set = p
+            .call(&dm, "set", json!({ "key": "k", "value": "v" }), None)
+            .await
+            .unwrap();
+        assert!(reaches(p, &dst).await.contains(&dm));
+    }
+    let members = alice.get(&format!("orgs/{dst}")).await.unwrap()["members"].clone();
+    assert!(members.get(&dave_id).is_none(), "{members}");
+    assert!(reaches(&dave, &dst).await.is_empty());
+}
+
 /// A move without members leaves the people outside the target out; the
 /// wrong movers are refused on the state of the moment (a member of the
 /// target, a demoted admin of it, a member removed from the source, one who
