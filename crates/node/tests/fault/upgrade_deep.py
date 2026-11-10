@@ -366,15 +366,20 @@ def people(w, *names):
     return [person(w, n) for n in names]
 
 
-def host(w, app):
-    """A running node that holds a replica of `app` (`GET /ops/placement`): a few routes
-    (`/apps/{app}/xcalls`) answer only there, `503 UNAVAILABLE` elsewhere."""
+def hosts(w, app):
+    """The running nodes that hold a replica of `app` (`GET /ops/placement`)."""
     for a in w.fleet.placement()["apps"]:
         if a["app"] == app:
             up = [n for n in a["replicas"] if n in w.members()]
             check(up, f"no running replica of {app}: {a['replicas']}")
-            return up[0]
+            return up
     raise Failed(f"{app} is not placed")
+
+
+def host(w, app):
+    """A running replica of `app`: a few routes (`/apps/{app}/xcalls`) answer only on one,
+    `503 UNAVAILABLE` elsewhere."""
+    return hosts(w, app)[0]
 
 
 def anyone(w, method, path, body=None, node=None):

@@ -4,7 +4,7 @@ transfer and move, usage and storage figures."""
 from __future__ import annotations
 
 from upgrade_deep import (VOLATILE, DeepCase, Failed, anyone, check, decision, decisions, eq, events, host,
-                          join, kv_wasm, new_org, people, person, same_decisions, same_read, scrub, snap, subset,
+                          hosts, join, kv_wasm, new_org, people, person, same_decisions, same_read, scrub, snap, subset,
                           team_id, until)
 from upgrade_path import case
 
@@ -115,9 +115,9 @@ class AccessKinds(DeepCase):
         s["decisions"] = self._decide(w, s)
 
 
-def _xcalls(w, s):
+def _xcalls(w, s, node=None):
     """`GET /apps/{a}/xcalls`, from a node that holds the app (only one answers it)."""
-    return scrub(person(w, "xia").get(f"apps/{s['a']}/xcalls", node=host(w, s["a"])))
+    return scrub(person(w, "xia").get(f"apps/{s['a']}/xcalls", node=node or host(w, s["a"])))
 
 
 def _nonempty(v):
@@ -132,8 +132,9 @@ class Xcall(DeepCase):
     area = "Apps"
     seeds = ("two apps of an organization; writes relayed from one to the other (xcall), one refused by the "
              "callee, one dead-lettered")
-    verifies = ("the relayed writes, what `onXcallFailed` recorded, the xcall list; a relay lands in the mixed "
-                "cluster (across releases while the two apps sit on different ones) and on the new release")
+    verifies = ("the relayed writes, what `onXcallFailed` recorded, the xcall list and its dead letters on every "
+                "replica; a relay lands in the mixed cluster (across releases while the two apps sit on different "
+                "ones) and on the new release")
 
     def populate(self, w):
         xia = person(w, "xia")
@@ -147,7 +148,8 @@ class Xcall(DeepCase):
         xia.call(s["a"], "relay", {"app": "no-such-app", "key": "lost", "value": "x"})
         s["failures"] = until("the dead letter is reported", lambda: _nonempty(xia.result(s["a"], "xcallFailures")))
         check(xia.result(s["b"], "get", {"key": "nope"}) is None, "a method that allows no app ran")
-        s["xcalls"] = _xcalls(w, s)
+        s["dead"] = _xcalls(w, s)["deadLetters"]
+        check(len(s["dead"]) == 1 and s["dead"][0]["app"] == "no-such-app", f"the dead letter: {s['dead']}")
         return s
 
     def _relay(self, w, s, tag):
@@ -162,16 +164,19 @@ class Xcall(DeepCase):
         for k, v in s["relayed"].items():
             eq(xia.result(s["b"], "get", {"key": k}), v, f"relayed {k}")
         eq(xia.result(s["a"], "xcallFailures"), s["failures"], "xcall failures")
-        subset(_xcalls(w, s), s["xcalls"], "the xcall list")
+        # Every replica answers it from its own state: each keeps the dead letters the old
+        # release recorded (a replica that caught up by replaying the log included).
+        for n in hosts(w, s["a"]):
+            dead = _xcalls(w, s, n)["deadLetters"]
+            lost = [d for d in s["dead"] if d not in dead]
+            check(not lost, f"replica {n} lost the dead letters {lost} (it lists {dead})")
 
     def during_mix(self, w, s):
         self.check(w, s)
         self._relay(w, s, "mixed")
-        s["xcalls"] = _xcalls(w, s)
 
     def exercise(self, w, s):
         self._relay(w, s, "new")
-        s["xcalls"] = _xcalls(w, s)
 
 
 @case
