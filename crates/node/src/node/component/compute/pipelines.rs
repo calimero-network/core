@@ -12,15 +12,15 @@ use std::sync::Arc;
 
 use calimero_app_host as host;
 use calimero_log::{Bytes, Group, GroupId, Proposal, WriteError};
-use calimero_pipeline::{parse_ref, Caps, Pipeline, Ref, Step};
+use calimero_pipeline::{parse_ref, AllowFailures, Caps, Pipeline, Ref, Step};
 use serde_json::{json, Map, Value};
 use tracing::debug;
 
 use super::{locked, Driving};
 use crate::app::{AppMachine, Status};
 use crate::component::{
-    ComponentCmd, PipelineCancelEntry, PipelineRun, PipelineStartEntry, PipelineState, RunCaps,
-    StepDecisionEntry, StepRun, StepStatus, StepVerdict,
+    run_id, ComponentCmd, FanOut, PipelineCancelEntry, PipelineRun, PipelineStartEntry,
+    PipelineState, RunCaps, StepDecisionEntry, StepRun, StepStatus, StepVerdict, MAX_STEP_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::component::entry_bytes;
@@ -30,6 +30,7 @@ use crate::types::{AppRecord, Caller};
 const DEFAULT_PAGE: usize = 20; // pipeline runs a list answers when the caller names no limit
 const MAX_PAGE: usize = 100; // the most pipeline runs a list answers
 const MAX_CACHED: usize = 64; // pipelines and compute components kept in memory, by hash
+const PIPELINE_UNAVAILABLE: &str = "PIPELINE_UNAVAILABLE"; // the reason of a step whose pipeline definition cannot be found
 
 /// The shared-memory state of the loop: what is being driven, and what it has looked up.
 #[derive(Default)]
@@ -47,8 +48,9 @@ fn remember<T>(cache: &std::sync::Mutex<HashMap<String, Arc<T>>>, key: &str, val
     let _prev = cache.insert(key.to_owned(), value);
 }
 
-/// What each pending step does now: it starts once its needs succeeded or were skipped, fails
-/// upstream when one did not, and a cancelled run ends it. `room` is the runs the app can take.
+/// What each step does now: a pending one starts once its needs succeeded or were skipped, fails
+/// upstream when one did not, and a cancelled run ends it; a running fan-out gets its next runs
+/// while it has items left. `room` is the runs the app can take.
 pub(super) fn plan(
     pipeline: &Pipeline,
     run: &PipelineRun,
@@ -61,9 +63,19 @@ pub(super) fn plan(
         .map(|(name, step)| (name.as_str(), step.status))
         .collect();
     let mut decided = Vec::new();
+    let mut waved: HashSet<&str> = HashSet::new();
     loop {
         let before = decided.len();
         for (name, step) in &pipeline.steps {
+            if run.steps.get(name).map(|s| s.status) == Some(StepStatus::Running)
+                && waved.insert(name.as_str())
+            {
+                if let Some(more) = next_wave(pipeline, run, name, step, caps, room) {
+                    room -= more.len();
+                    decided.push((name.clone(), StepVerdict::More { runs: more }));
+                }
+                continue;
+            }
             if status.get(name.as_str()) != Some(&StepStatus::Pending) {
                 continue;
             }
@@ -79,27 +91,33 @@ pub(super) fn plan(
                 )
             });
             let ready = needs.len() == step.needs.len() && needs.iter().all(|s| s.is_ok());
-            let verdict = if run.cancel_requested {
+            let verdict = if run.cancel_requested || run.stopping {
                 Some(StepVerdict::Cancelled)
             } else if broken {
                 Some(StepVerdict::UpstreamFailed)
             } else if ready {
-                match build_run(pipeline, run, name, step, caps) {
+                match build_step(pipeline, run, name, step, caps) {
                     Err(reason) => Some(StepVerdict::Failed {
                         reason: reason.to_owned(),
                     }),
-                    Ok(one) if room > 0 => {
-                        room -= 1;
-                        Some(StepVerdict::Start { runs: vec![one] })
+                    Ok(Built::Skip) => Some(StepVerdict::Skipped),
+                    Ok(Built::Runs { mut runs, fan }) => {
+                        let wave = wave_size(step, 0, runs.len(), room);
+                        if wave == 0 {
+                            None
+                        } else {
+                            room -= wave;
+                            runs.truncate(wave);
+                            Some(StepVerdict::Start { runs, fan })
+                        }
                     }
-                    Ok(_) => None,
                 }
             } else {
                 None
             };
             let Some(verdict) = verdict else { continue };
             let after = match &verdict {
-                StepVerdict::Start { .. } => StepStatus::Running,
+                StepVerdict::Start { .. } | StepVerdict::More { .. } => StepStatus::Running,
                 StepVerdict::Skipped => StepStatus::Skipped,
                 StepVerdict::UpstreamFailed => StepStatus::UpstreamFailed,
                 StepVerdict::Cancelled => StepStatus::Cancelled,
@@ -114,18 +132,142 @@ pub(super) fn plan(
     }
 }
 
-/// The compute run of a single-run step: caps lowered by its limits, the files its `inputs` name
-/// and its `args` with references filled in. A refusal is a stable code that fails the step.
-fn build_run(
+/// Runs of a step to start now: `maxParallel` less those active, the app's room and the most a
+/// decision may carry, never more than are `left`.
+fn wave_size(step: &Step, active: usize, left: usize, room: usize) -> usize {
+    let parallel = step
+        .max_parallel
+        .map_or(usize::MAX, |m| m as usize)
+        .saturating_sub(active);
+    left.min(parallel).min(room).min(MAX_STEP_RUNS)
+}
+
+/// The next runs of a running fan-out, if it has items left, tolerates its failures so far and
+/// the run is not being stopped.
+fn next_wave(
     pipeline: &Pipeline,
     run: &PipelineRun,
     name: &str,
     step: &Step,
     caps: &BTreeMap<String, Caps>,
-) -> Result<StepRun, &'static str> {
-    if step.for_each.is_some() || step.collect.is_some() {
-        return Err("NOT_YET_SUPPORTED");
+    room: usize,
+) -> Option<Vec<StepRun>> {
+    let state = run.steps.get(name)?;
+    let started = state.runs.len();
+    let total = state.fan.total as usize;
+    let stopped = run.cancel_requested || run.stopping || state.failed_items > state.fan.allowed;
+    if stopped || started >= total || step.for_each.is_none() {
+        return None;
     }
+    let active = started.saturating_sub(state.finished as usize);
+    let wave = wave_size(step, active, total - started, room);
+    if wave == 0 {
+        return None;
+    }
+    match build_step(pipeline, run, name, step, caps) {
+        Ok(Built::Runs { runs, .. }) => runs.get(started..started + wave).map(<[StepRun]>::to_vec),
+        _ => None,
+    }
+}
+
+/// What building a step gave: no items to run, or every run it will have.
+enum Built {
+    Skip,
+    Runs { runs: Vec<StepRun>, fan: FanOut },
+}
+
+/// What a fan-out runs over: the files of an input or of a step's outputs, or a step's results.
+enum Items {
+    Files(Vec<String>),
+    Values(Vec<Value>),
+}
+
+impl Items {
+    fn len(&self) -> usize {
+        match self {
+            Self::Files(f) => f.len(),
+            Self::Values(v) => v.len(),
+        }
+    }
+}
+
+/// The files and results a step's `forEach` names, read from the record.
+fn items_of(run: &PipelineRun, source: &str) -> Result<Items, &'static str> {
+    match parse_ref(source) {
+        Some(Ref::Input(n)) => Ok(Items::Files(run.inputs.get(n).cloned().unwrap_or_default())),
+        Some(Ref::Step(s, "outputs")) => Ok(Items::Files(step_outputs(run, s))),
+        Some(Ref::Step(s, "results")) => step_results(run, s).map(Items::Values),
+        _ => Err("BAD_REF"),
+    }
+}
+
+fn step_outputs(run: &PipelineRun, step: &str) -> Vec<String> {
+    run.steps
+        .get(step)
+        .map(|s| s.outputs().map(|o| o.id.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// A step's results as JSON, in item order; none are kept once they passed their bound.
+fn step_results(run: &PipelineRun, step: &str) -> Result<Vec<Value>, &'static str> {
+    let state = run.steps.get(step).ok_or("BAD_REF")?;
+    if state.results_too_large {
+        return Err("RESULTS_TOO_LARGE");
+    }
+    state
+        .run_results
+        .values()
+        .map(|b| serde_json::from_slice(&b.0).map_err(|_| "BAD_RESULT"))
+        .collect()
+}
+
+/// The files of a run: the step's `inputs` references in the order written, with `lead` where
+/// `item` stands in them, or first when none does. A file is named once.
+fn ordered_inputs(
+    step: &Step,
+    run: &PipelineRun,
+    lead: &[String],
+) -> Result<Vec<String>, &'static str> {
+    let item_placed = step
+        .inputs
+        .iter()
+        .any(|r| matches!(parse_ref(r), Some(Ref::Item)));
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut inputs: Vec<String> = Vec::new();
+    let mut add = |ids: &[String]| {
+        for id in ids {
+            if seen.insert(id.clone()) {
+                inputs.push(id.clone());
+            }
+        }
+    };
+    if !item_placed {
+        add(lead);
+    }
+    for reference in &step.inputs {
+        match parse_ref(reference) {
+            Some(Ref::Item) => add(lead),
+            Some(Ref::Input(n)) => add(run.inputs.get(n).map_or(&[][..], Vec::as_slice)),
+            Some(Ref::Step(s, "outputs")) => add(&step_outputs(run, s)),
+            _ => return Err("BAD_REF"),
+        }
+    }
+    if inputs.len() > host::MAX_PIPELINE_RUN_INPUTS {
+        return Err("TOO_MANY_INPUTS");
+    }
+    Ok(inputs)
+}
+
+/// Every compute run a step will have: one for a plain step, one per batch of items for a
+/// `forEach`, one over all a fan-out's outputs for a `collect`. A refusal is a stable code that
+/// fails the step.
+fn build_step(
+    pipeline: &Pipeline,
+    run: &PipelineRun,
+    name: &str,
+    step: &Step,
+    caps: &BTreeMap<String, Caps>,
+) -> Result<Built, &'static str> {
     let cap = caps.get(&step.method).ok_or("UNKNOWN_METHOD")?;
     let limits = step.limits.unwrap_or_default();
     let caps = RunCaps {
@@ -137,52 +279,111 @@ fn build_run(
             .wall_secs
             .map_or(cap.wall_secs, |v| v.min(cap.wall_secs)),
     };
-    let mut inputs: Vec<String> = Vec::new();
-    for reference in &step.inputs {
-        let named: Vec<String> = match parse_ref(reference) {
-            Some(Ref::Input(n)) => run.inputs.get(n).cloned().unwrap_or_default(),
-            Some(Ref::Step(s, "outputs")) => run
-                .steps
-                .get(s)
-                .map(|s| s.outputs.iter().map(|o| o.id.clone()).collect())
-                .unwrap_or_default(),
-            _ => return Err("BAD_REF"),
-        };
-        for id in named {
-            if !inputs.contains(&id) {
-                inputs.push(id);
-            }
-        }
-    }
-    if inputs.len() > host::MAX_RUN_INPUTS {
-        return Err("TOO_MANY_INPUTS");
-    }
-    let args = step
-        .args
-        .iter()
-        .map(|(k, v)| Ok((k.clone(), resolve(pipeline, run, v)?)))
-        .collect::<Result<Map<String, Value>, &'static str>>()?;
-    // No args is no bytes, as `compute::start` sends for `()`.
-    let args = if args.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(&args).map_err(|_| "BAD_REF")?
+    let make = |index: usize, inputs: Vec<String>, item: Option<&Value>| {
+        let args = resolve_args(pipeline, run, step, item)?;
+        Ok::<_, &'static str>(StepRun {
+            run: run_id(&run.id, name, index),
+            method: step.method.clone(),
+            args: Bytes(args),
+            inputs,
+            caps,
+        })
     };
-    if args.len() > host::MAX_COMPUTE_ARGS_BYTES {
-        return Err("ARGS_TOO_LARGE");
+    if let Some(source) = &step.for_each {
+        let items = items_of(run, source)?;
+        let n = items.len();
+        if n == 0 {
+            return Ok(Built::Skip);
+        }
+        if n > step.max_items.unwrap_or(u32::MAX) as usize {
+            return Err("TOO_MANY_ITEMS");
+        }
+        let batch = step.batch.unwrap_or(1).max(1) as usize;
+        let mut runs = Vec::new();
+        for index in 0..n.div_ceil(batch) {
+            let range = index * batch..((index + 1) * batch).min(n);
+            let (files, item) = match &items {
+                Items::Files(f) => {
+                    let group = &f[range];
+                    (
+                        group.to_vec(),
+                        group_value(group.iter().map(|id| json!(id))),
+                    )
+                }
+                Items::Values(v) => (Vec::new(), group_value(v[range].iter().cloned())),
+            };
+            let inputs = ordered_inputs(step, run, &files)?;
+            runs.push(make(index, inputs, Some(&item))?);
+        }
+        let n = u32::try_from(n).map_err(|_| "TOO_MANY_ITEMS")?;
+        let allowed = match step.allow_failures {
+            None => 0,
+            Some(AllowFailures::Count(c)) => c.min(n),
+            Some(AllowFailures::Percent(p)) => {
+                u32::try_from(u64::from(n) * u64::from(p) / 100).unwrap_or(n)
+            }
+        };
+        let fan = FanOut {
+            total: u32::try_from(runs.len()).map_err(|_| "TOO_MANY_ITEMS")?,
+            items: n,
+            batch: u32::try_from(batch).unwrap_or(u32::MAX),
+            allowed,
+        };
+        return Ok(Built::Runs { runs, fan });
     }
-    Ok(StepRun {
-        run: format!("{}.{name}.0", run.id),
-        method: step.method.clone(),
-        args: Bytes(args),
-        inputs,
-        caps,
+    let lead = match step.collect.as_deref().and_then(parse_ref) {
+        Some(Ref::Step(target, "outputs")) => step_outputs(run, target),
+        _ => Vec::new(),
+    };
+    let inputs = ordered_inputs(step, run, &lead)?;
+    let runs = vec![make(0, inputs, None)?];
+    Ok(Built::Runs {
+        runs,
+        fan: FanOut::SINGLE,
     })
 }
 
-/// `v` with each reference replaced: a param by the run's value or the param's default, a step's
-/// `result` by that step's result read as JSON.
-fn resolve(pipeline: &Pipeline, run: &PipelineRun, v: &Value) -> Result<Value, &'static str> {
+/// A batch's `item`: the value itself for a batch of one, else the list of them.
+fn group_value(values: impl Iterator<Item = Value>) -> Value {
+    let mut all: Vec<Value> = values.collect();
+    if all.len() == 1 {
+        all.remove(0)
+    } else {
+        Value::Array(all)
+    }
+}
+
+/// A step's `args` with references filled in, as bytes: none is no bytes, as `compute::start`
+/// sends for `()`.
+fn resolve_args(
+    pipeline: &Pipeline,
+    run: &PipelineRun,
+    step: &Step,
+    item: Option<&Value>,
+) -> Result<Vec<u8>, &'static str> {
+    let args = step
+        .args
+        .iter()
+        .map(|(k, v)| Ok((k.clone(), resolve(pipeline, run, v, item)?)))
+        .collect::<Result<Map<String, Value>, &'static str>>()?;
+    if args.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bytes = serde_json::to_vec(&args).map_err(|_| "BAD_REF")?;
+    if bytes.len() > host::MAX_COMPUTE_ARGS_BYTES {
+        return Err("ARGS_TOO_LARGE");
+    }
+    Ok(bytes)
+}
+
+/// `v` with each reference replaced: a param by the run's value or the param's default, the
+/// batch's `item`, a step's `result` or `results` by those read as JSON.
+fn resolve(
+    pipeline: &Pipeline,
+    run: &PipelineRun,
+    v: &Value,
+    item: Option<&Value>,
+) -> Result<Value, &'static str> {
     match v {
         Value::String(s) => match parse_ref(s) {
             None => Ok(v.clone()),
@@ -192,24 +393,26 @@ fn resolve(pipeline: &Pipeline, run: &PipelineRun, v: &Value) -> Result<Value, &
                 .cloned()
                 .or_else(|| pipeline.params.get(n).and_then(|p| p.default.clone()))
                 .ok_or("BAD_REF"),
+            Some(Ref::Item) => item.cloned().ok_or("BAD_REF"),
             Some(Ref::Step(step, "result")) => {
-                let result = run
-                    .steps
-                    .get(step)
-                    .and_then(|s| s.result.as_ref())
-                    .ok_or("NO_RESULT")?;
+                let state = run.steps.get(step).ok_or("NO_RESULT")?;
+                if state.results_too_large {
+                    return Err("RESULTS_TOO_LARGE");
+                }
+                let result = state.result().ok_or("NO_RESULT")?;
                 serde_json::from_slice(&result.0).map_err(|_| "BAD_RESULT")
             }
+            Some(Ref::Step(step, "results")) => step_results(run, step).map(Value::Array),
             Some(_) => Err("BAD_REF"),
         },
         Value::Array(items) => items
             .iter()
-            .map(|x| resolve(pipeline, run, x))
+            .map(|x| resolve(pipeline, run, x, item))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
         Value::Object(map) => map
             .iter()
-            .map(|(k, x)| Ok((k.clone(), resolve(pipeline, run, x)?)))
+            .map(|(k, x)| Ok((k.clone(), resolve(pipeline, run, x, item)?)))
             .collect::<Result<Map<_, _>, _>>()
             .map(Value::Object),
         _ => Ok(v.clone()),
@@ -224,19 +427,29 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
         let Some(shown) = v["steps"][name].as_object_mut() else {
             continue;
         };
-        if let Some(outputs) = shown.get_mut("outputs").and_then(Value::as_array_mut) {
-            for output in outputs.iter_mut().filter_map(Value::as_object_mut) {
-                if !files {
-                    let _gone = (output.remove("size"), output.remove("sha256"));
+        let _gone = (shown.remove("runOutputs"), shown.remove("runResults"));
+        let outputs: Vec<Value> = step
+            .outputs()
+            .map(|o| {
+                let mut o = serde_json::to_value(o).unwrap_or(Value::Null);
+                if let (false, Some(o)) = (files, o.as_object_mut()) {
+                    let _gone = (o.remove("size"), o.remove("sha256"));
                 }
-            }
-        }
-        let result = step
-            .result
-            .as_ref()
-            .filter(|_| files)
-            .map(|b| serde_json::from_slice(&b.0).unwrap_or_else(|_| json!(hex::encode(&b.0))));
+                o
+            })
+            .collect();
+        let _prev = shown.insert("outputs".to_owned(), Value::Array(outputs));
+        let json_of =
+            |b: &Bytes| serde_json::from_slice(&b.0).unwrap_or_else(|_| json!(hex::encode(&b.0)));
+        let result = step.result().filter(|_| files).map(json_of);
         let _prev = shown.insert("result".to_owned(), result.unwrap_or(Value::Null));
+        let results: Vec<Value> = step.run_results.values().map(json_of).collect();
+        let results = if files {
+            Value::Array(results)
+        } else {
+            Value::Null
+        };
+        let _prev = shown.insert("results".to_owned(), results);
     }
     v
 }
@@ -316,19 +529,30 @@ impl Node {
     }
 
     async fn drive_pipeline(&self, g: &Group<AppMachine>, run: &PipelineRun) {
-        if !run.steps.values().any(|s| s.status == StepStatus::Pending) {
+        let waiting = |s: &crate::component::StepState| match s.status {
+            StepStatus::Pending => true,
+            StepStatus::Running => s.runs.len() < s.fan.total as usize,
+            _ => false,
+        };
+        if !run.steps.values().any(waiting) {
             return;
         }
-        let looked = async {
-            let pipeline = self.pipeline_by_hash(&run.hash).await?;
-            let caps = self.caps_of_component(&run.compute_bundle).await?;
-            Ok::<_, ApiError>((pipeline, caps))
-        }
-        .await;
-        let (pipeline, caps) = match looked {
-            Ok(found) => found,
+        let pipeline = match self.pipeline_by_hash(&run.hash).await {
+            Ok(pipeline) => pipeline,
+            Err(e) if e.status == 404 => {
+                debug!(run = %run.id, error = %e.message, "pipeline is gone");
+                self.fail_unavailable(g, run).await;
+                return;
+            }
             Err(e) => {
                 debug!(run = %run.id, error = %e.message, "pipeline not loaded");
+                return;
+            }
+        };
+        let caps = match self.caps_of_component(&run.compute_bundle).await {
+            Ok(caps) => caps,
+            Err(e) => {
+                debug!(run = %run.id, error = %e.message, "compute component not loaded");
                 return;
             }
         };
@@ -338,7 +562,25 @@ impl Node {
         }
     }
 
-    /// Logs the decision unless the step is no longer pending; apply judges it again.
+    /// The pipeline's definition is gone: every step that has not started, and every fan-out that
+    /// has runs left to start, fails, which ends the run once its running steps settle.
+    async fn fail_unavailable(&self, g: &Group<AppMachine>, run: &PipelineRun) {
+        for (name, step) in &run.steps {
+            let open = match step.status {
+                StepStatus::Pending => true,
+                StepStatus::Running => step.runs.len() < step.fan.total as usize,
+                _ => false,
+            };
+            if open {
+                let reason = PIPELINE_UNAVAILABLE.to_owned();
+                self.propose_step(g, &run.id, name, StepVerdict::Failed { reason })
+                    .await;
+            }
+        }
+    }
+
+    /// Logs the decision unless it no longer applies (the step is not pending, or a fan-out's next
+    /// runs are not these); apply judges it again.
     async fn propose_step(
         &self,
         g: &Group<AppMachine>,
@@ -348,13 +590,25 @@ impl Node {
     ) {
         let proposed = g
             .propose_led(|m, _, _| {
-                let pending = m.pipeline_run(run).is_some_and(|p| {
-                    p.state == PipelineState::Running
-                        && p.steps
-                            .get(step)
-                            .is_some_and(|s| s.status == StepStatus::Pending)
+                let current = m
+                    .pipeline_run(run)
+                    .filter(|p| p.state == PipelineState::Running)
+                    .and_then(|p| p.steps.get(step).cloned());
+                let applies = current.is_some_and(|s| match &decision {
+                    StepVerdict::More { runs } => {
+                        s.status == StepStatus::Running
+                            && runs
+                                .first()
+                                .is_some_and(|r| r.run == run_id(run, step, s.runs.len()))
+                    }
+                    StepVerdict::Failed { .. } => {
+                        s.status == StepStatus::Pending
+                            || (s.status == StepStatus::Running
+                                && s.runs.len() < s.fan.total as usize)
+                    }
+                    _ => s.status == StepStatus::Pending,
                 });
-                if !pending {
+                if !applies {
                     return Proposal::Reply(Vec::new());
                 }
                 let mut cmd = ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
@@ -524,21 +778,12 @@ steps:
             start_ts_ms: 0,
             state: PipelineState::Running,
             cancel_requested: false,
+            fail_fast: false,
+            stopping: false,
             steps: pipeline
                 .steps
                 .keys()
-                .map(|k| {
-                    (
-                        k.clone(),
-                        StepState {
-                            status: StepStatus::Pending,
-                            runs: Vec::new(),
-                            outputs: Vec::new(),
-                            result: None,
-                            reason: None,
-                        },
-                    )
-                })
+                .map(|k| (k.clone(), StepState::pending()))
                 .collect(),
             end_ts_ms: None,
         }
@@ -550,7 +795,7 @@ steps:
 
     fn start_of(plan: &[(String, StepVerdict)], step: &str) -> StepRun {
         match plan.iter().find(|(s, _)| s == step) {
-            Some((_, StepVerdict::Start { runs })) => runs[0].clone(),
+            Some((_, StepVerdict::Start { runs, .. })) => runs[0].clone(),
             other => panic!("{step} did not start: {other:?}"),
         }
     }
@@ -585,12 +830,15 @@ steps:
         let mut run = run_of(&p);
         set(&mut run, "a", StepStatus::Succeeded);
         let a = run.steps.get_mut("a").unwrap();
-        a.outputs = vec![crate::component::RunInputRef {
-            id: "out1".into(),
-            size: 1,
-            sha256: String::new(),
-        }];
-        a.result = Some(Bytes(b"[\"h1\"]".to_vec()));
+        a.run_outputs = BTreeMap::from([(
+            0,
+            vec![crate::component::RunInputRef {
+                id: "out1".into(),
+                size: 1,
+                sha256: String::new(),
+            }],
+        )]);
+        a.run_results = BTreeMap::from([(0, Bytes(b"[\"h1\"]".to_vec()))]);
         let b = start_of(&plan(&p, &run, &caps(), 10), "b");
         assert_eq!(b.inputs, vec!["out1".to_owned()]);
         let args: Value = serde_json::from_slice(&b.args.0).unwrap();
@@ -647,7 +895,7 @@ steps:
         let mut run = run_of(&p);
         run.inputs.insert(
             "docs".into(),
-            (0..=host::MAX_RUN_INPUTS)
+            (0..=host::MAX_PIPELINE_RUN_INPUTS)
                 .map(|i| format!("f{i}"))
                 .collect(),
         );
@@ -664,28 +912,298 @@ steps:
 
         set(&mut run, "a", StepStatus::Succeeded);
         assert_eq!(failure(&plan(&p, &run, &caps(), 10), "b"), "NO_RESULT");
-        run.steps.get_mut("a").unwrap().result = Some(Bytes(b"not json".to_vec()));
+        run.steps.get_mut("a").unwrap().run_results =
+            BTreeMap::from([(0, Bytes(b"not json".to_vec()))]);
         assert_eq!(failure(&plan(&p, &run, &caps(), 10), "b"), "BAD_RESULT");
         let big = format!("[\"{}\"]", "x".repeat(host::MAX_COMPUTE_ARGS_BYTES));
-        run.steps.get_mut("a").unwrap().result = Some(Bytes(big.into_bytes()));
+        run.steps.get_mut("a").unwrap().run_results =
+            BTreeMap::from([(0, Bytes(big.into_bytes()))]);
         assert_eq!(failure(&plan(&p, &run, &caps(), 10), "b"), "ARGS_TOO_LARGE");
     }
 
-    #[test]
-    fn a_fan_out_step_is_not_supported_yet() {
-        let source = "apiVersion: compute.calimero.network/v1
+    const FAN_HEAD: &str = "apiVersion: compute.calimero.network/v1
 kind: Pipeline
 name: fan
 inputs:
   docs: { kind: files }
+  model: { kind: files }
+  extra: { kind: files }
 steps:
-  each: { method: digest, forEach: inputs.docs, maxItems: 4 }
 ";
-        let p = calimero_pipeline::compile(source).unwrap();
-        let run = run_of(&p);
+
+    fn fan_pipeline(steps: &str) -> Pipeline {
+        calimero_pipeline::compile(&format!("{FAN_HEAD}{steps}")).unwrap()
+    }
+
+    fn fan_run(p: &Pipeline, docs: usize) -> PipelineRun {
+        let mut run = run_of(p);
+        let docs = (0..docs).map(|i| format!("d{i}")).collect();
+        run.inputs = BTreeMap::from([
+            ("docs".to_owned(), docs),
+            ("model".to_owned(), vec!["m".to_owned()]),
+            ("extra".to_owned(), vec!["x".to_owned()]),
+        ]);
+        run
+    }
+
+    fn started(plan: &[(String, StepVerdict)], step: &str) -> (Vec<StepRun>, FanOut) {
+        match plan.iter().find(|(s, _)| s == step) {
+            Some((_, StepVerdict::Start { runs, fan })) => (runs.clone(), *fan),
+            other => panic!("{step} did not start: {other:?}"),
+        }
+    }
+
+    fn inputs_of(runs: &[StepRun]) -> Vec<Vec<&str>> {
+        runs.iter()
+            .map(|r| r.inputs.iter().map(String::as_str).collect())
+            .collect()
+    }
+
+    fn out_ref(id: &str) -> crate::component::RunInputRef {
+        crate::component::RunInputRef {
+            id: id.into(),
+            size: 1,
+            sha256: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_fan_out_runs_once_per_item_with_the_item_before_the_steps_other_inputs() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 9, inputs: [inputs.model] }\n");
+        let (runs, fan) = started(&plan(&p, &fan_run(&p, 3), &caps(), 10), "each");
+        assert_eq!(inputs_of(&runs), [["d0", "m"], ["d1", "m"], ["d2", "m"]]);
+        assert_eq!(runs[2].run, "r.each.2");
+        assert_eq!(
+            fan,
+            FanOut {
+                total: 3,
+                items: 3,
+                batch: 1,
+                allowed: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_step_with_no_inputs_of_its_own_gets_just_the_item_files() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 9 }\n");
+        let (runs, _) = started(&plan(&p, &fan_run(&p, 2), &caps(), 10), "each");
+        assert_eq!(inputs_of(&runs), [["d0"], ["d1"]]);
+    }
+
+    #[test]
+    fn item_stands_where_the_step_writes_it() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 9, inputs: [inputs.model, item, inputs.extra] }\n");
+        let (runs, _) = started(&plan(&p, &fan_run(&p, 2), &caps(), 10), "each");
+        assert_eq!(inputs_of(&runs), [["m", "d0", "x"], ["m", "d1", "x"]]);
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 9, inputs: [inputs.model, item] }\n");
+        let (runs, _) = started(&plan(&p, &fan_run(&p, 1), &caps(), 10), "each");
+        assert_eq!(inputs_of(&runs), [["m", "d0"]], "last");
+    }
+
+    #[test]
+    fn a_batch_groups_items_in_order_into_fewer_runs() {
+        let p = fan_pipeline("  each: { method: echo, forEach: inputs.docs, maxItems: 9, batch: 2, args: { files: item } }\n");
+        let (runs, fan) = started(&plan(&p, &fan_run(&p, 5), &caps(), 10), "each");
+        assert_eq!(
+            inputs_of(&runs),
+            [vec!["d0", "d1"], vec!["d2", "d3"], vec!["d4"]]
+        );
+        assert_eq!((fan.total, fan.items, fan.batch), (3, 5, 2));
+        let args: Value = serde_json::from_slice(&runs[0].args.0).unwrap();
+        assert_eq!(args, json!({ "files": ["d0", "d1"] }));
+        let args: Value = serde_json::from_slice(&runs[2].args.0).unwrap();
+        assert_eq!(args, json!({ "files": "d4" }), "a batch of one is the item");
+    }
+
+    fn results_run(p: &Pipeline, results: &[&str]) -> PipelineRun {
+        let mut run = fan_run(p, 1);
+        set(&mut run, "a", StepStatus::Succeeded);
+        run.steps.get_mut("a").unwrap().run_results = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (u32::try_from(i).unwrap(), Bytes(r.as_bytes().to_vec())))
+            .collect();
+        run
+    }
+
+    const OVER_RESULTS: &str = "  a: { method: digest }
+  each: { method: echo, forEach: a.results, maxItems: 9, args: { v: item } }
+";
+
+    #[test]
+    fn a_results_fan_out_passes_each_value_as_the_item() {
+        let p = fan_pipeline(OVER_RESULTS);
+        let run = results_run(&p, &["1", "{\"k\":2}"]);
+        let (runs, fan) = started(&plan(&p, &run, &caps(), 10), "each");
+        let args: Vec<Value> = runs
+            .iter()
+            .map(|r| serde_json::from_slice(&r.args.0).unwrap())
+            .collect();
+        assert_eq!(args, [json!({ "v": 1 }), json!({ "v": { "k": 2 } })]);
+        assert!(runs.iter().all(|r| r.inputs.is_empty()));
+        assert_eq!(fan.items, 2);
+    }
+
+    #[test]
+    fn a_fan_out_over_results_that_passed_their_bound_fails_the_referencing_step() {
+        let p = fan_pipeline(OVER_RESULTS);
+        let mut run = results_run(&p, &[]);
+        run.steps.get_mut("a").unwrap().results_too_large = true;
         assert_eq!(
             failure(&plan(&p, &run, &caps(), 10), "each"),
-            "NOT_YET_SUPPORTED"
+            "RESULTS_TOO_LARGE"
+        );
+        let p = fan_pipeline(
+            "  a: { method: digest }\n  b: { method: echo, args: { all: a.results } }\n",
+        );
+        let mut run = results_run(&p, &["1"]);
+        assert!(!started(&plan(&p, &run, &caps(), 10), "b").0[0]
+            .args
+            .0
+            .is_empty());
+        run.steps.get_mut("a").unwrap().results_too_large = true;
+        assert_eq!(
+            failure(&plan(&p, &run, &caps(), 10), "b"),
+            "RESULTS_TOO_LARGE"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_skips_the_step_and_too_many_items_fail_it_before_any_run() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 3 }\n");
+        let decided = plan(&p, &fan_run(&p, 0), &caps(), 10);
+        assert_eq!(decided, vec![("each".to_owned(), StepVerdict::Skipped)]);
+        assert_eq!(
+            failure(&plan(&p, &fan_run(&p, 4), &caps(), 10), "each"),
+            "TOO_MANY_ITEMS"
+        );
+        started(&plan(&p, &fan_run(&p, 3), &caps(), 10), "each");
+    }
+
+    #[test]
+    fn waves_respect_max_parallel_and_the_apps_room() {
+        let p = fan_pipeline(
+            "  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 3 }\n",
+        );
+        let mut run = fan_run(&p, 10);
+        let (first, fan) = started(&plan(&p, &run, &caps(), 10), "each");
+        assert_eq!(first.len(), 3, "maxParallel");
+        assert_eq!(fan.total, 10);
+        assert_eq!(
+            started(&plan(&p, &run, &caps(), 2), "each").0.len(),
+            2,
+            "room"
+        );
+        assert!(plan(&p, &run, &caps(), 0).is_empty());
+
+        let step = run.steps.get_mut("each").unwrap();
+        step.status = StepStatus::Running;
+        step.fan = fan;
+        step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        assert!(plan(&p, &run, &caps(), 10).is_empty(), "three are active");
+        run.steps.get_mut("each").unwrap().finished = 1;
+        let decided = plan(&p, &run, &caps(), 10);
+        let StepVerdict::More { runs } = &decided[0].1 else {
+            panic!("{decided:?}")
+        };
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run, "r.each.3", "the next index");
+        assert_eq!(runs[0].inputs, ["d3"]);
+        assert!(plan(&p, &run, &caps(), 0).is_empty());
+        run.steps.get_mut("each").unwrap().finished = 3;
+        let decided = plan(&p, &run, &caps(), 10);
+        let StepVerdict::More { runs } = &decided[0].1 else {
+            panic!("{decided:?}")
+        };
+        assert_eq!(runs.len(), 3, "up to maxParallel again");
+    }
+
+    #[test]
+    fn a_running_fan_out_stops_when_failures_pass_the_allowance_or_the_run_ends() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 3, allowFailures: 1 }\n");
+        let mut run = fan_run(&p, 10);
+        let (_, fan) = started(&plan(&p, &run, &caps(), 10), "each");
+        assert_eq!(fan.allowed, 1);
+        let step = run.steps.get_mut("each").unwrap();
+        step.status = StepStatus::Running;
+        step.fan = fan;
+        step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.finished = 3;
+        step.failed_items = 1;
+        assert_eq!(plan(&p, &run, &caps(), 10).len(), 1, "at the allowance");
+        run.steps.get_mut("each").unwrap().failed_items = 2;
+        assert!(plan(&p, &run, &caps(), 10).is_empty(), "one over");
+        run.steps.get_mut("each").unwrap().failed_items = 0;
+        run.stopping = true;
+        assert!(plan(&p, &run, &caps(), 10).is_empty());
+    }
+
+    #[test]
+    fn the_allowance_is_a_count_or_a_share_of_the_items_rounded_down() {
+        let allowed = |spec: &str, docs: usize| {
+            let p = fan_pipeline(&format!("  each: {{ method: digest, forEach: inputs.docs, maxItems: 200, allowFailures: {spec} }}\n"));
+            started(&plan(&p, &fan_run(&p, docs), &caps(), 10), "each")
+                .1
+                .allowed
+        };
+        assert_eq!(allowed("5%", 100), 5);
+        assert_eq!(allowed("5%", 39), 1);
+        assert_eq!(allowed("3%", 10), 0);
+        assert_eq!(allowed("100%", 7), 7);
+        assert_eq!(allowed("3", 100), 3);
+        assert_eq!(allowed("30", 4), 4, "never more than the items");
+    }
+
+    #[test]
+    fn a_collect_gets_every_output_of_the_fan_out_in_item_order_then_its_own_inputs() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 200 }\n  all: { method: digest, collect: each.outputs, inputs: [inputs.model] }\n");
+        let mut run = fan_run(&p, 100);
+        set(&mut run, "each", StepStatus::Succeeded);
+        let outputs = &mut run.steps.get_mut("each").unwrap().run_outputs;
+        for i in (0..100u32).rev().filter(|i| i % 10 != 3) {
+            outputs.insert(i, vec![out_ref(&format!("o{i}"))]);
+        }
+        let (runs, fan) = started(&plan(&p, &run, &caps(), 10), "all");
+        assert_eq!(fan, FanOut::SINGLE);
+        let inputs = &runs[0].inputs;
+        assert_eq!(inputs.len(), 91, "the failed items' outputs are absent");
+        assert!(inputs.len() > host::MAX_RUN_INPUTS);
+        assert_eq!((inputs[0].as_str(), inputs[1].as_str()), ("o0", "o1"));
+        assert_eq!(inputs[90], "m");
+        assert_eq!(inputs[89], "o99");
+    }
+
+    #[test]
+    fn a_start_of_a_full_collect_fits_one_log_entry() {
+        let inputs = (0..host::MAX_PIPELINE_RUN_INPUTS)
+            .map(|i| format!("{i:064x}"))
+            .collect();
+        let runs = vec![StepRun {
+            run: "r.all.0".into(),
+            method: "digest".into(),
+            args: Bytes(Vec::new()),
+            inputs,
+            caps: RunCaps {
+                fuel: 1,
+                memory_mib: 1,
+                wall_secs: 1,
+            },
+        }];
+        let mut cmd = ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
+            run: "r".into(),
+            step: "all".into(),
+            decision: StepVerdict::Start {
+                runs,
+                fan: FanOut::SINGLE,
+            },
+            ts_ms: 1,
+        }));
+        let bytes = entry_bytes(&mut cmd).0;
+        assert!(
+            bytes.len() < calimero_log::MAX_ENTRY_BYTES,
+            "{}",
+            bytes.len()
         );
     }
 

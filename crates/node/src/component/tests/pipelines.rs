@@ -6,7 +6,8 @@ use ed25519_dalek::SigningKey;
 use super::runs::{job_key, leader, out, report, why, World, DIGEST, INPUT};
 use super::*;
 use crate::component::pipelines::{
-    BAD_START, CANCELLING, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_RUNNING,
+    BAD_START, CANCELLING, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT, NOT_NEXT, NOT_RUNNING,
+    STEP_STOPPING, TOO_MANY_FAILURES,
 };
 use crate::job_wire::{sign_report, FailReason, ReportStatus};
 
@@ -31,6 +32,7 @@ fn start_entry(id: &str, steps: &[&str]) -> PipelineStartEntry {
             account: "a".into(),
         },
         payer: "account:alice".into(),
+        fail_fast: false,
         ts_ms: 5,
     }
 }
@@ -66,7 +68,15 @@ fn decide(w: &mut World, run: &str, step: &str, decision: StepVerdict) -> Applie
 
 fn start_step(w: &mut World, pipeline: &str, step: &str) -> Applied {
     let runs = vec![step_run(pipeline, step, 0)];
-    decide(w, pipeline, step, StepVerdict::Start { runs })
+    decide(
+        w,
+        pipeline,
+        step,
+        StepVerdict::Start {
+            runs,
+            fan: FanOut::SINGLE,
+        },
+    )
 }
 
 fn pipeline(w: &World, id: &str) -> PipelineRun {
@@ -177,7 +187,8 @@ fn a_started_step_makes_a_linked_queued_run_with_the_pinned_bundle() {
         run.pipeline,
         Some(PipelineLink {
             run: PIPE.into(),
-            step: "a".into()
+            step: "a".into(),
+            index: 0,
         })
     );
     assert!(w.active().contains(&"p1.a.0".to_owned()));
@@ -217,7 +228,15 @@ fn a_start_that_can_never_work_fails_the_step() {
     let _a = begin(&mut w, PIPE, &["a", "b", "c"]);
     let mut gone = step_run(PIPE, "a", 0);
     gone.inputs = vec![fid(0x77)];
-    let _d = decide(&mut w, PIPE, "a", StepVerdict::Start { runs: vec![gone] });
+    let _d = decide(
+        &mut w,
+        PIPE,
+        "a",
+        StepVerdict::Start {
+            runs: vec![gone],
+            fan: FanOut::SINGLE,
+        },
+    );
     assert_eq!(status(&w, PIPE, "a"), StepStatus::Failed);
     assert_eq!(
         pipeline(&w, PIPE).steps["a"].reason.as_deref(),
@@ -231,6 +250,7 @@ fn a_start_that_can_never_work_fails_the_step() {
         "b",
         StepVerdict::Start {
             runs: vec![wrong_id],
+            fan: FanOut::SINGLE,
         },
     );
     assert_eq!(
@@ -261,9 +281,9 @@ fn a_final_of_a_linked_run_settles_its_step_and_pins_its_outputs() {
     assert!(a.status == Status::Ok && !a.conflict, "{a:?}");
     let step = &pipeline(&w, PIPE).steps["a"];
     assert_eq!(step.status, StepStatus::Succeeded);
-    assert_eq!(step.outputs.len(), 1);
-    assert_eq!(step.outputs[0].id, out(1).id);
-    assert_eq!(step.result, Some(Bytes(b"\"ok\"".to_vec())));
+    assert_eq!(step.outputs().count(), 1);
+    assert_eq!(step.outputs().next().unwrap().id, out(1).id);
+    assert_eq!(step.result(), Some(&Bytes(b"\"ok\"".to_vec())));
     assert_eq!(refs(&w, 1), 1);
     assert_eq!(pipeline(&w, PIPE).state, PipelineState::Running);
 }
@@ -404,4 +424,280 @@ fn a_head_without_pipelines_reads_and_writes_as_before() {
     assert!(v.get("activePipelines").is_none() && v.get("finishedPipelines").is_none());
     let back: ComponentHead = serde_json::from_value(v).unwrap();
     assert!(back.active_pipelines.is_empty());
+}
+
+/// Runs `from..to` of `step`, one item each.
+fn runs_of(pipeline: &str, step: &str, from: usize, to: usize) -> Vec<StepRun> {
+    (from..to).map(|i| step_run(pipeline, step, i)).collect()
+}
+
+/// Starts `step` as a fan-out of `total` runs of one item, `allowed` of which may fail, with the
+/// first `first` runs.
+fn fan_start(w: &mut World, step: &str, total: u32, allowed: u32, first: usize) -> Applied {
+    let fan = FanOut {
+        total,
+        items: total,
+        batch: 1,
+        allowed,
+    };
+    let runs = runs_of(PIPE, step, 0, first);
+    decide(w, PIPE, step, StepVerdict::Start { runs, fan })
+}
+
+fn more(w: &mut World, step: &str, from: usize, to: usize) -> Applied {
+    let runs = runs_of(PIPE, step, from, to);
+    decide(w, PIPE, step, StepVerdict::More { runs })
+}
+
+/// A done final of `run` with output `n` and `result`.
+fn run_done_with_result(w: &mut World, run: &str, n: u8, result: &[u8]) -> Applied {
+    let k = job_key(1);
+    let _a = w.assign(run, &k);
+    let mut entry = done_with(w, run, &k, n);
+    if let Some(rep) = entry.report.as_mut() {
+        rep.result = result.to_vec();
+        entry.signature = Some(sign_report(&k, &DIGEST, rep).unwrap());
+    }
+    w.finish(entry)
+}
+
+fn run_failed(w: &mut World, run: &str) -> Applied {
+    let k = job_key(1);
+    let _a = w.assign(run, &k);
+    let end = trapped(w, run, &k);
+    w.finish(end)
+}
+
+#[test]
+fn more_runs_continue_a_running_fan_out_in_index_order() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    assert_eq!(why(&more(&mut w, "a", 0, 1)), NOT_FAN_OUT, "pending");
+    let a = fan_start(&mut w, "a", 5, 0, 2);
+    assert!(a.status == Status::Ok, "{a:?}");
+    assert_eq!(pipeline(&w, PIPE).steps["a"].fan.total, 5);
+    assert_eq!(why(&more(&mut w, "a", 3, 4)), NOT_NEXT, "a gap");
+    assert_eq!(why(&more(&mut w, "a", 0, 2)), NOT_NEXT, "already created");
+    assert_eq!(why(&more(&mut w, "a", 2, 6)), NOT_NEXT, "past the total");
+    let a = more(&mut w, "a", 2, 4);
+    assert!(a.status == Status::Ok, "{a:?}");
+    let runs = &pipeline(&w, PIPE).steps["a"].runs;
+    assert_eq!(runs.len(), 4);
+    assert_eq!(runs[3], "p1.a.3");
+    assert_eq!(why(&more(&mut w, "a", 2, 4)), NOT_NEXT, "a re-proposal");
+    assert_eq!(w.record("p1.a.3").pipeline.unwrap().index, 3);
+    let a = more(&mut w, "a", 4, 5);
+    assert!(a.status == Status::Ok, "{a:?}");
+    assert_eq!(why(&more(&mut w, "a", 5, 6)), NOT_NEXT, "no index left");
+    assert_eq!(why(&more(&mut w, "b", 0, 1)), NOT_FAN_OUT, "b is pending");
+}
+
+#[test]
+fn more_runs_are_refused_for_a_settled_step_and_a_full_app() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 1);
+    for i in 0..host::MAX_ACTIVE_RUNS - 1 {
+        w.start(&format!("filler{i}"));
+    }
+    assert_eq!(why(&more(&mut w, "a", 1, 2)), crate::component::NO_ROOM);
+    assert_eq!(pipeline(&w, PIPE).steps["a"].runs.len(), 1);
+    let _f = run_failed(&mut w, "p1.a.0");
+    assert_eq!(status(&w, PIPE, "a"), StepStatus::Failed);
+    assert_eq!(why(&more(&mut w, "a", 1, 2)), NOT_FAN_OUT, "settled");
+}
+
+#[test]
+fn outputs_and_results_are_in_item_order_whatever_order_runs_finish() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 3);
+    let _r = run_done_with_result(&mut w, "p1.a.2", 3, b"2");
+    let _r = run_done_with_result(&mut w, "p1.a.0", 1, b"0");
+    assert_eq!(status(&w, PIPE, "a"), StepStatus::Running);
+    let _r = run_done_with_result(&mut w, "p1.a.1", 2, b"1");
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(step.status, StepStatus::Succeeded);
+    let ids: Vec<&str> = step.outputs().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, [out(1).id, out(2).id, out(3).id]);
+    let results: Vec<&[u8]> = step.run_results.values().map(|b| &b.0[..]).collect();
+    assert_eq!(results, [&b"0"[..], b"1", b"2"]);
+}
+
+#[test]
+fn failures_at_the_allowance_succeed_and_one_over_fails_and_stops_the_step() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let _s = fan_start(&mut w, "a", 4, 1, 4);
+    let _r = run_failed(&mut w, "p1.a.1");
+    for (i, n) in [(0, 1), (2, 2), (3, 3)] {
+        let _r = run_done_with_result(&mut w, &format!("p1.a.{i}"), n, b"1");
+    }
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(step.status, StepStatus::Succeeded, "exactly at the limit");
+    assert_eq!(step.failed_items, 1);
+    assert_eq!(step.outputs().count(), 3, "only the successful outputs");
+    let _s = decide(&mut w, PIPE, "b", StepVerdict::Skipped);
+    assert_eq!(
+        pipeline(&w, PIPE).state,
+        PipelineState::SucceededWithFailures
+    );
+
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let _s = fan_start(&mut w, "a", 4, 1, 3);
+    let _r = run_failed(&mut w, "p1.a.0");
+    assert!(!w.record("p1.a.2").cancel_requested, "within the allowance");
+    let _r = run_failed(&mut w, "p1.a.1");
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(step.status, StepStatus::Running, "a run is still going");
+    assert!(w.record("p1.a.2").cancel_requested, "one over cancels it");
+    assert_eq!(why(&more(&mut w, "a", 3, 4)), STEP_STOPPING);
+    let end = leader(&w, "p1.a.2", FinalOutcome::Cancelled);
+    let _f = w.finish(end);
+    let p = pipeline(&w, PIPE);
+    assert_eq!(p.steps["a"].status, StepStatus::Failed);
+    assert_eq!(p.steps["a"].reason.as_deref(), Some(TOO_MANY_FAILURES));
+    assert_eq!(p.steps["a"].failed_items, 3);
+    assert_eq!(p.steps["a"].runs.len(), 3, "no fourth run was created");
+    assert_eq!(p.state, PipelineState::Failed);
+}
+
+#[test]
+fn a_failed_batch_run_fails_all_its_items() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let fan = FanOut {
+        total: 3,
+        items: 10,
+        batch: 4,
+        allowed: 2,
+    };
+    let runs = runs_of(PIPE, "a", 0, 3);
+    let _s = decide(&mut w, PIPE, "a", StepVerdict::Start { runs, fan });
+    let _r = run_failed(&mut w, "p1.a.2");
+    assert_eq!(pipeline(&w, PIPE).steps["a"].failed_items, 2, "4,4,2 items");
+    let _r = run_done_with_result(&mut w, "p1.a.0", 1, b"1");
+    let _r = run_done_with_result(&mut w, "p1.a.1", 2, b"1");
+    assert_eq!(status(&w, PIPE, "a"), StepStatus::Succeeded);
+    assert_eq!(
+        pipeline(&w, PIPE).state,
+        PipelineState::SucceededWithFailures
+    );
+}
+
+#[test]
+fn without_an_allowance_one_failed_item_fails_the_step_with_its_reason() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 3);
+    let _r = run_failed(&mut w, "p1.a.1");
+    assert!(w.record("p1.a.0").cancel_requested);
+    assert!(w.record("p1.a.2").cancel_requested);
+    for i in [0, 2] {
+        let run = format!("p1.a.{i}");
+        let end = leader(&w, &run, FinalOutcome::Cancelled);
+        let _f = w.finish(end);
+    }
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(step.status, StepStatus::Failed);
+    assert_eq!(step.reason.as_deref(), Some("trap"), "the first failure");
+}
+
+#[test]
+fn fail_fast_cancels_the_rest_of_the_run_and_ends_it_failed() {
+    let mut w = World::new();
+    let mut entry = start_entry(PIPE, &["a", "b", "c"]);
+    entry.fail_fast = true;
+    let _a = w.push(&ComponentCmd::PipelineStart(Box::new(entry)));
+    let _s = start_step(&mut w, PIPE, "a");
+    let _s = start_step(&mut w, PIPE, "b");
+    let _r = run_failed(&mut w, "p1.a.0");
+    let p = pipeline(&w, PIPE);
+    assert!(p.stopping && !p.cancel_requested);
+    assert_eq!(p.steps["c"].status, StepStatus::Cancelled);
+    assert!(w.record("p1.b.0").cancel_requested);
+    assert_eq!(p.state, PipelineState::Running, "b has a run going");
+    let end = leader(&w, "p1.b.0", FinalOutcome::Cancelled);
+    let _f = w.finish(end);
+    let p = pipeline(&w, PIPE);
+    assert_eq!(p.state, PipelineState::Failed);
+    assert_eq!(p.steps["b"].status, StepStatus::Failed);
+    assert!(w.active().is_empty());
+}
+
+#[test]
+fn without_fail_fast_only_dependents_are_upstream_failed() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let _s = start_step(&mut w, PIPE, "a");
+    let _s = start_step(&mut w, PIPE, "b");
+    let _r = run_failed(&mut w, "p1.a.0");
+    assert!(!pipeline(&w, PIPE).stopping);
+    assert!(!w.record("p1.b.0").cancel_requested);
+}
+
+#[test]
+fn a_cancel_between_waves_settles_the_step_that_has_no_run_left() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 1);
+    let _r = run_done_with_result(&mut w, "p1.a.0", 1, b"1");
+    assert_eq!(status(&w, PIPE, "a"), StepStatus::Running, "two runs to go");
+    let _c = w.push(&ComponentCmd::PipelineCancel(Box::new(
+        PipelineCancelEntry {
+            run: PIPE.into(),
+            ts_ms: 7,
+        },
+    )));
+    let p = pipeline(&w, PIPE);
+    assert_eq!(p.steps["a"].status, StepStatus::Failed);
+    assert_eq!(p.steps["a"].reason.as_deref(), Some("cancelled"));
+    assert_eq!(p.state, PipelineState::Cancelled);
+}
+
+#[test]
+fn results_past_the_step_bound_are_dropped_and_flagged() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let n = crate::component::MAX_STEP_RESULTS_BYTES / crate::component::MAX_STEP_RESULT_BYTES + 2;
+    let _s = fan_start(&mut w, "a", u32::try_from(n).unwrap(), 0, n);
+    let big = vec![b'x'; crate::component::MAX_STEP_RESULT_BYTES];
+    for i in 0..n {
+        let _r = run_done_with_result(
+            &mut w,
+            &format!("p1.a.{i}"),
+            u8::try_from(i + 1).unwrap(),
+            &big,
+        );
+    }
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(
+        step.status,
+        StepStatus::Succeeded,
+        "the step still succeeds"
+    );
+    assert!(step.results_too_large);
+    assert!(step.run_results.is_empty());
+    assert_eq!(step.outputs().count(), n);
+}
+
+#[test]
+fn a_running_fan_out_between_waves_can_be_failed_but_a_started_one_cannot() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 1);
+    let fail = || StepVerdict::Failed {
+        reason: "PIPELINE_UNAVAILABLE".into(),
+    };
+    let _s = start_step(&mut w, PIPE, "b");
+    assert_eq!(
+        why(&decide(&mut w, PIPE, "b", fail())),
+        DECIDED,
+        "b has all its runs"
+    );
+    let a = decide(&mut w, PIPE, "a", fail());
+    assert!(a.status == Status::Ok, "{a:?}");
+    assert_eq!(status(&w, PIPE, "a"), StepStatus::Failed);
+    assert!(w.record("p1.a.0").cancel_requested);
 }

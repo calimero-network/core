@@ -31,3 +31,4 @@ cargo test -p calimero-pipeline
 - A step with no module and no pipeline module runs in `Env::default_module`; with none either, `check` answers `MISSING_MODULE`.
 - A reference to a step adds it to `needs` in the compiled pipeline, so the canonical form always lists every arrow.
 - Every bound is a named constant at the top of `src/compile.rs`.
+- A fan-out run's inputs, as the engine builds them: the step's `inputs` references in the order written, with the run's item files where `item` stands, or first when `item` is not listed; a step with no `inputs` gets just the item files. `collect: <step>.outputs` puts all of that step's outputs in item order first, then the step's `inputs`.

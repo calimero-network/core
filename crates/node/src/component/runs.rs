@@ -203,6 +203,9 @@ pub struct RunRecord {
 pub struct PipelineLink {
     pub run: String,
     pub step: String,
+    /// The run's place among the step's runs, which is its items' place in item order.
+    #[serde(default)]
+    pub index: u32,
 }
 
 impl RunRecord {
