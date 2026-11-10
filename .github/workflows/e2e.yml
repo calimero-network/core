@@ -325,10 +325,13 @@ jobs:
           shared-key: ci-checks
           save-if: false
 
-      # Optimized like the product (sealing 47 MiB files in a debug build misses the push deadline), without fat LTO.
-      - name: Install mero-app-build
-        run: scripts/install-mero-app-build.sh
+      # The fixtures' builder, and the local runner compute-redact's output is checked against.
+      - name: Install mero-app-build and mero-compute
+        run: |
+          scripts/install-mero-app-build.sh
+          scripts/install-mero-compute.sh
 
+      # Optimized like the product (sealing 47 MiB files in a debug build misses the push deadline), without fat LTO.
       - name: Build merod, meroctl and the signer
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"
@@ -374,7 +377,7 @@ jobs:
       scenarios: ${{ steps.image.outputs.scenarios }}
     steps:
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

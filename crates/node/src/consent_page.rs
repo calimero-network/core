@@ -1245,7 +1245,7 @@ async fn upgrade_request(
             "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
         ));
     }
-    let current = node.release_of(&app.bundle).ok_or_else(|| {
+    let current = node.release_of_app(&app).ok_or_else(|| {
         ApiError::bad_request(
             "NOT_A_RELEASE",
             "this app runs a development bundle, not a signed release; upgrade it directly",

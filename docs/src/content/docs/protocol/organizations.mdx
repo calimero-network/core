@@ -17,13 +17,16 @@ checks most of them first so a refused request records nothing.
 ## App access
 
 An app instance carries one `Access` rule (`types::Access`), set at creation
-and changed by its owner (`POST /apps/{app}/access`):
+and changed with `POST /apps/{app}/access` by its owner, an organization admin,
+or whoever manages its team's apps (`MANAGE_APPLICATION` on its team, which a
+team's leads hold) and, when it moves to another team, that team's apps too;
+any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 
 | Rule | Who reaches the app |
 | --- | --- |
 | `owner` (default outside an organization) | The owner only |
 | `accounts { accounts }` | The owner and these accounts |
-| `org` (default inside an organization) | Every member of the app's organization, any role |
+| `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
 | `team { team }` | The team's members (direct rows, and inheritance into an open team) |
 | `public` | Anyone, signed in or not (as `Caller::Public` when not) |
 
@@ -45,7 +48,7 @@ Members have one role each, ordered `guest < member < admin < owner`:
 
 | Role | May |
 | --- | --- |
-| `guest` | Reach the organization's `org`-access apps |
+| `guest` | Once the organization has app teams, reach only the apps of the teams they have a direct row in (no `org`-access app, no open top-level team by inheritance); before that, its `org`-access apps as before. Always see only the people of their teams |
 | `member` | Also own apps in the organization and create top-level teams if they hold `CREATE_TEAM` |
 | `admin` | Manage members and their roles (below owner), capabilities, teams, organization metadata; delete the organization's apps; approve releases, upgrade apps and approve outbound hosts (they hold every capability) |
 | `owner` | Everything, plus ownership and deleting the organization. Release approvals are also open to `APPROVE_RELEASES` holders, upgrades and outbound approvals to `MANAGE_APPLICATION` holders (see Capabilities) |
@@ -100,9 +103,56 @@ creates teams under it, moves it within what they manage, and deletes it.
   `GET /orgs/{org}` and answers `404` on its own route.
 - A team keeps metadata the app defines (a folder's name and colour), set by
   those holding `MANAGE_METADATA` for it.
+- A team may hold **default capabilities** (`Team::default_capabilities`):
+  everyone in the team holds them there on top of their organization-wide
+  ones, unless their row sets its own. Set with `POST /orgs/{org}/capabilities
+  { team, capabilities }` (no `account`) by whoever manages the team or holds
+  `MANAGE_MEMBERS` there, with a passkey (`__set_default_capabilities { team,
+  capabilities }`). This is how "members may invite others to this app" is
+  switched on per app.
 
 An app deployed with `access: team` must be created by someone who writes that
 team (a member whose row is not read-only).
+
+## App teams
+
+An **app team** is a top-level team whose metadata marks a package:
+`metadata.app = { package, name }` (`Team::app_package`). An organization has
+at most one per package: marking a second is refused. Only an owner or admin
+makes, changes or drops the mark: installing an app in an organization is
+theirs. The app's instances use `access: team` on its app team, or on a
+restricted team below it (a private channel). The organization's **mode** is
+derived from its app teams, never stored, and answered as `mode` on
+`GET /orgs/{org}` and `GET /orgs/{org}/app-teams`:
+
+| Mode | When | Means |
+| --- | --- | --- |
+| `legacy` | No app team | Apps use `org` access, as before app teams. Behaves as standalone. |
+| `standalone` | Every app team open | Everyone in the organization has every app; members may invite to the app (the team's default `INVITE_MEMBERS`) |
+| `shared` | Some app team restricted | Each app lists its people; invites name the app team; only leads and admins invite unless an admin turns on the team's default |
+
+`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances? }], shared? }`
+(an owner or admin, with a passkey: `__scope_apps { apps, shared }`,
+`SystemCmd::ScopeApps`) gives apps their own access lists in one log entry.
+For each package (absent: every package with an `org`-access instance in the
+organization) it finds or makes the app team (its creator leads a new one),
+gives a plain row to every member who reaches the instances now, and moves the
+instances (absent: every `org`-access instance of the package) to `access:
+team` on it. `shared` (absent: whether the organization then holds two app
+teams or more) closes every app team, everyone it held kept as a direct row,
+and takes `INVITE_MEMBERS` out of its default. Nobody loses an app.
+`GET /orgs/{org}/app-teams` lists, to any member, each app team's package, id,
+name, `join`, member count, default capabilities and whether the caller is in
+it or manages it (a guest: only their own).
+
+While an organization has app teams, creating the first instance of a package
+that has none there is an admin's. In a
+`shared` organization a member sees, in `GET /orgs/{org}`, only the people of
+the teams they are in and its owner and admins; a guest sees only their teams'
+people in every mode; owners and admins see everyone. Calimero Home, the
+portal that manages people, invites and apps across an organization, is one
+first-party package every cluster installs; it uses these routes and needs
+nothing else from the node.
 
 ## Capabilities
 
@@ -114,7 +164,7 @@ organization value). Admins and team leads hold them all where they manage.
 | Bit | Name | Checked by the node |
 | --- | --- | --- |
 | `1 << 0` | `CREATE_APP` | Creating an app in the organization (on its team, or org-wide) |
-| `1 << 1` | `INVITE_MEMBERS` | Minting an invite (org-wide, or on each team it names) |
+| `1 << 1` | `INVITE_MEMBERS` | Minting an invite (org-wide, or on each team it names, where a team's default capabilities count) |
 | `1 << 2` | `JOIN_OPEN_TEAMS` | Inheritance into open teams (granted by default) |
 | `1 << 3` | `MANAGE_MEMBERS` | Adding non-lead rows and setting capabilities in a team |
 | `1 << 4` | `MANAGE_APPLICATION` | Upgrading the organization's apps (on the app's team, or org-wide), organization-wide upgrade runs, and approving the organization's outbound hosts (org-wide only) |
@@ -150,7 +200,13 @@ team it names (an owner opening their own link, say), gets the organization back
 and leaves the use for the person the invite was made for. The last use removes
 the invite; redeeming it after that, or after its organization is deleted, is
 refused `400 REJECTED` ("this invite was used up, revoked or never existed"), and
-past its expiry "this invite has expired". A redemption an earlier release logged
+past its expiry "this invite has expired". `GET /orgs/{org}/invites` lists the
+pending invites the caller may revoke (key, role, teams, uses left, expiry,
+creator and creation time; never a token): an admin all, a creator their own,
+a team's manager those naming only teams they manage. `DELETE
+/orgs/{org}/invites/{inviteKey}` revokes one, with the same rule and a passkey
+(`__revoke_invite { inviteKey }`); an invite the caller may not see is `404`.
+Invites made before record no creator. A redemption an earlier release logged
 replays as that release applied it (it spent a use whatever it changed): the
 API marks new ones (`RedeemInvite { free_when_unchanged: true }`).
 

@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.13] - 2026-11-10
+
+### Changed
+
+- **An instance runs the release it was created at or upgraded to** (#4887):
+  every app instance records its release (`AppRecord.release`), set at create
+  and by every upgrade path, so a release that changes only the frontend is an
+  upgrade of its own. Its holder approves it like any other, and `/app/{app}/`
+  opens the instance's own release. Reports answer that release as the
+  instance's `package.version`, `availableVersions` start from it and include
+  same-WASM releases, and `lastUpgrade` names the releases it moved between.
+  `GET /apps/{app}` answers `release`. A record written before this keeps the
+  release guessed from its bundle until its next upgrade.
+
+### Fixed
+
+- **Served-frontend redirects keep the query** (#4886): `/`, `/app/{app}/` and
+  the deployment hosts' redirects carry the request's query, so an
+  `?invite=...` link opened at an app's link reaches the app. A query over
+  4 KiB is refused with `414`.
+- **A slow output fetch no longer counts as the job node's silence** (#4882).
+
+### Dependencies
+
+- `redb` 4.5.0 (#4830), `tdx_workload_attestation` 0.2.0 (#4832).
+
+## [1.0.0-rc.12] - 2026-11-09
+
+### Added
+
+- **Compute runs on job nodes** (#4785, #4786, #4787, #4803): an app's call,
+  timer or result method starts a run of its release's compute component with
+  `runs.start`. The cluster queues it per payer (`maxConcurrentRunsPerOrg`,
+  `computeFuelPerOrg`), and the app's leader assigns it to an attested job node
+  (`POST /ops/nodes { role: "job" }`, `merod run --job-node`). The leader moves
+  the inputs there, takes back the signed report and sealed outputs, and logs
+  the final entry, whose result method stores the outputs. Runs are retried on
+  another job node up to three attempts and end on a timeout, a cancel or a
+  refusal. `GET /apps/{app}/runs` and `/runs/{run}` list them. Nothing changes
+  on a cluster without job nodes; registering one needs every replica node on
+  this release.
+- **Publishing a run's output** (#4855): `runs.publish` turns a done run's
+  output file into a plain blob the app can grant, so a result leaves the
+  sealed store only through the app.
+- **`mero-compute`** (#4856) runs a compute component alone, for developing one
+  without a cluster; **`apps/compute-redact`** (#4857) is a CSV redaction sample
+  on compute runs.
+
+### Changed
+
+- **Passkey names carry a cluster tag** (#4883): a new passkey is named
+  `alice · <cluster> · <tag>`, the tag being 4 hex characters of the cluster
+  identity, so the passkeys of a cluster made again under its old name are told
+  apart from the old ones. `GET /sign-up` also answers `cluster` and
+  `passkeyTag`. Existing passkeys keep their names.
+
+### Fixed
+
+- **An added passkey no longer replaces the one added before it** (#4883):
+  adding a passkey and account recovery gave every registration the account's
+  own user handle, so a second one added to the same iCloud Keychain or Google
+  Password Manager silently replaced the first. Every registration now gets a
+  random handle, as sign-up did.
+- **A sealed file opens only inside a compute run** (#4868), and an upgrade
+  carries the release's compute component with its app component.
+- **Job transfers are bounded by `JOB_TRANSFER_TIMEOUT`** (#4881), not the
+  shared client's 30 s.
+
 ## [1.0.0-rc.11] - 2026-11-06
 
 ### Added

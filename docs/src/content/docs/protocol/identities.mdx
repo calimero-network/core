@@ -61,12 +61,20 @@ on every other one. Two things keep that from confusing anyone:
 
 - **The name it is made under.** A registration's `user.name` and
   `user.displayName` (sign-up, adding a device, recovery) are the person's name
-  and the cluster's (`--cluster`), `alice · eu-shared-1`; a sign-up begun on a
-  package's frontend (a served or registered origin, `origin` on
-  `register/begin`) names the app too, `alice · kv-store (eu-shared-1)`: the
+  and the cluster's (`--cluster`) with its tag, `alice · eu-shared-1 · 3f2a`; a
+  sign-up begun on a package's frontend (a served or registered origin, `origin`
+  on `register/begin`) names the app too, `alice · kv-store (eu-shared-1 ·
+  3f2a)`: the
   newest release's display name, else the package id. Each part is cut at 32
   characters (`MAX_PASSKEY_NAME_PART_CHARS`). The account's own name is the
-  person's alone.
+  person's alone. The tag is the first 2 bytes of the cluster's identity key
+  (from its cluster key), 4 hex characters, public in `GET /sign-up`
+  (`passkeyTag`, beside `cluster`): a cluster begun again under the same name
+  has another cluster key, so its passkeys are listed apart from the old
+  cluster's. Each registration gets a random user handle (sign-up, adding a
+  device and recovery alike): a password manager keeps one passkey per site
+  and handle, so a shared handle would make a second passkey added in the same
+  manager replace the first.
 - **The answer to a passkey from elsewhere.** An assertion (sign-in or step-up)
   whose credential no account here has answers `401 PASSKEY_UNKNOWN_HERE`,
   "this passkey belongs to another Calimero cluster or was removed from this

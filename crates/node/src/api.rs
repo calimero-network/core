@@ -37,7 +37,7 @@ use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
-    Deployments, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
+    Deployments, PackageRef, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
 };
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, NodeRole, OrgRole, RefreshRecord,
@@ -401,7 +401,7 @@ impl Principal {
             None => Ok(()),
             Some(pkg)
                 if node
-                    .release_of(&app.bundle)
+                    .release_of_app(app)
                     .is_some_and(|r| r.at.package == pkg) =>
             {
                 Ok(())
@@ -967,7 +967,12 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
 /// only" instead of failing at the end of a passkey ceremony.
 async fn sign_up_public(State(node): State<Arc<Node>>) -> ApiResult {
     node.sys_fresh().await;
-    Ok(Json(node.sys(|s| sign_up_json(s.governance().sign_up))))
+    let mut out = node.sys(|s| sign_up_json(s.governance().sign_up));
+    // What this cluster's passkeys are named after (`passkeys::passkey_user_name`),
+    // so a sign-in can say which of the person's passkeys to pick.
+    out["cluster"] = json!(node.config.cluster);
+    out["passkeyTag"] = json!(passkeys::cluster_tag(&node));
+    Ok(Json(out))
 }
 
 fn sign_up_json(policy: SignUp) -> Value {
@@ -998,7 +1003,12 @@ async fn register_begin(
         .as_deref()
         .and_then(|o| app_origin(&node, o))
         .map(|a| passkeys::app_name(&node, &a.package));
-    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, app.as_deref());
+    let shown = passkeys::passkey_user_name(
+        &name,
+        &node.config.cluster,
+        &passkeys::cluster_tag(&node),
+        app.as_deref(),
+    );
     let id = put_pending(
         &node,
         Pending::Register {
@@ -1361,13 +1371,18 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
             )
         })
     });
-    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, None);
+    let shown = passkeys::passkey_user_name(
+        &name,
+        &node.config.cluster,
+        &passkeys::cluster_tag(&node),
+        None,
+    );
     Ok(Json(json!({
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": shown, "displayName": shown },
+            "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "attestation": "none",
@@ -2108,13 +2123,18 @@ async fn account_recovery_begin(
             )
         })
     });
-    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, None);
+    let shown = passkeys::passkey_user_name(
+        &name,
+        &node.config.cluster,
+        &passkeys::cluster_tag(&node),
+        None,
+    );
     Ok(Json(json!({
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": shown, "displayName": shown },
+            "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "timeout": 60000,
@@ -2395,7 +2415,7 @@ async fn upgrade_scope(
     let package = body
         .package
         .clone()
-        .or_else(|| node.release_of(&app.bundle).map(|r| r.at.package))
+        .or_else(|| node.release_of_app(&app).map(|r| r.at.package))
         .ok_or_else(|| {
             ApiError::bad_request(
                 "NOT_A_PACKAGE",
@@ -2846,19 +2866,22 @@ async fn bundle_named(
     service: Option<&str>,
     actor: &str,
     frontend: bool,
-) -> Result<(String, Option<String>), ApiError> {
+) -> Result<(String, Option<String>, Option<PackageRef>), ApiError> {
     match (bundle, package) {
-        // A hash names a release's WASM only for who may see that release.
+        // A hash names a release's WASM only for who may see that release;
+        // it names no release (`AppRecord::release` stays unset).
         (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => {
             let compute = node
                 .sys(|s| s.compute_of(&b, actor))
                 .map_err(|why| ApiError::bad_request(AMBIGUOUS_COMPUTE, why))?;
-            Ok((b, compute))
+            Ok((b, compute, None))
         }
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
-            node.resolve_release_parts(p, version, service, actor, frontend)
-                .await
+            let (bundle, compute, release) = node
+                .resolve_release_parts(p, version, service, actor, frontend)
+                .await?;
+            Ok((bundle, compute, Some(release)))
         }
         _ => Err(ApiError::bad_request(
             "BAD_REQUEST",
@@ -2881,7 +2904,7 @@ async fn offered_bundle(
     package: &str,
     version: Option<&str>,
     service: Option<&str>,
-) -> Result<(String, Option<String>), ApiError> {
+) -> Result<(String, Option<String>, PackageRef), ApiError> {
     let find = || {
         node.sys(|s| {
             let d = s.deployments.get(id)?;
@@ -2925,9 +2948,15 @@ async fn offered_bundle(
         }
     };
     let key = service.unwrap_or_default();
+    let release = PackageRef {
+        package: package.to_owned(),
+        version: version.clone(),
+        service: (!key.is_empty()).then(|| key.to_owned()),
+        compute: false,
+    };
     let found = services
         .get(key)
-        .map(|b| (b.clone(), compute.get(key).cloned()));
+        .map(|b| (b.clone(), compute.get(key).cloned(), release));
     found.ok_or_else(|| {
         ApiError::bad_request(
             "NO_SUCH_SERVICE",
@@ -2992,7 +3021,7 @@ async fn app_create(
     }
     let owner = p.account()?;
     let now = now_secs();
-    let (bundle, compute_bundle) = match &body.deployment {
+    let (bundle, compute_bundle, release) = match &body.deployment {
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
         Some(d) => {
@@ -3005,14 +3034,15 @@ async fn app_create(
             let package = body.package.as_deref().ok_or_else(|| {
                 ApiError::bad_request("BAD_REQUEST", "name the package the deployment offers")
             })?;
-            offered_bundle(
+            let (bundle, compute, release) = offered_bundle(
                 &node,
                 d,
                 package,
                 body.version.as_deref(),
                 body.service.as_deref(),
             )
-            .await?
+            .await?;
+            (bundle, compute, Some(release))
         }
         None => {
             bundle_named(
@@ -3086,6 +3116,7 @@ async fn app_create(
                 last_upgrade: None,
                 deployment: body.deployment,
                 compute_bundle,
+                release,
             }),
         })
         .await?;
@@ -4101,8 +4132,9 @@ pub(crate) async fn upgrade_app(
             "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
         ));
     }
-    // A version alone means the app's own package and service.
-    let current = node.release_of(&app.bundle);
+    // A version alone means the app's own package and service: the release
+    // it runs, not merely one shipping its WASM.
+    let current = node.release_of_app(&app);
     let package = body.package.clone().or_else(|| {
         body.version
             .as_ref()
@@ -4112,7 +4144,10 @@ pub(crate) async fn upgrade_app(
         .service
         .clone()
         .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()));
-    let (bundle, compute_bundle) = bundle_named(
+    // An upgrade to a release with the app's own bundle (a release that changes
+    // only its frontend) is an upgrade like any other: the same authority,
+    // consent and record, and the instance runs the new release after it.
+    let (bundle, compute_bundle, release) = bundle_named(
         node,
         body.bundle.clone(),
         package.as_deref(),
@@ -4164,8 +4199,11 @@ pub(crate) async fn upgrade_app(
     run_upgrade(
         node,
         app_id,
-        bundle,
-        compute_bundle,
+        Target {
+            bundle,
+            compute_bundle,
+            release,
+        },
         body.migrate,
         Upgrader {
             caller: Caller::Account {
@@ -4203,17 +4241,30 @@ impl Upgrader {
     }
 }
 
+/// Where an upgrade moves an app.
+struct Target {
+    bundle: String,
+    /// The compute component of the release `bundle` is taken from.
+    compute_bundle: Option<String>,
+    /// The release (`AppRecord::release`); `None` for a raw upload.
+    release: Option<PackageRef>,
+}
+
 /// Run an upgrade on the app's group and, once it succeeded, record the new
-/// bundle in the directory (where `UpgradeApp` judges who may). A failure is
-/// recorded too: the app's last upgrade says why.
+/// bundle and release in the directory (where `UpgradeApp` judges who may). A
+/// failure is recorded too: the app's last upgrade says why.
 async fn run_upgrade(
     node: &Node,
     app_id: String,
-    bundle: String,
-    compute_bundle: Option<String>,
+    target: Target,
     migrate: Option<String>,
     who: Upgrader,
 ) -> ApiResult {
+    let Target {
+        bundle,
+        compute_bundle,
+        release,
+    } = target;
     // Judged once, before the migration runs; `UpgradeApp` carries this time
     // so `apply` judges the deadline at the same moment and never refuses
     // the record of an upgrade the app's group already ran.
@@ -4239,7 +4290,7 @@ async fn run_upgrade(
     });
     if let Some(e) = refusal {
         let error = json!({ "code": e.code, "message": e.message });
-        note_failed_upgrade(node, &app_id, &bundle, &who, error).await;
+        note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
         return Err(e);
     }
     let applied = match node
@@ -4254,14 +4305,22 @@ async fn run_upgrade(
         Ok(a) => a,
         Err(e) => {
             let error = json!({ "code": e.code, "message": e.message });
-            note_failed_upgrade(node, &app_id, &bundle, &who, error).await;
+            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
             return Err(e);
         }
     };
     // A refused or failed upgrade leaves the app on its bundle; say so as an
     // error, not a 200 a client can mistake for success.
     if applied.status != Status::Ok {
-        note_failed_upgrade(node, &app_id, &bundle, &who, applied.error.clone()).await;
+        note_failed_upgrade(
+            node,
+            &app_id,
+            &bundle,
+            release.as_ref(),
+            &who,
+            applied.error.clone(),
+        )
+        .await;
         let why = applied.error.as_str().map_or_else(
             || "the upgrade did not run".to_owned(),
             |e| format!("the upgrade did not run: {e}"),
@@ -4281,6 +4340,7 @@ async fn run_upgrade(
             at: begun,
             run: who.run,
             consent: who.consent,
+            release,
         })
         .await?;
     Ok(Json(json!({
@@ -4309,6 +4369,7 @@ async fn note_failed_upgrade(
     node: &Node,
     app_id: &str,
     bundle: &str,
+    release: Option<&PackageRef>,
     who: &Upgrader,
     error: Value,
 ) {
@@ -4320,6 +4381,7 @@ async fn note_failed_upgrade(
             at: now_secs(),
             error,
             run: who.run.clone(),
+            release: release.cloned(),
         })
         .await;
 }
@@ -4375,21 +4437,22 @@ fn run_targets(
     });
     apps.into_iter()
         .filter(|a| {
-            node.release_of(&a.bundle)
+            node.release_of_app(a)
                 .is_some_and(|r| r.at.package == package)
         })
         .collect()
 }
 
-/// The bundle `version` of the package gives an app (same service), with that release's
-/// compute component, if installed and the upgrader may see it ([`upgrade_sees`]).
+/// Where `version` of the package moves an app (same service): its bundle, that
+/// release's compute component and the release, if installed and the upgrader
+/// may see it ([`upgrade_sees`]).
 fn target_bundle(
     node: &Node,
     app: &crate::types::AppRecord,
     version: &str,
     who: &Upgrader,
-) -> Option<(String, Option<String>)> {
-    let r = node.release_of(&app.bundle)?;
+) -> Option<Target> {
+    let r = node.release_of_app(app)?;
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
         let v = s.packages.get(&r.at.package)?.versions.get(version)?;
@@ -4397,7 +4460,16 @@ fn target_bundle(
             return None;
         }
         let bundle = v.services.get(&service).cloned()?;
-        Some((bundle, v.compute.get(&service).cloned()))
+        Some(Target {
+            bundle,
+            compute_bundle: v.compute.get(&service).cloned(),
+            release: Some(PackageRef {
+                package: r.at.package.clone(),
+                version: version.to_owned(),
+                service: r.at.service.clone(),
+                compute: false,
+            }),
+        })
     })
 }
 
@@ -4457,37 +4529,49 @@ async fn start_run(
     let _task = tokio::spawn(async move {
         for app in apps {
             match target_bundle(&node, &app, &version, &who) {
-                Some((bundle, compute_bundle)) if bundle == app.bundle => {
-                    // Same app component: nothing to run, though its compute component may differ.
-                    let _r = node
+                Some(t) if t.bundle == app.bundle => {
+                    // Same app component: nothing to run on the app's group,
+                    // though its compute component and its release (a
+                    // frontend-only one) may differ, which the directory
+                    // records; `UpgradeApp` judges who may as for any upgrade,
+                    // and a refusal is noted on the app and the run.
+                    let written = node
                         .sys_write(&SystemCmd::UpgradeApp {
                             app_id: app.app_id.clone(),
-                            bundle,
-                            compute_bundle,
+                            bundle: t.bundle.clone(),
+                            compute_bundle: t.compute_bundle,
                             by_operator: who.by_operator,
                             actor: who.actor.clone(),
                             at: now_secs(),
                             run: who.run.clone(),
                             consent: who.consent.clone(),
+                            release: t.release.clone(),
                         })
                         .await;
+                    if let Err(e) = written {
+                        let error = json!({ "code": e.code, "message": e.message });
+                        note_failed_upgrade(
+                            &node,
+                            &app.app_id,
+                            &t.bundle,
+                            t.release.as_ref(),
+                            &who,
+                            error,
+                        )
+                        .await;
+                    }
                 }
-                Some((bundle, compute_bundle)) => {
-                    let _r = run_upgrade(
-                        &node,
-                        app.app_id.clone(),
-                        bundle,
-                        compute_bundle,
-                        migrate.clone(),
-                        who.clone(),
-                    )
-                    .await;
+                Some(t) => {
+                    let _r =
+                        run_upgrade(&node, app.app_id.clone(), t, migrate.clone(), who.clone())
+                            .await;
                 }
                 None => {
                     note_failed_upgrade(
                         &node,
                         &app.app_id,
                         "",
+                        None,
                         &who,
                         json!({ "code": "NOT_INSTALLED", "message": "the release ships no bundle for this app's service" }),
                     )
@@ -4917,10 +5001,29 @@ async fn org_get(
     if o.role(&account).is_none() {
         return Err(ApiError::not_found("no such organization"));
     }
-    // Teams a member does not see are left out, as if they did not exist.
+    // Teams a member does not see are left out, as if they did not exist,
+    // and so are the people they do not see (`Org::sees_member`): in a shared
+    // organization a member has the people of their apps, a guest always.
     let mut v = serde_json::to_value(&o).unwrap_or_default();
     if let Some(teams) = v.get_mut("teams").and_then(Value::as_object_mut) {
         teams.retain(|id, _| o.sees_team(&account, id));
+        for team in teams.values_mut() {
+            for field in ["members", "capabilities"] {
+                if let Some(m) = team.get_mut(field).and_then(Value::as_object_mut) {
+                    m.retain(|a, _| o.sees_member(&account, a));
+                }
+            }
+            for field in ["readOnly", "removed"] {
+                if let Some(m) = team.get_mut(field).and_then(Value::as_array_mut) {
+                    m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
+                }
+            }
+        }
+    }
+    for field in ["members", "capabilities", "memberMetadata"] {
+        if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
+            m.retain(|a, _| o.sees_member(&account, a));
+        }
     }
     // Who may approve its releases, the keys it publishes, and whether a
     // passed deadline has stopped new work on its own set (`null`: it has
@@ -4937,6 +5040,7 @@ async fn org_get(
         )
     });
     if let Some(obj) = v.as_object_mut() {
+        let _prev = obj.insert("mode".into(), json!(o.mode()));
         let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
         let _prev = obj.insert("publishes".into(), json!(publishes));
         let _prev = obj.insert(
@@ -5276,7 +5380,7 @@ fn team_view(
             json!({
                 "account": a,
                 "role": o.team_role(a, team),
-                "capabilities": t.capabilities.get(a).copied().unwrap_or(o.default_capabilities),
+                "capabilities": o.team_caps(a, team),
             })
         })
         .collect();
@@ -5301,6 +5405,8 @@ fn team_view(
         "parent": t.parent,
         "join": t.join,
         "metadata": t.metadata,
+        "package": t.app_package(),
+        "defaultCapabilities": t.default_capabilities,
         "members": members,
         "children": children,
         "apps": apps,
@@ -5387,8 +5493,9 @@ struct CapabilitiesBody {
 }
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
-/// without an account, the organization's default; approved with the
-/// actor's passkey (412 first).
+/// without an account, the default: the organization's, or with `team` what
+/// everyone in that team holds there on top of their own (G6); approved with
+/// the actor's passkey (412 first).
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5414,11 +5521,13 @@ async fn org_capabilities(
             }
         }
         None => {
-            let args = json!({ "capabilities": body.capabilities });
+            let args =
+                crate::system::default_capabilities_args(body.team.as_deref(), body.capabilities);
             let method = "__set_default_capabilities";
             let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
             SystemCmd::SetDefaultCapabilities {
                 org,
+                team: body.team,
                 capabilities: body.capabilities,
                 actor,
                 consent,
@@ -5487,6 +5596,8 @@ async fn invite_create(
         teams: body.teams,
         expires_at: now_secs() + body.ttl_secs.unwrap_or(7 * 24 * 3600),
         uses_left: body.uses.unwrap_or(1).max(1),
+        created_by: actor.clone(),
+        created_at: now_secs(),
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
@@ -5554,6 +5665,180 @@ async fn invite_redeem(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// An organization invite as its list shows it: its key and terms, never a
+/// token (the log never had one).
+fn invite_json(key: &str, inv: &Invite, now: u64) -> Value {
+    json!({
+        "inviteKey": key,
+        "role": inv.role,
+        "teams": inv.teams,
+        "usesLeft": inv.uses_left,
+        "expiresAt": inv.expires_at,
+        "expired": inv.expires_at <= now,
+        "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
+        "createdAt": (inv.created_at != 0).then_some(inv.created_at),
+    })
+}
+
+/// The organization's pending invites the caller may see and revoke
+/// (`SystemState::sees_invite`): every one for an admin, those naming only
+/// teams they manage for a team's manager, and their own; `404` to anyone
+/// outside the organization.
+async fn invite_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let now = now_secs();
+    let v = node
+        .sys(|s| {
+            s.orgs.get(&org)?.role(&account)?;
+            let invites: Vec<Value> = s
+                .invites
+                .iter()
+                .filter(|(_, i)| i.org == org && s.sees_invite(i, &account))
+                .map(|(k, i)| invite_json(k, i, now))
+                .collect();
+            Some(json!({ "invites": invites }))
+        })
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    Ok(Json(v))
+}
+
+/// Withdraw an invite (its key, from [`invite_list`]): whoever may see it,
+/// with their passkey (412 first; the retry's JSON body carries `confirm`).
+async fn invite_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, key)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let visible = node.sys(|s| {
+        s.invites
+            .get(&key)
+            .is_some_and(|i| i.org == org && s.sees_invite(i, &actor))
+    });
+    if !visible {
+        return Err(ApiError::not_found(crate::system::INVITE_GONE));
+    }
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let args = json!({ "inviteKey": key });
+    let consent = org_consent(&node, &p, &org, "__revoke_invite", &args, confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::RevokeInvite {
+            org,
+            invite_key: key,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// The organization's app teams (one per package) and its mode, for any
+/// member: each team's package, id, name, whether it is open, how many people
+/// are in it, and whether the caller is in it or manages it. A guest sees
+/// only the app teams they are in. Names only: a team's people are read
+/// where the caller sees them (`GET /orgs/{org}/teams/{team}`).
+async fn app_team_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let v = node
+        .sys(|s| {
+            let o = s.orgs.get(&org)?;
+            let role = o.role(&account)?;
+            let teams: Vec<Value> = o
+                .teams
+                .values()
+                .filter_map(|t| Some((t.app_package()?, t)))
+                .filter(|(_, t)| role >= OrgRole::Member || o.in_team(&account, &t.team_id))
+                .map(|(package, t)| {
+                    let count = o
+                        .members
+                        .keys()
+                        .filter(|m| o.in_team(m, &t.team_id))
+                        .count();
+                    json!({
+                        "package": package,
+                        "teamId": t.team_id,
+                        "name": t.name,
+                        "join": t.join,
+                        "memberCount": count,
+                        "defaultCapabilities": t.default_capabilities,
+                        "member": o.in_team(&account, &t.team_id),
+                        "manages": o.manages_team(&account, &t.team_id),
+                    })
+                })
+                .collect();
+            Some(json!({ "mode": o.mode(), "appTeams": teams }))
+        })
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScopeAppsBody {
+    /// The packages to give app teams (absent: every package with an
+    /// organization-access instance here).
+    #[serde(default)]
+    apps: Option<Vec<crate::system::ScopeApp>>,
+    /// Close every app team (absent: when the organization then holds two
+    /// or more).
+    #[serde(default)]
+    shared: Option<bool>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Give apps their own access lists in one step (`SystemCmd::ScopeApps`):
+/// an admin's, with their passkey (412 first). Answers each package's team,
+/// whether it was made, the instances moved and the rows added, and the
+/// organization's mode after.
+async fn app_teams_scope(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<ScopeAppsBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    if body
+        .apps
+        .as_ref()
+        .is_some_and(|a| a.len() > crate::system::MAX_SCOPE_PACKAGES)
+    {
+        return Err(ApiError::bad_request(
+            "TOO_MANY_PACKAGES",
+            "too many packages in one step",
+        ));
+    }
+    let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
+    let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::ScopeApps {
+            org,
+            apps: body.apps,
+            shared: body.shared,
+            nonce: b64url(&random::<16>()),
+            actor,
+            consent,
+        })
+        .await?,
+    ))
 }
 
 // ---------------------------------------------------------------- recovery
@@ -9338,13 +9623,17 @@ async fn ops_upgrade(
     node.sys_fresh().await;
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let current = node.release_of(&app.bundle);
-    let (bundle, compute_bundle) = match (body.bundle, body.version) {
+    let current = node.release_of_app(&app);
+    let target = match (body.bundle, body.version) {
         (Some(b), _) => {
             let compute = node
                 .sys(|s| s.compute_of(&b, crate::system::OPERATOR))
                 .map_err(|why| ApiError::bad_request(AMBIGUOUS_COMPUTE, why))?;
-            (b, compute)
+            Target {
+                bundle: b,
+                compute_bundle: compute,
+                release: None,
+            }
         }
         (None, Some(version)) => {
             let package = body
@@ -9364,7 +9653,16 @@ async fn ops_upgrade(
                     .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
                     .and_then(|v| {
                         let bundle = v.services.get(&service).cloned()?;
-                        Some((bundle, v.compute.get(&service).cloned()))
+                        Some(Target {
+                            bundle,
+                            compute_bundle: v.compute.get(&service).cloned(),
+                            release: Some(PackageRef {
+                                package: package.clone(),
+                                version: version.clone(),
+                                service: (!service.is_empty()).then(|| service.clone()),
+                                compute: false,
+                            }),
+                        })
                     })
             })
             .ok_or_else(|| {
@@ -9384,7 +9682,8 @@ async fn ops_upgrade(
     };
     // A raw hash is the operator's own, or one the app's owner may name.
     if !node.sys(|s| {
-        s.sees_bundle(&bundle, crate::system::OPERATOR) || s.sees_bundle(&bundle, &app.owner)
+        s.sees_bundle(&target.bundle, crate::system::OPERATOR)
+            || s.sees_bundle(&target.bundle, &app.owner)
     }) {
         return Err(crate::node::rejected("unknown bundle"));
     }
@@ -9393,14 +9692,13 @@ async fn ops_upgrade(
         &node,
         &app_id,
         "__upgrade",
-        &json!({ "bundle": bundle, "migrate": body.migrate }),
+        &json!({ "bundle": target.bundle, "migrate": body.migrate }),
         body.operator_proof,
     )?;
     run_upgrade(
         &node,
         app_id,
-        bundle,
-        compute_bundle,
+        target,
         body.migrate,
         Upgrader {
             caller: Caller::Public,
@@ -9510,7 +9808,9 @@ pub fn router(node: Arc<Node>) -> Router {
             "/orgs/{org}/teams/{team}/members/{account}",
             delete(team_remove_member),
         )
-        .route("/orgs/{org}/invites", post(invite_create))
+        .route("/orgs/{org}/invites", post(invite_create).get(invite_list))
+        .route("/orgs/{org}/invites/{key}", delete(invite_revoke))
+        .route("/orgs/{org}/app-teams", get(app_team_list).post(app_teams_scope))
         .route("/orgs/{org}/recovery", post(recovery_set))
         .route("/orgs/{org}/recovery/start", post(recovery_start))
         .route("/orgs/{org}/recovery/cancel", post(recovery_cancel))

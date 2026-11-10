@@ -125,6 +125,9 @@ const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never
 /// The refusal when an app names a compute component its bundle's release does not ship.
 const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
 
+/// The refusal when an app names a release that does not ship its bundle.
+const RELEASE_NOT_SHIPPED: &str = "that release does not ship the app's bundle";
+
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
@@ -496,6 +499,13 @@ pub const SIGN_UP_PREFIX: &str = "sign-up refused";
 pub const INVITE_GONE: &str = "this invite was used up, revoked or never existed";
 /// A refusal: the organization invite is past its expiry.
 pub const INVITE_EXPIRED: &str = "this invite has expired";
+/// A refusal: making, changing or dropping an app team, scoping apps, or
+/// creating the first instance of a package without one in an organization
+/// whose apps have app teams, is installing an app there: an admin's.
+pub const ONLY_ADMINS_INSTALL: &str =
+    "only the organization's owner and admins install apps in it and change its app teams";
+/// A refusal: the package has an app team in this organization already.
+pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
 /// How many cluster sign-up invites a cluster keeps at once.
 pub const MAX_SIGN_UP_INVITES: usize = 10_000;
@@ -1051,6 +1061,20 @@ impl SystemState {
             .is_some_and(|at| at.compute)
     }
 
+    /// Whether `r` names an installed release whose service `r.service` is
+    /// `bundle`: what an app recorded as running `r` must run.
+    #[must_use]
+    pub fn release_ships(&self, r: &PackageRef, bundle: &str) -> bool {
+        let service = r.service.as_deref().unwrap_or_default();
+        !r.compute
+            && self
+                .packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version))
+                .and_then(|v| v.services.get(service))
+                .is_some_and(|h| h == bundle)
+    }
+
     /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
     /// whose app component is `bundle`. Releases may share an app component and differ in
     /// compute, so the caller names the compute hash and this checks the pair.
@@ -1543,6 +1567,262 @@ impl SystemState {
                 .is_some_and(|o| self.manages_apps(o, account, team))
     }
 
+    /// The package whose release `app` runs; `None` for a raw upload.
+    #[must_use]
+    pub fn package_of(&self, app: &AppRecord) -> Option<&str> {
+        self.bundles
+            .get(&app.bundle)?
+            .package
+            .as_ref()
+            .map(|r| r.package.as_str())
+    }
+
+    /// Whether `actor`, not `app`'s owner, may change its access to `to`
+    /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
+    /// [`Self::manages_apps`]) where the app is now and where it goes, on its
+    /// team for `Access::Team`, organization-wide for any other access. Org
+    /// admins and the owner hold it everywhere, a team's leads on their team.
+    #[must_use]
+    pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
+        let Some(org) = app.org.as_deref() else {
+            return false;
+        };
+        let manages = |a: &Access| match a {
+            Access::Team { team } => self.manages_apps(org, actor, Some(team)),
+            _ => self.manages_apps(org, actor, None),
+        };
+        manages(&app.access) && manages(to)
+    }
+
+    /// Whether `actor` sees (and may revoke) the organization invite `inv`:
+    /// an admin or the owner of its organization, its creator while still a
+    /// member, or whoever manages every team it names (an invite naming no
+    /// team is organization-wide: an admin's).
+    #[must_use]
+    pub fn sees_invite(&self, inv: &Invite, actor: &str) -> bool {
+        let Some(o) = self.orgs.get(&inv.org) else {
+            return false;
+        };
+        let Some(role) = o.role(actor) else {
+            return false;
+        };
+        role >= OrgRole::Admin
+            || inv.created_by == actor
+            || (!inv.teams.is_empty()
+                && inv
+                    .teams
+                    .iter()
+                    .all(|t| o.teams.contains_key(t) && o.manages_team(actor, t)))
+    }
+
+    /// [`SystemCmd::ScopeApps`], judged and applied as one step: everything
+    /// is checked and every person who reaches an instance now is found
+    /// before anything changes.
+    fn scope_apps(
+        &mut self,
+        org: &str,
+        apps: Option<Vec<ScopeApp>>,
+        shared: Option<bool>,
+        nonce: &str,
+        actor: &str,
+    ) -> Result<Value, &'static str> {
+        use crate::types::caps;
+
+        let o = self.orgs.get(org).ok_or("no such organization")?;
+        if !o.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
+            return Err(ONLY_ADMINS_INSTALL);
+        }
+        let in_org = |a: &&AppRecord| a.org.as_deref() == Some(org);
+        let specs = match apps {
+            Some(specs) => specs,
+            None => self
+                .apps
+                .values()
+                .filter(in_org)
+                .filter(|a| a.access == Access::Org)
+                .filter_map(|a| self.package_of(a))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(|package| ScopeApp {
+                    package: package.to_owned(),
+                    name: None,
+                    instances: None,
+                })
+                .collect(),
+        };
+        if specs.len() > MAX_SCOPE_PACKAGES {
+            return Err("too many packages in one step");
+        }
+        // Each package: its team (found, or to make), name, instances, and
+        // who reaches those instances now.
+        struct Plan {
+            package: String,
+            team: Option<TeamId>,
+            name: String,
+            instances: Vec<AppId>,
+            reach: BTreeSet<AccountId>,
+        }
+        let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
+        for spec in specs {
+            if plans.iter().any(|p| p.package == spec.package) {
+                return Err("a package is named twice");
+            }
+            let record = self.packages.get(&spec.package).ok_or("no such package")?;
+            let name = match spec.name {
+                Some(n) => n,
+                None => record
+                    .latest()
+                    .and_then(|v| v.metadata.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(spec.package.as_str())
+                    .to_owned(),
+            };
+            if name.trim().is_empty() || name.chars().count() > MAX_APP_TEAM_NAME_CHARS {
+                return Err("an app team's name is 1 to 64 characters");
+            }
+            let of_package = |a: &AppRecord| self.package_of(a) == Some(spec.package.as_str());
+            let instances: Vec<AppId> = match spec.instances {
+                Some(ids) => {
+                    if ids.len() > MAX_SCOPE_INSTANCES {
+                        return Err("too many instances in one step");
+                    }
+                    let ids: BTreeSet<AppId> = ids.into_iter().collect();
+                    for id in &ids {
+                        let a = self.apps.get(id).ok_or("no such app")?;
+                        if a.org.as_deref() != Some(org) || !of_package(a) {
+                            return Err(
+                                "an instance named is not of that package in this organization",
+                            );
+                        }
+                    }
+                    ids.into_iter().collect()
+                }
+                None => self
+                    .apps
+                    .values()
+                    .filter(in_org)
+                    .filter(|a| a.access == Access::Org && of_package(a))
+                    .map(|a| a.app_id.clone())
+                    .collect(),
+            };
+            let reach = instances
+                .iter()
+                .filter_map(|id| self.apps.get(id))
+                .flat_map(|a| {
+                    o.members
+                        .keys()
+                        .filter(|m| self.may_reach(a, Some(m.as_str())))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            plans.push(Plan {
+                team: o.app_team(&spec.package).map(|t| t.team_id.clone()),
+                package: spec.package,
+                name,
+                instances,
+                reach,
+            });
+        }
+        let app_teams = o
+            .teams
+            .values()
+            .filter(|t| t.app_package().is_some())
+            .count()
+            + plans.iter().filter(|p| p.team.is_none()).count();
+        let shared = shared.unwrap_or(app_teams >= 2);
+
+        let o = self.orgs.get_mut(org).ok_or("no such organization")?;
+        let mut report = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let created = plan.team.is_none();
+            let team_id = match plan.team {
+                Some(t) => t,
+                None => {
+                    let id = app_team_id(o, nonce, &plan.package);
+                    let mut members = BTreeMap::new();
+                    let _lead = members.insert(actor.to_owned(), true);
+                    // Standalone, its members may invite others to it; shared,
+                    // only its leads and the admins, until an admin says so.
+                    let default_capabilities = (!shared).then_some(caps::INVITE_MEMBERS);
+                    let _prev = o.teams.insert(
+                        id.clone(),
+                        Team {
+                            team_id: id.clone(),
+                            name: plan.name.clone(),
+                            parent: None,
+                            join: TeamJoin::Everyone,
+                            members,
+                            read_only: BTreeSet::new(),
+                            capabilities: BTreeMap::new(),
+                            metadata: json!({ "app": { "package": plan.package, "name": plan.name } }),
+                            removed: BTreeSet::new(),
+                            default_capabilities,
+                        },
+                    );
+                    id
+                }
+            };
+            let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+            let mut added = 0usize;
+            for a in &plan.reach {
+                let _back = t.removed.remove(a);
+                if !t.members.contains_key(a) {
+                    let _prev = t.members.insert(a.clone(), false);
+                    added += 1;
+                }
+            }
+            report.push(json!({
+                "package": plan.package,
+                "teamId": team_id,
+                "created": created,
+                "apps": plan.instances,
+                "added": added,
+            }));
+            for id in &plan.instances {
+                if let Some(a) = self.apps.get_mut(id) {
+                    a.access = Access::Team {
+                        team: team_id.clone(),
+                    };
+                }
+            }
+        }
+        if shared {
+            // Close every app team, its people kept as rows of their own.
+            let o = self.orgs.get(org).ok_or("no such organization")?;
+            let open: Vec<(TeamId, Vec<AccountId>)> = o
+                .teams
+                .values()
+                .filter(|t| t.app_package().is_some() && t.join == TeamJoin::Everyone)
+                .map(|t| {
+                    let inside = o
+                        .members
+                        .keys()
+                        .filter(|m| o.in_team(m, &t.team_id))
+                        .cloned()
+                        .collect();
+                    (t.team_id.clone(), inside)
+                })
+                .collect();
+            let o = self.orgs.get_mut(org).ok_or("no such organization")?;
+            for (id, inside) in open {
+                let Some(t) = o.teams.get_mut(&id) else {
+                    continue;
+                };
+                for a in inside {
+                    let _kept = t.members.entry(a).or_insert(false);
+                }
+                t.join = TeamJoin::Invite;
+                t.default_capabilities = t.default_capabilities.map(|c| c & !caps::INVITE_MEMBERS);
+            }
+        }
+        let mode = self
+            .orgs
+            .get(org)
+            .map_or(crate::types::OrgMode::Legacy, Org::mode);
+        Ok(json!({ "mode": mode, "teams": report }))
+    }
+
     /// `MANAGE_APPLICATION`: whether `account` may upgrade `org`'s apps
     /// (on `team`, or org-wide when `None`) and approve its outbound hosts.
     /// The owner, an admin, a team's lead, or a member holding the capability
@@ -1772,11 +2052,13 @@ impl SystemState {
             (_, Some(a)) if a == app.owner => true,
             (Access::Owner, Some(_)) => false,
             (Access::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
+            // Where apps have app teams, a guest has only the apps of the
+            // teams they are in.
             (Access::Org, Some(a)) => app
                 .org
                 .as_ref()
                 .and_then(|o| self.orgs.get(o))
-                .is_some_and(|o| o.role(a).is_some()),
+                .is_some_and(|o| o.role(a).is_some() && !o.app_only(a)),
             (Access::Team { team }, Some(a)) => app
                 .org
                 .as_ref()
@@ -1946,6 +2228,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             by_operator,
             actor,
             run: Some(run),
+            release: target,
             ..
         } => {
             // One consent covers the run (`StartUpgradeRun`); each app's
@@ -1971,6 +2254,9 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                 || r.finished
                 || !r.apps.contains(app_id)
                 || !release.is_some_and(|v| v.services.values().any(|h| h == bundle))
+                || target
+                    .as_ref()
+                    .is_some_and(|t| t.package != r.package || t.version != r.version)
             {
                 return Err("the upgrade is not one its run names");
             }
@@ -2603,12 +2889,13 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
         }
         SystemCmd::SetDefaultCapabilities {
             org,
+            team,
             capabilities,
             actor,
             consent,
         } => {
             let (st, used) = fresh(consent_of(actor, consent)?)?;
-            let args = json!({ "capabilities": capabilities });
+            let args = default_capabilities_args(team.as_deref(), *capabilities);
             states(
                 &st,
                 &format!("org:{org}"),
@@ -2631,6 +2918,32 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                 "__create_invite",
                 &|a| *a == args,
             )?;
+            Ok(Some(used))
+        }
+        SystemCmd::RevokeInvite {
+            org,
+            invite_key,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "inviteKey": invite_key });
+            states(&st, &format!("org:{org}"), "__revoke_invite", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::ScopeApps {
+            org,
+            apps,
+            shared,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = scope_apps_args(apps.as_deref(), *shared);
+            states(&st, &format!("org:{org}"), "__scope_apps", &|a| *a == args)?;
             Ok(Some(used))
         }
         // The token's key signs the redemption: only a node the redeemer
@@ -2890,6 +3203,57 @@ pub fn invite_args(invite_key: &str, invite: &Invite) -> Value {
     })
 }
 
+/// What a person consents to when setting default capabilities
+/// (`__set_default_capabilities`): the organization's as before, or a team's.
+#[must_use]
+pub fn default_capabilities_args(team: Option<&str>, capabilities: u32) -> Value {
+    match team {
+        None => json!({ "capabilities": capabilities }),
+        Some(t) => json!({ "team": t, "capabilities": capabilities }),
+    }
+}
+
+/// The most packages one `ScopeApps` names.
+pub const MAX_SCOPE_PACKAGES: usize = 64;
+/// The most instances one package of a `ScopeApps` names.
+pub const MAX_SCOPE_INSTANCES: usize = 1024;
+/// The longest app team name, in characters.
+pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
+
+/// One package of a [`SystemCmd::ScopeApps`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScopeApp {
+    pub package: String,
+    /// The app team's name when one is made (absent: the package's display
+    /// name, else the package).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The instances to move (absent: every organization-access instance of
+    /// the package here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instances: Option<Vec<AppId>>,
+}
+
+/// What an admin consents to when scoping apps (`org:<org> / __scope_apps`):
+/// the request as made; the teams and rows it leads to are judged at apply.
+#[must_use]
+pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value {
+    json!({ "apps": apps, "shared": shared })
+}
+
+/// The id a `ScopeApps` with `nonce` gives a new app team of `package`: the
+/// first of a short series not taken in `org` and not starting with `-`.
+fn app_team_id(org: &Org, nonce: &str, package: &str) -> TeamId {
+    (0u32..)
+        .map(|i| {
+            let h = calimero_identity::sha256(format!("{nonce}/{package}/{i}").as_bytes());
+            calimero_identity::b64url(&h[..16])
+        })
+        .find(|id| !id.starts_with('-') && !org.teams.contains_key(id))
+        .unwrap_or_default()
+}
+
 /// A change to the system group.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
@@ -2958,6 +3322,11 @@ pub enum SystemCmd {
         /// The owner's passkey assertion over this upgrade.
         #[serde(default)]
         consent: Value,
+        /// The release the app moves to (`AppRecord::release`), which must
+        /// ship `bundle`; it may be one with the app's own bundle (a
+        /// frontend-only release). `None` for a raw upload.
+        #[serde(default)]
+        release: Option<PackageRef>,
     },
     TransferApp {
         app_id: AppId,
@@ -3456,6 +3825,9 @@ pub enum SystemCmd {
         error: Value,
         #[serde(default)]
         run: Option<String>,
+        /// The release the upgrade was to, when it named one.
+        #[serde(default)]
+        release: Option<PackageRef>,
     },
     StartUpgradeRun {
         org: OrgId,
@@ -3555,9 +3927,13 @@ pub enum SystemCmd {
         #[serde(default)]
         consent: Value,
     },
-    /// The capabilities members hold unless set for them.
+    /// The capabilities members hold unless set for them: organization-wide
+    /// (`team: None`), or everyone in `team` on top of their own (G6).
     SetDefaultCapabilities {
         org: OrgId,
+        /// Absent in entries from before, which set the organization's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<TeamId>,
         capabilities: u32,
         actor: AccountId,
         /// The actor's passkey consent over it ([`crate::proof`]).
@@ -3599,6 +3975,36 @@ pub enum SystemCmd {
         /// reaches the same state.
         #[serde(default)]
         free_when_unchanged: bool,
+    },
+    /// Withdraw an invite before it is used up: its creator, an admin, or
+    /// whoever manages every team it names ([`SystemState::sees_invite`]),
+    /// with their passkey consent (`org:<org> / __revoke_invite /
+    /// { inviteKey }`).
+    RevokeInvite {
+        org: OrgId,
+        invite_key: String,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Give apps their own access lists in one step (G3): for each package
+    /// named (absent: every package with an organization-access instance
+    /// here), find or make its app team ([`crate::types::Team::app_package`]),
+    /// give every person who reaches its instances now a row there, and move
+    /// the instances to `Access::Team` on it. `shared` (absent: whether the
+    /// organization then holds two app teams or more) closes every app team,
+    /// rows filled in first, so nobody loses an app. An admin's, with their
+    /// passkey consent over [`scope_apps_args`].
+    ScopeApps {
+        org: OrgId,
+        #[serde(default)]
+        apps: Option<Vec<ScopeApp>>,
+        #[serde(default)]
+        shared: Option<bool>,
+        /// Random, from the API: new teams' ids derive from it
+        /// ([`app_team_id`]), so every replica makes the same ones.
+        nonce: String,
+        actor: AccountId,
+        consent: Value,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
     /// key: the owner's, with their passkey consent (`org:<org> /
@@ -3987,6 +4393,13 @@ impl SystemMachine {
                 if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
                     return Err(COMPUTE_NOT_SHIPPED);
                 }
+                if app
+                    .release
+                    .as_ref()
+                    .is_some_and(|r| !s.release_ships(r, &app.bundle))
+                {
+                    return Err(RELEASE_NOT_SHIPPED);
+                }
                 let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
                 if owned >= s.quotas.max_apps_per_account as usize {
                     return Err("quota exceeded: apps");
@@ -3996,7 +4409,12 @@ impl SystemMachine {
                 }
                 if let Some(id) = &app.deployment {
                     let d = s.deployments.get(id).ok_or("no such deployment")?;
-                    if !s.offers_bundle(d, &app.bundle) {
+                    let offers_release = app.release.as_ref().is_none_or(|r| {
+                        d.apps
+                            .values()
+                            .any(|o| o.package == r.package && o.version == r.version)
+                    });
+                    if !s.offers_bundle(d, &app.bundle) || !offers_release {
                         return Err("the deployment does not offer the release this app would run");
                     }
                 }
@@ -4014,6 +4432,16 @@ impl SystemMachine {
                     };
                     if !o.is_some_and(|o| o.may(&app.owner, team, crate::types::caps::CREATE_APP)) {
                         return Err("creating apps here needs the CREATE_APP capability");
+                    }
+                    // In an organization whose apps have app teams, a package
+                    // with none is a new app there: an admin installs it.
+                    if let (Some(o), Some(package)) = (o, s.package_of(&app)) {
+                        if o.mode() != crate::types::OrgMode::Legacy
+                            && o.app_team(package).is_none()
+                            && !o.role(&app.owner).is_some_and(|r| r >= OrgRole::Admin)
+                        {
+                            return Err(ONLY_ADMINS_INSTALL);
+                        }
                     }
                 }
                 if let Access::Team { team } = &app.access {
@@ -4039,6 +4467,7 @@ impl SystemMachine {
                 at,
                 run,
                 consent,
+                release,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
@@ -4048,6 +4477,12 @@ impl SystemMachine {
                 }
                 if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
                     return Err(COMPUTE_NOT_SHIPPED);
+                }
+                if release
+                    .as_ref()
+                    .is_some_and(|r| !s.release_ships(r, &bundle))
+                {
+                    return Err(RELEASE_NOT_SHIPPED);
                 }
                 let operator = s.governance().app_upgrades == Authority::Operator;
                 let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
@@ -4092,9 +4527,12 @@ impl SystemMachine {
                         api_key: crate::proof::key_proof_id(&consent)
                             .filter(|_| !by_operator)
                             .map(str::to_owned),
+                        from_release: a.release.clone(),
+                        to_release: release.clone(),
                     });
                     a.bundle = bundle;
                     a.compute_bundle = compute_bundle;
+                    a.release = release;
                 }
                 s.note_run(run.as_deref(), &app_id, None);
                 Ok(Value::Null)
@@ -4106,9 +4544,12 @@ impl SystemMachine {
                 at,
                 error,
                 run,
+                release,
             } => {
                 let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 a.last_upgrade = Some(crate::types::UpgradeRecord {
+                    from_release: a.release.clone(),
+                    to_release: release,
                     from: a.bundle.clone(),
                     to: bundle,
                     at,
@@ -4336,8 +4777,8 @@ impl SystemMachine {
                 actor,
             } => {
                 let app = s.apps.get(&app_id).ok_or("no such app")?;
-                if app.owner != actor {
-                    return Err("only the owner may change access");
+                if app.owner != actor && !s.may_set_access(app, &access, &actor) {
+                    return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access");
                 }
                 if let Access::Team { team } = &access {
                     let in_org = app
@@ -5410,6 +5851,7 @@ impl SystemMachine {
                         capabilities: Default::default(),
                         metadata: Value::Null,
                         removed: Default::default(),
+                        default_capabilities: None,
                     },
                 );
                 Ok(json!({ "teamId": team_id }))
@@ -5449,11 +5891,17 @@ impl SystemMachine {
                 if o.role(&account).is_none() {
                     return Err("only organization members join teams");
                 }
+                // A new row takes what the member holds organization-wide, and
+                // the team's default on top.
                 let default = o
                     .capabilities
                     .get(&account)
                     .copied()
-                    .unwrap_or(o.default_capabilities);
+                    .unwrap_or(o.default_capabilities)
+                    | o.teams
+                        .get(&team)
+                        .and_then(|t| t.default_capabilities)
+                        .unwrap_or(0);
                 if let Some(t) = o.teams.get_mut(&team) {
                     let _was = t.removed.remove(&account);
                     let _prev = t.members.insert(account.clone(), role == TeamRole::Lead);
@@ -5498,6 +5946,33 @@ impl SystemMachine {
                 }
                 if metadata.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_METADATA) {
                     return Err("not allowed to change this team's metadata");
+                }
+                // An app team (`metadata.app.package` at the top) installs an
+                // app in the organization: only an admin makes, changes or
+                // drops one, and a package has one app team here (G9).
+                let current = o.teams.get(&team).ok_or("no such team")?;
+                let parent_after = parent.clone().unwrap_or_else(|| current.parent.clone());
+                let package_before = current.app_package().map(str::to_owned);
+                let package_after = if parent_after.is_some() {
+                    None
+                } else {
+                    metadata
+                        .as_ref()
+                        .unwrap_or(&current.metadata)
+                        .get("app")
+                        .and_then(|a| a.get("package"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                };
+                if package_before != package_after {
+                    if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
+                        return Err(ONLY_ADMINS_INSTALL);
+                    }
+                    if let Some(p) = &package_after {
+                        if o.app_team(p).is_some_and(|t| t.team_id != team) {
+                            return Err(APP_TEAM_EXISTS);
+                        }
+                    }
                 }
                 if let Some(to) = &parent {
                     let may_move = o.manages_team(&actor, &team)
@@ -5596,15 +6071,27 @@ impl SystemMachine {
             }
             SystemCmd::SetDefaultCapabilities {
                 org,
+                team,
                 capabilities,
                 actor,
                 ..
             } => {
                 let o = self.org_mut(&org)?;
-                if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
-                    return Err("only admins manage members");
+                let Some(team) = team else {
+                    if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
+                        return Err("only admins manage members");
+                    }
+                    o.default_capabilities = capabilities;
+                    return Ok(Value::Null);
+                };
+                // A team's default: whoever may set its rows' capabilities.
+                if !o.manages_team(&actor, &team)
+                    && !o.may(&actor, Some(&team), crate::types::caps::MANAGE_MEMBERS)
+                {
+                    return Err("not allowed to manage this team");
                 }
-                o.default_capabilities = capabilities;
+                let t = o.teams.get_mut(&team).ok_or("no such team")?;
+                t.default_capabilities = Some(capabilities);
                 Ok(Value::Null)
             }
             SystemCmd::RemoveTeamMember {
@@ -5658,6 +6145,11 @@ impl SystemMachine {
                 if s.sign_up_invites.contains_key(&invite_key) {
                     return Err("invite exists");
                 }
+                // Its creator is the actor, whatever the entry says.
+                let invite = Invite {
+                    created_by: actor,
+                    ..invite
+                };
                 let _prev = s.invites.insert(invite_key, invite);
                 Ok(Value::Null)
             }
@@ -5674,6 +6166,30 @@ impl SystemMachine {
                 let org = s.redeem_org_invite(&invite_key, &account, now, free_when_unchanged)?;
                 Ok(json!({ "org": org }))
             }
+            SystemCmd::RevokeInvite {
+                org,
+                invite_key,
+                actor,
+                ..
+            } => {
+                let inv = s.invites.get(&invite_key).ok_or(INVITE_GONE)?;
+                if inv.org != org {
+                    return Err(INVITE_GONE);
+                }
+                if !s.sees_invite(inv, &actor) {
+                    return Err("only the invite's creator, an admin, or whoever manages every team it names may revoke it");
+                }
+                let _gone = s.invites.remove(&invite_key);
+                Ok(Value::Null)
+            }
+            SystemCmd::ScopeApps {
+                org,
+                apps,
+                shared,
+                nonce,
+                actor,
+                ..
+            } => s.scope_apps(&org, apps, shared, &nonce, &actor),
             SystemCmd::SetRecoveryKey {
                 org,
                 public_key,
@@ -6201,6 +6717,7 @@ mod tests {
             at: 0,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         for (app, actor, may) in [
             ("in-org", "bob", true),
@@ -6305,6 +6822,7 @@ mod tests {
             at: 0,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
         let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
@@ -6557,6 +7075,7 @@ mod tests {
             at: 0,
             run: None,
             consent: Value::Null,
+            release: None,
         };
         let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
         assert!(e.contains("compute component"), "{e}");
@@ -6816,6 +7335,7 @@ mod tests {
             at: 0,
             run: run.map(str::to_owned),
             consent,
+            release: None,
         };
         assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
         let c = consent(
@@ -7490,6 +8010,7 @@ mod tests {
             &json!({ "capabilities": 7 }),
             |consent| SystemCmd::SetDefaultCapabilities {
                 org: "org".into(),
+                team: None,
                 capabilities: 5,
                 actor: "alice".into(),
                 consent,
@@ -8430,6 +8951,7 @@ mod tests {
             at,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
             package: "p".into(),
@@ -8800,6 +9322,7 @@ mod tests {
                 at,
                 run: None,
                 consent: json!(crate::proof::sign_key_upgrade(secret, "k1", statement)),
+                release: None,
             }
         };
         let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
@@ -8897,6 +9420,7 @@ mod tests {
             at: 0,
             run: None,
             consent: serde_json::Value::Null,
+            release: None,
         };
         assert!(
             m.run_unproven(upgrade("cora", "b2")).is_err(),
@@ -10214,6 +10738,46 @@ mod tests {
             .unwrap()
             .get("origin")
             .is_none());
+    }
+
+    /// Invites, teams and default-capability entries from before app teams
+    /// read with no creator, no team default and the organization's default,
+    /// and write the bytes they did.
+    #[test]
+    fn invites_teams_and_default_caps_from_before_app_teams_read_and_write_as_before() {
+        let invite = json!({
+            "org": "o", "role": "member", "teams": ["t"], "expiresAt": 9, "usesLeft": 2
+        });
+        let read: crate::types::Invite = serde_json::from_value(invite.clone()).unwrap();
+        assert!(read.created_by.is_empty());
+        assert_eq!(read.created_at, 0);
+        assert_eq!(serde_json::to_value(&read).unwrap(), invite);
+
+        let team = json!({
+            "teamId": "t", "name": "chat", "parent": null, "join": "everyone",
+            "members": { "a": true }, "readOnly": [], "capabilities": {},
+            "metadata": { "app": { "package": "com.chat" } }, "removed": []
+        });
+        let read: crate::types::Team = serde_json::from_value(team.clone()).unwrap();
+        assert_eq!(read.default_capabilities, None);
+        assert_eq!(read.app_package(), Some("com.chat"));
+        assert_eq!(serde_json::to_value(&read).unwrap(), team);
+
+        let cmd = json!({
+            "op": "setDefaultCapabilities", "org": "o", "capabilities": 4,
+            "actor": "a", "consent": null
+        });
+        let read: SystemCmd = serde_json::from_value(cmd.clone()).unwrap();
+        assert!(matches!(
+            read,
+            SystemCmd::SetDefaultCapabilities { team: None, .. }
+        ));
+        assert_eq!(serde_json::to_value(&read).unwrap(), cmd);
+        // Its consent states what it did before.
+        assert_eq!(
+            super::default_capabilities_args(None, 4),
+            json!({ "capabilities": 4 })
+        );
     }
 
     #[test]

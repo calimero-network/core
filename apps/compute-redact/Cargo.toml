@@ -1,0 +1,28 @@
+[package]
+name = "compute-redact"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CSV redaction on compute runs: an admin's policy, a member's upload, one run per part"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+calimero-sdk = { path = "../../crates/sdk" }
+csv = "1"
+hmac = "0.13"
+regex-lite = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+calimero-app-engine-wasmtime = { path = "../../crates/app-engine-wasmtime" }
+calimero-app-host = { path = "../../crates/app-host" }
+
+# Standalone, like the other component apps: the tests build this crate for wasm32-wasip2.
+[workspace]

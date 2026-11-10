@@ -2387,6 +2387,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     at: calimero_node::types::now_secs(),
                     run: None,
                     consent,
+                    release: None,
                 })
                 .await
                 .unwrap_err();
