@@ -10755,6 +10755,46 @@ mod tests {
         );
     }
 
+    /// An `Accounts` instance (a DM) of a package whose app team in the
+    /// target is closed is reached there only by those in that team: a move
+    /// with its people gives each one who reaches it now (bob, a member, and
+    /// carol, a guest) a plain row on that team, and they reach it after.
+    #[test]
+    fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
+        let (mut m, _alice, _bob) = moving();
+        let s = &mut m.state;
+        let _prev = s.apps.insert(
+            "dm".into(),
+            serde_json::from_value(json!({
+                "appId": "dm", "name": "dm", "group": 6, "bundle": "b1", "owner": "bob",
+                "org": "org", "access": { "kind": "accounts", "accounts": ["bob", "carol"] },
+                "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap(),
+        );
+        let _prev = s.orgs.get_mut("new").unwrap().teams.insert(
+            "np".into(),
+            serde_json::from_value(json!({
+                "teamId": "np", "name": "Pad", "join": "invite", "members": { "alice": true },
+                "metadata": { "app": { "package": "p", "name": "Pad" } }
+            }))
+            .unwrap(),
+        );
+        let out = m
+            .run_unproven(move_app("dm", "new", "alice", true, Value::Null))
+            .unwrap();
+        assert_eq!(out["added"], json!(["bob", "carol"]), "{out}");
+        let s = &m.state;
+        let team = &s.orgs["new"].teams["np"];
+        assert_eq!(team.members.get("alice"), Some(&true));
+        assert_eq!(team.members.get("bob"), Some(&false));
+        assert_eq!(team.members.get("carol"), Some(&false));
+        for who in ["bob", "carol"] {
+            assert!(s.may_reach(&s.apps["dm"], Some(who)), "{who}");
+        }
+        assert!(s.owner_acts(&s.apps["dm"], "bob"));
+    }
+
     /// A personal app moves into an organization its owner administers,
     /// keeping its access, and its files go to the organization's bill. It
     /// is its owner's alone to move, and only into an organization they
