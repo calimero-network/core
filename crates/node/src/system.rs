@@ -1716,7 +1716,19 @@ impl SystemState {
                     .iter()
                     .all(|t| o.teams.contains_key(t) && o.manages_team(actor, t)))
     }
+}
 
+/// How the release that logged a [`SystemCmd::ScopeApps`] judged it: each
+/// flag is the entry's own, absent (`false`) in an earlier release's entry.
+#[derive(Clone, Copy, Debug)]
+struct ScopeAsLogged {
+    /// An owner reaches an app on a team only while in it.
+    owner_in_team: bool,
+    /// An `Accounts` instance is reached only through its app team.
+    accounts_in_app_team: bool,
+}
+
+impl SystemState {
     /// [`SystemCmd::ScopeApps`], judged and applied as one step: everything
     /// is checked and every person who reaches an instance now is found
     /// before anything changes.
@@ -1727,8 +1739,7 @@ impl SystemState {
         shared: Option<bool>,
         nonce: &str,
         actor: &str,
-        owner_in_team: bool,
-        accounts_in_app_team: bool,
+        logged: ScopeAsLogged,
     ) -> Result<Value, &'static str> {
         use crate::types::caps;
 
@@ -1844,8 +1855,8 @@ impl SystemState {
                             self.may_reach_as_logged(
                                 a,
                                 Some(m.as_str()),
-                                owner_in_team,
-                                accounts_in_app_team,
+                                logged.owner_in_team,
+                                logged.accounts_in_app_team,
                             )
                         })
                         .cloned()
@@ -6863,8 +6874,10 @@ impl SystemMachine {
                 shared,
                 &nonce,
                 &actor,
-                owner_in_team,
-                accounts_in_app_team,
+                ScopeAsLogged {
+                    owner_in_team,
+                    accounts_in_app_team,
+                },
             ),
             SystemCmd::SetRecoveryKey {
                 org,
