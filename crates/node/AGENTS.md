@@ -117,7 +117,7 @@ is its command line.
   `an_owner_opening_their_own_invite_leaves_it_for_the_invitee`). The fleet
   carries the operator's signature (`cluster /
   __register_node { id, addr, zone }`, `__remove_node { id }`,
-  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one
+  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_price_table { table }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one
   signature for both of a move's writes: the union applies with it unspent,
   the target spends it). The configured peers come with `Genesis { nodes }`;
   `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
@@ -541,6 +541,7 @@ is its command line.
   Capacity is per pool: `SystemState::pools` (`POST /ops/pools`, operator-signed `cluster / __set_pools / { pools }`, refused `409 UPGRADE_PENDING` by `Node::require_current_release` while a node is behind) names each pool's `runsPerNode` and `maxMemoryMib`, a job node's `NodeRecord::pool` (empty is `DEFAULT_POOL`) puts it in one, and a pool's capacity is its nodes times `runsPerNode` (`pool_capacity`); a node in a pool the cluster does not define adds none.
   A run goes to the smallest pool whose `maxMemoryMib` fits its caps (`pool_for`, `RunSlot::pool`), `AcquireRun` refuses one that fits none (`RUN_NO_POOL`, permanent), and `pick_job` keeps only job nodes of the slot's pool.
   `SetPools` refuses removing a pool that still has job nodes or runs (`POOL_IN_USE`).
+  `SystemState::price_table` (`GET`/`POST /ops/prices`, operator-signed `cluster / __set_price_table / { table }`, same release gate) holds the `calimero_pipeline::PriceTable`; `SetPriceTable` accepts only `version` = current + 1 (`PRICE_VERSION`) and a nonzero fuel rate (`BAD_PRICES`).
   With no pools it is the legacy single pool: registered job nodes times `RUNS_PER_JOB_NODE` (2).
   Whether a node is reachable or runs a release an org approved is the leader's attested view, not replicated state, so `apply` cannot count it and the leader bounds a run's wait instead.
   A payer's limits (`SystemState::payer_quotas`: runs, fuel, file bytes) are its override in `SystemState::org_quotas` where it has one (`POST /ops/quotas` with `org`: a field set to `null` clears it; operator-signed `cluster / __set_org_quotas / { payer, quotas }`, refused `409 UPGRADE_PENDING` while a node is behind; all fields cleared removes the entry), else the cluster's.

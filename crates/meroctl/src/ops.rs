@@ -68,6 +68,13 @@ pub enum OpsCmd {
     SetPools {
         pools: String,
     },
+    /// The operator's price table, `{}` until one is set.
+    Prices,
+    /// Set the price table, JSON `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond,
+    /// connectorGib, storageGibMonth, egressGib }`; the version is the current one plus one.
+    SetPrices {
+        table: String,
+    },
     Quotas,
     /// Replace the quotas with this JSON.
     SetQuotas {
@@ -203,6 +210,11 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
         OpsCmd::SetPools { pools } => {
             let body = json!({ "pools": json_arg(&pools)? });
             decide_at(env, client, Some(body), "ops/pools").await?
+        }
+        OpsCmd::Prices => client.get("ops/prices").await?,
+        OpsCmd::SetPrices { table } => {
+            let body = json!({ "table": json_arg(&table)? });
+            decide_at(env, client, Some(body), "ops/prices").await?
         }
         OpsCmd::Quotas => client.get("ops/quotas").await?,
         OpsCmd::SetQuotas { quotas } => {
