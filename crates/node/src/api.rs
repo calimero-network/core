@@ -33,6 +33,7 @@ use tracing::{info, warn};
 use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
+use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{
@@ -6049,8 +6050,8 @@ async fn internal_blob_put(
     if mode == crate::node::PeerBlobs::Refuse {
         return Err(ApiError::unavailable("blob puts are refused"));
     }
-    node.engine
-        .put_blob(&body.hash, &wasm.0)
+    node.blob_guards
+        .put(&body.hash, || node.engine.put_blob(&body.hash, &wasm.0))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     #[cfg(feature = "testing")]
     if mode == crate::node::PeerBlobs::StoreThenFail {
@@ -6213,20 +6214,29 @@ async fn blob_upload(
     let mime = blob_mime(&headers)?;
     // The bytes of a sealed file would claim its id.
     refuse_sealed_file(&node, &app, &sha256(&body)).await?;
-    let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
-    let a = node
-        .call(&CallRequest {
-            // The gate's round covers the leader's checks (`Node::sys_fresh_from`).
-            sys_index: p.sys_index,
-            ..CallRequest::host(
-                app_id,
-                "__blob",
-                json!({ "id": id, "size": size, "mime": mime }),
-                p.caller,
-            )
-        })
+    let pin = node
+        .pin_on_leader(&app, vec![hex::encode(sha256(&body))])
         .await?;
+    let stored = async {
+        let id = node.store_blob(&body, Some(&app_id)).await?;
+        let a = node
+            .call(&CallRequest {
+                // The gate's round covers the leader's checks (`Node::sys_fresh_from`).
+                sys_index: p.sys_index,
+                ..CallRequest::host(
+                    app_id.clone(),
+                    "__blob",
+                    json!({ "id": id, "size": size, "mime": mime }),
+                    p.caller,
+                )
+            })
+            .await?;
+        Ok::<_, ApiError>((id, a))
+    }
+    .await;
+    node.unpin_on_leader(pin).await;
+    let (id, a) = stored?;
     let raw = parse_blob_id(&id)?;
     let mut out = blob_json(&raw, size);
     out["index"] = json!(a.index);
@@ -6718,21 +6728,19 @@ async fn internal_blob_delete(
 ) -> ApiResult {
     let _caller = peer(&node, &headers, key).await?;
     let hash = body["hash"].as_str().unwrap_or_default().to_owned();
-    // The node that collects a blob checked that no app marks it; one here
-    // that still does keeps its bytes, whoever asks. A mark is judged as the
-    // app's leader holds it: this replica may not have applied the delete
-    // that let the blob go yet, and would keep the bytes for good (nothing
-    // asks again). Unknown counts as held.
+    let deletion = node.blob_guards.begin_deletion(&hash);
+    // The collecting node checked that no app holds it; this node asks the leaders again.
     if let Ok(raw) = <[u8; 32]>::try_from(hex::decode(&hash).unwrap_or_default()) {
-        for app in hosted_holders(&node, &hash) {
-            if node.blob_held_strong(&app, &raw).await.unwrap_or(true) {
-                return Err(ApiError::forbidden("an app here still holds that blob"));
-            }
+        if node.blob_in_use(&raw).await {
+            return Err(ApiError::forbidden("an app still holds that blob"));
         }
     }
+    #[cfg(feature = "testing")]
+    node.deletion_checkpoint().await;
     if !node.is_code_blob(&hash) {
-        node.engine
-            .delete_blob(&hash)
+        let deleted = deletion.delete(|| node.engine.delete_blob(&hash));
+        deleted
+            .ok_or_else(|| ApiError::conflict("the blob was stored again"))?
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     }
     Ok(Json(json!({})))
@@ -6747,6 +6755,9 @@ struct HeldBody {
     /// Ask whether it is held as a sealed file, not whether it is held at all.
     #[serde(default)]
     file: bool,
+    /// Count bytes an entry stored here and has not committed yet as held (strong reads only).
+    #[serde(default)]
+    pinned: bool,
 }
 
 async fn internal_blob_held(
@@ -6767,7 +6778,7 @@ async fn internal_blob_held(
         if body.file {
             m.is_sealed_file(&raw)
         } else {
-            m.holds_blob(&raw)
+            m.holds_blob(&raw) || (body.pinned && node.blob_guards.is_pinned(&body.id))
         }
     };
     let (held, standing) = if body.strong {
@@ -6781,6 +6792,52 @@ async fn internal_blob_held(
     Ok(Json(
         json!({ "held": held, "published": published, "epoch": epoch }),
     ))
+}
+
+/// Pins ids on this node, the app's leader, for a peer that is about to store their bytes
+/// (`ids`), or releases such a pin (`release`).
+#[derive(Deserialize)]
+struct PinBody {
+    #[serde(default)]
+    app: String,
+    #[serde(default)]
+    ids: Vec<String>,
+    release: Option<u64>,
+}
+
+async fn internal_blob_pin(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<PinBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    let app = node.app(&body.app).await?;
+    caller_may_hold(&node, &caller, &app)?;
+    if let Some(token) = body.release {
+        node.blob_guards.release_lease(&app.app_id, token);
+        return Ok(Json(json!({})));
+    }
+    if body.ids.is_empty() || body.ids.len() > MAX_LEASE_IDS {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "a pin names 1 to 16 blobs",
+        ));
+    }
+    for id in &body.ids {
+        parse_blob_id(id)?;
+    }
+    let g = node
+        .hosted(&app.app_id)
+        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+    g.read_strong(|_, _| ())
+        .await
+        .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+    let token = node
+        .blob_guards
+        .lease(&app.app_id, body.ids)
+        .ok_or_else(|| ApiError::new(429, "TOO_MANY_PINS", "too many blob pins are open"))?;
+    Ok(Json(json!({ "token": token })))
 }
 
 /// The system leader's applied index, once it confirmed it leads.
@@ -9400,6 +9457,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))
+        .route("/internal/blob/pin", post(internal_blob_pin))
         .route("/internal/storage", post(internal_storage))
         .route("/internal/last-write", post(internal_last_write))
         .route("/internal/presence", post(internal_presence))

@@ -1413,6 +1413,7 @@ fn stored_of(marks: &[FileMark]) -> Stored {
         ids: marks.iter().map(|m| m.id.clone()).collect(),
         charged: marks.iter().map(|m| m.size).sum(),
         outputs: true,
+        pin: None,
     }
 }
 
