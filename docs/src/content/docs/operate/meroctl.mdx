@@ -217,7 +217,7 @@ or `restricted` (only the members added).
 | `namespace leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
 | `namespace groups ORG` | `GET /orgs/{org}` | The organization's teams. |
 | `namespace create-group ORG NAME [--parent TEAM] [--join JOIN]` | `POST /orgs/{org}/teams` | Create a team; `--join` defaults to `restricted`. |
-| `namespace members list ORG` (`ls`) | `GET /orgs/{org}` | Its members. |
+| `namespace members list ORG [--security]` (`ls`) | `GET /orgs/{org}` | Its members. `--security` (owners and admins, `GET /orgs/{org}/members?detail=security`): each member's passkeys held (to `3+`), recovery code set, last active day and live sessions. |
 | `namespace members add ORG ACCOUNT [--role ROLE]` (`set-role`) | `POST /orgs/{org}/members` | Add a member or change their role (default `member`). `owner` moves ownership. |
 | `namespace members remove ORG ACCOUNT` (`rm`) | `DELETE /orgs/{org}/members/{account}` | Remove a member. |
 | `namespace metadata get ORG` | `GET /orgs/{org}` | The organization's metadata. |

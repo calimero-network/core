@@ -357,8 +357,10 @@ runs it). Records from before deployments are not moved into one.
 - `GET /deployments/{id}/orgs`: for its managers, on fresh state: each
   organization with instances created from it, with its id and name, how many,
   which of the deployment's apps and the releases they run, and when the
-  first was created. Never members, teams, instance names or app data;
-  instances outside an organization are only counted. Another deployment's
+  first was created, and `memberCount` and `activeMembers30d` (members whose
+  last sign-in or session exchange is within 30 days). Never who the members
+  are, teams, instance names or app data; instances outside an organization
+  are only counted. Another deployment's
   customers never appear, even on the same release.
 
 Frontends open at a deployment's release with `/d/{deployment}/`, or on the

@@ -156,7 +156,13 @@ pub enum NamespaceCmd {
 #[derive(Debug, Subcommand)]
 pub enum MembersCmd {
     #[command(alias = "ls")]
-    List { namespace: String },
+    List {
+        namespace: String,
+        /// Each member's lockout risk instead (owners and admins): passkeys
+        /// held (to "3+"), recovery code set, last active day, live sessions.
+        #[arg(long)]
+        security: bool,
+    },
     /// Add a member, or change their role.
     #[command(alias = "set-role")]
     Add {
@@ -256,9 +262,16 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
                 )
                 .await?
         }
-        NamespaceCmd::Members(MembersCmd::List { namespace }) => {
+        NamespaceCmd::Members(MembersCmd::List {
+            namespace,
+            security: false,
+        }) => {
             json!({ "members": org(env, &namespace).await?["members"] })
         }
+        NamespaceCmd::Members(MembersCmd::List {
+            namespace,
+            security: true,
+        }) => client.org_members_security(&namespace).await?,
         NamespaceCmd::Members(MembersCmd::Add {
             namespace,
             account,
