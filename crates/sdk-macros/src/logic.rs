@@ -46,6 +46,8 @@ struct ComputeAttr {
 struct Attrs {
     init: bool,
     view: bool,
+    /// `view(subscribable)` (PoC): clients may watch the view.
+    subscribable: bool,
     action: bool,
     /// `allow(action)`: called only by the app's own actions.
     action_only: bool,
@@ -131,7 +133,19 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
         };
         match name.as_str() {
             "init" => attrs.init = true,
-            "view" => attrs.view = true,
+            "view" => {
+                attrs.view = true;
+                if matches!(attr.meta, syn::Meta::List(_)) {
+                    attr.parse_nested_meta(|meta| {
+                        if meta.path.is_ident("subscribable") {
+                            attrs.subscribable = true;
+                            Ok(())
+                        } else {
+                            Err(meta.error("expected `subscribable`"))
+                        }
+                    })?;
+                }
+            }
             "action" => attrs.action = true,
             "confirm" => attrs.confirm = true,
             "public" => {
@@ -391,6 +405,9 @@ fn abi_entry(m: &Method) -> Value {
     }
     if m.attrs.action_only {
         let _ = entry.insert("allowAction".into(), true.into());
+    }
+    if m.attrs.subscribable {
+        let _ = entry.insert("subscribable".into(), true.into());
     }
     Value::Object(entry)
 }
@@ -714,6 +731,24 @@ mod tests {
             impl S { pub fn m(&self, p: Vec<Vec<u8>>) -> Result<()> { Ok(()) } }
         });
         assert!(msg.contains("D20"), "{msg}");
+    }
+
+    /// PoC: `view(subscribable)` writes `"subscribable": true`; nothing else is a view option.
+    #[test]
+    fn a_subscribable_view_reaches_the_abi() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                #[app::view(subscribable)]
+                pub fn result(&self) -> Result<u32> { Ok(1) }
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        let entry = r#"{"result":{"allowSystem":false,"confirm":false,"kind":"view","params":[],"public":false,"returns":"u32","subscribable":true}}"#;
+        assert!(out.contains(&lit(entry)[1..lit(entry).len() - 1]), "{out}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::view(shared)] pub fn m(&self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("subscribable"), "{msg}");
     }
 
     #[test]
