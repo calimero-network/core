@@ -84,6 +84,18 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// Move the context to another organization (namespace), its data where
+    /// it is: whoever manages it now, as an admin of the target, approves
+    /// with a passkey.
+    Move {
+        context: String,
+        namespace: String,
+        /// Bring the members of its organization who reach it along.
+        #[arg(long)]
+        bring_members: bool,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
     /// Print the context's committed events, then live ones, as JSON lines.
     #[command(alias = "ws")]
     Watch {
@@ -262,6 +274,20 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             env.post_approved(
                 &format!("apps/{app}/transfer"),
                 json!({ "to": to }),
+                dev_passkey.as_deref(),
+            )
+            .await?
+        }
+        ContextCmd::Move {
+            context,
+            namespace,
+            bring_members,
+            dev_passkey,
+        } => {
+            let app = env.app(&context).await?;
+            env.post_approved(
+                &format!("apps/{app}/move"),
+                json!({ "toOrg": namespace, "bringMembers": bring_members }),
                 dev_passkey.as_deref(),
             )
             .await?

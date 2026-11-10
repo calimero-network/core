@@ -128,6 +128,7 @@ App instances.
 | `context list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
 | `context get CONTEXT` | `GET /apps/{app}` | One context. |
 | `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
+| `context move CONTEXT NAMESPACE [--bring-members] [--dev-passkey F]` | `POST /apps/{app}/move` | Move the context to another org, its data where it is (whoever manages it now, as an admin of the target org, with a passkey); `--bring-members` adds the members who reach it. |
 | `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, or for an org's context its owner while a member or an org admin, with a passkey; an org's context only to a member of the org). |
 | `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
 | `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |

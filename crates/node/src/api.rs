@@ -5237,6 +5237,52 @@ async fn app_transfer(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MoveBody {
+    to_org: String,
+    #[serde(default)]
+    bring_members: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Move an app to another organization (`SystemCmd::MoveApp`), its data
+/// where it is: whoever manages it where it is now, as an admin or the owner
+/// of the target, with a passkey assertion over this move (412 first).
+/// Answers where it went, its access there, whether an app team was made,
+/// the accounts brought in and the invites revoked.
+async fn app_move(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<MoveBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    if !node.sys(|s| s.manages_app(&app, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
+    }
+    if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
+    }
+    let args = crate::system::move_app_args(&body.to_org, body.bring_members);
+    let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::MoveApp {
+            app_id,
+            to_org: body.to_org,
+            actor,
+            consent,
+            bring_members: body.bring_members,
+            nonce: b64url(&random::<16>()),
+        })
+        .await?,
+    ))
+}
+
 async fn org_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -10271,6 +10317,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
         .route("/apps/{app}/transfer", post(app_transfer))
+        .route("/apps/{app}/move", post(app_move))
         .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))

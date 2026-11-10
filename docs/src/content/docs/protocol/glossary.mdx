@@ -128,6 +128,11 @@ direct rows of role `lead`, `member` or `read-only`. [Group, subgroup]
 the one team of that app in an organization, whose instances use `team` access
 on it. See [Organizations](/protocol/organizations/#app-teams).
 
+**Move** — Taking an app instance to another organization (`MoveApp`,
+`POST /apps/{app}/move`): its data stays on its replicas; its organization,
+payer, quotas and access change. Not a **transfer**, which changes its owner
+within its organization. See [Organizations](/protocol/organizations/#moving-an-app).
+
 **Capability** — A bit granting a member an action beyond their role. See
 [Organizations](/protocol/organizations/#capabilities).
 
