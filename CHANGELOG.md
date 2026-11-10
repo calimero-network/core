@@ -2,9 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A DM moved with its people into a closed app team keeps them.** Since
+  #4905, an `accounts` instance (a DM, a private channel) of a
+  package with an app team in its organization is reached only by those in
+  that team. `MoveApp` with `bringMembers` added the source's people to the
+  target but gave them no row on the target's app team of the package, so
+  where that team is closed they lost the DM they were brought for. Such a
+  move now gives the people it brings, and the instance's owner, a plain row
+  on that team (never more than member; an open team needs none, and the
+  owner must still be a member of the target). `MoveApp` carries
+  `accounts_in_app_team`, which the API always sets; an entry an earlier
+  release logged replays giving no such rows.
+
+## [1.0.0-rc.15] - 2026-11-10
+
 ### Added
 
-- **Members make private channels under an app's team.** Only a parent
+- **Members make private channels under an app's team** (#4906). Only a parent
   team's leads and the organization's admins created a team below it, so an
   app could not make a private channel a child team of its app team. A member
   who writes a team and holds the new `CREATE_CHILD_TEAM` capability (`1 <<
@@ -16,42 +32,39 @@
   in the teams below it. `CreateTeam` and `ScopeApps` carry
   `member_child_teams` (serde default false), so entries an earlier release
   logged replay as they did.
-
-- **Move an app to another organization**: `POST /apps/{app}/move { toOrg,
-  bringMembers?, confirm? }` (`SystemCmd::MoveApp`, a passkey step-up over
-  `<app> / __move { toOrg, bringMembers }`; `meroctl context move`). Whoever
-  manages the app where it is now, as an admin or the owner of the target,
-  moves it; its data stays on its replicas. Its organization, file bytes,
-  compute runs and quotas go to the target (refused past the target's quota,
-  or when the target approves none of the releases holding it). `org` or
-  app-team access becomes the target's app team of its package (made when
+- **Move an app to another organization** (#4907): `POST /apps/{app}/move {
+  toOrg, bringMembers?, confirm? }` (`SystemCmd::MoveApp`, a passkey step-up
+  over `<app> / __move { toOrg, bringMembers }`; `meroctl context move`).
+  Whoever manages the app where it is now, as an admin or the owner of the
+  target, moves it; its data stays on its replicas. Its organization, file
+  bytes, compute runs and quotas go to the target (refused past the target's
+  quota, or when the target approves none of the releases holding it). `org`
+  or app-team access becomes the target's app team of its package (made when
   missing, closed when every app team of the target is; `org` access in a
-  legacy target); an app on any other team, and one whose owner would not be
-  a member of the target, is refused. `bringMembers` adds the source's members who reach the app,
-  capped at `member`, with rows on the target's app team. The source's
-  invites into the team the app leaves are revoked once no app is on it. No
-  stored format changes: the new entry's optional fields default, and a node
-  on an earlier release answers the route `404`.
-
-- **Close or open one app's team alone**: `POST /orgs/{org}/app-teams` takes,
-  per package, `join` (`invite` closes that app team, `everyone` opens it)
-  and, on a close, `keep: [account, ...]`. Before, the only atomic close was
-  `shared: true`, which closed every open app team at once; closing one with
-  `POST /orgs/{org}/teams/{team} { join: invite }` dropped everyone who
+  legacy target); an app on any other team, and one whose owner would not be a
+  member of the target, is refused. `bringMembers` adds the source's members
+  who reach the app, capped at `member`, with rows on the target's app team.
+  The source's invites into the team the app leaves are revoked once no app is
+  on it. No stored format changes: the new entry's optional fields default,
+  and a node on an earlier release answers the route `404`.
+- **Close or open one app's team alone** (#4903): `POST /orgs/{org}/app-teams`
+  takes, per package, `join` (`invite` closes that app team, `everyone` opens
+  it) and, on a close, `keep: [account, ...]`. Before, the only atomic close
+  was `shared: true`, which closed every open app team at once; closing one
+  with `POST /orgs/{org}/teams/{team} { join: invite }` dropped everyone who
   reached it by inheritance unless each had been added first. A close keeps
   everyone who reaches the app then as a direct row, or, with `keep`, those
   accounts and the team's leads: everyone else loses the app and their rows in
   the teams below it, in the same log entry. A package that names `join`
-  leaves the other app teams alone unless `shared` is set. Answers each
-  team's `join` and how many people were `dropped`. Stored format: the new
-  fields are left out when absent, so entries from before replay as they did
-  and their passkey consent reads the same; a node on an earlier release
-  refuses a request naming them (`400`, unknown field).
-
-- **Passkey times and the account's sessions**: `GET /auth/me` gives each
-  passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a passkey
-  added, or last signed in, before this release). `GET /auth/sessions` lists
-  the caller's own live sessions, `{ sessions: [{ session, passkey, app,
+  leaves the other app teams alone unless `shared` is set. Answers each team's
+  `join` and how many people were `dropped`. Stored format: the new fields are
+  left out when absent, so entries from before replay as they did and their
+  passkey consent reads the same; a node on an earlier release refuses a
+  request naming them (`400`, unknown field).
+- **Passkey times and the account's sessions** (#4894): `GET /auth/me` gives
+  each passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a
+  passkey added, or last signed in, before this release). `GET /auth/sessions`
+  lists the caller's own live sessions, `{ sessions: [{ session, passkey, app,
   origin, openedAt, lastActiveAt, current }] }` (latest active first, at most
   256; `openedAt` is `null` for a session opened before this release;
   `lastActiveAt` is when its refresh token was last exchanged, so the session
@@ -68,52 +81,83 @@
   them unknown on every replica. In a rolling upgrade a node on the earlier
   release ignores the new fields and keeps no times; the sessions route
   answers `404` there.
-- **Members' lockout risk, for organization admins**: `GET
+- **Members' lockout risk, for organization admins** (#4902): `GET
   /orgs/{org}/members?detail=security` gives an organization's owner and
   admins, per member, `{ account, name, role, teams, passkeys, recoveryCode,
   lastActiveDay, sessions }`: the passkey count capped at `"3+"`, whether a
   recovery code is set, the UTC day of the latest sign-in or session exchange
   and the number of live sessions. Never a credential id, a passkey label or
   time, a session, an origin or an activity entry. A member below admin gets
-  `403`, anyone outside the organization `404`; an API key or a
-  package-bound session is refused. `GET /deployments/{id}/orgs` adds
-  `memberCount` and `activeMembers30d` per customer organization (counts
-  only). `meroctl namespace members list --security`. No stored format
-  changes: everything is read from state the node already keeps.
-- **An account's activity**: `GET /auth/activity[?after=T]` lists what the
-  caller's passkeys did, newest first, the last 100 entries: `{ activity: [{
-  at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"` is
-  a sign-up, sign-in or recovery finish, with the package and origin its
+  `403`, anyone outside the organization `404`; an API key or a package-bound
+  session is refused. `GET /deployments/{id}/orgs` adds `memberCount` and
+  `activeMembers30d` per customer organization (counts only). `meroctl
+  namespace members list --security`. No stored format changes: everything is
+  read from state the node already keeps.
+- **An account's activity** (#4901): `GET /auth/activity[?after=T]` lists what
+  the caller's passkeys did, newest first, the last 100 entries: `{ activity:
+  [{ at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"`
+  is a sign-up, sign-in or recovery finish, with the package and origin its
   session is bound to (a refresh is none; a repeat of the newest sign-in only
   moves its time); `kind: "approval"` is a change the passkey approved with a
   step-up, with the method and subject its consent states, never its
   arguments. The account holder's own session only, as `/auth/sessions`;
   nothing is shown to operators, organization admins or deployment managers.
   `meroctl account activity`. Stored formats: `SystemState.activity` (by
-  account) is left out when empty, and a step-up's consent carries its
-  time as `at` outside what the passkey signs (left out when 0), so state and entries from before read
-  and write as they did, and a node on the earlier release checks the same
-  consent and keeps no activity. An earlier release's entries carry no time
-  and add no activity when replayed.
+  account) is left out when empty, and a step-up's consent carries its time as
+  `at` outside what the passkey signs (left out when 0), so state and entries
+  from before read and write as they did, and a node on the earlier release
+  checks the same consent and keeps no activity. An earlier release's entries
+  carry no time and add no activity when replayed.
+- **Compute node pools** (#4898): job nodes belong to named pools, and the run
+  queue grants places per pool. A run goes to the smallest pool whose
+  `maxMemoryMib` fits its declared memory (`AcquireRun.memoryMib`; none fits:
+  `RUN_NO_POOL`). `POST /ops/pools { pools }` (operator-signed, `__set_pools`)
+  and `GET /ops/pools { pools, capacity }`; `POST /ops/nodes` takes `pool` for
+  job nodes only (`400 POOL_FOR_JOB_NODES`); removing a pool that still has
+  job nodes or runs is `POOL_IN_USE`. `merod run --job-node --job-slots N`
+  (default 2). `meroctl ops pools`, `ops set-pools`, `ops add-node --pool`.
+  With no pools set the cluster behaves as before: one pool of job nodes x 2.
+  Stored format: `pools`, `NodeRecord.pool` and `RunSlot.pool` are left out
+  when empty; setting pools answers `409 UPGRADE_PENDING` until every node
+  runs this release.
+- **Per-organization compute quota overrides** (#4899): the operator gives one
+  organization (or personal account) its own `maxConcurrentRuns`,
+  `computeFuel` (a decimal string) and `maxFileBytes` in place of the cluster
+  quotas: `POST /ops/quotas { org, ... }` (operator-signed,
+  `__set_org_quotas`; fields merge with the existing override, `null` clears
+  one). `GET /ops/quotas` adds `orgs`. A lowered override never revokes runs
+  already granted. Stored format: `orgQuotas` is left out when empty; the
+  write answers `409 UPGRADE_PENDING` until every node runs this release.
+
+### Changed
+
+- **Sealed files are stored as 16 MiB segments, up to 2 GiB** (#4884): a
+  sealed file is an ordered list of segments, the only unit a node stores,
+  sends, fetches or verifies, and the file cap goes from 47 MiB to 2 GiB.
+  Uploads go through `POST /apps/{app}/files` (up to 16 MiB, one request) or
+  an upload session (`/apps/{app}/files/uploads[/{u}[/parts/{k} |
+  /complete]]`); `GET /apps/{app}/files[/{id}]` lists files, which leave
+  `/blobs`. `Client::upload_file` takes a reader and a size and resumes;
+  `meroctl file upload FILE -c CONTEXT`. **BREAKING**: `POST
+  /apps/{app}/blobs?sealed=...` answers `400 USE_FILES_API`; mero-js
+  `uploadFile` and the Python client need follow-ups. **One-way**: the mark,
+  record and job formats change and there is no reader for whole-file records,
+  so a cluster holding sealed files from rc.11 to rc.14 must be wiped before
+  it upgrades.
 
 ### Fixed
 
-- **A DM moved with its people into a closed app team keeps them.** Since
-  the change above, an `accounts` instance (a DM, a private channel) of a
-  package with an app team in its organization is reached only by those in
-  that team. `MoveApp` with `bringMembers` added the source's people to the
-  target but gave them no row on the target's app team of the package, so
-  where that team is closed they lost the DM they were brought for. Such a
-  move now gives the people it brings, and the instance's owner, a plain row
-  on that team (never more than member; an open team needs none, and the
-  owner must still be a member of the target). `MoveApp` carries
-  `accounts_in_app_team`, which the API always sets; an entry an earlier
-  release logged replays giving no such rows.
+- **A blob stored again after a delete keeps its bytes** (#4888): deleting a
+  blob and storing the same bytes again could lose them on every node, and the
+  next download answered `503 no peer holds the blob`. Every upload pins its
+  ids on the app's leader (`internal/blob/pin`, 1 to 16 ids, at most 1024 open
+  leases per node, `429 TOO_MANY_PINS` past that) and every delete goes
+  through one in-use check.
 
 ### Security
 
 - **An `accounts` instance of an app with an app team is reached only through
-  that team.** Private channels and DMs (`accounts` access) checked
+  that team** (#4905). Private channels and DMs (`accounts` access) checked
   organization membership alone, so someone removed from Chat's app team
   stayed in every private channel listing them, which the person who removed
   them could not edit. Now, where an instance's package has an app team in its
@@ -124,37 +168,36 @@
   earlier release logged replays as that release judged it. In a rolling
   upgrade a node on the earlier release judges reads by the list alone until
   it is upgraded.
-
 - **An app on a team is reached and managed by its owner only while they are
-  in that team.** An owner always reached their own app, so a person removed
-  from an app's team (Chat's, say) kept every channel they had created on it,
-  and could still change, transfer or delete it. Now, for an app with `team`
-  access, the owner reaches it, receives its events and holds the owner's
-  powers (access, metadata, transfer, deletion, upgrades, upgrade keys, files,
-  blobs) only while in that team, as #4893 asked of the organization; one who
-  is removed from the team, leaves it, or loses it when an open team closes
-  keeps their name on the app and gets it back on rejoining. The
-  organization's admins transfer such an app. Judged where the commands apply:
-  `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp`,
-  `CreateApiKey` and `ScopeApps` carry `owner_in_team`, which the API always
-  sets; an entry an earlier release logged replays judging the owner without
-  the team. In a rolling upgrade a node on the earlier release judges reads
-  without the team until it is upgraded.
-
+  in that team** (#4904). An owner always reached their own app, so a person
+  removed from an app's team (Chat's, say) kept every channel they had created
+  on it, and could still change, transfer or delete it. Now, for an app with
+  `team` access, the owner reaches it, receives its events and holds the
+  owner's powers (access, metadata, transfer, deletion, upgrades, upgrade
+  keys, files, blobs) only while in that team, as #4893 asked of the
+  organization; one who is removed from the team, leaves it, or loses it when
+  an open team closes keeps their name on the app and gets it back on
+  rejoining. The organization's admins transfer such an app. Judged where the
+  commands apply: `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`,
+  `UpgradeApp`, `CreateApiKey` and `ScopeApps` carry `owner_in_team`, which
+  the API always sets; an entry an earlier release logged replays judging the
+  owner without the team. In a rolling upgrade a node on the earlier release
+  judges reads without the team until it is upgraded.
 - **An organization's app is managed by its owner only while they are a
-  member.** Since #4891 an owner removed from the organization no longer
-  reached the app, but could still change it: make it `public` and reach it
-  again, transfer, delete or upgrade it, set its metadata, make an upgrade key
-  for it, upload files to it or delete its blobs. Owner powers over an
-  organization's app now hold only while the owner is a member (`member` or
-  above) of that organization; one who leaves, is removed or is made a guest
-  keeps their name on the app and none of the powers. The organization's
-  admins can now transfer such an app (`POST /apps/{app}/transfer`, with
-  their passkey) as well as delete it, so an organization cleans up an app
-  whose owner left. Personal apps are unchanged. Judged where the commands
-  apply; entries an earlier release logged replay as before (`owner_in_org`).
-  **Behaviour change**: an owner demoted to guest no longer manages their
-  organization app; make them a member again, or have an admin transfer it.
+  member** (#4893). Since #4891 an owner removed from the organization no
+  longer reached the app, but could still change it: make it `public` and
+  reach it again, transfer, delete or upgrade it, set its metadata, make an
+  upgrade key for it, upload files to it or delete its blobs. Owner powers
+  over an organization's app now hold only while the owner is a member
+  (`member` or above) of that organization; one who leaves, is removed or is
+  made a guest keeps their name on the app and none of the powers. The
+  organization's admins can now transfer such an app (`POST
+  /apps/{app}/transfer`, with their passkey) as well as delete it, so an
+  organization cleans up an app whose owner left. Personal apps are unchanged.
+  Judged where the commands apply; entries an earlier release logged replay as
+  before (`owner_in_org`). **Behaviour change**: an owner demoted to guest no
+  longer manages their organization app; make them a member again, or have an
+  admin transfer it.
 
 ## [1.0.0-rc.14] - 2026-11-10
 
