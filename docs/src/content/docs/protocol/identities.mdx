@@ -50,7 +50,9 @@ A ceremony's challenge lives in the memory of the node that issued it, for 5
 minutes; its id names that node. It may finish on any node: that node takes
 the challenge from the issuer over the attested peer channel, so it is still
 used once (a load balancer may send the two requests anywhere). A node holds
-at most 10 000 open ceremonies; past that it answers `429`.
+at most 10 000 open sign-in and sign-up ceremonies, and apart from those 64
+step-ups per account (10 000 across accounts), so a full anonymous pool never
+blocks a signed-in account's step-up; past either it answers `429`.
 
 ### Passkeys are each cluster's own
 

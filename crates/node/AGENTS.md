@@ -168,7 +168,7 @@ is its command line.
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
   `the_nodes_own_commands_cannot_be_called_as_methods`.
-- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Regression: `a_sign_in_begun_on_one_node_finishes_on_another`.
+- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES`; those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`.
 - **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
   the exact call; the retry carries a passkey assertion, which is logged as consent.
 - **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
@@ -886,7 +886,10 @@ is its command line.
   (`merod local`: `localhost`), each package's frontend is at
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
-  cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
+  cached, and so is a release shipping none; `FrontendCache::get_or_load` runs
+  one load per release and `FRONTEND_LOADS` at once; regressions:
+  `a_release_without_a_frontend_is_loaded_once`,
+  `frontend_loads_are_bounded_node_wide`). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
   `/app/{app}/` → the release that instance runs (`AppRecord::release`; for a
   record from before, the newest release, by `compare_versions`, shipping its
   WASM), `/d/{deployment}/` →

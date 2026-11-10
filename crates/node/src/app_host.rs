@@ -63,8 +63,9 @@
 //! in front of merod, with a certificate mdma orders over the node's quote;
 //! design and rollout in `docs/specs/custom-domains.md`.
 
+use core::future::Future;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -72,6 +73,7 @@ use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use calimero_bundle::{mime_type, FRONTEND_ROOT};
+use tokio::sync::Semaphore;
 
 use crate::node::Node;
 use crate::system::{compare_versions, Deployment, SystemState};
@@ -98,6 +100,12 @@ const MAX_STRIPPED_SEGMENTS: usize = 16;
 const MAX_REDIRECT_QUERY_BYTES: usize = 4096;
 /// How many releases' frontends a node keeps open in memory.
 const CACHED_FRONTENDS: usize = 32;
+/// How many releases a node remembers shipping no frontend, so a request for
+/// one does not fetch and verify its `.mpk` again.
+const CACHED_ABSENT_FRONTENDS: usize = 4096;
+/// Releases' `.mpk`s fetched and verified for their frontends at once,
+/// node-wide: a frontend's URL needs no credential.
+const FRONTEND_LOADS: usize = 4;
 
 /// The DNS label of `package`'s origin: SHA-256 of a domain-separated name,
 /// unpadded lowercase base32 (52 characters, as v1's).
@@ -177,18 +185,36 @@ pub struct Frontend {
     files: BTreeMap<String, Arc<[u8]>>,
 }
 
-/// `(package, version)` -> (last use, the frontend).
-type OpenFrontends = HashMap<(String, String), (u64, Arc<Frontend>)>;
+/// `(package, version)` -> (last use, the frontend, or `None` when the release
+/// ships none).
+type OpenFrontends = HashMap<(String, String), (u64, Option<Arc<Frontend>>)>;
 
-/// Frontends opened from their `.mpk`, newest use last.
-#[derive(Default)]
+/// Frontends opened from their `.mpk`, newest use last, and the releases known
+/// to ship none. One load runs per release at a time, and at most
+/// [`FRONTEND_LOADS`] across releases.
 pub struct FrontendCache {
     open: Mutex<OpenFrontends>,
     clock: std::sync::atomic::AtomicU64,
+    /// The load of each release in progress, which a second request waits on.
+    loading: Mutex<HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>>,
+    loads: Semaphore,
+}
+
+impl Default for FrontendCache {
+    fn default() -> Self {
+        Self {
+            open: Mutex::default(),
+            clock: std::sync::atomic::AtomicU64::default(),
+            loading: Mutex::default(),
+            loads: Semaphore::new(FRONTEND_LOADS),
+        }
+    }
 }
 
 impl FrontendCache {
-    fn get(&self, key: &(String, String)) -> Option<Arc<Frontend>> {
+    /// The cached answer for `key`: `Some(None)` for a release known to ship
+    /// no frontend.
+    fn get(&self, key: &(String, String)) -> Option<Option<Arc<Frontend>>> {
         let tick = self
             .clock
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -198,10 +224,11 @@ impl FrontendCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = open.get_mut(key)?;
         entry.0 = tick;
-        Some(Arc::clone(&entry.1))
+        Some(entry.1.clone())
     }
 
-    fn put(&self, key: (String, String), f: Arc<Frontend>) {
+    /// Remember `f` for `key`; each kind evicts its own least recently used.
+    fn put(&self, key: (String, String), f: Option<Arc<Frontend>>) {
         let tick = self
             .clock
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -209,13 +236,67 @@ impl FrontendCache {
             .open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if open.len() >= CACHED_FRONTENDS {
-            let oldest = open.iter().min_by_key(|(_, v)| v.0).map(|(k, _)| k.clone());
+        let cap = if f.is_some() {
+            CACHED_FRONTENDS
+        } else {
+            CACHED_ABSENT_FRONTENDS
+        };
+        let same_kind = |v: &Option<Arc<Frontend>>| v.is_some() == f.is_some();
+        if open.values().filter(|v| same_kind(&v.1)).count() >= cap {
+            let oldest = open
+                .iter()
+                .filter(|(_, v)| same_kind(&v.1))
+                .min_by_key(|(_, v)| v.0)
+                .map(|(k, _)| k.clone());
             if let Some(k) = oldest {
                 let _gone = open.remove(&k);
             }
         }
         let _prev = open.insert(key, (tick, f));
+    }
+
+    /// The lock a load of `key` holds, shared by every request for it.
+    fn load_lock(&self, key: &(String, String)) -> Arc<tokio::sync::Mutex<()>> {
+        let mut loading = self
+            .loading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(lock) = loading.get(key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        loading.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let _prev = loading.insert(key.clone(), Arc::downgrade(&lock));
+        lock
+    }
+
+    /// `key`'s frontend from the cache, else from `load`, run once however
+    /// many requests ask at the same time; a failed load is not remembered.
+    async fn get_or_load<F, Fut>(
+        &self,
+        key: (String, String),
+        load: F,
+    ) -> Result<Option<Arc<Frontend>>, crate::error::ApiError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Option<Arc<Frontend>>, crate::error::ApiError>>,
+    {
+        if let Some(f) = self.get(&key) {
+            return Ok(f);
+        }
+        let lock = self.load_lock(&key);
+        let _loading = lock.lock().await;
+        if let Some(f) = self.get(&key) {
+            return Ok(f);
+        }
+        let _permit = self
+            .loads
+            .acquire()
+            .await
+            .map_err(|_| crate::error::ApiError::internal("frontend loads closed"))?;
+        let f = load().await?;
+        self.put(key, f.clone());
+        Ok(f)
     }
 }
 
@@ -323,32 +404,34 @@ impl Node {
         package: &str,
         version: &str,
     ) -> Result<Option<Arc<Frontend>>, crate::error::ApiError> {
-        let key = (package.to_owned(), version.to_owned());
-        if let Some(f) = self.frontends.get(&key) {
-            return Ok(Some(f));
-        }
+        // A release the fleet does not have is answered from state, never
+        // cached, so made-up versions do not crowd out real ones.
         let Some(v) = self.sys(|s| s.packages.get(package)?.versions.get(version).cloned()) else {
             return Ok(None);
         };
-        let mpk = self.release_mpk(package, &v).await?;
-        let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk))?;
-        let Some(entry) = bundle.manifest().frontend.as_ref().map(|f| f.entry.clone()) else {
-            return Ok(None);
-        };
-        let contents = bundle
-            .contents()
-            .map_err(|e| crate::error::ApiError::internal(&format!("{e:#}")))?;
-        let strip = |p: &str| p.strip_prefix(FRONTEND_ROOT).unwrap_or(p).to_owned();
-        let f = Arc::new(Frontend {
-            entry: strip(&entry),
-            files: contents
-                .frontend
-                .into_iter()
-                .map(|(p, b)| (strip(&p), b))
-                .collect(),
-        });
-        self.frontends.put(key, Arc::clone(&f));
-        Ok(Some(f))
+        let key = (package.to_owned(), version.to_owned());
+        self.frontends
+            .get_or_load(key, || async {
+                let mpk = self.release_mpk(package, &v).await?;
+                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk))?;
+                let Some(entry) = bundle.manifest().frontend.as_ref().map(|f| f.entry.clone())
+                else {
+                    return Ok(None);
+                };
+                let contents = bundle
+                    .contents()
+                    .map_err(|e| crate::error::ApiError::internal(&format!("{e:#}")))?;
+                let strip = |p: &str| p.strip_prefix(FRONTEND_ROOT).unwrap_or(p).to_owned();
+                Ok(Some(Arc::new(Frontend {
+                    entry: strip(&entry),
+                    files: contents
+                        .frontend
+                        .into_iter()
+                        .map(|(p, b)| (strip(&p), b))
+                        .collect(),
+                })))
+            })
+            .await
     }
 
     /// Every node's API origin, for the page's `connect-src`.
@@ -675,6 +758,49 @@ mod tests {
             .into_iter()
             .collect(),
         }
+    }
+
+    /// A release that ships no frontend is loaded once, however many requests
+    /// ask for it at once or after: the answer is remembered.
+    #[tokio::test]
+    async fn a_release_without_a_frontend_is_loaded_once() {
+        let cache = FrontendCache::default();
+        let loads = std::sync::atomic::AtomicUsize::new(0);
+        let key = ("kv".to_owned(), "1.0.0".to_owned());
+        let ask = || {
+            cache.get_or_load(key.clone(), || async {
+                let _n = loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                Ok(None)
+            })
+        };
+        let answers = futures_util::future::join_all((0..16).map(|_| ask())).await;
+        assert!(answers.iter().all(|a| matches!(a, Ok(None))));
+        assert!(matches!(ask().await, Ok(None)));
+        assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Loads of different releases run at most `FRONTEND_LOADS` at a time.
+    #[tokio::test]
+    async fn frontend_loads_are_bounded_node_wide() {
+        let cache = FrontendCache::default();
+        let running = std::sync::atomic::AtomicUsize::new(0);
+        let most = std::sync::atomic::AtomicUsize::new(0);
+        let answers = futures_util::future::join_all((0..16).map(|i| {
+            cache.get_or_load(("kv".to_owned(), format!("1.0.{i}")), || async {
+                let now = running.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                let _prev = most.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                let _prev = running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Some(Arc::new(site())))
+            })
+        }))
+        .await;
+        assert!(answers.iter().all(|a| matches!(a, Ok(Some(_)))));
+        assert_eq!(
+            most.load(std::sync::atomic::Ordering::SeqCst),
+            FRONTEND_LOADS
+        );
     }
 
     /// A served page verifies the node before it signs anyone in, and on a TDX
