@@ -4539,6 +4539,10 @@ pub enum SystemCmd {
     /// no proof: like `RequireSessionProofs`, it is the nodes' own.
     SetClusterVersion {
         version: String,
+        /// As `[[id, version], ...]`: `SystemCmd` is internally tagged, and
+        /// serde reads such an enum through a buffer that keeps a JSON
+        /// object's keys as strings, which a `u64` key does not take.
+        #[serde(with = "cluster_version::node_versions")]
         nodes: BTreeMap<u64, String>,
     },
     /// Where the operator holds release approvals, it approves (or

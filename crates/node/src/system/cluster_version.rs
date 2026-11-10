@@ -183,6 +183,32 @@ pub fn advertised(health: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// `SetClusterVersion.nodes` on the wire: `[[id, version], ...]`, ids in
+/// order (a map with `u64` keys does not read back inside the tagged
+/// `SystemCmd`).
+pub(super) mod node_versions {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        nodes: &BTreeMap<u64, String>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        nodes.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<u64, String>, D::Error> {
+        let pairs = Vec::<(u64, String)>::deserialize(d)?;
+        let len = pairs.len();
+        let nodes: BTreeMap<u64, String> = pairs.into_iter().collect();
+        if nodes.len() != len {
+            return Err(serde::de::Error::custom("a node is named twice"));
+        }
+        Ok(nodes)
+    }
+}
+
 /// Refusals of [`SystemCmd::SetClusterVersion`].
 pub const NOT_FORWARD: &str = "the cluster version only moves forward";
 pub const NOT_EVERY_NODE: &str =
@@ -632,6 +658,31 @@ mod tests {
             .unwrap();
         let rc17 = [(1, "1.0.0-rc.17"), (2, "1.0.0-rc.17")];
         let _ok = m.run_authorized(set("1.0.0-rc.17", &rc17)).unwrap();
+    }
+
+    /// Reproduction: `SetClusterVersion` was logged as `{"1": ...}` and every
+    /// node refused it ("invalid type: string \"1\", expected u64"), since
+    /// the tagged `SystemCmd` reads map keys back as strings. It must read
+    /// back as the command it was.
+    #[test]
+    fn set_cluster_version_reads_back_from_the_log() {
+        let cmd = uses(Feature::ClusterVersion);
+        let bytes = serde_json::to_vec(&cmd).unwrap();
+        let back: SystemCmd = serde_json::from_slice(&bytes).unwrap();
+        let (
+            SystemCmd::SetClusterVersion { version, nodes },
+            SystemCmd::SetClusterVersion {
+                version: v2,
+                nodes: n2,
+            },
+        ) = (&cmd, &back)
+        else {
+            panic!("{back:?}");
+        };
+        assert_eq!((version, nodes), (v2, n2));
+        let twice =
+            json!({ "op": "setClusterVersion", "version": RC16, "nodes": [[1, RC16], [1, RC16]] });
+        assert!(serde_json::from_value::<SystemCmd>(twice).is_err());
     }
 
     #[test]
