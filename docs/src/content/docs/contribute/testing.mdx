@@ -552,6 +552,18 @@ written by an older version. A change to an on-disk or wire format
 needs its own migration test, as `calimero-log`'s `migration_tests.rs` does for
 the `log.redb` store.
 
+Nor do they run two releases in one cluster, so they cannot catch an entry an
+older node skips. **A new command or field ships with a feature gate**
+([The cluster version](/protocol/upgrades/#the-cluster-version)): add a
+`Feature` with the release it ships in, name it in `SystemCmd::features`, and
+give it a case in `uses` in `crates/node/src/system/cluster_version.rs`'s
+tests. There, `a_feature_is_never_proposed_while_an_older_node_holds_the_log`
+replays every feature through the proposal gate on a cluster holding an older
+node (modelled as a release that skips what it cannot decode, as
+`SystemMachine::apply` does) and checks that nothing is proposed and every
+replica keeps the same state, then that each feature works once the older
+node leaves and the leader raises the cluster version.
+
 ## Proving a fix
 
 <Steps>

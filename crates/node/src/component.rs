@@ -38,6 +38,7 @@ use calimero_app_host as host;
 use calimero_log::{Bytes, GroupState, StateTx};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::error;
 
 use crate::app::{rows, AppMachine, Status, Write};
 use crate::component::action::{ActionOut, ActionRecord, ActionsHead};
@@ -1524,15 +1525,22 @@ impl AppMachine {
                     ..host_answer(index, true, "")
                 }
             }
-            Err(e) => Applied {
-                index,
-                status: Status::Trap,
-                result: Value::Null,
-                error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
-                events: Vec::new(),
-                conflict: true,
-                timeout: false,
-            },
+            Err(e) => {
+                // As in the system log (`system::cluster_version`): a feature gate keeps
+                // every entry within what each replica applies, so this is a bug.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
+                error!(index, error = %e, undecodable = n,
+                    "an app entry this node cannot decode was skipped: its state now differs from the replicas that applied it");
+                Applied {
+                    index,
+                    status: Status::Trap,
+                    result: Value::Null,
+                    error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
+                    events: Vec::new(),
+                    conflict: true,
+                    timeout: false,
+                }
+            }
         };
         self.expire_component(tx, entry_ts_ms);
         if let Some(now) =

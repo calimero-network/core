@@ -11,12 +11,15 @@ use calimero_identity::Credential;
 use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
     Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
     NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
+
+pub mod cluster_version;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,6 +480,12 @@ pub struct SystemState {
     /// so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_proofs_from: Option<u64>,
+    /// The active cluster version ([`cluster_version`]): the newest core
+    /// release every node supports, logged by the system leader
+    /// (`SetClusterVersion`), only ever raised. `None` until the first.
+    /// Left out when `None`, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_version: Option<String>,
     /// Who may install apps where deployments are granted
     /// ([`Governance::deployments`]), by [`Deployer::key`]
     /// (`account:<id>`, `org:<id>`); [`SystemState::may_deploy`] judges them.
@@ -4533,6 +4542,14 @@ pub enum SystemCmd {
     /// (genesis sets it in a new one). It only ever tightens: a node that
     /// logs it early takes nothing from anyone.
     RequireSessionProofs,
+    /// The system leader raises the active cluster version
+    /// ([`SystemState::cluster_version`]) to `version`, once every registered
+    /// node advertises it or newer (`nodes`: each one's, by id). Only forward;
+    /// no proof: like `RequireSessionProofs`, it is the nodes' own.
+    SetClusterVersion {
+        version: String,
+        nodes: BTreeMap<u64, String>,
+    },
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
@@ -6460,6 +6477,9 @@ impl SystemMachine {
                 s.session_proofs_from = Some(index);
                 Ok(Value::Null)
             }
+            SystemCmd::SetClusterVersion { version, nodes } => {
+                cluster_version::apply(s, version, &nodes)
+            }
             SystemCmd::SetOperatorRelease {
                 version,
                 approved,
@@ -7623,7 +7643,16 @@ impl Machine for SystemMachine {
                 Ok(v) => ok(v),
                 Err(e) => err(&e),
             },
-            Err(e) => err(&format!("malformed command: {e}")),
+            Err(e) => {
+                // A feature gate keeps every entry within what each node
+                // applies (`cluster_version`): one that does not decode here
+                // means a node proposed above it, and this node's state now
+                // differs from the nodes that applied it.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
+                error!(index, error = %e, undecodable = n,
+                    "a system entry this node cannot decode was skipped: its state now differs from the nodes that applied it");
+                err(&format!("malformed command: {e}"))
+            }
         }
     }
 

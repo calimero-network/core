@@ -36,6 +36,7 @@ use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
+use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
     Deployments, PackageRef, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
@@ -763,6 +764,9 @@ async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
         "node": node.config.node_id,
         "systemLeader": s.leader,
         "release": node.config.release,
+        // The newest cluster version this build supports: what the system
+        // leader raises the cluster version by (`system::cluster_version`).
+        "clusterVersion": crate::system::cluster_version::supported(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
         "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
@@ -5477,6 +5481,8 @@ async fn app_move(
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::MoveApp]).await?;
     let args = crate::system::move_app_args(&body.to_org, body.bring_members);
     let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
     Ok(Json(
@@ -6265,6 +6271,8 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
+    node.require_features(&scope_app_features(body.apps.as_deref()))
+        .await?;
     let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
     let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
     Ok(Json(
@@ -8292,8 +8300,11 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
+    // The logged cluster version (`null` until the system leader logs one):
+    // a rollout is finished for the system log once it is the new release's.
+    let cluster_version = node.sys(|s| s.cluster_version.clone());
     Ok(Json(
-        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
+        json!({ "fresh": fresh, "apps": apps, "nodes": nodes, "clusterVersion": cluster_version }),
     ))
 }
 
@@ -8994,6 +9005,12 @@ async fn ops_org_quotas_set(
 /// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerDeveloperPerDay`. One
 /// code for every such gate, so the version gate on new entry shapes can share it.
 pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
+/// `409`: a command (or a field of one) that a node of the cluster does not
+/// support yet, refused before it is proposed, so no node skips an entry the
+/// others apply (`system::cluster_version`). The message names the feature and
+/// the version it needs; `details` is `{ feature, needs, active }`.
+pub const FEATURE_NOT_ACTIVE: &str = "FEATURE_NOT_ACTIVE";
 
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).

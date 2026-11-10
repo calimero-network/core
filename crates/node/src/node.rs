@@ -24,6 +24,7 @@ use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
 pub(crate) mod blob_guards;
+mod cluster_version;
 mod component;
 mod job;
 mod segments;
@@ -522,6 +523,9 @@ pub struct Node {
     moving: Mutex<HashSet<String>>,
     /// A promotion of learners to system voters is under way.
     promoting: std::sync::atomic::AtomicBool,
+    /// The system leader's bookkeeping for the cluster version
+    /// ([`Node::raise_cluster_version`]).
+    cluster_version: Mutex<cluster_version::Raising>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here (spec section 7).
@@ -881,6 +885,7 @@ impl Node {
             unattested: Mutex::default(),
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
+            cluster_version: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
             callers: Mutex::new(HashMap::new()),
             identifying: Arc::default(),
@@ -1106,8 +1111,12 @@ impl Node {
         self.system.read_local(|m, _| f(&m.state))
     }
 
-    /// Commit a system command through the system group's leader.
+    /// Commit a system command through the system group's leader; `409
+    /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
+    /// version ([`Node::require_features`]).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
+        // Nothing is proposed that a node of the cluster would skip.
+        self.require_features(&cmd.features()).await?;
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
@@ -1871,7 +1880,9 @@ impl Node {
             }
             let node = Arc::clone(&me);
             drop(tokio::spawn(async move {
-                if !node.attests_as_replica(id, &addr).await {
+                if !node.attests_as_replica(id, &addr).await
+                    || !node.joins_at_cluster_version(id, &addr).await
+                {
                     if let Ok(mut j) = node.joining.lock() {
                         let _was = j.remove(&id);
                     }
@@ -2033,6 +2044,7 @@ impl Node {
             }) {
                 let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
+            self.raise_cluster_version();
             self.admit_registered_nodes();
             self.promote_learners();
         }

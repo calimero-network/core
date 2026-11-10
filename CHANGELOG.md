@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A cluster version gates new log entries during a rollout**. Old and new
+  nodes replicate one system log through a rolling upgrade, and a node skips
+  an entry it cannot decode, so a command (or field) only the new release
+  knows changed the new nodes' state alone: the old nodes kept serving reads
+  and judging access from the state before it, and with an old system leader
+  the caller was refused an entry the new nodes applied. Each such shape is
+  now a feature with the release it ships in
+  (`system::cluster_version::FEATURES`); the system leader logs the active
+  cluster version (`SetClusterVersion`, only forward) once every registered
+  node supports it, and every proposal above it is refused `409
+  FEATURE_NOT_ACTIVE`, naming the feature and the version it needs (`details:
+  { feature, needs, active }`). `GET /health` answers `clusterVersion`, the
+  newest this node supports (a node of an earlier release is judged by its
+  `release`); `GET /ops/placement` answers the logged `clusterVersion`.
+  Retrofitted to rc.15's commands an rc.14 node cannot decode: `MoveApp`,
+  `ScopeApps` naming one app team's `join`/`keep`, `SetOrgQuotas` and
+  `SetPools` (rc.15); on a cluster whose nodes all run rc.15 or newer they
+  work as before. Once a version is logged, no node below it joins the
+  system group. A skipped undecodable entry now logs an error and counts in
+  `calimero_log_undecodable_entries_total{log}`. Stored format:
+  `SystemState.clusterVersion` is left out when unset; a node on an earlier
+  release skips `SetClusterVersion`, which is logged only once every node
+  supports it. **Rollout**: remove the old nodes (`DELETE /ops/nodes/{id}`)
+  to finish one; a registered node that does not answer holds the version
+  back.
+
 ## [1.0.0-rc.15] - 2026-11-10
 
 ### Added

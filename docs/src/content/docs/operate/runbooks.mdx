@@ -201,6 +201,24 @@ system state it applies, and its snapshots would carry that loss to the other no
 or retire them ([Upgrade the cluster's release](#upgrade-the-clusters-release),
 [Remove a node](#remove-a-node)), then send the same request again.
 
+### `409 FEATURE_NOT_ACTIVE`
+
+**What refuses with it:** a command, or a field of one, that a node of the
+cluster does not support yet, during a rollout from a release that lacks it
+([The cluster version](/protocol/upgrades/#the-cluster-version)). The message
+names the feature and the release it needs; `details` is `{ feature, needs,
+active }` (`active: null` when a registered node did not say what it
+supports).
+
+**Why:** a node that cannot decode an entry skips it, and its state would no
+longer match the others'.
+
+**What to do:** finish the rollout: once no app keeps a replica on the old
+nodes, remove them (`DELETE /ops/nodes/{id}`; a node that is stopped but still
+registered holds the version back as well). The system leader raises the
+cluster version within about 10 seconds (`clusterVersion` in `GET
+/ops/placement`), then send the request again.
+
 ## Close sign-up
 
 A cluster's [sign-up policy](/operate/auth/#sign-up-policy) is `open`,
@@ -262,8 +280,12 @@ app's data moves only to nodes on a release approved for it.
    [`ops move`](#move-an-apps-replicas). A move onto a node whose release the
    app's owner has not approved is refused.
 
-5. **Retire the old nodes** once they host no app: stop them. They stay in the
-   directory and the system group's membership (see [Add a node](#add-a-node)).
+5. **Retire the old nodes** once they host no app: remove them
+   ([Remove a node](#remove-a-node)), then stop them. Until every old node is
+   removed, commands the new release brings are refused `409
+   FEATURE_NOT_ACTIVE`; then the system leader raises the [cluster
+   version](/protocol/upgrades/#the-cluster-version) (`clusterVersion` in `GET
+   /ops/placement`), and no node of an older release joins again.
 
 </Steps>
 

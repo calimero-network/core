@@ -18,6 +18,7 @@ A confidential cloud for collaborative apps. Apps are written in Rust or JavaScr
 
 - **Reproduce first**: write the failing test at the layer a user hits the bug and watch it go red before changing code.
 - **Blind spot**: scenarios and the process suite run one build on fresh state, so they never test backward compatibility; an on-disk or wire format change needs its own migration test.
+- **Feature gate**: a new command or field ships with a feature gate. Old and new nodes share one log through a rollout, and a node skips an entry it cannot decode, so a new log command, or a new field that changes what one does, is a `Feature` in `system::cluster_version::FEATURES` (with the release it ships in) and is refused `409 FEATURE_NOT_ACTIVE` below the cluster version ([The cluster version](docs/src/content/docs/protocol/upgrades.mdx#the-cluster-version)).
 
 ## Definition of Done
 
