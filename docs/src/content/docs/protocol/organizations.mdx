@@ -30,15 +30,19 @@ any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 | `team { team }` | The team's members (direct rows, and inheritance into an open team) |
 | `public` | Anyone, signed in or not (as `Caller::Public` when not) |
 
-The owner always reaches their app. A caller who does not reach it gets `404`,
+The owner always reaches their app, except that an organization's app is
+reached only by the organization's current members: its owner and the accounts
+an `accounts` rule lists stop reaching it, and receiving its events, once they
+leave or are removed (the rule keeps their names, so being added back to the
+organization restores it). A caller who does not reach it gets `404`,
 so its existence is not disclosed; with no credential, `401`. The check reads
 fresh system state, so removing someone from an organization or team holds on
 every node before their next request ([Reads of the system
 state](/protocol/system-group/#reading-the-system-state)).
 
 A member whose **direct row** in the app's team is **read-only** still reaches
-the app and its calls run, but a call that would write anything is refused with
-`403`. A blob upload by them is refused
+the app, but only its views run for them: any other call is refused with `403`
+before it runs. A blob upload by them is refused
 before it starts.
 
 ## Organizations
@@ -91,6 +95,9 @@ A team's creator leads it. Whoever leads a team, or an ancestor team, or is an
 organization admin, **manages** it: renames it, adds and removes members,
 creates teams under it, moves it within what they manage, and deletes it.
 
+- Removing someone from a team, or their leaving it, also removes their direct
+  rows in every team below it, so a restricted child team (a private channel
+  under an app's team) does not keep them in.
 - A member who leaves a team, or whom a manager removes, does not come back by
   inheritance (`Team::removed`), so
   leaving an open team sticks. They return only when a manager adds them again
@@ -99,6 +106,10 @@ creates teams under it, moves it within what they manage, and deletes it.
 - A member may join an open team they already reach as a plain member row, or
   leave any team themselves.
 - Deleting a team deletes the teams below it and the apps deployed to them.
+  When there are apps, it takes the deleter's passkey: `DELETE
+  /orgs/{org}/teams/{team}` answers `412 CONFIRM_REQUIRED` with the `apps` that
+  go in its details, and the consent (`__delete_team { team, apps }`) names
+  exactly those, so an app added since is not deleted on an old approval.
 - Reads are filtered: a team someone neither reaches nor manages is left out of
   `GET /orgs/{org}` and answers `404` on its own route.
 - A team keeps metadata the app defines (a folder's name and colour), set by
@@ -189,7 +200,10 @@ first; the consent binds `{ inviteKey, role, teams, expiresAt, uses }`). Only
 the token's Ed25519 public key is stored (`inviteKey`, the key whose seed is
 `SHA-256("calimero.invite.v1\0" ‖ token)`). An invite expires (7 days by default) and
 admits `uses` accounts (1 by default). Its role may not exceed the inviter's and
-is never `owner`. An inviter below admin may name only teams they manage.
+is never `owner`. An inviter below admin needs `INVITE_MEMBERS` on each team the
+invite names (organization-wide when it names none), and may name only teams
+they see (a member of, or a manager): an organization-wide grant does not open a
+restricted team they are not in.
 `POST /invites/{token}/redeem`, by a signed-in person (no passkey prompt): the
 node signs the redemption with the token's key, which every node checks
 where it applies, so a node that saw only the log cannot redeem an invite. It adds them at the invite's
@@ -208,7 +222,11 @@ a team's manager those naming only teams they manage. `DELETE
 (`__revoke_invite { inviteKey }`); an invite the caller may not see is `404`.
 Invites made before record no creator. A redemption an earlier release logged
 replays as that release applied it (it spent a use whatever it changed): the
-API marks new ones (`RedeemInvite { free_when_unchanged: true }`).
+API marks new ones (`RedeemInvite { free_when_unchanged: true }`). In the same
+way, a `CreateInvite`, `RemoveTeamMember` or `DeleteTeam` an earlier release
+logged replays without the rules above (the teams the inviter sees, the rows
+below, the passkey for apps); the API marks new ones (`teams_seen`, `subtree`,
+`apps_need_consent`).
 
 ## Recovery
 

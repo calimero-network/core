@@ -33,6 +33,7 @@ use tracing::{info, warn};
 use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
+use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{
@@ -5468,16 +5469,69 @@ async fn team_update(
     Ok(Json(json!({})))
 }
 
+/// Delete a team with the teams below it and their apps. When there are
+/// apps, with the actor's passkey over them (412 first, its details listing
+/// the `apps` that go; the retry's JSON body carries `confirm`).
 async fn team_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    // Only someone who may delete it learns which apps go (as `DeleteTeam`
+    // judges it again where it applies).
+    let (sees, may_delete) = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .filter(|o| o.teams.contains_key(&team))
+            .map_or((false, false), |o| {
+                let may = o.manages_team(&actor, &team)
+                    || o.may(&actor, None, crate::types::caps::DELETE_TEAM);
+                (may || o.sees_team(&actor, &team), may)
+            })
+    });
+    if !sees {
+        return Err(ApiError::not_found("no such team"));
+    }
+    if !may_delete {
+        return Err(ApiError::forbidden("not allowed to delete this team"));
+    }
+    let apps = node.sys(|s| s.team_apps(&org, &team));
+    let consent = if apps.is_empty() {
+        Value::Null
+    } else {
+        let args = json!({ "team": team, "apps": apps });
+        let confirm = body.and_then(|Json(b)| b.confirm);
+        org_consent(&node, &p, &org, "__delete_team", &args, confirm)
+            .await
+            .map_err(|e| match e.code.as_str() {
+                "CONFIRM_REQUIRED" => with_detail(e, "apps", json!(apps)),
+                _ => e,
+            })?
+    };
     let v = node
-        .sys_write(&SystemCmd::DeleteTeam { org, team, actor })
+        .sys_write(&SystemCmd::DeleteTeam {
+            org,
+            team,
+            actor,
+            consent,
+            apps_need_consent: true,
+        })
         .await?;
     Ok(Json(v))
+}
+
+/// `e` with `key` added to its details (an object, or made one).
+fn with_detail(mut e: ApiError, key: &str, value: Value) -> ApiError {
+    if !e.details.is_object() {
+        *e.details = json!({});
+    }
+    if let Some(d) = e.details.as_object_mut() {
+        let _prev = d.insert(key.to_owned(), value);
+    }
+    e
 }
 
 #[derive(Deserialize)]
@@ -5558,6 +5612,7 @@ async fn team_remove_member(
             account,
             actor,
             consent,
+            subtree: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5639,6 +5694,7 @@ async fn invite_create(
             invite,
             actor,
             consent: c.consent,
+            teams_seen: true,
         })
         .await?;
     Ok(Json(json!({ "token": token })))
@@ -6325,8 +6381,8 @@ async fn internal_blob_put(
     if mode == crate::node::PeerBlobs::Refuse {
         return Err(ApiError::unavailable("blob puts are refused"));
     }
-    node.engine
-        .put_blob(&body.hash, &wasm.0)
+    node.blob_guards
+        .put(&body.hash, || node.engine.put_blob(&body.hash, &wasm.0))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     #[cfg(feature = "testing")]
     if mode == crate::node::PeerBlobs::StoreThenFail {
@@ -6536,20 +6592,29 @@ async fn blob_upload(
     let mime = blob_mime(&headers)?;
     // The bytes of a sealed file would claim its id.
     refuse_sealed_file(&node, &app, &sha256(&body)).await?;
-    let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
-    let a = node
-        .call(&CallRequest {
-            // The gate's round covers the leader's checks (`Node::sys_fresh_from`).
-            sys_index: p.sys_index,
-            ..CallRequest::host(
-                app_id,
-                "__blob",
-                json!({ "id": id, "size": size, "mime": mime }),
-                p.caller,
-            )
-        })
+    let pin = node
+        .pin_on_leader(&app, vec![hex::encode(sha256(&body))])
         .await?;
+    let stored = async {
+        let id = node.store_blob(&body, Some(&app_id)).await?;
+        let a = node
+            .call(&CallRequest {
+                // The gate's round covers the leader's checks (`Node::sys_fresh_from`).
+                sys_index: p.sys_index,
+                ..CallRequest::host(
+                    app_id.clone(),
+                    "__blob",
+                    json!({ "id": id, "size": size, "mime": mime }),
+                    p.caller,
+                )
+            })
+            .await?;
+        Ok::<_, ApiError>((id, a))
+    }
+    .await;
+    node.unpin_on_leader(pin).await;
+    let (id, a) = stored?;
     let raw = parse_blob_id(&id)?;
     let mut out = blob_json(&raw, size);
     out["index"] = json!(a.index);
@@ -7142,10 +7207,18 @@ async fn app_runs(
     Ok(Json(answer.result))
 }
 
-/// What the caller's account uses, against the cluster's quotas.
+/// What the caller's account uses, against the cluster's quotas, and what today's
+/// runs of the apps it is the developer of used (Q20, D76, D78): fuel and writes,
+/// summed over the component apps billed to `account:{id}` as their developer
+/// (`usage::developer`), on the UTC day of the node's app time. An organization's
+/// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
+/// decimal strings (D20): `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
-    Ok(Json(node.sys(|s| {
+    let today = node
+        .developer_usage_today(&crate::usage::account_payer(&account))
+        .await;
+    let mut out = node.sys(|s| {
         json!({
             "apps": s.apps.values().filter(|a| a.owner == account).count(),
             "bundleBytes": s
@@ -7153,7 +7226,8 @@ async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
                 .values()
                 .filter(|b| b.uploaded_by == account)
                 .map(|b| b.size)
-                .sum::<u64>(),
+                .sum::<u64>()
+                .to_string(),
             "apiKeys": s.api_keys.values().filter(|k| k.account == account).count(),
             "orgsOwned": s
                 .orgs
@@ -7173,7 +7247,125 @@ async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
                 .collect::<std::collections::BTreeMap<_, _>>(),
             "quotas": s.quotas,
         })
+    });
+    out["developerFuelToday"] = json!(today.fuel.to_string());
+    out["developerWritesToday"] = json!(today.writes.to_string());
+    Ok(Json(out))
+}
+
+/// What today's runs of the apps an organization is the developer of used (Q20, D76,
+/// D78): fuel and writes, summed over the component apps billed to it as their
+/// developer (`usage::developer`: instances of its deployments, and its own apps made
+/// from a release), on the UTC day of the node's app time, with the quotas; for its
+/// admins and owner only, judged on fresh system state like `GET /orgs/{org}`. One
+/// who is not a member learns nothing of it (404); a member below admin gets 403.
+async fn org_usage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    node.sys_fresh().await;
+    let (role, apps, quotas) = node.sys(|s| {
+        (
+            s.orgs.get(&org).and_then(|o| o.role(&account)),
+            s.apps
+                .values()
+                .filter(|a| crate::usage::Billed::of(s, a).developer == org)
+                .count(),
+            s.quotas.clone(),
+        )
+    });
+    match role {
+        None => return Err(ApiError::not_found("no such organization")),
+        Some(r) if r < OrgRole::Admin => {
+            return Err(ApiError::forbidden(
+                "only the organization's admins read its usage",
+            ))
+        }
+        Some(_) => {}
+    }
+    let today = node.developer_usage_today(&org).await;
+    Ok(Json(json!({
+        "apps": apps,
+        "developerFuelToday": today.fuel.to_string(),
+        "developerWritesToday": today.writes.to_string(),
+        "quotas": quotas,
     })))
+}
+
+/// One day of an app's usage book on the wire: every figure a decimal string (D20).
+/// `wallMs` is for information only; the quota counts fuel (D76).
+fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
+    json!({
+        "date": crate::component::utc_date(day),
+        "runs": u.runs.to_string(),
+        "fuel": u.fuel.to_string(),
+        "wallMs": u.wall_ms.to_string(),
+        "writes": u.writes.to_string(),
+        "bytesWritten": u.bytes_written.to_string(),
+        "events": u.events.to_string(),
+    })
+}
+
+/// What an app's runs used (Q20), for its owner and the admins of its organization
+/// only: `today` and `days`, the last 30 days before it (oldest first), each UTC on
+/// the node's app time; a day nothing ran is zeros, and so is every day of an app
+/// recorded before components (SDK 0.12, no longer run).
+async fn app_usage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its usage",
+        ));
+    }
+    let book = node.app_usage(&app).await?;
+    let today = crate::component::utc_day(node.app_clock().now_ms());
+    let day = |d: u64| usage_day(d, &book.on(d));
+    let first = today.saturating_sub(crate::component::USAGE_DAYS - 1);
+    Ok(Json(json!({
+        "today": day(today),
+        "days": (first..today).map(day).collect::<Vec<_>>(),
+    })))
+}
+
+/// An app's usage book on this replica, for a peer ([`Node::app_usage`]): only
+/// from a node that is one of the app's replicas, never from a group it still has
+/// after the app moved away.
+async fn internal_usage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let app_id = body["app"].as_str().unwrap_or_default();
+    let g = node
+        .sys(|s| s.apps.get(app_id).cloned())
+        .and_then(|app| node.replica_group(&app))
+        .ok_or_else(|| ApiError::unavailable("not a replica of the app"))?;
+    let book = g.read_local(|m, _| m.state.component.head.usage.clone());
+    Ok(Json(json!({ "usage": book })))
+}
+
+/// What every component app this node replicates used on `{ day }`, by app id, for
+/// a peer's fuel-cap refresh ([`Node::refresh_usage`]).
+async fn internal_usage_today(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let day = body["day"]
+        .as_u64()
+        .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "day is a number"))?;
+    Ok(Json(json!(node.replicas_usage_on(day))))
 }
 
 async fn internal_storage(
@@ -7244,20 +7436,18 @@ async fn internal_blob_delete(
     if !crate::job_wire::is_hash(&hash) {
         return Err(ApiError::bad_request("BAD_REQUEST", "not a blob hash"));
     }
-    // The node that collects a blob checked that no app marks it; one here
-    // that still does keeps its bytes, whoever asks. A mark is judged as the
-    // app's leader holds it: this replica may not have applied the delete
-    // that let the blob go yet, and would keep the bytes for good (nothing
-    // asks again). Unknown counts as held.
+    let deletion = node.blob_guards.begin_deletion(&hash);
+    // The collecting node checked that no app holds it; this node asks the leaders again.
     let raw = crate::job_wire::hash_bytes(&hash).map_err(|e| ApiError::internal(&e.to_string()))?;
-    for app in hosted_holders(&node, &hash) {
-        if node.blob_held_strong(&app, &raw).await.unwrap_or(true) {
-            return Err(ApiError::forbidden("an app here still holds that blob"));
-        }
+    if node.blob_in_use(&raw).await {
+        return Err(ApiError::forbidden("an app still holds that blob"));
     }
+    #[cfg(feature = "testing")]
+    node.deletion_checkpoint().await;
     if !node.is_code_blob(&hash) {
-        node.engine
-            .delete_blob(&hash)
+        let deleted = deletion.delete(|| node.engine.delete_blob(&hash));
+        deleted
+            .ok_or_else(|| ApiError::conflict("the blob was stored again"))?
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     }
     Ok(Json(json!({})))
@@ -7272,6 +7462,9 @@ struct HeldBody {
     /// Ask whether it is held as a sealed file, not whether it is held at all.
     #[serde(default)]
     file: bool,
+    /// Count bytes an entry stored here and has not committed yet as held (strong reads only).
+    #[serde(default)]
+    pinned: bool,
 }
 
 async fn internal_blob_held(
@@ -7292,7 +7485,7 @@ async fn internal_blob_held(
         if body.file {
             m.is_sealed_file(&raw)
         } else {
-            m.holds_blob(&raw)
+            m.holds_blob(&raw) || (body.pinned && node.blob_guards.is_pinned(&body.id))
         }
     };
     let (held, standing) = if body.strong {
@@ -7306,6 +7499,52 @@ async fn internal_blob_held(
     Ok(Json(
         json!({ "held": held, "published": published, "epoch": epoch }),
     ))
+}
+
+/// Pins ids on this node, the app's leader, for a peer that is about to store their bytes
+/// (`ids`), or releases such a pin (`release`).
+#[derive(Deserialize)]
+struct PinBody {
+    #[serde(default)]
+    app: String,
+    #[serde(default)]
+    ids: Vec<String>,
+    release: Option<u64>,
+}
+
+async fn internal_blob_pin(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<PinBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    let app = node.app(&body.app).await?;
+    caller_may_hold(&node, &caller, &app)?;
+    if let Some(token) = body.release {
+        node.blob_guards.release_lease(&app.app_id, token);
+        return Ok(Json(json!({})));
+    }
+    if body.ids.is_empty() || body.ids.len() > MAX_LEASE_IDS {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "a pin names 1 to 16 blobs",
+        ));
+    }
+    for id in &body.ids {
+        parse_blob_id(id)?;
+    }
+    let g = node
+        .hosted(&app.app_id)
+        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+    g.read_strong(|_, _| ())
+        .await
+        .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+    let token = node
+        .blob_guards
+        .lease(&app.app_id, body.ids)
+        .ok_or_else(|| ApiError::new(429, "TOO_MANY_PINS", "too many blob pins are open"))?;
+    Ok(Json(json!({ "token": token })))
 }
 
 /// The system leader's applied index, once it confirmed it leads.
@@ -8258,6 +8497,12 @@ async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Ap
     ))
 }
 
+/// `409`: a write that only this release, or a newer one, understands, refused while
+/// a registered node runs an older release or could not be attested
+/// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerDeveloperPerDay`. One
+/// code for every such gate, so the version gate on new entry shapes can share it.
+pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
 async fn ops_quotas_set(
@@ -8288,6 +8533,24 @@ async fn ops_quotas_set(
     }
     let quotas: crate::system::Quotas = serde_json::from_value(merged)
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // A fuel cap is written only once every node runs a release that knows it: an
+    // older node drops the field, and its snapshots would bring the cap back to 0.
+    // Judged before the operator is asked to sign, so a refused write is never signed.
+    if quotas.max_fuel_per_developer_per_day != 0 {
+        let behind = node.nodes_behind_release().await;
+        if !behind.is_empty() {
+            let nodes: Vec<Value> = behind
+                .iter()
+                .map(|(id, release)| json!({ "node": id, "release": release }))
+                .collect();
+            return Err(ApiError::new(
+                409,
+                UPGRADE_PENDING,
+                "a fuel cap needs every node on this node's release or newer",
+            )
+            .with_details(json!({ "release": node.own_release(), "nodes": nodes })));
+        }
+    }
     // Signed over the whole merged limits (`cluster / __set_quotas /
     // { quotas }`, 428 first), so a change made in between is not signed
     // over by mistake: the retry merges again and must match.
@@ -9872,6 +10135,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
+        .route("/apps/{app}/usage", get(app_usage))
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
@@ -9907,6 +10171,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
         .route("/orgs/{org}/metadata", post(org_metadata))
+        .route("/orgs/{org}/usage", get(org_usage))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))
         .route("/orgs/{org}/upgrades/{run}/retry", post(org_upgrade_retry))
@@ -9974,7 +10239,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))
+        .route("/internal/blob/pin", post(internal_blob_pin))
         .route("/internal/storage", post(internal_storage))
+        .route("/internal/usage", post(internal_usage))
+        .route("/internal/usage/today", post(internal_usage_today))
         .route("/internal/last-write", post(internal_last_write))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))

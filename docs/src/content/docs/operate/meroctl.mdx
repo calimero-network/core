@@ -236,12 +236,12 @@ An organization's teams. `ROLE` is `lead`, `member` or
 | --- | --- | --- |
 | `group get ORG TEAM` | `GET /orgs/{org}/teams/{team}` | One team. |
 | `group update ORG TEAM [--name NAME] [--join JOIN]` | `POST /orgs/{org}/teams/{team}` | Rename it or change who may join. |
-| `group delete ORG TEAM` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and their contexts. |
+| `group delete ORG TEAM [--dev-passkey FILE]` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and their contexts; with contexts there, approved with a passkey (`412` names them). |
 | `group reparent ORG TEAM (PARENT \| --top)` | `POST /orgs/{org}/teams/{team}` | Move it under another team, or to the top. |
 | `group subgroups ORG TEAM` | `GET /orgs/{org}` | The teams directly below it. |
 | `group members list ORG TEAM` (`ls`) | `GET /orgs/{org}/teams/{team}` | Its members and read-only members. |
 | `group members add ORG TEAM ACCOUNT [--role ROLE] [--capabilities BITS]` (`set-role`) | `POST /orgs/{org}/teams/{team}/members` | Add a member or change their role (default `member`) or capabilities. |
-| `group members remove ORG TEAM ACCOUNT` (`rm`) | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a member. |
+| `group members remove ORG TEAM ACCOUNT` (`rm`) | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a member, from the teams below it too. |
 | `group metadata ORG TEAM JSON` | `POST /orgs/{org}/teams/{team}` | Set the team's metadata. |
 | `group settings ORG TEAM --capabilities BITS` | `POST /orgs/{org}/capabilities` | The capabilities every member of the team gets. |
 | `group leave ORG TEAM` | `DELETE /orgs/{org}/teams/{team}/members/{me}` | Leave the team. |

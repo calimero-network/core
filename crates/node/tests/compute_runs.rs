@@ -20,6 +20,7 @@ use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POL
 use calimero_node::types::Caller;
 use calimero_node::Node;
 use common::{mpk_with, signed_up, Cluster, JobNode, PUBLISHER};
+use futures_util::FutureExt;
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde_json::{json, Value};
@@ -1800,6 +1801,122 @@ async fn a_revoked_grant_stays_revoked_after_the_blob_is_deleted_and_published_a
     assert_eq!(bytes.unwrap(), expected);
 }
 
+impl Rig {
+    /// Deletes a published blob and waits for its queued collection to be logged, so a later
+    /// publish of the same bytes meets no collection but the one a test starts.
+    async fn delete_and_settle(&self, blob: &str) {
+        self.alice.delete_blob(&self.app, blob).await.unwrap();
+        self.until("the collection of the deleted blob is logged", || {
+            self.leader()
+                .hosted(&self.app)
+                .unwrap()
+                .read_local(|m, _| m.state.component.head.collect.is_empty())
+        })
+        .await;
+    }
+
+    async fn assert_downloads_after_publishing_again(&self, blob: &str, expected: &[u8]) {
+        let fresh = self.grant(blob).await;
+        let bytes = self
+            .alice
+            .download_blob_granted(&self.app, blob, &fresh)
+            .await;
+        assert_eq!(bytes.unwrap(), expected);
+    }
+}
+
+fn raw_id(id: &str) -> [u8; 32] {
+    <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    rig.delete_and_settle(&blob).await;
+
+    let (reached, resume) = rig.leader().hold_next_file_push();
+    let collect = async {
+        reached.notified().await;
+        rig.leader().collect_blob(&raw_id(&blob)).await;
+        resume.notify_one();
+    };
+    let (again, ()) = tokio::join!(rig.publish(&output), collect);
+    assert_eq!(again, blob);
+    rig.assert_downloads_after_publishing_again(&blob, &expected)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_the_bytes() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, _expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    rig.delete_and_settle(&blob).await;
+
+    let leader = rig.c.app_leader(&rig.app).unwrap();
+    let (reached, resume) = rig.leader().hold_next_file_push();
+    let ask = async {
+        reached.notified().await;
+        for i in (0..3).filter(|i| *i != leader) {
+            let _refused = rig
+                .leader()
+                .peer_post(
+                    &rig.c.urls[i],
+                    "internal/blob/delete",
+                    &json!({ "hash": blob }),
+                )
+                .await;
+        }
+        resume.notify_one();
+    };
+    let (again, ()) = tokio::join!(rig.publish(&output), ask);
+    assert_eq!(again, blob);
+    for i in 0..3 {
+        let node = &rig.c.nodes[i].as_ref().unwrap().node;
+        assert!(
+            node.engine.get_blob(&blob).unwrap().is_some(),
+            "node {i} lost the bytes"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_peers_delete_that_checked_before_a_publish_stored_its_bytes_keeps_them() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (output, expected) = rig.finished_output().await;
+    let blob = rig.publish(&output).await;
+    rig.delete_and_settle(&blob).await;
+
+    let leader = rig.c.app_leader(&rig.app).unwrap();
+    let peer = (0..3).find(|i| *i != leader).unwrap();
+    let (reached, resume) = rig.c.nodes[peer]
+        .as_ref()
+        .unwrap()
+        .node
+        .hold_next_deletion();
+    let body = json!({ "hash": blob });
+    let ask = rig
+        .leader()
+        .peer_post(&rig.c.urls[peer], "internal/blob/delete", &body);
+    let publish_again = async {
+        reached.notified().await;
+        let again = rig.publish(&output).await;
+        resume.notify_one();
+        again
+    };
+    let (_answer, again) = tokio::join!(ask, publish_again);
+    assert_eq!(again, blob);
+    let node = &rig.c.nodes[peer].as_ref().unwrap().node;
+    assert!(
+        node.engine.get_blob(&blob).unwrap().is_some(),
+        "the peer lost the bytes a publish stored after its check"
+    );
+    rig.assert_downloads_after_publishing_again(&blob, &expected)
+        .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_owner_takes_a_published_blob_down_and_its_charge_is_released() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -1907,4 +2024,226 @@ async fn a_published_blob_survives_a_leader_change() {
         .await
         .unwrap();
     assert_eq!(bytes, expected);
+}
+
+/// What is stored and then recorded: a plain upload, or a run's output published.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    Plain,
+    Published,
+}
+
+/// The node a request goes through.
+#[derive(Clone, Copy, Debug)]
+enum Via {
+    Leader,
+    Follower,
+}
+
+/// One case of the store-and-delete matrix: a rig, a client on each node, and the blob.
+struct Case<'a> {
+    rig: &'a Rig,
+    kind: Kind,
+    clients: Vec<Client>,
+    leader: usize,
+    follower: usize,
+    /// A run's finished output to publish; unused for a plain upload.
+    output: String,
+    expected: Vec<u8>,
+}
+
+impl Case<'_> {
+    fn node(&self, via: Via) -> usize {
+        match via {
+            Via::Leader => self.leader,
+            Via::Follower => self.follower,
+        }
+    }
+
+    fn node_ref(&self, i: usize) -> &Node {
+        &self.rig.c.nodes[i].as_ref().unwrap().node
+    }
+
+    /// Stores the blob through node `i` and records it; returns its id.
+    async fn put(&self, i: usize) -> String {
+        match self.kind {
+            Kind::Plain => {
+                let up = self.clients[i]
+                    .upload_blob(&self.rig.app, self.expected.clone())
+                    .await
+                    .unwrap();
+                up["id"].as_str().unwrap().to_owned()
+            }
+            Kind::Published => {
+                let r = self.clients[i]
+                    .call(
+                        &self.rig.app,
+                        "publish",
+                        json!({ "output": self.output }),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                r.result.as_str().unwrap().to_owned()
+            }
+        }
+    }
+
+    /// The node whose next push of bytes a test holds: the receiving node for a plain upload,
+    /// the leader for a publish (its entry stores the bytes).
+    fn pushing_node(&self, up: usize) -> usize {
+        match self.kind {
+            Kind::Plain => up,
+            Kind::Published => self.leader,
+        }
+    }
+
+    /// The owner's delete through node `i`, then until the leader's queue of collections is empty.
+    async fn delete(&self, i: usize, id: &str) {
+        self.clients[i]
+            .delete_blob(&self.rig.app, id)
+            .await
+            .unwrap();
+        self.rig
+            .until("the collection of the deleted blob is logged", || {
+                self.rig
+                    .leader()
+                    .hosted(&self.rig.app)
+                    .unwrap()
+                    .read_local(|m, _| m.state.component.head.collect.is_empty())
+            })
+            .await;
+    }
+
+    fn nodes_with_bytes(&self, id: &str) -> usize {
+        (0..self.clients.len())
+            .filter(|i| self.node_ref(*i).engine.get_blob(id).unwrap().is_some())
+            .count()
+    }
+
+    async fn assert_downloads_from_a_majority(&self, id: &str) {
+        let bytes = match self.kind {
+            Kind::Plain => self.clients[self.leader]
+                .download_blob(&self.rig.app, id)
+                .await
+                .unwrap(),
+            Kind::Published => {
+                let grant = self.rig.grant(id).await;
+                self.rig
+                    .alice
+                    .download_blob_granted(&self.rig.app, id, &grant)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(bytes, self.expected, "the download differs");
+        let held = self.nodes_with_bytes(id);
+        assert!(held * 2 > self.clients.len(), "bytes on {held} nodes only");
+    }
+
+    /// A collection on node `del` runs while a store through node `up` has pushed its bytes and
+    /// not committed.
+    async fn collect_during_store(&self, up: usize, del: usize, id: &str) {
+        let (reached, resume) = self.node_ref(self.pushing_node(up)).hold_next_file_push();
+        let collect = async {
+            reached.notified().await;
+            self.node_ref(del).collect_blob(&raw_id(id)).await;
+            resume.notify_one();
+        };
+        let (again, ()) = tokio::join!(self.put(up), collect);
+        assert_eq!(again, id, "the id changed");
+    }
+
+    /// A store through node `up` runs while a collection on node `del` is between its check
+    /// and its delete.
+    async fn store_during_collect(&self, up: usize, del: usize, id: &str) {
+        let (reached, resume) = self.node_ref(del).hold_next_deletion();
+        let raw = raw_id(id);
+        let collect = self.node_ref(del).collect_blob(&raw);
+        let store = async {
+            reached.notified().await;
+            let again = self.put(up).await;
+            resume.notify_one();
+            again
+        };
+        let ((), again) = tokio::join!(collect, store);
+        assert_eq!(again, id, "the id changed");
+    }
+
+    async fn run(&self, up: Via, del: Via, baseline: u64) {
+        let (up, del) = (self.node(up), self.node(del));
+        let id = self.put(up).await;
+        self.assert_downloads_from_a_majority(&id).await;
+
+        self.delete(del, &id).await;
+        self.collect_during_store(up, del, &id).await;
+        self.assert_downloads_from_a_majority(&id).await;
+
+        self.delete(del, &id).await;
+        self.store_during_collect(up, del, &id).await;
+        self.assert_downloads_from_a_majority(&id).await;
+
+        self.delete(del, &id).await;
+        self.rig
+            .until("the bytes are gone on every node", || {
+                self.nodes_with_bytes(&id) == 0
+            })
+            .await;
+        let started = Instant::now();
+        while self.rig.charged().await != baseline {
+            assert!(started.elapsed() < WAIT, "the quota charge is not released");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
+    let mut failures = Vec::new();
+    for kind in [Kind::Plain, Kind::Published] {
+        for up in [Via::Leader, Via::Follower] {
+            for del in [Via::Leader, Via::Follower] {
+                let label = format!("kind={kind:?} up={up:?} del={del:?}");
+                let jobs: &[u64] = match kind {
+                    Kind::Plain => &[],
+                    Kind::Published => &[JOB_A],
+                };
+                let mut rig = Rig::start(jobs).await;
+                let (output, expected) = match kind {
+                    Kind::Plain => (String::new(), format!("plain {label}").into_bytes()),
+                    Kind::Published => rig.finished_output().await,
+                };
+                let baseline = rig.charged().await;
+                let leader = rig.c.app_leader(&rig.app).unwrap();
+                let follower = (0..3).find(|i| *i != leader).unwrap();
+                let mut clients = Vec::new();
+                for i in 0..3 {
+                    let client = rig.c.client(i);
+                    client.sign_in(&mut rig.pk).await.unwrap();
+                    clients.push(client);
+                }
+                let case = Case {
+                    rig: &rig,
+                    kind,
+                    clients,
+                    leader,
+                    follower,
+                    output,
+                    expected,
+                };
+                let ran = std::panic::AssertUnwindSafe(case.run(up, del, baseline))
+                    .catch_unwind()
+                    .await;
+                if let Err(e) = ran {
+                    let why = e
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| e.downcast_ref::<&str>().copied())
+                        .unwrap_or("panicked");
+                    failures.push(format!("{label}: {why}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

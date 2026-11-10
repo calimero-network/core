@@ -30,6 +30,7 @@ use crate::files::{
     sealed_len, unwrap_key, wrap_key, Segment, SegmentReader, SegmentWriter, CHUNK_BYTES,
     SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };
+use crate::node::blob_guards::Pins;
 use crate::node::{off_workers, status_of, Node, FORWARD_TIMEOUT, MAX_BLOB_BYTES};
 use crate::system::SystemCmd;
 use crate::types::Caller;
@@ -168,6 +169,8 @@ pub(super) struct Stored {
     /// The segments are a compute run's outputs, which another leader may have registered: deleted
     /// only once the blob records are known ([`Node::delete_unmarked_outputs`]).
     pub outputs: bool,
+    /// Keeps a collection from deleting the plain blobs until the entry commits or fails.
+    pub pin: Option<Pins>,
     /// Holds the entry's segments out of the sweep until the entry is decided.
     pub _pin: Option<crate::node::SegmentPin>,
 }
@@ -209,6 +212,37 @@ pub(crate) struct Probes {
     pub segment_store_fault: std::sync::atomic::AtomicBool,
     /// Fails the next barrier a failed mark commit asks for, leaving its outcome unknown.
     pub barrier_fault: std::sync::atomic::AtomicBool,
+    /// Holds the next push of files on this node after they are stored, before its entry commits.
+    pub push_hold: std::sync::Mutex<Option<Hold>>,
+    /// Holds the next blob deletion on this node between its checks and its delete.
+    pub deletion_hold: std::sync::Mutex<Option<Hold>>,
+}
+
+/// A test's hold on a code path: it notifies `.0` on arrival and waits for `.1` to go on.
+#[cfg(feature = "testing")]
+pub type Hold = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
+
+/// Sets a hold in `slot` for the next arrival and returns the test's ends of it.
+#[cfg(feature = "testing")]
+pub(crate) fn set_hold(slot: &std::sync::Mutex<Option<Hold>>) -> Hold {
+    let hold: Hold = Hold::default();
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hold.clone());
+    hold
+}
+
+/// Stops at a hold a test set in `slot`, once.
+#[cfg(feature = "testing")]
+pub(crate) async fn checkpoint(slot: &std::sync::Mutex<Option<Hold>>) {
+    let hold = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((reached, resume)) = hold {
+        reached.notify_one();
+        resume.notified().await;
+    }
 }
 
 #[cfg(feature = "testing")]
@@ -231,6 +265,8 @@ impl Default for Probes {
             upload_window: std::sync::atomic::AtomicUsize::new(super::uploads::UPLOAD_WINDOW),
             segment_store_fault: std::sync::atomic::AtomicBool::new(false),
             barrier_fault: std::sync::atomic::AtomicBool::new(false),
+            push_hold: std::sync::Mutex::new(None),
+            deletion_hold: std::sync::Mutex::new(None),
         }
     }
 }
@@ -782,7 +818,12 @@ impl Node {
             Ok::<(), ApiError>(())
         };
         match tokio::time::timeout_at(deadline, push).await {
-            Ok(done) => done,
+            Ok(Ok(())) => {
+                #[cfg(feature = "testing")]
+                self.push_checkpoint().await;
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
             Err(_) => Err(files_unavailable()),
         }
     }
@@ -830,11 +871,14 @@ impl Node {
     /// The bytes of `blob`, stored here: a segment a writer stored is read back.
     async fn stored_bytes(&self, blob: &Blob) -> Result<axum::body::Bytes, ApiError> {
         let engine = Arc::clone(&self.engine);
+        let guards = Arc::clone(&self.blob_guards);
         let (id, held, segment) = (blob.id.clone(), blob.bytes.clone(), blob.segment);
         let found = tokio::task::spawn_blocking(move || match held {
             None => engine.get_segment(&id),
             Some(held) if segment => engine.put_segment(&id, &held).map(|()| Some(held.to_vec())),
-            Some(held) => engine.put_blob(&id, &held).map(|()| Some(held.to_vec())),
+            Some(held) => guards
+                .put(&id, || engine.put_blob(&id, &held))
+                .map(|()| Some(held.to_vec())),
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -915,16 +959,8 @@ impl Node {
                 segments: unmarked,
                 ..Stored::default()
             };
-            self.delete_files(app_id, &stored).await;
+            self.delete_files(&stored).await;
         }
-    }
-
-    /// Whether a component app hosted here holds `id` as one of its blobs.
-    pub(crate) fn holds_file(&self, id: &str) -> bool {
-        self.apps.read().is_ok_and(|apps| {
-            apps.values()
-                .any(|g| g.read_local(|m, _| holds_file(m, id)))
-        })
     }
 
     /// Whether a component app hosted here lists `hash` as a segment of one of its files; true
@@ -936,32 +972,25 @@ impl Node {
         })
     }
 
-    /// Removes the segments `hashes` on this node and the app's other replicas, in a task of
-    /// its own: nobody waits for it. A replica that misses it keeps unreachable bytes.
+    /// Removes the plain blobs and segments of `stored` here and on the app's other replicas, in
+    /// a task of its own: nobody waits for it. A replica that misses it keeps unreachable bytes.
     pub(super) fn delete_files_later(&self, app_id: &str, stored: Stored) {
         let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
             return;
         };
         let app_id = app_id.to_owned();
         drop(tokio::spawn(async move {
-            let removal = node.delete_files(&app_id, &stored);
+            let removal = node.delete_files(&stored);
             if tokio::time::timeout(DELETE_WAIT, removal).await.is_err() {
                 warn!(app = %app_id, "file bytes not deleted everywhere in time");
             }
         }));
     }
 
-    async fn delete_files(&self, app_id: &str, stored: &Stored) {
-        // The nodes a push went to: the group's voters and learners.
-        let peers: Vec<String> = self
-            .push_targets(app_id, Instant::now() + PUSH_WAIT)
-            .await
-            .map(|t| [t.voters, t.learners].concat())
-            .unwrap_or_default();
+    async fn delete_files(&self, stored: &Stored) {
         for batch in stored.ids.chunks(MAX_DELETE_CONCURRENCY) {
             let _all =
-                futures_util::future::join_all(batch.iter().map(|id| self.delete_file(id, &peers)))
-                    .await;
+                futures_util::future::join_all(batch.iter().map(|id| self.delete_file(id))).await;
         }
         // Replicas' copies of the segments go with the sweep, after its grace.
         for hash in &stored.segments {
@@ -969,20 +998,10 @@ impl Node {
         }
     }
 
-    async fn delete_file(&self, id: &str, peers: &[String]) {
-        if self.is_code_blob(id) || self.holds_file(id) {
-            return;
+    async fn delete_file(&self, id: &str) {
+        if let Some(raw) = parse_blob_id(id) {
+            self.collect_blob(&raw).await;
         }
-        if let Err(e) = self.engine.delete_blob(id) {
-            warn!(file = %id, error = %e, "file bytes not deleted");
-        }
-        let body = json!({ "hash": id });
-        let _sent = futures_util::future::join_all(
-            peers
-                .iter()
-                .map(|addr| self.peer_post(addr, "internal/blob/delete", &body)),
-        )
-        .await;
     }
 
     fn delete_segment(&self, hash: &str) {
@@ -1067,7 +1086,8 @@ impl Node {
     }
 
     /// Undoes what a logged entry that did not commit stored and counted.
-    pub(super) fn discard(&self, app_id: &str, stored: Stored) {
+    pub(super) fn discard(&self, app_id: &str, mut stored: Stored) {
+        drop(stored.pin.take());
         let (charged, outputs) = (stored.charged, stored.outputs);
         if !stored.ids.is_empty() || !stored.segments.is_empty() {
             self.discard_bytes(app_id, stored, outputs);

@@ -37,6 +37,41 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
+    /// Fuel a developer's apps may burn per UTC day, summed over its component apps
+    /// (Q20, D76, D78); 0 (the default) is no limit. The developer is the one usage
+    /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
+    /// was created from, else the app's organization or owner. Over it, a client's
+    /// call or an xcall delivery to any of the developer's apps is refused before it
+    /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
+    /// count. Checked where the call runs, against the apps' usage books, not at
+    /// apply: those live in the app groups. A decimal string in JSON (D20); a number
+    /// is refused. Written only once every node runs a release that knows it
+    /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
+    #[serde(with = "decimal_u64")]
+    pub max_fuel_per_developer_per_day: u64,
+}
+
+/// A `u64` as a decimal string in JSON (D20): digits only, no sign, no leading zero.
+/// A JSON number is refused, so a client never sends a cap a JavaScript number has
+/// already rounded.
+mod decimal_u64 {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(v)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let s = String::deserialize(d)?;
+        let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        if !digits || (s.len() > 1 && s.starts_with('0')) {
+            return Err(D::Error::custom(format!(
+                "{s:?} is not a decimal string (D20)"
+            )));
+        }
+        s.parse().map_err(D::Error::custom)
+    }
 }
 
 impl Default for Quotas {
@@ -50,6 +85,7 @@ impl Default for Quotas {
             max_file_bytes_per_org: 50_000_000_000,
             max_concurrent_runs_per_org: 4,
             compute_fuel_per_org: 10 * calimero_app_host::MAX_COMPUTE_FUEL,
+            max_fuel_per_developer_per_day: 0,
         }
     }
 }
@@ -461,6 +497,11 @@ pub const SIGN_UP_PREFIX: &str = "sign-up refused";
 /// of an invite removes it, as does deleting its organization, so a used-up
 /// invite reads the same as one that never existed.
 pub const INVITE_GONE: &str = "this invite was used up, revoked or never existed";
+
+/// What `DeleteTeam` answers when its team's subtree holds apps and the
+/// command carries no passkey consent over them.
+pub const DELETE_TEAM_NEEDS_CONSENT: &str =
+    "deleting a team that holds apps needs the deleter's passkey";
 /// A refusal: the organization invite is past its expiry.
 pub const INVITE_EXPIRED: &str = "this invite has expired";
 /// A refusal: making, changing or dropping an app team, scoping apps, or
@@ -2007,9 +2048,19 @@ impl SystemState {
         Some((account, cred))
     }
 
-    /// Whether `account` may reach `app` at all.
+    /// Whether `account` may reach `app` at all. An organization's app is
+    /// reached only by its current members, whatever names the account: its
+    /// owner, or an `Accounts` list, stop reaching it once they leave or are
+    /// removed (the organization itself gone: nobody but a public app's
+    /// callers).
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
+        if let (Some(org), Some(a)) = (&app.org, account) {
+            let member = self.orgs.get(org).and_then(|o| o.role(a)).is_some();
+            if !member && app.access != Access::Public {
+                return false;
+            }
+        }
         match (&app.access, account) {
             (Access::Public, _) => true,
             (_, None) => false,
@@ -2069,6 +2120,24 @@ impl SystemState {
                 org(id).is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Admin))
             }
         }
+    }
+
+    /// The apps deleting `team` takes with it: those of `org` on `team` or a
+    /// team below it, in id order. None for a team `org` does not hold.
+    #[must_use]
+    pub fn team_apps(&self, org: &str, team: &str) -> Vec<AppId> {
+        let Some(o) = self.orgs.get(org).filter(|o| o.teams.contains_key(team)) else {
+            return Vec::new();
+        };
+        let gone = o.subtree(team);
+        self.apps
+            .values()
+            .filter(|a| {
+                a.org.as_deref() == Some(org)
+                    && matches!(&a.access, Access::Team { team } if gone.contains(team))
+            })
+            .map(|a| a.app_id.clone())
+            .collect()
     }
 
     #[must_use]
@@ -2822,12 +2891,35 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        // Deleting a team takes the apps below it: with apps there, the
+        // actor's passkey over exactly those apps, so one added since the
+        // approval is not taken silently.
+        SystemCmd::DeleteTeam {
+            org,
+            team,
+            actor,
+            consent,
+            apps_need_consent: true,
+        } => {
+            let apps = s.team_apps(org, team);
+            if apps.is_empty() {
+                return Ok(None);
+            }
+            if consent.is_null() {
+                return Err(DELETE_TEAM_NEEDS_CONSENT);
+            }
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "team": team, "apps": apps });
+            states(&st, &format!("org:{org}"), "__delete_team", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         SystemCmd::RemoveTeamMember {
             org,
             team,
             account,
             actor,
             consent,
+            ..
         } => {
             let (st, used) = fresh(consent_of(actor, consent)?)?;
             let args = json!({ "team": team, "account": account });
@@ -2873,6 +2965,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             invite,
             actor,
             consent,
+            ..
         } => {
             let (st, used) = fresh(consent_of(actor, consent)?)?;
             let args = invite_args(invite_key, invite);
@@ -3878,6 +3971,15 @@ pub enum SystemCmd {
         org: OrgId,
         team: TeamId,
         actor: AccountId,
+        /// The actor's passkey consent, over the apps that go with the team
+        /// (`org:<org> / __delete_team / { team, apps }`, [`team_apps`]).
+        #[serde(default)]
+        consent: Value,
+        /// A team whose subtree holds apps needs `consent`. The API always
+        /// sets it; absent (`false`) in an entry an earlier release logged,
+        /// which replays deleting without one, as that release did.
+        #[serde(default)]
+        apps_need_consent: bool,
     },
     /// A member's capabilities, organization-wide (`team: None`) or in a team.
     SetCapabilities {
@@ -3912,6 +4014,11 @@ pub enum SystemCmd {
         /// The actor's passkey consent over it ([`crate::proof`]).
         #[serde(default)]
         consent: Value,
+        /// The removal takes the account's direct rows in the teams below
+        /// `team` too. The API always sets it; absent (`false`) in an entry an
+        /// earlier release logged, which replays removing the one row.
+        #[serde(default)]
+        subtree: bool,
     },
     /// An invite, recorded under its token's public key
     /// ([`crate::proof::invite_key`]); the token itself is never logged.
@@ -3922,6 +4029,11 @@ pub enum SystemCmd {
         /// The actor's passkey consent over [`invite_args`].
         #[serde(default)]
         consent: Value,
+        /// Below admin, the actor must see every team the invite names
+        /// ([`Org::sees_team`]). The API always sets it; absent (`false`) in an
+        /// entry an earlier release logged, which replays without that check.
+        #[serde(default)]
+        teams_seen: bool,
     },
     /// Redeem an invite for `account`: `signature` is the token's key's
     /// ([`crate::proof::sign_invite_redeem`]), made by the node the redeemer
@@ -5971,7 +6083,10 @@ impl SystemMachine {
                 }
                 Ok(Value::Null)
             }
-            SystemCmd::DeleteTeam { org, team, actor } => {
+            SystemCmd::DeleteTeam {
+                org, team, actor, ..
+            } => {
+                let apps = s.team_apps(&org, &team);
                 let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
                 if !o.teams.contains_key(&team) {
                     return Err("no such team");
@@ -5985,15 +6100,6 @@ impl SystemMachine {
                 for t in &gone {
                     let _removed = o.teams.remove(t);
                 }
-                let apps: Vec<String> = s
-                    .apps
-                    .values()
-                    .filter(|a| {
-                        a.org.as_deref() == Some(org.as_str())
-                            && matches!(&a.access, Access::Team { team } if gone.contains(team))
-                    })
-                    .map(|a| a.app_id.clone())
-                    .collect();
                 for a in &apps {
                     s.remove_app(a);
                 }
@@ -6063,16 +6169,32 @@ impl SystemMachine {
                 team,
                 account,
                 actor,
+                subtree,
                 ..
             } => {
                 let o = self.org_mut(&org)?;
                 if actor != account && !o.manages_team(&actor, &team) {
                     return Err("not allowed to manage this team");
                 }
+                if !o.teams.contains_key(&team) {
+                    return Err("no such team");
+                }
+                // The teams below go too (a private channel under an app's
+                // team): a direct row there would keep them in. Whoever
+                // manages `team` manages those; a leaver leaves them.
+                let below = if subtree {
+                    o.subtree(&team)
+                } else {
+                    vec![team.clone()]
+                };
+                for id in &below {
+                    if let Some(t) = o.teams.get_mut(id) {
+                        let _prev = t.members.remove(&account);
+                        let _was = t.read_only.remove(&account);
+                        let _caps = t.capabilities.remove(&account);
+                    }
+                }
                 let t = o.teams.get_mut(&team).ok_or("no such team")?;
-                let _prev = t.members.remove(&account);
-                let _was = t.read_only.remove(&account);
-                let _caps = t.capabilities.remove(&account);
                 // A removal, and a leave too, keeps them from
                 // coming back by inheritance: an open team would otherwise put a
                 // leaver straight back, and a read-only leaver would shed the
@@ -6085,10 +6207,20 @@ impl SystemMachine {
                 invite_key,
                 invite,
                 actor,
+                teams_seen,
                 ..
             } => {
                 let o = s.orgs.get(&invite.org).ok_or("no such organization")?;
                 let role = o.role(&actor).ok_or("not a member")?;
+                // Below admin, only teams the inviter sees: an org-wide
+                // INVITE_MEMBERS (which `may` falls back to) does not open a
+                // restricted team they are not in.
+                if teams_seen
+                    && role < OrgRole::Admin
+                    && !invite.teams.iter().all(|t| o.sees_team(&actor, t))
+                {
+                    return Err("an invite names only teams the inviter sees");
+                }
                 // INVITE_MEMBERS: below admin, the capability for the
                 // organization (an invite naming no team) or for each team named
                 // (a team's leads hold it there).
@@ -6597,6 +6729,7 @@ mod tests {
                 account: "bob".into(),
                 actor: "bob".into(),
                 consent: serde_json::Value::Null,
+                subtree: true,
             })
             .unwrap();
         assert!(!reaches(&m), "inheritance does not put a leaver back");
@@ -7993,6 +8126,7 @@ mod tests {
                 account: "bob".into(),
                 actor: "alice".into(),
                 consent,
+                subtree: true,
             },
         );
         // Leaving takes the leaver's own consent, not the owner's.
@@ -8042,6 +8176,7 @@ mod tests {
                 invite: invite.clone(),
                 actor: "alice".into(),
                 consent,
+                teams_seen: true,
             },
         );
         let redeem = |signature: String| SystemCmd::RedeemInvite {
@@ -8164,6 +8299,260 @@ mod tests {
         // This release logs the flag, so its entries replay the new rule.
         let new = serde_json::to_value(redemption("inv_link", "alice", 10)).unwrap();
         assert_eq!(new["free_when_unchanged"], json!(true), "{new}");
+    }
+
+    // ------------------------------------------- teams and leaving members
+
+    use super::DELETE_TEAM_NEEDS_CONSENT;
+    use crate::types::{AppRecord, Audience};
+
+    /// `proven_cluster` plus a restricted team `c` under `t`, bob with a
+    /// direct row in both, and an app `inapp` on `c`.
+    fn nested_teams() -> (SystemMachine, Soft, Soft) {
+        let (mut m, alice, bob, _carol) = proven_cluster();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.teams.insert(
+            "c".into(),
+            serde_json::from_value(json!({
+                "teamId": "c", "name": "C", "parent": "t", "join": "invite", "members": {}
+            }))
+            .unwrap(),
+        );
+        for team in ["t", "c"] {
+            let _prev = o
+                .teams
+                .get_mut(team)
+                .unwrap()
+                .members
+                .insert("bob".into(), false);
+        }
+        let _prev = m.state.apps.insert(
+            "inapp".into(),
+            serde_json::from_value(json!({
+                "appId": "inapp", "name": "inapp", "group": 3, "bundle": "b1",
+                "owner": "alice", "org": "org", "access": { "kind": "team", "team": "c" },
+                "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap(),
+        );
+        (m, alice, bob)
+    }
+
+    /// A removal from a team takes the direct rows below it too.
+    #[test]
+    fn a_team_removal_takes_the_rows_below_it() {
+        let (mut m, mut alice, _bob) = nested_teams();
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__remove_team_member",
+            &json!({ "team": "t", "account": "bob" }),
+        );
+        let _ok = m
+            .run(SystemCmd::RemoveTeamMember {
+                org: "org".into(),
+                team: "t".into(),
+                account: "bob".into(),
+                actor: "alice".into(),
+                consent: c,
+                subtree: true,
+            })
+            .unwrap();
+        let o = &m.state.orgs["org"];
+        assert!(!o.in_team("bob", "t") && !o.in_team("bob", "c"));
+        assert!(!m.state.may_reach(&m.state.apps["inapp"], Some("bob")));
+    }
+
+    /// Deleting a team that holds apps needs the deleter's passkey over
+    /// exactly those apps; one without apps goes without it.
+    #[test]
+    fn deleting_a_team_with_apps_needs_consent_over_them() {
+        let (mut m, mut alice, _bob) = nested_teams();
+        let delete = |team: &str, consent| SystemCmd::DeleteTeam {
+            org: "org".into(),
+            team: team.into(),
+            actor: "alice".into(),
+            consent,
+            apps_need_consent: true,
+        };
+        assert_eq!(
+            m.run(delete("t", serde_json::Value::Null)).unwrap_err(),
+            DELETE_TEAM_NEEDS_CONSENT
+        );
+        let fewer = consent(
+            &mut alice,
+            "org:org",
+            "__delete_team",
+            &json!({ "team": "t", "apps": [] }),
+        );
+        assert!(m.run(delete("t", fewer)).is_err(), "another list of apps");
+        let real = consent(
+            &mut alice,
+            "org:org",
+            "__delete_team",
+            &json!({ "team": "t", "apps": ["inapp"] }),
+        );
+        let out = m.run(delete("t", real)).unwrap();
+        assert_eq!(out["apps"], json!(["inapp"]));
+        assert!(!m.state.apps.contains_key("inapp"));
+
+        let (mut m, _alice, _bob) = nested_teams();
+        let _gone = m.state.apps.remove("inapp");
+        let out = m.run(delete("c", serde_json::Value::Null)).unwrap();
+        assert_eq!(out["apps"], json!([]));
+    }
+
+    /// Below admin, an invite names only teams the inviter sees, whatever
+    /// INVITE_MEMBERS they hold organization-wide.
+    #[test]
+    fn an_invite_names_only_teams_the_inviter_sees() {
+        let (mut m, _alice, mut bob) = nested_teams();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.teams.insert(
+            "x".into(),
+            serde_json::from_value(json!({
+                "teamId": "x", "name": "X", "join": "invite", "members": {}
+            }))
+            .unwrap(),
+        );
+        let _prev = o
+            .capabilities
+            .insert("bob".into(), crate::types::caps::INVITE_MEMBERS);
+        let mint = |m: &mut SystemMachine, bob: &mut Soft, token: &str, team: &str| {
+            let key = crate::proof::invite_key(token);
+            let invite: crate::types::Invite = serde_json::from_value(json!({
+                "org": "org", "role": "member", "teams": [team], "expiresAt": 100, "usesLeft": 1,
+            }))
+            .unwrap();
+            let c = consent(
+                bob,
+                "org:org",
+                "__create_invite",
+                &super::invite_args(&key, &invite),
+            );
+            m.run(SystemCmd::CreateInvite {
+                invite_key: key,
+                invite,
+                actor: "bob".into(),
+                consent: c,
+                teams_seen: true,
+            })
+        };
+        assert!(
+            mint(&mut m, &mut bob, "inv_t", "t").is_ok(),
+            "a team he is in"
+        );
+        assert_eq!(
+            mint(&mut m, &mut bob, "inv_x", "x").unwrap_err(),
+            "an invite names only teams the inviter sees"
+        );
+    }
+
+    /// Commands an earlier release logged, without this release's flags,
+    /// replay as that release applied them: a team removal takes one row, an
+    /// invite skips the sight check, a team deletion needs no passkey. The
+    /// entries this release logs carry the flags.
+    #[test]
+    fn team_commands_logged_before_these_rules_replay_as_they_did() {
+        let (mut m, mut alice, mut bob) = nested_teams();
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__remove_team_member",
+            &json!({ "team": "t", "account": "bob" }),
+        );
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "removeTeamMember", "org": "org", "team": "t", "account": "bob",
+            "actor": "alice", "consent": c,
+        }))
+        .unwrap();
+        let _ok = m.run(old).unwrap();
+        assert!(
+            m.state.orgs["org"].in_team("bob", "c"),
+            "the row below stays"
+        );
+
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .capabilities
+            .insert("bob".into(), crate::types::caps::INVITE_MEMBERS);
+        let key = crate::proof::invite_key("inv_old");
+        let invite: crate::types::Invite = serde_json::from_value(json!({
+            "org": "org", "role": "member", "teams": ["t"], "expiresAt": 100, "usesLeft": 1,
+        }))
+        .unwrap();
+        let c = consent(
+            &mut bob,
+            "org:org",
+            "__create_invite",
+            &super::invite_args(&key, &invite),
+        );
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "createInvite", "invite_key": key, "invite": invite, "actor": "bob",
+            "consent": c,
+        }))
+        .unwrap();
+        let _ok = m.run(old).unwrap();
+        assert!(m.state.invites.contains_key(&key), "minted as it was");
+
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "deleteTeam", "org": "org", "team": "t", "actor": "alice",
+        }))
+        .unwrap();
+        let out = m.run(old).unwrap();
+        assert_eq!(out["apps"], json!(["inapp"]), "deleted without a passkey");
+
+        let new = |cmd: SystemCmd| serde_json::to_value(cmd).unwrap();
+        let removal = new(SystemCmd::RemoveTeamMember {
+            org: "org".into(),
+            team: "t".into(),
+            account: "bob".into(),
+            actor: "alice".into(),
+            consent: serde_json::Value::Null,
+            subtree: true,
+        });
+        assert_eq!(removal["subtree"], json!(true), "{removal}");
+        let deletion = new(SystemCmd::DeleteTeam {
+            org: "org".into(),
+            team: "t".into(),
+            actor: "alice".into(),
+            consent: serde_json::Value::Null,
+            apps_need_consent: true,
+        });
+        assert_eq!(deletion["apps_need_consent"], json!(true), "{deletion}");
+    }
+
+    /// An account an organization's app names (its owner, an `Accounts`
+    /// list) reaches it, and receives its events, only while a member.
+    #[test]
+    fn an_org_app_is_reached_only_by_current_members() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let listed: AppRecord = serde_json::from_value(json!({
+            "appId": "dm", "name": "dm", "group": 4, "bundle": "b1", "owner": "bob",
+            "org": "org", "access": { "kind": "accounts", "accounts": ["alice", "bob", "carol"] },
+            "replicas": [1, 2, 3], "createdAt": 0
+        }))
+        .unwrap();
+        let s = &m.state;
+        assert!(s.may_reach(&listed, Some("alice")) && s.may_reach(&listed, Some("bob")));
+        assert!(
+            !s.may_reach(&listed, Some("carol")),
+            "listed, never a member"
+        );
+        let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+        let s = &m.state;
+        assert!(!s.may_reach(&listed, Some("bob")), "listed owner, removed");
+        assert!(!s.receives(&listed, &Audience::All, Some("alice"), Some("bob")));
+        assert!(s.receives(&listed, &Audience::All, Some("bob"), Some("alice")));
+        // Outside an organization, the list alone decides.
+        let personal = AppRecord {
+            org: None,
+            ..listed
+        };
+        assert!(m.state.may_reach(&personal, Some("carol")));
     }
 
     // ---------------------------------------------------- account recovery

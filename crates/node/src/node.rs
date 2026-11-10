@@ -23,6 +23,7 @@ use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemStat
 use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
+pub(crate) mod blob_guards;
 mod component;
 mod job;
 mod segments;
@@ -36,7 +37,7 @@ pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 pub(crate) use component::RUN_VIEW;
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
-    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
+    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
 
@@ -435,6 +436,8 @@ pub struct Node {
     segment_sweep: Mutex<segments::Sweep>,
     /// The upload sessions this node holds as an app leader.
     uploads: component::Uploads,
+    /// Pins on blobs an entry stored but did not commit, and deletions in flight.
+    pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -446,6 +449,9 @@ pub struct Node {
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
+    /// What each peer's replicas last said its apps used today, for the fuel cap
+    /// (`component::USAGE_REFRESH`).
+    peer_usage: Mutex<component::PeerUsage>,
     /// Outbox messages this node failed to deliver as a source's leader (D29): per
     /// (source app, seq), the attempts and the app time of the next one.
     xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
@@ -656,6 +662,17 @@ pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 /// connection at 30 s, so the caller saw a dropped request and not the reason.
 pub const SYSTEM_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Ids pinned on an app's leader: held by this node, or leased from the leader by a peer.
+#[must_use]
+pub(crate) enum LeaderPin {
+    Here(blob_guards::Pins),
+    There {
+        addr: String,
+        app: String,
+        token: u64,
+    },
+}
+
 /// A command the system log refused at apply.
 /// The largest blob (an app's file, a package's `.mpk`) a node keeps: it
 /// reaches the other nodes base64-encoded inside one sealed request
@@ -836,11 +853,13 @@ impl Node {
             pinned_segments: Arc::default(),
             segment_sweep: Mutex::default(),
             uploads: component::Uploads::default(),
+            blob_guards: Arc::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
+            peer_usage: Mutex::default(),
             xcall_retry: Mutex::new(HashMap::new()),
             actions_running: Mutex::new(HashSet::new()),
             action_retry: Mutex::new(HashMap::new()),
@@ -1195,7 +1214,7 @@ impl Node {
     /// The app's group, if this node is one of its replicas. A node the app
     /// moved off may still hold the group until reconcile drops it; it must
     /// forward instead of answering from a group it no longer belongs to.
-    fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
+    pub(crate) fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
         if !app.replicas.contains(&self.config.node_id) {
             return None;
         }
@@ -1306,6 +1325,35 @@ impl Node {
                 .and_then(|v| v["index"].as_u64()),
             Err(_) => None,
         }
+    }
+
+    /// The registered nodes whose attested release is older than this node's own,
+    /// or that could not be attested, with what each named (`None`): until there are
+    /// none, a setting only this release knows is not written, as D71 gates
+    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// from what it applies, and its snapshots would bring it back to its default.
+    pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
+        let own = self.own_release();
+        let ids: Vec<NodeId> = self.sys(|s| {
+            s.nodes
+                .keys()
+                .filter(|id| !s.removed_nodes.contains(id))
+                .copied()
+                .collect()
+        });
+        let releases = futures_util::future::join_all(
+            ids.iter()
+                .map(|id| async move { (*id, self.release_of_node(*id).await) }),
+        )
+        .await;
+        releases
+            .into_iter()
+            .filter(|(_, r)| {
+                r.as_deref().is_none_or(|r| {
+                    crate::system::compare_versions(r, &own) == std::cmp::Ordering::Less
+                })
+            })
+            .collect()
     }
 
     /// The release node `id` runs, as its verified attestation names it (this
@@ -2152,10 +2200,12 @@ impl Node {
             return Err(blob_too_large());
         }
         let id = hex::encode(calimero_identity::sha256(bytes));
-        self.engine
-            .put_blob(&id, bytes)
+        self.blob_guards
+            .put(&id, || self.engine.put_blob(&id, bytes))
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         self.spread_blob(&id, bytes, app).await?;
+        #[cfg(feature = "testing")]
+        self.push_checkpoint().await;
         Ok(id)
     }
 
@@ -2496,17 +2546,16 @@ impl Node {
         if self.is_code_blob(&hex_id) {
             return;
         }
-        let apps: Vec<AppRecord> = self.sys(|s| s.apps.values().cloned().collect());
-        for app in &apps {
-            // Read on each app's leader: a lagging replica could miss a mark
-            // committed a moment ago (the same content uploaded to another
-            // app). Unknown counts as held: never delete what an app may need.
-            if self.blob_held_strong(app, id).await.unwrap_or(true) {
-                return;
-            }
+        let deletion = self.blob_guards.begin_deletion(&hex_id);
+        if self.blob_in_use(id).await {
+            return;
         }
-        if let Err(e) = self.engine.delete_blob(&hex_id) {
-            warn!(blob = %hex_id, error = %e, "blob not deleted");
+        #[cfg(feature = "testing")]
+        self.deletion_checkpoint().await;
+        match deletion.delete(|| self.engine.delete_blob(&hex_id)) {
+            None => return,
+            Some(Err(e)) => warn!(blob = %hex_id, error = %e, "blob not deleted"),
+            Some(Ok(_)) => {}
         }
         let peers: Vec<String> = self.sys(|s| {
             s.replica_nodes()
@@ -2523,17 +2572,69 @@ impl Node {
         .await;
     }
 
+    /// Whether any app holds `id`, or has stored it and not committed yet, as each app's leader
+    /// answers it (a lagging replica could miss a mark committed a moment ago). Unknown counts as
+    /// in use: never delete what an app may need. Every deletion of bytes asks this.
+    pub(crate) async fn blob_in_use(&self, id: &[u8; 32]) -> bool {
+        let apps: Vec<AppRecord> = self.sys(|s| s.apps.values().cloned().collect());
+        for app in &apps {
+            if self.blob_held_strong(app, id).await.unwrap_or(true) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pins `ids` on `app`'s leader, so that no deletion of them takes the bytes about to be
+    /// stored, until [`Self::unpin_on_leader`] or the pin's expiry. Every path that stores bytes
+    /// before their record commits takes this first.
+    pub(crate) async fn pin_on_leader(
+        &self,
+        app: &AppRecord,
+        ids: Vec<String>,
+    ) -> Result<LeaderPin, ApiError> {
+        if let Some(g) = self.replica_group(app) {
+            if g.read_strong(|_, _| ()).await.is_ok() {
+                return Ok(LeaderPin::Here(self.blob_guards.pin(ids)));
+            }
+        }
+        let body = json!({ "app": app.app_id, "ids": ids });
+        for addr in self.other_replicas(app) {
+            if let Ok(v) = self.peer_forward(&addr, "internal/blob/pin", &body).await {
+                if let Some(token) = v["token"].as_u64() {
+                    return Ok(LeaderPin::There {
+                        addr,
+                        app: app.app_id.clone(),
+                        token,
+                    });
+                }
+            }
+        }
+        Err(ApiError::unavailable("no leader of the app answered"))
+    }
+
+    pub(crate) async fn unpin_on_leader(&self, pin: LeaderPin) {
+        match pin {
+            LeaderPin::Here(pins) => drop(pins),
+            LeaderPin::There { addr, app, token } => {
+                let body = json!({ "app": app, "release": token });
+                let _sent = self.peer_forward(&addr, "internal/blob/pin", &body).await;
+            }
+        }
+    }
+
     /// Whether `id` is one of `app`'s blobs. A replica that has not applied
     /// the upload yet says no, so the others are asked too.
     /// [`Self::blob_held`] as `app`'s leader answers it (a linearizable
-    /// read); `None` when no replica could answer as leader.
+    /// read), also true while an entry it is committing has stored the bytes; `None` when no
+    /// replica could answer as leader.
     pub async fn blob_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
-        self.blob_asked_strong(app, id, false).await
+        self.blob_asked_strong(app, id, false, true).await
     }
 
     /// Whether `id` is one of `app`'s sealed files, as its leader answers it.
     pub async fn file_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
-        self.blob_asked_strong(app, id, true).await
+        self.blob_asked_strong(app, id, true, false).await
     }
 
     /// `id` as `app`'s leader holds it: `None` if no replica answered as leader, `Some(None)` if
@@ -2558,9 +2659,17 @@ impl Node {
     }
 
     /// The leader's answer to whether `id` is held (`file`: held as a sealed file).
-    async fn blob_asked_strong(&self, app: &AppRecord, id: &[u8; 32], file: bool) -> Option<bool> {
-        let body =
-            json!({ "app": app.app_id, "id": hex::encode(id), "strong": true, "file": file });
+    async fn blob_asked_strong(
+        &self,
+        app: &AppRecord,
+        id: &[u8; 32],
+        file: bool,
+        pinned: bool,
+    ) -> Option<bool> {
+        let hex_id = hex::encode(id);
+        let body = json!({
+            "app": app.app_id, "id": hex_id, "strong": true, "file": file, "pinned": pinned
+        });
         self.ask_leader(
             app,
             body,
@@ -2568,7 +2677,7 @@ impl Node {
                 if file {
                     m.is_sealed_file(id)
                 } else {
-                    m.holds_blob(id)
+                    m.holds_blob(id) || (pinned && self.blob_guards.is_pinned(&hex_id))
                 }
             },
             |v| v["held"].as_bool(),

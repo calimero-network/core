@@ -52,7 +52,7 @@ is its command line.
   (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
-  refused while a hosted app marks the blob; `raft` needs `rpc.sender()` = the
+  refused while a hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs `rpc.sender()` = the
   caller and, for an app group, an approved release and membership (replicas or
   the group's voters/learners): openraft itself never checks (F4). Outbound,
   blobs (`spread_blob`) and presence go only to peers `may_send` allows.
@@ -93,7 +93,10 @@ is its command line.
   { credentialId }`; `__create_api_key`, `system::api_key_args`, the key's
   hash included; `org:<org>`: `__set_org_role { account, role }`,
   `__remove_member { account }`, `__set_team_member { team, account, lead,
-  role, capabilities }`, `__remove_team_member { team, account }`,
+  role, capabilities }`, `__remove_team_member { team, account }` (it takes
+  the rows below the team too, `RemoveTeamMember { subtree }`),
+  `__delete_team { team, apps }` (only when the team's subtree holds apps,
+  `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
   `__set_default_capabilities { capabilities }` (a team's: `{ team,
   capabilities }`, `system::default_capabilities_args`), `__create_invite`,
@@ -804,8 +807,22 @@ is its command line.
   `Node::collect_blob` deletes the bytes on every node (`internal/blob/delete`) unless
   another app still holds the same content (asked of each app's leader; an app whose
   leader does not answer counts as holding it) or it is a bundle or a release `.mpk`.
-  Known window: the same content uploaded to another app between that check and the
-  deletion loses its bytes. A blob past `MAX_BLOB_BYTES` (47 MiB) is refused
+  Every path that stores bytes before their record commits pins the ids on the app's leader first,
+  and holds the pin until the record commits or fails (`node/blob_guards.rs`): `logged_entry` (a
+  publish, a call's files, a run's outputs; it runs on the leader) and the plain upload
+  (`Node::pin_on_leader`: locally on the leader, else through `internal/blob/pin`, a lease
+  that expires after `LEASE_TTL` if the receiving node never releases it). Every deletion of bytes
+  (`collect_blob`, which the owner's delete, the queued collection and discarded files call, and a
+  peer's `internal/blob/delete`) asks `Node::blob_in_use`: held or pinned, as each app's leader
+  answers, unknown counting as in use. A put of an id (`BlobGuards::put`) also stops a deletion of
+  that id that was between its checks and its delete, here and on every peer. Regressions:
+  `compute_runs.rs` (`a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it`, a
+  matrix over the kind stored, the node it goes through and the node the delete goes through;
+  `a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes`,
+  `a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_the_bytes`,
+  `a_peers_delete_that_checked_before_a_publish_stored_its_bytes_keeps_them`).
+  A leader change between the pin and the commit is not covered: the pin stays on the old leader.
+  A blob past `MAX_BLOB_BYTES` (47 MiB) is refused
   `413 TOO_LARGE` by the node, one past the sealed cap (64 MiB) by the envelope, in the
   clear; the client reports both as `TOO_LARGE`. Regressions:
   `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
@@ -938,7 +955,11 @@ is its command line.
 - **Inspection**:
   `GET /apps/{app}/storage` (keys, bytes, blobs, `lastWriteAt`), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
-  API keys, owned orgs, and the quotas).
+  API keys, owned orgs, the quotas, and `developerFuelToday`/`developerWritesToday`:
+  today's runs of the apps the account is the developer of), `GET /orgs/{org}/usage`
+  (the same figures for the apps an organization is the developer of, its admins
+  only, D78), `GET /apps/{app}/usage` (a component's runs, owner and org admins only;
+  see "Usage" below).
 - **Teams** (`types::Org`): nested (`parent`, moved with
   `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent, the
   organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`)
@@ -946,8 +967,9 @@ is its command line.
   member, read-only) and capabilities (`caps`, `MemberCapabilities` bits;
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
-  runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
-  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
+  runs only its views, any other call refused before it runs (`403`,
+  `node::READ_ONLY`), so no run burns the developer's fuel uncounted (regression:
+  `a_read_only_members_call_is_refused_before_it_runs`). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
   whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
@@ -1076,6 +1098,40 @@ is its command line.
   `SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release at 0.
   `DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
   `TransferApp` of a personal app is refused when the new owner's quota would not hold its files.
+  The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default,
+  is no limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It
+  is charged to the app's developer, `usage::developer` (#4839), the same identity
+  usage is billed to: the owner of the deployment an app was created from, else the
+  app's organization or owner. So two payers' instances of one developer's
+  deployment share one cap. The fuel lives in the app groups' usage books, so it is
+  checked where a client's call, a delivered xcall or a synchronous xcall runs
+  (`Node::fuel_quota_refusal`, from `call_local_component`, after the idempotent
+  replay and the delivered-xcall check, before the run); an action's own calls are
+  not refused, as its start was. The check asks no peer
+  (`Node::developer_fuel_cached`): apps this node replicates are read from the
+  replica, the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s)
+  while a cap is set asks all peers at once (`internal/usage/today`) and keeps a
+  silent peer's last figures; so the cap is approximate by one interval and an app
+  no peer ever reported counts as nothing (fails open). A refused delivered xcall is
+  the target's final answer (D29, `deliver_one`), not a dead letter. The refusal is
+  not logged, so the key is not spent; `init`, timer ticks and event handlers are
+  never refused, and they still count toward the developer's day. The quota is fuel;
+  wall time is information only (D76). A non-zero cap is written only once every
+  registered node's attested release is this node's or newer
+  (`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
+  (`api::UPGRADE_PENDING`, one code for every such release gate), judged before the
+  operator is asked to sign (`__set_quotas`, #4791): an older node would drop the
+  field and its snapshots would reset the cap. Accepted gap (#4809): an older node
+  added after the cap is set, then sent a quota change itself, writes the quotas
+  without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
+  and the W19 minimum-release gate closes it. Usage reads (`app_usage`,
+  `internal/usage`, `replicas_usage_on`) use `replica_group()`, never a group the
+  node keeps after the app moved away. Regressions:
+  `the_fuel_cap_asks_no_peer_during_a_call_while_a_replica_hangs`,
+  `an_over_cap_developer_is_refused_within_one_refresh_while_a_peer_hangs`,
+  `a_delivered_xcall_into_an_over_cap_developers_app_is_refused`,
+  `the_fuel_cap_is_a_decimal_string`, `a_fuel_cap_waits_until_every_node_runs_this_release`,
+  and `deployments::two_payers_of_one_developers_apps_share_its_fuel_cap`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
   elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
@@ -1178,6 +1234,26 @@ API and system group:
   the event stream (`api::local_events`, the subscriber passed to a peer's
   `internal/events`) and a call's answer check `SystemState::receives` when they
   send it, so a removed member stops receiving at once.
+- **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
+  `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
+  bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
+  replacement keeps fuel, wall time and writes). Applying a non-conflicting entry adds
+  it to `ComponentHead::usage` (a `UsageBook`), per UTC day of the entry's `ts_ms`,
+  pruning `USAGE_DAYS` (31) back from the earlier of that day and the day after the
+  newest one held, so a far-future stamp never erases the real days
+  (`a_far_future_entry_does_not_erase_the_real_days`); followers never measure, so
+  every replica's book is the same (a snapshot carries it in `Head`). Timeouts are
+  not logged, so not counted (#4736); views are not counted (Q9); actions and compute
+  runs are not in the book yet. The API gives every figure as a decimal string (D20):
+  `/apps/{app}/usage`, `bundleBytes`, `developerFuelToday`, `developerWritesToday`
+  in `/auth/usage`, and `developerFuelToday`, `developerWritesToday` in
+  `/orgs/{org}/usage`. Tests: `the_usage_book_sums_what_the_entries_carry`,
+  `usage_survives_a_leader_change_and_a_snapshot_install`,
+  `an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick`,
+  `a_fuel_limit_of_zero_never_refuses`, `only_the_owner_and_org_admins_read_an_apps_usage`,
+  `an_org_apps_runs_count_toward_the_org_not_its_owner`,
+  `an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run`,
+  `only_an_orgs_admins_read_its_usage`.
 - **Upgrades**: the node's route and authority (`POST /apps/{app}/upgrade`,
   passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.

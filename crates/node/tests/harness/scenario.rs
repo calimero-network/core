@@ -1646,7 +1646,7 @@ impl<'a> Runner<'a> {
                 }
                 return Ok(cl.post(&base, Value::Object(body)).await?);
             }
-            "team_delete" => return Ok(cl.delete(&base).await?),
+            "team_delete" => return self.delete_approved(step, &base).await,
             "capabilities" => {
                 let mut body = Map::new();
                 let _p = body.insert("capabilities".into(), json!(as_int(&step["capabilities"])?));

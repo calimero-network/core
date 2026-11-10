@@ -1427,3 +1427,119 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
         assert!(!t.contains(&format!("developer=\"{globex}\"")), "{t}");
     }
 }
+
+/// D78 (Xabi, 11-09): the daily fuel cap follows the developer, the identity an
+/// instance's usage is billed to (`usage::developer`). Two customers' instances of
+/// one developer's deployment are two payers, but one developer: their fuel adds up
+/// against one cap. An instance whose own payer has burned almost nothing is refused
+/// once the developer's total is at the cap; the developer reads that total, and a
+/// customer, who is the developer of nothing, reads none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (carol, _carol_pk) = signed_up(&c, 1, "carol").await;
+    let (erin, _erin_pk) = signed_up(&c, 2, "erin").await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+
+    let _ok = alice
+        .upload_package(release("com.test.notes", "1.0.0"))
+        .await
+        .unwrap();
+    let alpha = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &alpha,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+    let globex = org(&carol, "Globex").await;
+    let initech = org(&erin, "Initech").await;
+    let at_globex = instance(&carol, &alpha, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+    let at_initech = instance(&erin, &alpha, "com.test.notes", None, Some(&initech))
+        .await
+        .unwrap();
+
+    // Globex's instance burns; Initech's has only run its `init`.
+    for i in 0..10 {
+        let _r = carol
+            .call(
+                &at_globex,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let fuel = |v: &Value, k: &str| -> u64 {
+        v[k].as_str()
+            .unwrap_or_else(|| panic!("{k} is not a decimal string: {v}"))
+            .parse()
+            .unwrap()
+    };
+    let today = |v: Value| fuel(&v["today"], "fuel");
+    let globex_fuel = today(carol.get(&format!("apps/{at_globex}/usage")).await.unwrap());
+    let initech_fuel = today(erin.get(&format!("apps/{at_initech}/usage")).await.unwrap());
+    assert!(
+        initech_fuel < globex_fuel,
+        "{initech_fuel} vs {globex_fuel}"
+    );
+    // The developer's total is both instances'.
+    let developer = fuel(&alice.usage().await.unwrap(), "developerFuelToday");
+    assert_eq!(developer, globex_fuel + initech_fuel);
+    // A customer is the developer of neither.
+    assert_eq!(
+        fuel(
+            &erin.get(&format!("orgs/{initech}/usage")).await.unwrap(),
+            "developerFuelToday"
+        ),
+        0
+    );
+
+    // A cap above what either payer burned, at what the developer did.
+    let _ok = ops_signed(
+        &ops,
+        "ops/quotas",
+        json!({ "maxFuelPerDeveloperPerDay": developer.to_string() }),
+    )
+    .await
+    .unwrap();
+    for r in c.nodes.iter().flatten() {
+        for _ in 0..100 {
+            if r.node.sys(|s| s.quotas.max_fuel_per_developer_per_day) == developer {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let err = erin
+        .call(
+            &at_initech,
+            "set",
+            json!({ "key": "k", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+    let err = carol
+        .call(&at_globex, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+}
