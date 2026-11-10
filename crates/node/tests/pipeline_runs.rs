@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::component::blobs::BLOB_IDLE_MS;
 use calimero_node::component::{RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
 use calimero_node::Node;
 use common::{mpk_with_pipelines, signed_up, Cluster, JobNode, PUBLISHER};
@@ -107,6 +108,28 @@ steps:
   all: { method: digest, collect: each.outputs }
 ";
 
+const PARTIAL: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: partial
+inputs:
+  docs: { kind: files }
+params:
+  p: { type: string, default: one }
+steps:
+  a: { method: digest, inputs: [inputs.docs] }
+  b: { method: echo, needs: [a], args: { value: [params.p] } }
+  c: { method: echo, inputs: [a.outputs], args: { value: b.result } }
+";
+
+const FRESH: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: fresh
+inputs:
+  docs: { kind: files }
+steps:
+  a: { method: digest, inputs: [inputs.docs], cache: false }
+";
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(bytes))
@@ -146,6 +169,8 @@ impl Rig {
             ("pipelines/small.yaml", SMALL),
             ("pipelines/eager.yaml", EAGER),
             ("pipelines/resume.yaml", RESUME),
+            ("pipelines/partial.yaml", PARTIAL),
+            ("pipelines/fresh.yaml", FRESH),
         ];
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
@@ -393,6 +418,11 @@ impl Rig {
             ids.push(self.upload(text.as_bytes()).await);
         }
         ids
+    }
+
+    /// The result values of a step's runs, in item order.
+    fn rest_of(&self, v: &Value, step: &str) -> (Vec<String>, Value) {
+        (output_ids(v, step), v["steps"][step]["results"].clone())
     }
 
     fn active_runs(&self) -> usize {
@@ -782,7 +812,7 @@ async fn a_start_is_refused_with_a_stable_code() {
     );
     assert_eq!(
         code(start("broken", json!({ "docs": ["ab".repeat(32)] }), json!({})).await),
-        Some("BAD_INPUTS".into()),
+        Some("OUTPUT_EXPIRED".into()),
         "a file the app does not hold"
     );
     assert_eq!(
@@ -801,4 +831,105 @@ async fn a_start_is_refused_with_a_stable_code() {
         code(start("broken", docs, json!({})).await),
         Some("TOO_MANY_PIPELINE_RUNS".into())
     );
+}
+
+fn cached(v: &Value, step: &str) -> bool {
+    v["steps"][step]["cached"] == json!(true)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn rerunning_with_one_changed_param_runs_only_the_steps_it_reaches() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"some document").await;
+    let docs = json!({ "docs": [file] });
+    let first = rig
+        .start_run("partial", docs.clone(), json!({ "p": "one" }))
+        .await;
+    let first = rig.ended(&first).await;
+    assert_eq!(first["state"], "succeeded", "{first}");
+    assert!(!cached(&first, "a") && !cached(&first, "b"), "{first}");
+    assert_eq!(rig.all_records().len(), 3);
+
+    let second = rig
+        .start_run("partial", docs.clone(), json!({ "p": "two" }))
+        .await;
+    let second = rig.ended(&second).await;
+    assert_eq!(second["state"], "succeeded", "{second}");
+    assert!(cached(&second, "a"), "a does not read p: {second}");
+    assert!(!cached(&second, "b") && !cached(&second, "c"), "{second}");
+    assert_eq!(rig.all_records().len(), 5, "only b and c ran");
+    let a_run = step_runs(&second, "a");
+    assert!(
+        rig.leader()
+            .hosted(&rig.app)
+            .unwrap()
+            .read_local(|m, _| m.run_record(&a_run[0]))
+            .is_none(),
+        "a cached step has no run record, so no usage"
+    );
+    assert_eq!(output_ids(&second, "a"), output_ids(&first, "a"));
+
+    let third = rig.start_run("partial", docs, json!({ "p": "one" })).await;
+    let third = rig.ended(&third).await;
+    assert_eq!(third["state"], "succeeded", "{third}");
+    for step in ["a", "b", "c"] {
+        assert!(cached(&third, step), "{step}: {third}");
+    }
+    assert_eq!(rig.all_records().len(), 5, "no run record at all");
+    assert_eq!(third["steps"]["c"]["result"], first["steps"]["c"]["result"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_step_with_cache_false_always_runs() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"some document").await;
+    for n in 1..=2 {
+        let run = rig
+            .start_run("fresh", json!({ "docs": [file] }), json!({}))
+            .await;
+        let done = rig.ended(&run).await;
+        assert_eq!(done["state"], "succeeded", "{done}");
+        assert!(!cached(&done, "a"), "{done}");
+        assert_eq!(rig.all_records().len(), n, "run {n} ran the step");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fan_out_reuses_its_cached_items() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let files = rig
+        .uploads(&["item one".to_owned(), "item two".to_owned()])
+        .await;
+    let first = rig
+        .start_run("small", json!({ "docs": files }), json!({}))
+        .await;
+    let first = rig.ended(&first).await;
+    assert_eq!(first["state"], "succeeded", "{first}");
+    assert_eq!(first["steps"]["each"]["cachedItems"], 0);
+    assert_eq!(rig.all_records().len(), 2);
+    let again = rig
+        .start_run("small", json!({ "docs": files }), json!({}))
+        .await;
+    let again = rig.ended(&again).await;
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert!(cached(&again, "each"), "{again}");
+    assert_eq!(again["steps"]["each"]["cachedItems"], 2);
+    assert_eq!(rig.rest_of(&again, "each"), rig.rest_of(&first, "each"));
+    assert_eq!(rig.all_records().len(), 2, "no new run");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn starting_with_an_expired_output_answers_output_expired() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"will be forgotten").await;
+    rig.c
+        .advance_all(i64::try_from(BLOB_IDLE_MS).unwrap() + 1000);
+    // Any later entry expires what nothing refers to.
+    let _other = rig.upload(b"a later file").await;
+    let refused = rig
+        .alice
+        .start_pipeline_run(&rig.app, "fresh", json!({ "docs": [file] }), json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some("OUTPUT_EXPIRED"), "{refused}");
 }

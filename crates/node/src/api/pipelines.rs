@@ -26,8 +26,19 @@ const MAX_PARAM_STRING_BYTES: usize = 4096; // a string param's value
 /// The refusal for a pipeline the app's release does not register.
 pub const NO_SUCH_PIPELINE: &str = "NO_SUCH_PIPELINE";
 const BAD_INPUTS: &str = "BAD_INPUTS";
+const OUTPUT_EXPIRED: &str = "OUTPUT_EXPIRED";
 const BAD_PARAMS: &str = "BAD_PARAMS";
 const ONE_SERVICE: &str = "PIPELINES_NEED_ONE_SERVICE";
+
+/// An input that is a file id the app does not hold: a file is forgotten once nothing refers to
+/// it, so this cannot tell one that was never there from one that expired.
+fn expired() -> ApiError {
+    ApiError::new(
+        410,
+        OUTPUT_EXPIRED,
+        "an input is not a file this app holds; it may have expired",
+    )
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -176,10 +187,7 @@ pub(super) async fn start(
             .filter(|raw| hex::encode(raw) == *id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
         if node.file_held_strong(&app, &raw).await != Some(true) {
-            return Err(ApiError::bad_request(
-                BAD_INPUTS,
-                "an input is not a file of this app",
-            ));
+            return Err(expired());
         }
     }
     let run = typed_id::<12>();
@@ -208,10 +216,7 @@ pub(super) async fn start(
             TOO_MANY_PIPELINE_RUNS,
             "this app has too many pipeline runs going; wait for one to end",
         )),
-        (_, Some(INPUT_NOT_HELD)) => Err(ApiError::bad_request(
-            BAD_INPUTS,
-            "an input is not a file of this app",
-        )),
+        (_, Some(INPUT_NOT_HELD)) => Err(expired()),
         (status, why) => Err(ApiError::conflict(&format!(
             "the pipeline run was not started ({status:?}: {})",
             why.unwrap_or("no reason")

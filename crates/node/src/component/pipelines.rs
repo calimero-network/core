@@ -18,6 +18,7 @@ use serde_json::Value;
 use super::runs::{
     FailedReason, FinalOutcome, PipelineLink, RunCaps, RunInputRef, RunRecord, RunState,
 };
+use super::step_cache::{CacheEntry, CachedRun, MAX_CACHED_PER_DECISION};
 use super::{host_answer, parse_hex32, Applied, FileMark};
 use crate::app::{rows, AppMachine};
 use crate::types::Caller;
@@ -52,6 +53,7 @@ pub(super) const CANCELLING: &str = "the pipeline run is being cancelled";
 pub(super) const NOT_FAN_OUT: &str = "the step is not a running fan-out with runs left";
 pub(super) const NOT_NEXT: &str = "the runs are not the step's next ones";
 pub(super) const STEP_STOPPING: &str = "the step is ending and starts no more runs";
+pub(super) const CACHE_GONE: &str = "a cached run's entry or outputs are gone";
 
 /// Where a pipeline run is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +114,9 @@ pub struct StepState {
     pub finished: u32,
     /// Items of the runs that failed or were cancelled.
     pub failed_items: u32,
+    /// Indices of the runs answered from the step cache, which started no compute run.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub cached_runs: BTreeSet<u32>,
 }
 
 impl StepState {
@@ -128,7 +133,22 @@ impl StepState {
             fan: FanOut::default(),
             finished: 0,
             failed_items: 0,
+            cached_runs: BTreeSet::new(),
         }
+    }
+
+    /// Whether the step finished with every one of its runs answered from the cache.
+    #[must_use]
+    pub fn is_cached(&self) -> bool {
+        self.status == StepStatus::Succeeded
+            && !self.cached_runs.is_empty()
+            && self.cached_runs.len() == self.fan.total as usize
+    }
+
+    /// Items carried by the runs answered from the cache.
+    #[must_use]
+    pub fn cached_items(&self) -> u32 {
+        self.cached_runs.iter().map(|i| self.items_of(*i)).sum()
     }
 
     /// The files the step's runs made, in item order.
@@ -242,6 +262,9 @@ pub struct StepRun {
     /// File ids of the app.
     pub inputs: Vec<String>,
     pub caps: RunCaps,
+    /// The step cache key the leader made for this run; none when the step has `cache: false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
 }
 
 /// What the leader decided for a pending step.
@@ -252,10 +275,15 @@ pub enum StepVerdict {
     Start {
         runs: Vec<StepRun>,
         fan: FanOut,
+        /// Runs answered from the step cache; with `runs` they cover the indices from 0.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cached: Vec<CachedRun>,
     },
     /// The next runs of a running fan-out step, from the first index it has not started.
     More {
         runs: Vec<StepRun>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cached: Vec<CachedRun>,
     },
     Skipped,
     UpstreamFailed,
@@ -357,7 +385,10 @@ impl AppMachine {
     }
 
     /// The marks of `ids` as the app's sealed files hold them; none when one is not held.
-    fn file_refs<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> Option<Vec<RunInputRef>> {
+    pub(super) fn file_refs<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a String>,
+    ) -> Option<Vec<RunInputRef>> {
         let blobs = &self.state.component.blobs.records;
         ids.into_iter()
             .map(|id| {
@@ -373,7 +404,7 @@ impl AppMachine {
     }
 
     /// Adds `delta` references to each distinct file in `ids`.
-    fn pin_files<'a>(
+    pub(super) fn pin_files<'a>(
         &mut self,
         tx: &mut StateTx<'_>,
         ids: impl IntoIterator<Item = &'a String>,
@@ -481,40 +512,56 @@ impl AppMachine {
         let ts_ms = entry.ts_ms;
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
+        let mut hit_any = false;
         let (status, reason) = match &entry.decision {
-            StepVerdict::Start { runs, fan } => {
+            StepVerdict::Start { runs, fan, cached } => {
                 if pipeline.cancel_requested || pipeline.stopping {
                     return no_op(CANCELLING);
                 }
-                let started = if fan.well_formed() && runs.len() <= fan.total as usize {
-                    self.start_step_runs(tx, &pipeline, &entry.step, runs, ts_ms)
-                } else {
-                    Err(Refusal::Failed("BAD_START"))
-                };
+                let started =
+                    if fan.well_formed() && runs.len() + cached.len() <= fan.total as usize {
+                        self.start_wave(
+                            tx,
+                            &pipeline,
+                            &entry.step,
+                            0,
+                            (runs, cached),
+                            "BAD_START",
+                            ts_ms,
+                        )
+                    } else {
+                        Err(Refusal::Failed("BAD_START"))
+                    };
                 match started {
-                    Ok(ids) => {
+                    Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
-                            step.runs = ids;
+                            step.runs = wave.ids;
                             step.fan = *fan;
                         }
+                        hit_any = !wave.hits.is_empty();
+                        self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
                     Err(Refusal::NoRoom) => return no_op(NO_ROOM),
+                    Err(Refusal::CacheGone) => return no_op(CACHE_GONE),
                     Err(Refusal::Failed(code)) => (StepStatus::Failed, Some(code.to_owned())),
                 }
             }
-            StepVerdict::More { runs } => {
+            StepVerdict::More { runs, cached } => {
                 if pipeline.cancel_requested || pipeline.stopping {
                     return no_op(STEP_STOPPING);
                 }
-                match self.start_more_runs(tx, &pipeline, &entry.step, runs, ts_ms) {
-                    Ok(ids) => {
+                match self.start_more_runs(tx, &pipeline, &entry.step, (runs, cached), ts_ms) {
+                    Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
-                            step.runs.extend(ids);
+                            step.runs.extend(wave.ids);
                         }
+                        hit_any = !wave.hits.is_empty();
+                        self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
                     Err(Refusal::NoRoom) => return no_op(NO_ROOM),
+                    Err(Refusal::CacheGone) => return no_op(CACHE_GONE),
                     Err(Refusal::Failed(code)) if code == NOT_NEXT => return no_op(NOT_NEXT),
                     Err(Refusal::Failed(code)) if code == STEP_STOPPING => {
                         return no_op(STEP_STOPPING)
@@ -542,21 +589,12 @@ impl AppMachine {
                 step.reason = reason;
             }
         }
+        if hit_any {
+            self.settle_step(tx, &mut pipeline, &entry.step);
+        }
         self.settle_after_change(tx, &mut pipeline, ts_ms);
         Self::write_pipeline(tx, &pipeline);
         host_answer(index, true, "")
-    }
-
-    /// The first wave of a step: indices from 0, at most [`MAX_STEP_RUNS`].
-    fn start_step_runs(
-        &mut self,
-        tx: &mut StateTx<'_>,
-        pipeline: &PipelineRun,
-        step: &str,
-        runs: &[StepRun],
-        ts_ms: u64,
-    ) -> Result<Vec<String>, Refusal> {
-        self.start_runs_from(tx, pipeline, step, 0, runs, ts_ms)
     }
 
     /// The next wave of a running fan-out: it continues where the step's runs end, never past
@@ -566,9 +604,9 @@ impl AppMachine {
         tx: &mut StateTx<'_>,
         pipeline: &PipelineRun,
         step: &str,
-        runs: &[StepRun],
+        wave: (&[StepRun], &[CachedRun]),
         ts_ms: u64,
-    ) -> Result<Vec<String>, Refusal> {
+    ) -> Result<Wave, Refusal> {
         let Some(state) = pipeline.steps.get(step) else {
             return Err(Refusal::Failed(NOT_NEXT));
         };
@@ -576,36 +614,104 @@ impl AppMachine {
             return Err(Refusal::Failed(STEP_STOPPING));
         }
         let first = state.runs.len();
-        if runs.is_empty() || first + runs.len() > state.fan.total as usize {
+        let n = wave.0.len() + wave.1.len();
+        if n == 0 || first + n > state.fan.total as usize {
             return Err(Refusal::Failed(NOT_NEXT));
         }
-        let next = runs
-            .iter()
-            .enumerate()
-            .all(|(i, r)| r.run == run_id(&pipeline.id, step, first + i));
-        if !next {
-            return Err(Refusal::Failed(NOT_NEXT));
-        }
-        self.start_runs_from(tx, pipeline, step, first, runs, ts_ms)
+        self.start_wave(tx, pipeline, step, first, wave, NOT_NEXT, ts_ms)
     }
 
-    /// Records the runs of a step as queued compute runs, linked to it, and pins their inputs.
-    fn start_runs_from(
+    /// Starts the runs of a wave and finds its cache hits: the wave covers the indices from
+    /// `first`, a hit whose entry or outputs are gone ends it there, and nothing before that is lost.
+    #[allow(clippy::too_many_arguments)]
+    fn start_wave(
         &mut self,
         tx: &mut StateTx<'_>,
         pipeline: &PipelineRun,
         step: &str,
         first: usize,
-        runs: &[StepRun],
+        (runs, cached): (&[StepRun], &[CachedRun]),
+        bad: &'static str,
         ts_ms: u64,
-    ) -> Result<Vec<String>, Refusal> {
-        let ids_ok = runs.iter().enumerate().all(|(i, r)| {
-            r.run == run_id(&pipeline.id, step, first + i)
-                && !r.method.is_empty()
+    ) -> Result<Wave, Refusal> {
+        let slots = wave_slots(&pipeline.id, step, first, runs, cached)
+            .filter(|s| !s.is_empty() && cached.len() <= MAX_CACHED_PER_DECISION)
+            .ok_or(Refusal::Failed(bad))?;
+        let mut hits = Vec::new();
+        let mut kept = slots.len();
+        for (n, slot) in slots.iter().enumerate() {
+            let Slot::Hit(index, c) = slot else { continue };
+            let held = Self::read_cache(tx, &c.key)
+                .filter(|e| self.file_refs(e.outputs.iter().map(|o| &o.id)).is_some());
+            let Some(entry) = held else {
+                kept = n;
+                break;
+            };
+            hits.push((
+                u32::try_from(*index).unwrap_or(u32::MAX),
+                c.key.clone(),
+                entry,
+            ));
+        }
+        if kept == 0 {
+            return Err(Refusal::CacheGone);
+        }
+        let fresh: Vec<(usize, &StepRun)> = slots[..kept]
+            .iter()
+            .filter_map(|s| match s {
+                Slot::Run(i, r) => Some((*i, *r)),
+                Slot::Hit(..) => None,
+            })
+            .collect();
+        self.start_runs_from(tx, pipeline, step, &fresh, ts_ms)?;
+        let ids = (first..first + kept)
+            .map(|i| run_id(&pipeline.id, step, i))
+            .collect();
+        Ok(Wave { ids, hits })
+    }
+
+    /// Takes the cache hits of a wave into the step as finished runs.
+    fn record_hits(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        pipeline: &mut PipelineRun,
+        step: &str,
+        hits: Vec<(u32, String, CacheEntry)>,
+        ts_ms: u64,
+    ) {
+        for (index, key, entry) in hits {
+            self.pin_files(tx, entry.outputs.iter().map(|o| &o.id), 1, ts_ms);
+            if let Some(state) = pipeline.steps.get_mut(step) {
+                state.finished += 1;
+                let _new = state.cached_runs.insert(index);
+                let _prev = state.run_outputs.insert(index, entry.outputs.clone());
+                if let Some(result) = &entry.result {
+                    keep_result(state, index, &result.0);
+                }
+            }
+            self.touch_cache(tx, &key, entry, ts_ms);
+        }
+    }
+
+    /// Records the runs as queued compute runs, linked to their step by index, and pins their
+    /// inputs.
+    fn start_runs_from(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        pipeline: &PipelineRun,
+        step: &str,
+        runs: &[(usize, &StepRun)],
+        ts_ms: u64,
+    ) -> Result<(), Refusal> {
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let ids_ok = runs.iter().all(|(_, r)| {
+            !r.method.is_empty()
                 && r.args.0.len() <= host::MAX_COMPUTE_ARGS_BYTES
                 && r.inputs.len() <= host::MAX_PIPELINE_RUN_INPUTS
         });
-        if runs.is_empty() || runs.len() > MAX_STEP_RUNS || !ids_ok {
+        if runs.len() > MAX_STEP_RUNS || !ids_ok {
             return Err(Refusal::Failed("BAD_START"));
         }
         let head = &self.state.component.head;
@@ -614,23 +720,23 @@ impl AppMachine {
         }
         if runs
             .iter()
-            .any(|r| head.active_runs.contains(&r.run) || Self::read_run(tx, &r.run).is_some())
+            .any(|(_, r)| head.active_runs.contains(&r.run) || Self::read_run(tx, &r.run).is_some())
         {
             return Err(Refusal::Failed("RUN_EXISTS"));
         }
         let mut records = Vec::new();
-        for r in runs {
+        for (index, r) in runs {
             let Some(inputs) = self.file_refs(&r.inputs) else {
                 return Err(Refusal::Failed("INPUT_NOT_HELD"));
             };
-            records.push((r, inputs));
+            records.push((*index, *r, inputs));
         }
         let bundle = self
             .state
             .bundle
             .clone()
             .unwrap_or_else(|| pipeline.compute_bundle.clone());
-        for (i, (r, inputs)) in records.into_iter().enumerate() {
+        for (index, r, inputs) in records {
             let record = RunRecord {
                 run: r.run.clone(),
                 method: r.method.clone(),
@@ -651,14 +757,15 @@ impl AppMachine {
                 pipeline: Some(PipelineLink {
                     run: pipeline.id.clone(),
                     step: step.to_owned(),
-                    index: u32::try_from(first + i).unwrap_or(u32::MAX),
+                    index: u32::try_from(index).unwrap_or(u32::MAX),
                 }),
+                cache_key: r.cache_key.clone(),
             };
             Self::write_run(tx, &record);
             let _new = self.state.component.head.active_runs.insert(r.run.clone());
             self.pin_inputs(tx, &inputs, 1, ts_ms);
         }
-        Ok(runs.iter().map(|r| r.run.clone()).collect())
+        Ok(())
     }
 
     /// Tells the active runs of `runs` to stop.
@@ -721,6 +828,25 @@ impl AppMachine {
         let Some(link) = &record.pipeline else {
             return;
         };
+        let made: Vec<RunInputRef> = outputs
+            .iter()
+            .map(|o| RunInputRef {
+                id: o.id.clone(),
+                size: o.size,
+                sha256: hex::encode(&o.sha256.0),
+            })
+            .collect();
+        if let (Some(key), None) = (&record.cache_key, failure_of(record)) {
+            if result.len() <= MAX_STEP_RESULT_BYTES {
+                let entry = CacheEntry {
+                    outputs: made.clone(),
+                    result: (!result.is_empty()).then(|| Bytes(result.to_vec())),
+                    ts_ms,
+                    source_run: record.run.clone(),
+                };
+                self.cache_put(tx, key, entry, ts_ms);
+            }
+        }
         let Some(mut pipeline) = Self::read_pipeline(tx, &link.run) else {
             return;
         };
@@ -737,14 +863,6 @@ impl AppMachine {
                 step.reason.get_or_insert(code);
             }
             None => {
-                let made: Vec<RunInputRef> = outputs
-                    .iter()
-                    .map(|o| RunInputRef {
-                        id: o.id.clone(),
-                        size: o.size,
-                        sha256: hex::encode(&o.sha256.0),
-                    })
-                    .collect();
                 self.pin_files(tx, made.iter().map(|o| &o.id), 1, ts_ms);
                 if let Some(step) = pipeline.steps.get_mut(&link.step) {
                     step.run_outputs.insert(link.index, made);
@@ -911,6 +1029,49 @@ pub fn run_id(pipeline: &str, step: &str, index: usize) -> String {
 enum Refusal {
     /// The app's active runs are full: try again later.
     NoRoom,
+    /// The wave's first cache hit is gone: decide again.
+    CacheGone,
     /// The step can never start; the code says why.
     Failed(&'static str),
+}
+
+/// A wave as apply took it: the ids of the indices it covers, and the cache hits among them.
+struct Wave {
+    ids: Vec<String>,
+    hits: Vec<(u32, String, CacheEntry)>,
+}
+
+/// One index of a wave: a run to start or a cache hit.
+enum Slot<'a> {
+    Run(usize, &'a StepRun),
+    Hit(usize, &'a CachedRun),
+}
+
+/// The wave's indices from `first` in order, each a hit or the next run; none if the hits and
+/// runs do not tile the indices or a run's id is not its index's.
+fn wave_slots<'a>(
+    pipeline: &str,
+    step: &str,
+    first: usize,
+    runs: &'a [StepRun],
+    cached: &'a [CachedRun],
+) -> Option<Vec<Slot<'a>>> {
+    let n = runs.len() + cached.len();
+    let mut hits: BTreeMap<usize, &CachedRun> = BTreeMap::new();
+    for c in cached {
+        let i = c.index as usize;
+        if i < first || i >= first + n || hits.insert(i, c).is_some() {
+            return None;
+        }
+    }
+    let mut next = runs.iter();
+    (first..first + n)
+        .map(|i| match hits.get(&i) {
+            Some(c) => Some(Slot::Hit(i, c)),
+            None => next
+                .next()
+                .filter(|r| r.run == run_id(pipeline, step, i))
+                .map(|r| Slot::Run(i, r)),
+        })
+        .collect()
 }

@@ -30,6 +30,7 @@ pub mod blobs;
 mod pipelines;
 mod runs;
 pub mod search;
+mod step_cache;
 pub mod xcall;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -58,6 +59,10 @@ pub use runs::{
     Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome,
     PipelineLink, RunCaps, RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT,
     MAX_ATTEMPTS,
+};
+pub use step_cache::{
+    cache_key, CacheEntry, CachedRun, CACHE_EXPIRY_STEP, CACHE_TTL_MS, MAX_CACHED_PER_DECISION,
+    MAX_CACHE_ENTRIES,
 };
 
 /// An event a run emitted, with its audience (R9).
@@ -831,6 +836,9 @@ pub struct ComponentHead {
     /// The last finished pipeline runs, oldest first; their records are kept until they leave it.
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     pub finished_pipelines: VecDeque<String>,
+    /// Keys of the pipeline step cache, oldest first.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub step_cache: VecDeque<String>,
     /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
     /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
     /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
@@ -1569,6 +1577,7 @@ impl AppMachine {
         if let Some(now) =
             idempotency::expiry_now(self.state.component.head.last_ts_ms, entry_ts_ms)
         {
+            self.expire_step_cache(tx, now);
             self.state.component.expire_blobs(tx, now);
         }
         serde_json::to_vec(&applied).unwrap_or_default()
