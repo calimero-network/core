@@ -235,8 +235,10 @@ meroctl group upgrade retry <org> <run>     # the failed instances, as a new run
 
 The run (`POST /orgs/{org}/upgrade`, `GET /orgs/{org}/upgrades/{run}`) lists
 the apps it targets, those `done` and, under `failed`, each failed app's
-refusal. An app already on the target counts as done; a failure leaves that
-app on its release and the rest of the run goes on. The operator runs the same
+refusal. An app whose current component is the target's (a release that
+changes only the frontend) is recorded on the new release without running
+anything; a failure leaves that app on its release and the rest of the run
+goes on. The operator runs the same
 upgrade with `meroctl ops upgrade-namespace` where it holds app upgrades.
 
 ## Troubleshooting
