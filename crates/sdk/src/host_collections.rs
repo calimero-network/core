@@ -3,6 +3,13 @@
 //! store. The host writes the keys and bytes the guest path writes, so the two read each
 //! other's state.
 //!
+//! Records and map values cross the interface as JSON text ([`to_json`]); the host stores
+//! them as the guest path's CBOR by the types the ABI declares. A record reads its own JSON
+//! back as is (its derive writes and reads 64-bit fields as decimal strings); a map value
+//! of a plain serde type gets its 64-bit integers back as decimal strings, which
+//! [`map_value`] turns into numbers by the map's value type from the state ABI
+//! ([`map_value_types`], registered by `AppState::load`).
+//!
 //! Every function answers `None` when the host does not serve the name (a collection the
 //! state does not declare, say one built by hand with `new`): the caller then takes the
 //! guest path, which stores at the same keys. The first such answer for a name is logged
@@ -17,8 +24,12 @@
 //! collection's other calls off the host. Every guest-path access of a host build is
 //! therefore in the invocation's log.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::bindings::calimero::app::collections as wit;
 use crate::encoding::key::KeyPart;
@@ -34,6 +45,98 @@ thread_local! {
     static GUEST_PATH: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
     /// `(collection, reason)` already logged by [`guest_only`] in this invocation.
     static GUEST_ONLY: RefCell<BTreeSet<(String, String)>> = const { RefCell::new(BTreeSet::new()) };
+    /// The state's maps and their value types (ABI names), from [`map_value_types`].
+    static MAP_VALUES: Cell<&'static [(&'static str, &'static str)]> = const { Cell::new(&[]) };
+}
+
+/// Remember the state's maps and their value types (`#[app::state]` passes them in `load`).
+pub(crate) fn map_value_types(maps: &'static [(&'static str, &'static str)]) {
+    MAP_VALUES.with(|m| m.set(maps));
+}
+
+/// A record or map value as the JSON text the host takes.
+pub(crate) fn to_json<T: Serialize + ?Sized>(value: &T) -> Result<String, StorageError> {
+    serde_json::to_string(value).map_err(|e| StorageError::Encode(e.to_string()))
+}
+
+/// A record from the host's JSON text: its derive reads 64-bit fields as decimal strings.
+pub(crate) fn from_json<T: DeserializeOwned>(text: &str) -> Result<T, StorageError> {
+    serde_json::from_str(text).map_err(|e| StorageError::Decode(e.to_string()))
+}
+
+/// A value of the map `map` from the host's JSON text: the 64-bit integers the host wrote as
+/// decimal strings become numbers again, by the map's value type, before `V` reads them.
+pub(crate) fn map_value<V: DeserializeOwned>(map: &str, text: &str) -> Result<V, StorageError> {
+    let mut json: Value =
+        serde_json::from_str(text).map_err(|e| StorageError::Decode(e.to_string()))?;
+    let ty = MAP_VALUES.with(|m| {
+        m.get()
+            .iter()
+            .find(|(name, _)| *name == map)
+            .map(|(_, ty)| *ty)
+    });
+    if let Some(ty) = ty {
+        numbers(ty, &mut json)?;
+    }
+    serde_json::from_value(json).map_err(|e| StorageError::Decode(e.to_string()))
+}
+
+/// Turn the decimal strings at the `u64`/`i64` positions of `ty` (an ABI type name:
+/// `option<T>`, `list<T>`, `tuple<A, ..>`) into JSON numbers; other positions are left.
+fn numbers(ty: &str, json: &mut Value) -> Result<(), StorageError> {
+    let ty = ty.trim();
+    let generic = |head: &str| ty.strip_prefix(head)?.strip_suffix('>');
+    match json {
+        Value::String(s) if ty == "u64" || ty == "i64" => {
+            let n = if ty == "u64" {
+                s.parse::<u64>().map(Value::from)
+            } else {
+                s.parse::<i64>().map(Value::from)
+            };
+            *json = n.map_err(|e| StorageError::Decode(format!("{ty} {s:?}: {e}")))?;
+        }
+        Value::Null => {}
+        Value::Array(items) => {
+            if let Some(inner) = generic("option<") {
+                return numbers(inner, json);
+            }
+            if let Some(inner) = generic("list<") {
+                for item in items {
+                    numbers(inner, item)?;
+                }
+            } else if let Some(inner) = generic("tuple<") {
+                for (ty, item) in split_top(inner).into_iter().zip(items) {
+                    numbers(ty, item)?;
+                }
+            }
+        }
+        _ => {
+            if let Some(inner) = generic("option<") {
+                return numbers(inner, json);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `a, option<b>, tuple<c, d>` split at its top-level commas.
+fn split_top(list: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in list.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&list[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&list[start..]);
+    parts
 }
 
 /// Whether `name` is already known to be served by the guest path.
@@ -75,8 +178,8 @@ macro_rules! served_by_host {
 /// A host answer, or `None` for the guest path.
 pub(crate) type Host<T, E = StorageError> = Option<Result<T, E>>;
 
-/// One entry of a page: the key after the collection's base and the stored bytes.
-pub(crate) type HostEntry = (Vec<KeyPart>, Vec<u8>);
+/// One entry of a page: the key after the collection's base and the value as JSON.
+pub(crate) type HostEntry = (Vec<KeyPart>, String);
 
 /// A page of entries and the cursor of the next.
 pub(crate) type HostPage = (Vec<HostEntry>, Option<String>);
@@ -206,8 +309,8 @@ fn page(page: wit::Page) -> HostPage {
 
 // --- tables --------------------------------------------------------------------------
 
-/// Insert (or with `upsert`, insert or replace) a record given as its CBOR bytes.
-pub(crate) fn table_put(table: &str, record: &[u8], upsert: bool) -> Host<(), TableError> {
+/// Insert (or with `upsert`, insert or replace) a record given as JSON ([`to_json`]).
+pub(crate) fn table_put(table: &str, record: &str, upsert: bool) -> Host<(), TableError> {
     served_by_host!(table);
     let answer = if upsert {
         wit::table_upsert(table, record)
@@ -217,8 +320,8 @@ pub(crate) fn table_put(table: &str, record: &[u8], upsert: bool) -> Host<(), Ta
     served(table, answer)
 }
 
-/// The record bytes at `key`.
-pub(crate) fn table_get(table: &str, key: &[KeyPart]) -> Host<Option<Vec<u8>>> {
+/// The record at `key`, as JSON.
+pub(crate) fn table_get(table: &str, key: &[KeyPart]) -> Host<Option<String>> {
     served_by_host!(table);
     let key = key!(key);
     storage(table, wit::table_get(table, &key))
@@ -256,20 +359,20 @@ pub(crate) fn table_count(table: &str, count: &str, prefix: &[KeyPart]) -> Host<
 
 // --- maps ----------------------------------------------------------------------------
 
-pub(crate) fn map_get(map: &str, key: &[KeyPart]) -> Host<Option<Vec<u8>>> {
+pub(crate) fn map_get(map: &str, key: &[KeyPart]) -> Host<Option<String>> {
     served_by_host!(map);
     let key = key!(key);
     storage(map, wit::map_get(map, &key))
 }
 
-/// Set `key` to the CBOR `value`; the bytes it replaces.
-pub(crate) fn map_insert(map: &str, key: &[KeyPart], value: &[u8]) -> Host<Option<Vec<u8>>> {
+/// Set `key` to the JSON `value`; the value it replaces, as JSON.
+pub(crate) fn map_insert(map: &str, key: &[KeyPart], value: &str) -> Host<Option<String>> {
     served_by_host!(map);
     let key = key!(key);
     storage(map, wit::map_insert(map, &key, value))
 }
 
-pub(crate) fn map_remove(map: &str, key: &[KeyPart]) -> Host<Option<Vec<u8>>> {
+pub(crate) fn map_remove(map: &str, key: &[KeyPart]) -> Host<Option<String>> {
     served_by_host!(map);
     let key = key!(key);
     storage(map, wit::map_remove(map, &key))

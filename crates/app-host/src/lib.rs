@@ -30,8 +30,8 @@ pub use action::{
 pub use blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 pub use collections::{
     collection_fuel, CollEntry, CollError, CollPage, CollectionSchema, KeyPart, TableSchema,
-    COLLECTION_BASE_FUEL, COLLECTION_BYTE_FUEL, COLLECTION_ENTRY_FUEL, MAX_COLLECTION_KEY_BYTES,
-    MAX_COLLECTION_LIMIT,
+    ValueType, COLLECTION_BASE_FUEL, COLLECTION_BYTE_FUEL, COLLECTION_ENTRY_FUEL,
+    MAX_COLLECTION_KEY_BYTES, MAX_COLLECTION_LIMIT, MAX_JSON_DEPTH, MAX_JSON_ITEMS,
 };
 pub use core::{
     CursorId, HostCore, Progress, ReaderId, WriterId, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE,

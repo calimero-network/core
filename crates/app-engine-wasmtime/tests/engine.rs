@@ -1604,6 +1604,26 @@ fn key_parts_above_i64_max_come_back_as_uint() {
     );
 }
 
+/// Records and values cross `calimero:app/collections` as JSON: a record not of its
+/// declared types is the soft `bad-record` and writes nothing; a `u64` above 2^53 sent as a
+/// number comes back as its exact decimal string, fields in stored (canonical) order.
+#[test]
+fn records_cross_the_interface_as_json() {
+    let fx = fixture();
+    let app = prepare(&fx, "collections");
+    let out = coll_run(&fx, &app, "badRecord", "", heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert!(out.diff.is_empty(), "nothing written");
+    let why: String = serde_json::from_slice(&out.result).unwrap();
+    assert!(why.contains("field `id`"), "{why}");
+
+    let out = coll_run(&fx, &app, "roundTrip", "", heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let texts: Vec<String> = serde_json::from_slice(&out.result).unwrap();
+    let record = r#"{"id":"18446744073709551615","note":"hi","owner":"bob"}"#;
+    assert_eq!(texts, [record, record, "false"]);
+}
+
 /// The fuel calibration: the same 3-field insert with one index and one count, through the
 /// SDK's `Table` and through `table-insert`. Prints the numbers the constants' doc cites.
 #[test]
@@ -1620,16 +1640,9 @@ fn a_host_table_insert_costs_between_half_and_all_of_the_sdk_path() {
     let host_total = fuel("hostInsert", r#"{"id":7}"#) - noop;
     let out = coll_run(&fx, &app, "hostInsert", r#"{"id":7}"#, heavy());
     let mut probe = coll_host(&app, InvocationKind::Call, "hostInsert", r#"{"id":7}"#);
-    let record = {
-        // The record the guest sends: {id, note, owner} in canonical CBOR.
-        let mut out = vec![0xA3, 0x62, b'i', b'd', 0x07];
-        out.extend([0x64, b'n', b'o', b't', b'e', 0x65]);
-        out.extend(b"hello");
-        out.extend([0x65, b'o', b'w', b'n', b'e', b'r', 0x65]);
-        out.extend(b"alice");
-        out
-    };
-    probe.table_insert("mirror", &record).unwrap().unwrap();
+    // The record the guest sends, as the SDK's JSON (`id` a decimal string).
+    let record = r#"{"id":"7","owner":"alice","note":"hello"}"#;
+    probe.table_insert("mirror", record).unwrap().unwrap();
     let charge = probe.host_fuel();
     println!(
         "noop {noop}; sdk insert {sdk}; host insert {host_total} (host charge {charge}, guest {})",

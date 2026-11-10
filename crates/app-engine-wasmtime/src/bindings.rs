@@ -545,15 +545,15 @@ impl StoreData {
 }
 
 impl collections::Host for StoreData {
-    fn table_insert(&mut self, table: String, record: Vec<u8>) -> CollAnswer<()> {
+    fn table_insert(&mut self, table: String, record: String) -> CollAnswer<()> {
         self.collection(|h| h.table_insert(&table, &record))
     }
 
-    fn table_upsert(&mut self, table: String, record: Vec<u8>) -> CollAnswer<()> {
+    fn table_upsert(&mut self, table: String, record: String) -> CollAnswer<()> {
         self.collection(|h| h.table_upsert(&table, &record))
     }
 
-    fn table_get(&mut self, table: String, k: collections::Key) -> CollAnswer<Option<Vec<u8>>> {
+    fn table_get(&mut self, table: String, k: collections::Key) -> CollAnswer<Option<String>> {
         self.collection(|h| h.table_get(&table, &key(k)))
     }
 
@@ -592,7 +592,7 @@ impl collections::Host for StoreData {
         self.collection(|h| h.table_count(&table, &count, &key(prefix)))
     }
 
-    fn map_get(&mut self, map: String, k: collections::Key) -> CollAnswer<Option<Vec<u8>>> {
+    fn map_get(&mut self, map: String, k: collections::Key) -> CollAnswer<Option<String>> {
         self.collection(|h| h.map_get(&map, &key(k)))
     }
 
@@ -600,12 +600,12 @@ impl collections::Host for StoreData {
         &mut self,
         map: String,
         k: collections::Key,
-        value: Vec<u8>,
-    ) -> CollAnswer<Option<Vec<u8>>> {
+        value: String,
+    ) -> CollAnswer<Option<String>> {
         self.collection(|h| h.map_insert(&map, &key(k), &value))
     }
 
-    fn map_remove(&mut self, map: String, k: collections::Key) -> CollAnswer<Option<Vec<u8>>> {
+    fn map_remove(&mut self, map: String, k: collections::Key) -> CollAnswer<Option<String>> {
         self.collection(|h| h.map_remove(&map, &key(k)))
     }
 

@@ -260,8 +260,8 @@ impl<T: Record, S: Store> Table<T, S> {
     /// Insert a record, refusing an existing key (`Duplicate { index: "key" }`) or a unique clash.
     pub fn insert(&mut self, record: T) -> Result<(), TableError> {
         via_host!(S, {
-            let bytes = value::to_vec(&record)?;
-            crate::host_collections::table_put(&self.name, &bytes, false)
+            let json = crate::host_collections::to_json(&record)?;
+            crate::host_collections::table_put(&self.name, &json, false)
         });
         let new = self.entries(&record)?;
         let bytes = value::to_vec(&record)?;
@@ -279,8 +279,8 @@ impl<T: Record, S: Store> Table<T, S> {
     /// Insert or replace a record; unique constraints still apply.
     pub fn upsert(&mut self, record: T) -> Result<(), TableError> {
         via_host!(S, {
-            let bytes = value::to_vec(&record)?;
-            crate::host_collections::table_put(&self.name, &bytes, true)
+            let json = crate::host_collections::to_json(&record)?;
+            crate::host_collections::table_put(&self.name, &json, true)
         });
         let new = self.entries(&record)?;
         let bytes = value::to_vec(&record)?;
@@ -298,8 +298,11 @@ impl<T: Record, S: Store> Table<T, S> {
     pub fn get<K: ToKey + ?Sized>(&self, key: &K) -> Result<Option<T>, StorageError> {
         via_host!(
             S,
-            crate::host_collections::table_get(&self.name, &key.to_key())
-                .map(|found| { found?.map(|bytes| value::from_slice(&bytes)).transpose() })
+            crate::host_collections::table_get(&self.name, &key.to_key()).map(|found| {
+                found?
+                    .map(|json| crate::host_collections::from_json(&json))
+                    .transpose()
+            })
         );
         self.read(&self.record_key(&key.to_key())?)
     }
@@ -399,8 +402,8 @@ impl<T: Record, S: Store> Table<T, S> {
         Ok(true)
     }
 
-    /// `update` through the host: the record read by `table_get`, changed, then upserted;
-    /// a changed key is refused before the write.
+    /// `update` through the host: the record read by `table_get` (JSON), changed, then
+    /// upserted; a changed key is refused before the write.
     #[cfg(all(
         feature = "host-collections",
         target_arch = "wasm32",
@@ -408,25 +411,25 @@ impl<T: Record, S: Store> Table<T, S> {
     ))]
     fn host_update(
         &mut self,
-        found: Option<Vec<u8>>,
+        found: Option<String>,
         change: impl FnOnce(&mut T),
     ) -> Result<bool, TableError> {
-        let Some(bytes) = found else {
+        let Some(json) = found else {
             return Ok(false);
         };
-        let mut record: T = value::from_slice(&bytes)?;
+        let mut record: T = crate::host_collections::from_json(&json)?;
         let key = record.key_parts(T::KEY);
         change(&mut record);
         if record.key_parts(T::KEY) != key {
             return Err(StorageError::KeyChanged.into());
         }
-        let bytes = value::to_vec(&record)?;
-        crate::host_collections::table_put(&self.name, &bytes, true)
+        let json = crate::host_collections::to_json(&record)?;
+        crate::host_collections::table_put(&self.name, &json, true)
             .unwrap_or_else(|| Err(StorageError::UnknownName(self.name.clone()).into()))?;
         Ok(true)
     }
 
-    /// A host page of record bytes as records.
+    /// A host page of records (JSON) as records.
     #[cfg(all(
         feature = "host-collections",
         target_arch = "wasm32",
@@ -437,7 +440,7 @@ impl<T: Record, S: Store> Table<T, S> {
     ) -> Result<Page<T>, StorageError> {
         let items = entries
             .iter()
-            .map(|(_, bytes)| value::from_slice(bytes))
+            .map(|(_, json)| crate::host_collections::from_json(json))
             .collect::<Result<_, _>>()?;
         Ok(Page { items, next })
     }

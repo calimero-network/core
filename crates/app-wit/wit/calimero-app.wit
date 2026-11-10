@@ -130,21 +130,23 @@ interface action {
 }
 
 // PoC (host collections): not part of the spec's 0.5.1; the version is kept while this is tried out.
+// Records and map values are JSON text; the host stores them as canonical CBOR, converted by
+// the types the ABI declares (a table's `fields`, a map's `value`). Keys are typed parts.
 interface collections {
   variant key-part { none, boolean(bool), int(s64), uint(u64), text(string), bytes(list<u8>) }
   type key = list<key-part>;
-  record entry { key: key, value: list<u8> }
+  record entry { key: key, value: string }
   record page { items: list<entry>, next: option<string> }
   variant coll-error { duplicate(string), bad-record(string), bad-cursor, unknown-collection(string), wrong-kind(string), unknown-set(string) }
-  table-insert: func(table: string, %record: list<u8>) -> result<_, coll-error>;
-  table-upsert: func(table: string, %record: list<u8>) -> result<_, coll-error>;
-  table-get: func(table: string, key: key) -> result<option<list<u8>>, coll-error>;
+  table-insert: func(table: string, %record: string) -> result<_, coll-error>;
+  table-upsert: func(table: string, %record: string) -> result<_, coll-error>;
+  table-get: func(table: string, key: key) -> result<option<string>, coll-error>;
   table-remove: func(table: string, key: key) -> result<bool, coll-error>;
   table-find: func(table: string, index: option<string>, prefix: key, cursor: option<string>, limit: u32, reverse: bool) -> result<page, coll-error>;
   table-count: func(table: string, count: string, prefix: key) -> result<u64, coll-error>;
-  map-get: func(%map: string, key: key) -> result<option<list<u8>>, coll-error>;
-  map-insert: func(%map: string, key: key, value: list<u8>) -> result<option<list<u8>>, coll-error>;
-  map-remove: func(%map: string, key: key) -> result<option<list<u8>>, coll-error>;
+  map-get: func(%map: string, key: key) -> result<option<string>, coll-error>;
+  map-insert: func(%map: string, key: key, value: string) -> result<option<string>, coll-error>;
+  map-remove: func(%map: string, key: key) -> result<option<string>, coll-error>;
   map-page: func(%map: string, prefix: key, cursor: option<string>, limit: u32, reverse: bool) -> result<page, coll-error>;
   tally-add: func(tally: string, key: key, delta: s64) -> result<_, coll-error>;
   tally-get: func(tally: string, key: key) -> result<s64, coll-error>;

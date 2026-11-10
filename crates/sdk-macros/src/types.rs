@@ -208,43 +208,76 @@ pub fn is_unit(ty: &Type) -> bool {
 /// The ABI name of a Rust type: integer and float names as is, `string`, `bool`, `bytes`,
 /// `option<T>`, `list<T>`, `tuple<A, B>`; any other type by its name.
 pub fn abi_type(ty: &Type) -> String {
+    type_name(ty, true)
+}
+
+/// [`abi_type`] for a value plain serde writes (a map value): `Vec<u8>` and `[u8]` are
+/// arrays of integers there, so they are `list<u8>`, not `bytes` (which the D20 helpers
+/// of method parameters and record fields make a byte string).
+pub fn plain_abi_type(ty: &Type) -> String {
+    type_name(ty, false)
+}
+
+fn type_name(ty: &Type, bytes: bool) -> String {
+    let name = |ty: &Type| type_name(ty, bytes);
     match ty {
-        Type::Reference(r) => abi_type(&r.elem),
-        Type::Paren(p) => abi_type(&p.elem),
-        Type::Group(g) => abi_type(&g.elem),
-        Type::Slice(s) if ident_of(&s.elem).as_deref() == Some("u8") => "bytes".into(),
-        Type::Slice(s) => format!("list<{}>", abi_type(&s.elem)),
+        Type::Reference(r) => name(&r.elem),
+        Type::Paren(p) => name(&p.elem),
+        Type::Group(g) => name(&g.elem),
+        Type::Slice(s) if bytes && ident_of(&s.elem).as_deref() == Some("u8") => "bytes".into(),
+        Type::Slice(s) => format!("list<{}>", name(&s.elem)),
         Type::Tuple(t) if t.elems.is_empty() => "unit".into(),
         Type::Tuple(t) => {
-            let parts: Vec<_> = t.elems.iter().map(abi_type).collect();
+            let parts: Vec<_> = t.elems.iter().map(name).collect();
             format!("tuple<{}>", parts.join(", "))
         }
-        Type::Path(_) => path_type(ty),
+        Type::Path(_) => path_type(ty, bytes),
         other => compact(other),
     }
 }
 
-fn path_type(ty: &Type) -> String {
-    if let Some(name) = ident_of(ty) {
+fn path_type(ty: &Type, bytes: bool) -> String {
+    let name = |ty: &Type| type_name(ty, bytes);
+    if let Some(ident) = ident_of(ty) {
         // Integers, floats and `bool` keep their Rust names; app types keep theirs.
-        return match name.as_str() {
+        return match ident.as_str() {
             "String" | "str" => "string".into(),
-            _ => name,
+            _ => ident,
         };
     }
     if let Some(inner) = generic_arg(ty, "Option") {
-        return format!("option<{}>", abi_type(inner));
+        return format!("option<{}>", name(inner));
     }
     if let Some(inner) = generic_arg(ty, "Vec") {
-        if ident_of(inner).as_deref() == Some("u8") {
+        if bytes && ident_of(inner).as_deref() == Some("u8") {
             return "bytes".into();
         }
-        return format!("list<{}>", abi_type(inner));
+        return format!("list<{}>", name(inner));
     }
     if let Some(inner) = generic_arg(ty, "Box") {
-        return abi_type(inner);
+        return name(inner);
     }
     compact(ty)
+}
+
+/// The value type `V` of a field written `UnorderedMap<K, V>` (or `UnorderedMap<K, V, S>`,
+/// any path ending in it); the macro sees only these tokens, so an alias is not one.
+pub fn map_value(ty: &Type) -> Option<&Type> {
+    let Type::Path(path) = ty else { return None };
+    let last = path.path.segments.last()?;
+    if last.ident != "UnorderedMap" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    args.args
+        .iter()
+        .filter_map(|a| match a {
+            GenericArgument::Type(t) => Some(t),
+            _ => None,
+        })
+        .nth(1)
 }
 
 /// `value` as compact JSON with every object's keys sorted, whatever serde_json's
@@ -295,6 +328,28 @@ mod tests {
         assert_eq!(abi_type(&parse_quote!(Vec<RoomId>)), "list<RoomId>");
         assert_eq!(abi_type(&parse_quote!((u32, bool))), "tuple<u32, bool>");
         assert_eq!(abi_type(&parse_quote!(Page<Booking>)), "Page<Booking>");
+        assert_eq!(plain_abi_type(&parse_quote!(Vec<u8>)), "list<u8>");
+        assert_eq!(
+            plain_abi_type(&parse_quote!(Option<(u64, Vec<u8>)>)),
+            "option<tuple<u64, list<u8>>>"
+        );
+        assert_eq!(plain_abi_type(&parse_quote!(String)), "string");
+    }
+
+    #[test]
+    fn map_value_types() {
+        let value = |ty: Type| map_value(&ty).map(abi_type);
+        assert_eq!(
+            value(parse_quote!(UnorderedMap<String, u64>)).as_deref(),
+            Some("u64")
+        );
+        assert_eq!(
+            value(parse_quote!(collections::UnorderedMap<(String, u64), Vec<String>, MemStore>))
+                .as_deref(),
+            Some("list<string>")
+        );
+        assert_eq!(value(parse_quote!(Table<Item>)), None);
+        assert_eq!(value(parse_quote!(Votes)), None);
     }
 
     #[test]

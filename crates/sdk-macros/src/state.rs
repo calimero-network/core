@@ -6,7 +6,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Fields, ItemStruct, LitInt};
 
-use crate::types::camel;
+use crate::types::{camel, map_value, plain_abi_type};
 
 pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> {
     let sdk = crate::sdk::path();
@@ -65,12 +65,28 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
         })
         .collect();
     kinds.sort_by(|a, b| a.0.cmp(&b.0));
+    // The value type of every field written `UnorderedMap<K, V>`, by its storage name: the
+    // map's schema below, and what the Rust host path reads 64-bit strings back by.
+    let map_values: Vec<(String, String)> = kinds
+        .iter()
+        .filter_map(|(field, ty)| Some((field.clone(), plain_abi_type(map_value(ty)?))))
+        .collect();
     // `"collections":{"<name>":<schema>,..}`: every field's `StateField::SCHEMA`, or
-    // `{"kind":"<KIND>"}` when it has none; the host keeps its keys in step with these.
+    // `{"kind":"<KIND>"}` when it has none, or for a map `{"kind":"unorderedMap",
+    // "value":"<type>"}`; the host keeps its keys in step with these and converts records
+    // and map values by their types.
     let mut parts = vec![quote! { "{\"collections\":{" }];
     for (i, (field, ty)) in kinds.iter().enumerate() {
         let open = format!("{}\"{field}\":", if i == 0 { "" } else { "," });
         parts.push(quote! { #open });
+        if let Some((_, value)) = map_values.iter().find(|(name, _)| name == field) {
+            let schema = format!(
+                "{{\"kind\":\"unorderedMap\",\"value\":{}}}",
+                serde_json::Value::String(value.clone())
+            );
+            parts.push(quote! { #schema });
+            continue;
+        }
         parts.push(quote! {
             if <#ty as #sdk::app::StateField>::SCHEMA.is_empty() { "{\"kind\":\"" }
             else { <#ty as #sdk::app::StateField>::SCHEMA }
@@ -99,6 +115,8 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
         parts.push(quote! { <#ty as #sdk::app::StateField>::SEARCH });
     }
     let close = format!("}},\"version\":{version}}}");
+    let map_names = map_values.iter().map(|(name, _)| name);
+    let map_types = map_values.iter().map(|(_, ty)| ty);
     parts.push(quote! { #close });
     Ok(quote! {
         #item
@@ -117,6 +135,7 @@ pub fn expand(args: TokenStream, item: &ItemStruct) -> syn::Result<TokenStream> 
             };
 
             fn load() -> Self {
+                #sdk::__private::map_value_types(&[#((#map_names, #map_types)),*]);
                 Self { #(#inits),* }
             }
         }

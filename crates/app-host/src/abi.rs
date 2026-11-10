@@ -6,7 +6,7 @@ use std::time::Duration;
 use calimero_app_wit::COMPUTE_WORLD;
 use serde_json::{Map, Value};
 
-use crate::collections::{camel, CollectionSchema, TableSchema};
+use crate::collections::{camel, CollectionSchema, TableSchema, ValueType};
 use crate::engine::PrepareError;
 
 /// ABI versions this host reads. A bundle declares its own in `abiVersion`.
@@ -208,8 +208,11 @@ fn search_fields(json: &Value) -> Result<BTreeMap<String, Vec<String>>, PrepareE
     Ok(out)
 }
 
-/// `state.collections`: `{ field: { "kind": .., .. } }`; a table also declares `key` (a
-/// non-empty field list) and `indexes`, `unique` and `counts` (name to field list).
+/// `state.collections`: `{ field: { "kind": .., .. } }`; a table also declares `fields`
+/// (every record field to its ABI type), `key` (a non-empty field list) and `indexes`,
+/// `unique` and `counts` (name to field list), every listed field one of `fields`; a map
+/// declares its `value` type. A table without `fields` or a map without `value` is refused:
+/// the host converts records and values between JSON and CBOR by these types.
 fn collection_schemas(json: &Value) -> Result<BTreeMap<String, CollectionSchema>, PrepareError> {
     let mut out = BTreeMap::new();
     for (field, schema) in object(json, "state.collections")? {
@@ -217,18 +220,29 @@ fn collection_schemas(json: &Value) -> Result<BTreeMap<String, CollectionSchema>
         let schema = object(schema, &what)?;
         let schema = match schema.get("kind").and_then(Value::as_str) {
             Some("table") => {
+                let fields = field_types(schema.get("fields"), &what)?;
                 let key = names(schema.get("key"), &format!("{what}: key"))?;
                 if key.is_empty() {
                     return Err(bad(format!("{what}: a table has a key")));
                 }
+                let declared = |list: &[String], what: &str| -> Result<(), PrepareError> {
+                    match list.iter().find(|f| !fields.contains_key(*f)) {
+                        Some(f) => Err(bad(format!("{what} names `{f}`, not a field"))),
+                        None => Ok(()),
+                    }
+                };
+                declared(&key, &format!("{what}: key"))?;
                 let sets = |name: &str| -> Result<BTreeMap<String, Vec<String>>, PrepareError> {
                     let what = format!("{what}: {name}");
                     let sets: BTreeMap<String, Vec<String>> = match schema.get(name) {
                         None | Some(Value::Null) => BTreeMap::new(),
                         Some(sets) => object(sets, &what)?
                             .iter()
-                            .map(|(set, fields)| {
-                                Ok((set.clone(), names(Some(fields), &format!("{what}.{set}"))?))
+                            .map(|(set, list)| {
+                                let what = format!("{what}.{set}");
+                                let list = names(Some(list), &what)?;
+                                declared(&list, &what)?;
+                                Ok((set.clone(), list))
                             })
                             .collect::<Result<_, PrepareError>>()?,
                     };
@@ -245,14 +259,22 @@ fn collection_schemas(json: &Value) -> Result<BTreeMap<String, CollectionSchema>
                     }
                     Ok(sets)
                 };
+                let (indexes, unique, counts) =
+                    (sets("indexes")?, sets("unique")?, sets("counts")?);
                 CollectionSchema::Table(TableSchema {
+                    fields,
                     key,
-                    indexes: sets("indexes")?,
-                    unique: sets("unique")?,
-                    counts: sets("counts")?,
+                    indexes,
+                    unique,
+                    counts,
                 })
             }
-            Some("unorderedMap") => CollectionSchema::Map,
+            Some("unorderedMap") => match schema.get("value").and_then(Value::as_str) {
+                Some(value) => CollectionSchema::Map(
+                    ValueType::parse(value).map_err(|e| bad(format!("{what}: value: {e}")))?,
+                ),
+                None => return Err(bad(format!("{what}: a map declares its value type"))),
+            },
             Some("tally") => CollectionSchema::Tally,
             Some(other) => CollectionSchema::Other(other.to_owned()),
             None => return Err(bad(format!("{what} has no kind"))),
@@ -260,6 +282,28 @@ fn collection_schemas(json: &Value) -> Result<BTreeMap<String, CollectionSchema>
         let _prev = out.insert(field.clone(), schema);
     }
     Ok(out)
+}
+
+/// A table's `fields`: an object of field name to ABI type name.
+fn field_types(
+    json: Option<&Value>,
+    what: &str,
+) -> Result<BTreeMap<String, ValueType>, PrepareError> {
+    let Some(json) = json else {
+        return Err(bad(format!("{what}: a table declares its fields")));
+    };
+    object(json, &format!("{what}: fields"))?
+        .iter()
+        .map(|(field, ty)| {
+            let ty = ty
+                .as_str()
+                .ok_or_else(|| bad(format!("{what}: field {field} has no type name")))
+                .and_then(|ty| {
+                    ValueType::parse(ty).map_err(|e| bad(format!("{what}: field {field}: {e}")))
+                })?;
+            Ok((field.clone(), ty))
+        })
+        .collect()
 }
 
 /// A list of non-empty strings.

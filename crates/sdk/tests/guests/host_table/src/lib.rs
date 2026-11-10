@@ -33,6 +33,8 @@ pub struct HostTable {
     shop_items: Table<Item>,
     group_members: Table<Membership>,
     user_notes: UnorderedMap<(String, u64), String>,
+    /// 64-bit values: decimal strings from the host, numbers to plain serde.
+    big_counts: UnorderedMap<String, Option<u64>>,
     vote_tally: Tally<String>,
 }
 
@@ -246,6 +248,33 @@ impl HostTable {
 
     pub fn note_remove(&mut self, who: String, n: u64) -> app::Result<Option<String>> {
         Ok(self.user_notes.remove(&(who, n))?)
+    }
+
+    /// Set a 64-bit map value (or none); the old one as a decimal string, else null.
+    pub fn big_set(&mut self, who: String, n: Option<u64>) -> app::Result<Value> {
+        let old = self.big_counts.insert(&who, &n)?;
+        Ok(json!(old.map(|v| v.map(|v| v.to_string()))))
+    }
+
+    #[app::view]
+    pub fn big_get(&self, who: String) -> app::Result<Value> {
+        let got = self.big_counts.get(&who)?;
+        Ok(json!(got.map(|v| v.map(|v| v.to_string()))))
+    }
+
+    pub fn big_remove(&mut self, who: String) -> app::Result<Value> {
+        let old = self.big_counts.remove(&who)?;
+        Ok(json!(old.map(|v| v.map(|v| v.to_string()))))
+    }
+
+    #[app::view]
+    pub fn bigs(&self) -> app::Result<Value> {
+        let page = self.big_counts.page(FindOpts::default())?;
+        Ok(json!(page
+            .items
+            .iter()
+            .map(|(who, v)| json!([who, v.map(|v| v.to_string())]))
+            .collect::<Vec<_>>()))
     }
 
     #[app::view]

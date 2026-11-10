@@ -170,6 +170,18 @@ fn writes(r: &mut Run<'_>) {
         );
     }
     let _ = r.call("noteSet", json!({"who": "ann", "n": "3", "text": "again"}));
+    // 64-bit map values, above 2^53 and none.
+    for (who, n) in [
+        ("max", Some(u64::MAX)),
+        ("above", Some((1u64 << 53) + 1)),
+        ("none", None),
+        ("small", Some(7)),
+        ("max", Some(u64::MAX - 1)),
+    ] {
+        let _ = r.call("bigSet", json!({"who": who, "n": n.map(|n| n.to_string())}));
+    }
+    let _ = r.call("bigRemove", json!({"who": "small"}));
+    let _ = r.call("bigRemove", json!({"who": "small"}));
     let _ = r.call("noteRemove", json!({"who": "bob", "n": "2"}));
     let _ = r.call("noteRemove", json!({"who": "bob", "n": "2"}));
 
@@ -185,6 +197,7 @@ fn writes(r: &mut Run<'_>) {
         ("g1", "m6", 6),
         ("g1", "m4", 4),
         ("g1", "m2", 20),
+        ("g3", "big", u64::MAX),
     ] {
         let _ = r.call(
             "join",
@@ -271,6 +284,11 @@ fn reads(r: &mut Run<'_>) {
     for choice in ["yes", "no", "maybe"] {
         let _ = r.view("votes", json!({"choice": choice}));
     }
+
+    for who in ["max", "above", "none", "small"] {
+        let _ = r.view("bigGet", json!({"who": who}));
+    }
+    let _ = r.view("bigs", json!({}));
 }
 
 /// `scan_prefix` page walks: one group forward and back, two pages and more, every
@@ -429,6 +447,18 @@ fn same_state_with_and_without_host_collections() {
                 if code == "Storage" && fields["message"].as_str().unwrap().ends_with("over the 1023 byte limit")),
             "{label}: {:?}",
             answer(label)
+        );
+    }
+    // 64-bit map values above 2^53 read back exactly (the host sends decimal strings).
+    for (who, want) in [
+        ("max", json!((u64::MAX - 1).to_string())),
+        ("above", json!(((1u64 << 53) + 1).to_string())),
+        ("none", Value::Null),
+    ] {
+        assert_eq!(
+            answer(&format!("view bigGet {{\"who\":\"{who}\"}}")),
+            Ok(want),
+            "{who}"
         );
     }
     assert_eq!(off.export_state(), on.export_state(), "the same state");

@@ -60,8 +60,11 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
     pub fn get(&self, k: &K) -> Result<Option<V>, StorageError> {
         via_host!(
             S,
-            crate::host_collections::map_get(&self.name, &k.to_key())
-                .map(|found| { found?.map(|bytes| value::from_slice(&bytes)).transpose() })
+            crate::host_collections::map_get(&self.name, &k.to_key()).map(|found| {
+                found?
+                    .map(|json| crate::host_collections::map_value(&self.name, &json))
+                    .transpose()
+            })
         );
         self.store
             .get(&self.storage_key(k)?)
@@ -82,9 +85,11 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
     /// Set the value at `k`, returning the value it replaces.
     pub fn insert(&mut self, k: &K, v: &V) -> Result<Option<V>, StorageError> {
         via_host!(S, {
-            let bytes = value::to_vec(v)?;
-            crate::host_collections::map_insert(&self.name, &k.to_key(), &bytes)
-                .map(|old| old?.map(|bytes| value::from_slice(&bytes)).transpose())
+            let json = crate::host_collections::to_json(v)?;
+            crate::host_collections::map_insert(&self.name, &k.to_key(), &json).map(|old| {
+                old?.map(|json| crate::host_collections::map_value(&self.name, &json))
+                    .transpose()
+            })
         });
         let key = self.storage_key(k)?;
         let bytes = value::to_vec(v)?;
@@ -104,8 +109,10 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
     pub fn remove(&mut self, k: &K) -> Result<Option<V>, StorageError> {
         via_host!(
             S,
-            crate::host_collections::map_remove(&self.name, &k.to_key())
-                .map(|old| { old?.map(|bytes| value::from_slice(&bytes)).transpose() })
+            crate::host_collections::map_remove(&self.name, &k.to_key()).map(|old| {
+                old?.map(|json| crate::host_collections::map_value(&self.name, &json))
+                    .transpose()
+            })
         );
         let key = self.storage_key(k)?;
         let Some(bytes) = self.store.get(&key) else {
@@ -140,21 +147,22 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 }
 
 impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> {
-    /// A host page of keys and value bytes as entries.
+    /// A host page of keys and values (JSON) as entries.
     #[cfg(all(
         feature = "host-collections",
         target_arch = "wasm32",
         not(calimero_compute)
     ))]
     fn host_page(
+        &self,
         (entries, next): crate::host_collections::HostPage,
     ) -> Result<Page<(K, V)>, StorageError> {
         let items = entries
             .into_iter()
-            .map(|(parts, v)| {
+            .map(|(parts, json)| {
                 let key = K::from_key(&parts)
                     .ok_or_else(|| StorageError::Decode("a key of another type".into()))?;
-                Ok((key, value::from_slice(&v)?))
+                Ok((key, crate::host_collections::map_value(&self.name, &json)?))
             })
             .collect::<Result<_, StorageError>>()?;
         Ok(Page { items, next })
@@ -181,7 +189,7 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
         via_host!(
             S,
             crate::host_collections::map_page(&self.name, &[], &opts)
-                .map(|found| Self::host_page(found?))
+                .map(|found| self.host_page(found?))
         );
         self.page_under(&self.base()?, &opts)
     }
@@ -198,7 +206,7 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
         via_host!(
             S,
             crate::host_collections::map_page(&self.name, prefix, &opts)
-                .map(|found| Self::host_page(found?))
+                .map(|found| self.host_page(found?))
         );
         let base = [self.base()?, key::encode(prefix)].concat();
         check_key(&base)?;

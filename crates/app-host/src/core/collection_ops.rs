@@ -9,10 +9,10 @@ use ciborium::Value;
 
 use super::{HostCore, MAX_RANGE_BATCH};
 use crate::collections::{
-    camel, canonical, canonical_value, check_wit_key, collection_fuel, decode_key, encode_key,
-    encoded_len, field_part, read_guest_value, read_value, write_value, CollEntry, CollError,
-    CollPage, CollectionSchema, KeyPart, TableSchema, MAX_COLLECTION_KEY_BYTES,
-    MAX_COLLECTION_LIMIT, MAX_CURSOR_CHARS,
+    camel, canonical, check_wit_key, collection_fuel, decode_key, encode_key, encoded_len,
+    field_part, read_value, record_in, record_out, value_in, value_out, write_value, CollEntry,
+    CollError, CollPage, CollectionSchema, KeyPart, TableSchema, ValueType,
+    MAX_COLLECTION_KEY_BYTES, MAX_COLLECTION_LIMIT, MAX_CURSOR_CHARS,
 };
 use crate::state::{stored_key, KeyValue, GENERATION};
 use crate::types::{HostDenied, InvocationKind};
@@ -119,15 +119,37 @@ fn check_prefix(prefix: &[KeyPart], fields: usize) -> Result<(), CollError> {
 /// A record's fields: its CBOR map entries.
 type Fields = Vec<(Value, Value)>;
 
-/// A guest record's canonical bytes and its fields; it must be a CBOR map, and is
-/// bounded before it is parsed ([`read_guest_value`]).
-fn parse_record(bytes: &[u8]) -> Result<(Vec<u8>, Fields), CollError> {
-    parse(read_guest_value(bytes))
+/// A guest record (JSON text with exactly the table's fields, each of its type) as its
+/// canonical bytes and its fields; bounded before it is parsed.
+fn parse_record(schema: &TableSchema, text: &str) -> Result<(Vec<u8>, Fields), CollError> {
+    parse(record_in(&schema.fields, text))
 }
 
 /// A stored record's canonical bytes and its fields (the run's own caps bound it).
 fn parse_stored(bytes: &[u8]) -> Result<(Vec<u8>, Fields), CollError> {
     parse(read_value(bytes))
+}
+
+/// A stored record as the guest gets it: JSON text by the table's field types.
+fn record_json(schema: &TableSchema, bytes: &[u8]) -> Result<String, CollError> {
+    read_value(bytes)
+        .and_then(|record| record_out(&schema.fields, &record))
+        .map_err(CollError::BadRecord)
+}
+
+/// A guest map value (JSON text of type `ty`) as canonical CBOR bytes.
+fn value_bytes(ty: &ValueType, text: &str) -> Result<Vec<u8>, CollError> {
+    value_in(ty, text)
+        .and_then(canonical)
+        .and_then(|value| write_value(&value))
+        .map_err(CollError::BadRecord)
+}
+
+/// A stored map value as the guest gets it: JSON text of type `ty`.
+fn value_json(ty: &ValueType, bytes: &[u8]) -> Result<String, CollError> {
+    read_value(bytes)
+        .and_then(|value| value_out(ty, &value))
+        .map_err(CollError::BadRecord)
 }
 
 fn parse(value: Result<Value, String>) -> Result<(Vec<u8>, Fields), CollError> {
@@ -197,25 +219,29 @@ impl HostCore {
         self.writes
     }
 
-    /// Insert a record (deterministic CBOR map), refusing a taken key (`Duplicate("key")`)
-    /// or unique entry (`Duplicate(<camelCase name>)`).
-    pub fn table_insert(&mut self, table: &str, record: &[u8]) -> Answer<()> {
+    /// Insert a record (a JSON object of the table's declared fields, stored as
+    /// deterministic CBOR), refusing a taken key (`Duplicate("key")`) or unique entry
+    /// (`Duplicate(<camelCase name>)`).
+    pub fn table_insert(&mut self, table: &str, record: &str) -> Answer<()> {
         let bytes = input(&[Some(table)], &[]).saturating_add(record.len());
         self.metered(true, bytes, |host| host.put_record(table, record, false))
     }
 
     /// Insert or replace a record; unique entries still apply.
-    pub fn table_upsert(&mut self, table: &str, record: &[u8]) -> Answer<()> {
+    pub fn table_upsert(&mut self, table: &str, record: &str) -> Answer<()> {
         let bytes = input(&[Some(table)], &[]).saturating_add(record.len());
         self.metered(true, bytes, |host| host.put_record(table, record, true))
     }
 
-    /// The record with this key.
-    pub fn table_get(&mut self, table: &str, key: &[KeyPart]) -> Answer<Option<Vec<u8>>> {
+    /// The record with this key, as JSON.
+    pub fn table_get(&mut self, table: &str, key: &[KeyPart]) -> Answer<Option<String>> {
         self.metered(false, input(&[Some(table)], &[key]), |host| {
-            let _schema = soft!(host.table_schema(table));
+            let schema = soft!(host.table_schema(table));
             let record_key = soft!(collection_key(table, "r", key));
-            Ok(Ok(host.coll_get(&record_key)?))
+            let Some(stored) = host.coll_get(&record_key)? else {
+                return Ok(Ok(None));
+            };
+            Ok(record_json(&schema, &stored).map(Some))
         })
     }
 
@@ -237,7 +263,7 @@ impl HostCore {
 
     /// Records whose index fields (or, with no index, key fields) start with `prefix`, in
     /// that order, one page of at most [`MAX_COLLECTION_LIMIT`] at a time. Each entry is
-    /// the record's key and its bytes.
+    /// the record's key and the record as JSON.
     pub fn table_find(
         &mut self,
         table: &str,
@@ -256,8 +282,9 @@ impl HostCore {
                 let base = soft!(collection_key(table, "r", prefix));
                 let (found, next) = soft!(host.read_page(&base, cursor, limit, reverse)?);
                 let mut items = Vec::with_capacity(found.len());
-                for (k, value) in found {
+                for (k, stored) in found {
                     let key = soft!(key_after(&k, &record_base));
+                    let value = soft!(record_json(&schema, &stored));
                     items.push(CollEntry { key, value });
                 }
                 return Ok(Ok(CollPage { items, next }));
@@ -277,10 +304,11 @@ impl HostCore {
                         "an index entry not holding a record key of this table".into(),
                     )));
                 }
-                let Some(value) = host.coll_get(&record_key)? else {
+                let Some(stored) = host.coll_get(&record_key)? else {
                     return Ok(Err(CollError::BadRecord("a dangling index entry".into())));
                 };
                 let key = soft!(key_after(&record_key, &record_base));
+                let value = soft!(record_json(&schema, &stored));
                 items.push(CollEntry { key, value });
             }
             Ok(Ok(CollPage { items, next }))
@@ -312,31 +340,39 @@ impl HostCore {
         })
     }
 
-    /// The value at `key`.
-    pub fn map_get(&mut self, map: &str, key: &[KeyPart]) -> Answer<Option<Vec<u8>>> {
+    /// The value at `key`, as JSON.
+    pub fn map_get(&mut self, map: &str, key: &[KeyPart]) -> Answer<Option<String>> {
         self.metered(false, input(&[Some(map)], &[key]), |host| {
-            soft!(host.expect_kind(map, &CollectionSchema::Map));
+            let ty = soft!(host.map_value(map));
             let k = soft!(collection_key(map, "m", key));
-            Ok(Ok(host.coll_get(&k)?))
+            let Some(stored) = host.coll_get(&k)? else {
+                return Ok(Ok(None));
+            };
+            Ok(value_json(&ty, &stored).map(Some))
         })
     }
 
-    /// Set the value at `key` (canonicalized), returning the value it replaces; a new key
-    /// adds one to the map's count.
+    /// Set the value at `key` (JSON of the map's value type, stored canonicalized),
+    /// returning the value it replaces; a new key adds one to the map's count.
     pub fn map_insert(
         &mut self,
         map: &str,
         key: &[KeyPart],
-        value: &[u8],
-    ) -> Answer<Option<Vec<u8>>> {
+        value: &str,
+    ) -> Answer<Option<String>> {
         let bytes = input(&[Some(map)], &[key]).saturating_add(value.len());
         self.metered(true, bytes, |host| {
-            soft!(host.expect_kind(map, &CollectionSchema::Map));
+            let ty = soft!(host.map_value(map));
             soft!(check_wit_key(key).map_err(CollError::BadRecord));
             let k = soft!(collection_key(map, "m", key));
             let count = soft!(collection_key(map, "n", &[]));
-            let value = soft!(canonical_value(value).map_err(CollError::BadRecord));
-            let old = host.coll_get(&k)?;
+            let value = soft!(value_bytes(&ty, value));
+            // The old value is converted before anything is written, so a stored value not
+            // of the declared type refuses the insert instead of half-applying it.
+            let old = match host.coll_get(&k)? {
+                Some(stored) => Some(soft!(value_json(&ty, &stored))),
+                None => None,
+            };
             host.coll_put(&k, &value)?;
             if old.is_none() {
                 host.coll_add(&count, 1)?;
@@ -346,14 +382,15 @@ impl HostCore {
     }
 
     /// Remove `key`, returning the value it held; one less in the map's count.
-    pub fn map_remove(&mut self, map: &str, key: &[KeyPart]) -> Answer<Option<Vec<u8>>> {
+    pub fn map_remove(&mut self, map: &str, key: &[KeyPart]) -> Answer<Option<String>> {
         self.metered(true, input(&[Some(map)], &[key]), |host| {
-            soft!(host.expect_kind(map, &CollectionSchema::Map));
+            let ty = soft!(host.map_value(map));
             let k = soft!(collection_key(map, "m", key));
             let count = soft!(collection_key(map, "n", &[]));
-            let Some(old) = host.coll_get(&k)? else {
+            let Some(stored) = host.coll_get(&k)? else {
                 return Ok(Ok(None));
             };
+            let old = soft!(value_json(&ty, &stored));
             host.coll_delete(&k)?;
             host.coll_add(&count, -1)?;
             Ok(Ok(Some(old)))
@@ -372,14 +409,15 @@ impl HostCore {
     ) -> Answer<CollPage> {
         let bytes = input(&[Some(map), cursor], &[prefix]);
         self.metered(false, bytes, |host| {
-            soft!(host.expect_kind(map, &CollectionSchema::Map));
+            let ty = soft!(host.map_value(map));
             let map_base = soft!(collection_key(map, "m", &[]));
             soft!(within(map_base.len().saturating_add(encoded_len(prefix))));
             let base = [map_base.as_slice(), &encode_key(prefix)].concat();
             let (found, next) = soft!(host.read_page(&base, cursor, limit, reverse)?);
             let mut items = Vec::with_capacity(found.len());
-            for (k, value) in found {
+            for (k, stored) in found {
                 let key = soft!(key_after(&k, &map_base));
+                let value = soft!(value_json(&ty, &stored));
                 items.push(CollEntry { key, value });
             }
             Ok(Ok(CollPage { items, next }))
@@ -463,6 +501,14 @@ impl HostCore {
         }
     }
 
+    /// A map's declared value type.
+    fn map_value(&self, name: &str) -> Result<ValueType, CollError> {
+        match self.lookup(name)? {
+            CollectionSchema::Map(ty) => Ok(ty.clone()),
+            other => Err(CollError::WrongKind(other.kind().to_owned())),
+        }
+    }
+
     fn expect_kind(&self, name: &str, kind: &CollectionSchema) -> Result<(), CollError> {
         let found = self.lookup(name)?;
         if found != kind {
@@ -471,9 +517,9 @@ impl HostCore {
         Ok(())
     }
 
-    fn put_record(&mut self, table: &str, record: &[u8], upsert: bool) -> Answer<()> {
+    fn put_record(&mut self, table: &str, record: &str, upsert: bool) -> Answer<()> {
         let schema = soft!(self.table_schema(table));
-        let (bytes, fields) = soft!(parse_record(record));
+        let (bytes, fields) = soft!(parse_record(&schema, record));
         let new = soft!(entries(table, &schema, &fields));
         let old = match self.coll_get(&new.record)? {
             Some(_) if !upsert => return Ok(Err(CollError::Duplicate("key".into()))),

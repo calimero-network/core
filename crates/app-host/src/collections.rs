@@ -10,6 +10,9 @@
 //! - map (`unorderedMap`): `(map, "m", key..)` values, `(map, "n")` their count;
 //! - tally: `(tally, "t", key..)` integers changed only with `storage.add`.
 //!
+//! Records and map values cross the interface as JSON text and are stored as the SDK's
+//! canonical CBOR, converted by the types the ABI declares ([`json`]).
+//!
 //! The key encoder and the value canonicalizer are copies of the SDK's
 //! (`calimero_sdk::encoding::{key, value}`): the SDK depends on this crate under `testing`, so
 //! this crate cannot depend on it. The tests pin both against the SDK.
@@ -18,10 +21,14 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
-use crate::core::{MAX_KEY_BYTES, MAX_RUN_BYTES};
+use crate::core::MAX_KEY_BYTES;
 
+mod json;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use json::{record_in, record_out, value_in, value_out};
+pub use json::{ValueType, MAX_JSON_DEPTH, MAX_JSON_ITEMS};
 
 /// The largest page a find or page returns; a larger `limit` is cut to it.
 pub const MAX_COLLECTION_LIMIT: u32 = 1_000;
@@ -32,16 +39,6 @@ pub const MAX_COLLECTION_KEY_BYTES: usize = MAX_KEY_BYTES - 1;
 /// The longest cursor a find or page accepts: the base64url (unpadded) of a
 /// [`MAX_COLLECTION_KEY_BYTES`] key. A longer one is refused before it is decoded.
 pub const MAX_CURSOR_CHARS: usize = MAX_COLLECTION_KEY_BYTES.div_ceil(3) * 4;
-/// The deepest nesting of a guest record or map value (arrays, maps, tags), checked on the
-/// raw bytes before they are parsed.
-pub const MAX_CBOR_DEPTH: usize = 64;
-/// The most CBOR items (every array or map element, map key and tag counts) a guest
-/// record or map value may hold, checked on the raw bytes before they are parsed: the
-/// parsed tree costs some 50 bytes of host heap per item, so this caps one call's tree at a
-/// few MiB whatever the input. (The guest path stores any value; the host path refuses a
-/// value with more items as `bad-record`.)
-pub const MAX_CBOR_ITEMS: usize = 65_536;
-
 /// Fuel of every collection call.
 ///
 /// Calibrated against the guest code a host call replaces (PoC, measured 2026-11-09 by the
@@ -56,7 +53,10 @@ pub const MAX_CBOR_ITEMS: usize = 65_536;
 /// (final review fix wave): the table name and the 28-byte record add 34 x 10, so the
 /// insert is now charged 21,330, 0.76x the 28,005 the SDK path took in the same rerun.
 /// The guest still pays its own side of the call (encoding the record and the
-/// canonical ABI copy): 12,250 fuel in that measurement.
+/// canonical ABI copy): 12,250 fuel in that measurement. With records as JSON
+/// (2026-11-10) the record is the 41-byte `{"id":"7","note":"hello","owner":"alice"}`, so
+/// the insert is charged 21,460, 0.77x the SDK path's 28,024, and the guest's side fell to
+/// 4,973 fuel (no CBOR encoder).
 pub const COLLECTION_BASE_FUEL: u64 = 5_000;
 /// Fuel per byte of key or value read or written (see [`COLLECTION_BASE_FUEL`]).
 pub const COLLECTION_BYTE_FUEL: u64 = 10;
@@ -78,8 +78,8 @@ pub fn collection_fuel(bytes: usize, entries: usize) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CollectionSchema {
     Table(TableSchema),
-    /// `"unorderedMap"`.
-    Map,
+    /// `"unorderedMap"` and its declared `value` type.
+    Map(ValueType),
     /// `"tally"`.
     Tally,
     /// Any other kind; the host serves none of its calls.
@@ -92,17 +92,19 @@ impl CollectionSchema {
     pub fn kind(&self) -> &str {
         match self {
             Self::Table(_) => "table",
-            Self::Map => "unorderedMap",
+            Self::Map(_) => "unorderedMap",
             Self::Tally => "tally",
             Self::Other(kind) => kind,
         }
     }
 }
 
-/// A table's declared key, indexes, unique constraints and counts. Field names are the
-/// record's CBOR (camelCase) names; set names are as written in `#[table(..)]`.
+/// A table's declared fields, key, indexes, unique constraints and counts. Field names are
+/// the record's (camelCase) names; set names are as written in `#[table(..)]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TableSchema {
+    /// Every field of the record and its type; a record has exactly these.
+    pub fields: BTreeMap<String, ValueType>,
     pub key: Vec<String>,
     pub indexes: BTreeMap<String, Vec<String>>,
     pub unique: BTreeMap<String, Vec<String>>,
@@ -120,11 +122,11 @@ pub enum KeyPart {
     Bytes(Vec<u8>),
 }
 
-/// A key and its value. Mirrors the WIT `entry`.
+/// A key and its value (JSON text). Mirrors the WIT `entry`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CollEntry {
     pub key: Vec<KeyPart>,
-    pub value: Vec<u8>,
+    pub value: String,
 }
 
 /// One page of a find. Mirrors the WIT `page`; `next` is the base64url of the last
@@ -140,7 +142,8 @@ pub struct CollPage {
 pub enum CollError {
     /// The record's key (`"key"`) or a unique entry (its camelCase name) is taken.
     Duplicate(String),
-    /// A record, value, key or prefix the call cannot use.
+    /// A record, value, key or prefix the call cannot use: a record or value that is not
+    /// JSON of its declared types, too large or deep, or a stored one that is not either.
     BadRecord(String),
     /// A cursor not from this collection, index and prefix.
     BadCursor,
@@ -306,133 +309,6 @@ pub(crate) fn read_value(bytes: &[u8]) -> Result<Value, String> {
     Ok(value)
 }
 
-/// One CBOR item from the guest: refused over [`MAX_RUN_BYTES`] (it could never be stored)
-/// and, on the raw bytes before anything is parsed, past [`MAX_CBOR_DEPTH`] or
-/// [`MAX_CBOR_ITEMS`] or with a length its bytes cannot hold, so a small input never
-/// becomes a large tree.
-pub(crate) fn read_guest_value(bytes: &[u8]) -> Result<Value, String> {
-    if bytes.len() > MAX_RUN_BYTES {
-        return Err(format!(
-            "a value of {} bytes, over {MAX_RUN_BYTES}",
-            bytes.len()
-        ));
-    }
-    Shape {
-        bytes,
-        pos: 0,
-        items: 0,
-    }
-    .top()?;
-    read_value(bytes)
-}
-
-/// A walk over raw CBOR that allocates nothing: depth, item count and declared lengths.
-struct Shape<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-    items: usize,
-}
-
-impl Shape<'_> {
-    fn top(&mut self) -> Result<(), String> {
-        if self.item(0)? {
-            return Err("a CBOR break outside an indefinite item".into());
-        }
-        Ok(())
-    }
-
-    fn left(&self) -> usize {
-        self.bytes.len() - self.pos
-    }
-
-    fn byte(&mut self) -> Result<u8, String> {
-        let b = *self.bytes.get(self.pos).ok_or("truncated CBOR")?;
-        self.pos += 1;
-        Ok(b)
-    }
-
-    fn skip(&mut self, n: u64) -> Result<(), String> {
-        let n = usize::try_from(n)
-            .ok()
-            .filter(|&n| n <= self.left())
-            .ok_or("a CBOR length past the end of the value")?;
-        self.pos += n;
-        Ok(())
-    }
-
-    /// The head's argument; `None` for an indefinite length.
-    fn arg(&mut self, info: u8) -> Result<Option<u64>, String> {
-        Ok(Some(match info {
-            0..=23 => u64::from(info),
-            24..=27 => {
-                let mut v = 0u64;
-                for _ in 0..(1u32 << (info - 24)) {
-                    v = (v << 8) | u64::from(self.byte()?);
-                }
-                v
-            }
-            31 => return Ok(None),
-            _ => return Err("malformed CBOR".into()),
-        }))
-    }
-
-    /// One item at `depth`; `true` when it was a break code.
-    fn item(&mut self, depth: usize) -> Result<bool, String> {
-        if depth > MAX_CBOR_DEPTH {
-            return Err(format!("CBOR nested deeper than {MAX_CBOR_DEPTH}"));
-        }
-        let b = self.byte()?;
-        if b == 0xFF {
-            return Ok(true);
-        }
-        self.items += 1;
-        if self.items > MAX_CBOR_ITEMS {
-            return Err(format!("more than {MAX_CBOR_ITEMS} CBOR items"));
-        }
-        let (major, info) = (b >> 5, b & 0x1F);
-        match (major, self.arg(info)?) {
-            (0 | 1 | 7, Some(_)) => {}
-            (2 | 3, Some(n)) => self.skip(n)?,
-            (2 | 3, None) => loop {
-                // Chunks of definite strings of the same type, up to a break.
-                let chunk = self.byte()?;
-                if chunk == 0xFF {
-                    break;
-                }
-                match self.arg(chunk & 0x1F)? {
-                    Some(n) if chunk >> 5 == major => self.skip(n)?,
-                    _ => return Err("malformed CBOR string chunk".into()),
-                }
-            },
-            (4, Some(n)) => self.children(n, 1, depth)?,
-            (5, Some(n)) => self.children(n, 2, depth)?,
-            (4 | 5, None) => while !self.item(depth + 1)? {},
-            (6, Some(_)) => {
-                if self.item(depth + 1)? {
-                    return Err("a CBOR tag around a break".into());
-                }
-            }
-            _ => return Err("malformed CBOR".into()),
-        }
-        Ok(false)
-    }
-
-    /// `n` entries of `per` items each; every item takes at least one byte, so a count the
-    /// remaining bytes cannot hold is refused before any is read.
-    fn children(&mut self, n: u64, per: u64, depth: usize) -> Result<(), String> {
-        let total = n.saturating_mul(per);
-        if total > u64::try_from(self.left()).unwrap_or(u64::MAX) {
-            return Err("a CBOR length past the end of the value".into());
-        }
-        for _ in 0..total {
-            if self.item(depth + 1)? {
-                return Err("a CBOR break inside a definite item".into());
-            }
-        }
-        Ok(())
-    }
-}
-
 /// `value` in deterministic CBOR: map keys sorted by their encoded bytes, recursively;
 /// NaN and duplicate map keys refused.
 pub(crate) fn canonical(value: Value) -> Result<Value, String> {
@@ -462,12 +338,6 @@ pub(crate) fn write_value(value: &Value) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     ciborium::into_writer(value, &mut out).map_err(|e| format!("encode: {e}"))?;
     Ok(out)
-}
-
-/// `bytes` from the guest ([`read_guest_value`]) re-encoded as the SDK's `value::to_vec`
-/// writes the value they hold.
-pub(crate) fn canonical_value(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    write_value(&canonical(read_guest_value(bytes)?)?)
 }
 
 /// A record field as a key part, by CBOR type, as the SDK's `ToKeyPart` makes it.

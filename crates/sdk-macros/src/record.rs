@@ -11,7 +11,7 @@ use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
 use syn::{DeriveInput, Fields, Ident, LitStr, Token};
 
-use crate::types::{camel, check_wire, wire, Wire};
+use crate::types::{abi_type, camel, canonical, check_wire, wire, Wire};
 
 /// A named set of fields, as written: `by_owner = ["owner", "name_key"]`.
 struct FieldSet {
@@ -193,10 +193,21 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
         Ok(format!("{{{}}}", out.join(",")))
     };
+    // `{"<camelName>":"<abi type>",..}`: every field, for the host to convert the record
+    // between JSON and stored CBOR. The ABI types are those of method parameters.
+    let field_types: std::collections::BTreeMap<String, String> = fields
+        .iter()
+        .map(|(ident, ty)| (camel(&ident.to_string()), abi_type(ty)))
+        .collect();
+    let fields_json =
+        canonical(&serde_json::to_value(&field_types).map_err(|e| {
+            syn::Error::new_spanned(&input.ident, format!("record field types: {e}"))
+        })?);
     // Keys sorted, like the rest of the state ABI (see `types::canonical`).
     let schema_json = format!(
-        "{{\"counts\":{},\"indexes\":{},\"key\":{},\"kind\":\"table\",\"unique\":{}}}",
+        "{{\"counts\":{},\"fields\":{},\"indexes\":{},\"key\":{},\"kind\":\"table\",\"unique\":{}}}",
         sets_json(&table.count)?,
+        fields_json,
         sets_json(&table.index)?,
         list_json(&key),
         sets_json(&table.unique)?,

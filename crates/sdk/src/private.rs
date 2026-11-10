@@ -139,6 +139,23 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
     D::run(index, args)
 }
 
+/// The state's maps and their value types (ABI names), for the host-collections build to
+/// read 64-bit map values back (`#[app::state]` calls it in `load`); nothing elsewhere.
+pub fn map_value_types(maps: &'static [(&'static str, &'static str)]) {
+    #[cfg(all(
+        feature = "host-collections",
+        target_arch = "wasm32",
+        not(calimero_compute)
+    ))]
+    crate::host_collections::map_value_types(maps);
+    #[cfg(not(all(
+        feature = "host-collections",
+        target_arch = "wasm32",
+        not(calimero_compute)
+    )))]
+    let _ = maps;
+}
+
 /// Decode a JSON object of arguments; empty `args` is `{}`. Anything else is `BadArgs`.
 pub fn decode_args<T: DeserializeOwned>(args: &[u8]) -> Result<T> {
     let value: Value = if args.is_empty() {

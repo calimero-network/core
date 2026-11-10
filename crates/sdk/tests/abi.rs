@@ -196,16 +196,30 @@ fn abi_lists_every_method_with_its_attributes() {
         abi_json["state"],
         json!({
             "collections": {
-                "blobs": { "kind": "table", "key": ["id"], "indexes": {}, "unique": {}, "counts": {} },
+                "blobs": {
+                    "kind": "table",
+                    "fields": { "data": "bytes", "id": "string" },
+                    "key": ["id"],
+                    "indexes": {},
+                    "unique": {},
+                    "counts": {},
+                },
                 "bookings": {
                     "kind": "table",
+                    "fields": {
+                        "checkedIn": "bool",
+                        "id": "string",
+                        "roomId": "string",
+                        "start": "u64",
+                        "title": "string",
+                    },
                     "key": ["id"],
                     "indexes": { "by_start": ["checkedIn", "start"] },
                     "unique": { "slot": ["roomId", "start"] },
                     "counts": { "by_room": ["roomId"] },
                 },
                 "nextId": { "kind": "counter" },
-                "titles": { "kind": "unorderedMap" },
+                "titles": { "kind": "unorderedMap", "value": "string" },
             },
             "fields": {
                 "blobs": "table",
