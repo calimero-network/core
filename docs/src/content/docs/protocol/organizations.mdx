@@ -108,7 +108,14 @@ Teams (`types::Team`; `meroctl`'s *groups*) nest (`parent`), move
 A **direct row** has a role (`lead`, `member` or `read-only`) and capabilities.
 A team's creator leads it. Whoever leads a team, or an ancestor team, or is an
 organization admin, **manages** it: renames it, adds and removes members,
-creates teams under it, moves it within what they manage, and deletes it.
+creates teams under it, moves it within what they manage, and deletes it. A
+member who writes a team (a row that is not read-only, or inheritance into an
+open team) and holds `CREATE_CHILD_TEAM` there also creates a **restricted**
+team below it, and leads that one: this is how any member of an app's team
+makes a private channel. An app team holds `CREATE_CHILD_TEAM` in its default
+capabilities, so it is on unless an admin turns it off; a `CreateTeam` entry an
+earlier release logged replays with only the parent's managers creating below
+it (`member_child_teams`).
 
 - Removing someone from a team, or their leaving it, also removes their direct
   rows in every team below it, so a restricted child team (a private channel
@@ -166,7 +173,10 @@ gives a plain row to every member who reaches the instances now, and moves the
 instances (absent: every `org`-access instance of the package) to `access:
 team` on it. `shared` (absent: whether the organization then holds two app
 teams or more) closes every app team, everyone it held kept as a direct row,
-and takes `INVITE_MEMBERS` out of its default. Nobody loses an app.
+and takes `INVITE_MEMBERS` out of its default. Nobody loses an app. A new
+app team's default holds `CREATE_CHILD_TEAM` in either mode (`INVITE_MEMBERS`
+too while standalone), so its members make private channels below it; app
+teams made before keep the default they had until an admin sets it.
 `GET /orgs/{org}/app-teams` lists, to any member, each app team's package, id,
 name, `join`, member count, default capabilities and whether the caller is in
 it or manages it (a guest: only their own).
@@ -199,6 +209,7 @@ organization value). Admins and team leads hold them all where they manage.
 | `1 << 7` | `MANAGE_VISIBILITY` | Switching a team between open and restricted |
 | `1 << 8` | `MANAGE_METADATA` | Organization and team metadata |
 | `1 << 10` | `APPROVE_RELEASES` | Approving (or withdrawing) the mero-tee releases that hold the apps the organization governs: those of the packages it publishes, and its own apps of packages whose key is not bound; and binding a package signing key to the organization (org-wide only: a team grant does not reach it) ([Release approvals](/protocol/governance/#release-approvals)) |
+| `1 << 11` | `CREATE_CHILD_TEAM` | Creating a restricted team below a team one writes, without managing it (the creator leads the new team); in an app team's default |
 
 Bit 9 is unused: v1's `MemberCapabilities` spends it on `CAN_AUTHOR_ON_BEHALF`,
 so a client that sends v1's `ALL` grants nothing new by accident. A grant is

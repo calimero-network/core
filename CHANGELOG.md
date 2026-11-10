@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Members make private channels under an app's team.** Only a parent
+  team's leads and the organization's admins created a team below it, so an
+  app could not make a private channel a child team of its app team. A member
+  who writes a team and holds the new `CREATE_CHILD_TEAM` capability (`1 <<
+  11`) there now creates a restricted team below it and leads it (`POST
+  /orgs/{org}/teams { parent, join: invite }`); never an open one. A new app
+  team's default capabilities hold it (`ScopeApps`), so it is on for app teams
+  unless an admin turns it off; app teams made before keep their default. As
+  before, removing someone from a team, or their leaving it, takes their rows
+  in the teams below it. `CreateTeam` and `ScopeApps` carry
+  `member_child_teams` (serde default false), so entries an earlier release
+  logged replay as they did.
+
 - **Passkey times and the account's sessions**: `GET /auth/me` gives each
   passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a passkey
   added, or last signed in, before this release). `GET /auth/sessions` lists

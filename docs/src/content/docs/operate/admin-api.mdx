@@ -204,7 +204,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
 | `POST /orgs/{org}/recovery/cancel` | account holder | Cancel the recovery under way (owner; `412` first) | - |
 | `POST /orgs/{org}/recovery/finish` | account holder | Become the owner once `readyAt` passed (the account that started it; `412` first; `409 RECOVERY_NOT_READY` before) | - |
-| `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }` | `namespace create-group` |
+| `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `namespace create-group` |
 | `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
 | `POST /orgs/{org}/teams/{team}` | session | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
 | `DELETE /orgs/{org}/teams/{team}` | session | Delete with the teams and apps below | `group delete` |

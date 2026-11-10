@@ -420,6 +420,10 @@ pub mod caps {
     /// `MemberCapabilities` spends 9 on `CAN_AUTHOR_ON_BEHALF`, so a client
     /// that sends v1's `ALL` does not hand out release approvals with it.
     pub const APPROVE_RELEASES: u32 = 1 << 10;
+    /// Create a restricted team below a team one writes (a private channel
+    /// under an app's team) without leading it; the creator leads the new
+    /// team. On by default in an app team (its default capabilities).
+    pub const CREATE_CHILD_TEAM: u32 = 1 << 11;
     /// What a member holds unless an admin says otherwise.
     pub const DEFAULT: u32 = JOIN_OPEN_TEAMS;
 }

@@ -1699,6 +1699,7 @@ impl SystemState {
         shared: Option<bool>,
         nonce: &str,
         actor: &str,
+        member_child_teams: bool,
     ) -> Result<Value, &'static str> {
         use crate::types::caps;
 
@@ -1818,7 +1819,13 @@ impl SystemState {
                     let _lead = members.insert(actor.to_owned(), true);
                     // Standalone, its members may invite others to it; shared,
                     // only its leads and the admins, until an admin says so.
-                    let default_capabilities = (!shared).then_some(caps::INVITE_MEMBERS);
+                    // Either way they make private channels below it.
+                    let invite = (!shared).then_some(caps::INVITE_MEMBERS);
+                    let child = member_child_teams.then_some(caps::CREATE_CHILD_TEAM);
+                    let default_capabilities = match (invite, child) {
+                        (None, None) => None,
+                        (a, b) => Some(a.unwrap_or(0) | b.unwrap_or(0)),
+                    };
                     let _prev = o.teams.insert(
                         id.clone(),
                         Team {
@@ -4053,6 +4060,13 @@ pub enum SystemCmd {
         parent: Option<TeamId>,
         join: TeamJoin,
         actor: AccountId,
+        /// A member of `parent` holding `caps::CREATE_CHILD_TEAM` there (an
+        /// app team's default) may create a restricted team below it. The
+        /// API always sets it; absent (`false`) in an entry an earlier
+        /// release logged, which replays with only `parent`'s managers
+        /// creating below it.
+        #[serde(default)]
+        member_child_teams: bool,
     },
     SetTeamMember {
         org: OrgId,
@@ -4204,6 +4218,12 @@ pub enum SystemCmd {
         nonce: String,
         actor: AccountId,
         consent: Value,
+        /// A new app team's default capabilities let its members create
+        /// restricted teams below it (`caps::CREATE_CHILD_TEAM`). The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays making the default it made then.
+        #[serde(default)]
+        member_child_teams: bool,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
     /// key: the owner's, with their passkey consent (`org:<org> /
@@ -6084,15 +6104,27 @@ impl SystemMachine {
                 parent,
                 join,
                 actor,
+                member_child_teams,
             } => {
                 let o = self.org_mut(&org)?;
                 if o.teams.contains_key(&team_id) {
                     return Err("team exists");
                 }
                 // An admin anywhere, a team's lead below it; a member with
-                // CREATE_TEAM at the top.
+                // CREATE_TEAM at the top; a member who writes a team and holds
+                // CREATE_CHILD_TEAM there (an app team's default), a
+                // restricted team below it (a private channel), which they
+                // lead.
+                let member_creates = |p: &str| {
+                    member_child_teams
+                        && join == TeamJoin::Invite
+                        && o.writes_team(&actor, p)
+                        && o.may(&actor, Some(p), crate::types::caps::CREATE_CHILD_TEAM)
+                };
                 let allowed = match &parent {
-                    Some(p) => o.teams.contains_key(p) && o.manages_team(&actor, p),
+                    Some(p) => {
+                        o.teams.contains_key(p) && (o.manages_team(&actor, p) || member_creates(p))
+                    }
                     None => {
                         o.role(&actor).is_some_and(|r| r >= OrgRole::Member)
                             && o.may(&actor, None, crate::types::caps::CREATE_TEAM)
@@ -6473,8 +6505,9 @@ impl SystemMachine {
                 shared,
                 nonce,
                 actor,
+                member_child_teams,
                 ..
-            } => s.scope_apps(&org, apps, shared, &nonce, &actor),
+            } => s.scope_apps(&org, apps, shared, &nonce, &actor, member_child_teams),
             SystemCmd::SetRecoveryKey {
                 org,
                 public_key,
@@ -8893,6 +8926,96 @@ mod tests {
             ..listed
         };
         assert!(m.state.may_reach(&personal, Some("carol")));
+    }
+
+    /// A member who writes a team whose default capabilities hold
+    /// `CREATE_CHILD_TEAM` (an app team's) creates a restricted team below
+    /// it and leads it; never an open one, never from a read-only row,
+    /// without the capability, outside the team, or in an entry an earlier
+    /// release logged. Removed from the parent, they leave the child too.
+    #[test]
+    fn a_member_of_a_team_creates_a_private_team_below_it() {
+        use crate::types::{caps, TeamJoin};
+
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("carol".into(), OrgRole::Member);
+        let t = o.teams.get_mut("t").unwrap();
+        let _prev = t.members.insert("bob".into(), false);
+        t.default_capabilities = Some(caps::CREATE_CHILD_TEAM);
+        let create = |id: &str, who: &str, join: TeamJoin, flag: bool| SystemCmd::CreateTeam {
+            org: "org".into(),
+            team_id: id.into(),
+            name: id.into(),
+            parent: Some("t".into()),
+            join,
+            actor: who.into(),
+            member_child_teams: flag,
+        };
+        let refused = "not allowed to create this team";
+        assert_eq!(
+            m.run_authorized(create("old", "bob", TeamJoin::Invite, false)),
+            Err(refused),
+            "as logged before"
+        );
+        assert_eq!(
+            m.run_authorized(create("open", "bob", TeamJoin::Everyone, true)),
+            Err(refused)
+        );
+        assert_eq!(
+            m.run_authorized(create("c", "carol", TeamJoin::Invite, true)),
+            Err(refused),
+            "not in the team"
+        );
+        let _ok = m
+            .run_authorized(create("dm", "bob", TeamJoin::Invite, true))
+            .unwrap();
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.teams["dm"].parent.as_deref(), Some("t"));
+        assert!(o.manages_team("bob", "dm") && !o.manages_team("bob", "t"));
+
+        // Read-only, or without the capability: no.
+        let t = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .teams
+            .get_mut("t")
+            .unwrap();
+        let _new = t.read_only.insert("bob".into());
+        assert_eq!(
+            m.run_authorized(create("ro", "bob", TeamJoin::Invite, true)),
+            Err(refused)
+        );
+        let t = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .teams
+            .get_mut("t")
+            .unwrap();
+        let _was = t.read_only.remove("bob");
+        t.default_capabilities = Some(caps::INVITE_MEMBERS);
+        assert_eq!(
+            m.run_authorized(create("nocap", "bob", TeamJoin::Invite, true)),
+            Err(refused)
+        );
+
+        // Removed from the parent, Bob is out of the team he made below it.
+        let _ok = m
+            .run_authorized(SystemCmd::RemoveTeamMember {
+                org: "org".into(),
+                team: "t".into(),
+                account: "bob".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                subtree: true,
+            })
+            .unwrap();
+        let o = &m.state.orgs["org"];
+        assert!(!o.in_team("bob", "dm") && !o.manages_team("bob", "dm"));
     }
 
     // ------------------------------------- an org app's owner, while a member
