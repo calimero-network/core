@@ -95,7 +95,8 @@ ownership and makes the previous owner an admin; the owner cannot be removed,
 only replaced. Leaving is removing oneself. Removing a member clears their
 capabilities, metadata and every team row they had. `DELETE /orgs/{org}`
 (owner, with a passkey step-up) deletes the organization with its teams,
-invites and apps.
+invites and apps, and unbinds the package signing keys it published
+([Publishers](/protocol/governance/#publishers)).
 
 An organization also keeps metadata for its apps and frontends to read (admins,
 or members holding `MANAGE_METADATA`), per-member metadata (the member or an

@@ -814,7 +814,7 @@ impl Node {
             None => None,
         };
         let system = engine
-            .start_group(SYSTEM_GROUP, SystemMachine::default())
+            .start_group(SYSTEM_GROUP, SystemMachine::new(config.cluster.clone()))
             .await?;
         let sealed = Arc::new(calimero_sealed::SealedTransport::generate(
             &calimero_sealed::SealedOptions {
