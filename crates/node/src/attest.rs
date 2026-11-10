@@ -57,6 +57,39 @@ pub fn release_attestation(
     ))
 }
 
+/// On TDX, refuse to run unless this TD's own registers match `tee_profile`
+/// (`MERO_TEE_PROFILE`) in the signed release `tee_release` (`MERO_TEE_VERSION`):
+/// the profile decides whether the node trusts debug peers, and both values
+/// come from the host. Mock nodes have no registers and check nothing.
+pub async fn check_own_profile(
+    mode: Mode,
+    tee_release: Option<&str>,
+    tee_profile: Option<&str>,
+) -> eyre::Result<()> {
+    if mode == Mode::Mock {
+        return Ok(());
+    }
+    let (Some(release), Some(profile)) = (tee_release, tee_profile) else {
+        eyre::bail!(
+            "a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE to check its own image"
+        );
+    };
+    // The report data binds nothing: this quote never leaves the node, only
+    // its registers are read.
+    let generated = tokio::task::spawn_blocking(|| {
+        calimero_tee_attestation::generate_attestation([0; 64])
+            .map_err(|e| eyre::eyre!("TDX quote: {e:?}"))
+    })
+    .await??;
+    if generated.is_mock {
+        eyre::bail!("TDX quote: this build produced a mock quote; run with --dev for one");
+    }
+    let measured = QuoteMeasurements::of(&generated.quote.body);
+    verify_own_profile(release, profile, &measured)
+        .await
+        .map_err(|e| eyre::eyre!("this node's own image: {e:#}"))
+}
+
 /// How many quotes the release server makes at once; more requests wait. A
 /// TDX quote goes through one configfs-tsm entry, so more would only queue
 /// there.

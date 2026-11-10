@@ -3628,6 +3628,34 @@ async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() 
     );
 }
 
+/// Once the cluster is founded, its directory says which nodes hold K_c: an id
+/// that only a node's own `--peers` lists (not registered, not a member) is
+/// not one, whatever address that list gives for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_cluster_key_goes_only_to_registered_nodes_after_genesis() {
+    use calimero_node::cluster_key::Request;
+
+    let elsewhere = format!("http://127.0.0.1:{}/", free_port());
+    let c = Cluster::start_with(3, |config| {
+        if config.node_id == 3 {
+            let _prev = config.peers.insert(9, elsewhere.clone());
+        }
+    })
+    .await;
+    let ask = serde_json::to_value(Request {
+        cluster: c.name.clone(),
+        node: 9,
+        token: hex::encode([1_u8; 32]),
+    })
+    .unwrap();
+    let e = c
+        .client(2)
+        .post("internal/cluster-key", ask)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not a node of this cluster"), "{e}");
+}
+
 /// Ownership transfer: the owner hands an app to another account
 /// with a passkey assertion; the new owner then decides, the old one no longer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

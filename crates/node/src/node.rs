@@ -129,6 +129,9 @@ pub struct Config {
     pub refresh_rotate_after: Duration,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
+    /// On TDX, `run` refuses to start unless the TD's own registers match
+    /// this profile in that release (`attest::check_own_profile`), so the
+    /// peer policy reads a measured profile.
     pub tee_release: Option<String>,
     pub tee_profile: Option<String>,
     /// Which TD images a peer's real quote may come from.
@@ -201,7 +204,8 @@ impl Config {
 }
 
 /// How a node judges a peer's quote. It trusts debug peers only when it runs a
-/// debug image itself.
+/// debug image itself: `tee_profile` is the profile its own registers match
+/// (checked at start on TDX, `attest::check_own_profile`).
 pub(crate) fn peer_policy(
     allow_mock: bool,
     measurements: &calimero_client::Measurements,
@@ -943,6 +947,15 @@ impl Node {
             Some(n) => Some(n.addr.clone()),
             None => self.config.peers.get(&id).cloned(),
         })
+    }
+
+    /// Where K_c may be delivered for node `id` (`cluster_key::recipient_addr`):
+    /// the directory's address, else the system group's membership's; this
+    /// node's `--peers` only before genesis.
+    #[must_use]
+    pub fn key_recipient_addr(&self, id: NodeId) -> Option<String> {
+        let member = self.system.member_addr(id);
+        self.sys(|s| crate::cluster_key::recipient_addr(s, member, &self.config.peers, id))
     }
 
     /// The address the directory or `--peers` holds for the replica node at

@@ -13,6 +13,10 @@ refuses every real quote, `Pinned` checks fixed allowlists, `Release` fetches th
 Sigstore-verified `published-mrtds.json` of the release the node names and requires a
 matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash binding).
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
+Node-only helpers beside it (no client or mero-js counterpart): `configured_min_release`
+refuses a node's `--peer-min-release` below `DEFAULT_MIN_RELEASE`, and `check_own_profile` /
+`verify_own_profile` check that a TD's own registers match its declared profile in its signed
+release (`calimero_node::attest::check_own_profile`, at start on TDX).
 The quote step itself (`verify_quote`, then `judge` for a real quote's registers) is
 shared by `verify`, `verify_receipt_key` and `attest::release::verify_release`.
 A document that carries `kms` (`KmsKeys`: what the node verified of the KMS its storage

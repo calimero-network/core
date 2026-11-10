@@ -19,14 +19,17 @@
 //!   only `/health`, `/attestation` and the delivery route meanwhile, and asks
 //!   its `--peers` for K_c (`POST /internal/cluster-key`, [`Request`]). A peer
 //!   never answers with the key: it delivers it ([`deliver`]) to the address
-//!   the cluster has for that node id (registered with `/ops/nodes`, or in the
-//!   peer's own `--peers`), inside a sealed channel to the key the TD there
+//!   the cluster has for that node id ([`recipient_addr`]: registered with
+//!   `/ops/nodes`, else in the system group's membership; the peer's own
+//!   `--peers` only before genesis, while the founding nodes ask the founder),
+//!   inside a sealed channel to the key the TD there
 //!   attests under the peer policy. So the key reaches only a genuine TD at an
 //!   address the operator chose, which is the bar mero-kms's shared disk
 //!   identity sets for K_r. The delivery carries the request's random token,
 //!   which travelled only inside the sealed channel to an attested peer, so
 //!   the waiting node takes K_c from that peer alone.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,6 +48,8 @@ use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use crate::attest::{quote, report_data, AttestationDoc, HttpAttestor};
+use crate::system::SystemState;
+use crate::types::NodeRole;
 use crate::Config;
 
 /// The file in the data directory that holds K_c wrapped under K_r.
@@ -429,6 +434,32 @@ async fn ask(
     Ok(())
 }
 
+/// Where K_c may go for node `id`: the address the directory registers for
+/// that replica node, else the one the system group's membership holds
+/// (`member`, decided by the log). A node's own `--peers` (`peers`) name a
+/// recipient only before genesis, while the founding nodes ask the founder
+/// for the key; genesis registers them, and after it an id only `--peers`
+/// names is no node of the cluster, whatever address the host put there.
+/// None for a removed node or a job node.
+pub fn recipient_addr(
+    state: &SystemState,
+    member: Option<String>,
+    peers: &BTreeMap<u64, String>,
+    id: u64,
+) -> Option<String> {
+    if state.removed_nodes.contains(&id) {
+        return None;
+    }
+    match state.nodes.get(&id) {
+        Some(n) if n.role == NodeRole::Job => None,
+        Some(n) => Some(n.addr.clone()),
+        None if state.governance.is_none() && state.accounts.is_empty() => {
+            member.or_else(|| peers.get(&id).cloned())
+        }
+        None => member,
+    }
+}
+
 /// On a peer: deliver K_c to `addr`, over a sealed channel to the key the TD
 /// there attests under this node's peer policy. Only that TD can read it.
 pub async fn deliver(
@@ -471,6 +502,58 @@ pub async fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Before genesis the founder delivers to its `--peers`; after it, only to
+    /// registered nodes and system members, never to an id `--peers` alone names.
+    #[test]
+    fn the_cluster_key_goes_to_peers_only_while_the_cluster_is_founded() {
+        let peers: BTreeMap<u64, String> = [
+            (2, "http://two/".to_owned()),
+            (9, "http://nine/".to_owned()),
+        ]
+        .into();
+        let mut s = SystemState::default();
+        assert_eq!(
+            recipient_addr(&s, None, &peers, 2).as_deref(),
+            Some("http://two/")
+        );
+        assert_eq!(recipient_addr(&s, None, &peers, 7), None);
+
+        s.governance = Some(crate::system::Governance::default());
+        let _prev = s.nodes.insert(
+            2,
+            crate::types::NodeRecord {
+                id: 2,
+                addr: "http://registered-two/".into(),
+                zone: String::new(),
+                role: NodeRole::Replica,
+                pool: String::new(),
+            },
+        );
+        assert_eq!(
+            recipient_addr(&s, None, &peers, 2).as_deref(),
+            Some("http://registered-two/")
+        );
+        assert_eq!(recipient_addr(&s, None, &peers, 9), None);
+        // A member the log admitted (a genesis from before registered peers).
+        assert_eq!(
+            recipient_addr(&s, Some("http://member-nine/".into()), &peers, 9).as_deref(),
+            Some("http://member-nine/")
+        );
+        let _new = s.removed_nodes.insert(2);
+        assert_eq!(recipient_addr(&s, None, &peers, 2), None);
+        let _prev = s.nodes.insert(
+            3,
+            crate::types::NodeRecord {
+                id: 3,
+                addr: "http://job/".into(),
+                zone: String::new(),
+                role: NodeRole::Job,
+                pool: String::new(),
+            },
+        );
+        assert_eq!(recipient_addr(&s, None, &peers, 3), None);
+    }
 
     #[test]
     fn a_wrapped_key_file_from_an_earlier_build_opens() {

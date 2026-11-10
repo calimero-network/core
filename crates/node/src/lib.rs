@@ -118,6 +118,13 @@ fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
 
 /// Start a node and serve its API until stopped.
 pub async fn run(config: Config) -> eyre::Result<Running> {
+    // Before any peer is judged: the peer policy reads this node's profile.
+    attest::check_own_profile(
+        config.attestation,
+        config.tee_release.as_deref(),
+        config.tee_profile.as_deref(),
+    )
+    .await?;
     let listener = TcpListener::bind(config.listen).await?;
     // A new node waits here, serving only what lets a peer deliver K_c.
     let (cluster_key, listener) = cluster_key::resolve(&config, listener).await?;

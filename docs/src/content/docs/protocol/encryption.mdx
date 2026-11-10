@@ -95,8 +95,11 @@ So nothing the nodes share is keyed by K_r itself (`calimero_node::cluster_key`)
   (`POST /internal/cluster-key { cluster, node, token }`, inside the sealed
   channel to a peer whose quote it verified), every second for up to 10
   minutes (`cluster_key::WAIT`). The peer never answers with the key. It
-  delivers it to the address the cluster has for that node id (registered
-  with `/ops/nodes`, or in the peer's own `--peers`; not a removed node),
+  delivers it to the address the cluster has for that node id: the one
+  registered with `/ops/nodes` (the founding `--peers` are registered at
+  genesis), else the system group's membership; a node id only the peer's own
+  `--peers` names is served only before genesis, while the cluster is being
+  founded, and a removed node never,
   inside a sealed channel to the key the TD at that address attests, judged
   like any peer (`--peer-profiles`, `--peer-min-release`)
   (`POST /internal/cluster-key/deliver { token, key }`). The waiting node takes
