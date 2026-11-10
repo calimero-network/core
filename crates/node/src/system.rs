@@ -11860,7 +11860,7 @@ mod tests {
         );
         assert_eq!(
             m.run(restore("gone", &[2, 1, 3], &proof)).unwrap_err(),
-            RESTORE_BUNDLE_GONE
+            crate::system::RESTORE_BUNDLE_GONE
         );
         assert!(
             m.run(restore("b0", &[2, 9], &proof)).is_err(),
