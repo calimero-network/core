@@ -48,6 +48,11 @@ fn generated_documents_and_clients_match_the_golden_files() {
             },
         );
         let doc = format!("{}\n", serde_json::to_string_pretty(&doc).unwrap());
+        // The keys are sorted whatever serde_json's features (`openapi::sorted`).
+        assert!(
+            doc.find("\"components\"") < doc.find("\"info\""),
+            "{app}: keys not sorted"
+        );
         let golden = dir("golden");
         check(
             &golden.join(format!("{app}.openapi.json")),

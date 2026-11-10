@@ -75,7 +75,7 @@ pub fn document(abi: &AppAbi, info: &Info) -> Value {
 
     let mut schemas = common_schemas();
     schemas.append(&mut ctx.schemas);
-    json!({
+    sorted(&json!({
         "openapi": OPENAPI_VERSION,
         "info": {
             "title": info.title,
@@ -102,7 +102,27 @@ pub fn document(abi: &AppAbi, info: &Info) -> Value {
                 },
             },
         },
-    })
+    }))
+}
+
+/// `value` with every object's keys in sorted order, whether or not the build unifies
+/// serde_json's `preserve_order` in, so the same ABI always gives the same bytes.
+#[must_use]
+pub fn sorted(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), sorted(v)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+        other => other.clone(),
+    }
 }
 
 /// `getOrInsert` → `GetOrInsert`; `not_found` → `NotFound`.
