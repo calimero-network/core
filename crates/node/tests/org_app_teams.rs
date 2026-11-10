@@ -32,6 +32,7 @@ const BLOCKS: &str = "com.test.blocks";
 const NOTES: &str = "com.test.notes";
 const INVITE_MEMBERS: u32 = 1 << 1;
 const CREATE_APP: u32 = 1 << 0;
+const CREATE_CHILD_TEAM: u32 = 1 << 11;
 
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
@@ -294,12 +295,25 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .post(&format!("apps/{app}/access"), access(&t2))
         .await
         .unwrap();
-    // The owner still may, anywhere in the organization.
-    let _ok = bob
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "org" } }),
+    // The owner, not in team two, holds no owner powers over an app on it;
+    // once in it, they may change its access anywhere in the organization.
+    let to_org = json!({ "access": { "kind": "org" } });
+    refused(
+        &bob.post(&format!("apps/{app}/access"), to_org.clone())
+            .await
+            .unwrap_err(),
+        "MANAGE_APPLICATION",
+    );
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{t2}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+            &mut a,
         )
+        .await
+        .unwrap();
+    let _ok = bob
+        .post(&format!("apps/{app}/access"), to_org)
         .await
         .unwrap();
 }
@@ -601,7 +615,11 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     let chat_team = s(&done["teams"][0]["teamId"]);
     let t = app_team(&bob, &org, CHAT).await;
     assert_eq!(t["join"], "everyone", "{t}");
-    assert_eq!(t["defaultCapabilities"], INVITE_MEMBERS, "{t}");
+    assert_eq!(
+        t["defaultCapabilities"],
+        INVITE_MEMBERS | CREATE_CHILD_TEAM,
+        "{t}"
+    );
     assert!(reaches(&bob, &org).await.contains(&chat));
     // A guest is not in an open team by inheritance, reaches no
     // organization-access app here, and sees no one but themselves.
@@ -684,4 +702,306 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     assert!(directory(&eve, &org).await.contains(&bob_id));
     let teams = eve.get(&format!("orgs/{org}/app-teams")).await.unwrap();
     assert_eq!(teams["appTeams"].as_array().unwrap().len(), 1, "{teams}");
+}
+
+/// Any member of an app team makes a private channel below it (a restricted
+/// child team, `CREATE_CHILD_TEAM` in the app team's default) and leads it;
+/// never an open one. Someone out of the app team (kicked, never in it, of
+/// another organization) makes none, and someone removed from the app team,
+/// or who leaves it, is out of the channels below it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn members_of_an_app_team_make_private_channels_below_it() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    let (gail, _g) = signed_up(&c, 1, "gail").await;
+    let (erin, _e) = signed_up(&c, 2, "erin").await;
+    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol, &dave] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (bob_id, carol_id, dave_id) = (id(&bob).await, id(&carol).await, id(&dave).await);
+    let _chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    // Chat's team, closed, with everyone in it.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": true }))
+        .await
+        .unwrap();
+    let chat_team = s(&done["teams"][0]["teamId"]);
+    let t = app_team(&alice, &org, CHAT).await;
+    assert_eq!(t["defaultCapabilities"], CREATE_CHILD_TEAM, "{t}");
+    // Gail joins after: not in Chat.
+    join(
+        &gail,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let channel = |join: &str| json!({ "name": "design", "join": join, "parent": chat_team });
+    let teams = format!("orgs/{org}/teams");
+
+    // Carol makes a private channel and leads it: she adds Dave.
+    let private = s(&carol.post(&teams, channel("invite")).await.unwrap()["teamId"]);
+    let _ok = carol
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{private}/members"),
+            json!({ "account": dave_id, "role": "member" }),
+            &mut cpk,
+        )
+        .await
+        .unwrap();
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .unwrap();
+    assert!(
+        view.to_string().contains(&carol_id) && view.to_string().contains(&dave_id),
+        "{view}"
+    );
+    // Never an open one; never by someone out of Chat.
+    refused(
+        &carol.post(&teams, channel("everyone")).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+    refused(
+        &gail.post(&teams, channel("invite")).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+    let _outside = erin.post(&teams, channel("invite")).await.unwrap_err();
+    let _ok = alice
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{bob_id}"),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    refused(
+        &bob.post(&teams, channel("invite")).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+
+    // Dave, removed from Chat, and Carol, who leaves it, are out of the
+    // channel below it.
+    let _ok = alice
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{dave_id}"),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let _ok = carol
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{carol_id}"),
+            &mut cpk,
+        )
+        .await
+        .unwrap();
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .unwrap();
+    assert!(
+        !view.to_string().contains(&carol_id) && !view.to_string().contains(&dave_id),
+        "a row is left below: {view}"
+    );
+    assert!(dave
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .is_err());
+}
+
+/// An admin closes one app's team and no other, in one step, keeping either
+/// everyone who reaches it now or only the people named: whoever is not
+/// kept loses the app and the private channels under its team, and nobody
+/// else loses anything. Opening one team again is one step too. Only an
+/// organization admin does either, and only for the organization's members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (dave, mut d) = signed_up(&c, 0, "dave").await;
+    let (frank, _f) = signed_up(&c, 1, "frank").await;
+    let (erin, mut e) = signed_up(&c, 2, "erin").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol, &dave, &frank] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (bob_id, carol_id, dave_id, frank_id) = (
+        id(&bob).await,
+        id(&carol).await,
+        id(&dave).await,
+        id(&frank).await,
+    );
+    // Erin is an admin of an organization of her own, never of this one.
+    let _theirs = new_org(&erin).await;
+    let erin_id = id(&erin).await;
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    // Both apps get open teams: everyone has both.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
+    // Carol leads a private channel under Chat, with an instance of its own.
+    let channel = s(&alice
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "carol's", "join": "invite", "parent": chat_team }),
+        )
+        .await
+        .unwrap()["teamId"]);
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{channel}/members"),
+            json!({ "account": carol_id, "lead": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let private = instance(
+        &alice,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": channel }),
+    )
+    .await
+    .unwrap();
+    assert!(reaches(&carol, &org).await.contains(&private));
+    // Dave left Chat; Frank is removed from the organization.
+    let _ok = dave
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{dave_id}"),
+            &mut d,
+        )
+        .await
+        .unwrap();
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{frank_id}"), &mut a)
+        .await
+        .unwrap();
+
+    let close = |keep: Value| {
+        let mut app = json!({ "package": CHAT, "join": "invite" });
+        if !keep.is_null() {
+            app["keep"] = keep;
+        }
+        json!({ "apps": [app] })
+    };
+    // Only an admin of this organization closes it, keeping only its members.
+    refused(
+        &scope(&bob, &mut b, &org, close(json!([bob_id])))
+            .await
+            .unwrap_err(),
+        "only the organization's owner and admins",
+    );
+    let _outside = scope(&erin, &mut e, &org, close(json!([erin_id])))
+        .await
+        .unwrap_err();
+    for gone in [&erin_id, &frank_id] {
+        refused(
+            &scope(&alice, &mut a, &org, close(json!([bob_id, gone])))
+                .await
+                .unwrap_err(),
+            "only members of the organization keep an app",
+        );
+    }
+    refused(
+        &scope(
+            &alice,
+            &mut a,
+            &org,
+            json!({ "apps": [{ "package": CHAT, "keep": [bob_id] }] }),
+        )
+        .await
+        .unwrap_err(),
+        "only closing an app team",
+    );
+    refused(
+        &scope(
+            &alice,
+            &mut a,
+            &org,
+            json!({ "apps": [{ "package": CHAT, "join": "everyone" }], "shared": true }),
+        )
+        .await
+        .unwrap_err(),
+        "cannot open while the step closes every app team",
+    );
+    assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
+
+    // Closed keeping Bob: Bob and Alice (its lead) have Chat; Carol loses it
+    // and her channel under it; Dave, who left, is not brought back; Blocks
+    // stays open for everyone.
+    let done = scope(&alice, &mut a, &org, close(json!([bob_id])))
+        .await
+        .unwrap();
+    assert_eq!(done["mode"], "shared", "{done}");
+    assert_eq!(done["teams"][0]["join"], "invite", "{done}");
+    assert_eq!(done["teams"][0]["dropped"], 1, "{done}");
+    assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
+    assert!(reaches(&bob, &org).await.contains(&chat));
+    assert!(reaches(&alice, &org).await.contains(&chat));
+    for p in [&carol, &dave] {
+        let r = reaches(p, &org).await;
+        assert!(!r.contains(&chat) && !r.contains(&private), "{r:?}");
+        assert!(r.contains(&blocks), "{r:?}");
+    }
+    let row = alice
+        .get(&format!("orgs/{org}/teams/{channel}"))
+        .await
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&row).unwrap().contains(&carol_id),
+        "{row}"
+    );
+
+    // Opened again, alone: Carol has Chat back (not her channel, whose row
+    // went with the close), Dave stays out, Blocks is untouched.
+    let done = scope(
+        &alice,
+        &mut a,
+        &org,
+        json!({ "apps": [{ "package": CHAT, "join": "everyone" }] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let r = reaches(&carol, &org).await;
+    assert!(r.contains(&chat) && !r.contains(&private), "{r:?}");
+    assert!(!reaches(&dave, &org).await.contains(&chat));
+
+    // Closed keeping everyone who reaches it: nobody loses it.
+    let done = scope(&alice, &mut a, &org, close(Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(done["teams"][0]["dropped"], 0, "{done}");
+    assert!(reaches(&carol, &org).await.contains(&chat));
+    assert!(reaches(&bob, &org).await.contains(&chat));
+    assert!(!reaches(&dave, &org).await.contains(&chat));
+    assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
+
+    // A single team also opens with the team update an admin always had.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{chat_team}"),
+            json!({ "join": "everyone" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
 }

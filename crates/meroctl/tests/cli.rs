@@ -256,6 +256,16 @@ fn scenario(root: &Path, url: &str) {
         1
     );
 
+    // account activity: the account's own sign-ins, newest first.
+    let activity = alice.run(&["account", "activity"]);
+    let entries = activity["activity"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["kind"] == "signIn" && s(&e["passkey"]) == device),
+        "{activity}"
+    );
+
     // app: v1's applications are signed packages.
     let installed = alice.run(&["app", "install", "--path", path(&kv_1_0)]);
     assert_eq!(installed["package"], "com.test.kv");
@@ -768,6 +778,21 @@ fn scenario(root: &Path, url: &str) {
         ])
         .unwrap_err();
     assert!(refused.contains("no operator key"), "{refused}");
+    // Pools: none set yet, and only a job node is registered in one.
+    assert_eq!(ops(&["pools"])["pools"], serde_json::json!({}));
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "add-node",
+            "9",
+            "http://127.0.0.1:1/",
+            "--pool",
+            "highmem",
+        ])
+        .unwrap_err();
+    assert!(refused.contains("POOL_FOR_JOB_NODES"), "{refused}");
     // A node no context lives on, and one that does not exist.
     let unknown = alice
         .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])
@@ -789,6 +814,16 @@ fn scenario(root: &Path, url: &str) {
         Some(3)
     );
     assert_eq!(proven["governance"]["appUpgrades"], "owner");
+
+    // A personal context moves into an organization its owner administers,
+    // with the owner's passkey; the node asks for it first.
+    let asked = alice
+        .try_run(&["context", "move", "notes", &org])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let moved = alice.run(&["context", "move", "notes", &org, "--dev-passkey", pk]);
+    assert_eq!(moved["org"], org, "{moved}");
+    assert_eq!(alice.run(&["context", "get", "notes"])["org"], org);
 
     // Clean up: an organization goes with its contexts; logout forgets the session.
     // Without a file passkey the request still goes out: the node asks for the

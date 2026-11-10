@@ -27,14 +27,19 @@ any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 | `owner` (default outside an organization) | The owner only |
 | `accounts { accounts }` | The owner and these accounts |
 | `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
-| `team { team }` | The team's members (direct rows, and inheritance into an open team) |
+| `team { team }` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
 | `public` | Anyone, signed in or not (as `Caller::Public` when not) |
 
 The owner always reaches their app, except that an organization's app is
 reached only by the organization's current members: its owner and the accounts
 an `accounts` rule lists stop reaching it, and receiving its events, once they
 leave or are removed (the rule keeps their names, so being added back to the
-organization restores it). A caller who does not reach it gets `404`,
+organization restores it). An app on a team is reached by its owner only while
+they are in that team, as `owner_in_org` asks of the organization: an owner who
+leaves the team, is removed from it, or loses it when an open team is closed
+without them, stops reaching it (a person removed from Chat's app team no
+longer reaches the channels they created), and has it back once they are in
+the team again. A caller who does not reach it gets `404`,
 so its existence is not disclosed; with no credential, `401`. The check reads
 fresh system state, so removing someone from an organization or team holds on
 every node before their next request ([Reads of the system
@@ -49,11 +54,16 @@ or deleting it, upgrading it or making an upgrade key for it, uploading files
 to it or deleting its blobs. The organization's admins (and its owner) still
 transfer it to a member or delete it, so an organization cleans up an app whose
 owner left; `POST /apps/{app}/transfer` is open to them too, with their own
-passkey. A personal app (no organization) stays its owner's alone. The rule is
-judged where each command applies; `SetAccess`, `SetAppMetadata`,
+passkey. A personal app (no organization) stays its owner's alone. Likewise, an app on
+a team is managed by its owner only while they are in that team: out of it,
+they keep their name on it and none of the powers above, and the
+organization's admins (or whoever manages the team's apps) transfer it. The
+rules are judged where each command applies; `SetAccess`, `SetAppMetadata`,
 `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` entries an earlier
 release logged replay as that release judged them (ownership alone, and no
-admin transfer); the API marks new ones (`owner_in_org`).
+admin transfer, without `owner_in_org`; the owner without the team, without
+`owner_in_team`), as do `ScopeApps` entries, which find who reaches an
+instance; the API marks new ones.
 
 A member whose **direct row** in the app's team is **read-only** still reaches
 the app, but only its views run for them: any other call is refused with `403`
@@ -93,6 +103,28 @@ there with the release each runs and its last upgrade (who, of which kind),
 the releases that govern each app, and the releases the cluster's nodes run
 ([Reading the approvals](/protocol/governance/#reading-the-approvals)).
 
+### Members' security
+
+The owner and admins read what tells them a member may be locked out, with
+`GET /orgs/{org}/members?detail=security` (their own session on the
+cluster's origin; never an API key or a package-bound session). For each
+member: the self-set `name` (`memberMetadata.name`), `role`, the `teams` they
+are in, `passkeys` (`1`, `2` or `"3+"`: whether they have a backup, not how
+many devices they own), `recoveryCode` (set or not), `lastActiveDay` (the UTC
+day of their latest sign-in or session exchange; `null` when the node knows
+neither) and `sessions` (how many live sessions they hold).
+
+| Reader | Sees | Never |
+| --- | --- | --- |
+| The account holder | Everything about their own account: passkeys with labels and times, sessions, activity (`/auth/me`, `/auth/sessions`, `/auth/activity`) | - |
+| The organization's owner and admins, about its members | The fields above | Credential ids, passkey labels (names people choose for their devices), sign counts and times, sessions, origins, activity, a recovery under way |
+| A member below admin | Nothing new (`403`) | as above |
+| A deployment's managers, about customer organizations | `memberCount` and `activeMembers30d` per organization (`GET /deployments/{id}/orgs`) | Any account, name or per-member fact |
+| The operator | Nothing new: the Ops API has no read path into accounts | Anything per account |
+
+A removed member leaves the listing at once, and someone outside the
+organization is answered as if it did not exist (`404`).
+
 ## Teams
 
 Teams (`types::Team`; `meroctl`'s *groups*) nest (`parent`), move
@@ -108,7 +140,14 @@ Teams (`types::Team`; `meroctl`'s *groups*) nest (`parent`), move
 A **direct row** has a role (`lead`, `member` or `read-only`) and capabilities.
 A team's creator leads it. Whoever leads a team, or an ancestor team, or is an
 organization admin, **manages** it: renames it, adds and removes members,
-creates teams under it, moves it within what they manage, and deletes it.
+creates teams under it, moves it within what they manage, and deletes it. A
+member who writes a team (a row that is not read-only, or inheritance into an
+open team) and holds `CREATE_CHILD_TEAM` there also creates a **restricted**
+team below it, and leads that one: this is how any member of an app's team
+makes a private channel. An app team holds `CREATE_CHILD_TEAM` in its default
+capabilities, so it is on unless an admin turns it off; a `CreateTeam` entry an
+earlier release logged replays with only the parent's managers creating below
+it (`member_child_teams`).
 
 - Removing someone from a team, or their leaving it, also removes their direct
   rows in every team below it, so a restricted child team (a private channel
@@ -157,7 +196,7 @@ derived from its app teams, never stored, and answered as `mode` on
 | `standalone` | Every app team open | Everyone in the organization has every app; members may invite to the app (the team's default `INVITE_MEMBERS`) |
 | `shared` | Some app team restricted | Each app lists its people; invites name the app team; only leads and admins invite unless an admin turns on the team's default |
 
-`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances? }], shared? }`
+`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances?, join?, keep? }], shared? }`
 (an owner or admin, with a passkey: `__scope_apps { apps, shared }`,
 `SystemCmd::ScopeApps`) gives apps their own access lists in one log entry.
 For each package (absent: every package with an `org`-access instance in the
@@ -166,7 +205,25 @@ gives a plain row to every member who reaches the instances now, and moves the
 instances (absent: every `org`-access instance of the package) to `access:
 team` on it. `shared` (absent: whether the organization then holds two app
 teams or more) closes every app team, everyone it held kept as a direct row,
-and takes `INVITE_MEMBERS` out of its default. Nobody loses an app.
+and takes `INVITE_MEMBERS` out of its default. Nobody loses an app. A new
+app team's default holds `CREATE_CHILD_TEAM` in either mode (`INVITE_MEMBERS`
+too while standalone), so its members make private channels below it; app
+teams made before keep the default they had until an admin sets it.
+
+To keep one app apart and leave the others as they are, a package names its
+own `join` in the same request: `invite` closes that app team alone, in the
+same log entry that fills its rows, and `everyone` opens it again (`shared`,
+absent, then changes no other team; `shared: true` with an `everyone` is
+refused). A close keeps, by default, everyone who reaches the app then, each
+as a direct row. With `keep: [account, ...]` (members of the organization
+only) the team's leads and those accounts keep it, each with a row, and
+everyone else in it, by a row or by inheritance, loses it, together with their
+direct rows in the teams below the app team (its private channels), as a
+removal from the team takes them; they are not barred, so opening the team
+again lets them back in. Each package's answer names its team's `join` after the step and
+how many people it `dropped`. A single team also opens or closes with `POST
+/orgs/{org}/teams/{team} { join }` (`MANAGE_VISIBILITY`, an admin's anywhere),
+which fills no rows: closing that way, only the existing direct rows stay.
 `GET /orgs/{org}/app-teams` lists, to any member, each app team's package, id,
 name, `join`, member count, default capabilities and whether the caller is in
 it or manages it (a guest: only their own).
@@ -179,6 +236,52 @@ people in every mode; owners and admins see everyone. Calimero Home, the
 portal that manages people, invites and apps across an organization, is one
 first-party package every cluster installs; it uses these routes and needs
 nothing else from the node.
+
+## Moving an app
+
+`POST /apps/{app}/move { toOrg, bringMembers? }` (`SystemCmd::MoveApp`, with a
+passkey: `<app> / __move { toOrg, bringMembers }`) moves an app instance to
+another organization in one log entry. Its data stays where it is: the same
+group, replicas and state. Calimero Home's "Merge organizations" moves every
+app of one organization into another this way.
+
+- **Who**: whoever manages the app where it is now (its owner while a member,
+  or an admin there; a personal app's owner), as an admin or the owner of the
+  target. Judged on the state of the moment, so a member removed from the
+  source, or an admin of the target demoted, is refused.
+- **Payer**: its file bytes, compute runs and quotas go to the target. A move
+  past the target's file or compute quota is refused (`429 QUOTA_EXCEEDED`),
+  as is one to a target that approves none of the releases holding the app now.
+- **Access**: `org` access, or `team` access on its package's app team,
+  becomes `team` access on the target's app team of the package. The target's
+  is used, or made when missing: open, unless every app team of the target
+  is restricted (`shared: true`), where it is restricted like its others; an
+  app team an admin closed alone leaves it open. The mover leads a new one,
+  whose default capabilities are any new app team's (`CREATE_CHILD_TEAM`, and
+  `INVITE_MEMBERS` while open). A `legacy` target, and a raw upload (no
+  package), get `org` access instead, so moving an app in never changes the
+  target's mode. `owner`, `accounts` and `public`
+  access stay as they are, though only the target's members reach a
+  non-public app from then on. An app on any other team (a restricted team
+  below the app team, a plain team) is refused: that team's leads, read-only
+  rows and capabilities are grants of the source, which the target's admins
+  never saw. Give it `org` or app-team access first.
+- **Owner**: stays, and must be a member of the target once the move is done,
+  or the move is refused: an organization's app is owned by one of its members,
+  and only a transfer the owner or an admin consents to changes who that is.
+  An owner who reaches the app now gets a row on the target's app team, as an
+  owner reaches and manages an app on a team only while in it.
+- **`bringMembers`**: every member of the source who reaches the app joins the
+  target at their role there, capped at `member` (a guest stays a guest; an
+  admin comes in as a member, and the target's admins grant more themselves),
+  and gets a row on the target's app team. Someone already in the target keeps
+  their role. A personal app brings nobody.
+- **Invites**: the source's invites naming the team the app leaves are revoked
+  once no app of the source is on that team.
+
+The answer is `{ appId, from, org, access, created, added, revokedInvites }`.
+A node from before this route answers `404`, which clients take as "not
+supported here".
 
 ## Capabilities
 
@@ -199,6 +302,7 @@ organization value). Admins and team leads hold them all where they manage.
 | `1 << 7` | `MANAGE_VISIBILITY` | Switching a team between open and restricted |
 | `1 << 8` | `MANAGE_METADATA` | Organization and team metadata |
 | `1 << 10` | `APPROVE_RELEASES` | Approving (or withdrawing) the mero-tee releases that hold the apps the organization governs: those of the packages it publishes, and its own apps of packages whose key is not bound; and binding a package signing key to the organization (org-wide only: a team grant does not reach it) ([Release approvals](/protocol/governance/#release-approvals)) |
+| `1 << 11` | `CREATE_CHILD_TEAM` | Creating a restricted team below a team one writes, without managing it (the creator leads the new team); in an app team's default |
 
 Bit 9 is unused: v1's `MemberCapabilities` spends it on `CAN_AUTHOR_ON_BEHALF`,
 so a client that sends v1's `ALL` grants nothing new by accident. A grant is

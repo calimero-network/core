@@ -107,11 +107,14 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
         "no recorded executor: wasmer"
     );
     assert!(node.sys(|s| s.apps.contains_key(&app)));
-    // Its owner signed up before passkey and session times were kept: the
-    // account and its sessions read with them unknown, never made up.
-    let (times, opened) = node.sys(|s| {
+    // Its owner signed up before passkey and session times, and activity,
+    // were kept: the account and its sessions read with them unknown, never
+    // made up, and replaying the old log's sign-up and step-ups adds no
+    // activity.
+    let (times, activity, opened) = node.sys(|s| {
         (
             s.accounts[&owner].passkey_times.clone(),
+            s.activity.get(&owner).cloned().unwrap_or_default(),
             s.refresh
                 .values()
                 .filter(|r| r.account == owner)
@@ -120,6 +123,7 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
         )
     });
     assert!(times.is_empty(), "{times:?}");
+    assert!(activity.is_empty(), "{activity:?}");
     assert!(opened.iter().all(|t| *t == 0), "{opened:?}");
     // Its group opens on the state the old node left.
     let mut group = None;
@@ -186,12 +190,34 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
         .await
         .unwrap_err(),
     );
+    // A move of it, new in this release, is judged on the old state like any
+    // command: without its owner's passkey it is refused, and the record
+    // stays as the old node wrote it (personal, its owner's payer).
+    let refused = node
+        .sys_write(&SystemCmd::MoveApp {
+            app_id: app.clone(),
+            to_org: "nowhere".into(),
+            actor: owner.clone(),
+            consent: Value::Null,
+            bring_members: false,
+            nonce: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused.status, 400, "{refused:?}");
+    let kept = node.app(&app).await.unwrap();
+    assert_eq!(kept.org, None);
+    assert_eq!(
+        calimero_node::usage::payer(&kept),
+        format!("account:{owner}")
+    );
     // Its owner deletes it, as any app.
     let _ok = node
         .sys_write(&SystemCmd::DeleteApp {
             app_id: app.clone(),
             actor: owner,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await
         .unwrap();

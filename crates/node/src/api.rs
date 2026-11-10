@@ -1202,6 +1202,8 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
+        // A sign-in: its activity entry comes from its session's opening.
+        at: 0,
     };
     let now = now_secs();
     let invite = invite.map(|token| crate::system::SignUpRedemption {
@@ -1347,6 +1349,8 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     let consent = crate::proof::Consent {
         statement,
         assertion: body.assertion.clone(),
+        // A sign-in: its activity entry comes from its session's opening.
+        at: 0,
     };
     new_session(
         &node,
@@ -2029,6 +2033,201 @@ async fn session_revoke(
     Ok(Json(json!({})))
 }
 
+/// How recently, in seconds, a member counts as active in a deployment's
+/// customer counts (`activeMembers30d`): 30 days.
+const ACTIVE_WINDOW_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// What the node knows of each account's use, from its live sessions: how
+/// many it holds and when the latest was last exchanged
+/// (`expires_at - REFRESH_TTL`), by account. One pass over the refresh
+/// records, each session counted once.
+fn session_use(s: &SystemState, now: u64) -> BTreeMap<&str, (usize, u64)> {
+    let mut seen: BTreeMap<&str, (&str, u64)> = BTreeMap::new();
+    for r in s.refresh.values() {
+        if r.expires_at <= now || s.revoked_sessions.contains(&r.session) {
+            continue;
+        }
+        let at = r.expires_at.saturating_sub(REFRESH_TTL);
+        let _prev = seen
+            .entry(r.session.as_str())
+            .and_modify(|(_, t)| *t = (*t).max(at))
+            .or_insert((r.account.as_str(), at));
+    }
+    let mut out: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+    for (account, at) in seen.into_values() {
+        let e = out.entry(account).or_insert((0, 0));
+        e.0 += 1;
+        e.1 = e.1.max(at);
+    }
+    out
+}
+
+/// When `account` was last active, as far as the node knows (Unix seconds):
+/// its passkeys' latest sign-in or its sessions' latest exchange
+/// ([`session_use`]); `None` when it knows neither.
+fn last_active(s: &SystemState, account: &str, used: &BTreeMap<&str, (usize, u64)>) -> Option<u64> {
+    let signed_in = s.accounts.get(account).and_then(|a| {
+        a.passkey_times
+            .values()
+            .filter_map(|t| t.last_sign_in_at)
+            .max()
+    });
+    let exchanged = used.get(account).map(|u| u.1).filter(|t| *t > 0);
+    signed_in.max(exchanged)
+}
+
+/// A Unix time's UTC day, `YYYY-MM-DD`.
+fn utc_day(secs: u64) -> Option<String> {
+    let secs = i64::try_from(secs).ok()?;
+    chrono::DateTime::from_timestamp(secs, 0).map(|t| t.format("%Y-%m-%d").to_string())
+}
+
+/// The most passkeys `GET /orgs/{org}/members?detail=security` counts before
+/// it answers `"3+"`: an admin learns whether a member has a backup, not how
+/// many devices they own.
+const PASSKEYS_COUNTED: usize = 3;
+
+#[derive(Deserialize)]
+struct MembersQuery {
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+/// `GET /orgs/{org}/members?detail=security`: for the organization's owner
+/// and admins, the lockout risk of each member they see (`Org::sees_member`,
+/// everyone for them): their self-set name, role and teams, how many
+/// passkeys they hold (`1`, `2`, or `"3+"`), whether a recovery code is set,
+/// the UTC day they were last active and how many live sessions they hold.
+/// Never a credential id, a passkey's label or times, a session, an origin,
+/// a recovery under way or an activity entry: those are the account
+/// holder's alone (`/auth/me`, `/auth/sessions`, `/auth/activity`). A member
+/// below admin is refused (`403`); someone outside the organization is
+/// answered as if it did not exist (`404`). The admin's own session on the
+/// cluster's origin only: never an API key or a package-bound session.
+async fn org_members(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Query(q): Query<MembersQuery>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    if q.detail.as_deref() != Some("security") {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "the member listing is `?detail=security`",
+        ));
+    }
+    node.sys_fresh_from(p.sys_index).await;
+    let now = now_secs();
+    node.sys(|s| {
+        let o = s
+            .orgs
+            .get(&org)
+            .filter(|o| o.role(&account).is_some())
+            .ok_or_else(|| ApiError::not_found("no such organization"))?;
+        if !s.is_org_admin(&org, &account) {
+            return Err(ApiError::forbidden(
+                "only the organization's owner and admins see its members' security",
+            ));
+        }
+        let used = session_use(s, now);
+        let members: Vec<Value> = o
+            .members
+            .iter()
+            .filter(|(m, _)| o.sees_member(&account, m))
+            .map(|(m, role)| {
+                let acc = s.accounts.get(m);
+                let passkeys = acc.map_or(0, |a| a.passkeys.len());
+                json!({
+                    "account": m,
+                    "name": o
+                        .member_metadata
+                        .get(m)
+                        .and_then(|v| v.get("name"))
+                        .and_then(Value::as_str),
+                    "role": role,
+                    "teams": o
+                        .teams
+                        .keys()
+                        .filter(|t| o.in_team(m, t))
+                        .collect::<Vec<_>>(),
+                    "passkeys": if passkeys >= PASSKEYS_COUNTED {
+                        json!(format!("{PASSKEYS_COUNTED}+"))
+                    } else {
+                        json!(passkeys)
+                    },
+                    "recoveryCode": s.recovery_keys.values().any(|a| a == m),
+                    "lastActiveDay": last_active(s, m, &used).and_then(utc_day),
+                    "sessions": used.get(m.as_str()).map_or(0, |u| u.0),
+                })
+            })
+            .collect();
+        Ok(Json(json!({ "orgId": org, "members": members })))
+    })
+}
+
+#[derive(Deserialize)]
+struct ActivityQuery {
+    /// Only entries after this time (Unix seconds).
+    #[serde(default)]
+    after: u64,
+}
+
+/// `GET /auth/activity`: what the caller's passkeys did, newest first
+/// (`SystemState::activity`): each sign-in, with the package and origin
+/// its session is bound to, and each change a passkey approved, with the
+/// method and subject its consent states. The account holder's alone, as
+/// `GET /auth/sessions` is: never an API key or a package-bound session,
+/// which would learn the other apps the person signs in to and what they
+/// approve; no one else (operator, organization admin, deployment manager)
+/// has a route to it.
+async fn activity_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<ActivityQuery>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let activity = node.sys(|s| {
+        s.activity.get(&account).map_or_else(Vec::new, |a| {
+            a.iter()
+                .rev()
+                .filter(|e| e.at > q.after)
+                .map(activity_entry)
+                .collect::<Vec<_>>()
+        })
+    });
+    Ok(Json(json!({ "activity": activity })))
+}
+
+/// One activity entry as `GET /auth/activity` lists it: every key present,
+/// the ones its kind does not have `null`.
+fn activity_entry(e: &crate::types::ActivityEntry) -> Value {
+    use crate::types::Activity;
+    let (kind, app, origin, method, subject) = match &e.what {
+        Activity::SignIn { app, origin } => {
+            ("signIn", app.as_deref(), origin.as_deref(), None, None)
+        }
+        Activity::Approval { method, subject } => (
+            "approval",
+            None,
+            None,
+            Some(method.as_str()),
+            Some(subject.as_str()),
+        ),
+    };
+    json!({
+        "at": e.at,
+        "passkey": e.passkey,
+        "kind": kind,
+        "app": app,
+        "origin": origin,
+        "method": method,
+        "subject": subject,
+    })
+}
+
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
@@ -2471,6 +2670,8 @@ async fn account_recovery_finish(
     let consent = crate::proof::Consent {
         statement,
         assertion: confirm.assertion,
+        // A sign-in: its activity entry comes from its session's opening.
+        at: 0,
     };
     let _ok = node
         .sys_write(&SystemCmd::FinishAccountRecovery {
@@ -2643,6 +2844,7 @@ async fn apikey_create(
             record,
             consent: c.consent,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({ "keyId": key_id, "key": key })))
@@ -3377,6 +3579,7 @@ async fn app_delete(
             app_id: app_id.clone(),
             actor: account,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({ "appId": app_id, "deleted": true })))
@@ -3681,6 +3884,8 @@ async fn step_up(
             nonce,
         },
         assertion: confirm.assertion,
+        // When it was given: the account's activity entry for it.
+        at: now_secs(),
     };
     Ok(Consented {
         consent: serde_json::to_value(&consent).unwrap_or_default(),
@@ -4489,6 +4694,7 @@ async fn run_upgrade(
             consent: who.consent,
             release,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({
@@ -4695,6 +4901,7 @@ async fn start_run(
                             consent: who.consent.clone(),
                             release: t.release.clone(),
                             owner_in_org: true,
+                            owner_in_team: true,
                         })
                         .await;
                     if let Err(e) = written {
@@ -5100,6 +5307,7 @@ async fn app_access(
             access: body.access,
             actor: account,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5258,6 +5466,53 @@ async fn app_transfer(
             actor,
             consent,
             owner_in_org: true,
+            owner_in_team: true,
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MoveBody {
+    to_org: String,
+    #[serde(default)]
+    bring_members: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Move an app to another organization (`SystemCmd::MoveApp`), its data
+/// where it is: whoever manages it where it is now, as an admin or the owner
+/// of the target, with a passkey assertion over this move (412 first).
+/// Answers where it went, its access there, whether an app team was made,
+/// the accounts brought in and the invites revoked.
+async fn app_move(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<MoveBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    if !node.sys(|s| s.manages_app(&app, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
+    }
+    if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
+    }
+    let args = crate::system::move_app_args(&body.to_org, body.bring_members);
+    let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::MoveApp {
+            app_id,
+            to_org: body.to_org,
+            actor,
+            consent,
+            bring_members: body.bring_members,
+            nonce: b64url(&random::<16>()),
         })
         .await?,
     ))
@@ -5349,6 +5604,7 @@ async fn app_metadata(
             metadata: body.metadata,
             actor,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5467,6 +5723,7 @@ async fn team_create(
             parent: body.parent,
             join: body.join,
             actor,
+            member_child_teams: true,
         })
         .await?;
     Ok(Json(v))
@@ -6044,6 +6301,8 @@ async fn app_teams_scope(
             nonce: b64url(&random::<16>()),
             actor,
             consent,
+            owner_in_team: true,
+            member_child_teams: true,
         })
         .await?,
     ))
@@ -8312,6 +8571,8 @@ struct NodeBody {
     operator_proof: Option<OperatorProofBody>,
     #[serde(default)]
     role: NodeRole,
+    #[serde(default)]
+    pool: String,
 }
 
 /// Register a node: the operator's decision, signed
@@ -8360,12 +8621,28 @@ async fn ops_register_node(
             "another node has that address",
         ));
     }
+    // Only a job node has a pool, and registering one already waits for every node to upgrade.
+    if b.pool.len() > crate::system::MAX_POOL_NAME_BYTES {
+        return Err(ApiError::bad_request(
+            "BAD_POOL",
+            "a pool's name is at most 64 bytes",
+        ));
+    }
+    if b.role != NodeRole::Job && !b.pool.is_empty() {
+        return Err(ApiError::bad_request(
+            "POOL_FOR_JOB_NODES",
+            "only a job node is registered in a pool",
+        ));
+    }
     if b.role == NodeRole::Job {
         node.require_upgraded_nodes().await?;
     }
     let mut args = json!({ "id": b.id, "addr": b.addr, "zone": b.zone });
     if b.role != NodeRole::Replica {
         args["role"] = json!(b.role);
+    }
+    if !b.pool.is_empty() {
+        args["pool"] = json!(b.pool);
     }
     let proof = operator_proof(&node, "cluster", "__register_node", &args, b.operator_proof)?;
     let _ok = node
@@ -8375,6 +8652,7 @@ async fn ops_register_node(
                 addr: b.addr,
                 zone: b.zone,
                 role: b.role,
+                pool: b.pool,
             },
             proof,
         })
@@ -8637,11 +8915,103 @@ async fn move_replicas(
     Ok(Json(json!({ "status": g.status(), "unchanged": false })))
 }
 
+#[derive(Deserialize)]
+struct PoolsBody {
+    pools: std::collections::BTreeMap<String, crate::system::PoolConfig>,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// Set the compute pools: the operator's decision, signed (`cluster / __set_pools / { pools }`).
+async fn ops_pools_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(b): Json<PoolsBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    node.require_current_release("node pools").await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__set_pools",
+        &json!({ "pools": b.pools }),
+        b.operator_proof,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetPools {
+            pools: b.pools,
+            proof,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// The pools and the runs each takes at once.
+async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(node.sys(|s| {
+        let capacity: std::collections::BTreeMap<&String, usize> =
+            s.pools.keys().map(|p| (p, s.pool_capacity(p))).collect();
+        json!({ "pools": s.pools, "capacity": capacity })
+    })))
+}
+
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
-    Ok(Json(
-        serde_json::to_value(node.sys(|s| s.quotas.clone())).unwrap_or_default(),
-    ))
+    let (quotas, orgs) = node.sys(|s| (s.quotas.clone(), s.org_quotas.clone()));
+    let mut shown = serde_json::to_value(quotas).unwrap_or_default();
+    shown["orgs"] = serde_json::to_value(orgs).unwrap_or_default();
+    Ok(Json(shown))
+}
+
+/// `POST /ops/quotas` with `org`: change the limits named for one payer; a field set to `null`
+/// goes back to the cluster's. Signed (`cluster / __set_org_quotas / { payer, quotas }`).
+async fn ops_org_quotas_set(
+    node: &Node,
+    payer: &str,
+    changes: serde_json::Map<String, Value>,
+    given: Option<OperatorProofBody>,
+) -> ApiResult {
+    node.require_current_release("org quotas").await?;
+    node.sys_fresh().await;
+    let mut merged = serde_json::to_value(
+        node.sys(|s| s.org_quotas.get(payer).cloned())
+            .unwrap_or_default(),
+    )
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let limits = merged
+        .as_object_mut()
+        .ok_or_else(|| ApiError::internal("quotas are not an object"))?;
+    for (k, v) in changes {
+        if !["maxConcurrentRuns", "computeFuel", "maxFileBytes"].contains(&k.as_str()) {
+            return Err(ApiError::bad_request(
+                "UNKNOWN_QUOTA",
+                &format!("no org quota named {k}"),
+            ));
+        }
+        if v.is_null() {
+            let _gone = limits.remove(&k);
+        } else {
+            let _prev = limits.insert(k, v);
+        }
+    }
+    let quotas: crate::system::OrgQuotas = serde_json::from_value(merged)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    let proof = operator_proof(
+        node,
+        "cluster",
+        "__set_org_quotas",
+        &json!({ "payer": payer, "quotas": quotas }),
+        given,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetOrgQuotas {
+            payer: payer.to_owned(),
+            quotas,
+            proof,
+        })
+        .await?;
+    Ok(Json(json!({})))
 }
 
 /// `409`: a write that only this release, or a newer one, understands, refused while
@@ -8663,6 +9033,16 @@ async fn ops_quotas_set(
         .map(serde_json::from_value)
         .transpose()
         .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // `orgs` is what GET answers; a read-modify-write of that answer leaves the overrides alone.
+    let _read_only = changes.remove("orgs");
+    if let Some(org) = changes.remove("org") {
+        let payer = org
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "org is a payer id"))?
+            .to_owned();
+        return ops_org_quotas_set(&node, &payer, changes, given).await;
+    }
     node.sys_fresh().await;
     let mut merged = serde_json::to_value(node.sys(|s| s.quotas.clone()))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -8684,19 +9064,7 @@ async fn ops_quotas_set(
     // older node drops the field, and its snapshots would bring the cap back to 0.
     // Judged before the operator is asked to sign, so a refused write is never signed.
     if quotas.max_fuel_per_developer_per_day != 0 {
-        let behind = node.nodes_behind_release().await;
-        if !behind.is_empty() {
-            let nodes: Vec<Value> = behind
-                .iter()
-                .map(|(id, release)| json!({ "node": id, "release": release }))
-                .collect();
-            return Err(ApiError::new(
-                409,
-                UPGRADE_PENDING,
-                "a fuel cap needs every node on this node's release or newer",
-            )
-            .with_details(json!({ "release": node.own_release(), "nodes": nodes })));
-        }
+        node.require_current_release("a fuel cap").await?;
     }
     // Signed over the whole merged limits (`cluster / __set_quotas /
     // { quotas }`, 428 first), so a change made in between is not signed
@@ -9896,9 +10264,10 @@ struct Customer<'a> {
 /// The organizations with instances created from the deployment, for its
 /// managers, on fresh state: each organization's id and name, how many
 /// instances it has from here, which of the deployment's apps they are and
-/// the releases they run, and when its first was created. Never members,
-/// teams, instance names or app data; instances outside an organization are
-/// counted only (`outsideOrgs`).
+/// the releases they run, when its first was created, and how many members
+/// it has and how many of them were active in the last 30 days. Never who
+/// the members are, teams, instance names or app data; instances outside an
+/// organization are counted only (`outsideOrgs`).
 async fn deployment_orgs(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -9907,7 +10276,9 @@ async fn deployment_orgs(
     let p = signed_in(&node, &headers).await?;
     p.unbound()?;
     let d = managed_deployment(&node, &p, &id).await?;
+    let now = now_secs();
     Ok(Json(node.sys(|s| {
+        let used = session_use(s, now);
         let mut orgs: BTreeMap<&str, Customer<'_>> = BTreeMap::new();
         let mut outside = 0u64;
         for a in s
@@ -9940,9 +10311,19 @@ async fn deployment_orgs(
         let orgs: Vec<Value> = orgs
             .into_iter()
             .map(|(org, c)| {
+                // Counts only: how many people, and how many were active in
+                // the last 30 days; never who.
+                let members = s.orgs.get(org).map(|o| o.members.keys());
+                let (count, active) = members.into_iter().flatten().fold((0, 0), |(n, a), m| {
+                    let recent =
+                        last_active(s, m, &used).is_some_and(|t| t + ACTIVE_WINDOW_SECS > now);
+                    (n + 1, a + u64::from(recent))
+                });
                 json!({
                     "orgId": org,
                     "name": s.orgs.get(org).map(|o| o.name.clone()),
+                    "memberCount": count,
+                    "activeMembers30d": active,
                     "instances": c.instances,
                     "apps": c.apps.iter().map(|(app, version)| json!({
                         "app": app, "version": version,
@@ -10261,6 +10642,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/logout-all", post(logout_all))
         .route("/auth/sessions", get(sessions_list))
         .route("/auth/sessions/{session}", delete(session_revoke))
+        .route("/auth/activity", get(activity_list))
         .route("/auth/releases", post(account_release_approval))
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))
@@ -10297,6 +10679,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
         .route("/apps/{app}/transfer", post(app_transfer))
+        .route("/apps/{app}/move", post(app_move))
         .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))
@@ -10325,7 +10708,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))
         .route("/orgs/{org}/upgrades/{run}/retry", post(org_upgrade_retry))
         .route("/orgs/{org}/members/{account}/metadata", post(member_metadata))
-        .route("/orgs/{org}/members", post(org_set_member))
+        .route("/orgs/{org}/members", get(org_members).post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
         .route("/orgs/{org}/teams", post(team_create))
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
@@ -10448,6 +10831,7 @@ pub fn router(node: Arc<Node>) -> Router {
             delete(ops_package_version_uninstall),
         )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
+        .route("/ops/pools", get(ops_pools_get).post(ops_pools_set))
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.
         .route_layer(axum::middleware::from_fn(crate::metrics::track))

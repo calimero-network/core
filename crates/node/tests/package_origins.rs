@@ -195,6 +195,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         "consent": calimero_node::proof::Consent {
             assertion: bob_pk.assert(&statement.challenge().unwrap()),
             statement,
+            at: 0,
         },
     });
     let leader = c

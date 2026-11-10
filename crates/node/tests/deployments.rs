@@ -147,6 +147,7 @@ fn consent_of(pk: &mut SoftAuthenticator, subject: &str, method: &str, args: &Va
     serde_json::to_value(calimero_node::proof::Consent {
         statement,
         assertion: pk.assert(&challenge),
+        at: 0,
     })
     .unwrap()
 }
@@ -603,7 +604,14 @@ async fn deployments_of_one_release_are_independent() {
         orgs[0]["apps"],
         json!([{ "app": "notes", "version": "1.0.0" }])
     );
+    // How many people, and how many were active in 30 days: never who.
+    assert_eq!(orgs[0]["memberCount"], 1, "{listed}");
+    assert_eq!(orgs[0]["activeMembers30d"], 1, "{listed}");
     assert!(orgs[0].get("members").is_none(), "{listed}");
+    assert!(
+        !listed.to_string().contains(&account_of(&carol).await),
+        "no member's account: {listed}"
+    );
     let listed = dave.get(&format!("deployments/{db}/orgs")).await.unwrap();
     let orgs = listed["orgs"].as_array().unwrap();
     assert_eq!(orgs.len(), 1, "{listed}");

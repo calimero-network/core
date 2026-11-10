@@ -4,6 +4,50 @@
 
 ### Added
 
+- **Members make private channels under an app's team.** Only a parent
+  team's leads and the organization's admins created a team below it, so an
+  app could not make a private channel a child team of its app team. A member
+  who writes a team and holds the new `CREATE_CHILD_TEAM` capability (`1 <<
+  11`) there now creates a restricted team below it and leads it (`POST
+  /orgs/{org}/teams { parent, join: invite }`); never an open one. A new app
+  team's default capabilities hold it (`ScopeApps`), so it is on for app teams
+  unless an admin turns it off; app teams made before keep their default. As
+  before, removing someone from a team, or their leaving it, takes their rows
+  in the teams below it. `CreateTeam` and `ScopeApps` carry
+  `member_child_teams` (serde default false), so entries an earlier release
+  logged replay as they did.
+
+- **Move an app to another organization**: `POST /apps/{app}/move { toOrg,
+  bringMembers?, confirm? }` (`SystemCmd::MoveApp`, a passkey step-up over
+  `<app> / __move { toOrg, bringMembers }`; `meroctl context move`). Whoever
+  manages the app where it is now, as an admin or the owner of the target,
+  moves it; its data stays on its replicas. Its organization, file bytes,
+  compute runs and quotas go to the target (refused past the target's quota,
+  or when the target approves none of the releases holding it). `org` or
+  app-team access becomes the target's app team of its package (made when
+  missing, closed when every app team of the target is; `org` access in a
+  legacy target); an app on any other team, and one whose owner would not be
+  a member of the target, is refused. `bringMembers` adds the source's members who reach the app,
+  capped at `member`, with rows on the target's app team. The source's
+  invites into the team the app leaves are revoked once no app is on it. No
+  stored format changes: the new entry's optional fields default, and a node
+  on an earlier release answers the route `404`.
+
+- **Close or open one app's team alone**: `POST /orgs/{org}/app-teams` takes,
+  per package, `join` (`invite` closes that app team, `everyone` opens it)
+  and, on a close, `keep: [account, ...]`. Before, the only atomic close was
+  `shared: true`, which closed every open app team at once; closing one with
+  `POST /orgs/{org}/teams/{team} { join: invite }` dropped everyone who
+  reached it by inheritance unless each had been added first. A close keeps
+  everyone who reaches the app then as a direct row, or, with `keep`, those
+  accounts and the team's leads: everyone else loses the app and their rows in
+  the teams below it, in the same log entry. A package that names `join`
+  leaves the other app teams alone unless `shared` is set. Answers each
+  team's `join` and how many people were `dropped`. Stored format: the new
+  fields are left out when absent, so entries from before replay as they did
+  and their passkey consent reads the same; a node on an earlier release
+  refuses a request naming them (`400`, unknown field).
+
 - **Passkey times and the account's sessions**: `GET /auth/me` gives each
   passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a passkey
   added, or last signed in, before this release). `GET /auth/sessions` lists
@@ -24,8 +68,51 @@
   them unknown on every replica. In a rolling upgrade a node on the earlier
   release ignores the new fields and keeps no times; the sessions route
   answers `404` there.
+- **Members' lockout risk, for organization admins**: `GET
+  /orgs/{org}/members?detail=security` gives an organization's owner and
+  admins, per member, `{ account, name, role, teams, passkeys, recoveryCode,
+  lastActiveDay, sessions }`: the passkey count capped at `"3+"`, whether a
+  recovery code is set, the UTC day of the latest sign-in or session exchange
+  and the number of live sessions. Never a credential id, a passkey label or
+  time, a session, an origin or an activity entry. A member below admin gets
+  `403`, anyone outside the organization `404`; an API key or a
+  package-bound session is refused. `GET /deployments/{id}/orgs` adds
+  `memberCount` and `activeMembers30d` per customer organization (counts
+  only). `meroctl namespace members list --security`. No stored format
+  changes: everything is read from state the node already keeps.
+- **An account's activity**: `GET /auth/activity[?after=T]` lists what the
+  caller's passkeys did, newest first, the last 100 entries: `{ activity: [{
+  at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"` is
+  a sign-up, sign-in or recovery finish, with the package and origin its
+  session is bound to (a refresh is none; a repeat of the newest sign-in only
+  moves its time); `kind: "approval"` is a change the passkey approved with a
+  step-up, with the method and subject its consent states, never its
+  arguments. The account holder's own session only, as `/auth/sessions`;
+  nothing is shown to operators, organization admins or deployment managers.
+  `meroctl account activity`. Stored formats: `SystemState.activity` (by
+  account) is left out when empty, and a step-up's consent carries its
+  time as `at` outside what the passkey signs (left out when 0), so state and entries from before read
+  and write as they did, and a node on the earlier release checks the same
+  consent and keeps no activity. An earlier release's entries carry no time
+  and add no activity when replayed.
 
 ### Security
+
+- **An app on a team is reached and managed by its owner only while they are
+  in that team.** An owner always reached their own app, so a person removed
+  from an app's team (Chat's, say) kept every channel they had created on it,
+  and could still change, transfer or delete it. Now, for an app with `team`
+  access, the owner reaches it, receives its events and holds the owner's
+  powers (access, metadata, transfer, deletion, upgrades, upgrade keys, files,
+  blobs) only while in that team, as #4893 asked of the organization; one who
+  is removed from the team, leaves it, or loses it when an open team closes
+  keeps their name on the app and gets it back on rejoining. The
+  organization's admins transfer such an app. Judged where the commands apply:
+  `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp`,
+  `CreateApiKey` and `ScopeApps` carry `owner_in_team`, which the API always
+  sets; an entry an earlier release logged replays judging the owner without
+  the team. In a rolling upgrade a node on the earlier release judges reads
+  without the team until it is upgraded.
 
 - **An organization's app is managed by its owner only while they are a
   member.** Since #4891 an owner removed from the organization no longer

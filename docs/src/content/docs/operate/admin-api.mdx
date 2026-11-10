@@ -117,6 +117,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
 | `GET /auth/sessions` | account holder | The account's live sessions, latest active first (at most 256): `{ sessions: [{ session, passkey, app, origin, openedAt, lastActiveAt, current }] }` ([Sessions](/operate/auth/#sessions)) | `account session list` |
 | `DELETE /auth/sessions/{session}` | account holder | End one of the account's sessions; `404` for one it does not hold live | `account session revoke` |
+| `GET /auth/activity[?after=T]` | account holder | What the account's passkeys did, newest first (the last 100): `{ activity: [{ at, passkey, kind, app, origin, method, subject }] }`, `kind` `signIn` (with `app`, `origin`) or `approval` (with `method`, `subject`); `after`: only entries after `T` (Unix seconds) ([Activity](/operate/auth/#activity)) | `account activity` |
 | `GET /auth/me` | signed in | The account, passkeys (each with `addedAt` and `lastSignInAt`), `passkeyId`, organizations, approvals, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The account's own apps (outside any organization; a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, each app's release, newer releases it may upgrade to, last upgrade, replicas' releases and `lastWriteAt` (as in `GET /ops/apps`) ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
 | `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `developerFuelToday` and `developerWritesToday`: what today's runs of the apps the account is the developer of used (D76, D78). `bundleBytes`, `developerFuelToday` and `developerWritesToday` are decimal strings | `account usage` |
@@ -159,7 +160,8 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
-| `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member or an organization admin, with a passkey step-up; an organization's app only to a member) | `context transfer` |
+| `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member, and in the app's team for an app on a team, or an organization admin, with a passkey step-up; an organization's app only to a member) | `context transfer` |
+| `POST /apps/{app}/move` | account holder | `{ toOrg, bringMembers?, confirm? }`: move the app to another organization, its data where it is (whoever manages it now, as an admin or the owner of `toOrg`, with a passkey step-up). Its files, runs and quotas go to the target; `org` or app-team access becomes the target's app team of its package (made when missing, closed when every app team of the target is; `org` access in a legacy target). `bringMembers` adds the source's members who reach it, capped at `member`. Answers `{ appId, from, org, access, created, added, revokedInvites }`; a node without the route answers `404` | `context move` |
 | `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `context storage` |
@@ -191,6 +193,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | --- | --- | --- | --- |
 | `POST /orgs` | session | `{ name, recoveryKey? }` (a recovery key's public half) | `namespace create` |
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
+| `GET /orgs/{org}/members?detail=security` | account holder, owner or admin | Each member's lockout risk: `{ orgId, members: [{ account, name, role, teams, passkeys, recoveryCode, lastActiveDay, sessions }] }`, `passkeys` `1`, `2` or `"3+"`, `lastActiveDay` a UTC day (`YYYY-MM-DD`, `null`: unknown). `403` below admin, `404` outside the organization ([Members' security](/protocol/organizations/#members-security)) | `namespace members list --security` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
 | `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas (D78); a member gets `403` | |
@@ -204,12 +207,14 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
 | `POST /orgs/{org}/recovery/cancel` | account holder | Cancel the recovery under way (owner; `412` first) | - |
 | `POST /orgs/{org}/recovery/finish` | account holder | Become the owner once `readyAt` passed (the account that started it; `412` first; `409 RECOVERY_NOT_READY` before) | - |
-| `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }` | `namespace create-group` |
+| `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `namespace create-group` |
 | `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
 | `POST /orgs/{org}/teams/{team}` | session | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
 | `DELETE /orgs/{org}/teams/{team}` | session | Delete with the teams and apps below | `group delete` |
 | `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities?, confirm? }`. `412` first | `group members add` |
 | `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
+| `GET /orgs/{org}/app-teams` | signed in (a member) | `{ mode, appTeams }`: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own) | |
+| `POST /orgs/{org}/app-teams` | session | `{ apps?: [{ package, name?, instances?, join?, keep? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`. `412` first | |
 | `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
 | `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |
@@ -239,6 +244,8 @@ there.
 | `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
 | `POST /ops/sign-up`, `POST\|GET /ops/sign-up/invites`, `DELETE /ops/sign-up/invites/{key}` | Set the [sign-up policy](/operate/auth/#sign-up-policy) (`{ policy }`) and issue, list and withdraw cluster sign-up invites (`{ token, uses?, expiresAt }`); each change signed (`428` first), refused once the cluster's owner runs sign-up | |
 | `GET /ops/quotas`, `POST /ops/quotas` | Read or change the per-account quotas; a change is signed (`428` first, `cluster / __set_quotas / { quotas }` with every limit after the change; `operatorProof` sits beside the limits) | `ops quotas`, `ops set-quotas` |
+| `POST /ops/quotas` with `org` | Override one payer's `maxConcurrentRuns`, `computeFuel` (decimal string) and `maxFileBytes` (`null` clears a field; none left removes the override); signed (`cluster / __set_org_quotas / { payer, quotas }`), refused `409 UPGRADE_PENDING` while a node runs an older release. `GET /ops/quotas` lists them under `orgs` | |
+| `GET /ops/pools`, `POST /ops/pools` | Read the compute pools and the runs each takes, or set them (`{ pools: { name: { runsPerNode, maxMemoryMib } } }`); a change is signed (`428` first, `cluster / __set_pools / { pools }`) and refused `409 UPGRADE_PENDING` while a node runs an older release, `POOL_IN_USE` when a pool to remove still has job nodes or runs. `POST /ops/nodes` takes `pool` for a job node | |
 | `POST /ops/releases` | `{ version, approved }`, where the operator holds release approvals | `ops release` |
 | `POST /ops/outbound` | `{ package, prefixes, replace }`, where the operator holds outbound approvals | `ops outbound` |
 | `POST /ops/packages`, `POST /ops/packages/install`, `GET /ops/packages` | Install (upload or registry) and list the releases the operator upgrades to | `ops install`, `ops packages` |

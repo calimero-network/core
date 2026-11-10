@@ -1,9 +1,14 @@
 //! The compute run queue: who is granted a place on a job node, and when.
 
+use std::collections::BTreeMap;
+
 use calimero_log::Machine;
 use serde_json::json;
 
-use super::{Quotas, RunSlot, SystemCmd, SystemMachine, SystemState, RUNS_PER_JOB_NODE};
+use super::{
+    OrgQuotas, PoolConfig, Quotas, RunSlot, SystemCmd, SystemMachine, SystemState,
+    RUNS_PER_JOB_NODE,
+};
 
 /// Apps `a1`, `a2`, `a3` of org `x`, `b1`, `b2` of org `y` and `p` (personal, owner alice).
 fn machine() -> SystemMachine {
@@ -59,7 +64,75 @@ fn acquire(app: &str, run: &str, fuel: u64) -> SystemCmd {
         run: run.into(),
         payer: payer.into(),
         fuel,
+        memory_mib: 0,
     }
+}
+
+fn acquire_mem(app: &str, run: &str, memory_mib: u32) -> SystemCmd {
+    match acquire(app, run, 1) {
+        SystemCmd::AcquireRun {
+            app,
+            run,
+            payer,
+            fuel,
+            ..
+        } => SystemCmd::AcquireRun {
+            app,
+            run,
+            payer,
+            fuel,
+            memory_mib,
+        },
+        other => other,
+    }
+}
+
+fn pool_node(m: &mut SystemMachine, id: u64, pool: &str) {
+    let node = serde_json::from_value(
+        json!({ "id": id, "addr": format!("http://j{id}"), "role": "job", "pool": pool }),
+    )
+    .unwrap();
+    m.run_authorized(SystemCmd::RegisterNode {
+        node,
+        proof: serde_json::Value::Null,
+    })
+    .unwrap();
+}
+
+fn pools(list: &[(&str, u32, u32)]) -> BTreeMap<String, PoolConfig> {
+    list.iter()
+        .map(|(name, runs, mem)| {
+            (
+                (*name).to_owned(),
+                PoolConfig {
+                    runs_per_node: *runs,
+                    max_memory_mib: *mem,
+                },
+            )
+        })
+        .collect()
+}
+
+fn set_pools(
+    m: &mut SystemMachine,
+    list: &[(&str, u32, u32)],
+) -> Result<serde_json::Value, String> {
+    m.run_authorized(SystemCmd::SetPools {
+        pools: pools(list),
+        proof: serde_json::Value::Null,
+    })
+    .map_err(str::to_owned)
+}
+
+/// How many runs each pool holds granted.
+fn granted_by_pool(m: &SystemMachine) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for slot in m.state.compute.values().flat_map(BTreeMap::values) {
+        if slot.granted {
+            *out.entry(slot.pool.clone()).or_default() += 1;
+        }
+    }
+    out
 }
 
 /// The `(code, retryable)` of a refused acquire; the answer must be a refusal.
@@ -227,6 +300,7 @@ fn a_run_is_refused_with_a_code_for_an_unknown_app_a_foreign_payer_or_too_much_f
         run: "r".into(),
         payer: "y".into(),
         fuel: 1,
+        memory_mib: 0,
     });
     assert_eq!(refusal(foreign), ("NOT_PAYER".into(), true));
     let heavy = m.run(acquire("a1", "r", calimero_app_host::MAX_COMPUTE_FUEL + 1));
@@ -269,7 +343,8 @@ fn acquiring_twice_answers_the_state_and_changes_nothing() {
             fuel: 5,
             seq: 0,
             granted: true,
-            refused: false
+            refused: false,
+            pool: String::new(),
         })
     );
 }
@@ -321,6 +396,7 @@ fn deleting_an_app_releases_its_runs_and_grants_the_next() {
         app_id: "a1".into(),
         actor: "alice".into(),
         owner_in_org: true,
+        owner_in_team: true,
     })
     .unwrap();
     assert_eq!(granted(&m), pairs(&[("b1", "r3")]));
@@ -380,6 +456,7 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
         actor: "alice".into(),
         consent: serde_json::Value::Null,
         owner_in_org: true,
+        owner_in_team: true,
     })
     .unwrap();
     assert_eq!(m.state.run_slot("p", "r1").unwrap().payer, "account:bob");
@@ -441,6 +518,7 @@ fn deleting_an_app_forgets_its_released_ids() {
         app_id: "a1".into(),
         actor: "alice".into(),
         owner_in_org: true,
+        owner_in_team: true,
     })
     .unwrap();
     assert!(m.state.released_runs.is_empty());
@@ -505,4 +583,299 @@ fn lowering_the_fuel_quota_marks_the_queued_runs_it_can_never_grant_refused() {
     m.run(release("a1", "granted")).unwrap();
     assert!(m.state.run_slot("a1", "small").unwrap().granted);
     assert!(!m.state.run_slot("a1", "big").unwrap().granted);
+}
+
+const TWO_POOLS: [(&str, u32, u32); 2] = [("standard", 2, 4096), ("highmem", 1, 65536)];
+
+#[test]
+fn no_pools_is_the_legacy_single_pool() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    assert_eq!(m.state.pool_for(1_000_000), Some(String::new()));
+    assert_eq!(m.state.pool_capacity(""), RUNS_PER_JOB_NODE);
+    for (app, run) in [("a1", "r1"), ("b1", "r2"), ("p", "r3")] {
+        m.run(acquire_mem(app, run, 999_999)).unwrap();
+    }
+    assert_eq!(granted(&m).len(), RUNS_PER_JOB_NODE);
+}
+
+#[test]
+fn a_highmem_run_waits_for_highmem_capacity() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    pool_node(&mut m, 6, "highmem");
+    m.run(acquire_mem("a1", "r1", 8192)).unwrap();
+    m.run(acquire_mem("b1", "r2", 8192)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r1")]));
+    m.run(acquire_mem("b2", "r3", 1024)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("b2", "r3")]));
+    m.run(release("a1", "r1")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("b1", "r2"), ("b2", "r3")]));
+}
+
+#[test]
+fn capacity_is_counted_per_pool() {
+    let mut m = machine();
+    m.state.quotas.max_concurrent_runs_per_org = 100;
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    pool_node(&mut m, 6, "standard");
+    pool_node(&mut m, 7, "highmem");
+    for i in 0..6 {
+        m.run(acquire_mem("a1", &format!("s{i}"), 1024)).unwrap();
+    }
+    for i in 0..2 {
+        m.run(acquire_mem("a2", &format!("h{i}"), 8192)).unwrap();
+    }
+    assert_eq!(granted(&m).len(), 5);
+    assert_eq!(
+        granted_by_pool(&m),
+        BTreeMap::from([("standard".to_owned(), 4), ("highmem".to_owned(), 1)])
+    );
+}
+
+#[test]
+fn memory_no_pool_fits_is_refused() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    assert_eq!(
+        refusal(m.run(acquire_mem("a1", "r", 65537))),
+        ("RUN_NO_POOL".into(), false)
+    );
+    assert!(m.state.compute.is_empty());
+}
+
+#[test]
+fn a_run_queued_before_pools_is_dispatched_to_the_default_pool() {
+    let mut m = machine();
+    m.run(acquire("a1", "r1", 1)).unwrap();
+    set_pools(&mut m, &[("standard", 2, 4096)]).unwrap();
+    job_node(&mut m, 5);
+    assert_eq!(granted(&m), pairs(&[("a1", "r1")]));
+    let pool = m.state.dispatch_pool("a1", "r1").unwrap();
+    assert_eq!(pool, "standard");
+    assert!(m.state.node_in_pool(&m.state.nodes[&5], &pool));
+}
+
+#[test]
+fn org_quota_overrides_are_bounded() {
+    let mut m = machine();
+    let set = |m: &mut SystemMachine, payer: &str| {
+        m.run_authorized(SystemCmd::SetOrgQuotas {
+            payer: payer.into(),
+            quotas: OrgQuotas {
+                max_concurrent_runs: Some(1),
+                ..OrgQuotas::default()
+            },
+            proof: serde_json::Value::Null,
+        })
+    };
+    assert!(set(&mut m, &"p".repeat(super::MAX_PAYER_BYTES + 1)).is_err());
+    for i in 0..super::MAX_ORG_QUOTAS {
+        let _prev = m
+            .state
+            .org_quotas
+            .insert(format!("org{i}"), OrgQuotas::default());
+    }
+    assert!(set(&mut m, "one-more").is_err());
+    set(&mut m, "org0").unwrap();
+}
+
+#[test]
+fn pools_are_bounded_in_number_and_name() {
+    let mut m = machine();
+    let many: Vec<(String, u32, u32)> = (0..=super::MAX_POOLS)
+        .map(|i| (format!("p{i}"), 1, 1024))
+        .collect();
+    let many: Vec<(&str, u32, u32)> = many
+        .iter()
+        .map(|(n, r, mem)| (n.as_str(), *r, *mem))
+        .collect();
+    assert!(set_pools(&mut m, &many)
+        .unwrap_err()
+        .starts_with("BAD_POOLS"));
+    let long = "x".repeat(super::MAX_POOL_NAME_BYTES + 1);
+    assert!(set_pools(&mut m, &[(long.as_str(), 1, 1024)])
+        .unwrap_err()
+        .starts_with("BAD_POOLS"));
+    assert!(set_pools(&mut m, &[("", 1, 1024)])
+        .unwrap_err()
+        .starts_with("BAD_POOLS"));
+    assert!(m.state.pools.is_empty());
+    set_pools(&mut m, &many[..super::MAX_POOLS]).unwrap();
+}
+
+#[test]
+fn a_node_in_an_unknown_pool_adds_no_capacity() {
+    let mut m = machine();
+    set_pools(&mut m, &[("standard", 2, 4096)]).unwrap();
+    pool_node(&mut m, 5, "ghost");
+    pool_node(&mut m, 6, "");
+    assert_eq!(m.state.pool_capacity("ghost"), 0);
+    assert_eq!(m.state.pool_capacity("standard"), 2);
+    m.run(acquire_mem("a1", "r1", 1)).unwrap();
+    m.run(acquire_mem("a1", "r2", 1)).unwrap();
+    m.run(acquire_mem("b1", "r3", 1)).unwrap();
+    assert_eq!(granted(&m).len(), 2);
+    m.run_authorized(SystemCmd::RemoveNode {
+        id: 6,
+        proof: serde_json::Value::Null,
+    })
+    .unwrap();
+    assert_eq!(m.state.pool_capacity("standard"), 0);
+}
+
+#[test]
+fn removing_a_pool_in_use_is_refused() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 6, "highmem");
+    let err = set_pools(&mut m, &[("standard", 2, 4096)]).unwrap_err();
+    assert!(err.starts_with("POOL_IN_USE"), "{err}");
+    assert_eq!(m.state.pools, pools(&TWO_POOLS));
+    // Without the node, a granted run still keeps its pool.
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    m.run(acquire_mem("a1", "r1", 1024)).unwrap();
+    let err = set_pools(&mut m, &[("highmem", 1, 65536)]).unwrap_err();
+    assert!(err.starts_with("POOL_IN_USE"), "{err}");
+    m.run(release("a1", "r1")).unwrap();
+    pool_node(&mut m, 7, "highmem");
+    m.run_authorized(SystemCmd::RemoveNode {
+        id: 5,
+        proof: serde_json::Value::Null,
+    })
+    .unwrap();
+    set_pools(&mut m, &[("highmem", 1, 65536)]).unwrap();
+}
+
+#[test]
+fn set_pools_twice_is_idempotent() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    m.run(acquire_mem("a1", "r1", 1024)).unwrap();
+    let before = granted(&m);
+    let first = set_pools(&mut m, &TWO_POOLS).unwrap();
+    let second = set_pools(&mut m, &TWO_POOLS).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(granted(&m), before);
+    assert_eq!(m.state.pools, pools(&TWO_POOLS));
+}
+
+fn set_org(m: &mut SystemMachine, payer: &str, quotas: OrgQuotas) {
+    m.run_authorized(SystemCmd::SetOrgQuotas {
+        payer: payer.into(),
+        quotas,
+        proof: serde_json::Value::Null,
+    })
+    .unwrap();
+}
+
+fn runs_cap(n: u32) -> OrgQuotas {
+    OrgQuotas {
+        max_concurrent_runs: Some(n),
+        ..OrgQuotas::default()
+    }
+}
+
+#[test]
+fn an_org_at_its_override_waits_while_another_is_granted() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    job_node(&mut m, 6);
+    set_org(&mut m, "x", runs_cap(1));
+    for (app, run) in [("a1", "r1"), ("a2", "r2"), ("b1", "r3")] {
+        m.run(acquire(app, run, 1)).unwrap();
+    }
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("b1", "r3")]));
+}
+
+#[test]
+fn raising_an_override_grants_waiting_runs() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    set_org(&mut m, "x", runs_cap(1));
+    m.run(acquire("a1", "r1", 1)).unwrap();
+    m.run(acquire("a1", "r2", 1)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r1")]));
+    set_org(&mut m, "x", runs_cap(2));
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+}
+
+#[test]
+fn a_fuel_override_admits_a_bigger_run() {
+    let mut m = machine();
+    m.state.quotas.compute_fuel_per_org = 10;
+    job_node(&mut m, 5);
+    set_org(
+        &mut m,
+        "x",
+        OrgQuotas {
+            compute_fuel: Some(20),
+            ..OrgQuotas::default()
+        },
+    );
+    assert_eq!(
+        refusal(m.run(acquire("b1", "r1", 15))),
+        ("FUEL_OVER_QUOTA".into(), false)
+    );
+    m.run(acquire("a1", "r2", 15)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r2")]));
+}
+
+#[test]
+fn lowering_an_override_never_revokes_granted_runs() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    for run in ["r1", "r2", "r3"] {
+        m.run(acquire("a1", run, 1)).unwrap();
+    }
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+    set_org(&mut m, "x", runs_cap(1));
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+    m.run(release("a1", "r1")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r2")]));
+    m.run(release("a1", "r2")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r3")]));
+}
+
+#[test]
+fn clearing_an_override_falls_back_to_the_cluster_quota() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    set_org(&mut m, "x", runs_cap(1));
+    m.run(acquire("a1", "r1", 1)).unwrap();
+    m.run(acquire("a1", "r2", 1)).unwrap();
+    assert_eq!(granted(&m).len(), 1);
+    set_org(&mut m, "x", OrgQuotas::default());
+    assert!(m.state.org_quotas.is_empty());
+    assert_eq!(m.state.payer_quotas("x").0, 4);
+    assert_eq!(granted(&m).len(), 2);
+}
+
+#[test]
+fn org_quotas_are_decimal_strings_and_the_file_override_is_read() {
+    let q = OrgQuotas {
+        compute_fuel: Some(u64::MAX),
+        max_file_bytes: Some(7),
+        ..OrgQuotas::default()
+    };
+    let shown = serde_json::to_value(&q).unwrap();
+    assert_eq!(
+        shown,
+        json!({ "computeFuel": u64::MAX.to_string(), "maxFileBytes": 7 })
+    );
+    assert_eq!(serde_json::from_value::<OrgQuotas>(shown).unwrap(), q);
+    assert!(serde_json::from_value::<OrgQuotas>(json!({ "computeFuel": 5 })).is_err());
+    let mut m = machine();
+    set_org(&mut m, "x", q);
+    assert_eq!(m.state.payer_quotas("x").2, 7);
+    assert_eq!(
+        m.state.payer_quotas("y").2,
+        Quotas::default().max_file_bytes_per_org
+    );
 }

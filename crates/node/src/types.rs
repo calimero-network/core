@@ -110,6 +110,9 @@ pub struct NodeRecord {
     pub zone: String,
     #[serde(default)]
     pub role: NodeRole,
+    /// The compute pool a job node serves; empty is [`crate::system::DEFAULT_POOL`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pool: String,
 }
 
 /// Which components a release, and the app made from it, has.
@@ -322,6 +325,68 @@ pub struct Account {
     pub passkey_times: std::collections::BTreeMap<String, PasskeyTimes>,
 }
 
+/// How many activity entries (`system::SystemState::activity`) an account keeps: the oldest goes
+/// first.
+pub const ACTIVITY_KEPT: usize = 100;
+
+/// The longest method or subject an [`Activity::Approval`] keeps, in
+/// characters (they are names the node makes: ids and `__` methods).
+pub const ACTIVITY_TEXT_CHARS: usize = 160;
+
+/// One thing a passkey did, at `at` (Unix seconds, as the node that took
+/// the ceremony read its clock).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEntry {
+    pub at: u64,
+    /// The credential id of the passkey that did it.
+    pub passkey: String,
+    #[serde(flatten)]
+    pub what: Activity,
+}
+
+/// What an [`ActivityEntry`] records.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Activity {
+    /// A sign-in (a sign-up's, a recovery's finish): the package whose
+    /// frontend opened the session and the registered origin, if bound.
+    #[serde(rename_all = "camelCase")]
+    SignIn {
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        origin: Option<String>,
+    },
+    /// A change the passkey approved (a step-up): the method and subject
+    /// its consent states (`proof::Statement`), never its arguments.
+    #[serde(rename_all = "camelCase")]
+    Approval { method: String, subject: String },
+}
+
+/// Records `entry` in an account's activity `log`, dropping the oldest past
+/// [`ACTIVITY_KEPT`]. A sign-in that repeats the newest entry's passkey, app
+/// and origin only moves its time, so signing in again to one app keeps the
+/// rest. An entry with no time (0) records nothing.
+pub fn record_activity(log: &mut std::collections::VecDeque<ActivityEntry>, entry: ActivityEntry) {
+    if entry.at == 0 {
+        return;
+    }
+    if let Some(last) = log.back_mut() {
+        if matches!(last.what, Activity::SignIn { .. })
+            && last.what == entry.what
+            && last.passkey == entry.passkey
+        {
+            last.at = last.at.max(entry.at);
+            return;
+        }
+    }
+    log.push_back(entry);
+    while log.len() > ACTIVITY_KEPT {
+        let _oldest = log.pop_front();
+    }
+}
+
 /// When one passkey was added and last signed in (Unix seconds, as the node
 /// that took the ceremony read its clock). `None`: not known, because it
 /// happened before the node kept it.
@@ -453,6 +518,10 @@ pub mod caps {
     /// `MemberCapabilities` spends 9 on `CAN_AUTHOR_ON_BEHALF`, so a client
     /// that sends v1's `ALL` does not hand out release approvals with it.
     pub const APPROVE_RELEASES: u32 = 1 << 10;
+    /// Create a restricted team below a team one writes (a private channel
+    /// under an app's team) without leading it; the creator leads the new
+    /// team. On by default in an app team (its default capabilities).
+    pub const CREATE_CHILD_TEAM: u32 = 1 << 11;
     /// What a member holds unless an admin says otherwise.
     pub const DEFAULT: u32 = JOIN_OPEN_TEAMS;
 }

@@ -341,6 +341,7 @@ impl Cluster {
             tee_release: from.tee_release.clone(),
             tee_profile: from.tee_profile.clone(),
             cluster_identity: self.nodes[0].as_ref().unwrap().node.cluster_identity(),
+            slots: calimero_node::RUNS_PER_JOB_NODE,
         };
         configure(&mut config);
         let url = format!("http://127.0.0.1:{}/", config.listen.port());

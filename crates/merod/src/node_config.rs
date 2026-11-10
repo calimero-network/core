@@ -119,6 +119,10 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_CLUSTER_IDENTITY")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cluster_identity: Option<String>,
+    /// With `--job-node`: how many compute runs it takes at once [default: 2].
+    #[arg(long, env = "MEROD_JOB_SLOTS")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_slots: Option<usize>,
     /// The passkey (WebAuthn) relying party id [default: localhost]. It must
     /// be a registrable suffix of every host that runs a passkey ceremony:
     /// each `--origins` host and `--apps-domain` must equal it or be a
@@ -331,6 +335,7 @@ impl NodeArgs {
             dev: self.dev.or(base.dev),
             job_node: self.job_node.or(base.job_node),
             cluster_identity: self.cluster_identity.or(base.cluster_identity),
+            job_slots: self.job_slots.or(base.job_slots),
             storage_key: self.storage_key.or(base.storage_key),
             rp_id: self.rp_id.or(base.rp_id),
             origins: list(self.origins, base.origins),

@@ -41,7 +41,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move` and `ops set-quotas` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -128,6 +128,7 @@ App instances.
 | `context list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
 | `context get CONTEXT` | `GET /apps/{app}` | One context. |
 | `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
+| `context move CONTEXT NAMESPACE [--bring-members] [--dev-passkey F]` | `POST /apps/{app}/move` | Move the context to another org, its data where it is (whoever manages it now, as an admin of the target org, with a passkey); `--bring-members` adds the members who reach it. |
 | `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, or for an org's context its owner while a member or an org admin, with a passkey; an org's context only to a member of the org). |
 | `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
 | `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
@@ -217,7 +218,7 @@ or `restricted` (only the members added).
 | `namespace leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
 | `namespace groups ORG` | `GET /orgs/{org}` | The organization's teams. |
 | `namespace create-group ORG NAME [--parent TEAM] [--join JOIN]` | `POST /orgs/{org}/teams` | Create a team; `--join` defaults to `restricted`. |
-| `namespace members list ORG` (`ls`) | `GET /orgs/{org}` | Its members. |
+| `namespace members list ORG [--security]` (`ls`) | `GET /orgs/{org}` | Its members. `--security` (owners and admins, `GET /orgs/{org}/members?detail=security`): each member's passkeys held (to `3+`), recovery code set, last active day and live sessions. |
 | `namespace members add ORG ACCOUNT [--role ROLE]` (`set-role`) | `POST /orgs/{org}/members` | Add a member or change their role (default `member`). `owner` moves ownership. |
 | `namespace members remove ORG ACCOUNT` (`rm`) | `DELETE /orgs/{org}/members/{account}` | Remove a member. |
 | `namespace metadata get ORG` | `GET /orgs/{org}` | The organization's metadata. |
@@ -263,6 +264,7 @@ The signed-in account.
 | `account device revoke CREDENTIAL [--dev-passkey FILE]` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. Approved with a passkey. |
 | `account session list` (`ls`) | `GET /auth/sessions` | Its live sessions: the device each was opened with, the application and origin it is bound to, when it opened and was last active (to within about an hour), and the current one. |
 | `account session revoke SESSION` | `DELETE /auth/sessions/{session}` | End one session. |
+| `account activity [--after T]` | `GET /auth/activity` | What its devices did, newest first: the applications and origins each signed in to, and the changes each approved (needs a passkey session). |
 | `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
 | `account api-key revoke KEY_ID [--dev-passkey FILE]` | `DELETE /auth/apikeys/{key}` | Revoke one, approved with a passkey. |
@@ -296,12 +298,14 @@ node answers `403` for the others.
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
 | `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |
-| `ops add-node ID ADDR [--zone Z] [--role replica\|job]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
+| `ops add-node ID ADDR [--zone Z] [--role replica\|job] [--pool P]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
 | `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
 | `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |
 | `ops quotas` | `GET /ops/quotas` | The per-account quotas. |
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
+| `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
+| `ops set-pools JSON` | `POST /ops/pools` | Set the pools, `{ name: { runsPerNode, maxMemoryMib } }`; a job node joins one with `add-node --pool`. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
 | `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |

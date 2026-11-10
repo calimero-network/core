@@ -1418,6 +1418,134 @@ async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
     let _unused = &mut cpk;
 }
 
+/// An app on a team is its team's, its owner's only while they are in it:
+/// an owner removed from the team, who left it, or who lost it when an open
+/// team closed reaches the app no more and manages it no more (no access
+/// change, metadata, transfer or deletion), and nobody outside the
+/// organization reaches it. The organization's admins transfer it; back in
+/// the team, an owner has it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    let (erin, _e) = signed_up(&c, 1, "erin").await;
+    let (org, ids) = org_with(&alice, &mut a, &[&bob, &carol, &dave]).await;
+    let (bob_id, carol_id, dave_id) = (ids[0].clone(), ids[1].clone(), ids[2].clone());
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let team = |name: &str, join: &str| {
+        let body = json!({ "name": name, "join": join });
+        let (alice, org) = (&alice, &org);
+        async move {
+            alice
+                .post(&format!("orgs/{org}/teams"), body)
+                .await
+                .unwrap()["teamId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    // Chat is restricted, Blocks open to the organization.
+    let chat = team("Chat", "invite").await;
+    let blocks = team("Blocks", "everyone").await;
+    for who in [&bob_id, &carol_id, &dave_id] {
+        // CREATE_APP | JOIN_OPEN_TEAMS
+        let _ok = alice
+            .post_confirmed(
+                &format!("orgs/{org}/capabilities"),
+                json!({ "account": who, "capabilities": 5 }),
+                &mut a,
+            )
+            .await
+            .unwrap();
+    }
+    for who in [&bob_id, &carol_id] {
+        let _ok = alice
+            .post_confirmed(
+                &format!("orgs/{org}/teams/{chat}/members"),
+                json!({ "account": who, "role": "member" }),
+                &mut a,
+            )
+            .await
+            .unwrap();
+    }
+    let on = |t: &str| json!({ "org": org, "access": { "kind": "team", "team": t } });
+    let mut apps = Vec::new();
+    for (who, t) in [(&bob, &chat), (&carol, &chat), (&dave, &blocks)] {
+        let bundle = who.upload_bundle(kv_wasm()).await.unwrap();
+        let app = who.create_app("channel", &bundle, on(t)).await.unwrap();
+        set(who, &app, "in").await.unwrap();
+        apps.push(app);
+    }
+    let (bobs, carols, daves) = (apps[0].clone(), apps[1].clone(), apps[2].clone());
+
+    // Kicked from Chat, Bob neither reaches nor manages his channel.
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/teams/{chat}/members/{bob_id}"), &mut a)
+        .await
+        .unwrap();
+    // Carol leaves Chat.
+    let _ok = carol
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat}/members/{carol_id}"),
+            &mut cpk,
+        )
+        .await
+        .unwrap();
+    // Blocks closes: Dave, in it by inheritance only, is out.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{blocks}"),
+            json!({ "join": "invite" }),
+        )
+        .await
+        .unwrap();
+    all_applied(&c).await;
+    for (who, app) in [(&bob, &bobs), (&carol, &carols), (&dave, &daves)] {
+        let err = set(who, app, "after").await.unwrap_err();
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: reached: {err}");
+        assert!(who.get(&format!("apps/{app}")).await.is_err(), "{app}");
+    }
+    let err = set(&erin, &bobs, "outside").await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    let err = set_access(&bob, &bobs, json!({ "kind": "public" }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "access: {err}");
+    let err = set_metadata(&bob, &bobs, json!({ "pinned": true }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "metadata: {err}");
+    let err = bob.transfer_app(&bobs, &bob_id, &mut b).await.unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "transfer: {err}");
+    let err = bob.delete(&format!("apps/{bobs}")).await.unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "delete: {err}");
+
+    // The organization's owner takes Bob's channel; Dave, added back to
+    // Blocks, has his again.
+    let _ok = alice.transfer_app(&bobs, &alice_id, &mut a).await.unwrap();
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{blocks}/members"),
+            json!({ "account": dave_id, "role": "member" }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    all_applied(&c).await;
+    set(&alice, &bobs, "alice's").await.unwrap();
+    set(&dave, &daves, "back").await.unwrap();
+    let _ok = set_metadata(&dave, &daves, json!({ "pinned": true }))
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_passkey_is_another_device_of_the_same_account() {
     let c = Cluster::start(3).await;
@@ -2811,6 +2939,7 @@ async fn the_leader_checks_upgrade_authority_again() {
             let consent = serde_json::to_value(calimero_node::proof::Consent {
                 assertion: pk.assert(&statement.challenge().unwrap()),
                 statement,
+                at: 0,
             })
             .unwrap();
             let e = c.nodes[i]
@@ -2828,6 +2957,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     consent,
                     release: None,
                     owner_in_org: true,
+                    owner_in_team: true,
                 })
                 .await
                 .unwrap_err();
@@ -4363,6 +4493,22 @@ async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
     panic!("the fuel quota never reached every node");
 }
 
+/// Waits until every running node has applied what the app's leader has, so a
+/// usage read on any replica counts every run that committed.
+async fn applied_everywhere(c: &Cluster, app: &str) {
+    let target = c.applied_on(c.app_leader(app).unwrap(), app);
+    for i in (0..c.nodes.len()).filter(|i| c.nodes[*i].is_some()) {
+        let g = hosted_on(c, i, app).await;
+        for _ in 0..200 {
+            if g.applied() >= target {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(g.applied() >= target, "node {i} never applied {target}");
+    }
+}
+
 /// Each running node's own answer for the app's usage, once it applied `target`.
 async fn usage_on_every_node(
     c: &Cluster,
@@ -4664,6 +4810,7 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         .call(&in_org, "set", json!({ "key": "k", "value": "v" }), None)
         .await
         .unwrap();
+    applied_everywhere(&c, &in_org).await;
 
     let owner = app_usage(&alice, &in_org).await;
     assert_eq!(figure(&owner["today"]["runs"]), 2, "{owner}");
@@ -5206,4 +5353,91 @@ async fn a_fuel_cap_waits_until_every_node_runs_this_release() {
         }
     }
     fuel_limit_everywhere(&c, 1000).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn org_quotas_wait_for_the_release_then_merge_and_clear() {
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let err = ops
+        .post("ops/quotas", json!({ "org": "x", "maxConcurrentRuns": 1 }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
+    c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
+    let set = |body: serde_json::Value| {
+        let ops = &ops;
+        async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                match ops
+                    .post_operator_signed("ops/quotas", body.clone(), &common::operator_sign)
+                    .await
+                {
+                    Ok(_) => return,
+                    Err(e) => {
+                        assert!(std::time::Instant::now() < deadline, "still refused: {e}");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+    };
+    set(json!({ "org": "x", "maxConcurrentRuns": 1 })).await;
+    set(json!({ "org": "x", "computeFuel": "99" })).await;
+    let shown = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(
+        shown["orgs"],
+        json!({ "x": { "maxConcurrentRuns": 1, "computeFuel": "99" } })
+    );
+    set(json!({ "org": "x", "maxConcurrentRuns": null, "computeFuel": null })).await;
+    assert_eq!(ops.get("ops/quotas").await.unwrap()["orgs"], json!({}));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pools_wait_until_every_node_runs_this_release() {
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    // A pool names the job nodes it is for: a replica given one is refused before anything
+    // is signed, so no older node is asked to read a field it drops.
+    let err = ops
+        .post(
+            "ops/nodes",
+            json!({ "id": 9, "addr": "http://127.0.0.1:1", "pool": "standard" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("POOL_FOR_JOB_NODES"), "{err}");
+    let pools = json!({ "pools": { "standard": { "runsPerNode": 2, "maxMemoryMib": 4096 } } });
+    let err = ops.post("ops/pools", pools.clone()).await.unwrap_err();
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 409, .. }),
+        "{err}"
+    );
+    c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match ops
+            .post_operator_signed("ops/pools", pools.clone(), &common::operator_sign)
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                assert!(std::time::Instant::now() < deadline, "still refused: {e}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    let shown = ops.get("ops/pools").await.unwrap();
+    assert_eq!(shown["pools"], pools["pools"]);
+    assert_eq!(shown["capacity"], json!({ "standard": 0 }));
 }
