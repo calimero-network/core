@@ -114,6 +114,9 @@ pub const MANIFEST_SUFFIX: &str = ".manifest";
 /// A backup file name's longest form: `{index:020}.{group}.{snapshot}.snap`.
 pub const MAX_NAME_LEN: usize = 160;
 
+/// A manifest is never larger: a few short fields, sealed.
+pub const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
+
 const MANIFEST_MAGIC: &[u8] = b"calimero.backup-manifest.v1\n";
 const MANIFEST_LABEL: &str = "calimero.backup.manifest.v1";
 
@@ -335,6 +338,11 @@ pub fn find(
     let group: u64 = group.parse().map_err(bad)?;
     let sha256 = file_sha256(&path).map_err(bad)?;
     let manifest_path = app_dir.join(format!("{name}{MANIFEST_SUFFIX}"));
+    if std::fs::metadata(&manifest_path).is_ok_and(|m| m.len() > MAX_MANIFEST_BYTES) {
+        return Err(BackupError::Bad(
+            "the backup's manifest is too large".into(),
+        ));
+    }
     let manifest = match std::fs::read(&manifest_path) {
         Ok(bytes) => Some(open_manifest(cluster_key, app_id, &name, &bytes)?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
