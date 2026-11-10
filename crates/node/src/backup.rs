@@ -79,6 +79,12 @@ pub const KEYS: &str = "cluster-key";
 /// system state names, by hash, sealed under [`code_key`].
 pub const CODE: &str = "code";
 
+/// A kept cluster key file is never larger: magic, nonce, the key and a tag.
+pub const MAX_KEY_FILE_BYTES: u64 = 4096;
+
+/// A kept code file is never larger: the largest blob, sealed.
+pub const MAX_CODE_FILE_BYTES: u64 = crate::node::MAX_BLOB_BYTES as u64 + 64;
+
 /// The key code in a backup directory is sealed under: a bundle a raw upload
 /// made may be private to its owner.
 fn code_sealer(cluster_key: &[u8; 32]) -> Sealer {
@@ -133,7 +139,7 @@ pub fn cluster_key_from(dir: &Path, storage_key: &[u8; 32]) -> eyre::Result<[u8;
     {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !plain_name(&name) || name.ends_with(".tmp") {
+        if !plain_name(&name) || entry.metadata()?.len() > MAX_KEY_FILE_BYTES {
             continue;
         }
         if let Ok(key) = crate::cluster_key::unwrap(storage_key, &std::fs::read(entry.path())?) {
@@ -184,7 +190,7 @@ pub fn code(dir: &Path, cluster_key: &[u8; 32]) -> eyre::Result<Vec<(String, Vec
     for entry in entries {
         let entry = entry?;
         let hash = entry.file_name().to_string_lossy().into_owned();
-        if !plain_name(&hash) {
+        if !plain_name(&hash) || entry.metadata()?.len() > MAX_CODE_FILE_BYTES {
             continue;
         }
         let Ok(bytes) = sealer.open(hash.as_bytes(), &std::fs::read(entry.path())?) else {
