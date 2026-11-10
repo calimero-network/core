@@ -71,7 +71,7 @@ pub enum OpsCmd {
     /// The operator's price table, `{}` until one is set.
     Prices,
     /// Set the price table, JSON `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond,
-    /// connectorGib, storageGibMonth, egressGib }`; the version is the current one plus one.
+    /// connectorGib, storageGibMonth, egressGib }`; the version must be the current one plus one.
     SetPrices {
         table: String,
     },

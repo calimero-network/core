@@ -312,7 +312,7 @@ node answers `403` for the others.
 | `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
 | `ops set-pools JSON` | `POST /ops/pools` | Set the pools, `{ name: { runsPerNode, maxMemoryMib } }`; a job node joins one with `add-node --pool`. |
 | `ops prices` | `GET /ops/prices` | The price table, `{}` until one is set. |
-| `ops set-prices JSON` | `POST /ops/prices` | Set it, `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond, connectorGib, storageGibMonth, egressGib }` in micro-units; the version is the current one plus one. |
+| `ops set-prices JSON` | `POST /ops/prices` | Set it, `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond, connectorGib, storageGibMonth, egressGib }` in micro-units; the version must be the current one plus one. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
 | `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |

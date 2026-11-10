@@ -50,7 +50,7 @@ impl PriceTable {
             return Err(SpecError {
                 path: "fuelPerVcpuSecond".into(),
                 code: "BAD_PRICES",
-                message: "the fuel rate per vCPU-second is above zero".into(),
+                message: "the fuel rate per vCPU-second must be above zero".into(),
             });
         }
         Ok(())

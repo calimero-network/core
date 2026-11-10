@@ -155,9 +155,9 @@ pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node'
 /// The apply error for a pool set past `MAX_POOLS` or with an empty or too long name.
 pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 64 bytes";
 /// The apply error for a price table whose version is not the current one plus one.
-pub const PRICE_VERSION: &str = "PRICE_VERSION: the version is the current one plus one";
+pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
 /// The apply error for a price table with a zero fuel rate.
-pub const BAD_PRICES: &str = "BAD_PRICES: the fuel rate per vCPU-second is above zero";
+pub const BAD_PRICES: &str = "BAD_PRICES: the fuel rate per vCPU-second must be above zero";
 /// Released run ids kept per app, so a late `AcquireRun` for one is refused.
 pub const RELEASED_RUNS_KEPT: usize = 256;
 
