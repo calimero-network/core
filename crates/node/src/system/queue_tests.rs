@@ -6,7 +6,8 @@ use calimero_log::Machine;
 use serde_json::json;
 
 use super::{
-    PoolConfig, Quotas, RunSlot, SystemCmd, SystemMachine, SystemState, RUNS_PER_JOB_NODE,
+    OrgQuotas, PoolConfig, Quotas, RunSlot, SystemCmd, SystemMachine, SystemState,
+    RUNS_PER_JOB_NODE,
 };
 
 /// Apps `a1`, `a2`, `a3` of org `x`, `b1`, `b2` of org `y` and `p` (personal, owner alice).
@@ -659,6 +660,30 @@ fn a_run_queued_before_pools_is_dispatched_to_the_default_pool() {
 }
 
 #[test]
+fn org_quota_overrides_are_bounded() {
+    let mut m = machine();
+    let set = |m: &mut SystemMachine, payer: &str| {
+        m.run_authorized(SystemCmd::SetOrgQuotas {
+            payer: payer.into(),
+            quotas: OrgQuotas {
+                max_concurrent_runs: Some(1),
+                ..OrgQuotas::default()
+            },
+            proof: serde_json::Value::Null,
+        })
+    };
+    assert!(set(&mut m, &"p".repeat(super::MAX_PAYER_BYTES + 1)).is_err());
+    for i in 0..super::MAX_ORG_QUOTAS {
+        let _prev = m
+            .state
+            .org_quotas
+            .insert(format!("org{i}"), OrgQuotas::default());
+    }
+    assert!(set(&mut m, "one-more").is_err());
+    set(&mut m, "org0").unwrap();
+}
+
+#[test]
 fn pools_are_bounded_in_number_and_name() {
     let mut m = machine();
     let many: Vec<(String, u32, u32)> = (0..=super::MAX_POOLS)
@@ -739,4 +764,118 @@ fn set_pools_twice_is_idempotent() {
     assert_eq!(first, second);
     assert_eq!(granted(&m), before);
     assert_eq!(m.state.pools, pools(&TWO_POOLS));
+}
+
+fn set_org(m: &mut SystemMachine, payer: &str, quotas: OrgQuotas) {
+    m.run_authorized(SystemCmd::SetOrgQuotas {
+        payer: payer.into(),
+        quotas,
+        proof: serde_json::Value::Null,
+    })
+    .unwrap();
+}
+
+fn runs_cap(n: u32) -> OrgQuotas {
+    OrgQuotas {
+        max_concurrent_runs: Some(n),
+        ..OrgQuotas::default()
+    }
+}
+
+#[test]
+fn an_org_at_its_override_waits_while_another_is_granted() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    job_node(&mut m, 6);
+    set_org(&mut m, "x", runs_cap(1));
+    for (app, run) in [("a1", "r1"), ("a2", "r2"), ("b1", "r3")] {
+        m.run(acquire(app, run, 1)).unwrap();
+    }
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("b1", "r3")]));
+}
+
+#[test]
+fn raising_an_override_grants_waiting_runs() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    set_org(&mut m, "x", runs_cap(1));
+    m.run(acquire("a1", "r1", 1)).unwrap();
+    m.run(acquire("a1", "r2", 1)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r1")]));
+    set_org(&mut m, "x", runs_cap(2));
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+}
+
+#[test]
+fn a_fuel_override_admits_a_bigger_run() {
+    let mut m = machine();
+    m.state.quotas.compute_fuel_per_org = 10;
+    job_node(&mut m, 5);
+    set_org(
+        &mut m,
+        "x",
+        OrgQuotas {
+            compute_fuel: Some(20),
+            ..OrgQuotas::default()
+        },
+    );
+    assert_eq!(
+        refusal(m.run(acquire("b1", "r1", 15))),
+        ("FUEL_OVER_QUOTA".into(), false)
+    );
+    m.run(acquire("a1", "r2", 15)).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r2")]));
+}
+
+#[test]
+fn lowering_an_override_never_revokes_granted_runs() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    for run in ["r1", "r2", "r3"] {
+        m.run(acquire("a1", run, 1)).unwrap();
+    }
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+    set_org(&mut m, "x", runs_cap(1));
+    assert_eq!(granted(&m), pairs(&[("a1", "r1"), ("a1", "r2")]));
+    m.run(release("a1", "r1")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r2")]));
+    m.run(release("a1", "r2")).unwrap();
+    assert_eq!(granted(&m), pairs(&[("a1", "r3")]));
+}
+
+#[test]
+fn clearing_an_override_falls_back_to_the_cluster_quota() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    set_org(&mut m, "x", runs_cap(1));
+    m.run(acquire("a1", "r1", 1)).unwrap();
+    m.run(acquire("a1", "r2", 1)).unwrap();
+    assert_eq!(granted(&m).len(), 1);
+    set_org(&mut m, "x", OrgQuotas::default());
+    assert!(m.state.org_quotas.is_empty());
+    assert_eq!(m.state.payer_quotas("x").0, 4);
+    assert_eq!(granted(&m).len(), 2);
+}
+
+#[test]
+fn org_quotas_are_decimal_strings_and_the_file_override_is_read() {
+    let q = OrgQuotas {
+        compute_fuel: Some(u64::MAX),
+        max_file_bytes: Some(7),
+        ..OrgQuotas::default()
+    };
+    let shown = serde_json::to_value(&q).unwrap();
+    assert_eq!(
+        shown,
+        json!({ "computeFuel": u64::MAX.to_string(), "maxFileBytes": 7 })
+    );
+    assert_eq!(serde_json::from_value::<OrgQuotas>(shown).unwrap(), q);
+    assert!(serde_json::from_value::<OrgQuotas>(json!({ "computeFuel": 5 })).is_err());
+    let mut m = machine();
+    set_org(&mut m, "x", q);
+    assert_eq!(m.state.payer_quotas("x").2, 7);
+    assert_eq!(
+        m.state.payer_quotas("y").2,
+        Quotas::default().max_file_bytes_per_org
+    );
 }

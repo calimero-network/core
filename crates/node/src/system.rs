@@ -74,6 +74,51 @@ mod decimal_u64 {
     }
 }
 
+mod decimal_u64_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    struct Decimal(#[serde(with = "super::decimal_u64")] u64);
+
+    pub fn serialize<S: Serializer>(v: &Option<u64>, s: S) -> Result<S::Ok, S::Error> {
+        v.map(|n| n.to_string()).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+        Ok(Option::<Decimal>::deserialize(d)?.map(|Decimal(n)| n))
+    }
+}
+
+/// One payer's compute and file limits in place of the cluster's; a field left out keeps the
+/// cluster's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OrgQuotas {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_runs: Option<u32>,
+    #[serde(with = "decimal_u64_option", skip_serializing_if = "Option::is_none")]
+    pub compute_fuel: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes: Option<u64>,
+}
+
+/// The runs, fuel and file bytes `payer` may hold: its override, else the cluster's.
+fn limits_of(
+    quotas: &Quotas,
+    overrides: &BTreeMap<String, OrgQuotas>,
+    payer: &str,
+) -> (u32, u64, u64) {
+    let o = overrides.get(payer);
+    (
+        o.and_then(|o| o.max_concurrent_runs)
+            .unwrap_or(quotas.max_concurrent_runs_per_org),
+        o.and_then(|o| o.compute_fuel)
+            .unwrap_or(quotas.compute_fuel_per_org),
+        o.and_then(|o| o.max_file_bytes)
+            .unwrap_or(quotas.max_file_bytes_per_org),
+    )
+}
+
 impl Default for Quotas {
     fn default() -> Self {
         Self {
@@ -102,6 +147,8 @@ pub const RUN_NO_POOL: &str = "RUN_NO_POOL";
 pub const POOL_IN_USE: &str = "POOL_IN_USE: the pool still has job nodes or runs";
 /// The pool a job node with no pool, and a run on a cluster with no pools, belongs to.
 pub const DEFAULT_POOL: &str = "standard";
+pub const MAX_ORG_QUOTAS: usize = 10_000; // payers with their own quota override
+pub const MAX_PAYER_BYTES: usize = 128; // a payer id an override names
 pub const MAX_POOLS: usize = 32; // pools one cluster defines
 pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node's record
 /// The apply error for a pool set past `MAX_POOLS` or with an empty or too long name.
@@ -322,6 +369,9 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemState {
+    /// Per-payer quota overrides; left out when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub org_quotas: BTreeMap<String, OrgQuotas>,
     /// Job node pools by name; left out when empty (one legacy pool).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pools: BTreeMap<String, PoolConfig>,
@@ -893,6 +943,12 @@ impl SystemState {
         self.nodes.values().filter(|n| n.role == NodeRole::Job)
     }
 
+    /// The `(runs, fuel, file bytes)` `payer` ([`crate::usage::payer`]) may hold.
+    #[must_use]
+    pub fn payer_quotas(&self, payer: &str) -> (u32, u64, u64) {
+        limits_of(&self.quotas, &self.org_quotas, payer)
+    }
+
     /// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits.
     #[must_use]
     pub fn pool_for(&self, memory_mib: u32) -> Option<String> {
@@ -990,9 +1046,9 @@ impl SystemState {
     /// Grants waiting runs up to the job nodes' places, to the payers in turn (longest served
     /// first); a payer at a quota is passed over for the pass. Granted runs stay.
     fn grant_runs(&mut self) {
-        let quota = self.quotas.compute_fuel_per_org;
         for slot in self.compute.values_mut().flat_map(BTreeMap::values_mut) {
-            slot.refused |= !slot.granted && slot.fuel > quota;
+            let fuel = limits_of(&self.quotas, &self.org_quotas, &slot.payer).1;
+            slot.refused |= !slot.granted && slot.fuel > fuel;
         }
         let mut granted_in: BTreeMap<String, usize> = BTreeMap::new();
         let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
@@ -1049,10 +1105,9 @@ impl SystemState {
             if *used >= self.pool_capacity(&pool) {
                 continue;
             }
+            let (max_runs, max_fuel, _) = self.payer_quotas(&payer);
             let held = load.entry(payer.clone()).or_default();
-            if held.0 < self.quotas.max_concurrent_runs_per_org
-                && held.1.saturating_add(fuel) <= self.quotas.compute_fuel_per_org
-            {
+            if held.0 < max_runs && held.1.saturating_add(fuel) <= max_fuel {
                 held.0 += 1;
                 held.1 += fuel;
                 *used += 1;
@@ -3779,6 +3834,16 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             states(&st, "cluster", "__set_quotas", &|a| *a == args)?;
             Ok(Some(used))
         }
+        SystemCmd::SetOrgQuotas {
+            payer,
+            quotas,
+            proof,
+        } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "payer": payer, "quotas": quotas });
+            states(&st, "cluster", "__set_org_quotas", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         SystemCmd::SetPools { pools, proof } => {
             let (st, used) = fresh(operator(proof)?)?;
             let args = json!({ "pools": pools });
@@ -4372,6 +4437,15 @@ pub enum SystemCmd {
     },
     SetQuotas {
         quotas: Quotas,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The operator sets one payer's quota overrides (`cluster / __set_org_quotas / { payer,
+    /// quotas }`); all `None` removes them.
+    SetOrgQuotas {
+        payer: String,
+        quotas: OrgQuotas,
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,
@@ -5617,9 +5691,9 @@ impl SystemMachine {
                 }
                 // A personal app's files move to the new owner's quota.
                 let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
+                let new_payer = format!("account:{to}");
                 if app.org.is_none()
-                    && s.file_bytes(&format!("account:{to}")).saturating_add(held)
-                        > s.quotas.max_file_bytes_per_org
+                    && s.file_bytes(&new_payer).saturating_add(held) > s.payer_quotas(&new_payer).2
                 {
                     return Err("quota exceeded: file bytes");
                 }
@@ -5668,8 +5742,9 @@ impl SystemMachine {
                 let app = s.apps.get(&app_id).ok_or("no such app")?;
                 let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
                 let now = if delta >= 0 {
-                    let total = s.file_bytes(&crate::usage::payer(app));
-                    if total.saturating_add(delta.unsigned_abs()) > s.quotas.max_file_bytes_per_org
+                    let payer = crate::usage::payer(app);
+                    if s.file_bytes(&payer).saturating_add(delta.unsigned_abs())
+                        > s.payer_quotas(&payer).2
                     {
                         return Err("quota exceeded: file bytes");
                     }
@@ -5696,7 +5771,7 @@ impl SystemMachine {
                         Some((RUN_NOT_PAYER, true))
                     } else if fuel > calimero_app_host::MAX_COMPUTE_FUEL {
                         Some((RUN_FUEL_OVER_MAX, false))
-                    } else if fuel > s.quotas.compute_fuel_per_org {
+                    } else if fuel > s.payer_quotas(&payer).1 {
                         Some((RUN_FUEL_OVER_QUOTA, false))
                     } else if pool.is_none() {
                         Some((RUN_NO_POOL, false))
@@ -6224,6 +6299,21 @@ impl SystemMachine {
             }
             SystemCmd::SetQuotas { quotas, .. } => {
                 s.quotas = quotas;
+                s.grant_runs();
+                Ok(Value::Null)
+            }
+            SystemCmd::SetOrgQuotas { payer, quotas, .. } => {
+                if payer.is_empty() || payer.len() > MAX_PAYER_BYTES {
+                    return Err("a payer is named, in at most 128 bytes");
+                }
+                if !s.org_quotas.contains_key(&payer) && s.org_quotas.len() >= MAX_ORG_QUOTAS {
+                    return Err("quota exceeded: org quota overrides");
+                }
+                if quotas == OrgQuotas::default() {
+                    let _gone = s.org_quotas.remove(&payer);
+                } else {
+                    let _prev = s.org_quotas.insert(payer, quotas);
+                }
                 s.grant_runs();
                 Ok(Value::Null)
             }
