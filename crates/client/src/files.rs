@@ -226,7 +226,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{Notify, RwLock};
+    use tokio::sync::Notify;
 
     use super::FILE_PART_BYTES;
     use crate::{Client, Error, Policy};
@@ -471,13 +471,8 @@ mod tests {
             server.public_key(),
         ));
         let client = Client {
-            base,
-            http,
+            transport: crate::Transport::from_parts(base, http, sealed),
             policy: Policy::default(),
-            sealed,
-            auth: RwLock::new(None),
-            session: RwLock::new(None),
-            refreshing: tokio::sync::Mutex::new(()),
         };
         (client, mock)
     }

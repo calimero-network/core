@@ -232,6 +232,24 @@ impl Transport {
         })
     }
 
+    /// A transport over a sealed channel made elsewhere (a test's, sealed to
+    /// a known key).
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        base: Url,
+        http: reqwest::Client,
+        sealed: Arc<SealedTransport>,
+    ) -> Self {
+        Self {
+            base,
+            http,
+            sealed,
+            auth: RwLock::new(None),
+            session: RwLock::new(None),
+            refreshing: tokio::sync::Mutex::new(()),
+        }
+    }
+
     /// The node's base URL (ends in `/`).
     #[must_use]
     pub fn base(&self) -> &Url {
