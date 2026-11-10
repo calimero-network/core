@@ -94,6 +94,12 @@ struct JobNode {
     /// Milliseconds every output route waits before it answers (feature `testing`).
     #[cfg(feature = "testing")]
     outputs_delay_ms: AtomicU64,
+    /// How many output requests still fail after `outputs_slow` (feature `testing`).
+    #[cfg(feature = "testing")]
+    outputs_failing: std::sync::atomic::AtomicU32,
+    /// How long a failing output request waits before it answers an error (feature `testing`).
+    #[cfg(feature = "testing")]
+    outputs_slow: AtomicU64,
 }
 
 impl JobNode {
@@ -152,6 +158,14 @@ impl RunningJob {
     pub fn delay_outputs(&self, delay: std::time::Duration) {
         let ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
         self.job.outputs_delay_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Makes the next `times` output requests wait `delay` and then answer an error. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_outputs_slowly(&self, delay: std::time::Duration, times: u32) {
+        let ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+        self.job.outputs_slow.store(ms, Ordering::Relaxed);
+        self.job.outputs_failing.store(times, Ordering::Relaxed);
     }
 
     /// The hashes of the components this node holds. Tests only.
@@ -218,6 +232,10 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         outputs_fail: AtomicBool::new(false),
         #[cfg(feature = "testing")]
         outputs_delay_ms: AtomicU64::new(0),
+        #[cfg(feature = "testing")]
+        outputs_failing: std::sync::atomic::AtomicU32::new(0),
+        #[cfg(feature = "testing")]
+        outputs_slow: AtomicU64::new(0),
     });
     let router = Router::new()
         .route("/health", get(health))
