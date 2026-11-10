@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::Executor;
-use common::{mpk_with, signed_up, Cluster, PUBLISHER};
+use common::{mpk_needing, mpk_with, signed_up, Cluster, PUBLISHER};
 use serde_json::{json, Value};
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
@@ -433,4 +433,177 @@ async fn a_release_that_changes_only_compute_code_gives_its_app_its_own_compute_
         Some(sha256_hex(&job2)),
         "upgraded to the second release"
     );
+}
+
+/// The runtime (`Config::release`) of every node but node 4.
+const NEW_RUNTIME: &str = "1.0.0";
+/// Node 4's runtime: older than [`NEEDS_RUNTIME`].
+const OLD_RUNTIME: &str = "0.9.0";
+/// What release 1.1.0 of `com.test.runtime` declares as its `minRuntimeVersion`.
+const NEEDS_RUNTIME: &str = "0.10.0";
+
+/// Four nodes, node 4 on an older runtime than the rest. All four attest the
+/// same mero-tee release, so release approvals let any of them hold an app:
+/// only the runtime tells them apart. `com.test.runtime` 1.0.0 needs any
+/// runtime, 1.1.0 needs [`NEEDS_RUNTIME`]; `owner` has two apps of 1.0.0, the
+/// first on nodes 1-3 and the second (placed by load) on node 4.
+async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String) {
+    let c = Cluster::start_with(4, |cfg| {
+        cfg.allow_unsigned_bundles = false;
+        cfg.tee_release = Some("1.0.0".into());
+        cfg.release = if cfg.node_id == 4 {
+            OLD_RUNTIME
+        } else {
+            NEW_RUNTIME
+        }
+        .into();
+    })
+    .await;
+    let (owner, pk) = signed_up(&c, 0, "owner").await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let kv = common::component("kv");
+    for (version, wasm, needs) in [
+        ("1.0.0", kv.clone(), "0.1.0"),
+        (
+            "1.1.0",
+            patched(&kv, |a| a["build"] = json!(2)),
+            NEEDS_RUNTIME,
+        ),
+    ] {
+        let _installed = owner
+            .upload_package(mpk_needing(
+                "com.test.runtime",
+                version,
+                &wasm,
+                None,
+                needs,
+                &key,
+            ))
+            .await
+            .unwrap();
+    }
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let mut apps = Vec::new();
+    for name in ["on-new-nodes", "on-node-4"] {
+        let created = owner
+            .post(
+                "apps",
+                json!({ "name": name, "package": "com.test.runtime", "version": "1.0.0" }),
+            )
+            .await
+            .unwrap();
+        apps.push(created["appId"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(node.app(&apps[0]).await.unwrap().replicas, vec![1, 2, 3]);
+    assert_eq!(
+        node.app(&apps[1]).await.unwrap().replicas,
+        vec![1, 2, 4],
+        "the least-loaded node holds the second app"
+    );
+    let second = apps.pop().unwrap();
+    let first = apps.pop().unwrap();
+    (c, owner, pk, first, second)
+}
+
+/// `app`'s entry in the account's own report (`GET /auth/apps`).
+async fn reported(owner: &Client, app: &str) -> Value {
+    let report = owner.get("auth/apps").await.unwrap();
+    report["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["app"] == json!(app))
+        .cloned()
+        .unwrap_or_else(|| panic!("{app} not reported: {report}"))
+}
+
+/// A release whose `minRuntimeVersion` a replica's node falls short of is not
+/// one its app can move to: the upgrade is refused `409 RUNTIME_TOO_OLD`
+/// naming the node, before anything runs, and the report says so ahead of it:
+/// the newest release the app can reach, and why the latest is not it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_needing_a_newer_runtime_than_a_replica_has_is_refused_and_reported() {
+    let (c, owner, mut pk, on_new, on_old) = mixed_runtimes().await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+
+    let a = reported(&owner, &on_old).await;
+    assert_eq!(a["availableVersions"], json!(["1.1.0"]), "{a}");
+    assert_eq!(a["latestReachable"], Value::Null, "{a}");
+    assert_eq!(a["latestBlocked"]["version"], json!("1.1.0"), "{a}");
+    assert_eq!(a["latestBlocked"]["reason"], json!("runtime"), "{a}");
+    assert_eq!(
+        a["latestBlocked"]["minRuntimeVersion"],
+        json!(NEEDS_RUNTIME),
+        "{a}"
+    );
+    assert_eq!(
+        a["latestBlocked"]["nodes"],
+        json!([{ "node": 4, "runtime": OLD_RUNTIME }]),
+        "{a}"
+    );
+    let a = reported(&owner, &on_new).await;
+    assert_eq!(a["latestReachable"], json!("1.1.0"), "{a}");
+    assert!(a.get("latestBlocked").is_none(), "{a}");
+
+    let before = node.app(&on_old).await.unwrap().bundle;
+    let e = owner
+        .upgrade_app(&on_old, json!({ "version": "1.1.0" }), &mut pk)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("RUNTIME_TOO_OLD"), "{e}");
+    assert!(
+        matches!(e, calimero_client::Error::Api { status: 409, .. }),
+        "{e}"
+    );
+    let details = e.details().unwrap();
+    assert_eq!(details["minRuntimeVersion"], json!(NEEDS_RUNTIME), "{e:?}");
+    assert_eq!(
+        details["nodes"],
+        json!([{ "node": 4, "runtime": OLD_RUNTIME }]),
+        "{e:?}"
+    );
+    assert_eq!(node.app(&on_old).await.unwrap().bundle, before);
+
+    // The app whose replicas all run a new enough runtime upgrades.
+    let up = owner
+        .upgrade_app(&on_new, json!({ "version": "1.1.0" }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+}
+
+/// Placement never puts an app on a node whose runtime is below its release's
+/// `minRuntimeVersion`, however lightly loaded, and the operator cannot move
+/// one there either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn placement_and_moves_keep_an_app_off_nodes_below_its_runtime() {
+    let (c, owner, _pk, _on_new, _on_old) = mixed_runtimes().await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    // Loads are now 2, 2, 1, 1: by load alone the next app would take node 4.
+    let created = owner
+        .post(
+            "apps",
+            json!({ "name": "needs-new", "package": "com.test.runtime", "version": "1.1.0" }),
+        )
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    assert_eq!(node.app(&app).await.unwrap().replicas, vec![1, 2, 3]);
+
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let e = common::ops_signed(
+        &ops,
+        &format!("ops/apps/{app}/replicas"),
+        json!({ "replicas": [1, 2, 4] }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), Some("RUNTIME_TOO_OLD"), "{e}");
+    assert_eq!(
+        e.details().unwrap()["nodes"],
+        json!([{ "node": 4, "runtime": OLD_RUNTIME }]),
+        "{e:?}"
+    );
+    assert_eq!(node.app(&app).await.unwrap().replicas, vec![1, 2, 3]);
 }
