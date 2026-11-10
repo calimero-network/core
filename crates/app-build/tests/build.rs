@@ -197,3 +197,13 @@ fn the_cache_keeps_both_components_and_whether_there_is_a_compute_one() {
     let plain_again = build_components_cached(&echo, &[], cache.path()).expect("cached");
     assert!(plain_again.compute.is_none());
 }
+
+#[test]
+fn a_crate_with_a_cdylib_dependency_packages_its_own_component() {
+    let target = tempfile::tempdir().expect("tempdir");
+    let top = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/chain/top");
+    let built = build_component(&top, target.path()).expect("build");
+    let abi = built.abi.expect("an ABI");
+    let methods = abi["methods"].as_object().expect("methods");
+    assert_eq!(methods.keys().collect::<Vec<_>>(), ["top_only"]);
+}
