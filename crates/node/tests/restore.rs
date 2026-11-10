@@ -86,10 +86,12 @@ async fn leader_of(c: &Cluster, app: &str) -> usize {
 }
 
 /// Back `app` up on its leader; answers that node and the backup's file name.
+/// The leader backs up every app it leads, so a backup of `app` may be there
+/// already from backing up another app it leads, and this call writes none.
 async fn back_up(c: &Cluster, app: &str) -> (usize, String) {
     let at = leader_of(c, app).await;
     let node = &c.nodes[at].as_ref().unwrap().node;
-    assert!(node.backup().await.unwrap() >= 1);
+    let _written = node.backup().await.unwrap();
     let mut names: Vec<String> = std::fs::read_dir(backup_dir(c, at).join(app))
         .unwrap()
         .filter_map(Result::ok)
@@ -97,7 +99,7 @@ async fn back_up(c: &Cluster, app: &str) -> (usize, String) {
         .filter(|n| n.ends_with(".snap"))
         .collect();
     names.sort();
-    (at, names.pop().unwrap())
+    (at, names.pop().expect("a backup of the app on its leader"))
 }
 
 fn backup_dir(c: &Cluster, i: usize) -> PathBuf {
@@ -151,7 +153,9 @@ async fn an_app_is_restored_from_its_backup_on_every_replica_and_takes_writes() 
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let details = e.details().unwrap();
     assert_eq!(details["method"], "__restore_app");
-    assert_eq!(details["args"]["backup"], json!(name));
+    // `args` is the exact JSON text the operator signs.
+    let args: Value = serde_json::from_str(details["args"].as_str().unwrap()).unwrap();
+    assert_eq!(args["backup"], json!(name));
 
     let out = restore(&c, at, &kv, json!({ "backup": name }))
         .await

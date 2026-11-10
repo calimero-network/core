@@ -11911,6 +11911,9 @@ mod tests {
     #[test]
     fn a_restore_is_signed_over_its_backup_and_ends_in_its_own_group() {
         let (mut m, ..) = proven_cluster();
+        // The fixture puts the app in group 2 directly; `CreateApp` would have
+        // allocated that group and left `next_group` at it.
+        m.state.next_group = m.state.apps["app"].group;
         let _prev = m.state.bundles.insert(
             "b0".into(),
             serde_json::from_value(json!({ "hash": "b0", "size": 1, "uploadedBy": "alice" }))
