@@ -710,6 +710,19 @@ impl Db {
         Ok(out)
     }
 
+    /// Whether the store holds no row in any column (new, or created and never written).
+    pub(crate) fn is_empty(&self) -> eyre::Result<bool> {
+        for col in Column::ALL {
+            let mut it = self.db.raw_iterator_cf(&self.cf(col)?);
+            it.seek_to_first();
+            if it.valid() {
+                return Ok(false);
+            }
+            it.status()?;
+        }
+        Ok(true)
+    }
+
     /// [`Db::scan`] over a consistent point-in-time view of the state column.
     pub(crate) fn scan_state_snapshot(
         &self,

@@ -546,8 +546,28 @@ pub struct TickEntry {
     pub outcome: Outcome,
 }
 
+/// The entry format this release writes, and the newest it reads ([`entry_format`]).
+/// Format 1 is every entry logged so far, which carries no marker. A change to what an entry
+/// holds that a replica on the release before cannot apply as the leader meant it (a field it
+/// would ignore, a meaning that changes) raises it; the release that raises it keeps applying
+/// format 1, and writes the new format only once every replica of the group reads it.
+pub const ENTRY_FORMAT: u32 = 1;
+
+/// The format of a component entry: `{"v":N,` as the start of an entry marks format `N` (the
+/// writer puts the marker first, so a replica reads it without decoding the entry); no marker
+/// is format 1; `None` for a marker that is not a number.
+#[must_use]
+pub fn entry_format(command: &[u8]) -> Option<u32> {
+    let Some(rest) = command.strip_prefix(b"{\"v\":") else {
+        return Some(1);
+    };
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    std::str::from_utf8(&rest[..digits]).ok()?.parse().ok()
+}
+
 /// A component app's entries. Their `op` names are not a wasmer app's
-/// (`app::AppCmd`), so neither executor's entries decode as the other's.
+/// (`app::AppCmd`), so neither executor's entries decode as the other's. Their format is
+/// [`ENTRY_FORMAT`], which also covers what they carry ([`Outcome`], [`FileMark`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum ComponentCmd {
@@ -1295,6 +1315,37 @@ impl AppMachine {
         index: u64,
         command: &[u8],
     ) -> Vec<u8> {
+        // An entry a later release wrote in a newer format is not applied in part: it answers
+        // as a malformed one does (the same on every replica of this release), and says why.
+        match entry_format(command) {
+            Some(format) if format <= ENTRY_FORMAT => {}
+            format => {
+                tracing::error!(
+                    index,
+                    ?format,
+                    "an entry in a format this release does not read: applied as a no-op"
+                );
+                let detail = format.map_or_else(
+                    || "entry format marker is not a number".to_owned(),
+                    |f| {
+                        format!(
+                            "entry format {f}, which a later release wrote; this release \
+                             reads entry formats up to {ENTRY_FORMAT}"
+                        )
+                    },
+                );
+                return serde_json::to_vec(&Applied {
+                    index,
+                    status: Status::Trap,
+                    result: Value::Null,
+                    error: json!({ "kind": "Fault", "detail": detail }),
+                    events: Vec::new(),
+                    conflict: true,
+                    timeout: false,
+                })
+                .unwrap_or_default();
+            }
+        }
         let cmd = serde_json::from_slice::<ComponentCmd>(command);
         let entry_ts_ms = match &cmd {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
@@ -2004,6 +2055,34 @@ mod tests {
 
     fn queued(r: &Rig) -> Vec<String> {
         sorted(r.machine.state.component.head.collect.clone())
+    }
+
+    /// Every entry logged so far carries no format marker: format 1, applied as before. One a
+    /// later release marks newer is applied as a no-op that names its format, so a replica
+    /// still on this release never applies part of it.
+    #[test]
+    fn an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies() {
+        assert_eq!(entry_format(&init(0)), Some(1));
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let unmarked = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        let newer = [&b"{\"v\":2,"[..], &unmarked[1..]].concat();
+        assert_eq!(entry_format(&newer), Some(2));
+        let a = r.apply(2, &newer);
+        assert!(a.conflict);
+        let detail = a.error["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("entry format 2") && detail.contains("up to 1"),
+            "{detail}"
+        );
+        assert!(held(&r).is_empty(), "nothing of it applied");
+        assert_eq!(r.machine.state.last_index, 2, "its position moves");
+        let garbled = [&b"{\"v\":\"x\","[..], &unmarked[1..]].concat();
+        assert_eq!(entry_format(&garbled), None);
+        assert!(r.apply(3, &garbled).conflict);
+        let ok = file_call(3, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(4, &ok).conflict);
+        assert_eq!(held(&r), [fid(1)]);
     }
 
     #[test]

@@ -107,7 +107,15 @@ pub(crate) struct LegacySnapshot {
 /// The state row an in-memory machine's checkpoint lives in.
 const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 
-const SNAPSHOT_MAGIC: &[u8] = b"CALIMERO-SNAPSHOT-1\n";
+/// The snapshot file format this release writes, and the newest it reads: the number in the
+/// file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 is the only one so far (every
+/// release since the store, backups included). A change to the framing, or to the rows a
+/// snapshot carries (`format::STORE_FORMAT`), raises it.
+pub const SNAPSHOT_FORMAT: u32 = 1;
+/// The first line of a snapshot file, before its format number.
+const SNAPSHOT_MAGIC_PREFIX: &[u8] = b"CALIMERO-SNAPSHOT-";
+/// The longest format number a first line may carry (a `u32`).
+const MAX_FORMAT_DIGITS: usize = 10;
 /// Rows per frame stop growing past this many plaintext bytes.
 const FRAME_BYTES: usize = 1024 * 1024;
 /// A frame is refused past this size when read back.
@@ -196,6 +204,36 @@ impl FrameWriter<'_> {
     }
 }
 
+/// The first line of a snapshot file this release writes.
+fn first_line() -> Vec<u8> {
+    [
+        SNAPSHOT_MAGIC_PREFIX,
+        format!("{SNAPSHOT_FORMAT}\n").as_bytes(),
+    ]
+    .concat()
+}
+
+/// The first line of a snapshot file: its format number. Anything else is not a snapshot file.
+fn read_format(r: &mut impl Read) -> eyre::Result<u32> {
+    let not_a_snapshot = || eyre::eyre!("not a snapshot file");
+    let mut prefix = [0; SNAPSHOT_MAGIC_PREFIX.len()];
+    r.read_exact(&mut prefix).map_err(|_| not_a_snapshot())?;
+    if prefix != SNAPSHOT_MAGIC_PREFIX {
+        return Err(not_a_snapshot());
+    }
+    let mut digits = String::new();
+    loop {
+        let mut b = [0_u8; 1];
+        r.read_exact(&mut b).map_err(|_| not_a_snapshot())?;
+        match b[0] {
+            b'\n' if !digits.is_empty() => break,
+            d @ b'0'..=b'9' if digits.len() < MAX_FORMAT_DIGITS => digits.push(char::from(d)),
+            _ => return Err(not_a_snapshot()),
+        }
+    }
+    digits.parse().map_err(|_| not_a_snapshot())
+}
+
 /// Read a snapshot file back, frame by frame: `f(key, sealed row)`.
 fn read_frames(
     frames: &crate::store::Sealer,
@@ -205,10 +243,15 @@ fn read_frames(
     mut f: impl FnMut(&[u8], &[u8]) -> eyre::Result<()>,
 ) -> eyre::Result<()> {
     let mut r = BufReader::new(file);
-    let mut magic = vec![0; SNAPSHOT_MAGIC.len()];
-    r.read_exact(&mut magic)?;
-    if magic != SNAPSHOT_MAGIC {
-        eyre::bail!("not a snapshot file");
+    let format = read_format(&mut r)?;
+    if format > SNAPSHOT_FORMAT {
+        eyre::bail!(
+            "snapshot file format {format}, which a later release wrote; this release reads \
+             snapshot format {SNAPSHOT_FORMAT}"
+        );
+    }
+    if format != SNAPSHOT_FORMAT {
+        eyre::bail!("snapshot file format {format}, which no release wrote");
     }
     let mut n = 0_u64;
     loop {
@@ -387,7 +430,7 @@ impl<M: Machine> StateMachine<M> {
         let name = format!("g{}-{}.snap", self.group, meta.snapshot_id);
         let path = self.snapshot_path(&name);
         let mut out = BufWriter::new(std::fs::File::create(&path)?);
-        out.write_all(SNAPSHOT_MAGIC)?;
+        out.write_all(&first_line())?;
         let mut w = FrameWriter {
             db: &self.db,
             group: self.group,
@@ -696,4 +739,56 @@ pub fn read_snapshot_file(
             f(k, &plain)
         },
     )
+}
+
+#[cfg(test)]
+mod snapshot_format {
+    use super::*;
+
+    fn read_header(bytes: &[u8]) -> eyre::Result<u32> {
+        read_format(&mut &bytes[..])
+    }
+
+    /// Every snapshot and backup written so far begins `CALIMERO-SNAPSHOT-1\n`.
+    #[test]
+    fn the_first_line_written_so_far_reads_as_format_1() {
+        assert_eq!(read_header(b"CALIMERO-SNAPSHOT-1\n\x01").unwrap(), 1);
+        assert_eq!(
+            first_line(),
+            b"CALIMERO-SNAPSHOT-1\n",
+            "what this release writes, a node of the release before reads"
+        );
+    }
+
+    #[test]
+    fn anything_else_is_not_a_snapshot() {
+        for bad in [
+            &b""[..],
+            b"CALIMERO-SNAPSHOT-",
+            b"CALIMERO-SNAPSHOT-\n",
+            b"CALIMERO-SNAPSHOT-1",
+            b"CALIMERO-SNAPSHOT-x\n",
+            b"CALIMERO-SNAPSHOT-12345678901\n",
+            b"calimero-snapshot-1\n",
+        ] {
+            let e = read_header(bad).unwrap_err().to_string();
+            assert_eq!(e, "not a snapshot file", "{bad:?}");
+        }
+    }
+
+    /// A node on this release that is sent (or restores) a snapshot from a later one says so,
+    /// instead of failing on its frames as if the file were damaged.
+    #[test]
+    fn a_snapshot_from_a_later_release_is_refused_by_its_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g1-x.snap");
+        std::fs::write(&path, b"CALIMERO-SNAPSHOT-2\n\x01\x00\x00\x00\x00").unwrap();
+        let e = read_snapshot_file(&[0; 32], 1, "x", &path, |_, _| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("format 2") && e.contains("snapshot format 1"),
+            "{e}"
+        );
+    }
 }
