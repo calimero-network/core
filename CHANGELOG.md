@@ -27,6 +27,22 @@
 
 ### Security
 
+- **An app on a team is reached and managed by its owner only while they are
+  in that team.** An owner always reached their own app, so a person removed
+  from an app's team (Chat's, say) kept every channel they had created on it,
+  and could still change, transfer or delete it. Now, for an app with `team`
+  access, the owner reaches it, receives its events and holds the owner's
+  powers (access, metadata, transfer, deletion, upgrades, upgrade keys, files,
+  blobs) only while in that team, as #4893 asked of the organization; one who
+  is removed from the team, leaves it, or loses it when an open team closes
+  keeps their name on the app and gets it back on rejoining. The
+  organization's admins transfer such an app. Judged where the commands apply:
+  `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp`,
+  `CreateApiKey` and `ScopeApps` carry `owner_in_team`, which the API always
+  sets; an entry an earlier release logged replays judging the owner without
+  the team. In a rolling upgrade a node on the earlier release judges reads
+  without the team until it is upgraded.
+
 - **An organization's app is managed by its owner only while they are a
   member.** Since #4891 an owner removed from the organization no longer
   reached the app, but could still change it: make it `public` and reach it

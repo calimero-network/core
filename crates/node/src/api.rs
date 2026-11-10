@@ -2643,6 +2643,7 @@ async fn apikey_create(
             record,
             consent: c.consent,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({ "keyId": key_id, "key": key })))
@@ -3374,6 +3375,7 @@ async fn app_delete(
             app_id: app_id.clone(),
             actor: account,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({ "appId": app_id, "deleted": true })))
@@ -4463,6 +4465,7 @@ async fn run_upgrade(
             consent: who.consent,
             release,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({
@@ -4669,6 +4672,7 @@ async fn start_run(
                             consent: who.consent.clone(),
                             release: t.release.clone(),
                             owner_in_org: true,
+                            owner_in_team: true,
                         })
                         .await;
                     if let Err(e) = written {
@@ -5074,6 +5078,7 @@ async fn app_access(
             access: body.access,
             actor: account,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5232,6 +5237,7 @@ async fn app_transfer(
             actor,
             consent,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?,
     ))
@@ -5323,6 +5329,7 @@ async fn app_metadata(
             metadata: body.metadata,
             actor,
             owner_in_org: true,
+            owner_in_team: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -6018,6 +6025,7 @@ async fn app_teams_scope(
             nonce: b64url(&random::<16>()),
             actor,
             consent,
+            owner_in_team: true,
         })
         .await?,
     ))
