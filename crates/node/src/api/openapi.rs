@@ -853,7 +853,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         get("/apps/{app}/blobs/{id}/info", "blob_info", AppAccess, "A blob's size")
             .ok("{ blobId: string, id: string, size: uint }")
-            .errors(&[(404, "NOT_FOUND"), (404, "NOT_SUPPORTED")]),
+            .errors(&[(404, "NOT_FOUND"), (409, "NOT_SUPPORTED")]),
         post("/apps/{app}/blobs/{id}/revoke", "blob_revoke", AppAccess, "Invalidate a blob's grants")
             .about("The grants made so far for a published blob; the owner or an organization admin.")
             .ok("{ index: uint }")
@@ -1090,13 +1090,13 @@ fn operations() -> Vec<Op> {
             .json::<super::NodeBody>(r#"{ id: uint, addr: string, zone?: string, operatorProof?: #OperatorProof, role?: "replica" | "job", pool?: string }"#)
             .ok("{}")
             .operator()
-            .errors(&[(400, "BAD_ADDRESS"), (400, "BAD_POOL"), (400, "POOL_FOR_JOB_NODES"), (409, "ADDRESS_TAKEN"), (409, "NODE_HOLDS_CLUSTER")]),
+            .errors(&[(400, "BAD_ADDRESS"), (400, "BAD_POOL"), (400, "POOL_FOR_JOB_NODES"), (409, "ADDRESS_TAKEN"), (400, "NODE_HOLDS_CLUSTER")]),
         delete("/ops/nodes/{id}", "ops_remove_node", Ops, "Remove a node")
             .about("One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over `__remove_node / { id }`.")
             .proof_body()
             .ok("{ status: string }")
             .operator()
-            .errors(&[(409, "LAST_NODE"), (421, "NOT_LEADER")]),
+            .errors(&[(400, "LAST_NODE"), (421, "NOT_LEADER")]),
         get("/ops/nodes/{id}/receipt-key", "account_proof::ops_receipt_key", Ops, "A node's receipt key")
             .ok("{ node: uint, key: string, release: string, attestedAt: uint }")
             .errors(&[(404, "NOT_FOUND")]),
@@ -1181,7 +1181,7 @@ fn operations() -> Vec<Op> {
             .json::<super::OpsUpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, migrate?: string, operatorProof?: #OperatorProof }")
             .ok("{ index: uint, status: string, error: any, compute: bool }")
             .operator()
-            .errors(&[(400, "AMBIGUOUS_COMPUTE"), (400, "BAD_REQUEST"), (400, "NOT_INSTALLED"), (409, "RELEASE_DEADLINE"), (422, "UPGRADE_FAILED")]),
+            .errors(&[(400, "AMBIGUOUS_COMPUTE"), (400, "BAD_REQUEST"), (409, "NOT_INSTALLED"), (409, "RELEASE_DEADLINE"), (422, "UPGRADE_FAILED")]),
         post("/ops/orgs/{org}/upgrade", "ops_org_upgrade", Ops, "An operator's upgrade run")
             .json::<super::OrgUpgradeBody>("{ package: string, version: string, team?: string, cascade?: bool, migrate?: string, confirm?: #Confirm, operatorProof?: #OperatorProof }")
             .ok("#UpgradeRun")

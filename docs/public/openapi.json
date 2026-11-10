@@ -175,7 +175,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -198,7 +198,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -372,7 +372,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -437,7 +437,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -460,7 +460,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -532,7 +532,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -555,7 +555,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -631,7 +631,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -711,7 +711,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -734,7 +734,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -849,7 +849,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -980,7 +980,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1118,7 +1118,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1201,7 +1201,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1224,7 +1224,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1328,7 +1328,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1351,7 +1351,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1374,7 +1374,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1465,7 +1465,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1488,7 +1488,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`; `NOT_SUPPORTED`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1500,7 +1500,29 @@
                       "properties": {
                         "error": {
                           "enum": [
-                            "NOT_FOUND",
+                            "NOT_FOUND"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`NOT_SUPPORTED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "enum": [
                             "NOT_SUPPORTED"
                           ]
                         }
@@ -1572,7 +1594,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1595,7 +1617,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1618,7 +1640,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1693,7 +1715,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1716,7 +1738,7 @@
             }
           },
           "429": {
-            "description": "`RATE_LIMITED`",
+            "description": "`RATE_LIMITED`: a node's limit on open streams or ceremonies",
             "content": {
               "application/json": {
                 "schema": {
@@ -1842,7 +1864,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -1865,7 +1887,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2006,7 +2028,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2114,7 +2136,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2261,7 +2283,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2333,7 +2355,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2432,7 +2454,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2558,7 +2580,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2652,7 +2674,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2675,7 +2697,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2798,7 +2820,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2821,7 +2843,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2844,7 +2866,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2890,7 +2912,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -3067,7 +3089,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3229,7 +3251,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3252,7 +3274,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3275,7 +3297,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -3353,7 +3375,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3462,7 +3484,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3551,7 +3573,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3657,7 +3679,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3680,7 +3702,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3755,7 +3777,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3778,7 +3800,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3880,7 +3902,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -3987,7 +4009,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -4010,7 +4032,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4033,7 +4055,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -4174,7 +4196,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -4197,7 +4219,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4244,7 +4266,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -4392,7 +4414,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -4415,7 +4437,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4522,7 +4544,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -4648,7 +4670,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -4671,7 +4693,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4804,7 +4826,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -4904,7 +4926,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -4927,7 +4949,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5048,7 +5070,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5071,7 +5093,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5137,7 +5159,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5214,7 +5236,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5237,7 +5259,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5318,7 +5340,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5341,7 +5363,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5404,7 +5426,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5548,7 +5570,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5571,7 +5593,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5594,7 +5616,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -5679,7 +5701,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5702,7 +5724,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5804,7 +5826,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -5827,7 +5849,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5850,7 +5872,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5873,7 +5895,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -5978,7 +6000,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -6030,7 +6052,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -6053,7 +6075,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6105,7 +6127,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -6128,7 +6150,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6322,7 +6344,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -6345,7 +6367,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -6448,7 +6470,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -6471,7 +6493,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6494,7 +6516,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -6571,7 +6593,7 @@
             }
           },
           "429": {
-            "description": "`RATE_LIMITED`",
+            "description": "`RATE_LIMITED`: a node's limit on open streams or ceremonies",
             "content": {
               "application/json": {
                 "schema": {
@@ -6768,7 +6790,7 @@
             }
           },
           "429": {
-            "description": "`RATE_LIMITED`",
+            "description": "`RATE_LIMITED`: a node's limit on open streams or ceremonies",
             "content": {
               "application/json": {
                 "schema": {
@@ -6916,7 +6938,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -6981,7 +7003,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7004,7 +7026,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7115,7 +7137,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7138,7 +7160,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7161,7 +7183,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -7244,7 +7266,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7267,7 +7289,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7367,7 +7389,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7390,7 +7412,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7413,7 +7435,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -7517,7 +7539,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7540,7 +7562,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7563,7 +7585,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -7656,7 +7678,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7679,7 +7701,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7702,7 +7724,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -7782,7 +7804,7 @@
             }
           },
           "429": {
-            "description": "`RATE_LIMITED`",
+            "description": "`RATE_LIMITED`: a node's limit on open streams or ceremonies",
             "content": {
               "application/json": {
                 "schema": {
@@ -7874,7 +7896,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -7897,7 +7919,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7920,7 +7942,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -8015,7 +8037,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8061,7 +8083,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -8185,7 +8207,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8274,7 +8296,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8397,7 +8419,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8420,7 +8442,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8443,7 +8465,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -8564,7 +8586,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8587,7 +8609,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8649,7 +8671,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8672,7 +8694,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8695,7 +8717,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -8773,7 +8795,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8872,7 +8894,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -8895,7 +8917,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9049,7 +9071,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9072,7 +9094,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9158,7 +9180,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9181,7 +9203,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9204,7 +9226,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -9345,7 +9367,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9368,7 +9390,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9391,7 +9413,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -9445,7 +9467,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9468,7 +9490,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9578,7 +9600,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9601,7 +9623,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9624,7 +9646,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -9730,7 +9752,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9753,7 +9775,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9776,7 +9798,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -9841,7 +9863,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9907,7 +9929,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -9930,7 +9952,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -10038,7 +10060,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10061,7 +10083,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -10084,7 +10106,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -10215,7 +10237,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10238,7 +10260,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -10261,7 +10283,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -10284,7 +10306,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -10397,7 +10419,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10420,7 +10442,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -10443,7 +10465,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -10466,7 +10488,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -10535,7 +10557,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10669,7 +10691,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10692,7 +10714,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -10789,7 +10811,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10812,7 +10834,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -10937,7 +10959,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -10960,7 +10982,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11007,7 +11029,7 @@
             }
           },
           "421": {
-            "description": "`NOT_LEADER`",
+            "description": "`NOT_LEADER`: send it to the leader named in `details.leaderUrl`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11030,7 +11052,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -11144,7 +11166,7 @@
             }
           },
           "400": {
-            "description": "`AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_INSTALLED`",
+            "description": "`AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed",
             "content": {
               "application/json": {
                 "schema": {
@@ -11157,8 +11179,7 @@
                         "error": {
                           "enum": [
                             "AMBIGUOUS_COMPUTE",
-                            "BAD_REQUEST",
-                            "NOT_INSTALLED"
+                            "BAD_REQUEST"
                           ]
                         }
                       }
@@ -11169,7 +11190,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11192,7 +11213,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11216,7 +11237,7 @@
             }
           },
           "409": {
-            "description": "`RELEASE_DEADLINE`",
+            "description": "`NOT_INSTALLED`; `RELEASE_DEADLINE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11228,6 +11249,7 @@
                       "properties": {
                         "error": {
                           "enum": [
+                            "NOT_INSTALLED",
                             "RELEASE_DEADLINE"
                           ]
                         }
@@ -11262,7 +11284,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -11323,7 +11345,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11346,7 +11368,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11406,7 +11428,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11429,7 +11451,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11511,7 +11533,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11534,7 +11556,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11581,7 +11603,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -11678,7 +11700,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11701,7 +11723,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11725,7 +11747,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -11815,7 +11837,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11838,7 +11860,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11862,7 +11884,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -11952,7 +11974,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -11975,7 +11997,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11999,7 +12021,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -12077,7 +12099,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12100,7 +12122,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12147,7 +12169,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -12202,7 +12224,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12225,7 +12247,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12316,7 +12338,7 @@
             }
           },
           "400": {
-            "description": "`BAD_ADDRESS`; `BAD_POOL`; `POOL_FOR_JOB_NODES`",
+            "description": "`BAD_ADDRESS`; `BAD_POOL`; `NODE_HOLDS_CLUSTER`; `POOL_FOR_JOB_NODES`",
             "content": {
               "application/json": {
                 "schema": {
@@ -12330,6 +12352,7 @@
                           "enum": [
                             "BAD_ADDRESS",
                             "BAD_POOL",
+                            "NODE_HOLDS_CLUSTER",
                             "POOL_FOR_JOB_NODES"
                           ]
                         }
@@ -12341,7 +12364,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12364,7 +12387,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12388,7 +12411,7 @@
             }
           },
           "409": {
-            "description": "`ADDRESS_TAKEN`; `NODE_HOLDS_CLUSTER`",
+            "description": "`ADDRESS_TAKEN`",
             "content": {
               "application/json": {
                 "schema": {
@@ -12400,8 +12423,7 @@
                       "properties": {
                         "error": {
                           "enum": [
-                            "ADDRESS_TAKEN",
-                            "NODE_HOLDS_CLUSTER"
+                            "ADDRESS_TAKEN"
                           ]
                         }
                       }
@@ -12412,7 +12434,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -12501,54 +12523,7 @@
               }
             }
           },
-          "401": {
-            "description": "`UNAUTHENTICATED`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Error"
-                    },
-                    {
-                      "properties": {
-                        "error": {
-                          "enum": [
-                            "UNAUTHENTICATED"
-                          ]
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Error"
-                    },
-                    {
-                      "properties": {
-                        "error": {
-                          "enum": [
-                            "BAD_OPERATOR_SIGNATURE",
-                            "FORBIDDEN"
-                          ]
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "409": {
+          "400": {
             "description": "`LAST_NODE`",
             "content": {
               "application/json": {
@@ -12571,8 +12546,55 @@
               }
             }
           },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "enum": [
+                            "UNAUTHENTICATED"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "error": {
+                          "enum": [
+                            "BAD_OPERATOR_SIGNATURE",
+                            "FORBIDDEN"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "421": {
-            "description": "`NOT_LEADER`",
+            "description": "`NOT_LEADER`: send it to the leader named in `details.leaderUrl`",
             "content": {
               "application/json": {
                 "schema": {
@@ -12595,7 +12617,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -12682,7 +12704,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12705,7 +12727,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12728,7 +12750,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -12837,7 +12859,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12860,7 +12882,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12959,7 +12981,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -12982,7 +13004,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13006,7 +13028,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -13029,7 +13051,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -13111,7 +13133,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13134,7 +13156,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13158,7 +13180,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -13262,7 +13284,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13285,7 +13307,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13344,7 +13366,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13367,7 +13389,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13454,7 +13476,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13477,7 +13499,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13539,7 +13561,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13562,7 +13584,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13632,7 +13654,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13655,7 +13677,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13779,7 +13801,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13802,7 +13824,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13855,7 +13877,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13878,7 +13900,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -13966,7 +13988,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -13989,7 +14011,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14037,7 +14059,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -14145,7 +14167,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14168,7 +14190,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14261,7 +14283,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14284,7 +14306,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14331,7 +14353,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -14410,7 +14432,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14433,7 +14455,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14457,7 +14479,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -14541,7 +14563,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14564,7 +14586,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14588,7 +14610,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -14668,7 +14690,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14691,7 +14713,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14715,7 +14737,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -14806,7 +14828,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14829,7 +14851,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14906,7 +14928,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -14929,7 +14951,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14953,7 +14975,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -15062,7 +15084,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15085,7 +15107,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15109,7 +15131,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -15163,7 +15185,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15186,7 +15208,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15265,7 +15287,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15288,7 +15310,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15312,7 +15334,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -15394,7 +15416,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15417,7 +15439,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15441,7 +15463,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -15515,7 +15537,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15538,7 +15560,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15620,7 +15642,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15643,7 +15665,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15754,7 +15776,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15777,7 +15799,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -15877,7 +15899,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -15900,7 +15922,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -15923,7 +15945,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -16002,7 +16024,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16025,7 +16047,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -16162,7 +16184,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16185,7 +16207,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16208,7 +16230,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -16321,7 +16343,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16344,7 +16366,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -16458,7 +16480,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16481,7 +16503,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16504,7 +16526,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -16637,7 +16659,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16660,7 +16682,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16683,7 +16705,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -16747,7 +16769,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16770,7 +16792,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16793,7 +16815,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -16903,7 +16925,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -16926,7 +16948,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16949,7 +16971,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -16972,7 +16994,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -17123,7 +17145,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17146,7 +17168,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -17169,7 +17191,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -17278,7 +17300,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17301,7 +17323,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -17324,7 +17346,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -17437,7 +17459,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17460,7 +17482,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -17483,7 +17505,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -17575,7 +17597,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17656,7 +17678,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17769,7 +17791,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17792,7 +17814,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -17815,7 +17837,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -17936,7 +17958,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -17959,7 +17981,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -17982,7 +18004,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -18005,7 +18027,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -18134,7 +18156,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -18157,7 +18179,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -18180,7 +18202,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -18203,7 +18225,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -18319,7 +18341,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -18342,7 +18364,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -18365,7 +18387,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -18470,7 +18492,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -18493,7 +18515,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -18516,7 +18538,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -18539,7 +18561,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -18654,7 +18676,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -18677,7 +18699,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -18700,7 +18722,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -18746,7 +18768,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -18848,7 +18870,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -18871,7 +18893,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`; `WRONG_RECOVERY_KEY`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `WRONG_RECOVERY_KEY`",
             "content": {
               "application/json": {
                 "schema": {
@@ -19005,7 +19027,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19028,7 +19050,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19051,7 +19073,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -19149,7 +19171,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19172,7 +19194,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19246,7 +19268,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19269,7 +19291,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -19366,7 +19388,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19389,7 +19411,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19515,7 +19537,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19538,7 +19560,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19561,7 +19583,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -19584,7 +19606,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -19712,7 +19734,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19735,7 +19757,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19758,7 +19780,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -19879,7 +19901,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -19902,7 +19924,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19925,7 +19947,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -20051,7 +20073,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20074,7 +20096,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20097,7 +20119,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -20173,7 +20195,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20196,7 +20218,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -20309,7 +20331,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20332,7 +20354,7 @@
             }
           },
           "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`",
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20356,7 +20378,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -20379,7 +20401,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -20405,7 +20427,7 @@
             }
           },
           "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`",
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement",
             "content": {
               "application/json": {
                 "schema": {
@@ -20493,7 +20515,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20516,7 +20538,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20539,7 +20561,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -20617,7 +20639,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20730,7 +20752,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20753,7 +20775,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20776,7 +20798,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -20908,7 +20930,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -20931,7 +20953,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20954,7 +20976,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -20977,7 +20999,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -21084,7 +21106,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21107,7 +21129,7 @@
             }
           },
           "403": {
-            "description": "`DEPLOY_NOT_GRANTED`; `FORBIDDEN`; `UPLOADS_DISABLED`",
+            "description": "`DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `UPLOADS_DISABLED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21194,7 +21216,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21308,7 +21330,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21331,7 +21353,7 @@
             }
           },
           "403": {
-            "description": "`DEPLOY_NOT_GRANTED`; `FORBIDDEN`",
+            "description": "`DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21398,7 +21420,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21421,7 +21443,7 @@
             }
           },
           "404": {
-            "description": "`NOT_FOUND`",
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
             "content": {
               "application/json": {
                 "schema": {
@@ -21481,7 +21503,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21504,7 +21526,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21574,7 +21596,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21597,7 +21619,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21811,7 +21833,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21834,7 +21856,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -21857,7 +21879,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -21971,7 +21993,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -21994,7 +22016,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -22017,7 +22039,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
@@ -22071,7 +22093,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -22094,7 +22116,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -22196,7 +22218,7 @@
             }
           },
           "401": {
-            "description": "`UNAUTHENTICATED`",
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -22219,7 +22241,7 @@
             }
           },
           "403": {
-            "description": "`FORBIDDEN`",
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -22242,7 +22264,7 @@
             }
           },
           "412": {
-            "description": "`CONFIRM_REQUIRED`",
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge",
             "content": {
               "application/json": {
                 "schema": {
