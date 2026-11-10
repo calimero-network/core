@@ -3,7 +3,7 @@
 Rust client for Calimero nodes: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
 signs in with a `Passkey` (feature `testing`: `SoftAuthenticator`) or an API key,
-and calls `/apps/{app}/{intents,views,events}`.
+and calls `/apps/{app}/{intents,views,events,watches}`.
 
 The attestation check (`attest::verify`) is the one place clients and peers decide
 trust: quote genuine (or an allowed mock), report data =
@@ -72,6 +72,16 @@ while the node answers `503` or cannot be reached (`Error::is_unavailable`;
 record. Confirm calls (`call_confirmed`) are not retried: their challenge is
 single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
 `crates/node/tests/cluster.rs`.
+
+View subscriptions (PoC, `watch.rs`): `watch_stream(app, resume)` opens a watch stream
+(`events?watch=true`, its first frame names it; `resume = (stream, last index)` re-attaches
+it, and a different id back means the node no longer held it), `add_watch(app, stream,
+view, args)` answers `WatchAdded { sub, index }`, `remove_watch(app, sub)`. `watch(app,
+view, args)` keeps one watch going: `Watch { sub, index, notices }` yields
+`WatchNotice::Changed { index }` (re-read with `Consistency::Stale { min_index: index }`)
+and `Ended`; on a dropped connection it resumes the stream, and on a lost one registers
+again and yields `Changed` with the new watch's index (the re-read hint). A notice never
+carries the view's result. Test: `crates/node/tests/watches.rs`.
 
 The command line over this client is `meroctl` (`crates/meroctl`).
 

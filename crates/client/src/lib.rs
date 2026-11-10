@@ -16,8 +16,10 @@ use tokio::sync::RwLock;
 use url::Url;
 
 pub mod attest;
+mod watch;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
+pub use watch::{Watch, WatchAdded, WatchNotice, WatchStream};
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]
