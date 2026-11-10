@@ -5849,6 +5849,7 @@ async fn team_update(
             parent: body.parent,
             metadata: body.metadata,
             actor,
+            close_drops_below: true,
         })
         .await?;
     Ok(Json(json!({})))
