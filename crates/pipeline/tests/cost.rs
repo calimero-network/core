@@ -22,6 +22,7 @@ fn caps(fuel: u64, memory_mib: u32, wall_secs: u32) -> Caps {
 
 fn env(modules: &[(&str, &[(&str, Caps)])]) -> Env {
     Env {
+        default_module: None,
         modules: modules
             .iter()
             .map(|(m, methods)| {
