@@ -28,6 +28,18 @@
   several releases behind reaches the newest in one upgrade; `upgrades.mdx`
   no longer describes the migration planner removed with SDK 0.12.
 
+### Security
+
+- **Closing a team takes the channel rows of whoever loses it.** An open
+  team closed with the plain team update (`POST /orgs/{org}/teams/{team}
+  { join: invite }`) dropped everyone in it by inheritance alone but left
+  their rows in the restricted teams below it, so they kept reaching the
+  private channels' apps under an app team they no longer had. Those rows now
+  go, as a removal from the team and `ScopeApps`' close take them; nobody is
+  barred, so opening the team again lets them back into it (not into the
+  channels). `UpdateTeam` carries `close_drops_below`, which the API always
+  sets; an entry an earlier release logged replays keeping the rows.
+
 ## [1.0.0-rc.15] - 2026-11-10
 
 ### Added
