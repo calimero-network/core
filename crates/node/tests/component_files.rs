@@ -7,7 +7,10 @@ mod common;
 
 use std::time::Duration;
 
-use calimero_client::{Client, Consistency};
+use std::sync::Arc;
+
+use calimero_client::attest::HttpAttestor;
+use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::files::{unwrap_key, FileOpener};
@@ -80,7 +83,8 @@ async fn start_with(c: Cluster) -> Fixture {
     let mut clients = vec![alice];
     for i in 1..c.nodes.len() {
         let client = c.client(i);
-        let _s = client.sign_in(&mut pk).await.unwrap();
+        // A node on a release the owner has not approved takes no sign-in.
+        let _s = client.sign_in(&mut pk).await;
         clients.push(client);
     }
     let passkey = tokio::sync::Mutex::new(pk);
@@ -205,8 +209,16 @@ impl Fixture {
         panic!("{what}");
     }
 
+    /// Runs the segment sweep on every node now.
+    fn sweep(&self) {
+        for i in (0..self.c.nodes.len()).filter(|i| self.c.nodes[*i].is_some()) {
+            self.node(i).sweep_segments();
+        }
+    }
+
     async fn wait_gone(&self, id: &str) {
         for _ in 0..100 {
+            self.sweep();
             if self.holders_of_any(id).is_empty() {
                 return;
             }
@@ -673,6 +685,272 @@ async fn a_push_of_three_segments_to_two_replicas_holds_two_segments_at_most() {
     let peak = f.node(f.leader()).push_bytes_peak();
     assert!(peak > 0, "the push took no budget");
     assert!(peak <= 2 * SEGMENT_BYTES, "a push held {peak} bytes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_blob_with_a_segments_hash_never_takes_the_segment_with_it() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 71).await;
+    let segment = f.segments_of(&id)[0].clone();
+    let bytes = (f.node(f.leader()).engine.get_segment(&segment))
+        .unwrap()
+        .unwrap();
+    // The same bytes as a plain blob have the segment's hash as their id.
+    let blob = f.clients[0].upload_blob(&f.app, bytes).await.unwrap();
+    assert_eq!(blob["id"].as_str().unwrap(), segment);
+    let _deleted = f.clients[0].delete_blob(&f.app, &segment).await.unwrap();
+    f.until("the blob is deleted everywhere", || {
+        (0..3).all(|i| f.node(i).engine.get_blob(&segment).unwrap().is_none())
+    })
+    .await;
+    for i in f.holders(&id) {
+        assert!(f.node(i).engine.get_segment(&segment).unwrap().is_some());
+    }
+    assert!(
+        f.node(f.leader())
+            .engine
+            .get_segment(&segment)
+            .unwrap()
+            .is_some(),
+        "the segment went with the blob"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn segments_no_app_lists_are_swept_after_the_grace_and_everything_else_stays() {
+    use calimero_node::node::SEGMENT_GRACE;
+
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 72).await;
+    let listed = f.segments_of(&id);
+    // What a leader that crashed mid-upload leaves: segments on every node no entry lists.
+    let orphan = vec![9u8; 5_000];
+    let orphan_hash = sha256_hex(&orphan);
+    for i in 0..3 {
+        f.node(i).engine.put_segment(&orphan_hash, &orphan).unwrap();
+    }
+    // A plain blob as old as the orphans.
+    let plain = f.clients[0]
+        .upload_blob(&f.app, stream(3_000, 4))
+        .await
+        .unwrap();
+    let plain = plain["id"].as_str().unwrap().to_owned();
+
+    let first = std::time::Instant::now();
+    for i in 0..3 {
+        f.node(i).sweep_segments_at(first);
+    }
+    let orphans_on = || {
+        (0..3)
+            .filter(|i| {
+                f.node(*i)
+                    .engine
+                    .get_segment(&orphan_hash)
+                    .unwrap()
+                    .is_some()
+            })
+            .count()
+    };
+    assert_eq!(orphans_on(), 3, "swept at first sight");
+    let later = first + SEGMENT_GRACE + Duration::from_secs(1);
+    for i in 0..3 {
+        f.node(i).sweep_segments_at(later);
+    }
+    assert_eq!(orphans_on(), 0, "the orphans outlived the grace");
+    assert!(f.holders(&id).len() >= 2, "a listed segment was swept");
+    for h in &listed {
+        assert!(f.node(f.leader()).engine.get_segment(h).unwrap().is_some());
+    }
+    assert!(f
+        .node(f.leader())
+        .engine
+        .get_blob(&plain)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_whose_pin_dropped_before_its_entry_applied_waits_out_the_grace() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let bytes = vec![6u8; 2_000];
+    let hash = sha256_hex(&bytes);
+    f.node(0).engine.put_segment(&hash, &bytes).unwrap();
+    let present = || f.node(0).engine.get_segment(&hash).unwrap().is_some();
+    let first = std::time::Instant::now();
+    let pin = f.node(0).pin_segments(std::slice::from_ref(&hash));
+    f.node(0).sweep_segments_at(first);
+    drop(pin);
+    f.node(0).sweep_segments_at(first + Duration::from_secs(1));
+    assert!(present(), "deleted at once, before the grace");
+    f.node(0)
+        .sweep_segments_at(first + SEGMENT_GRACE + Duration::from_secs(2));
+    assert!(!present(), "kept past the grace");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_a_node_got_before_it_applied_the_entry_survives_the_next_sweep() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let handed = vec![5u8; 2_000];
+    let hash = sha256_hex(&handed);
+    f.node(0).engine.put_segment(&hash, &handed).unwrap();
+    f.sweep();
+    f.sweep();
+    assert!(f.node(0).engine.get_segment(&hash).unwrap().is_some());
+}
+
+/// The status of a raw request to node `to`'s internal route, sent as node `from` over its own
+/// sealed channel.
+async fn as_node(
+    f: &Fixture,
+    from: usize,
+    to: usize,
+    method: reqwest::Method,
+    path: &str,
+    body: Vec<u8>,
+) -> u16 {
+    let channel = calimero_sealed::client::SealedTransport::identified_as(
+        f.c.urls[to].parse().unwrap(),
+        reqwest::Client::new(),
+        Arc::new(HttpAttestor {
+            policy: Policy {
+                allow_mock: true,
+                ..Policy::default()
+            },
+            seen_release: Arc::default(),
+        }),
+        f.node(from).transport.static_key(),
+    );
+    let mut request = reqwest::Client::new()
+        .request(method.clone(), format!("{}{path}", f.c.urls[to]))
+        .header("x-cluster-auth", f.node(0).cluster_secret())
+        .header("x-calimero-node", (from as u64 + 1).to_string());
+    if method == reqwest::Method::POST {
+        request = request.header("content-type", "application/json");
+    }
+    if !body.is_empty() {
+        request = request.body(body);
+    }
+    channel
+        .execute(request.build().unwrap())
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_segment_routes_judge_the_caller_the_hash_and_what_is_held() {
+    use calimero_node::files::SEGMENT_BYTES;
+    use reqwest::Method;
+
+    // Node 3 runs a release nobody approved, so it hosts nothing and may hold nothing.
+    let c = Cluster::start_with(3, |cfg| {
+        more_time(cfg);
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    let f = start_with(c).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 73).await;
+    let leader = f.leader();
+    let approved = (0..2).find(|i| *i != leader).unwrap();
+    let segment = f.segments_of(&id)[0].clone();
+    let path = format!("internal/segment/{segment}");
+
+    // A put is judged by its bytes: another hash, and more than a segment.
+    let bad = format!("internal/segment/{}", sha256_hex(b"other"));
+    assert_eq!(
+        as_node(&f, approved, leader, Method::PUT, &bad, b"nope".to_vec()).await,
+        400
+    );
+    let big = vec![1u8; SEGMENT_BYTES + 1];
+    let big_path = format!("internal/segment/{}", sha256_hex(&big));
+    assert_eq!(
+        as_node(&f, approved, leader, Method::PUT, &big_path, big).await,
+        400
+    );
+
+    // A get is answered to an approved node, refused to one that is not, and a hash nobody lists
+    // is unknown.
+    assert_eq!(
+        as_node(&f, approved, leader, Method::GET, &path, Vec::new()).await,
+        200
+    );
+    assert_eq!(
+        as_node(&f, 2, leader, Method::GET, &path, Vec::new()).await,
+        403
+    );
+    let unknown = format!("internal/segment/{}", sha256_hex(b"nobody lists this"));
+    assert_eq!(
+        as_node(&f, approved, leader, Method::GET, &unknown, Vec::new()).await,
+        404
+    );
+
+    // A delete is refused to a node not approved, for a listed segment and for a pending one.
+    let delete = |from: usize, hash: &str| {
+        let body = serde_json::to_vec(&json!({ "hash": hash })).unwrap();
+        as_node(
+            &f,
+            from,
+            leader,
+            Method::POST,
+            "internal/segment/delete",
+            body,
+        )
+    };
+    assert_eq!(delete(2, &segment).await, 403);
+    assert_eq!(delete(approved, &segment).await, 403);
+    assert!(f
+        .node(leader)
+        .engine
+        .get_segment(&segment)
+        .unwrap()
+        .is_some());
+    let pending = vec![3u8; 500];
+    let pending_hash = sha256_hex(&pending);
+    f.node(leader)
+        .engine
+        .put_segment(&pending_hash, &pending)
+        .unwrap();
+    let pin = f.node(leader).pin_segments(&[pending_hash.clone()]);
+    assert_eq!(delete(approved, &pending_hash).await, 403);
+    assert!(f
+        .node(leader)
+        .engine
+        .get_segment(&pending_hash)
+        .unwrap()
+        .is_some());
+    drop(pin);
+    assert_eq!(delete(approved, &pending_hash).await, 200);
+    assert!(f
+        .node(leader)
+        .engine
+        .get_segment(&pending_hash)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_blob_routes_refuse_a_name_that_is_not_a_hash() {
+    use reqwest::Method;
+
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let (id, _sha, _index) = f.put(20 * MIB, 74).await;
+    let leader = f.leader();
+    let peer = (0..3).find(|i| *i != leader).unwrap();
+    let segment = f.segments_of(&id)[0].clone();
+    for route in ["internal/blob/delete", "internal/blob/get"] {
+        for name in [format!("seg.{segment}"), segment.to_uppercase()] {
+            let body = serde_json::to_vec(&json!({ "hash": name })).unwrap();
+            let status = as_node(&f, peer, leader, Method::POST, route, body).await;
+            assert_eq!(status, 400, "{route} {name}");
+        }
+    }
+    assert!(f
+        .node(leader)
+        .engine
+        .get_segment(&segment)
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1317,6 +1595,25 @@ async fn an_unreferenced_file_is_forgotten_after_the_idle_time_and_releases_its_
     f.until_charged(2_000 + 1).await;
     assert!(f.mark(0, &kept).is_some());
     assert!(f.holders(&kept).len() >= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_an_app_stops_listing_survives_the_next_sweep_and_goes_after_the_grace() {
+    let f = start().await;
+    let up = f.upload(0, 30_000, 8).await.unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    let _cached = f.segments_of(&id);
+    f.sweep();
+    let _index = f.pass_the_idle_time().await;
+    f.until("the app forgets the file", || !f.recorded_anywhere(&id))
+        .await;
+    f.sweep();
+    f.sweep();
+    assert!(
+        !f.holders_of_any(&id).is_empty(),
+        "a segment no app lists went before the grace"
+    );
+    f.wait_gone(&id).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

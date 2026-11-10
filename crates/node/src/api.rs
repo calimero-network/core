@@ -6077,6 +6077,9 @@ async fn internal_blob_get(
     Json(body): Json<BlobBody>,
 ) -> ApiResult {
     let caller = peer(&node, &headers, key).await?;
+    if !crate::job_wire::is_hash(&body.hash) {
+        return Err(ApiError::bad_request("BAD_REQUEST", "not a blob hash"));
+    }
     // Code goes to any node of the cluster; an app's blob only to a node
     // approved for an app hosted here that marks it.
     if !node.is_code_blob(&body.hash) {
@@ -6143,7 +6146,11 @@ async fn internal_segment_get(
     if !crate::job_wire::is_hash(&hash) {
         return Err(ApiError::bad_request("BAD_REQUEST", "not a segment hash"));
     }
-    let allowed = hosted_segment_holders(&node, &hash)
+    let holders = hosted_segment_holders(&node, &hash);
+    if holders.is_empty() {
+        return Err(ApiError::not_found("no such segment here"));
+    }
+    let allowed = holders
         .iter()
         .any(|app| caller_may_hold(&node, &caller, app).is_ok());
     if !allowed {
@@ -6161,20 +6168,31 @@ async fn internal_segment_get(
         .into_response())
 }
 
-/// Delete a segment here, at the request of the node that no longer needs it; one a file of an
-/// app hosted here lists keeps its bytes, whoever asks.
+/// Delete a segment here, at the request of a node approved for an app hosted here; one a file of
+/// an app hosted here lists, or an upload or a pending entry holds, keeps its bytes.
 async fn internal_segment_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<BlobBody>,
 ) -> ApiResult {
-    let _caller = peer(&node, &headers, key).await?;
+    let caller = peer(&node, &headers, key).await?;
     if !crate::job_wire::is_hash(&body.hash) {
         return Err(ApiError::bad_request("BAD_REQUEST", "not a segment hash"));
     }
-    if !hosted_segment_holders(&node, &body.hash).is_empty() {
-        return Err(ApiError::forbidden("an app here still holds that segment"));
+    let hosted: Vec<crate::types::AppRecord> = node.sys(|s| s.apps.values().cloned().collect());
+    let approved = (hosted.iter())
+        .filter(|a| node.hosted(&a.app_id).is_some())
+        .any(|a| caller_may_hold(&node, &caller, a).is_ok());
+    if !approved {
+        return Err(ApiError::forbidden(
+            "the calling node's release is not approved for an app hosted here",
+        ));
+    }
+    if !hosted_segment_holders(&node, &body.hash).is_empty() || node.segment_pinned(&body.hash) {
+        return Err(ApiError::forbidden(
+            "an app here lists that segment or an upload holds it",
+        ));
     }
     node.engine
         .delete_segment(&body.hash)
@@ -6814,16 +6832,18 @@ async fn internal_blob_delete(
 ) -> ApiResult {
     let _caller = peer(&node, &headers, key).await?;
     let hash = body["hash"].as_str().unwrap_or_default().to_owned();
+    if !crate::job_wire::is_hash(&hash) {
+        return Err(ApiError::bad_request("BAD_REQUEST", "not a blob hash"));
+    }
     // The node that collects a blob checked that no app marks it; one here
     // that still does keeps its bytes, whoever asks. A mark is judged as the
     // app's leader holds it: this replica may not have applied the delete
     // that let the blob go yet, and would keep the bytes for good (nothing
     // asks again). Unknown counts as held.
-    if let Ok(raw) = <[u8; 32]>::try_from(hex::decode(&hash).unwrap_or_default()) {
-        for app in hosted_holders(&node, &hash) {
-            if node.blob_held_strong(&app, &raw).await.unwrap_or(true) {
-                return Err(ApiError::forbidden("an app here still holds that blob"));
-            }
+    let raw = crate::job_wire::hash_bytes(&hash).map_err(|e| ApiError::internal(&e.to_string()))?;
+    for app in hosted_holders(&node, &hash) {
+        if node.blob_held_strong(&app, &raw).await.unwrap_or(true) {
+            return Err(ApiError::forbidden("an app here still holds that blob"));
         }
     }
     if !node.is_code_blob(&hash) {

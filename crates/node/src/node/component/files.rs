@@ -168,6 +168,8 @@ pub(super) struct Stored {
     /// The segments are a compute run's outputs, which another leader may have registered: deleted
     /// only once the blob records are known ([`Node::delete_unmarked_outputs`]).
     pub outputs: bool,
+    /// Holds the entry's segments out of the sweep until the entry is decided.
+    pub _pin: Option<crate::node::SegmentPin>,
 }
 
 /// What an upload answers.
@@ -900,9 +902,10 @@ impl Node {
         })
     }
 
-    /// Whether a component app hosted here lists `hash` as a segment of one of its files.
-    fn holds_segment(&self, hash: &str) -> bool {
-        self.apps.read().is_ok_and(|apps| {
+    /// Whether a component app hosted here lists `hash` as a segment of one of its files; true
+    /// when the apps cannot be read, so nothing is deleted on a guess.
+    pub(crate) fn holds_segment(&self, hash: &str) -> bool {
+        self.apps.read().map_or(true, |apps| {
             apps.values()
                 .any(|g| g.read_local(|m, _| m.holds_segment(hash)))
         })

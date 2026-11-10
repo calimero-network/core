@@ -724,20 +724,18 @@ impl ComponentState {
     /// Forget the blobs idle past their time at `now_ms` and queue their bytes for the
     /// leader to collect.
     fn expire_blobs(&mut self, tx: &mut StateTx<'_>, now_ms: u64) {
-        for (id, charged, segments) in self.blobs.expire(tx, now_ms) {
-            self.queue_collect(hex::encode(id), charged, segments);
+        for (id, charged) in self.blobs.expire(tx, now_ms) {
+            self.queue_collect(hex::encode(id), charged);
         }
     }
 
-    /// Queue the bytes of the forgotten blob `id` for the leader to collect, with the bytes
-    /// of quota it held (a file or a published blob) and the segments of a file, each queued
-    /// as an id of its own.
-    fn queue_collect(&mut self, id: String, charged: Option<u64>, segments: Vec<String>) {
+    /// Queue the forgotten blob `id` for the leader to collect, with the quota bytes it held;
+    /// a file's segments are left to every node's sweep.
+    fn queue_collect(&mut self, id: String, charged: Option<u64>) {
         if let Some(size) = charged {
             let _prev = self.head.collect_files.insert(id.clone(), size);
         }
         self.head.collect.push(id);
-        self.head.collect.extend(segments);
         let over = self.head.collect.len().saturating_sub(MAX_COLLECT_QUEUE);
         for dropped in self.head.collect.drain(..over) {
             let _gone = self.head.collect_files.remove(&dropped);
@@ -1289,7 +1287,7 @@ impl AppMachine {
                 let c = &mut self.state.component;
                 let forgotten = parse_hex32(&id).and_then(|raw| c.blobs.forget_blob(tx, &raw));
                 if let Some(size) = forgotten.filter(|size| *size > 0) {
-                    c.queue_collect(id, Some(size), Vec::new());
+                    c.queue_collect(id, Some(size));
                 }
                 host_answer(index, forgotten.is_some(), "no such blob in this app")
             }
@@ -1879,7 +1877,7 @@ mod tests {
             &file_call(3, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
         );
         assert_eq!(held(&r), [fid(1)]);
-        assert_eq!(queued(&r), sorted(vec![fid(2), seg(2)]));
+        assert_eq!(queued(&r), sorted(vec![fid(2)]));
     }
 
     fn file_cmd(n: u8, ts_ms: u64, key: Option<&str>) -> Vec<u8> {
@@ -1971,7 +1969,7 @@ mod tests {
             &file_call(3, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
         );
         let ids = queued(&r);
-        assert_eq!(ids, sorted(vec![fid(1), fid(2), seg(1), seg(2)]));
+        assert_eq!(ids, sorted(vec![fid(1), fid(2)]));
         let freed = |a: Applied| a.result["freed"].as_u64().unwrap();
         assert_eq!(freed(r.apply(5, &collected(&ids))), 10);
         assert!(queued(&r).is_empty());
@@ -2035,7 +2033,7 @@ mod tests {
         let later = t + 1 + BLOB_IDLE_MS + 1;
         let _a = r.apply(7, &file_call(6, later, Status::Ok, vec![], vec![]));
         assert!(held(&r).is_empty());
-        assert_eq!(queued(&r), sorted(vec![fid(1), seg(1)]));
+        assert_eq!(queued(&r), sorted(vec![fid(1)]));
     }
 
     #[test]

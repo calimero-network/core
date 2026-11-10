@@ -15,7 +15,7 @@
 //! The records are host-owned (D39): hidden rows of the group (`rows::CBLOB`) and, in
 //! memory, an ordered map shared with runs as their view of the app's blobs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use calimero_app_host::{BlobHost, BlobInfo};
@@ -121,7 +121,7 @@ pub struct FileSeal {
 }
 
 /// A blob forgotten by retention: its id, the quota it held, and the segments of a sealed file.
-pub type Expired = ([u8; 32], Option<u64>, Vec<String>);
+pub type Expired = ([u8; 32], Option<u64>);
 
 /// A component app's blobs, by SHA-256.
 pub type Blobs = Arc<BTreeMap<[u8; 32], BlobRecord>>;
@@ -135,9 +135,34 @@ pub struct BlobTable {
     /// Above the epoch of every grantable blob forgotten so far: a record made again starts
     /// here, so a grant of a forgotten blob never holds for its successor.
     floor: u32,
+    /// The segments the sealed files list, by hash, to the file: rebuilt from the records on load.
+    segments: HashMap<String, [u8; 32]>,
 }
 
 impl BlobTable {
+    /// Whether a sealed file of the app lists segment `hash`.
+    #[must_use]
+    pub fn holds_segment(&self, hash: &str) -> bool {
+        self.segments.contains_key(hash)
+    }
+
+    fn index_segments(&mut self, id: &[u8; 32], record: &BlobRecord) {
+        for hash in record.file.iter().flat_map(|f| &f.segments) {
+            let _prev = self.segments.insert(hash.clone(), *id);
+        }
+    }
+
+    fn unindex_segments(&mut self, id: &[u8; 32]) {
+        let Some(file) = self.records.get(id).and_then(|r| r.file.as_ref()) else {
+            return;
+        };
+        for hash in &file.segments {
+            if self.segments.get(hash) == Some(id) {
+                let _gone = self.segments.remove(hash);
+            }
+        }
+    }
+
     /// Read the records from the group's rows (a restart, a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
         let mut records = BTreeMap::new();
@@ -158,6 +183,14 @@ impl BlobTable {
             .iter()
             .filter(|(_, r)| r.refs == 0)
             .map(|(id, r)| (r.idle_since_ms, *id))
+            .collect();
+        self.segments = (records.iter())
+            .flat_map(|(id, r)| {
+                r.file
+                    .iter()
+                    .flat_map(|f| &f.segments)
+                    .map(|h| (h.clone(), *id))
+            })
             .collect();
         self.records = Arc::new(records);
         self.floor = floor;
@@ -299,6 +332,7 @@ impl BlobTable {
 
     /// Forget a blob; whether the app held it.
     pub fn forget(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
+        self.unindex_segments(id);
         let Some(prev) = Arc::make_mut(&mut self.records).remove(id) else {
             return false;
         };
@@ -358,9 +392,7 @@ impl BlobTable {
                 let record = self.records.get(&id);
                 let charged =
                     record.and_then(|r| (r.file.is_some() || r.charged).then_some(r.size));
-                let segments = (record.and_then(|r| r.file.as_ref()))
-                    .map_or_else(Vec::new, |f| f.segments.clone());
-                self.forget(tx, &id).then_some((id, charged, segments))
+                self.forget(tx, &id).then_some((id, charged))
             })
             .collect()
     }
@@ -370,6 +402,8 @@ impl BlobTable {
             Ok(v) => tx.put_hidden(rows::CBLOB, &id, &v),
             Err(e) => tx.fail(e),
         }
+        self.unindex_segments(&id);
+        self.index_segments(&id, &record);
         let _prev = Arc::make_mut(&mut self.records).insert(id, record);
     }
 }

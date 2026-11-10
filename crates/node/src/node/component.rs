@@ -887,8 +887,13 @@ impl Node {
             );
             return Err(e);
         }
+        let segments: Vec<String> = (blobs.iter())
+            .filter(|b| b.segment)
+            .map(|b| b.id.clone())
+            .collect();
         let stored = Stored {
             charged,
+            _pin: Some(self.pin_segments(&segments)),
             ..stored_of_blobs(blobs)
         };
         Ok((bytes, stored))

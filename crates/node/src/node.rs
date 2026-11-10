@@ -25,6 +25,9 @@ use crate::usage::{Meter, Usage};
 
 mod component;
 mod job;
+mod segments;
+
+pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 
 #[cfg(feature = "testing")]
 pub use component::ComputeLimits;
@@ -425,6 +428,10 @@ pub struct Node {
     push_bytes: Arc<tokio::sync::Semaphore>,
     /// The ciphertext of new files that runs hold until their entries are proposed.
     pending_file_bytes: Arc<tokio::sync::Semaphore>,
+    /// Segments upload sessions and pending entries hold, which no sweep or delete may take.
+    pinned_segments: segments::Pinned,
+    /// What the segment sweep saw at its earlier runs.
+    segment_sweep: Mutex<segments::Sweep>,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -799,6 +806,8 @@ impl Node {
             pending_file_bytes: Arc::new(tokio::sync::Semaphore::new(
                 component::MAX_PENDING_FILE_BYTES,
             )),
+            pinned_segments: Arc::default(),
+            segment_sweep: Mutex::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -2468,10 +2477,6 @@ impl Node {
         if let Err(e) = self.engine.delete_blob(&hex_id) {
             warn!(blob = %hex_id, error = %e, "blob not deleted");
         }
-        // The id may name a file segment, which the apps' leaders above never hold as a blob.
-        if let Err(e) = self.engine.delete_segment(&hex_id) {
-            warn!(segment = %hex_id, error = %e, "segment not deleted");
-        }
         let peers: Vec<String> = self.sys(|s| {
             s.replica_nodes()
                 .filter(|n| n.id != self.config.node_id)
@@ -2479,10 +2484,11 @@ impl Node {
                 .collect()
         });
         let body = json!({ "hash": hex_id });
-        let _r = futures_util::future::join_all(peers.iter().map(|addr| async {
-            let _blob = self.peer_post(addr, "internal/blob/delete", &body).await;
-            self.peer_post(addr, "internal/segment/delete", &body).await
-        }))
+        let _r = futures_util::future::join_all(
+            peers
+                .iter()
+                .map(|addr| self.peer_post(addr, "internal/blob/delete", &body)),
+        )
         .await;
     }
 
