@@ -120,42 +120,51 @@ impl Node {
             return;
         };
         drop(tokio::spawn(async move {
-            let advertised = me.advertised_versions().await;
-            let Some(version) = cv::floor(advertised.values().map(Option::as_deref)) else {
-                return;
-            };
-            let logged = me.sys(|s| s.cluster_version.clone());
-            if cv::effective(logged.as_deref(), Some(version.as_str())) == logged {
-                return;
-            }
-            // Below the version that brings `SetClusterVersion`, a node would
-            // skip it: the floor judges proposals until every node has it.
-            if cv::check(Some(version.as_str()), &[Feature::ClusterVersion]).is_err() {
-                return;
-            }
-            let registered: Vec<NodeId> = me.sys(|s| {
-                s.replica_nodes()
-                    .map(|n| n.id)
-                    .filter(|id| !s.removed_nodes.contains(id))
-                    .collect()
-            });
-            let nodes: BTreeMap<u64, String> = registered
-                .into_iter()
-                .filter_map(|id| advertised.get(&id).cloned().flatten().map(|v| (id, v)))
-                .collect();
-            match me
-                .sys_write(&SystemCmd::SetClusterVersion {
-                    version: version.clone(),
-                    nodes,
-                })
-                .await
-            {
-                Ok(_) => info!(%version, "the cluster version was raised"),
-                Err(e) => {
-                    warn!(%version, error = %e.message, "could not raise the cluster version yet")
-                }
+            match me.raise_cluster_version_once().await {
+                Ok(Some(version)) => info!(%version, "the cluster version was raised"),
+                Ok(None) => {}
+                Err(why) => warn!(%why, "could not raise the cluster version yet"),
             }
         }));
+    }
+
+    /// One pass of [`Self::raise_cluster_version`]: ask every node, and log
+    /// the oldest version they support when it is above the logged one.
+    /// `Ok(None)` when there is nothing to raise yet; `Err` says why a raise
+    /// was refused.
+    #[doc(hidden)]
+    pub async fn raise_cluster_version_once(&self) -> Result<Option<String>, String> {
+        let advertised = self.advertised_versions().await;
+        let Some(version) = cv::floor(advertised.values().map(Option::as_deref)) else {
+            return Err(format!("not every node answered: {advertised:?}"));
+        };
+        let logged = self.sys(|s| s.cluster_version.clone());
+        if cv::effective(logged.as_deref(), Some(version.as_str())) == logged {
+            return Ok(None);
+        }
+        // Below the version that brings `SetClusterVersion`, a node would
+        // skip it: the floor judges proposals until every node has it.
+        if let Err(refused) = cv::check(Some(version.as_str()), &[Feature::ClusterVersion]) {
+            return Err(refused.message());
+        }
+        let registered: Vec<NodeId> = self.sys(|s| {
+            s.replica_nodes()
+                .map(|n| n.id)
+                .filter(|id| !s.removed_nodes.contains(id))
+                .collect()
+        });
+        let nodes: BTreeMap<u64, String> = registered
+            .into_iter()
+            .filter_map(|id| advertised.get(&id).cloned().flatten().map(|v| (id, v)))
+            .collect();
+        let _out = self
+            .sys_write(&SystemCmd::SetClusterVersion {
+                version: version.clone(),
+                nodes: nodes.clone(),
+            })
+            .await
+            .map_err(|e| format!("{} {}: {} (nodes {nodes:?})", e.status, e.code, e.message))?;
+        Ok(Some(version))
     }
 
     /// Whether the registered node `id` at `addr` may join the system group

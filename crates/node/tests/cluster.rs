@@ -3012,8 +3012,10 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
             if let Some(n) = n {
                 let logged = n.node.sys(|s| s.cluster_version.clone());
                 let advertised = n.node.advertised_versions().await;
+                // One raise from here, to say where it stops.
+                let raised = n.node.raise_cluster_version_once().await;
                 seen.push(format!(
-                    "node {i}: logged {logged:?}, advertised {advertised:?}"
+                    "node {i}: logged {logged:?}, advertised {advertised:?}, a raise from it: {raised:?}"
                 ));
             }
         }
