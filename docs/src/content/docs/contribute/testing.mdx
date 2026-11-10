@@ -490,6 +490,147 @@ the next release PR (CONTRIBUTING.md, "Cutting a release"); the job warns when
 a newer version is tagged. A pinned tag that does not exist yet is reported and
 not run; a tag whose release lacks an artifact fails the job.
 
+### Deep cases: every functionality
+
+Beside the representative data set (`upgrade_cases/10_representative.py`), the
+cases `upgrade_cases/20_*.py` and on take each user-visible functionality in
+turn: accounts and passkeys, sessions, activity, the recovery code, API and
+upgrade keys; organizations (roles, capabilities, invites, ownership, deletion,
+the recovery key); teams and app teams; packages, publisher bindings, app
+upgrades with a state migration and organization upgrade runs; app instances
+(history, access kinds, xcall, search, presence, transfer and move, usage);
+sealed files and upload sessions; governance and the operator's state. Each is a
+`DeepCase` (`crates/node/tests/fault/upgrade_deep.py`), whose steps the
+harness runs:
+
+| Step | Runs | What it does |
+| --- | --- | --- |
+| `populate(w)` | once, on the old release | seeds through the public API and answers a JSON-able record of what it expects |
+| `check(w, s)` | right after seeding, in the mixed cluster, on the new nodes, after the restart | reads everything back and judges access both ways: what was allowed is allowed, what was refused (a removed member, a closed team, a revoked key) is refused with the same code |
+| `during_mix(w, s)` | in the mixed cluster | `check` by default; xcall also relays between two apps that may sit on different releases |
+| `exercise(w, s)` | on the new nodes | writes something new of the kind (and updates `s` for the checks after it) |
+
+`check` runs right after seeding as well, so a check that fails after the roll
+failed because of the upgrade, not because it was wrong. A read compares as a
+subset (a new release may add a field, never drop or change one), without the
+fields that move on their own (`VOLATILE`: sign-in counts, replicas, write
+times). A case that fails to seed is reported by each later step and the run goes
+on, so one run lists every breakage. The cases deploy the release's own kv
+component and packages built from the release's tag with its `mero-sign`
+(`scripts/build-upgrade-deep-fixtures.sh`, after `build-release-fixtures.sh`).
+
+**New functionality ships with a case.** A PR that adds a user-visible
+functionality adds a `DeepCase` for it, with `since` set to the release it will
+ship in. Rolled from an older release, such a case is seeded on the rolled
+cluster instead (in `extend`) and checked from then on, so it runs from the PR
+that adds it, and becomes a full upgrade case once the pinned release has the
+functionality. To add one:
+
+<Steps>
+
+1. Put a `@case` class deriving `DeepCase` in the `upgrade_cases/` file of its
+   area (or a new `NN_area.py`), with a unique `name`, its `area`, `since`, and
+   one-line `seeds` and `verifies` for the matrix.
+2. `populate` signs its own people up (`person(w, name)`, names no other case
+   uses) and keeps every id and expected value in the record; `check` reads them
+   back and records access decisions with `decisions({...})`, compared with
+   `same_decisions`; `exercise` writes on the new release.
+3. Paste the output of `python3 -I crates/node/tests/fault/upgrade_deep.py --matrix`
+   between the matrix markers below; the job fails while they differ
+   (`--check-matrix`).
+4. Run it: `scripts/upgrade-path.sh`, or with the fixtures in hand:
+
+   ```bash
+   scripts/build-upgrade-deep-fixtures.sh target/upgrade-from   # after build-release-fixtures.sh
+   python3 -I crates/node/tests/fault/upgrade_path.py --from-dir target/upgrade-from \
+     --to-merod target/release/merod --to-meroctl target/release/meroctl \
+     --kv-next target/upgrade-path-fixtures/kv-next.mpk --only <name>
+   ```
+
+</Steps>
+
+What cannot be tested this way yet is listed in `NOT_COVERED`
+(`upgrade_deep.py`) with the reason, and appears in the matrix as not covered;
+a case is never skipped.
+
+#### Coverage matrix
+
+{/* upgrade-matrix:begin: python3 -I crates/node/tests/fault/upgrade_deep.py --matrix */}
+
+| Area | Case | Seeded on the old release | Checked in the mixed cluster, after the roll and after a restart | Covered |
+| --- | --- | --- | --- | --- |
+| Representative | `accounts-and-keys` | Accounts with passkeys, meroctl sessions and API keys. | read back, extended, read again | yes |
+| Representative | `organization` | An organization with members, a team with a member, an open invite and app teams. | read back, extended, read again | yes |
+| Representative | `kv-package` | The release's signed kv package, an app instance of it in the org with history, an app team, a read-only key; upgraded on the new release to a build of this tree. | read back, extended, read again | yes |
+| Representative | `blobs` | Plain blobs of the kv app, one referenced from its state. | read back, extended, read again | yes |
+| Representative | `files-and-compute` | Sealed files (one of three segments) of a compute app from a signed package, and a compute run finished on the old release; on the new one a run reads the old files. | read back, extended, read again | yes |
+| Accounts | `account-passkeys` | an account with three passkeys: one labelled, one removed | the passkey list and labels; every kept passkey signs in on each node, the removed one is refused; a label set on the new release | yes (since 1.0.0-rc.15) |
+| Accounts | `account-sessions` | sessions opened on old nodes, one revoked; an account signed out everywhere | a refresh token an old node issued refreshes on every node; its session token is accepted while that node is in the cluster and refused once it is removed; the revoked session's and the signed-out account's refresh tokens are refused; a session revoked on the new release ends | yes (since 1.0.0-rc.15) |
+| Accounts | `account-activity` | sign-ins and passkey approvals (an API key made, a confirm method called) | every seeded activity entry is still listed; an approval and a sign-in on the new release add theirs | yes (since 1.0.0-rc.15) |
+| Accounts | `account-recovery-code` | an account recovery code made on the old release | `recoveryCode` stays set; the code begins a recovery on every node and a wrong code is refused; removed on the new release, it is refused | yes (since 1.0.0-rc.15) |
+| Keys | `api-keys` | API keys: read-only for one app, one method of one app, with a TTL, revoked; an alias | each key allowed and refused exactly as before (reads, writes, its method, its app, another app); the revoked key stays refused; the key list and the alias; a key made and one revoked on the new release | yes (since 1.0.0-rc.15) |
+| Keys | `upgrade-keys` | an upgrade key (an API key that may only move one app to releases of its package) | the key still cannot call or read the app; on the new release it upgrades the app to the next release, and is refused another app | yes (since 1.0.0-rc.15) |
+| Organizations | `org-members-roles` | an organization with metadata, an admin, members (one granted CREATE_TEAM), a guest, member metadata, a removed member, a member who left, an organization app | the organization as the owner, a member and a guest read it; the members' security view; who reaches the app (members yes; removed, departed and outsider no; the guest as before) and who may read security and write metadata; CREATE_TEAM makes a team on the new release, a plain member is refused; metadata written there | yes (since 1.0.0-rc.15) |
+| Organizations | `org-invites` | invites: a multi-use one used once, an unused single-use one, a used-up one, a revoked one, a guest invite into one team (app-only access) | the invite list; the revoked and used-up invites are refused; the guest reaches its team's app only; the unused and multi-use invites made on the old release redeem on the new one | yes (since 1.0.0-rc.15) |
+| Organizations | `org-ownership` | an organization whose owner handed it to a member | the roles after the hand-over; the former owner is refused owner-only actions; the new owner changes a role on the new release | yes (since 1.0.0-rc.15) |
+| Organizations | `org-deleted` | an organization with an app and a team, deleted | the organization and its app stay gone; the owner makes a new one on the new release | yes (since 1.0.0-rc.15) |
+| Organizations | `org-recovery-key` | an organization with a recovery key, and a recovery a member started with it on the old release | the recovery key and the pending recovery; finishing early and a recovery signed with another key are refused; the owner keeps the organization; the owner cancels it on the new release and the member starts it again | yes (since 1.0.0-rc.15) |
+| Teams | `teams` | an open team; a closed team with a lead, a member, a read-only member and a removed member; a private child team; an app on each | each team as before; who reads and writes each team's app (the closed team excludes non-members, read-only reads only, the removed member is refused, the open team admits the organization, the child only its members); a member added on the new release writes | yes (since 1.0.0-rc.15) |
+| Teams | `app-teams` | two packages' instances in an organization given app teams (ScopeApps): one closed keeping one member, one open | the app-team list; the kept member and the open team's members reach their apps, the member who lost the closed one is refused it; the closed one opened again on the new release admits them | yes (since 1.0.0-rc.15) |
+| Packages | `packages` | two signed releases installed from the registry and the second uninstalled again; an app on the first with data; an app from a dev bundle (raw component) | the package and its versions; both apps answer from the new nodes; on the new release the uninstalled version installs again and the app upgrades to it keeping its data | yes (since 1.0.0-rc.15) |
+| Packages | `publisher-binding` | a package signing key bound to an organization (its publisher) | the binding and its generation as anyone reads them; a second key bound on the new release | yes (since 1.0.0-rc.15) |
+| Upgrades | `app-upgrade-migration` | notes 1.0.0 and 2.0.0 (state version 1 to 2) installed; an app upgraded to 2.0.0, one left on 1.0.0, two upgraded by an organization-wide upgrade run | each app's release and notes; the run's status as a member reads it; the app left on 1.0.0 upgrades on the new release keeping its note and gains 2.0.0's methods; a new run there | yes (since 1.0.0-rc.15) |
+| Apps | `app-state-history` | an app with 40 writes (sets, overwrites, removals) and app metadata | every entry through each node, the length, the full event history from index 0 (the event stream's replay), the app record, its storage figures and ABI; a write on the new release extends the history after the old events | yes (since 1.0.0-rc.15) |
+| Apps | `app-access-kinds` | an organization's app of each access kind: owner, organization, listed accounts, public, team | who reads and writes each (the owner, a member, a listed account, an outsider, no credential), allowed and refused as before; access changed on the new release | yes (since 1.0.0-rc.15) |
+| Apps | `xcall` | two apps of an organization; writes relayed from one to the other (xcall), one refused by the callee, one dead-lettered | the relayed writes, what `onXcallFailed` recorded, the xcall list; a relay lands in the mixed cluster (across releases while the two apps sit on different ones) and on the new release | yes (since 1.0.0-rc.15) |
+| Apps | `full-text-search` | notes in an app's full-text index (title and body), one dropped | each search answers the same notes through every node (each rebuilds its index); a note added on the new release is found | yes (since 1.0.0-rc.15) |
+| Apps | `presence` | presence published in an app (ephemeral: it expires by design, so nothing is carried) | presence publishes and reads back through every node, in the mixed cluster and after | yes (since 1.0.0-rc.15) |
+| Apps | `app-transfer-move` | an app handed to another account (transfer); an app moved to another organization with its members | the owner and organization of each, their data; the former owner refused; the moved app's members reach it in its new organization; handed back on the new release | yes (since 1.0.0-rc.15) |
+| Metering | `usage-and-storage` | an organization's app with writes; the account's and the organization's usage | the app's per-day usage history (earlier days unchanged, today's figures only grow), the account's usage counts and the organization's usage | yes (since 1.0.0-rc.15) |
+| Blobs and files | `sealed-files-sessions` | files an app wrote itself, an upload session begun with one of its parts sent, a plain blob deleted (the representative set uploads files of several segments) | each app-written file's size and SHA-256 as the app reads it; the half-done session expects its next part while its leader (an old node) leads and answers `UPLOAD_UNKNOWN` once the app moved (documented: the client begins again); a session begun on the new release completes with the right digest; the deleted blob stays gone | yes (since 1.0.0-rc.15) |
+| Governance | `outbound-approvals` | an organization's outbound approval for a package and an account's own | each approval as its holder reads it (or the same refusal, where governance gives it to the operator); every release the cluster approved stays approved after the roll | yes (since 1.0.0-rc.15) |
+| Ops | `ops-state` | account quotas changed, a per-organization quota override, a compute pool | quotas, overrides, pools, the cluster's sign-up invites and policy as before; a quota changed and a backup written on each new node | yes (since 1.0.0-rc.15) |
+| Accounts | Account recovery started and finished with a new passkey | - | - | no: the start takes a WebAuthn registration made outside a session, which neither meroctl nor the suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The recovery code (`account-recovery-code`) is covered |
+| Accounts | Sign-up through a cluster sign-up invite, and issuing one | - | - | no: meroctl's login takes no invite and has no command to issue one (an operator-signed request); the policy and the invite list are read back (`ops-state`) |
+| Accounts | Consent-page approvals (`/consent/requests`) | - | - | no: a consent request is approved in a browser on the node's consent page; the cluster test `consent_page.rs` covers it on one build |
+| Apps | Timers (`#[app::every]`) firing across the roll | - | - | no: the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; the cluster tests move the app clock |
+| Packages | Served frontends and served origins (custom domains) | - | - | no: the suite's packages carry no frontend, and the node routes a frontend by Host under the apps domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` covers serving |
+| Governance | Owner-held release approvals and release deadlines | - | - | no: the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as Calimero Cloud does; the operator's approval of the new release is the rollout's first step |
+| Deployments | Deployer grants and deployments (`/deployers`, `/deployments`, `/ops/deployers`) | - | - | no: not seeded yet: a grant is an operator-signed or passkey-approved decision these cases do not make yet; the cluster tests (`deployers.rs`, `deployments.rs`) cover them on one build |
+| Packages | Registered web origins of a package (`/package-origins`) | - | - | no: not seeded yet: an origin is added with its manager's passkey approval and is read only by the served-frontend path above |
+| Blobs and files | Revoking a published blob's grants (`/blobs/{id}/revoke`) | - | - | no: not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow |
+| Ops | Restoring a backup onto the new release | - | - | no: `POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, not a rollout |
+
+{/* upgrade-matrix:end */}
+
+### Replaying a release's data directory
+
+The rollout moves state between nodes; it does not show that this tree applies
+an old release's log the same way. `crates/node/tests/upgrade_replay.rs` does,
+in process and in seconds (it runs with the other `calimero-node` tests): each
+`crates/node/tests/fixtures/upgrade/<release>/` holds the data directory of a
+one-node cluster as that release's `merod run --dev` left it (accounts with two
+passkeys and a recovery code, scoped API keys, an organization with a removed
+member, a team and an invite, apps of three access kinds with history, a note
+and a blob) and `expected.json`, every answer that release gave to a fixed list
+of reads (`GET /auth/me`, the organization, its team and invites, the apps, their
+storage and ABI, views as members, a read-only key and an outsider,
+`/ops/quotas`, `/sign-up`). The data set stays under the log's snapshot interval,
+so the directory holds no system snapshot (the test asserts it) and this tree
+rebuilds the whole system state by applying every entry the old release logged.
+The test opens each directory, sends every read again (the same status, a body
+holding every field of the old one), then writes.
+
+A release's fixture is written once, with that release's binaries, and kept:
+the PR that moves `.github/upgrade-from` to a release adds its fixture too.
+
+```bash
+scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
+python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
+  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.15
+cargo test -p calimero-node --test upgrade_replay
+```
+
 ## In CI
 
 `.github/workflows/e2e.yml` runs on every PR that touches code:
