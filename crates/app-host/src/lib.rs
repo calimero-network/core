@@ -11,6 +11,7 @@ mod core;
 mod engine;
 mod files;
 mod overlay;
+mod read_set;
 mod runs;
 mod search;
 mod state;
@@ -51,6 +52,7 @@ pub use files::{
     MAX_OPEN_FILES, MAX_PUBLISHED_BYTES, MAX_PUBLISHED_PER_RUN, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
     NOT_A_RUN_OUTPUT, NO_SUCH_FILE, RUN_PUBLISHED_TOO_MUCH, RUN_WROTE_TOO_MUCH,
 };
+pub use read_set::{ReadSet, MAX_READ_SET_BYTES, MAX_READ_SET_KEYS, MAX_READ_SET_RANGES};
 pub use runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN, NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN,

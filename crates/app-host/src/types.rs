@@ -223,6 +223,8 @@ pub struct Outcome {
     pub compute_starts: Vec<StartedRun>,
     pub compute_cancels: Vec<String>,
     pub usage: Usage,
+    /// What the run read, when it was asked to record it (`HostCore::with_read_set`).
+    pub read_set: Option<crate::read_set::ReadSet>,
 }
 
 /// A role in an org, ordered from least to most privileged.

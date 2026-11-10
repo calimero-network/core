@@ -21,8 +21,11 @@ use super::{
 use crate::abi::Abi;
 use crate::core::HostCore;
 use crate::core::{MAX_RUN_BYTES, MAX_WRITES};
-use crate::state::{KeyValue, GENERATION};
-use crate::types::{Caller, Directory, HostDenied, Invocation, InvocationKind, OrgRole};
+use crate::read_set::ReadSet;
+use crate::state::{stored_key, KeyValue, GENERATION};
+use crate::types::{
+    Caller, Directory, HostDenied, Invocation, InvocationKind, OrgRole, Status, Usage, Write,
+};
 use crate::COLLECTION_BASE_FUEL;
 
 #[derive(calimero_sdk::Record, Clone, Debug, PartialEq)]
@@ -1397,4 +1400,170 @@ fn a_batch_past_the_write_cap_is_denied() {
     let denied = host.table_upsert_many(TABLE, &records).unwrap_err();
     assert!(denied.0.contains("10,000 writes"), "{denied:?}");
     assert_eq!(host.write_count(), 0);
+}
+
+// --- read sets (PoC, view subscriptions) ---------------------------------------------------
+
+/// The committed state after a call inserted `records`.
+fn committed(records: &[Member]) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    let mut host = call();
+    for r in records {
+        ok(host.table_insert(TABLE, &json_of(r)));
+    }
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    out.diff
+        .into_iter()
+        .filter_map(|w| w.value.map(|v| (w.key, v)))
+        .collect()
+}
+
+fn on(state: &BTreeMap<Vec<u8>, Vec<u8>>, kind: InvocationKind) -> HostCore {
+    let inv = Invocation {
+        kind,
+        method: "m".to_owned(),
+        args: Vec::new(),
+        caller: Caller::Account("ada".to_owned()),
+        entry_ts_ms: 1_000,
+        id_term: 1,
+        id_seq: 1,
+        seed: [7; 32],
+        timer: None,
+        compute: None,
+    };
+    HostCore::new(
+        "app",
+        Arc::new(state.clone()),
+        0,
+        inv,
+        Arc::new(NoDirectory),
+    )
+    .unwrap()
+    .with_collections(&abi())
+}
+
+/// What a view that runs `read` on `state` read.
+fn read_set(state: &BTreeMap<Vec<u8>, Vec<u8>>, read: impl FnOnce(&mut HostCore)) -> ReadSet {
+    let mut view = on(state, InvocationKind::View).with_read_set();
+    read(&mut view);
+    view.finish(Status::Ok, Vec::new(), Usage::default())
+        .read_set
+        .unwrap()
+}
+
+/// The diff of a call on `state` that upserts `records`.
+fn diff_upserting(state: &BTreeMap<Vec<u8>, Vec<u8>>, records: &[Member]) -> Vec<Write> {
+    let mut host = on(state, InvocationKind::Call);
+    for r in records {
+        ok(host.table_upsert(TABLE, &json_of(r)));
+    }
+    host.finish(Status::Ok, Vec::new(), Usage::default()).diff
+}
+
+fn five() -> BTreeMap<Vec<u8>, Vec<u8>> {
+    let records: Vec<Member> = (1..=5).map(|id| member("o1", id, "ann", None)).collect();
+    committed(&records)
+}
+
+#[test]
+fn a_point_read_is_touched_by_its_own_key_only() {
+    let state = five();
+    let set = read_set(&state, |v| {
+        let got = ok(v.table_get(TABLE, &[s("o1"), KeyPart::Int(2)]));
+        assert!(got.is_some());
+    });
+    assert_eq!(set.keys().len(), 1);
+    assert!(set.ranges().is_empty());
+    let mut changed = member("o1", 2, "ann", None);
+    changed.score = 9;
+    assert!(set.touches(&diff_upserting(&state, &[changed])));
+    let mut other = member("o1", 3, "ann", None);
+    other.score = 9;
+    assert!(!set.touches(&diff_upserting(&state, &[other])));
+}
+
+/// A page cut short by `limit` read up to the entry after its last (which decides `next`):
+/// a write past it changes nothing the view saw; a write inside it does.
+#[test]
+fn a_page_cut_short_is_bounded_at_the_last_key_read() {
+    let state = five();
+    let set = read_set(&state, |v| {
+        let page = ok(v.table_find(TABLE, None, &[], None, 2, false));
+        assert_eq!(page.items.len(), 2);
+        assert!(page.next.is_some());
+    });
+    assert_eq!(set.ranges().len(), 1);
+    let mut past = member("o1", 5, "ann", None);
+    past.score = 9;
+    assert!(!set.touches(&diff_upserting(&state, &[past])));
+    assert!(!set.touches(&diff_upserting(&state, &[member("o1", 9, "ann", None)])));
+    let mut inside = member("o1", 2, "ann", None);
+    inside.score = 9;
+    assert!(set.touches(&diff_upserting(&state, &[inside])));
+    // A new record between the first two keys lands inside the range read.
+    assert!(set.touches(&diff_upserting(&state, &[member("o0", 1, "ann", None)])));
+}
+
+/// A page that reached the end of its prefix read all of it: a record added after the last
+/// one changes the answer.
+#[test]
+fn an_exhausted_page_covers_its_whole_prefix() {
+    let state = five();
+    let set = read_set(&state, |v| {
+        let page = ok(v.table_find(TABLE, None, &[s("o1")], None, 10, false));
+        assert_eq!(page.items.len(), 5);
+        assert!(page.next.is_none());
+    });
+    assert!(set.touches(&diff_upserting(&state, &[member("o1", 9, "ann", None)])));
+    // Another org's records are outside the prefix: their index and count entries too.
+    assert!(!set.touches(&diff_upserting(&state, &[member("o2", 1, "bob", None)])));
+}
+
+#[test]
+fn a_prefix_count_reads_its_count_entries() {
+    let state = five();
+    let all = read_set(&state, |v| {
+        assert_eq!(ok(v.table_count(TABLE, "per_owner", &[])), 5);
+    });
+    let ann = read_set(&state, |v| {
+        assert_eq!(ok(v.table_count(TABLE, "per_owner", &[s("ann")])), 5);
+    });
+    let bobs = diff_upserting(&state, &[member("o2", 1, "bob", None)]);
+    assert!(all.touches(&bobs));
+    assert!(!ann.touches(&bobs));
+    let anns = diff_upserting(&state, &[member("o2", 1, "ann", None)]);
+    assert!(ann.touches(&anns));
+}
+
+#[test]
+fn a_run_without_the_recorder_records_nothing() {
+    let state = five();
+    let mut view = on(&state, InvocationKind::View);
+    let _ = ok(view.table_get(TABLE, &[s("o1"), KeyPart::Int(2)]));
+    let out = view.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(out.read_set.is_none());
+}
+
+#[test]
+fn a_raw_cursor_stopped_early_is_cut_at_its_last_key() {
+    let state = five();
+    for reverse in [false, true] {
+        let set = read_set(&state, |v| {
+            let cursor = v.range_open(b"", b"", reverse).unwrap();
+            assert_eq!(v.range_next(cursor, 1).unwrap().len(), 1);
+            v.range_close(cursor);
+        });
+        let all = dump(&mut on(&state, InvocationKind::View));
+        let (first, last) = (all.first().unwrap(), all.last().unwrap());
+        let (seen, unseen) = if reverse {
+            (last, first)
+        } else {
+            (first, last)
+        };
+        let write = |key: &[u8]| Write {
+            key: stored_key(GENERATION, key),
+            value: None,
+        };
+        assert!(set.touches(&[write(&seen.0)]), "reverse {reverse}");
+        assert!(!set.touches(&[write(&unseen.0)]), "reverse {reverse}");
+    }
 }

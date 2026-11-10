@@ -192,6 +192,14 @@ pub(crate) fn encode_key(parts: &[KeyPart]) -> Vec<u8> {
     out
 }
 
+/// `[start, end)` of every record key of table `table` (`(table, "r", key..)`): no part tag
+/// reaches `0xFF`, so `start ‖ 0xFF` is past every one of them.
+pub(crate) fn record_range(table: &str) -> (Vec<u8>, Vec<u8>) {
+    let start = encode_key(&[KeyPart::Str(table.to_owned()), KeyPart::Str("r".to_owned())]);
+    let end = [start.as_slice(), &[0xFF]].concat();
+    (start, end)
+}
+
 /// The length [`encode_key`] gives `parts`, computed without encoding them, so an over-long
 /// key is refused before anything of its size is allocated.
 pub(crate) fn encoded_len(parts: &[KeyPart]) -> usize {

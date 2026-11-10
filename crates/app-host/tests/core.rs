@@ -494,6 +494,29 @@ fn abi_reads_method_attributes() {
     assert!(Abi::from_json(&json!({ "abiVersion": 1 })).is_err());
 }
 
+/// PoC: `subscribable` marks a view clients may watch; it is refused on any other kind.
+#[test]
+fn only_a_view_is_subscribable() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "methods": {
+            "result": { "kind": "view", "subscribable": true },
+            "plain": { "kind": "view" }
+        }
+    }))
+    .unwrap();
+    assert!(abi.methods["result"].subscribable);
+    assert!(!abi.methods["plain"].subscribable);
+    for kind in ["call", "init", "action"] {
+        let err = Abi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "x": { "kind": kind, "subscribable": true } }
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("only for views"), "{kind}: {err}");
+    }
+}
+
 #[test]
 fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
     let abi = Abi::from_json(&json!({
@@ -1235,7 +1258,7 @@ fn query(limit: u32, text: &str) -> SearchQuery {
 #[test]
 fn only_views_search_and_queries_are_bounded() {
     let state = base(&[]);
-    let view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
     assert_eq!(
         view.search_query(&query(10, "eggs"))
             .unwrap()
@@ -1257,11 +1280,11 @@ fn only_views_search_and_queries_are_bounded() {
         InvocationKind::Init,
         InvocationKind::Action,
     ] {
-        let host = core_for(&state, &inv(kind)).with_search(Arc::new(OneHit));
+        let mut host = core_for(&state, &inv(kind)).with_search(Arc::new(OneHit));
         assert!(host.search_query(&query(10, "eggs")).is_err(), "{kind:?}");
     }
     // Without the node's index no table is searchable.
-    let bare = core_for(&state, &inv(InvocationKind::View));
+    let mut bare = core_for(&state, &inv(InvocationKind::View));
     assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
 }
 
