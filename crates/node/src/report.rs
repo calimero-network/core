@@ -509,7 +509,7 @@ mod tests {
         assert!(serde_json::to_value(&old).unwrap().get("release").is_none());
         let r = release_of_app(&s, &old, reader).unwrap();
         assert_eq!(r.version, "1.0.0");
-        let v = app_json(&s, &old, &BTreeMap::new(), reader);
+        let v = app_json(&s, &old, &BTreeMap::new(), &BTreeMap::new(), reader);
         assert_eq!(v["package"]["version"], json!("1.0.0"), "{v}");
         assert_eq!(v["availableVersions"], json!(["1.1.0"]), "{v}");
 
@@ -523,11 +523,17 @@ mod tests {
         let back: AppRecord =
             serde_json::from_value(serde_json::to_value(&named).unwrap()).unwrap();
         assert_eq!(back.release, named.release);
-        let v = app_json(&s, &named, &BTreeMap::new(), reader);
+        let v = app_json(&s, &named, &BTreeMap::new(), &BTreeMap::new(), reader);
         assert_eq!(v["package"]["version"], json!("1.1.0"), "{v}");
         assert_eq!(v["availableVersions"], json!([]), "{v}");
         // A release the reader may not see is not named, nor guessed.
-        let v = app_json(&s, &named, &BTreeMap::new(), Reader::Operator);
+        let v = app_json(
+            &s,
+            &named,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Reader::Operator,
+        );
         assert_eq!(v["package"], Value::Null, "{v}");
     }
 
