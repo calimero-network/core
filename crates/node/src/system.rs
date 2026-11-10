@@ -1716,7 +1716,19 @@ impl SystemState {
                     .iter()
                     .all(|t| o.teams.contains_key(t) && o.manages_team(actor, t)))
     }
+}
 
+/// How the release that logged a [`SystemCmd::ScopeApps`] judged it: each
+/// flag is the entry's own, absent (`false`) in an earlier release's entry.
+#[derive(Clone, Copy, Debug)]
+struct ScopeAsLogged {
+    /// An owner reaches an app on a team only while in it.
+    owner_in_team: bool,
+    /// A new app team's default holds `CREATE_CHILD_TEAM`.
+    member_child_teams: bool,
+}
+
+impl SystemState {
     /// [`SystemCmd::ScopeApps`], judged and applied as one step: everything
     /// is checked and every person who reaches an instance now is found
     /// before anything changes.
@@ -1727,8 +1739,7 @@ impl SystemState {
         shared: Option<bool>,
         nonce: &str,
         actor: &str,
-        owner_in_team: bool,
-        member_child_teams: bool,
+        logged: ScopeAsLogged,
     ) -> Result<Value, &'static str> {
         use crate::types::caps;
 
@@ -1840,7 +1851,9 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| self.may_reach_as_logged(a, Some(m.as_str()), owner_in_team))
+                        .filter(|m| {
+                            self.may_reach_as_logged(a, Some(m.as_str()), logged.owner_in_team)
+                        })
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -1877,7 +1890,7 @@ impl SystemState {
                     // only its leads and the admins, until an admin says so.
                     // Either way they make private channels below it.
                     let invite = (!shared).then_some(caps::INVITE_MEMBERS);
-                    let child = member_child_teams.then_some(caps::CREATE_CHILD_TEAM);
+                    let child = logged.member_child_teams.then_some(caps::CREATE_CHILD_TEAM);
                     let default_capabilities = match (invite, child) {
                         (None, None) => None,
                         (a, b) => Some(a.unwrap_or(0) | b.unwrap_or(0)),
@@ -6855,8 +6868,10 @@ impl SystemMachine {
                 shared,
                 &nonce,
                 &actor,
-                owner_in_team,
-                member_child_teams,
+                ScopeAsLogged {
+                    owner_in_team,
+                    member_child_teams,
+                },
             ),
             SystemCmd::SetRecoveryKey {
                 org,
