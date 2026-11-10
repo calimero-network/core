@@ -1048,6 +1048,16 @@ impl AppMachine {
             .collect()
     }
 
+    /// The app's xcalls as `GET /apps/{app}/xcalls` answers them: the messages
+    /// waiting in its outbox and its dead letters, oldest first.
+    #[must_use]
+    pub fn xcalls_report(&self) -> Value {
+        json!({
+            "pending": self.state.component.head.xcall.pending(),
+            "deadLetters": self.dead_letters(),
+        })
+    }
+
     /// Whether `slot` of `timer` was already applied.
     #[must_use]
     pub fn tick_applied(&self, timer: &str, slot: u64) -> bool {
@@ -1281,7 +1291,7 @@ impl AppMachine {
         key: Option<&str>,
         applied: &Applied,
     ) {
-        let known = key.is_some_and(|k| self.component_replay(&Caller::System, k).is_some());
+        let known = key.is_some_and(|k| replay_in(tx, &Caller::System, k).is_some());
         if let (Some(key), false) = (key, known) {
             self.remember_component(tx, ts_ms, &Caller::System, key, applied);
         }
@@ -1490,7 +1500,7 @@ impl AppMachine {
             }) => {
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
-                match self.action_record(&id) {
+                match action_in(tx, &id) {
                     None => host_answer(index, false, "no such pending action"),
                     Some(record) if retry => {
                         self.state.component.head.actions.retried(tx, record);
@@ -1506,7 +1516,7 @@ impl AppMachine {
                 }
             }
             Ok(ComponentCmd::XcallDone { seq, dead, ts_ms }) => {
-                let head = self.outgoing(seq);
+                let head = outgoing_in(tx, seq);
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
                 let done = c.head.xcall.done(tx, head, seq, dead.as_deref(), ts_ms);
@@ -1542,6 +1552,33 @@ impl AppMachine {
         }
         serde_json::to_vec(&applied).unwrap_or_default()
     }
+}
+
+// Apply reads host rows through the batch's `StateTx`, never the group's committed
+// state: a replica catching up (a new replica of a moved app, a restarted one) applies
+// many entries in one batch, and an entry must see the rows the entries before it in
+// the batch wrote, as its leader, which applied them one at a time, did. The readers on
+// `AppMachine` (`outgoing`, `action_record`, `component_replay`) are for the node's
+// routes and its leader's polls, between batches.
+
+/// The outbox's message `seq` as `tx` leaves it.
+fn outgoing_in(tx: &StateTx<'_>, seq: u64) -> Option<xcall::Outgoing> {
+    let raw = tx.get_hidden(rows::COUT, &xcall::outbox_key(seq))?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// Pending action `id` as `tx` leaves it.
+fn action_in(tx: &StateTx<'_>, id: &str) -> Option<ActionRecord> {
+    let raw = tx.get_hidden(rows::CACT, &action::action_key(id))?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// The answer remembered for `caller`'s key `key` as `tx` leaves it.
+fn replay_in(tx: &StateTx<'_>, caller: &Caller, key: &str) -> Option<Applied> {
+    let raw = tx.get_hidden(rows::CIDEM, idem_key(caller, key).as_bytes())?;
+    serde_json::from_slice::<IdemRecord>(&raw)
+        .ok()
+        .map(|r| r.applied)
 }
 
 /// A blob id as the host commands carry it (hex).

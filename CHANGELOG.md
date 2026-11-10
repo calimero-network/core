@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dead letters survive an app's move to new replicas.** A replica catching up
+  from the log applies many entries in one batch, and `componentXcallDone` read
+  the outbox row from the group's committed state, not the batch's, so a new
+  replica that applied an xcall's send and its dead-lettering together wrote no
+  dead letter: after `POST /ops/apps/{app}/replicas` the new replicas listed
+  `deadLetters: []`. `componentActionEnd` (an action started and ended in one
+  batch stayed pending, its retries uncounted, its `ActionFailed` event never
+  sent) and the first answer remembered under a node command's key had the same
+  hole. Apply now reads those rows through the batch. No stored format changes;
+  replaying a log now gives what its leader applied. A replica that applied such
+  a batch before keeps what it wrote: replace it (move the app's replicas, as a
+  rollout does) to rebuild it from the log.
+- **`GET /apps/{app}/xcalls` from a node without a replica** answered `503 "ask
+  a node that hosts the app"`; it now asks a replica (`internal/xcalls`), as
+  the other app routes do.
+
 ### Security
 
 - **Closing a team takes the channel rows of whoever loses it.** An open
