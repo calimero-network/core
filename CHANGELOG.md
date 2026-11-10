@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Leaving an organization ends access to all of its apps.** An organization's
+  app is reached only by the organization's current members: an account an
+  `accounts` rule lists (a private channel, a DM) or the app's owner, once
+  removed from the organization or gone of their own accord, reaches it no more
+  and receives none of its events. **Behaviour change**: an app that relied on
+  an `accounts` list to keep an ex-member in loses them; add them back to the
+  organization (as a guest, say) to restore it.
+- **Removing someone from a team removes them from the teams below it**: their
+  direct rows in a restricted child team (a private channel under an app's
+  team) no longer keep them in.
+- **An invite names only teams the inviter sees**: below admin, an
+  organization-wide `INVITE_MEMBERS` no longer mints invites into a restricted
+  team the inviter is not in.
+- **Deleting a team that holds apps takes a passkey**: `DELETE
+  /orgs/{org}/teams/{team}` answers `412 CONFIRM_REQUIRED` with the `apps`
+  that go, and the consent names exactly those; an empty team is deleted as
+  before. `meroctl group delete` takes `--dev-passkey`.
+
 ## [1.0.0-rc.13] - 2026-11-10
 
 ### Changed

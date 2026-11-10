@@ -42,10 +42,14 @@ pub enum GroupCmd {
         #[arg(long, value_enum)]
         join: Option<Join>,
     },
-    /// Delete a team with the teams below it and their contexts.
+    /// Delete a team with the teams below it and their contexts (with
+    /// contexts there, approved with a passkey).
     Delete {
         namespace: String,
         group: String,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
     /// Move a team under another (`--top`: to the top of the organization).
     Reparent {
@@ -178,10 +182,16 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
                 .post(&format!("orgs/{namespace}/teams/{group}"), body)
                 .await?
         }
-        GroupCmd::Delete { namespace, group } => {
-            client
-                .delete(&format!("orgs/{namespace}/teams/{group}"))
-                .await?
+        GroupCmd::Delete {
+            namespace,
+            group,
+            dev_passkey,
+        } => {
+            env.delete_approved(
+                &format!("orgs/{namespace}/teams/{group}"),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         GroupCmd::Reparent {
             namespace,

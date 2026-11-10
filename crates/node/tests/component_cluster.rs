@@ -969,9 +969,10 @@ async fn teams_work_like_v1_subgroups() {
         "lead"
     );
 
-    // Deleting a team deletes what is under it, apps included.
+    // Deleting a team deletes what is under it, apps included (with the
+    // deleter's passkey, since it holds an app).
     let gone = alice
-        .delete(&format!("orgs/{org}/teams/{board}"))
+        .delete_confirmed(&format!("orgs/{org}/teams/{board}"), &mut a)
         .await
         .unwrap();
     assert_eq!(gone["teams"].as_array().unwrap().len(), 2, "{gone}");
@@ -1204,13 +1205,14 @@ async fn invite(
     org: &str,
     teams: Value,
     pk: &mut SoftAuthenticator,
-) -> Result<Value, calimero_client::Error> {
+) -> Result<Value, Box<calimero_client::Error>> {
     who.post_confirmed(
         &format!("orgs/{org}/invites"),
         json!({ "role": "member", "teams": teams }),
         pk,
     )
     .await
+    .map_err(Box::new)
 }
 
 /// Deleting a team that holds apps takes the deleter's passkey, and the

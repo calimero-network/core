@@ -93,7 +93,10 @@ is its command line.
   { credentialId }`; `__create_api_key`, `system::api_key_args`, the key's
   hash included; `org:<org>`: `__set_org_role { account, role }`,
   `__remove_member { account }`, `__set_team_member { team, account, lead,
-  role, capabilities }`, `__remove_team_member { team, account }`,
+  role, capabilities }`, `__remove_team_member { team, account }` (it takes
+  the rows below the team too, `RemoveTeamMember { subtree }`),
+  `__delete_team { team, apps }` (only when the team's subtree holds apps,
+  `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
   `__set_default_capabilities { capabilities }`, `__create_invite`,
   `system::invite_args`). A step-up whose arguments the node makes (an API
