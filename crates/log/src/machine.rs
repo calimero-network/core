@@ -104,8 +104,9 @@ pub(crate) struct LegacySnapshot {
     pub(crate) data: Bytes,
 }
 
-/// The state row an in-memory machine's checkpoint lives in.
-const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
+/// The state row an in-memory machine's checkpoint lives in (and so where a
+/// snapshot file holds that machine's whole state).
+pub const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 
 const SNAPSHOT_MAGIC: &[u8] = b"CALIMERO-SNAPSHOT-1\n";
 /// Rows per frame stop growing past this many plaintext bytes.
@@ -723,6 +724,21 @@ pub(crate) fn replace_state<M: Machine>(
         let _removed = std::fs::remove_file(db.snapshot_dir.join(&served.file));
     }
     Ok(rows)
+}
+
+/// Replace an in-memory machine's whole state with `data` (what
+/// [`Machine::snapshot`] answers), keeping where the group stands in its log:
+/// the caller then builds a snapshot, which checkpoints it. Only the group's
+/// sole voter may do this (`calimero_log::Group::replace_machine_data`).
+pub(crate) fn replace_machine_data<M: Machine>(
+    shared: &Shared<M>,
+    data: &[u8],
+) -> eyre::Result<()> {
+    if !M::IN_MEMORY {
+        eyre::bail!("a disk machine's state is replaced from a snapshot file");
+    }
+    let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
+    st.machine.restore(data)
 }
 
 /// Where a row of group `from` lives in group `to`: a hidden key (its row is an

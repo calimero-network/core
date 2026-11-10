@@ -188,11 +188,30 @@ pub struct RestoreSource {
 
 /// A restore under way: `seed` (the first of the app's replicas) holds the
 /// backup and seeds the app's new group from it, then adds the other replicas.
+/// Without a seed, the app waits for one: the cluster was founded again from
+/// its system backup (`node::restore`), and no node hosts the app until the
+/// operator restores it from its own backup.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingRestore {
-    pub seed: u64,
-    pub source: RestoreSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RestoreSource>,
+}
+
+impl PendingRestore {
+    /// What an app of a cluster founded again from its system backup waits in.
+    pub const AWAITING_BACKUP: Self = Self {
+        seed: None,
+        source: None,
+    };
+
+    /// Whether the app waits for a backup: no node hosts it meanwhile.
+    #[must_use]
+    pub const fn awaits_backup(&self) -> bool {
+        self.seed.is_none()
+    }
 }
 
 /// Which executor runs an app's code.

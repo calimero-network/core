@@ -352,3 +352,168 @@ async fn a_backup_is_restored_only_where_it_belongs() {
         .result;
     assert_eq!(v, json!("other"));
 }
+
+/// Copy the backup directory `from` into `to`, as a sync to object storage does.
+fn collect(from: &std::path::Path, to: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    std::fs::create_dir_all(to).unwrap();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let target = to.join(entry.file_name());
+        if path.is_dir() {
+            collect(&path, &target);
+        } else if !target.exists() {
+            let _bytes = std::fs::copy(&path, &target).unwrap();
+        }
+    }
+}
+
+/// A new cluster under `name`, its founder founding it again from `store`.
+async fn found_again(name: &str, store: &std::path::Path) -> Cluster {
+    Cluster::start_with(3, |config| {
+        config.cluster = name.to_owned();
+        if config.node_id == 1 {
+            config.restore_from = Some(store.to_owned());
+            config.backup_dir = Some(store.to_owned());
+        }
+    })
+    .await
+}
+
+/// After founding again: alice is back through her refresh token, the app
+/// waits for its backup, and once restored holds its data and takes writes.
+async fn alice_and_her_app_come_back(
+    new: &Cluster,
+    alice: &Client,
+    kv: &str,
+    expect: &[(&str, &str)],
+) {
+    let cl = new.client(0);
+    cl.use_session(alice.session().await.unwrap()).await;
+    let _fresh = cl.refresh().await.unwrap();
+    assert_eq!(cl.get("auth/me").await.unwrap()["name"], "alice");
+    let e = cl
+        .view(kv, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_RESTORING"), "{e}");
+    for r in new.nodes.iter().flatten() {
+        assert!(
+            r.node.hosted(kv).is_none(),
+            "an app waiting for its backup is hosted nowhere"
+        );
+    }
+
+    let out = restore(new, 0, kv, json!({})).await.unwrap();
+    assert_eq!(
+        out["status"]["voters"].as_array().unwrap().len(),
+        3,
+        "{out}"
+    );
+    for (key, value) in expect {
+        let v = cl
+            .view(kv, "get", json!({ "key": key }), Consistency::Strong)
+            .await
+            .unwrap()
+            .result;
+        assert_eq!(v, json!(value), "{key}");
+    }
+    let index = set(&cl, kv, "after", "1").await;
+    for i in 0..3 {
+        assert_eq!(
+            on_replica(new, i, &cl, kv, "after", index).await,
+            json!("1"),
+            "node {i}"
+        );
+    }
+}
+
+/// A cluster that must be recreated (a one-way format change, a lost
+/// region): its nodes' backups found it again on new nodes under its own
+/// cluster key. Accounts, sessions' refresh tokens and the directory come
+/// back from the system backup; each app comes back from its own backup. A
+/// node whose storage key opens no kept copy of the cluster key (another
+/// release, another cluster name) cannot found it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cluster_is_founded_again_from_its_backups() {
+    let mut old = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&old, 0, "alice").await;
+    let kv = deploy(&alice, "kv").await;
+    let _i = set(&alice, &kv, "a", "1").await;
+    let _i = set(&alice, &kv, "b", "2").await;
+    // Every node backs up what it leads; together, the system group and every app.
+    let store = tempfile::tempdir().unwrap();
+    for i in 0..3 {
+        let _n = old.nodes[i].as_ref().unwrap().node.backup().await.unwrap();
+        collect(&backup_dir(&old, i), store.path());
+    }
+    for sub in ["system", "cluster-key", "code", kv.as_str()] {
+        assert!(store.path().join(sub).is_dir(), "{sub} is backed up");
+    }
+    let name = old.name.clone();
+    for i in 0..3 {
+        old.stop(i).await;
+    }
+
+    // Another release's node: its K_r opens none of the kept copies.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let url = format!("http://127.0.0.1:{}/", harness::free_port());
+    let peers: std::collections::BTreeMap<u64, String> = [(1, url)].into_iter().collect();
+    let mut config = harness::node_config(1, &peers, elsewhere.path());
+    config.cluster.clone_from(&name);
+    config.storage_key = [43; 32];
+    config.restore_from = Some(store.path().to_owned());
+    let Err(e) = calimero_node::run(config).await else {
+        panic!("a node of another release founded the cluster again");
+    };
+    assert!(format!("{e:#}").contains("no cluster key"), "{e:#}");
+
+    let new = found_again(&name, store.path()).await;
+    let founder = &new.nodes[0].as_ref().unwrap().node;
+    assert_eq!(founder.cluster_key(), &old_key(store.path()));
+    alice_and_her_app_come_back(&new, &alice, &kv, &[("a", "1"), ("b", "2")]).await;
+}
+
+/// The cluster key the store keeps for the test release, as its nodes wrapped it.
+fn old_key(store: &std::path::Path) -> [u8; 32] {
+    calimero_node::backup::cluster_key_from(store, &[42; 32]).unwrap()
+}
+
+/// Disaster recovery: two of three nodes are lost, so the system group has no
+/// majority and nothing can change. The survivor still holds every group it
+/// applied; it backs them all up, leader or not (`ops/backup?all=true`), and
+/// the cluster is founded again from that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor() {
+    let mut old = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&old, 0, "alice").await;
+    let kv = deploy(&alice, "kv").await;
+    let _i = set(&alice, &kv, "a", "1").await;
+    let last = set(&alice, &kv, "b", "2").await;
+    let survivor = &old.nodes[0].as_ref().unwrap().node;
+    assert!(
+        survivor
+            .hosted(&kv)
+            .unwrap()
+            .wait_applied(last, Duration::from_secs(10))
+            .await
+    );
+    let name = old.name.clone();
+    old.stop(1).await;
+    old.stop(2).await;
+    // Without a majority, the survivor leads nothing; it still backs up all it holds.
+    let out = ops_at(&old, 0)
+        .await
+        .post("ops/backup?all=true", json!({}))
+        .await
+        .unwrap();
+    assert!(out["written"].as_u64().unwrap() >= 2, "{out}");
+    let store = tempfile::tempdir().unwrap();
+    collect(&backup_dir(&old, 0), store.path());
+    old.stop(0).await;
+
+    let new = found_again(&name, store.path()).await;
+    alice_and_her_app_come_back(&new, &alice, &kv, &[("a", "1"), ("b", "2")]).await;
+}

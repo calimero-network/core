@@ -1,6 +1,6 @@
 ---
 title: Runbooks
-description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
+description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, found a cluster again, recover from a lost system majority, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
 sidebar:
   order: 9
 ---
@@ -138,8 +138,14 @@ set the app already has answers `unchanged: true`.
 With `--backup-dir` set, every node writes, every 60 seconds, a snapshot of
 each app group it leads that has moved since its last one:
 `{backup-dir}/{app-id}/{index:020}.{group}.{snapshot-id}.snap`, with its
-manifest beside it (`….snap.manifest`). Force one now on a node with
-`meroctl ops backup` (it answers `{ written }`).
+manifest beside it (`….snap.manifest`). The system group's leader writes the
+system group's the same way, under `{backup-dir}/system/` (accounts and
+passkeys, organizations and teams, packages, the app directory, governance,
+the operator key), with the code the directory names (`code/{hash}`, sealed).
+Every node also keeps the cluster key K_c wrapped under its own release's
+storage key, once per release (`cluster-key/{release}`). Force a backup now on
+a node with `meroctl ops backup` (it answers `{ written }`); `meroctl ops
+backup --all` backs up every group the node holds, leader or not.
 
 - Snapshots are the Raft snapshot files as written, sealed frame by frame under
   the cluster key K_c. The manifest names the app, group, log index, the
@@ -147,16 +153,20 @@ manifest beside it (`….snap.manifest`). Force one now on a node with
   release that wrote it, sealed under a key derived from K_c and bound to the
   app and the file name. Only a node holding this cluster's K_c, on any
   release, opens either.
-- Only leaders write, so collect `--backup-dir` from every node; the newest
-  file per app is the newest backup. Copy the manifest with its file: a
-  backup without one is taken only as a pre-manifest backup (below).
+- Only leaders write, so collect `--backup-dir` from every node into one
+  place; the newest file per app (and under `system/`) is the newest backup.
+  Copy the manifest with its file: a backup without one is taken only as a
+  pre-manifest backup (below). Keep `cluster-key/` and `code/` with them:
+  without a kept cluster key no new node can open any of it.
 - Copy them off the machine; the directory stands in for object storage.
 
 ### Schedule, RPO and RTO
 
 - **RPO** (what a restore loses) is the time since the backup restored, at
   most the 60-second interval plus however long your copy job takes to take
-  it off the machine. Copy `--backup-dir` off every node at least as often as
+  it off the machine. The same holds for the system group: accounts, passkeys
+  and memberships made after the system backup are lost when a cluster is
+  founded again. Copy `--backup-dir` off every node at least as often as
   you can afford to lose; keep several generations per app (the files are
   named by index, so a plain sync keeps them all) and prune by age.
 - **RTO** (how long a restore takes) is about the time to read the backup
@@ -167,6 +177,9 @@ manifest beside it (`….snap.manifest`). Force one now on a node with
   downgraded, and a bad release is otherwise only fixed forward), take a
   backup by hand: `meroctl ops backup` on the app's leader.
 - Test a restore regularly, on a development cluster or on a scratch app.
+- Before a release upgrade, check that `cluster-key/` holds a copy for the new
+  release (a node of it writes one once it joined): a cluster can be founded
+  again only on a release that kept one and whose mero-kms still serves.
 
 ## Restore an app
 
@@ -227,6 +240,98 @@ the same cluster opens it, whatever its release; the operator holding the
 files reads nothing in them. What the operator can do is choose which
 backup an app goes back to: a restore is a rollback of the app's data, which
 is why it needs the operator's signature, and why the log records it.
+
+## Found a cluster again from its backups
+
+When a cluster must be recreated (its storage format changed one way, its
+nodes or region are gone), new nodes found it again from the backups, under
+the cluster's own key K_c: to clients, apps and job nodes it is the same
+cluster (the cluster identity and every app's keys derive from K_c).
+
+<Steps>
+
+1. Collect the backups (every node's `--backup-dir`) into one directory:
+   `system/`, `cluster-key/`, `code/` and one directory per app.
+
+2. Stop every node of the cluster backed up. A founder refuses to start while
+   one still answers, as a node of this cluster, at an address the new
+   `--peers` do not reuse: two live clusters must never share K_c.
+
+3. Start the founder on an empty data directory with the cluster's name,
+   governance flags and `--operator-key`, on a release that kept a copy of the
+   cluster key and whose mero-kms still serves:
+
+   ```bash
+   merod run --bootstrap --restore-from /backups --backup-dir /backups --peers 1=...,2=...,3=... ...
+   ```
+
+   It opens `cluster-key/{release}` with its storage key (`no cluster key in
+   ... opens with this node's storage key` names the releases that kept one),
+   forms the system group alone, seeds it with the newest system backup and
+   loads the code. The fleet becomes `--peers`; replica nodes of the old fleet
+   that are not in it are removed, job nodes stay. Start the other `--peers`
+   as in [Add a node](#add-a-node), without `--bootstrap`: they get K_c from
+   the founder and join as learners, and the first two become voters.
+
+4. People sign in again with their passkeys, or refresh their sessions:
+   refresh tokens come back with the system state; sessions the old nodes
+   signed answer `401` once.
+
+5. Every app waits for its own backup (`409 APP_RESTORING`, hosted nowhere).
+   Restore each one as in [Restore an app](#restore-an-app), on the founder or
+   any node holding its backup:
+
+   ```bash
+   for app in $(ls /backups | grep -v -e system -e cluster-key -e code); do
+     meroctl --operator-key-file operator.key ops restore "$app"
+   done
+   ```
+
+</Steps>
+
+**Trust.** Founding again grants nothing new: K_c reaches the founder only
+through a copy wrapped under the K_r of a release, which only a TD of that
+release and cluster name, attested by that release's mero-kms, derives, the
+same bar a node's own disk sets. A backup copied anywhere else opens nowhere.
+Once a release's mero-kms is retired, its copy is dead: carry the key forward
+by letting a node of each new release join before the old one is retired
+(it writes its own copy).
+
+## Disaster recovery: the system group lost its majority
+
+While a majority of the system group's voters answers, nothing below is
+needed: [a lost node](#a-node-is-lost) is replaced and the cluster heals. When
+a majority is lost for good, no sign-in, install or organization change
+commits, and there is no route that changes the system group's voters
+without a majority: the surviving nodes found the cluster again.
+
+<Steps>
+
+1. Make sure the lost nodes are gone for good (their disks destroyed, or
+   their machines stopped and never restarted): a lost node that comes back
+   after step 4 is a second cluster under the same key.
+
+2. On every surviving node, back up everything it holds, leader or not:
+
+   ```bash
+   meroctl --api https://n1.eu1.example.com/ ops backup --all
+   ```
+
+   Each survivor writes its system group and every app group it hosts, as
+   far as it applied them, and its copy of the cluster key.
+
+3. Collect the survivors' backups with the regular ones. Per app and for
+   `system/`, the restore takes the newest file by index (the file names
+   sort by it); a survivor that lagged wrote an older one.
+
+4. Stop the survivors, then [found the cluster again](#found-a-cluster-again-from-its-backups)
+   from that directory and restore every app.
+
+</Steps>
+
+What was committed but applied by none of the survivors is lost, as is
+anything since the newest backup of an app none of them hosted. An app whose
+own group kept its majority loses nothing it had applied on the survivors.
 
 ## Set quotas
 
@@ -400,9 +505,9 @@ clients refresh. Removing a node ends the sessions it signed the same way.
   leader. Move the lost node's apps to healthy nodes with `ops move` to restore
   their margin.
 - **The system group** keeps working while a majority of its voters answers.
-  If a majority of the founding voters is lost, sign-ins, installs and
-  organization changes stop; there is no route to change the system group's
-  voters.
+  If a majority of its voters is lost, sign-ins, installs and organization
+  changes stop; there is no route to change the system group's voters without
+  a majority: follow [Disaster recovery](#disaster-recovery-the-system-group-lost-its-majority).
 - **Restarting** a node with the same data directory and configuration resumes
   it: it catches up from the leaders.
 
