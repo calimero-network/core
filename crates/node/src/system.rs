@@ -313,6 +313,15 @@ pub struct SystemState {
     pub next_group: u64,
     pub bundles: BTreeMap<String, BundleRecord>,
     pub accounts: BTreeMap<AccountId, Account>,
+    /// What each account's passkeys did, oldest first: each sign-in and each
+    /// change one approved, the last [`crate::types::ACTIVITY_KEPT`]. Shown
+    /// to the account holder alone (`GET /auth/activity`). Written at apply
+    /// from entries that carry their time; an earlier release's entries carry
+    /// none and add nothing. Kept beside the accounts, not in them, so the
+    /// account a sign-up's passkey signs (`account_args`) is unchanged; left
+    /// out when empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub activity: BTreeMap<AccountId, VecDeque<crate::types::ActivityEntry>>,
     /// credential id -> account
     pub credentials: BTreeMap<String, AccountId>,
     /// API key hash -> record
@@ -2207,6 +2216,17 @@ impl SystemState {
             })
             .map(|a| a.app_id.clone())
             .collect()
+    }
+
+    /// Records `entry` in `account`'s activity ([`Self::activity`]); none
+    /// for an account the state does not hold.
+    pub fn record_activity(&mut self, account: &str, entry: crate::types::ActivityEntry) {
+        if self.accounts.contains_key(account) {
+            crate::types::record_activity(
+                self.activity.entry(account.to_owned()).or_default(),
+                entry,
+            );
+        }
     }
 
     #[must_use]
@@ -4262,6 +4282,55 @@ fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The account activity entry for the passkey consent `cmd` carries, which
+/// [`authorize`] verified and marked `used`: the account whose passkey gave
+/// it, the method and subject it states, at the time it carries. None for an
+/// operator's or an API key's proof, and for a consent with no time (a
+/// sign-in's, whose entry comes from its session, or one an earlier release
+/// logged), so replaying an earlier release's log adds nothing.
+fn approval_of(
+    s: &SystemState,
+    cmd: &SystemCmd,
+    used: &str,
+) -> Option<(AccountId, crate::types::ActivityEntry)> {
+    let Ok(Value::Object(fields)) = serde_json::to_value(cmd) else {
+        return None;
+    };
+    let consent = fields.into_iter().find_map(|(_, v)| {
+        v.get("assertion")?;
+        let c: crate::proof::Consent = serde_json::from_value(v).ok()?;
+        (c.at > 0 && c.used().ok()? == used).then_some(c)
+    })?;
+    let passkey = consent.assertion.credential_id;
+    let account = s.credentials.get(&passkey)?.clone();
+    let text = |t: String| t.chars().take(crate::types::ACTIVITY_TEXT_CHARS).collect();
+    Some((
+        account,
+        crate::types::ActivityEntry {
+            at: consent.at,
+            passkey,
+            what: crate::types::Activity::Approval {
+                method: text(consent.statement.method),
+                subject: text(consent.statement.subject),
+            },
+        },
+    ))
+}
+
+/// The activity entry of a sign-in that opened `record`'s session, at its
+/// opening (0, an earlier release's: none).
+fn sign_in_of(record: &RefreshRecord) -> Option<crate::types::ActivityEntry> {
+    Some(crate::types::ActivityEntry {
+        at: record.opened_at,
+        passkey: record.passkey.clone()?,
+        what: crate::types::Activity::SignIn {
+            app: record.app.clone(),
+            origin: record.origin.clone(),
+        },
+    })
+    .filter(|e| e.at > 0)
+}
+
 /// The system group's state machine.
 #[derive(Default)]
 pub struct SystemMachine {
@@ -4313,9 +4382,16 @@ impl SystemMachine {
         if let Some(stall) = self.new_work_refusal(&cmd) {
             return Err(stall.message());
         }
+        // Found before it applies: the command may remove the passkey.
+        let approval = used
+            .as_deref()
+            .and_then(|used| approval_of(&self.state, &cmd, used));
         let out = self.run_authorized(cmd).map_err(str::to_owned)?;
         if let Some(used) = used {
             let _new = self.state.used_proofs.insert(used);
+        }
+        if let Some((account, entry)) = approval {
+            self.state.record_activity(&account, entry);
         }
         Ok(out)
     }
@@ -5051,11 +5127,15 @@ impl SystemMachine {
                         g.record.opened_at = at;
                     }
                 }
+                let signed_in = refresh.as_ref().and_then(|g| sign_in_of(&g.record));
                 if let Some(RefreshGrant { hash, record }) = refresh {
                     let _prev = s.refresh.insert(hash, record);
                 }
                 let id = account.account_id.clone();
                 let _prev = s.accounts.insert(id.clone(), account);
+                if let Some(entry) = signed_in {
+                    s.record_activity(&id, entry);
+                }
                 if let Some(r) = &invite {
                     let _new = s.used_proofs.insert(crate::proof::invite_redeem_used(
                         &r.invite_key,
@@ -5329,6 +5409,9 @@ impl SystemMachine {
                     s.api_keys.retain(|_, k| k.account != account);
                 }
                 let revoked_keys = keys_before - s.api_keys.len();
+                if let Some(entry) = sign_in_of(&refresh.record) {
+                    s.record_activity(&account, entry);
+                }
                 let _prev = s.refresh.insert(refresh.hash, refresh.record);
                 Ok(json!({
                     "accountId": account,
@@ -5351,6 +5434,7 @@ impl SystemMachine {
                 }
                 // A sign-in: its passkey's last sign-in is when the session
                 // opened (unknown in an earlier release's entry).
+                let mut signed_in = false;
                 if let (Some(passkey), Some(acc), true) = (
                     &record.passkey,
                     s.accounts.get_mut(&record.account),
@@ -5361,7 +5445,11 @@ impl SystemMachine {
                             .entry(passkey.clone())
                             .or_default()
                             .signed_in(record.opened_at);
+                        signed_in = true;
                     }
+                }
+                if let Some(entry) = sign_in_of(&record).filter(|_| signed_in) {
+                    s.record_activity(&record.account, entry);
                 }
                 let _prev = s.refresh.insert(hash, record);
                 Ok(Value::Null)
@@ -7514,6 +7602,7 @@ mod tests {
         serde_json::to_value(crate::proof::Consent {
             statement,
             assertion: pk.assert(&challenge),
+            at: 0,
         })
         .unwrap()
     }
@@ -8238,6 +8327,151 @@ mod tests {
         let cmd: SystemCmd = serde_json::from_value(entry.clone()).unwrap();
         assert!(matches!(cmd, SystemCmd::AddPasskey { at: 0, .. }));
         assert_eq!(serde_json::to_value(&cmd).unwrap(), entry);
+    }
+
+    /// An account's activity comes from the entries' own times: a sign-in's
+    /// session opening (with the app and origin it is bound to) and a
+    /// step-up's consent time, under the passkey that gave it. A repeated
+    /// sign-in moves the newest entry's time; a refused command, a consent
+    /// with no time (an earlier release's) and an earlier release's sign-in
+    /// add nothing; the oldest entries go past the cap; nobody else's
+    /// activity moves.
+    #[test]
+    fn activity_records_sign_ins_and_step_ups_from_their_times() {
+        use crate::types::{Activity, ActivityEntry, ACTIVITY_KEPT};
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let cred = alice.credential_id();
+        assert!(m
+            .state
+            .activity
+            .get("alice")
+            .cloned()
+            .unwrap_or_default()
+            .is_empty());
+        let mut session = 0;
+        let mut sign_in =
+            |m: &mut SystemMachine, alice: &mut Soft, opened_at: u64, app: Option<&str>| {
+                session += 1;
+                let (_token, hash, record) = refresh_token("alice", &cred, &format!("s{session}"));
+                let record = crate::types::RefreshRecord {
+                    opened_at,
+                    app: app.map(str::to_owned),
+                    origin: app.map(|a| format!("https://{a}.example.com")),
+                    ..record
+                };
+                let c = consent(
+                    alice,
+                    "session",
+                    "__sign_in",
+                    &super::sign_in_args(&hash, &record),
+                );
+                let _ok = m
+                    .run(SystemCmd::CreateRefresh {
+                        hash,
+                        record,
+                        consent: c,
+                    })
+                    .unwrap();
+            };
+        let timed = |c: serde_json::Value, at: u64| {
+            let mut c = c;
+            c["at"] = json!(at);
+            c
+        };
+        let signed_in = |at: u64, app: Option<&str>| ActivityEntry {
+            at,
+            passkey: cred.clone(),
+            what: Activity::SignIn {
+                app: app.map(str::to_owned),
+                origin: app.map(|a| format!("https://{a}.example.com")),
+            },
+        };
+
+        sign_in(&mut m, &mut alice, 0, None);
+        assert!(
+            m.state
+                .activity
+                .get("alice")
+                .cloned()
+                .unwrap_or_default()
+                .is_empty(),
+            "an earlier release's sign-in adds nothing"
+        );
+        sign_in(&mut m, &mut alice, 40, Some("com.notes"));
+        sign_in(&mut m, &mut alice, 45, Some("com.notes"));
+        assert_eq!(
+            m.state.activity.get("alice").cloned().unwrap_or_default(),
+            [signed_in(45, Some("com.notes"))],
+            "a repeated sign-in moves the newest entry's time"
+        );
+
+        // A step-up: its method and subject, never its arguments.
+        let args = json!({ "version": "2.0.0" });
+        let wrong = timed(
+            consent(&mut alice, "account:bob", "__approve_release", &args),
+            50,
+        );
+        assert!(m.run(approve_with("alice", "2.0.0", wrong)).is_err());
+        let real = timed(
+            consent(&mut alice, "account:alice", "__approve_release", &args),
+            50,
+        );
+        let _ok = m.run(approve_with("alice", "2.0.0", real)).unwrap();
+        let approved = ActivityEntry {
+            at: 50,
+            passkey: cred.clone(),
+            what: Activity::Approval {
+                method: "__approve_release".into(),
+                subject: "account:alice".into(),
+            },
+        };
+        assert_eq!(
+            m.state.activity.get("alice").cloned().unwrap_or_default(),
+            [signed_in(45, Some("com.notes")), approved.clone()],
+            "a refused command adds nothing"
+        );
+        // A consent with no time (an earlier release's) adds nothing.
+        let untimed = consent(&mut alice, "account:alice", "__withdraw_release", &args);
+        let _ok = m
+            .run(SystemCmd::SetReleaseApproval {
+                scope: ReleaseScope::Account,
+                version: "2.0.0".into(),
+                approved: false,
+                actor: "alice".into(),
+                consent: untimed,
+            })
+            .unwrap();
+        assert_eq!(
+            m.state
+                .activity
+                .get("alice")
+                .cloned()
+                .unwrap_or_default()
+                .len(),
+            2
+        );
+        // Stored as the route lists it, and left out when empty.
+        assert_eq!(
+            serde_json::to_value(&approved).unwrap(),
+            json!({ "at": 50, "passkey": cred, "kind": "approval",
+                "method": "__approve_release", "subject": "account:alice" })
+        );
+        assert!(serde_json::to_value(SystemState::default())
+            .unwrap()
+            .get("activity")
+            .is_none());
+
+        // Past the cap the oldest go first.
+        for i in 0..ACTIVITY_KEPT {
+            let app = if i % 2 == 0 { "com.a" } else { "com.b" };
+            sign_in(&mut m, &mut alice, 100 + i as u64, Some(app));
+        }
+        let kept = &m.state.activity.get("alice").cloned().unwrap_or_default();
+        assert_eq!(kept.len(), ACTIVITY_KEPT);
+        assert!(!kept.contains(&approved), "the oldest went first");
+        assert_eq!(kept.back().unwrap().at, 100 + ACTIVITY_KEPT as u64 - 1);
+        assert!(!m.state.activity.contains_key("bob"));
+        assert!(!m.state.activity.contains_key("carol"));
     }
 
     /// An account is created only by its own new passkey, over the whole
