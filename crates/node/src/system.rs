@@ -4490,14 +4490,14 @@ pub enum SystemCmd {
         /// reached by its owner only while in it ([`SystemState::may_reach`]).
         /// The API always sets it; absent (`false`) in an entry an earlier
         /// release logged, which replays as that release judged it.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         owner_in_team: bool,
         /// Who reaches an instance now is judged with an `Accounts` instance
         /// reached only through its package's app team
         /// ([`SystemState::may_reach`]). The API always sets it; absent
         /// (`false`) in an entry an earlier release logged, which replays as
         /// that release judged it.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         accounts_in_app_team: bool,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
