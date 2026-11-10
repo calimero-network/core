@@ -2523,6 +2523,7 @@ async fn apikey_create(
             hash,
             record,
             consent: c.consent,
+            owner_in_org: true,
         })
         .await?;
     Ok(Json(json!({ "keyId": key_id, "key": key })))
@@ -3253,6 +3254,7 @@ async fn app_delete(
         .sys_write(&SystemCmd::DeleteApp {
             app_id: app_id.clone(),
             actor: account,
+            owner_in_org: true,
         })
         .await?;
     Ok(Json(json!({ "appId": app_id, "deleted": true })))
@@ -4341,6 +4343,7 @@ async fn run_upgrade(
             run: who.run,
             consent: who.consent,
             release,
+            owner_in_org: true,
         })
         .await?;
     Ok(Json(json!({
@@ -4546,6 +4549,7 @@ async fn start_run(
                             run: who.run.clone(),
                             consent: who.consent.clone(),
                             release: t.release.clone(),
+                            owner_in_org: true,
                         })
                         .await;
                     if let Err(e) = written {
@@ -4950,6 +4954,7 @@ async fn app_access(
             app_id,
             access: body.access,
             actor: account,
+            owner_in_org: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -5075,9 +5080,10 @@ struct TransferBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// Hand an app to another account: the
-/// owner's, with a passkey assertion over this transfer (412 first). Who then
-/// upgrades the app, and so which code reads its data, is the new owner's.
+/// Hand an app to another account: the owner's (of an organization's app,
+/// while a member of it) or an organization admin's, with a passkey assertion
+/// over this transfer (412 first). Who then upgrades the app, and so which
+/// code reads its data, is the new owner's.
 async fn app_transfer(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5088,8 +5094,8 @@ async fn app_transfer(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if app.owner != actor {
-        return Err(ApiError::forbidden("only the app's owner transfers it"));
+    if !node.sys(|s| s.manages_app(&app, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
     }
     let consent = consent(
         &node,
@@ -5106,6 +5112,7 @@ async fn app_transfer(
             to: body.to,
             actor,
             consent,
+            owner_in_org: true,
         })
         .await?,
     ))
@@ -5196,6 +5203,7 @@ async fn app_metadata(
             app_id,
             metadata: body.metadata,
             actor,
+            owner_in_org: true,
         })
         .await?;
     Ok(Json(json!({})))
@@ -6427,14 +6435,15 @@ fn blob_json(id: &[u8; 32], size: u64) -> Value {
 }
 
 /// Whether `account` may upload and list the files of `app`: its owner and the members of its
-/// organization (not guests), even where the app is public.
+/// organization (not guests), even where the app is public; an organization's app's owner only
+/// while a member ([`crate::system::SystemState::owner_acts`]).
 fn may_handle_files(
     s: &crate::system::SystemState,
     app: &crate::types::AppRecord,
     account: Option<&str>,
 ) -> bool {
     account.is_some_and(|a| {
-        app.owner == a
+        s.owner_acts(app, a)
             || app
                 .org
                 .as_ref()
@@ -6641,17 +6650,11 @@ async fn blob_download(
     Ok(([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response())
 }
 
-/// Whether `account` may manage `app`'s data (its owner, or an admin of its
-/// organization): delete its blobs.
+/// Whether `account` may manage `app`'s data (its owner, of an organization's
+/// app while a member of it, or an admin of its organization): delete its
+/// blobs ([`crate::system::SystemState::manages_app`]).
 fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    let Some(a) = account else {
-        return false;
-    };
-    app.owner == a
-        || app
-            .org
-            .as_deref()
-            .is_some_and(|o| node.sys(|s| s.is_org_admin(o, a)))
+    account.is_some_and(|a| node.sys(|s| s.manages_app(app, a)))
 }
 
 /// The app's blobs.

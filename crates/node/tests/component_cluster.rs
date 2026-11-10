@@ -1273,6 +1273,151 @@ async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
     assert!(alice.get(&format!("apps/{channel}")).await.is_err());
 }
 
+/// `who` changes `app`'s access to `access`.
+async fn set_access(
+    who: &Client,
+    app: &str,
+    access: Value,
+) -> Result<Value, Box<calimero_client::Error>> {
+    who.post(&format!("apps/{app}/access"), json!({ "access": access }))
+        .await
+        .map_err(Box::new)
+}
+
+/// `who` sets `app`'s metadata.
+async fn set_metadata(
+    who: &Client,
+    app: &str,
+    metadata: Value,
+) -> Result<Value, Box<calimero_client::Error>> {
+    who.post(
+        &format!("apps/{app}/metadata"),
+        json!({ "metadata": metadata }),
+    )
+    .await
+    .map_err(Box::new)
+}
+
+/// Removed from an organization, the owner of one of its apps manages it no
+/// more: they cannot open it to the public (and so reach it again), transfer
+/// it, delete it or set its metadata. The organization's admins still can,
+/// so they clean it up: transfer one to a member, delete another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (org, ids) = org_with(&alice, &mut a, &[&bob, &carol]).await;
+    let (bob_id, carol_id) = (ids[0].clone(), ids[1].clone());
+    // Bob may create apps here (CREATE_APP | JOIN_OPEN_TEAMS).
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": 5 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let mut apps = Vec::new();
+    for name in ["kept", "dropped"] {
+        let app = bob
+            .create_app(
+                name,
+                &bundle,
+                json!({ "org": org, "access": { "kind": "org" } }),
+            )
+            .await
+            .unwrap();
+        set(&bob, &app, "in").await.unwrap();
+        apps.push(app);
+    }
+    let (kept, dropped) = (apps[0].clone(), apps[1].clone());
+
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    for app in [&kept, &dropped] {
+        let err = set_access(&bob, app, json!({ "kind": "public" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("REJECTED"), "{app}: access: {err}");
+        let err = set(&bob, app, "back").await.unwrap_err();
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: reached: {err}");
+        let err = set_metadata(&bob, app, json!({ "pinned": true }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some("REJECTED"), "{app}: metadata: {err}");
+        let err = bob.transfer_app(app, &bob_id, &mut b).await.unwrap_err();
+        assert_eq!(err.code(), Some("FORBIDDEN"), "{app}: transfer: {err}");
+        let err = bob.delete(&format!("apps/{app}")).await.unwrap_err();
+        assert_eq!(err.code(), Some("REJECTED"), "{app}: delete: {err}");
+    }
+    let record = alice.get(&format!("apps/{kept}")).await.unwrap();
+    assert_eq!(record["access"]["kind"], "org", "{record}");
+    assert_eq!(record["metadata"], Value::Null, "{record}");
+
+    // The organization's owner hands one to a member and deletes the other.
+    let _ok = alice.transfer_app(&kept, &carol_id, &mut a).await.unwrap();
+    all_applied(&c).await;
+    let record = carol.get(&format!("apps/{kept}")).await.unwrap();
+    assert_eq!(record["owner"], json!(carol_id), "{record}");
+    set(&carol, &kept, "carol's").await.unwrap();
+    let _ok = alice.delete(&format!("apps/{dropped}")).await.unwrap();
+    assert!(alice.get(&format!("apps/{dropped}")).await.is_err());
+}
+
+/// An owner who is a member of the app's organization manages it as before,
+/// and so does the owner of an app outside any organization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
+    let (org, ids) = org_with(&alice, &mut a, &[&bob, &carol]).await;
+    let (bob_id, carol_id) = (ids[0].clone(), ids[1].clone());
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": 5 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let in_org = bob
+        .create_app(
+            "team-app",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    let personal = bob.create_app("mine", &bundle, json!({})).await.unwrap();
+    for app in [&in_org, &personal] {
+        let _ok = set_access(&bob, app, json!({ "kind": "public" }))
+            .await
+            .unwrap();
+        let _ok = set_metadata(&bob, app, json!({ "pinned": true }))
+            .await
+            .unwrap();
+        let _ok = bob.transfer_app(app, &carol_id, &mut b).await.unwrap();
+    }
+    all_applied(&c).await;
+    for app in [&in_org, &personal] {
+        let record = carol.get(&format!("apps/{app}")).await.unwrap();
+        assert_eq!(record["owner"], json!(carol_id), "{record}");
+        assert_eq!(record["metadata"], json!({ "pinned": true }), "{record}");
+        let _ok = carol.delete(&format!("apps/{app}")).await.unwrap();
+    }
+    let _unused = &mut cpk;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_passkey_is_another_device_of_the_same_account() {
     let c = Cluster::start(3).await;
@@ -2682,6 +2827,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     run: None,
                     consent,
                     release: None,
+                    owner_in_org: true,
                 })
                 .await
                 .unwrap_err();

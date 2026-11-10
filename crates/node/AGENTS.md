@@ -587,7 +587,8 @@ is its command line.
   `job_transfer` (assignment, component, inputs, output bodies) has its own pool (`MAX_INFLIGHT_JOB_OPS`) and 300 s.
   A cancel whose poll gets no answer ends from the held report if any (while that report only waits on the leader's own writes the run stays open, up to the run ceiling), else cancelled with no usage, without a delete.
   `GET /apps/{app}/runs/{run}` and `GET /apps/{app}/runs?limit=&before=` (`AppMachine::runs_page`, newest `startTsMs` first, ties by run id descending, `limit` 1 to 100, a `before` cursor of `startTsMs:run` bounded by `MAX_RUNS_CURSOR_BYTES`, at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` records read per page) are the reserved view `__run` answered by the leader (`Node::run_view`), one shared `run_json` for both; they show plaintext sizes and hashes of files only to those who may list the files.
-- **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
+- **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
+- **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
   closed (`Engine::store_watch`): a task still running holds the RocksDB lock
@@ -718,8 +719,8 @@ is its command line.
   and `GET /auth/aliases`; an alias names only an app its account reaches.
 - **Metadata and org lifecycle** (org/member/app metadata, device
   labels, owner-delete): `Org::metadata` (admins or `MANAGE_METADATA`),
-  `Org::member_metadata` (the member or an admin), `AppRecord::metadata` (owner
-  or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
+  `Org::member_metadata` (the member or an admin), `AppRecord::metadata` (owner,
+  while a member for an org app, or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
   `Account::passkey_labels` (`POST /auth/passkeys/{cred} { label }`).
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
   and takes the org's teams, invites and apps. Ownership moves with
