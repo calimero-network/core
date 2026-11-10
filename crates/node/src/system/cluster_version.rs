@@ -600,11 +600,16 @@ mod tests {
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
         for feature in FEATURES {
-            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
-            assert_eq!(refused.feature, feature);
+            let cmd = uses(feature);
+            let needs = cmd.features();
+            assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
+            let refused = propose(&mut nodes, &cmd).unwrap_err();
+            // The first feature the entry needs that the cluster lacks: a move
+            // carrying `accounts_in_app_team` is refused as `moveApp` here.
+            assert_eq!(refused.feature, needs[0]);
             assert_eq!(refused.active.as_deref(), Some(RC14));
             assert!(
-                refused.message().contains(feature.since()),
+                refused.message().contains(refused.feature.since()),
                 "{}",
                 refused.message()
             );
@@ -647,6 +652,12 @@ mod tests {
             assert!(propose(&mut nodes, &uses(feature)).is_ok(), "{feature:?}");
         }
         assert!(propose(&mut nodes, &uses(Feature::ClusterVersion)).is_err());
+        // rc.16's fields on an rc.15 command are held back by their own name.
+        for feature in [Feature::TeamCloseDropsBelow, Feature::MoveAccountsAppTeam] {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(refused.feature, feature);
+            assert_eq!(refused.active.as_deref(), Some(RC15));
+        }
         assert!(same_state(&nodes));
     }
 
