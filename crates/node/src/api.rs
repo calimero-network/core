@@ -967,7 +967,12 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
 /// only" instead of failing at the end of a passkey ceremony.
 async fn sign_up_public(State(node): State<Arc<Node>>) -> ApiResult {
     node.sys_fresh().await;
-    Ok(Json(node.sys(|s| sign_up_json(s.governance().sign_up))))
+    let mut out = node.sys(|s| sign_up_json(s.governance().sign_up));
+    // What this cluster's passkeys are named after (`passkeys::passkey_user_name`),
+    // so a sign-in can say which of the person's passkeys to pick.
+    out["cluster"] = json!(node.config.cluster);
+    out["passkeyTag"] = json!(passkeys::cluster_tag(&node));
+    Ok(Json(out))
 }
 
 fn sign_up_json(policy: SignUp) -> Value {
@@ -998,7 +1003,12 @@ async fn register_begin(
         .as_deref()
         .and_then(|o| app_origin(&node, o))
         .map(|a| passkeys::app_name(&node, &a.package));
-    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, app.as_deref());
+    let shown = passkeys::passkey_user_name(
+        &name,
+        &node.config.cluster,
+        &passkeys::cluster_tag(&node),
+        app.as_deref(),
+    );
     let id = put_pending(
         &node,
         Pending::Register {
@@ -1361,13 +1371,18 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
             )
         })
     });
-    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, None);
+    let shown = passkeys::passkey_user_name(
+        &name,
+        &node.config.cluster,
+        &passkeys::cluster_tag(&node),
+        None,
+    );
     Ok(Json(json!({
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": shown, "displayName": shown },
+            "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "attestation": "none",
@@ -2108,13 +2123,18 @@ async fn account_recovery_begin(
             )
         })
     });
-    let shown = passkeys::passkey_user_name(&name, &node.config.cluster, None);
+    let shown = passkeys::passkey_user_name(
+        &name,
+        &node.config.cluster,
+        &passkeys::cluster_tag(&node),
+        None,
+    );
     Ok(Json(json!({
         "challengeId": id,
         "options": {
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
-            "user": { "id": b64url(&sha256(account.as_bytes())[..16]), "name": shown, "displayName": shown },
+            "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "timeout": 60000,

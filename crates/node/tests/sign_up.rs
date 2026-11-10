@@ -120,11 +120,19 @@ async fn an_invite_only_cluster_takes_invited_people() {
     let c = Cluster::start_with(3, |cfg| cfg.governance.sign_up = SignUp::Invite).await;
     let ops = ops(&c).await;
     let info = c.client(1).get("sign-up").await.unwrap();
-    assert_eq!(
-        info,
-        json!({
-            "policy": "invite", "orgInvites": true, "signUpInvites": true, "inviteRequired": true,
-        })
+    for (key, want) in [
+        ("policy", json!("invite")),
+        ("orgInvites", json!(true)),
+        ("signUpInvites", json!(true)),
+        ("inviteRequired", json!(true)),
+    ] {
+        assert_eq!(info[key], want, "{key} in {info}");
+    }
+    // The cluster's name and the tag its passkeys' names carry.
+    assert!(info["cluster"].is_string(), "{info}");
+    assert!(
+        info["passkeyTag"].as_str().is_some_and(|t| t.len() == 4),
+        "{info}"
     );
     // Refused at begin: the passkey is never asked.
     let e = c
@@ -294,7 +302,13 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
     // take `localhost` as their rp-id.
     let home = Cluster::start(1).await;
     let away = Cluster::start(1).await;
-    let shown = format!("alice · {}", home.name);
+    let tag = passkey_tag(&home).await;
+    // Test clusters share one storage key (`[42; 32]`), so they share a
+    // cluster key and a tag; in production every cluster gets its own KMS
+    // identity, so a cluster made again under its old name gets another tag
+    // (`backup::tests`: another cluster key, another identity key).
+    assert_eq!(tag, passkey_tag(&away).await);
+    let shown = format!("alice · {} · {tag}", home.name);
     let begin = home
         .client(0)
         .post("auth/passkey/register/begin", json!({ "name": "alice" }))
@@ -327,4 +341,37 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
         "{e}"
     );
     assert!(details.is_null(), "{e}");
+}
+
+/// The tag this cluster's passkeys are named with (`GET /sign-up`, public).
+async fn passkey_tag(c: &Cluster) -> String {
+    let public = c.client(0).get("sign-up").await.unwrap();
+    let tag = public["passkeyTag"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(tag.len(), 4, "{public}");
+    assert_eq!(public["cluster"], c.name.as_str(), "{public}");
+    tag
+}
+
+/// A passkey added to an account (and one a recovery makes) gets a user
+/// handle of its own, as a sign-up's does. A password manager keeps one
+/// passkey per site and handle: with the account's handle every time, a
+/// second passkey added in the same iCloud Keychain or Google Password
+/// Manager silently replaced the first, which the account still listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn each_added_passkey_gets_a_user_handle_of_its_own() {
+    let c = Cluster::start(1).await;
+    let tag = passkey_tag(&c).await;
+    let (alice, _pk) = sign_up(&c, 0, "alice", None).await.unwrap();
+    let first = alice
+        .post("auth/passkeys/add/begin", json!({}))
+        .await
+        .unwrap();
+    let second = alice
+        .post("auth/passkeys/add/begin", json!({}))
+        .await
+        .unwrap();
+    let (a, b) = (&first["options"]["user"], &second["options"]["user"]);
+    assert!(a["id"].as_str().is_some_and(|id| !id.is_empty()), "{first}");
+    assert_ne!(a["id"], b["id"], "{first} {second}");
+    assert_eq!(a["name"], format!("alice · {} · {tag}", c.name), "{first}");
 }
