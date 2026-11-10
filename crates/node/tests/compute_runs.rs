@@ -16,7 +16,7 @@ use calimero_node::component::{
 };
 use calimero_node::files::noise_seed;
 use calimero_node::job_wire::{Report, ReportStatus, ReportUsage};
-use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POLL};
+use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POLL, SEGMENT_GRACE};
 use calimero_node::types::Caller;
 use calimero_node::Node;
 use common::{mpk_with, signed_up, Cluster, JobNode, PUBLISHER};
@@ -32,6 +32,7 @@ const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 const READ_PIECE: usize = 64 * 1024; // what the fixture reads and keys at a time
 const WAIT: Duration = Duration::from_secs(180);
 const PAST_IDLE_MS: i64 = 3_700_000; // past the idle time of an unreferenced blob
+const SESSION_LEN: usize = 17 * 1024 * 1024 + 1000; // more than one upload part
 const UPLOAD_TRIES: usize = 5; // FILES_UNAVAILABLE is retryable on an overloaded runner
 
 struct Rig {
@@ -242,6 +243,16 @@ impl Rig {
             .call(&self.app, "ping", json!({}), None)
             .await
             .unwrap();
+    }
+
+    /// Runs the segment sweep on every node once now and once after the grace.
+    fn sweep_past_grace(&self) {
+        let now = Instant::now();
+        for n in self.c.nodes.iter().flatten() {
+            n.node.sweep_segments_at(now);
+            n.node
+                .sweep_segments_at(now + SEGMENT_GRACE + Duration::from_secs(1));
+        }
     }
 
     /// The file bytes the payer of alice's apps is charged for.
@@ -2026,11 +2037,14 @@ async fn a_published_blob_survives_a_leader_change() {
     assert_eq!(bytes, expected);
 }
 
-/// What is stored and then recorded: a plain upload, or a run's output published.
+/// What is stored and then recorded: a plain upload, a run's output published, a sealed file
+/// sent as one request, or one sent through an upload session.
 #[derive(Clone, Copy, Debug)]
 enum Kind {
     Plain,
     Published,
+    File,
+    Session,
 }
 
 /// The node a request goes through.
@@ -2049,6 +2063,7 @@ struct Case<'a> {
     follower: usize,
     /// A run's finished output to publish; unused for a plain upload.
     output: String,
+    /// The bytes of a plain blob, a published output, or a sealed file's plaintext.
     expected: Vec<u8>,
 }
 
@@ -2074,6 +2089,13 @@ impl Case<'_> {
                     .unwrap();
                 up["id"].as_str().unwrap().to_owned()
             }
+            Kind::File | Kind::Session => {
+                let up = self.clients[i]
+                    .upload_bytes(&self.rig.app, self.expected.clone())
+                    .await
+                    .unwrap();
+                up["id"].as_str().unwrap().to_owned()
+            }
             Kind::Published => {
                 let r = self.clients[i]
                     .call(
@@ -2093,7 +2115,7 @@ impl Case<'_> {
     /// the leader for a publish (its entry stores the bytes).
     fn pushing_node(&self, up: usize) -> usize {
         match self.kind {
-            Kind::Plain => up,
+            Kind::Plain | Kind::File | Kind::Session => up,
             Kind::Published => self.leader,
         }
     }
@@ -2127,6 +2149,7 @@ impl Case<'_> {
                 .download_blob(&self.rig.app, id)
                 .await
                 .unwrap(),
+            Kind::File | Kind::Session => unreachable!("files are read by runs"),
             Kind::Published => {
                 let grant = self.rig.grant(id).await;
                 self.rig
@@ -2170,8 +2193,95 @@ impl Case<'_> {
         assert_eq!(again, id, "the id changed");
     }
 
+    /// A run reads file `id` and writes an output of the plaintext XOR its stream; the segments
+    /// of the file are on a majority of the nodes.
+    async fn assert_file_reads_from_a_majority(&self, id: &str) {
+        let segments = self.rig.segments(id);
+        let want = if matches!(self.kind, Kind::Session) {
+            2
+        } else {
+            1
+        };
+        assert!(segments.len() >= want, "{} segments", segments.len());
+        let held = (0..self.clients.len())
+            .filter(|i| self.rig.holds_segments(*i, &segments))
+            .count();
+        assert!(
+            held * 2 > self.clients.len(),
+            "segments on {held} nodes only"
+        );
+        let run = self
+            .rig
+            .begin("startUnkept", json!({ "inputs": [id] }))
+            .await;
+        let ended = until_ended(self.rig, &run, 120).await;
+        assert_eq!(ended.state, RunState::Done, "the run did not read the file");
+        let seed = noise_seed(&self.rig.leader().app_file_key(&self.rig.app), &run);
+        let output = ended.final_.unwrap().outputs[0].sha256.0.clone();
+        assert_eq!(
+            hex::encode(output),
+            sha256_hex(&expected_output(&self.expected, seed)),
+            "the run read other bytes"
+        );
+    }
+
+    /// Passes the idle time with an entry logged through node `i`, which forgets the file.
+    async fn forget_unreferenced(&self, i: usize, id: &str) {
+        self.rig.c.advance_all(PAST_IDLE_MS);
+        self.clients[i]
+            .call(&self.rig.app, "ping", json!({}), None)
+            .await
+            .unwrap();
+        self.rig
+            .until("the app forgets the file", || self.rig.blob(id).is_none())
+            .await;
+    }
+
+    /// Files have no delete and no plain-blob id: one is forgotten after its idle time and its
+    /// segments, which no new upload shares, go with the sweep after its grace.
+    async fn run_file(&self, up: usize, del: usize, baseline: u64) {
+        let id = self.put(up).await;
+        self.assert_file_reads_from_a_majority(&id).await;
+        let old = self.rig.segments(&id);
+
+        self.rig.sweep_past_grace();
+        self.assert_file_reads_from_a_majority(&id).await;
+
+        self.forget_unreferenced(del, &id).await;
+        self.rig
+            .until("the segments are gone on every node", || {
+                self.rig.sweep_past_grace();
+                !self.rig.holds_bytes(&id)
+            })
+            .await;
+
+        let again = self.put(up).await;
+        assert_ne!(again, id, "a file got an id it had before");
+        let fresh = self.rig.segments(&again);
+        assert!(
+            fresh.iter().all(|h| !old.contains(h)),
+            "an upload shares segments with an earlier one"
+        );
+        self.assert_file_reads_from_a_majority(&again).await;
+        self.forget_unreferenced(del, &again).await;
+        self.rig
+            .until("the segments are gone on every node", || {
+                self.rig.sweep_past_grace();
+                !self.rig.holds_bytes(&again)
+            })
+            .await;
+        let started = Instant::now();
+        while self.rig.charged().await != baseline {
+            assert!(started.elapsed() < WAIT, "the quota charge is not released");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn run(&self, up: Via, del: Via, baseline: u64) {
         let (up, del) = (self.node(up), self.node(del));
+        if matches!(self.kind, Kind::File | Kind::Session) {
+            return self.run_file(up, del, baseline).await;
+        }
         let id = self.put(up).await;
         self.assert_downloads_from_a_majority(&id).await;
 
@@ -2200,18 +2310,20 @@ impl Case<'_> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
     let mut failures = Vec::new();
-    for kind in [Kind::Plain, Kind::Published] {
+    for kind in [Kind::Plain, Kind::Published, Kind::File, Kind::Session] {
         for up in [Via::Leader, Via::Follower] {
             for del in [Via::Leader, Via::Follower] {
                 let label = format!("kind={kind:?} up={up:?} del={del:?}");
                 let jobs: &[u64] = match kind {
                     Kind::Plain => &[],
-                    Kind::Published => &[JOB_A],
+                    Kind::Published | Kind::File | Kind::Session => &[JOB_A],
                 };
                 let mut rig = Rig::start(jobs).await;
                 let (output, expected) = match kind {
                     Kind::Plain => (String::new(), format!("plain {label}").into_bytes()),
                     Kind::Published => rig.finished_output().await,
+                    Kind::File => (String::new(), input()),
+                    Kind::Session => (String::new(), vec![7; SESSION_LEN]),
                 };
                 let baseline = rig.charged().await;
                 let leader = rig.c.app_leader(&rig.app).unwrap();
