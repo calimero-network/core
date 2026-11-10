@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Close or open one app's team alone**: `POST /orgs/{org}/app-teams` takes,
+  per package, `join` (`invite` closes that app team, `everyone` opens it)
+  and, on a close, `keep: [account, ...]`. Before, the only atomic close was
+  `shared: true`, which closed every open app team at once; closing one with
+  `POST /orgs/{org}/teams/{team} { join: invite }` dropped everyone who
+  reached it by inheritance unless each had been added first. A close keeps
+  everyone who reaches the app then as a direct row, or, with `keep`, those
+  accounts and the team's leads: everyone else loses the app and their rows in
+  the teams below it, in the same log entry. A package that names `join`
+  leaves the other app teams alone unless `shared` is set. Answers each
+  team's `join` and how many people were `dropped`. Stored format: the new
+  fields are left out when absent, so entries from before replay as they did
+  and their passkey consent reads the same; a node on an earlier release
+  refuses a request naming them (`400`, unknown field).
+
 - **Passkey times and the account's sessions**: `GET /auth/me` gives each
   passkey `addedAt` and `lastSignInAt` (Unix seconds; `null` for a passkey
   added, or last signed in, before this release). `GET /auth/sessions` lists
