@@ -253,7 +253,7 @@ is its command line.
   `--app-upgrades`, `--outbound-approvals`. The first leader writes
   `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
   a second genesis is refused, so a restart with other flags changes nothing.
-  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance, cluster, node)`,
   `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
   side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
   then answers), `POST /ops/apps/{app}/upgrade` (an installed release;

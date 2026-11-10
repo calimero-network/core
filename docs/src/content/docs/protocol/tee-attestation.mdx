@@ -33,13 +33,19 @@ The quote's 64 bytes of report data bind the request to the key:
 
 ```text
 transport:  report_data = nonce ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)
-receipts:   report_data = nonce ‖ SHA-256("calimero.tee-attest.receipt-key.v2" ‖ receipt_key ‖ SHA-256(governance JSON))
+receipts:   report_data = nonce ‖ SHA-256("calimero.tee-attest.receipt-key.v3" ‖ receipt_key ‖ SHA-256(governance JSON) ‖ u32_be(len(cluster)) ‖ cluster ‖ u64_be(node))
 kms:        report_data = nonce ‖ SHA-256("calimero.tee-attest.kms-evidence.v1" ‖ transport_binding ‖ SHA-256(JCS(kms)))
 ```
 
 `governance JSON` is `Governance::canonical`: its fields in declaration
 order, `deployments` and `deployers` only when not the defaults
 ([Deployers](/protocol/governance/#deployers)).
+
+A receipts quote also binds the cluster name and node id, so a verifier checks
+it against the node it asked for, never the document's own `cluster` and
+`node`: `verify_app_cluster` against the cluster the entry node names in its
+sealed answer and the node id of each replica, a peer against its own cluster
+and the node it reached for.
 
 `transport_binding` is the second half of the transport form, so a `kms`
 quote still attests the transport key; it also commits to the `kms` record.
@@ -188,9 +194,11 @@ Clients never need it.
 ## Verifying the whole app cluster
 
 `GET /apps/{app}/attestation?nonce=` asks every replica of the app for its
-receipt-key attestation over the caller's nonce and returns them together.
-`Client::verify_app_cluster` checks each one with the client's policy, checks
-each replica answers as the node it is listed as, and requires every replica to
+receipt-key attestation over the caller's nonce and returns them together,
+with the cluster's name. `Client::verify_app_cluster` checks each one with the
+client's policy, checks each quote binds the cluster that answer names and the
+node id it is listed under (the entry node fetches the documents in the clear,
+so their own `cluster` and `node` fields are not trusted), and requires every replica to
 attest the **same governance**. It answers the attested receipt key per node
 and that governance. A replica that does not answer, or does not pass, fails
 the whole check.

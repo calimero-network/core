@@ -825,6 +825,8 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         r[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
             &node.receipt_public(),
             &governance,
+            &node.config.cluster,
+            node.config.node_id,
         ));
         r
     } else if let Some(kms) = &kms {
@@ -892,7 +894,11 @@ async fn app_attestation(
             Err(e) => json!({ "node": id, "error": e }),
         });
     }
-    Ok(Json(json!({ "appId": app_id, "replicas": replicas })))
+    // The cluster, said over the caller's attested channel: what each
+    // replica's quote must bind, since the documents came in the clear.
+    Ok(Json(
+        json!({ "appId": app_id, "cluster": node.config.cluster, "replicas": replicas }),
+    ))
 }
 
 // ---------------------------------------------------------------- auth

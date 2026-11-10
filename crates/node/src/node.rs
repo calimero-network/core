@@ -1572,9 +1572,13 @@ impl Node {
                 .json()
                 .await
                 .ok()?;
+            // Bound to this cluster and the node asked for: the address
+            // answers in the clear, so another node's quote is refused.
             let (key, _governance) = crate::attest::verify_receipt_key(
                 &doc,
                 &nonce,
+                &self.config.cluster,
+                id,
                 &self.config.peer_policy(),
             )
             .await

@@ -272,14 +272,24 @@ impl Governance {
 }
 
 /// What a receipt-key attestation's report data binds after the nonce: the
-/// receipt key and the cluster's governance.
+/// receipt key, the cluster's governance, and the cluster and node id (text
+/// u32-BE length-prefixed, as [`job_key_binding`]), so one node's quote never
+/// stands for another node's, or another cluster's.
 #[must_use]
-pub fn receipt_key_binding(receipt_key: &[u8; 32], governance: &Governance) -> [u8; 32] {
+pub fn receipt_key_binding(
+    receipt_key: &[u8; 32],
+    governance: &Governance,
+    cluster: &str,
+    node: u64,
+) -> [u8; 32] {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
-    h.update(b"calimero.tee-attest.receipt-key.v2");
+    h.update(b"calimero.tee-attest.receipt-key.v3");
     h.update(receipt_key);
     h.update(sha2::Sha256::digest(governance.canonical()));
+    h.update((cluster.len() as u32).to_be_bytes());
+    h.update(cluster.as_bytes());
+    h.update(node.to_be_bytes());
     h.finalize().into()
 }
 
@@ -588,11 +598,14 @@ pub async fn verify(
 }
 
 /// Verify a receipt-key attestation (`purpose=receipts`): the same checks as
-/// [`verify`], over a quote that binds the node's receipt key and the
-/// cluster's governance. Answers both.
+/// [`verify`], over a quote that binds the node's receipt key, the cluster's
+/// governance, and the `cluster` and `node` the caller asked for (never the
+/// document's own fields, which nothing signs). Answers the key and governance.
 pub async fn verify_receipt_key(
     doc: &AttestationDoc,
     nonce: &[u8; 32],
+    cluster: &str,
+    node: u64,
     policy: &Policy,
 ) -> eyre::Result<([u8; 32], Governance)> {
     let key = hex32(
@@ -606,7 +619,7 @@ pub async fn verify_receipt_key(
         .ok_or_else(|| eyre::eyre!("the attestation names no governance"))?;
     let mut expected = [0; 64];
     expected[..32].copy_from_slice(nonce);
-    expected[32..].copy_from_slice(&receipt_key_binding(&key, &governance));
+    expected[32..].copy_from_slice(&receipt_key_binding(&key, &governance, cluster, node));
     verify_report(doc, nonce, policy, &expected).await?;
     Ok((key, governance))
 }
@@ -886,6 +899,77 @@ mod tests {
             nonce: hex::encode(nonce),
             ..doc("2.4.0")
         }
+    }
+
+    /// A receipt-key document as node `node` of cluster `cluster` answers it.
+    fn mock_receipt_doc(cluster: &str, node: u64, nonce: [u8; 32]) -> AttestationDoc {
+        let mut report = [0; 64];
+        report[..32].copy_from_slice(&nonce);
+        report[32..].copy_from_slice(&receipt_key_binding(
+            &[5; 32],
+            &Governance::default(),
+            cluster,
+            node,
+        ));
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        AttestationDoc {
+            quote: STANDARD.encode(quote),
+            receipt_key: Some(hex::encode([5; 32])),
+            governance: Some(Governance::default()),
+            cluster: cluster.into(),
+            node,
+            mock: true,
+            nonce: hex::encode(nonce),
+            ..doc("2.4.0")
+        }
+    }
+
+    /// A receipt-key quote names the node and cluster it was made for: one
+    /// node's quote relabelled as another's, or another cluster's, is refused.
+    #[tokio::test]
+    async fn a_receipt_key_quote_is_bound_to_its_node_and_cluster() {
+        let mock = Policy {
+            allow_mock: true,
+            ..Policy::default()
+        };
+        let nonce = [7; 32];
+        let good = mock_receipt_doc("c", 1, nonce);
+        assert!(verify_receipt_key(&good, &nonce, "c", 1, &mock)
+            .await
+            .is_ok());
+        // Relabelled: the document's own fields say node 2, the quote node 1.
+        let as_node_2 = AttestationDoc {
+            node: 2,
+            ..good.clone()
+        };
+        assert!(
+            verify_receipt_key(&as_node_2, &nonce, "c", 2, &mock)
+                .await
+                .is_err(),
+            "node 1's quote verified as node 2's"
+        );
+        let as_other_cluster = AttestationDoc {
+            cluster: "d".into(),
+            ..good.clone()
+        };
+        assert!(
+            verify_receipt_key(&as_other_cluster, &nonce, "d", 1, &mock)
+                .await
+                .is_err(),
+            "cluster c's quote verified as cluster d's"
+        );
+        // The caller's expectation decides, not the document's fields.
+        assert!(verify_receipt_key(&good, &nonce, "c", 2, &mock)
+            .await
+            .is_err());
+        assert!(verify_receipt_key(&good, &nonce, "d", 1, &mock)
+            .await
+            .is_err());
+        // The length prefix keeps one name apart from a longer one.
+        assert_ne!(
+            receipt_key_binding(&[5; 32], &Governance::default(), "c", 1),
+            receipt_key_binding(&[5; 32], &Governance::default(), "c\0", 1)
+        );
     }
 
     #[tokio::test]
@@ -1291,8 +1375,8 @@ mod tests {
             r#"{"releases":"owner","appUpgrades":"owner","outbound":"owner","deployments":"granted","deployers":"owner"}"#
         );
         assert_ne!(
-            receipt_key_binding(&[1; 32], &granted),
-            receipt_key_binding(&[1; 32], &Governance::default())
+            receipt_key_binding(&[1; 32], &granted, "c", 1),
+            receipt_key_binding(&[1; 32], &Governance::default(), "c", 1)
         );
         let old: Governance = serde_json::from_slice(
             br#"{"releases":"operator","appUpgrades":"owner","outbound":"owner"}"#,
@@ -1320,8 +1404,8 @@ mod tests {
             ..invite.clone()
         };
         assert_ne!(
-            receipt_key_binding(&[1; 32], &closed),
-            receipt_key_binding(&[1; 32], &invite)
+            receipt_key_binding(&[1; 32], &closed, "c", 1),
+            receipt_key_binding(&[1; 32], &invite, "c", 1)
         );
     }
 }

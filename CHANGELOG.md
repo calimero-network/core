@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Receipt-key quotes bind the cluster and node.** A `purpose=receipts`
+  quote's report data is now `nonce || SHA-256("calimero.tee-attest.receipt-key.v3"
+  || receipt_key || SHA-256(governance JSON) || u32-BE len || cluster || u64-BE
+  node)`. `verify_receipt_key` takes the cluster and node the caller expects
+  and checks them against the quote, not the document's unsigned fields;
+  `verify_app_cluster` reads the cluster from the entry node's sealed answer
+  (`GET /apps/{app}/attestation` now names `cluster`), and a node attesting a
+  peer's session-issuing key checks its own cluster and that peer's id. A v2
+  verifier refuses a new node's receipt-key quote and the other way round; a
+  session issued by a node of the other version is refreshed on the answering
+  node until the cluster runs one release.
+
 ## [1.0.0-rc.15] - 2026-11-10
 
 ### Added
