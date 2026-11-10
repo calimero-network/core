@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Compatibility, written down and checked**. The policy and
+- **Compatibility, written down and checked** (#4927). The policy and
   matrix of what each release keeps for the releases, apps, clients and data before
   it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
   ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
@@ -15,6 +15,18 @@
   deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
   policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
   checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
+
+### Security
+
+- **Closing a team takes the channel rows of whoever loses it.** An open
+  team closed with the plain team update (`POST /orgs/{org}/teams/{team}
+  { join: invite }`) dropped everyone in it by inheritance alone but left
+  their rows in the restricted teams below it, so they kept reaching the
+  private channels' apps under an app team they no longer had. Those rows now
+  go, as a removal from the team and `ScopeApps`' close take them; nobody is
+  barred, so opening the team again lets them back into it (not into the
+  channels). `UpdateTeam` carries `close_drops_below`, which the API always
+  sets; an entry an earlier release logged replays keeping the rows.
 
 ## [1.0.0-rc.15] - 2026-11-10
 
