@@ -19,6 +19,9 @@ pub enum AccountCmd {
     /// The account's devices (passkeys).
     #[command(subcommand)]
     Device(DeviceCmd),
+    /// The account's sessions (needs a passkey session).
+    #[command(subcommand)]
+    Session(SessionCmd),
     /// API keys for services (need a passkey session to create).
     #[command(subcommand)]
     ApiKey(ApiKeyCmd),
@@ -72,6 +75,22 @@ pub enum DeviceCmd {
         credential: String,
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCmd {
+    /// Its live sessions: the device (passkey) each was opened with, the
+    /// application and origin it is bound to, when it opened and was last
+    /// active (to within about an hour), and the current one.
+    #[command(alias = "ls")]
+    List,
+    /// End one session (sign it out).
+    Revoke {
+        /// The session id, as `list` shows it (base64url: it may start
+        /// with `-`).
+        #[arg(allow_hyphen_values = true)]
+        session: String,
     },
 }
 
@@ -151,6 +170,10 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
                 dev_passkey.as_deref(),
             )
             .await?
+        }
+        AccountCmd::Session(SessionCmd::List) => client.sessions().await?,
+        AccountCmd::Session(SessionCmd::Revoke { session }) => {
+            client.revoke_session(&session).await?
         }
         AccountCmd::ApiKey(ApiKeyCmd::Create {
             label,

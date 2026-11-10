@@ -2583,6 +2583,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             account,
             credential,
             consent,
+            ..
         } => {
             let (st, used) = fresh(consent_of(account, consent)?)?;
             let args = json!({
@@ -2731,6 +2732,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             invite,
             refresh,
             consent,
+            ..
         } => {
             let (st, used) = fresh(crate::proof::verify_sign_in(consent, &account.passkeys)?)?;
             // An invite at sign-up: the token's key signs it, as a redemption
@@ -3448,6 +3450,13 @@ pub enum SystemCmd {
         /// The new passkey's consent ([`crate::proof`]).
         #[serde(default)]
         consent: Value,
+        /// When the sign-up was taken (Unix seconds): the passkey's added
+        /// and last sign-in time and the session's opening
+        /// ([`crate::types::PasskeyTimes`]). Outside what the passkey signs,
+        /// so a release that does not know it checks the same consent. 0 (a
+        /// sign-up an earlier release logged): unknown.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        at: u64,
     },
     /// A new passkey, approved by one the account already has.
     AddPasskey {
@@ -3456,6 +3465,10 @@ pub enum SystemCmd {
         /// The actor's passkey consent over it ([`crate::proof`]).
         #[serde(default)]
         consent: Value,
+        /// When it was added (Unix seconds); 0 (an earlier release's
+        /// entry): unknown.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        at: u64,
     },
     /// Remove a passkey and revoke every session opened with it.
     RemovePasskey {
@@ -4871,9 +4884,10 @@ impl SystemMachine {
                 Ok(Value::Null)
             }
             SystemCmd::CreateAccount {
-                account,
+                mut account,
                 invite,
-                refresh,
+                mut refresh,
+                at,
                 ..
             } => {
                 // The first account waits for genesis: the rules it joins
@@ -4901,6 +4915,24 @@ impl SystemMachine {
                     let _prev = s
                         .credentials
                         .insert(c.id.clone(), account.account_id.clone());
+                }
+                // The sign-up adds its passkey and signs in with it, at the
+                // time the entry carries (none: an earlier release's).
+                account.passkey_times = BTreeMap::new();
+                if at > 0 {
+                    for c in &account.passkeys {
+                        let mut times = crate::types::PasskeyTimes {
+                            added_at: Some(at),
+                            last_sign_in_at: None,
+                        };
+                        if refresh.is_some() {
+                            times.signed_in(at);
+                        }
+                        let _prev = account.passkey_times.insert(c.id.clone(), times);
+                    }
+                    if let Some(g) = &mut refresh {
+                        g.record.opened_at = at;
+                    }
                 }
                 if let Some(RefreshGrant { hash, record }) = refresh {
                     let _prev = s.refresh.insert(hash, record);
@@ -4934,6 +4966,7 @@ impl SystemMachine {
             SystemCmd::AddPasskey {
                 account,
                 credential,
+                at,
                 ..
             } => {
                 if s.credentials.contains_key(&credential.id) {
@@ -4942,6 +4975,15 @@ impl SystemMachine {
                 let acc = s.accounts.get_mut(&account).ok_or("unknown account")?;
                 if acc.passkeys.len() >= 10 {
                     return Err("an account holds at most 10 passkeys");
+                }
+                if at > 0 {
+                    let _prev = acc.passkey_times.insert(
+                        credential.id.clone(),
+                        crate::types::PasskeyTimes {
+                            added_at: Some(at),
+                            last_sign_in_at: None,
+                        },
+                    );
                 }
                 let _prev = s.credentials.insert(credential.id.clone(), account);
                 acc.passkeys.push(credential);
@@ -4961,6 +5003,7 @@ impl SystemMachine {
                     return Err("no such passkey");
                 }
                 acc.passkeys.retain(|c| c.id != credential_id);
+                let _gone = acc.passkey_times.remove(&credential_id);
                 let _prev = s.credentials.remove(&credential_id);
                 // A removed device keeps no session (Xil's review, issue 5).
                 let sessions: BTreeSet<String> = s
@@ -5143,6 +5186,17 @@ impl SystemMachine {
                 // recovery spends a code a passkey approved, so this grows
                 // by one per code at most.
                 acc.passkeys.push(credential.clone());
+                // Added and signed in with when the session opened (none: a
+                // finish an earlier release logged).
+                let opened = refresh.record.opened_at;
+                if opened > 0 {
+                    let mut times = crate::types::PasskeyTimes {
+                        added_at: Some(opened),
+                        last_sign_in_at: None,
+                    };
+                    times.signed_in(opened);
+                    let _prev = acc.passkey_times.insert(credential.id.clone(), times);
+                }
                 let _prev = s.credentials.insert(credential.id, account.clone());
                 let _done = s.account_recoveries.remove(&account);
                 // Whoever holds the lost devices keeps no session, and no
@@ -5173,13 +5227,27 @@ impl SystemMachine {
                 if s.refresh_known(&hash) {
                     return Err("refresh token already issued");
                 }
+                // A sign-in: its passkey's last sign-in is when the session
+                // opened (unknown in an earlier release's entry).
+                if let (Some(passkey), Some(acc), true) = (
+                    &record.passkey,
+                    s.accounts.get_mut(&record.account),
+                    record.opened_at > 0,
+                ) {
+                    if acc.passkeys.iter().any(|c| &c.id == passkey) {
+                        acc.passkey_times
+                            .entry(passkey.clone())
+                            .or_default()
+                            .signed_in(record.opened_at);
+                    }
+                }
                 let _prev = s.refresh.insert(hash, record);
                 Ok(Value::Null)
             }
             SystemCmd::UseRefresh {
                 old_hash,
                 new_hash,
-                record,
+                mut record,
                 now,
                 ..
             } => {
@@ -5193,6 +5261,9 @@ impl SystemMachine {
                 if s.revoked_sessions.contains(&old.session) {
                     return Err("session revoked");
                 }
+                // The session opened when its first token did, whatever the
+                // exchange states (an earlier release's states none).
+                record.opened_at = old.opened_at;
                 let _prev = s.rotated_refresh.insert(old_hash, old);
                 let _prev = s.refresh.insert(new_hash, record);
                 s.prune_sessions(now);
@@ -6464,6 +6535,7 @@ mod tests {
 
     fn account(id: &str) -> SystemCmd {
         SystemCmd::CreateAccount {
+            at: 0,
             account: serde_json::from_value(
                 json!({ "accountId": id, "name": id, "createdAt": 0, "passkeys": [] }),
             )
@@ -7302,6 +7374,7 @@ mod tests {
         .unwrap();
         let args = super::account_args(&account, None);
         SystemCmd::CreateAccount {
+            at: 0,
             consent: consent(pk, &format!("account:{id}"), "__create_account", &args),
             account,
             invite: None,
@@ -7599,6 +7672,7 @@ mod tests {
             calimero_identity::verify_registration(&rp, &challenge, &phone.register(&challenge))
                 .unwrap();
         let add = |consent| SystemCmd::AddPasskey {
+            at: 0,
             account: "alice".into(),
             credential: cred.clone(),
             consent,
@@ -7725,6 +7799,7 @@ mod tests {
             app: None,
             origin: None,
             key: crate::proof::refresh_key(&token),
+            opened_at: 0,
         };
         (token, hash, record)
     }
@@ -7901,6 +7976,146 @@ mod tests {
         );
     }
 
+    /// Passkey and session times come from the entries: a sign-up's and an
+    /// added passkey's `at`, a sign-in's `opened_at`. The latest sign-in wins
+    /// whatever order they commit in, and an exchange keeps when its session
+    /// opened. Entries an earlier release logged carry none, and leave the
+    /// times unknown on every replica instead of making one up.
+    #[test]
+    fn passkey_and_session_times_come_from_their_entries() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let cred = alice.credential_id();
+        // `proven_cluster`'s sign-ups are an earlier release's: no `at`.
+        assert!(m.state.accounts["alice"].passkey_times.is_empty());
+        let mut sign_in = |m: &mut SystemMachine, session: &str, opened_at: u64| {
+            let (token, hash, record) = refresh_token("alice", &cred, session);
+            let record = crate::types::RefreshRecord {
+                opened_at,
+                ..record
+            };
+            let c = consent(
+                &mut alice,
+                "session",
+                "__sign_in",
+                &super::sign_in_args(&hash, &record),
+            );
+            let _ok = m
+                .run(SystemCmd::CreateRefresh {
+                    hash: hash.clone(),
+                    record,
+                    consent: c,
+                })
+                .unwrap();
+            (token, hash)
+        };
+        let _old = sign_in(&mut m, "s0", 0);
+        assert!(
+            m.state.accounts["alice"].passkey_times.is_empty(),
+            "a sign-in an earlier release logged moves nothing"
+        );
+        let (token, hash) = sign_in(&mut m, "s1", 40);
+        let _later = sign_in(&mut m, "s2", 50);
+        let _earlier = sign_in(&mut m, "s3", 45);
+        assert_eq!(
+            m.state.accounts["alice"].passkey_times[&cred],
+            crate::types::PasskeyTimes {
+                added_at: None,
+                last_sign_in_at: Some(50),
+            },
+            "added before it was kept; the latest sign-in wins"
+        );
+        assert_eq!(m.state.refresh[&hash].opened_at, 40);
+
+        // An exchange that states no opening (an earlier release's) keeps
+        // the session's.
+        let (_next, next_hash, next_record) = refresh_token("alice", &cred, "s1");
+        let signed = crate::proof::sign_refresh_use(
+            &token,
+            &crate::proof::refresh_use_message(
+                &hash,
+                &next_hash,
+                &next_record.key,
+                "s1",
+                next_record.expires_at,
+                5,
+            ),
+        );
+        let _ok = m
+            .run(SystemCmd::UseRefresh {
+                old_hash: hash,
+                new_hash: next_hash.clone(),
+                record: next_record,
+                now: 5,
+                signature: signed,
+            })
+            .unwrap();
+        assert_eq!(m.state.refresh[&next_hash].opened_at, 40);
+        assert_eq!(
+            m.state.accounts["alice"].passkey_times[&cred].last_sign_in_at,
+            Some(50),
+            "a refresh is no sign-in"
+        );
+
+        // A sign-up on this release: added and signed in at its `at`, and
+        // its session opened then.
+        let mut dave = Soft::new("localhost", "http://localhost:3000");
+        let SystemCmd::CreateAccount { account, .. } = account_with("dave", &mut dave) else {
+            unreachable!()
+        };
+        let (_t, dave_hash, record) = refresh_token("dave", &dave.credential_id(), "d1");
+        let grant = super::RefreshGrant {
+            hash: dave_hash.clone(),
+            record,
+        };
+        let args = super::account_args(&account, Some(&grant));
+        let _ok = m
+            .run(SystemCmd::CreateAccount {
+                consent: consent(&mut dave, "account:dave", "__create_account", &args),
+                account,
+                invite: None,
+                refresh: Some(grant),
+                at: 70,
+            })
+            .unwrap();
+        assert_eq!(
+            m.state.accounts["dave"].passkey_times[&dave.credential_id()],
+            crate::types::PasskeyTimes {
+                added_at: Some(70),
+                last_sign_in_at: Some(70),
+            }
+        );
+        assert_eq!(m.state.refresh[&dave_hash].opened_at, 70);
+    }
+
+    /// An account and a refresh record as an earlier release wrote them read
+    /// with their times unknown and write back byte for byte, and so does
+    /// the account a sign-up's passkey signs (`account_args`), so a replica
+    /// on either release checks the same consent.
+    #[test]
+    fn accounts_and_sessions_from_before_the_times_read_and_write_as_they_did() {
+        let account = json!({
+            "accountId": "alice", "name": "alice", "createdAt": 3,
+            "passkeys": [{ "id": "c1", "public_key": { "alg": "Es256", "key": "pk" }, "sign_count": 0 }],
+            "approvedReleases": ["1.0.0"], "outboundApprovals": {},
+            "passkeyLabels": { "c1": "laptop" }, "aliases": {},
+        });
+        let read: crate::types::Account = serde_json::from_value(account.clone()).unwrap();
+        assert!(read.passkey_times.is_empty());
+        assert_eq!(serde_json::to_value(&read).unwrap(), account);
+        let record = json!({
+            "account": "alice", "session": "s1", "expiresAt": 99, "passkey": "c1", "key": "ab",
+        });
+        let read: crate::types::RefreshRecord = serde_json::from_value(record.clone()).unwrap();
+        assert_eq!(read.opened_at, 0);
+        assert_eq!(serde_json::to_value(&read).unwrap(), record);
+        // An entry an earlier release logged replays as the same command.
+        let entry = json!({ "op": "addPasskey", "account": "alice",
+            "credential": { "id": "c2", "public_key": { "alg": "Es256", "key": "pk" }, "sign_count": 0 }, "consent": null });
+        let cmd: SystemCmd = serde_json::from_value(entry.clone()).unwrap();
+        assert!(matches!(cmd, SystemCmd::AddPasskey { at: 0, .. }));
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), entry);
+    }
+
     /// An account is created only by its own new passkey, over the whole
     /// account and the session its sign-up opens; never with a refresh token
     /// for another account.
@@ -7914,6 +8129,7 @@ mod tests {
         let (_token, hash, record) = refresh_token("dave", &dave.credential_id(), "s1");
         let grant = super::RefreshGrant { hash, record };
         let create = |refresh: Option<super::RefreshGrant>, consent| SystemCmd::CreateAccount {
+            at: 0,
             account: account.clone(),
             invite: None,
             refresh,
@@ -11458,6 +11674,7 @@ mod tests {
                 unreachable!()
             };
             SystemCmd::CreateAccount {
+                at: 0,
                 account,
                 invite: token.map(|t| SignUpRedemption {
                     invite_key: crate::proof::invite_key(t),
@@ -11555,6 +11772,7 @@ mod tests {
                 unreachable!()
             };
             let forged = SystemCmd::CreateAccount {
+                at: 0,
                 account,
                 invite: Some(SignUpRedemption {
                     invite_key: crate::proof::invite_key("inv_org"),

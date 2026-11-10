@@ -776,6 +776,28 @@ is its command line.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+- **Passkey times and sessions** (the account holder's alone): `Account::passkey_times`
+  (`types::PasskeyTimes { addedAt, lastSignInAt }`, by credential) and
+  `RefreshRecord::opened_at` are set at apply from the times the entries carry:
+  `CreateAccount::at` (added, signed in, session opened), `AddPasskey::at`,
+  a sign-in's `CreateRefresh` record `opened_at` (last sign-in, the latest
+  wins), a recovery finish's record `opened_at`; `UseRefresh` keeps the old
+  record's `opened_at`, so a refresh is no sign-in and no extra entry is
+  written. Each is outside what a passkey signs (`account_args` and
+  `sign_in_args` are unchanged, and every field is left out when empty), so
+  a replica on the earlier release checks the same consent and ignores
+  them; an earlier release's entries carry none and leave the times
+  unknown (`null`) on every replica. `/auth/me` gives `addedAt` and
+  `lastSignInAt` per passkey; `GET /auth/sessions` (`api::account_sessions`,
+  `MAX_SESSIONS_LISTED`) lists the caller's live sessions with
+  `lastActiveAt` = the last exchange (`expires_at - REFRESH_TTL`, up to
+  about 1 h 15 min behind), and `DELETE /auth/sessions/{session}` ends one
+  (`RevokeSession`; `404` for any session the account does not hold live).
+  Both are `holder` (unbound passkey session), as `/auth/logout-all`.
+  Regressions: `tests/sessions.rs`,
+  `passkey_and_session_times_come_from_their_entries`,
+  `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`,
+  `tests/old_datadir.rs`.
 - **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
   "Passkeys are each cluster's own"): clusters share an rp-id, so a
   registration's `user.name`/`displayName` is `passkey_user_name` (person ·

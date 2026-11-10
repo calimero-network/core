@@ -107,6 +107,20 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
         "no recorded executor: wasmer"
     );
     assert!(node.sys(|s| s.apps.contains_key(&app)));
+    // Its owner signed up before passkey and session times were kept: the
+    // account and its sessions read with them unknown, never made up.
+    let (times, opened) = node.sys(|s| {
+        (
+            s.accounts[&owner].passkey_times.clone(),
+            s.refresh
+                .values()
+                .filter(|r| r.account == owner)
+                .map(|r| r.opened_at)
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert!(times.is_empty(), "{times:?}");
+    assert!(opened.iter().all(|t| *t == 0), "{opened:?}");
     // Its group opens on the state the old node left.
     let mut group = None;
     for _ in 0..200 {

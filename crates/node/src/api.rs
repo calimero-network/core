@@ -670,6 +670,9 @@ impl NewSession {
             app,
             origin,
             key: crate::proof::refresh_key(&self.refresh),
+            // Stated nowhere a passkey signs: each entry sets it
+            // (`CreateRefresh`'s record, `CreateAccount::at`).
+            opened_at: 0,
         }
     }
 
@@ -698,10 +701,14 @@ async fn new_session(
         info!(%package, %origin, "a session opened on a registered origin");
     }
     let token = session_token_for(node, account, passkey, app.clone(), origin.clone(), &new)?;
+    let record = RefreshRecord {
+        opened_at: now_secs(),
+        ..new.record(account, passkey, app, origin)
+    };
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
             hash: new.hash(),
-            record: new.record(account, passkey, app, origin),
+            record,
             consent,
         })
         .await?;
@@ -1094,6 +1101,8 @@ async fn register_finish(
         outbound_approvals: std::collections::BTreeMap::new(),
         passkey_labels: std::collections::BTreeMap::new(),
         aliases: std::collections::BTreeMap::new(),
+        // Set at apply, from the sign-up's time (`CreateAccount::at`).
+        passkey_times: std::collections::BTreeMap::new(),
     };
     // A registration carries no signature by the new key (attestation
     // `none`): the new passkey signs the account it creates, and the session
@@ -1209,6 +1218,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
                 record: session.record(&account_id, &passkey, app, origin),
             }),
             consent: serde_json::to_value(&consent).unwrap_or_default(),
+            at: now,
         })
         .await?;
     Ok(session_answer(&account_id, &token, &session))
@@ -1461,6 +1471,7 @@ async fn passkey_add_finish(
             account,
             credential: cred,
             consent: c.consent,
+            at: now_secs(),
         })
         .await?;
     Ok(Json(json!({ "credentialId": id })))
@@ -1566,6 +1577,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         app: rec.app.clone(),
         origin: rec.origin.clone(),
         key: crate::proof::refresh_key(&new_refresh),
+        opened_at: rec.opened_at,
     };
     let new_hash = b64url(&sha256(new_refresh.as_bytes()));
     let now = now_secs();
@@ -1921,6 +1933,102 @@ async fn logout_all(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
     Ok(Json(out))
 }
 
+/// The most sessions `GET /auth/sessions` lists: the latest active.
+const MAX_SESSIONS_LISTED: usize = 256;
+/// The longest session id `DELETE /auth/sessions/{session}` looks up (ids
+/// are 22 characters, `NewSession`); a longer one is no session.
+const MAX_SESSION_ID_CHARS: usize = 64;
+
+/// The account's live sessions, latest active first: each one's passkey, the
+/// package and registered origin it is bound to, when it opened (`null`:
+/// before the node kept it) and when its refresh token was last exchanged.
+/// A refresh token younger than `Config::refresh_rotate_after` (an hour) is
+/// kept without a write, and a session token lives [`SESSION_TTL`], so a
+/// session may have been used up to that much after `lastActiveAt`.
+fn account_sessions(s: &SystemState, account: &str, current: Option<&str>, now: u64) -> Vec<Value> {
+    let mut latest: BTreeMap<&str, &RefreshRecord> = BTreeMap::new();
+    for r in s.refresh.values() {
+        if r.account != account || r.expires_at <= now || s.revoked_sessions.contains(&r.session) {
+            continue;
+        }
+        let _prev = latest
+            .entry(r.session.as_str())
+            .and_modify(|seen| {
+                if r.expires_at > seen.expires_at {
+                    *seen = r;
+                }
+            })
+            .or_insert(r);
+    }
+    let mut sessions: Vec<&RefreshRecord> = latest.into_values().collect();
+    sessions.sort_by_key(|r| std::cmp::Reverse(r.expires_at));
+    sessions
+        .into_iter()
+        .take(MAX_SESSIONS_LISTED)
+        .map(|r| {
+            json!({
+                "session": r.session,
+                "passkey": r.passkey,
+                "app": r.app,
+                "origin": r.origin,
+                "openedAt": (r.opened_at > 0).then_some(r.opened_at),
+                "lastActiveAt": r.expires_at.saturating_sub(REFRESH_TTL),
+                "current": current == Some(r.session.as_str()),
+            })
+        })
+        .collect()
+}
+
+/// `GET /auth/sessions`: the caller's own sessions ([`account_sessions`]).
+/// The account holder's alone, on the cluster's own origin: never an API key
+/// or a package-bound session, which would learn the other apps and origins
+/// the person signs in to.
+async fn sessions_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let current = p.session.as_ref().map(|c| c.session.clone());
+    let now = now_secs();
+    let sessions = node.sys(|s| account_sessions(s, &account, current.as_deref(), now));
+    Ok(Json(json!({ "sessions": sessions })))
+}
+
+/// `DELETE /auth/sessions/{session}`: end one of the caller's own sessions,
+/// gated as sign-out everywhere is (the account holder's session, no
+/// passkey asked: it ends less than that does). A session the account does
+/// not hold live, another account's included, is `404`, so the answer tells
+/// nothing about anyone else's; `RevokeSession` judges it again at apply.
+async fn session_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    if session.len() > MAX_SESSION_ID_CHARS {
+        return Err(ApiError::not_found("no such session"));
+    }
+    // A session opened through another node a moment ago is the caller's too.
+    let _caught_up = node.sys_fresh().await;
+    let now = now_secs();
+    let theirs = node.sys(|s| {
+        !s.revoked_sessions.contains(&session)
+            && s.refresh
+                .values()
+                .any(|r| r.session == session && r.account == account && r.expires_at > now)
+    });
+    if !theirs {
+        return Err(ApiError::not_found("no such session"));
+    }
+    let _ok = node
+        .sys_write(&SystemCmd::RevokeSession {
+            session,
+            actor: account,
+            now,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
@@ -1944,11 +2052,18 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     Ok(Json(json!({
         "accountId": acc.account_id,
         "name": acc.name,
-        "passkeys": acc.passkeys.iter().map(|c| json!({
-            "id": c.id,
-            "signCount": c.sign_count,
-            "label": acc.passkey_labels.get(&c.id),
-        })).collect::<Vec<_>>(),
+        "passkeys": acc.passkeys.iter().map(|c| {
+            let times = acc.passkey_times.get(&c.id);
+            json!({
+                "id": c.id,
+                "signCount": c.sign_count,
+                "label": acc.passkey_labels.get(&c.id),
+                // When it was added and last signed in (Unix seconds);
+                // `null`: before the node kept it.
+                "addedAt": times.and_then(|t| t.added_at),
+                "lastSignInAt": times.and_then(|t| t.last_sign_in_at),
+            })
+        }).collect::<Vec<_>>(),
         "orgs": orgs,
         "via": if p.api_key.is_some() { "apiKey" } else { "session" },
         // The passkey (device) this session was opened with.
@@ -2363,7 +2478,10 @@ async fn account_recovery_finish(
             at,
             refresh: RefreshGrant {
                 hash: session.hash(),
-                record: session.record(&account, &passkey, None, None),
+                record: RefreshRecord {
+                    opened_at: at,
+                    ..session.record(&account, &passkey, None, None)
+                },
             },
             consent: serde_json::to_value(&consent).unwrap_or_default(),
             revoke_api_keys: true,
@@ -9852,6 +9970,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/auth/logout-all", post(logout_all))
+        .route("/auth/sessions", get(sessions_list))
+        .route("/auth/sessions/{session}", delete(session_revoke))
         .route("/auth/releases", post(account_release_approval))
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))

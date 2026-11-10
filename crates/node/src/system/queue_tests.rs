@@ -353,6 +353,7 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
     })
     .unwrap();
     m.run(SystemCmd::CreateAccount {
+        at: 0,
         account: serde_json::from_value(
             json!({ "accountId": "bob", "name": "bob", "createdAt": 0, "passkeys": [] }),
         )
