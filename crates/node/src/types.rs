@@ -886,6 +886,24 @@ impl Org {
         out
     }
 
+    /// Take `accounts`' direct rows in every team below `team` (not `team`
+    /// itself): who lost a team leaves the restricted teams under it (its
+    /// private channels), where a row would keep them in.
+    pub fn drop_rows_below(&mut self, team: &str, accounts: &[AccountId]) {
+        if accounts.is_empty() {
+            return;
+        }
+        for id in self.subtree(team).into_iter().skip(1) {
+            if let Some(t) = self.teams.get_mut(&id) {
+                for a in accounts {
+                    let _prev = t.members.remove(a);
+                    let _was = t.read_only.remove(a);
+                    let _caps = t.capabilities.remove(a);
+                }
+            }
+        }
+    }
+
     /// Whether `account` may manage `team`: an org admin, the team's lead, or
     /// the lead of an ancestor team.
     #[must_use]
