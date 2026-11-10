@@ -228,7 +228,7 @@ def roll_forward(fleet: Fleet, binary: str, release: str, new_ids: list[int], *,
         log(f"rollout: add node {i} on {Path(binary).name} ({release}); it joins as a learner")
         fleet.join(i, binary, release)
     voters = wait("every new node is in the system group and it has a leader",
-                  lambda: _system_ready(fleet, len(old) + len(new_ids), new_ids))
+                  lambda: system_ready(fleet, len(old) + len(new_ids), new_ids))
     log(f"rollout: system group {voters}")
     took["add_nodes"] = time.time() - t
 
@@ -257,11 +257,11 @@ def roll_forward(fleet: Fleet, binary: str, release: str, new_ids: list[int], *,
     t = time.time()
     for i in sorted(old, key=lambda n: (n == _leader(fleet), n)):
         wait(f"a system leader and full voters before removing node {i}",
-             lambda: _system_ready(fleet, len(fleet.members)))
+             lambda: system_ready(fleet, len(fleet.members)))
         log(f"rollout: remove old node {i} (DELETE /ops/nodes/{i})")
         wait(f"node {i} removed", lambda n=i: _try_remove(fleet, n), STEP_TIMEOUT_S, every=2)
     wait("the system group keeps a leader and 3 voters on the new nodes",
-         lambda: _system_ready(fleet, len(fleet.members)))
+         lambda: system_ready(fleet, len(fleet.members)))
     took["remove_old"] = time.time() - t
     log(f"rollout: done: {moved and len(moved)} apps moved, nodes {fleet.members}; "
         + ", ".join(f"{k} {v:.0f}s" for k, v in took.items()))
@@ -275,7 +275,9 @@ def _leader(fleet):
         return None
 
 
-def _system_ready(fleet, nodes, members=()):
+def system_ready(fleet, nodes, members=()):
+    """The system group's leader, voters and learners once it has a leader, at least
+    min(3, nodes) voters and every id of `members` among its voters or learners."""
     s = fleet.system()
     voters = [int(v) for v in s.get("voters") or []]
     learners = [int(v) for v in s.get("learners") or []]

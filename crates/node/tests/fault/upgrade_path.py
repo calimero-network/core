@@ -322,6 +322,8 @@ def restart_from_disk(w, node):
     """Stop new node `node` and start it again on its data directory."""
     say(f"== restart node {node} from its data directory")
     w.fleet.restart(node)
+    w.wait("the system group has a leader and 3 voters again",
+           lambda: rollout.system_ready(w.fleet, len(w.fleet.members)), 60)
     groups = {a["app"] for a in w.fleet.placement()["apps"] if node in a["replicas"]}
     for app in groups:
         w.wait(f"node {node} back in {app}'s group", lambda a=app: w.fleet.app_status(node, a), 60)
