@@ -167,6 +167,16 @@ it (`member_child_teams`).
   themselves.
 - A member may join an open team they already reach as a plain member row, or
   leave any team themselves.
+- One account's rows in several teams of the organization are set in one log
+  entry with one passkey approval (`POST /orgs/{org}/members/{account}/teams
+  { teams: [{ team, role?, capabilities? }] }`, `SystemCmd::SetTeamMembers`,
+  consent `__set_team_members { account, teams }`): Calimero Home's "give all
+  apps" gives a member every app team at once. They are taken, or left, the
+  same way (`DELETE` with `{ teams: [team] }`, `SystemCmd::RemoveTeamMembers`,
+  `__remove_team_members { account, teams }`). Each team is judged as its own
+  team-member change would be, in order, and the entry applies all or
+  nothing: one team the caller may not change refuses the whole batch. A
+  batch names 1 to 64 teams (`MAX_TEAM_BATCH`), each once (`400 BAD_TEAMS`).
 - Deleting a team deletes the teams below it and the apps deployed to them.
   When there are apps, it takes the deleter's passkey: `DELETE
   /orgs/{org}/teams/{team}` answers `412 CONFIRM_REQUIRED` with the `apps` that

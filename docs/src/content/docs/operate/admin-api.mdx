@@ -200,6 +200,8 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/members` | session | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
 | `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
+| `POST /orgs/{org}/members/{account}/teams` | session | `{ teams: [{ team, role?, capabilities? }], confirm? }`: the account's row in each team (1 to 64, each once), each judged as `POST /orgs/{org}/teams/{team}/members`; all or nothing. `400 BAD_TEAMS`; `412` first | |
+| `DELETE /orgs/{org}/members/{account}/teams` | session | `{ teams: [team], confirm? }`: out of each team (or leave them), the teams below included, each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`; all or nothing. `400 BAD_TEAMS`; `412` first | |
 | `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
 | `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, confirm? }` → a token. `412` first | `namespace invite` |
 | `POST /invites/{token}/redeem` | session | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |

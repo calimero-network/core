@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **One account in several teams with one approval.** Calimero Home's "give
+  all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
+  step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
+  [{ team, role?, capabilities? }], confirm? }` sets the account's row in up
+  to 64 teams in one log entry (`SystemCmd::SetTeamMembers`, consent
+  `org:<org> / __set_team_members { account, teams }`), and `DELETE` on the
+  same path with `{ teams: [team] }` takes them out, or leaves them, the
+  teams below included (`SystemCmd::RemoveTeamMembers`, `__remove_team_members
+  { account, teams }`). Each team is judged as the single-team route judges
+  it, and the entry applies all or nothing. A node on an earlier release
+  answers the routes `404`.
+
 ## [1.0.0-rc.15] - 2026-11-10
 
 ### Added
