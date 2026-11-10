@@ -246,13 +246,11 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
         node.sys(|s| s.proves_sessions(from) && !s.proves_sessions(from - 1)),
         "from {from} on, not before"
     );
-    r.stop().await;
     // The store had no format row (format 0, every release up to 1.0.0-rc.15): opening it
-    // marked it current, which `merod inspect` reads back among the node's own rows.
-    let inspected = calimero_node::inspect::inspect(&dir, Some([42; 32])).unwrap();
+    // marked it current, a row of the node's own (`merod inspect` lists it).
     assert_eq!(
-        inspected["groups"][u64::MAX.to_string()]["values"]["format"],
-        json!(calimero_log::STORE_FORMAT),
-        "{inspected}"
+        node.engine.get_node_meta::<u32>("format").unwrap(),
+        Some(calimero_log::STORE_FORMAT)
     );
+    r.stop().await;
 }
