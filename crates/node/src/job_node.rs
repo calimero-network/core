@@ -251,8 +251,8 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
             get(runs::status).delete(runs::cancel),
         )
         .route(
-            "/job/runs/{app}/{run}/{attempt}/inputs/{i}",
-            put(runs::put_input),
+            "/job/runs/{app}/{run}/{attempt}/inputs/{i}/{k}",
+            put(runs::put_segment),
         )
         .route(
             "/job/runs/{app}/{run}/{attempt}/outputs/{i}",

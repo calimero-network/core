@@ -12,12 +12,13 @@ use calimero_app_host::{
     ComputeCaps, FileError, FileInfo, FileRead, FileWrite, Files, NewFile, Outcome, Progress,
     ReadError, Status, NO_SUCH_FILE,
 };
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::warn;
 use zeroize::Zeroizing;
 
 use super::runs::{hash_hex, Finished, Keys, OutputFile, Phase, Run};
 use super::{locked, JobNode};
-use crate::files::{sealed_len, FileOpener, SegmentWriter, CHUNK_BYTES, TAG_BYTES};
+use crate::files::{sealed_len, FileOpener, SegmentWriter, CHUNK_BYTES, SEGMENT_BYTES, TAG_BYTES};
 use crate::job_wire::{
     sign_report, Assignment, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
     MAX_REPORT_MESSAGE_BYTES,
@@ -221,11 +222,35 @@ fn failed(e: impl ToString) -> FileError {
     FileError::Failed(e.to_string())
 }
 
-/// Writes the ciphertext of input `i` into the run's directory.
-pub(super) async fn store_input(dir: &Path, i: usize, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes segment `k` of input `i` at its place in the input's partial file in the run's directory.
+pub(super) async fn store_segment(
+    dir: &Path,
+    i: usize,
+    k: usize,
+    bytes: &[u8],
+) -> std::io::Result<()> {
     let part = dir.join(format!("{INPUT_PREFIX}{i}{PART_SUFFIX}"));
-    tokio::fs::write(&part, bytes).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&part)
+        .await?;
+    file.seek(std::io::SeekFrom::Start((k * SEGMENT_BYTES) as u64))
+        .await?;
+    file.write_all(bytes).await?;
+    file.flush().await
+}
+
+/// Moves input `i`, whole and proved, to the name the run reads it by.
+pub(super) async fn finish_input(dir: &Path, i: usize) -> std::io::Result<()> {
+    let part = dir.join(format!("{INPUT_PREFIX}{i}{PART_SUFFIX}"));
     tokio::fs::rename(&part, dir.join(format!("{INPUT_PREFIX}{i}"))).await
+}
+
+/// The partial file of input `i`.
+pub(super) fn input_part(dir: &Path, i: usize) -> PathBuf {
+    dir.join(format!("{INPUT_PREFIX}{i}{PART_SUFFIX}"))
 }
 
 /// Starts `run` on its own thread, once, when every input is in.
@@ -405,18 +430,23 @@ fn failure_message(status: &Status, reason: Option<FailReason>) -> String {
     text[..text.floor_char_boundary(MAX_REPORT_MESSAGE_BYTES)].to_owned()
 }
 
-/// Whether `ciphertext` opens under `key` to a file of `size` bytes hashing to `sha256`: what
-/// the leader declared of an input, which is checked once, when the input arrives.
-pub(super) fn input_matches(
-    ciphertext: &[u8],
-    key: &[u8; 32],
-    size: u64,
-    sha256: &[u8; 32],
-) -> bool {
+/// Whether the file at `path` opens under `key` to `size` bytes hashing to `sha256`, read a chunk
+/// at a time: checked once, when an input's last segment arrives.
+pub(super) fn input_matches(path: &Path, key: &[u8; 32], size: u64, sha256: &[u8; 32]) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
     let mut opener = FileOpener::new(key);
-    for piece in ciphertext.chunks(CHUNK_BYTES + TAG_BYTES) {
-        if opener.push(piece).is_err() {
-            return false;
+    let mut buf = vec![0; CHUNK_BYTES + TAG_BYTES];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if opener.push(&buf[..n]).is_err() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
         }
     }
     opener.finish_expecting(size, sha256).is_ok()
@@ -655,32 +685,44 @@ mod tests {
         let input = &files.inputs[0];
         let key = &*input.key;
         let (size, sha256) = (input.size, input.sha256);
-        assert!(input_matches(&ciphertext, key, size, &sha256));
-        assert!(!input_matches(&ciphertext, key, size, &[9; 32]));
-        assert!(!input_matches(&ciphertext, key, size + 1, &sha256));
-        assert!(!input_matches(&ciphertext, &[1; 32], size, &sha256));
+        let probe = dir.path().join("probe");
+        let matches = |bytes: &[u8], key: &[u8; 32], size: u64, sha256: &[u8; 32]| {
+            std::fs::write(&probe, bytes).unwrap();
+            input_matches(&probe, key, size, sha256)
+        };
+        assert!(matches(&ciphertext, key, size, &sha256));
+        assert!(!matches(&ciphertext, key, size, &[9; 32]));
+        assert!(!matches(&ciphertext, key, size + 1, &sha256));
+        assert!(!matches(&ciphertext, &[1; 32], size, &sha256));
         let mut flipped = ciphertext.clone();
         flipped[ciphertext.len() / 2] ^= 1;
-        assert!(!input_matches(&flipped, key, size, &sha256));
-        assert!(!input_matches(
+        assert!(!matches(&flipped, key, size, &sha256));
+        assert!(!matches(
             &ciphertext[..ciphertext.len() - 1],
             key,
             size,
             &sha256
         ));
-        assert!(!input_matches(
-            &ciphertext[..CHUNK_BYTES],
-            key,
-            size,
-            &sha256
-        ));
+        assert!(!matches(&ciphertext[..CHUNK_BYTES], key, size, &sha256));
         // Authentic bytes of a file other than the one the record names.
-        assert!(!input_matches(
-            &ciphertext,
-            key,
-            size,
-            &calimero_identity::sha256(&data[1..])
-        ));
+        let other = calimero_identity::sha256(&data[1..]);
+        assert!(!matches(&ciphertext, key, size, &other));
+        assert!(!input_matches(&dir.path().join("none"), key, size, &sha256));
+    }
+
+    #[test]
+    fn segments_stored_in_any_order_make_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (a, b) = (vec![1u8; SEGMENT_BYTES], vec![2u8; 100]);
+        rt.block_on(store_segment(dir.path(), 0, 1, &b)).unwrap();
+        rt.block_on(store_segment(dir.path(), 0, 0, &a)).unwrap();
+        let held = std::fs::read(input_part(dir.path(), 0)).unwrap();
+        assert_eq!(held, [a, b].concat());
+        rt.block_on(finish_input(dir.path(), 0)).unwrap();
+        assert!(dir.path().join("in-0").exists());
     }
 
     #[test]
@@ -709,7 +751,7 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let e = rt.block_on(store_input(&gone, 0, b"x")).unwrap_err();
+        let e = rt.block_on(store_segment(&gone, 0, 0, b"x")).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
     }
 

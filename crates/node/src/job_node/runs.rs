@@ -23,7 +23,9 @@ use zeroize::Zeroizing;
 use super::admission::{admit_assignment, token_matches};
 use super::{exec, locked, JobNode, RUNS_PER_JOB_NODE};
 use crate::error::ApiError;
-use crate::files::{file_id, sealed_len, segments_match, unwrap_for_job, JobWrap, WrapKind};
+use crate::files::{
+    file_id, sealed_len, segment_hash, unwrap_for_job, JobWrap, WrapKind, SEGMENT_BYTES,
+};
 use crate::job_wire::{assignment_message, is_hash, Assignment, Report, RunInput, SHA256_LEN};
 use crate::node::MAX_ARGS_BYTES;
 
@@ -84,7 +86,7 @@ pub(super) struct Run {
     pub dir: PathBuf,
     pub cancel: Arc<AtomicBool>,
     created: Instant,
-    received: tokio::sync::Mutex<BTreeSet<usize>>,
+    received: tokio::sync::Mutex<BTreeSet<(usize, usize)>>,
     pub state: Mutex<RunState>,
     /// Becomes true when the run ends.
     pub finished: watch::Sender<bool>,
@@ -511,10 +513,11 @@ fn find(
     Ok(run)
 }
 
-/// `PUT /job/runs/{app}/{run}/{attempt}/inputs/{i}`: the i-th input's ciphertext.
-pub(super) async fn put_input(
+/// `PUT /job/runs/{app}/{run}/{attempt}/inputs/{i}/{k}`: segment `k` of the i-th input's
+/// ciphertext, in any order. The input is proved from disk when its last segment is in.
+pub(super) async fn put_segment(
     State(job): State<Arc<JobNode>>,
-    Path((app, run, attempt, i)): Path<(String, String, u32, usize)>,
+    Path((app, run, attempt, i, k)): Path<(String, String, u32, usize, usize)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
@@ -524,28 +527,48 @@ pub(super) async fn put_input(
         .inputs
         .get(i)
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_INPUT", "the run has no such input"))?;
-    if body.len() as u64 != sealed_len(input.size) {
-        return Err(ApiError::bad_request(
-            "BAD_INPUT_SIZE",
-            "the ciphertext is not the size the input declares",
-        ));
-    }
-    let (held, segments) = (body.clone(), input_segments(input).unwrap_or_default());
-    let named = tokio::task::spawn_blocking(move || segments_match(&held, &segments))
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let hashes = input_segments(input).unwrap_or_default();
+    let want = hashes
+        .get(k)
+        .ok_or_else(|| ApiError::new(404, "NO_SUCH_SEGMENT", "the input has no such segment"))?;
+    let last = (hashes.len() - 1) as u64;
+    let expected = if k as u64 == last {
+        sealed_len(input.size) - last * SEGMENT_BYTES as u64
+    } else {
+        SEGMENT_BYTES as u64
+    };
+    let want = *want;
+    let held = body.clone();
+    let named = body.len() as u64 == expected
+        && tokio::task::spawn_blocking(move || segment_hash(&held) == want)
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !named {
         return Err(ApiError::bad_request(
-            "BAD_INPUT_ID",
-            "the ciphertext is not the file the input names",
+            "BAD_SEGMENT",
+            "the bytes are not the segment the input lists",
         ));
     }
     let mut received = run.received.lock().await;
-    if received.contains(&i) {
+    if received.contains(&(i, k)) {
         return Ok(Json(run.status()));
     }
     if !matches!(locked(&run.state).phase, Phase::Awaiting) {
         return Err(not_awaiting());
+    }
+    if let Err(e) = exec::store_segment(&run.dir, i, k, &body).await {
+        // A cancel removed the run's directory under this request.
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(not_awaiting());
+        }
+        return Err(ApiError::internal(&format!(
+            "cannot store the segment: {e}"
+        )));
+    }
+    let _new = received.insert((i, k));
+    let have = |n: usize| received.range((n, 0)..=(n, usize::MAX)).count();
+    if have(i) < hashes.len() {
+        return Ok(Json(run.status()));
     }
     let key = locked(&run.keys)
         .as_ref()
@@ -554,9 +577,9 @@ pub(super) async fn put_input(
     let (Some(key), Some(sha256)) = (key, sha256) else {
         return Err(not_awaiting());
     };
-    let held = body.clone();
+    let part = exec::input_part(&run.dir, i);
     let matches =
-        tokio::task::spawn_blocking(move || exec::input_matches(&held, &key, size, &sha256))
+        tokio::task::spawn_blocking(move || exec::input_matches(&part, &key, size, &sha256))
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !matches {
@@ -564,15 +587,16 @@ pub(super) async fn put_input(
         exec::fail_integrity(&job, &run);
         return Ok(Json(run.status()));
     }
-    if let Err(e) = exec::store_input(&run.dir, i, &body).await {
-        // A cancel removed the run's directory under this request.
+    if let Err(e) = exec::finish_input(&run.dir, i).await {
         if e.kind() == std::io::ErrorKind::NotFound {
             return Err(not_awaiting());
         }
         return Err(ApiError::internal(&format!("cannot store the input: {e}")));
     }
-    let _new = received.insert(i);
-    let complete = received.len() == run.assignment.inputs.len();
+    let complete = (0..run.assignment.inputs.len()).all(|n| {
+        let total = run.assignment.inputs[n].segments.len();
+        have(n) == total
+    });
     drop(received);
     if complete {
         exec::start(&job, &run);

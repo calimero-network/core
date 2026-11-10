@@ -182,21 +182,6 @@ impl Node {
         assignment.signature = self.sign_assignment(&assignment)?;
         Ok(assignment)
     }
-
-    /// The ciphertext of a file: its segments, from this node's store or the app's other
-    /// replicas', joined.
-    async fn input_ciphertext(
-        &self,
-        app: &AppRecord,
-        segments: &[String],
-    ) -> eyre::Result<Vec<u8>> {
-        let peers = self.other_replicas(app);
-        let mut joined = Vec::new();
-        for hash in segments {
-            joined.extend(self.segment_from(hash, &peers).await?);
-        }
-        Ok(joined)
-    }
 }
 
 impl Drive<'_> {
@@ -347,27 +332,32 @@ impl Drive<'_> {
         Ok(())
     }
 
+    /// Sends every segment of every input, one at a time: from this node's store, else fetched
+    /// from a replica.
     async fn push_inputs(&self, peer: &JobPeer, assignment: &Assignment) -> eyre::Result<()> {
         let token = self.token(assignment.attempt);
+        let replicas = self.node.other_replicas(self.app);
         for (i, input) in assignment.inputs.iter().enumerate() {
-            let _slot = self.node.job_slot().await?;
-            let ciphertext = self
-                .node
-                .input_ciphertext(self.app, &input.segments)
-                .await?;
-            let answer = self
-                .node
-                .job_call_held(
-                    peer,
-                    Method::PUT,
-                    &format!("{}/inputs/{i}", self.path(assignment.attempt)),
-                    &[(TOKEN_HEADER, &token)],
-                    ciphertext,
-                    MAX_JOB_STATUS_BYTES,
-                )
-                .await?;
-            if answer.status != 200 {
-                eyre::bail!("the job node refused input {i} with {}", answer.status);
+            for (k, hash) in input.segments.iter().enumerate() {
+                let _slot = self.node.job_slot().await?;
+                let segment = self.node.segment_from(hash, &replicas).await?;
+                let answer = self
+                    .node
+                    .job_call_held(
+                        peer,
+                        Method::PUT,
+                        &format!("{}/inputs/{i}/{k}", self.path(assignment.attempt)),
+                        &[(TOKEN_HEADER, &token)],
+                        segment,
+                        MAX_JOB_STATUS_BYTES,
+                    )
+                    .await?;
+                if answer.status != 200 {
+                    eyre::bail!(
+                        "the job node refused segment {k} of input {i} with {}",
+                        answer.status
+                    );
+                }
             }
         }
         Ok(())

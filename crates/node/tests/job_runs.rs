@@ -10,8 +10,8 @@ use std::time::Duration;
 use calimero_client::Client;
 use calimero_node::backup::cluster_identity_key;
 use calimero_node::files::{
-    file_id, noise_seed, run_token, segment_hash, unwrap_key, wrap_for_job, FileOpener, JobWrap,
-    WrapKind, SEGMENT_BYTES,
+    file_id, noise_seed, run_token, unwrap_key, wrap_for_job, FileOpener, JobWrap, WrapKind,
+    SEGMENT_BYTES,
 };
 use calimero_node::job_node::{MAX_RUN_INPUTS, TOKEN_HEADER};
 use calimero_node::job_wire::{
@@ -139,10 +139,31 @@ impl JobClient {
         self.json(Method::POST, "job/runs", None, body).await
     }
 
-    async fn put_input(&self, a: &Assignment, i: usize, token: &str, bytes: &[u8]) -> (u16, Value) {
-        let path = format!("job/runs/{}/inputs/{i}", run_path(a));
+    /// Segment `k` of the i-th input's ciphertext.
+    async fn put_segment(
+        &self,
+        a: &Assignment,
+        i: usize,
+        k: usize,
+        token: &str,
+        bytes: &[u8],
+    ) -> (u16, Value) {
+        let path = format!("job/runs/{}/inputs/{i}/{k}", run_path(a));
         self.json(Method::PUT, &path, Some(token), bytes.to_vec())
             .await
+    }
+
+    /// The i-th input's ciphertext, segment by segment in order: the first answer that is not
+    /// `200`, else the last answer.
+    async fn put_input(&self, a: &Assignment, i: usize, token: &str, bytes: &[u8]) -> (u16, Value) {
+        let mut last = (200, Value::Null);
+        for (k, segment) in bytes.chunks(SEGMENT_BYTES).enumerate() {
+            last = self.put_segment(a, i, k, token, segment).await;
+            if last.0 != 200 {
+                break;
+            }
+        }
+        last
     }
 
     async fn status(&self, a: &Assignment, token: &str) -> (u16, Value) {
@@ -213,7 +234,7 @@ impl Input {
     /// Names the ciphertext by its own segments, as the leader would send it.
     fn rename(&mut self) {
         let hashes: Vec<[u8; 32]> = (self.ciphertext.chunks(SEGMENT_BYTES))
-            .map(segment_hash)
+            .map(calimero_identity::sha256)
             .collect();
         self.segments = hashes.iter().map(hex::encode).collect();
         self.id = hex::encode(file_id(&hashes));
@@ -318,12 +339,17 @@ impl Rig {
 
     /// A sealed file of the `files` app, as the leader knows it: its record and its data key.
     async fn input(&self, seed: u64) -> Input {
+        self.input_len(INPUT_LEN, seed).await
+    }
+
+    /// [`Self::input`] of `len` bytes.
+    async fn input_len(&self, len: usize, seed: u64) -> Input {
         let r = self
             .alice
             .call(
                 &self.app,
                 "putFile",
-                json!({ "len": INPUT_LEN.to_string(), "seed": seed.to_string() }),
+                json!({ "len": len.to_string(), "seed": seed.to_string() }),
                 None,
             )
             .await
@@ -339,7 +365,7 @@ impl Rig {
             .unwrap();
         let seal = record.file.expect("a sealed file");
         let key = unwrap_key(&self.file_key, &self.app, &seal.wrapped_key.0).unwrap();
-        let plain = stream(INPUT_LEN, seed);
+        let plain = stream(len, seed);
         assert_eq!(hex::encode(&seal.sha256.0), sha256_hex(&plain));
         Input {
             ciphertext: seal
@@ -549,7 +575,7 @@ async fn a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_t
     let out = &report_a.outputs[0];
     let (ciphertext, key) = job_a.output(&a, &token_a, 0).await;
     let hashes: Vec<[u8; 32]> = (ciphertext.chunks(SEGMENT_BYTES))
-        .map(segment_hash)
+        .map(calimero_identity::sha256)
         .collect();
     assert_eq!(out.id, hex::encode(file_id(&hashes)));
     assert_eq!(
@@ -613,6 +639,55 @@ async fn a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_t
 
     // Nothing of the cluster's usage series moved: a compute run is counted nowhere yet.
     assert_eq!(wasm_series(&rig.c).await, metered);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_segments_of_an_input_arrive_in_any_order_and_a_wrong_one_is_refused() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let input = rig.input_len(40 * MIB, 21).await;
+    assert_eq!(input.segments.len(), 3);
+    let a = rig.assignment(&job, "segments", 1, "digest", DIGEST, &[&input]);
+    assert_eq!(rig.push(&job).await.0, 200);
+    assert_eq!(job.post(&a).await.0, 200);
+    let token = rig.token(&a);
+    let segment = |k: usize| input.ciphertext.chunks(SEGMENT_BYTES).nth(k).unwrap();
+
+    // Another segment's bytes, a segment the file has not, a short last segment.
+    let (status, e) = job.put_segment(&a, 0, 0, &token, segment(1)).await;
+    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_SEGMENT")));
+    assert_eq!(job.put_segment(&a, 0, 3, &token, segment(0)).await.0, 404);
+    let short = &segment(2)[..segment(2).len() - 1];
+    let (status, e) = job.put_segment(&a, 0, 2, &token, short).await;
+    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_SEGMENT")));
+    assert_eq!(job.status(&a, &token).await.1["state"], "awaiting");
+
+    for k in [2, 0, 1] {
+        let (status, answer) = job.put_segment(&a, 0, k, &token, segment(k)).await;
+        assert_eq!(status, 200, "{answer}");
+    }
+    let answer = job.finish(&a, &token).await;
+    let done = report(&answer, &job, &a);
+    assert_eq!(done.status, ReportStatus::Done);
+    assert_eq!(
+        serde_json::from_slice::<Vec<String>>(&done.result).unwrap(),
+        vec![hex::encode(input.sha256)]
+    );
+    // A late copy of a segment changes nothing.
+    assert_eq!(job.put_segment(&a, 0, 1, &token, segment(1)).await.0, 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn segments_that_match_their_list_but_not_the_declared_file_end_the_run_as_integrity() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let mut tampered = rig.input_len(40 * MIB, 22).await;
+    let middle = tampered.ciphertext.len() / 2;
+    tampered.ciphertext[middle] ^= 1;
+    tampered.rename();
+    let a = rig.assignment(&job, "tamper3", 1, "digest", DIGEST, &[&tampered]);
+    let answer = rig.run(&job, &a, &[&tampered]).await;
+    failed(&answer, &job, &a, FailReason::Integrity);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -693,7 +768,7 @@ async fn an_altered_input_fails_the_run_as_integrity_and_a_malformed_one_is_refu
     let token = rig.token(&a);
     let short = &input.ciphertext[..input.ciphertext.len() - 1];
     let (status, e) = job.put_input(&a, 0, &token, short).await;
-    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_INPUT_SIZE")));
+    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_SEGMENT")));
     let (status, e) = job
         .put_input(&a, 0, &hex::encode([1u8; 32]), &input.ciphertext)
         .await;
@@ -1169,7 +1244,7 @@ async fn an_input_must_be_the_file_it_is_named_by_and_an_oversized_assignment_is
     swapped.ciphertext.truncate(input.ciphertext.len());
     swapped.ciphertext.resize(input.ciphertext.len(), 0);
     let (status, e) = job.put_input(&a, 0, &token, &swapped.ciphertext).await;
-    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_INPUT_ID")));
+    assert_eq!((status, e["error"].as_str()), (400, Some("BAD_SEGMENT")));
     assert_eq!(job.status(&a, &token).await.1["state"], "awaiting");
     assert_eq!(job.put_input(&a, 0, &token, &input.ciphertext).await.0, 200);
     assert_eq!(job.finish(&a, &token).await["state"], "done");
