@@ -4363,6 +4363,22 @@ async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
     panic!("the fuel quota never reached every node");
 }
 
+/// Waits until every running node has applied what the app's leader has, so a
+/// usage read on any replica counts every run that committed.
+async fn applied_everywhere(c: &Cluster, app: &str) {
+    let target = c.applied_on(c.app_leader(app).unwrap(), app);
+    for i in (0..c.nodes.len()).filter(|i| c.nodes[*i].is_some()) {
+        let g = hosted_on(c, i, app).await;
+        for _ in 0..200 {
+            if g.applied() >= target {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(g.applied() >= target, "node {i} never applied {target}");
+    }
+}
+
 /// Each running node's own answer for the app's usage, once it applied `target`.
 async fn usage_on_every_node(
     c: &Cluster,
@@ -4664,6 +4680,7 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         .call(&in_org, "set", json!({ "key": "k", "value": "v" }), None)
         .await
         .unwrap();
+    applied_everywhere(&c, &in_org).await;
 
     let owner = app_usage(&alice, &in_org).await;
     assert_eq!(figure(&owner["today"]["runs"]), 2, "{owner}");
