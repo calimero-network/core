@@ -4930,6 +4930,142 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     assert_eq!(own["governance"]["appUpgrades"], json!("operator"), "{own}");
 }
 
+/// A release that changes only the frontend (the same WASM) is a release of
+/// its own: an instance runs the release it was created at or upgraded to,
+/// the reports name that release and the newer ones (same WASM included),
+/// and moving to one is an upgrade like any other: approved with a passkey
+/// by whoever holds the app's upgrades, one app at a time or in an org run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
+    let c = Cluster::start(3).await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let bob_id = account_id(&bob).await;
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .post_confirmed(
+            &format!("orgs/{org}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+            &mut apk,
+        )
+        .await
+        .unwrap();
+    // One WASM, three releases whose frontends differ.
+    let wasm = variant(&kv_wasm(), "fe");
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let page = format!("<p>{version}");
+        let _ = alice
+            .upload_package(mpk_full(
+                "com.test.fe",
+                version,
+                &wasm,
+                &publisher,
+                &[],
+                &[("frontend/index.html", page.as_bytes())],
+                None,
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Created at 1.1.0: it runs 1.1.0, not the first release shipping its WASM.
+    let mine = alice
+        .post(
+            "apps",
+            json!({ "name": "mine", "package": "com.test.fe", "version": "1.1.0" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let a = reported_app(&alice, "auth/apps", &mine).await;
+    assert_eq!(a["package"]["version"], json!("1.1.0"), "{a}");
+    assert_eq!(a["availableVersions"], json!(["1.2.0"]), "{a}");
+    let record = alice.get(&format!("apps/{mine}")).await.unwrap();
+    assert_eq!(
+        record["release"],
+        json!({ "package": "com.test.fe", "version": "1.1.0" }),
+        "{record}"
+    );
+
+    // Moving to 1.2.0 (same WASM) needs the owner's passkey, as any upgrade.
+    let e = alice
+        .post(
+            &format!("apps/{mine}/upgrade"),
+            json!({ "version": "1.2.0" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let _ = alice
+        .upgrade_app(&mine, json!({ "version": "1.2.0" }), &mut apk)
+        .await
+        .unwrap();
+    let a = reported_app(&alice, "auth/apps", &mine).await;
+    assert_eq!(a["package"]["version"], json!("1.2.0"), "{a}");
+    assert_eq!(a["availableVersions"], json!([]), "{a}");
+    assert_eq!(a["lastUpgrade"]["ok"], json!(true), "{a}");
+    assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.1.0"), "{a}");
+    assert_eq!(a["lastUpgrade"]["to"]["version"], json!("1.2.0"), "{a}");
+    assert_eq!(
+        a["lastUpgrade"]["from"]["bundle"], a["lastUpgrade"]["to"]["bundle"],
+        "{a}"
+    );
+    // Still serving.
+    let _ = alice
+        .call(&mine, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+
+    // An org app: a member without MANAGE_APPLICATION may not move it, even
+    // to a release with the same WASM; the owner's org run does.
+    let shared = alice
+        .post(
+            "apps",
+            json!({
+                "name": "shared", "package": "com.test.fe", "version": "1.0.0",
+                "org": org, "access": { "kind": "org" },
+            }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let route = format!("orgs/{org}/apps");
+    let a = reported_app(&bob, &route, &shared).await;
+    assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
+    let e = bob
+        .post(
+            &format!("apps/{shared}/upgrade"),
+            json!({ "version": "1.1.0" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    let run = alice
+        .upgrade_org(
+            &org,
+            json!({ "package": "com.test.fe", "version": "1.1.0" }),
+            &mut apk,
+        )
+        .await
+        .unwrap();
+    let run_id = run["runId"].as_str().unwrap().to_owned();
+    let done = finished_run(&alice, &org, &run_id).await;
+    assert_eq!(done["done"], json!([shared]), "{done}");
+    let a = reported_app(&bob, &route, &shared).await;
+    assert_eq!(a["package"]["version"], json!("1.1.0"), "{a}");
+    assert_eq!(a["lastUpgrade"]["run"], json!(run_id), "{a}");
+    assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.0.0"), "{a}");
+    assert_eq!(a["lastUpgrade"]["to"]["version"], json!("1.1.0"), "{a}");
+}
+
 // ---------------------------------------------------------------- proofs at apply
 
 /// Credentials, memberships and invites are a person's decisions: each

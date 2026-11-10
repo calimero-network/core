@@ -1108,21 +1108,26 @@ async fn frontend_redirects_keep_the_query() {
     assert_eq!(long.status(), 414);
 }
 
-/// `/app/{app}/` opens the newest release (by version, not by the version's
-/// string) of those shipping the instance's WASM, when several do.
+/// `/app/{app}/` opens the release that instance runs, never simply the newest
+/// one shipping its WASM: releases may share a WASM and differ in their
+/// frontend, which works with its own release only. Created at a release, or
+/// from a deployment's offer, it opens that one; once upgraded (to a release
+/// with the same WASM too), the new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_instance_link_opens_the_newest_release_shipping_its_wasm() {
+async fn an_instance_link_opens_the_release_that_instance_runs() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
-    let (alice, _alice_pk) = signed_up(&c, 0, "alice").await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
     // One WASM in three releases; by string "1.0.0" < "10.0.0" < "9.0.0".
     let wasm = variant(&kv_wasm(), "shared");
     for version in ["1.0.0", "9.0.0", "10.0.0"] {
+        let page = format!("<p>{version}");
         let _ok = alice
             .upload_package(mpk(
                 "com.test.site",
                 version,
                 &wasm,
-                &[("frontend/index.html", b"<p>site")],
+                &[("frontend/index.html", page.as_bytes())],
             ))
             .await
             .unwrap();
@@ -1137,24 +1142,52 @@ async fn an_instance_link_opens_the_newest_release_shipping_its_wasm() {
         .as_str()
         .unwrap()
         .to_owned();
+    let d = deploy(
+        &alice,
+        &mut alice_pk,
+        "nine",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(&alice, &mut alice_pk, &d, "site", "com.test.site", "9.0.0")
+        .await
+        .unwrap();
+    let offered = instance(&alice, &d, "com.test.site", None, None)
+        .await
+        .unwrap();
 
     let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
     let host = format!(
         "{}.localhost",
         calimero_node::app_host::label("com.test.site")
     );
-    let r = reqwest::Client::builder()
-        .resolve(&host, ([127, 0, 0, 1], port).into())
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap()
-        .get(format!("http://{host}:{port}/app/{app}/"))
-        .header("accept", "text/html")
-        .send()
+    let location = |app: String| {
+        let host = host.clone();
+        async move {
+            let r = reqwest::Client::builder()
+                .resolve(&host, ([127, 0, 0, 1], port).into())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap()
+                .get(format!("http://{host}:{port}/app/{app}/"))
+                .header("accept", "text/html")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 302, "{r:?}");
+            r.headers()["location"].to_str().unwrap().to_owned()
+        }
+    };
+    assert_eq!(location(app.clone()).await, "/1.0.0/");
+    assert_eq!(location(offered.clone()).await, "/9.0.0/");
+
+    // Upgraded to 10.0.0 (the same WASM): the link follows it.
+    let _ok = alice
+        .upgrade_app(&app, json!({ "version": "10.0.0" }), &mut alice_pk)
         .await
         .unwrap();
-    assert_eq!(r.status(), 302, "{r:?}");
-    assert_eq!(r.headers()["location"], "/10.0.0/");
+    assert_eq!(location(app).await, "/10.0.0/");
+    assert_eq!(location(offered).await, "/9.0.0/");
 }
 
 /// Where deployments are granted, creating a deployment and offering an app

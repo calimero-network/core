@@ -427,6 +427,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
             consent: json!(calimero_node::proof::sign_key_upgrade(
                 secret, &key_id, statement
             )),
+            release: None,
         })
         .unwrap()
     };
