@@ -35,7 +35,7 @@ component SDK has no counterpart for; the node's idempotency keys cover retries.
 ## Build and test
 
 ```bash
-cargo test                                                       # here: harness + scenarios
+cargo test                                                       # here: harness, scenarios, migrations
 scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
 mero-app-build apps/kv-store --out kv_store.wasm   # from the repo root
 ```
@@ -44,5 +44,7 @@ mero-app-build apps/kv-store --out kv_store.wasm   # from the repo root
 (`calimero_sdk::testing::TestApp`): `tests/harness.rs` is v1's `TestHost` suite, and
 `tests/scenarios.rs` runs every `scenarios/*.json` in the org its `.org.json` names. The
 scenarios replace the merobox workflows (`simple-store`, `bundle-invitation`,
-`workflow-example`); `kv-store.json` covers the rest of the ABI. The crate is standalone
-(its own `[workspace]`).
+`workflow-example`); `kv-store.json` covers the rest of the ABI. `tests/migrations.rs`
+runs `migrations/0.1.0.json` from the bundle `releases/0.1.0.mpk` (the store as it was
+packed at `1.0.0-rc.15`, dev-signed) to this build: whatever the store becomes, it must read
+what that release stored. The crate is standalone (its own `[workspace]`).

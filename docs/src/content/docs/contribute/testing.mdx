@@ -165,6 +165,14 @@ in a result reads back as its name). The app clock starts at
 `advance` moves every node's clock, `tick` waits until the timer's due slot is
 applied everywhere. Events are each account's live stream from the log's start.
 
+A migration scenario, `apps/<app>/migrations/<version>.json`, is the same step
+array with one `{ "op": "upgrade" }` step: the app's own `tests/migrations.rs`
+runs it with `run_migration`, from the component in `apps/<app>/releases/<version>.mpk`
+to the crate's current build ([Testing apps](/core/build/testing/#upgrades-test-against-a-shipped-releases-state)).
+The cluster runner does not discover these files (they are not in a
+`scenarios` directory); a node-level upgrade is a cluster scenario's
+`upgrade_app` step.
+
 ### Cluster scenarios
 
 `apps/<app>/scenarios/cluster/**/*.json` and `workflows/**/scenarios/**/*.json`

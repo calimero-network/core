@@ -65,7 +65,7 @@ polished product. Grouped by theme; check items off as they land.
 - [x] 49. How-to: blobs (upload/announce/fetch).
 - [x] 50. Document access-controlled storage (Shared/User/Frozen) with examples.
 - [ ] 51. Generate an SDK API reference from rustdoc.
-- [ ] 52. How-to: ship v2 (migrations) with troubleshooting.
+- [x] 52. How-to: ship v2 (migrations) with troubleshooting. (`build/ship-v2`.)
 
 ## G · Operate track content
 - [ ] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
@@ -193,7 +193,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R47. Example gallery with "what it teaches" tags.
 - [ ] R48. Collaborative text-editor tutorial (RGA, end to end).
 - [ ] R49. Access-controlled app tutorial (Shared / Owner).
-- [ ] R50. Migration tutorial: ship v2 with a schema change.
+- [x] R50. Migration tutorial: ship v2 with a schema change. (`build/ship-v2`, tested with `run_migration` against the shipped `.mpk`.)
 - [ ] R51. xcall worked example (secondary-index pattern).
 - [ ] R52. Blob upload/download worked example with a frontend.
 - [ ] R53. "Deploy to a 3-node cluster" tutorial.
