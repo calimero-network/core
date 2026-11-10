@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Every app added later, for a member**: an organization member may hold a
+  standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
+  team made from then on (by `ScopeApps`, by a move into the organization,
+  or a team marked as one) gives them a plain row, so in an organization
+  that keeps its apps apart a new app reaches them though nobody named them.
+  Before, a new app's team held only those named. The owner or an admin gives
+  it on an invite (`POST /orgs/{org}/invites { allApps: true }`, named in the
+  consent) or later (`POST /orgs/{org}/all-apps { account, allApps }`,
+  `SystemCmd::SetAllApps`, a passkey step-up over `__set_all_apps`); it ends
+  with the membership. Apps already there are untouched. `ScopeApps`,
+  `MoveApp` and `UpdateTeam` carry `all_apps_rows`, which the API always
+  sets, so entries an earlier release logged replay as they did; the new
+  fields are left out when empty, so state and invites from before read and
+  write as they did.
+
 - **Members make private channels under an app's team.** Only a parent
   team's leads and the organization's admins created a team below it, so an
   app could not make a private channel a child team of its app team. A member
