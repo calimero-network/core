@@ -223,6 +223,7 @@ every feature gated it stays at zero.
 | `appTeamJoin` | `ScopeApps` naming one app team's `join` or `keep` | 1.0.0-rc.15 |
 | `orgQuotas` | `SetOrgQuotas` (also `409 UPGRADE_PENDING` first) | 1.0.0-rc.15 |
 | `computePools` | `SetPools` (also `409 UPGRADE_PENDING` first) | 1.0.0-rc.15 |
+| `teamCloseDropsBelow` | `UpdateTeam` closing a team (`join: invite`), which takes the rows below it of whoever loses it; an earlier release keeps them | 1.0.0-rc.16 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use super::{compare_versions, ScopeApp, SystemCmd, SystemState, MAX_RELEASE_VERSION_BYTES};
+use crate::types::TeamJoin;
 
 /// An entry shape a node on an earlier release cannot apply as this one does.
 /// A new command, or a new field with new meaning, adds one here with the
@@ -41,15 +42,19 @@ pub enum Feature {
     OrgQuotas,
     /// `SetPools` (#4898).
     ComputePools,
+    /// `UpdateTeam` closing a team with `close_drops_below` (#4911): an
+    /// earlier release ignores the field and keeps the rows below.
+    TeamCloseDropsBelow,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 5] = [
+pub const FEATURES: [Feature; 6] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
     Feature::ComputePools,
     Feature::ClusterVersion,
+    Feature::TeamCloseDropsBelow,
 ];
 
 impl Feature {
@@ -62,6 +67,7 @@ impl Feature {
             Self::AppTeamJoin => "appTeamJoin",
             Self::OrgQuotas => "orgQuotas",
             Self::ComputePools => "computePools",
+            Self::TeamCloseDropsBelow => "teamCloseDropsBelow",
         }
     }
 
@@ -73,7 +79,7 @@ impl Feature {
             Self::MoveApp | Self::AppTeamJoin | Self::OrgQuotas | Self::ComputePools => {
                 "1.0.0-rc.15"
             }
-            Self::ClusterVersion => "1.0.0-rc.16",
+            Self::ClusterVersion | Self::TeamCloseDropsBelow => "1.0.0-rc.16",
         }
     }
 }
@@ -234,6 +240,12 @@ impl SystemCmd {
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps { apps, .. } => scope_app_features(apps.as_deref()),
+            // Only a close changes what the flag does.
+            Self::UpdateTeam {
+                join: Some(TeamJoin::Invite),
+                close_drops_below: true,
+                ..
+            } => vec![Feature::TeamCloseDropsBelow],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
@@ -400,6 +412,16 @@ mod tests {
             Feature::ComputePools => SystemCmd::SetPools {
                 pools: BTreeMap::new(),
                 proof: Value::Null,
+            },
+            Feature::TeamCloseDropsBelow => SystemCmd::UpdateTeam {
+                org: "org".into(),
+                team: "team".into(),
+                name: None,
+                join: Some(TeamJoin::Invite),
+                parent: None,
+                metadata: None,
+                actor: "alice".into(),
+                close_drops_below: true,
             },
         }
     }
