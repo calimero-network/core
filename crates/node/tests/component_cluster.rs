@@ -2811,6 +2811,7 @@ async fn the_leader_checks_upgrade_authority_again() {
             let consent = serde_json::to_value(calimero_node::proof::Consent {
                 assertion: pk.assert(&statement.challenge().unwrap()),
                 statement,
+                at: 0,
             })
             .unwrap();
             let e = c.nodes[i]

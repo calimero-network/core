@@ -313,6 +313,15 @@ pub struct SystemState {
     pub next_group: u64,
     pub bundles: BTreeMap<String, BundleRecord>,
     pub accounts: BTreeMap<AccountId, Account>,
+    /// What each account's passkeys did, oldest first: each sign-in and each
+    /// change one approved, the last [`crate::types::ACTIVITY_KEPT`]. Shown
+    /// to the account holder alone (`GET /auth/activity`). Written at apply
+    /// from entries that carry their time; an earlier release's entries carry
+    /// none and add nothing. Kept beside the accounts, not in them, so the
+    /// account a sign-up's passkey signs (`account_args`) is unchanged; left
+    /// out when empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub activity: BTreeMap<AccountId, VecDeque<crate::types::ActivityEntry>>,
     /// credential id -> account
     pub credentials: BTreeMap<String, AccountId>,
     /// API key hash -> record
@@ -1722,11 +1731,19 @@ impl SystemState {
                     package: package.to_owned(),
                     name: None,
                     instances: None,
+                    join: None,
+                    keep: None,
                 })
                 .collect(),
         };
         if specs.len() > MAX_SCOPE_PACKAGES {
             return Err("too many packages in one step");
+        }
+        // A package's own `join` decides its team and no other: `shared`
+        // then closes nothing more unless asked, and never one opened here.
+        let per_app = specs.iter().any(|a| a.join.is_some());
+        if shared == Some(true) && specs.iter().any(|a| a.join == Some(TeamJoin::Everyone)) {
+            return Err("an app team cannot open while the step closes every app team");
         }
         // Each package: its team (found, or to make), name, instances, and
         // who reaches those instances now.
@@ -1736,6 +1753,8 @@ impl SystemState {
             name: String,
             instances: Vec<AppId>,
             reach: BTreeSet<AccountId>,
+            join: Option<TeamJoin>,
+            keep: Option<BTreeSet<AccountId>>,
         }
         let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
         for spec in specs {
@@ -1755,6 +1774,21 @@ impl SystemState {
             if name.trim().is_empty() || name.chars().count() > MAX_APP_TEAM_NAME_CHARS {
                 return Err("an app team's name is 1 to 64 characters");
             }
+            let keep = match spec.keep {
+                None => None,
+                Some(_) if spec.join != Some(TeamJoin::Invite) => {
+                    return Err("only closing an app team (join: invite) names who keeps it");
+                }
+                Some(list) => {
+                    if list.len() > MAX_SCOPE_KEEP {
+                        return Err("too many accounts kept in one step");
+                    }
+                    if list.iter().any(|a| o.role(a).is_none()) {
+                        return Err("only members of the organization keep an app");
+                    }
+                    Some(list.into_iter().collect::<BTreeSet<_>>())
+                }
+            };
             let of_package = |a: &AppRecord| self.package_of(a) == Some(spec.package.as_str());
             let instances: Vec<AppId> = match spec.instances {
                 Some(ids) => {
@@ -1797,6 +1831,8 @@ impl SystemState {
                 name,
                 instances,
                 reach,
+                join: spec.join,
+                keep,
             });
         }
         let app_teams = o
@@ -1805,7 +1841,7 @@ impl SystemState {
             .filter(|t| t.app_package().is_some())
             .count()
             + plans.iter().filter(|p| p.team.is_none()).count();
-        let shared = shared.unwrap_or(app_teams >= 2);
+        let shared = shared.unwrap_or(!per_app && app_teams >= 2);
 
         let o = self.orgs.get_mut(org).ok_or("no such organization")?;
         let mut report = Vec::with_capacity(plans.len());
@@ -1844,21 +1880,87 @@ impl SystemState {
                     id
                 }
             };
+            // Closing with a list: the people the admin keeps, whoever
+            // reaches the moved instances or not (the other rows go below).
+            // Otherwise everyone who reaches them, and, closing, everyone in
+            // the team now.
+            let seed: BTreeSet<AccountId> = match (&plan.keep, plan.join) {
+                (Some(keep), _) => keep.clone(),
+                (None, Some(TeamJoin::Invite)) => {
+                    let mut all = plan.reach.clone();
+                    all.extend(o.members.keys().filter(|m| o.in_team(m, &team_id)).cloned());
+                    all
+                }
+                (None, _) => plan.reach.clone(),
+            };
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
             let mut added = 0usize;
-            for a in &plan.reach {
+            for a in &seed {
                 let _back = t.removed.remove(a);
                 if !t.members.contains_key(a) {
                     let _prev = t.members.insert(a.clone(), false);
                     added += 1;
                 }
             }
+            let mut dropped = 0usize;
+            match plan.join {
+                Some(TeamJoin::Invite) => {
+                    let inside: Vec<AccountId> = o
+                        .members
+                        .keys()
+                        .filter(|m| o.in_team(m, &team_id))
+                        .cloned()
+                        .collect();
+                    let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+                    // A list names everyone but the leads who keeps it: the
+                    // other rows go (not barred: opening it again lets them
+                    // back in, as it does everyone).
+                    if let Some(keep) = &plan.keep {
+                        let out: Vec<AccountId> = t
+                            .members
+                            .iter()
+                            .filter(|(a, lead)| !**lead && !keep.contains(*a))
+                            .map(|(a, _)| a.clone())
+                            .collect();
+                        for a in &out {
+                            let _prev = t.members.remove(a);
+                            let _was = t.read_only.remove(a);
+                            let _caps = t.capabilities.remove(a);
+                        }
+                    }
+                    t.join = TeamJoin::Invite;
+                    t.default_capabilities =
+                        t.default_capabilities.map(|c| c & !caps::INVITE_MEMBERS);
+                    // Who lost it leaves the teams below it too: a row there
+                    // would keep them in its private channels.
+                    let gone: Vec<AccountId> = inside
+                        .into_iter()
+                        .filter(|m| !o.in_team(m, &team_id))
+                        .collect();
+                    dropped = gone.len();
+                    let below: Vec<TeamId> = o.subtree(&team_id).into_iter().skip(1).collect();
+                    for id in &below {
+                        if let Some(t) = o.teams.get_mut(id) {
+                            for a in &gone {
+                                let _prev = t.members.remove(a);
+                                let _was = t.read_only.remove(a);
+                                let _caps = t.capabilities.remove(a);
+                            }
+                        }
+                    }
+                }
+                Some(TeamJoin::Everyone) => t.join = TeamJoin::Everyone,
+                None => {}
+            }
+            let join = o.teams.get(&team_id).map(|t| t.join);
             report.push(json!({
                 "package": plan.package,
                 "teamId": team_id,
                 "created": created,
                 "apps": plan.instances,
                 "added": added,
+                "join": join,
+                "dropped": dropped,
             }));
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
@@ -2214,6 +2316,17 @@ impl SystemState {
             })
             .map(|a| a.app_id.clone())
             .collect()
+    }
+
+    /// Records `entry` in `account`'s activity ([`Self::activity`]); none
+    /// for an account the state does not hold.
+    pub fn record_activity(&mut self, account: &str, entry: crate::types::ActivityEntry) {
+        if self.accounts.contains_key(account) {
+            crate::types::record_activity(
+                self.activity.entry(account.to_owned()).or_default(),
+                entry,
+            );
+        }
     }
 
     #[must_use]
@@ -3354,6 +3467,8 @@ pub fn default_capabilities_args(team: Option<&str>, capabilities: u32) -> Value
 pub const MAX_SCOPE_PACKAGES: usize = 64;
 /// The most instances one package of a `ScopeApps` names.
 pub const MAX_SCOPE_INSTANCES: usize = 1024;
+/// The most accounts one package of a `ScopeApps` keeps on a close.
+pub const MAX_SCOPE_KEEP: usize = 1024;
 /// The longest app team name, in characters.
 pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
 
@@ -3370,6 +3485,20 @@ pub struct ScopeApp {
     /// the package here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instances: Option<Vec<AppId>>,
+    /// Open (`everyone`) or close (`invite`) this package's app team in this
+    /// step, and no other team (absent: as the step's `shared` says). Naming
+    /// it on any package leaves `shared` unset to mean "no other team".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<TeamJoin>,
+    /// Closing (`join: invite`) only: who keeps the app. Absent: everyone
+    /// who reaches it now gets a row of their own, so nobody loses it. A
+    /// list: the team's leads and those accounts (members of the
+    /// organization) keep it, each with a row, and everyone else in it, by
+    /// a row or by inheritance, loses it, with their rows in the teams below
+    /// it (a private channel under the app's team), as a removal from the
+    /// team takes them. They are not barred: opening it again lets them in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<Vec<AccountId>>,
 }
 
 /// What an admin consents to when scoping apps (`org:<org> / __scope_apps`):
@@ -4205,8 +4334,11 @@ pub enum SystemCmd {
     /// give every person who reaches its instances now a row there, and move
     /// the instances to `Access::Team` on it. `shared` (absent: whether the
     /// organization then holds two app teams or more) closes every app team,
-    /// rows filled in first, so nobody loses an app. An admin's, with their
-    /// passkey consent over [`scope_apps_args`].
+    /// rows filled in first, so nobody loses an app. A package's own `join`
+    /// opens or closes its team alone ([`ScopeApp::join`], `shared` absent
+    /// then means no other team changes), a close keeping everyone who
+    /// reaches it or only the accounts named ([`ScopeApp::keep`]). An
+    /// admin's, with their passkey consent over [`scope_apps_args`].
     ScopeApps {
         org: OrgId,
         #[serde(default)]
@@ -4282,6 +4414,55 @@ fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The account activity entry for the passkey consent `cmd` carries, which
+/// [`authorize`] verified and marked `used`: the account whose passkey gave
+/// it, the method and subject it states, at the time it carries. None for an
+/// operator's or an API key's proof, and for a consent with no time (a
+/// sign-in's, whose entry comes from its session, or one an earlier release
+/// logged), so replaying an earlier release's log adds nothing.
+fn approval_of(
+    s: &SystemState,
+    cmd: &SystemCmd,
+    used: &str,
+) -> Option<(AccountId, crate::types::ActivityEntry)> {
+    let Ok(Value::Object(fields)) = serde_json::to_value(cmd) else {
+        return None;
+    };
+    let consent = fields.into_iter().find_map(|(_, v)| {
+        v.get("assertion")?;
+        let c: crate::proof::Consent = serde_json::from_value(v).ok()?;
+        (c.at > 0 && c.used().ok()? == used).then_some(c)
+    })?;
+    let passkey = consent.assertion.credential_id;
+    let account = s.credentials.get(&passkey)?.clone();
+    let text = |t: String| t.chars().take(crate::types::ACTIVITY_TEXT_CHARS).collect();
+    Some((
+        account,
+        crate::types::ActivityEntry {
+            at: consent.at,
+            passkey,
+            what: crate::types::Activity::Approval {
+                method: text(consent.statement.method),
+                subject: text(consent.statement.subject),
+            },
+        },
+    ))
+}
+
+/// The activity entry of a sign-in that opened `record`'s session, at its
+/// opening (0, an earlier release's: none).
+fn sign_in_of(record: &RefreshRecord) -> Option<crate::types::ActivityEntry> {
+    Some(crate::types::ActivityEntry {
+        at: record.opened_at,
+        passkey: record.passkey.clone()?,
+        what: crate::types::Activity::SignIn {
+            app: record.app.clone(),
+            origin: record.origin.clone(),
+        },
+    })
+    .filter(|e| e.at > 0)
+}
+
 /// The system group's state machine.
 #[derive(Default)]
 pub struct SystemMachine {
@@ -4333,9 +4514,16 @@ impl SystemMachine {
         if let Some(stall) = self.new_work_refusal(&cmd) {
             return Err(stall.message());
         }
+        // Found before it applies: the command may remove the passkey.
+        let approval = used
+            .as_deref()
+            .and_then(|used| approval_of(&self.state, &cmd, used));
         let out = self.run_authorized(cmd).map_err(str::to_owned)?;
         if let Some(used) = used {
             let _new = self.state.used_proofs.insert(used);
+        }
+        if let Some((account, entry)) = approval {
+            self.state.record_activity(&account, entry);
         }
         Ok(out)
     }
@@ -5071,11 +5259,15 @@ impl SystemMachine {
                         g.record.opened_at = at;
                     }
                 }
+                let signed_in = refresh.as_ref().and_then(|g| sign_in_of(&g.record));
                 if let Some(RefreshGrant { hash, record }) = refresh {
                     let _prev = s.refresh.insert(hash, record);
                 }
                 let id = account.account_id.clone();
                 let _prev = s.accounts.insert(id.clone(), account);
+                if let Some(entry) = signed_in {
+                    s.record_activity(&id, entry);
+                }
                 if let Some(r) = &invite {
                     let _new = s.used_proofs.insert(crate::proof::invite_redeem_used(
                         &r.invite_key,
@@ -5349,6 +5541,9 @@ impl SystemMachine {
                     s.api_keys.retain(|_, k| k.account != account);
                 }
                 let revoked_keys = keys_before - s.api_keys.len();
+                if let Some(entry) = sign_in_of(&refresh.record) {
+                    s.record_activity(&account, entry);
+                }
                 let _prev = s.refresh.insert(refresh.hash, refresh.record);
                 Ok(json!({
                     "accountId": account,
@@ -5371,6 +5566,7 @@ impl SystemMachine {
                 }
                 // A sign-in: its passkey's last sign-in is when the session
                 // opened (unknown in an earlier release's entry).
+                let mut signed_in = false;
                 if let (Some(passkey), Some(acc), true) = (
                     &record.passkey,
                     s.accounts.get_mut(&record.account),
@@ -5381,7 +5577,11 @@ impl SystemMachine {
                             .entry(passkey.clone())
                             .or_default()
                             .signed_in(record.opened_at);
+                        signed_in = true;
                     }
+                }
+                if let Some(entry) = sign_in_of(&record).filter(|_| signed_in) {
+                    s.record_activity(&record.account, entry);
                 }
                 let _prev = s.refresh.insert(hash, record);
                 Ok(Value::Null)
@@ -7547,6 +7747,7 @@ mod tests {
         serde_json::to_value(crate::proof::Consent {
             statement,
             assertion: pk.assert(&challenge),
+            at: 0,
         })
         .unwrap()
     }
@@ -8271,6 +8472,151 @@ mod tests {
         let cmd: SystemCmd = serde_json::from_value(entry.clone()).unwrap();
         assert!(matches!(cmd, SystemCmd::AddPasskey { at: 0, .. }));
         assert_eq!(serde_json::to_value(&cmd).unwrap(), entry);
+    }
+
+    /// An account's activity comes from the entries' own times: a sign-in's
+    /// session opening (with the app and origin it is bound to) and a
+    /// step-up's consent time, under the passkey that gave it. A repeated
+    /// sign-in moves the newest entry's time; a refused command, a consent
+    /// with no time (an earlier release's) and an earlier release's sign-in
+    /// add nothing; the oldest entries go past the cap; nobody else's
+    /// activity moves.
+    #[test]
+    fn activity_records_sign_ins_and_step_ups_from_their_times() {
+        use crate::types::{Activity, ActivityEntry, ACTIVITY_KEPT};
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let cred = alice.credential_id();
+        assert!(m
+            .state
+            .activity
+            .get("alice")
+            .cloned()
+            .unwrap_or_default()
+            .is_empty());
+        let mut session = 0;
+        let mut sign_in =
+            |m: &mut SystemMachine, alice: &mut Soft, opened_at: u64, app: Option<&str>| {
+                session += 1;
+                let (_token, hash, record) = refresh_token("alice", &cred, &format!("s{session}"));
+                let record = crate::types::RefreshRecord {
+                    opened_at,
+                    app: app.map(str::to_owned),
+                    origin: app.map(|a| format!("https://{a}.example.com")),
+                    ..record
+                };
+                let c = consent(
+                    alice,
+                    "session",
+                    "__sign_in",
+                    &super::sign_in_args(&hash, &record),
+                );
+                let _ok = m
+                    .run(SystemCmd::CreateRefresh {
+                        hash,
+                        record,
+                        consent: c,
+                    })
+                    .unwrap();
+            };
+        let timed = |c: serde_json::Value, at: u64| {
+            let mut c = c;
+            c["at"] = json!(at);
+            c
+        };
+        let signed_in = |at: u64, app: Option<&str>| ActivityEntry {
+            at,
+            passkey: cred.clone(),
+            what: Activity::SignIn {
+                app: app.map(str::to_owned),
+                origin: app.map(|a| format!("https://{a}.example.com")),
+            },
+        };
+
+        sign_in(&mut m, &mut alice, 0, None);
+        assert!(
+            m.state
+                .activity
+                .get("alice")
+                .cloned()
+                .unwrap_or_default()
+                .is_empty(),
+            "an earlier release's sign-in adds nothing"
+        );
+        sign_in(&mut m, &mut alice, 40, Some("com.notes"));
+        sign_in(&mut m, &mut alice, 45, Some("com.notes"));
+        assert_eq!(
+            m.state.activity.get("alice").cloned().unwrap_or_default(),
+            [signed_in(45, Some("com.notes"))],
+            "a repeated sign-in moves the newest entry's time"
+        );
+
+        // A step-up: its method and subject, never its arguments.
+        let args = json!({ "version": "2.0.0" });
+        let wrong = timed(
+            consent(&mut alice, "account:bob", "__approve_release", &args),
+            50,
+        );
+        assert!(m.run(approve_with("alice", "2.0.0", wrong)).is_err());
+        let real = timed(
+            consent(&mut alice, "account:alice", "__approve_release", &args),
+            50,
+        );
+        let _ok = m.run(approve_with("alice", "2.0.0", real)).unwrap();
+        let approved = ActivityEntry {
+            at: 50,
+            passkey: cred.clone(),
+            what: Activity::Approval {
+                method: "__approve_release".into(),
+                subject: "account:alice".into(),
+            },
+        };
+        assert_eq!(
+            m.state.activity.get("alice").cloned().unwrap_or_default(),
+            [signed_in(45, Some("com.notes")), approved.clone()],
+            "a refused command adds nothing"
+        );
+        // A consent with no time (an earlier release's) adds nothing.
+        let untimed = consent(&mut alice, "account:alice", "__withdraw_release", &args);
+        let _ok = m
+            .run(SystemCmd::SetReleaseApproval {
+                scope: ReleaseScope::Account,
+                version: "2.0.0".into(),
+                approved: false,
+                actor: "alice".into(),
+                consent: untimed,
+            })
+            .unwrap();
+        assert_eq!(
+            m.state
+                .activity
+                .get("alice")
+                .cloned()
+                .unwrap_or_default()
+                .len(),
+            2
+        );
+        // Stored as the route lists it, and left out when empty.
+        assert_eq!(
+            serde_json::to_value(&approved).unwrap(),
+            json!({ "at": 50, "passkey": cred, "kind": "approval",
+                "method": "__approve_release", "subject": "account:alice" })
+        );
+        assert!(serde_json::to_value(SystemState::default())
+            .unwrap()
+            .get("activity")
+            .is_none());
+
+        // Past the cap the oldest go first.
+        for i in 0..ACTIVITY_KEPT {
+            let app = if i % 2 == 0 { "com.a" } else { "com.b" };
+            sign_in(&mut m, &mut alice, 100 + i as u64, Some(app));
+        }
+        let kept = &m.state.activity.get("alice").cloned().unwrap_or_default();
+        assert_eq!(kept.len(), ACTIVITY_KEPT);
+        assert!(!kept.contains(&approved), "the oldest went first");
+        assert_eq!(kept.back().unwrap().at, 100 + ACTIVITY_KEPT as u64 - 1);
+        assert!(!m.state.activity.contains_key("bob"));
+        assert!(!m.state.activity.contains_key("carol"));
     }
 
     /// An account is created only by its own new passkey, over the whole
@@ -11784,6 +12130,25 @@ mod tests {
         assert_eq!(
             super::default_capabilities_args(None, 4),
             json!({ "capabilities": 4 })
+        );
+    }
+
+    #[test]
+    fn a_scope_apps_from_before_a_per_app_join_reads_writes_and_consents_as_before() {
+        let cmd = json!({
+            "op": "scopeApps", "org": "o", "apps": [{ "package": "com.chat" }],
+            "shared": true, "nonce": "n", "actor": "a", "consent": null
+        });
+        let read: SystemCmd = serde_json::from_value(cmd.clone()).unwrap();
+        let SystemCmd::ScopeApps { apps, shared, .. } = &read else {
+            panic!("{read:?}");
+        };
+        let apps = apps.as_deref().unwrap();
+        assert_eq!((apps[0].join, apps[0].keep.as_ref()), (None, None));
+        assert_eq!(serde_json::to_value(&read).unwrap(), cmd);
+        assert_eq!(
+            super::scope_apps_args(Some(apps), *shared),
+            json!({ "apps": [{ "package": "com.chat" }], "shared": true })
         );
     }
 

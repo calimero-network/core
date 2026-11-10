@@ -126,7 +126,9 @@ direct rows of role `lead`, `member` or `read-only`. [Group, subgroup]
 
 **App team** — A top-level team whose `metadata.app.package` marks a package:
 the one team of that app in an organization, whose instances use `team` access
-on it. See [Organizations](/protocol/organizations/#app-teams).
+on it. Open, everyone in the organization has the app; closed (restricted),
+only its rows do, and an admin closes or opens one app team alone. See
+[Organizations](/protocol/organizations/#app-teams).
 
 **Capability** — A bit granting a member an action beyond their role (an app
 team's default lets its members make private channels, `CREATE_CHILD_TEAM`). See

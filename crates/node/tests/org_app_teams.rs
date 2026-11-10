@@ -801,3 +801,194 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
         .await
         .is_err());
 }
+
+/// An admin closes one app's team and no other, in one step, keeping either
+/// everyone who reaches it now or only the people named: whoever is not
+/// kept loses the app and the private channels under its team, and nobody
+/// else loses anything. Opening one team again is one step too. Only an
+/// organization admin does either, and only for the organization's members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (dave, mut d) = signed_up(&c, 0, "dave").await;
+    let (frank, _f) = signed_up(&c, 1, "frank").await;
+    let (erin, mut e) = signed_up(&c, 2, "erin").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol, &dave, &frank] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (bob_id, carol_id, dave_id, frank_id) = (
+        id(&bob).await,
+        id(&carol).await,
+        id(&dave).await,
+        id(&frank).await,
+    );
+    // Erin is an admin of an organization of her own, never of this one.
+    let _theirs = new_org(&erin).await;
+    let erin_id = id(&erin).await;
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    // Both apps get open teams: everyone has both.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
+    // Carol leads a private channel under Chat, with an instance of its own.
+    let channel = s(&alice
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "carol's", "join": "invite", "parent": chat_team }),
+        )
+        .await
+        .unwrap()["teamId"]);
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{channel}/members"),
+            json!({ "account": carol_id, "lead": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let private = instance(
+        &alice,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": channel }),
+    )
+    .await
+    .unwrap();
+    assert!(reaches(&carol, &org).await.contains(&private));
+    // Dave left Chat; Frank is removed from the organization.
+    let _ok = dave
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{dave_id}"),
+            &mut d,
+        )
+        .await
+        .unwrap();
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{frank_id}"), &mut a)
+        .await
+        .unwrap();
+
+    let close = |keep: Value| {
+        let mut app = json!({ "package": CHAT, "join": "invite" });
+        if !keep.is_null() {
+            app["keep"] = keep;
+        }
+        json!({ "apps": [app] })
+    };
+    // Only an admin of this organization closes it, keeping only its members.
+    refused(
+        &scope(&bob, &mut b, &org, close(json!([bob_id])))
+            .await
+            .unwrap_err(),
+        "only the organization's owner and admins",
+    );
+    let _outside = scope(&erin, &mut e, &org, close(json!([erin_id])))
+        .await
+        .unwrap_err();
+    for gone in [&erin_id, &frank_id] {
+        refused(
+            &scope(&alice, &mut a, &org, close(json!([bob_id, gone])))
+                .await
+                .unwrap_err(),
+            "only members of the organization keep an app",
+        );
+    }
+    refused(
+        &scope(
+            &alice,
+            &mut a,
+            &org,
+            json!({ "apps": [{ "package": CHAT, "keep": [bob_id] }] }),
+        )
+        .await
+        .unwrap_err(),
+        "only closing an app team",
+    );
+    refused(
+        &scope(
+            &alice,
+            &mut a,
+            &org,
+            json!({ "apps": [{ "package": CHAT, "join": "everyone" }], "shared": true }),
+        )
+        .await
+        .unwrap_err(),
+        "cannot open while the step closes every app team",
+    );
+    assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
+
+    // Closed keeping Bob: Bob and Alice (its lead) have Chat; Carol loses it
+    // and her channel under it; Dave, who left, is not brought back; Blocks
+    // stays open for everyone.
+    let done = scope(&alice, &mut a, &org, close(json!([bob_id])))
+        .await
+        .unwrap();
+    assert_eq!(done["mode"], "shared", "{done}");
+    assert_eq!(done["teams"][0]["join"], "invite", "{done}");
+    assert_eq!(done["teams"][0]["dropped"], 1, "{done}");
+    assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
+    assert!(reaches(&bob, &org).await.contains(&chat));
+    assert!(reaches(&alice, &org).await.contains(&chat));
+    for p in [&carol, &dave] {
+        let r = reaches(p, &org).await;
+        assert!(!r.contains(&chat) && !r.contains(&private), "{r:?}");
+        assert!(r.contains(&blocks), "{r:?}");
+    }
+    let row = alice
+        .get(&format!("orgs/{org}/teams/{channel}"))
+        .await
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&row).unwrap().contains(&carol_id),
+        "{row}"
+    );
+
+    // Opened again, alone: Carol has Chat back (not her channel, whose row
+    // went with the close), Dave stays out, Blocks is untouched.
+    let done = scope(
+        &alice,
+        &mut a,
+        &org,
+        json!({ "apps": [{ "package": CHAT, "join": "everyone" }] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let r = reaches(&carol, &org).await;
+    assert!(r.contains(&chat) && !r.contains(&private), "{r:?}");
+    assert!(!reaches(&dave, &org).await.contains(&chat));
+
+    // Closed keeping everyone who reaches it: nobody loses it.
+    let done = scope(&alice, &mut a, &org, close(Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(done["teams"][0]["dropped"], 0, "{done}");
+    assert!(reaches(&carol, &org).await.contains(&chat));
+    assert!(reaches(&bob, &org).await.contains(&chat));
+    assert!(!reaches(&dave, &org).await.contains(&chat));
+    assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
+
+    // A single team also opens with the team update an admin always had.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{chat_team}"),
+            json!({ "join": "everyone" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
+}

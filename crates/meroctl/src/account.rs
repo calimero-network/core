@@ -22,6 +22,13 @@ pub enum AccountCmd {
     /// The account's sessions (needs a passkey session).
     #[command(subcommand)]
     Session(SessionCmd),
+    /// What the account's passkeys did, newest first: the apps each signed
+    /// in to and the changes each approved (needs a passkey session).
+    Activity {
+        /// Only what happened after this time (Unix seconds).
+        #[arg(long)]
+        after: Option<u64>,
+    },
     /// API keys for services (need a passkey session to create).
     #[command(subcommand)]
     ApiKey(ApiKeyCmd),
@@ -175,6 +182,7 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
         AccountCmd::Session(SessionCmd::Revoke { session }) => {
             client.revoke_session(&session).await?
         }
+        AccountCmd::Activity { after } => client.activity(after).await?,
         AccountCmd::ApiKey(ApiKeyCmd::Create {
             label,
             contexts,
