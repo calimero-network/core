@@ -7,7 +7,7 @@ sidebar:
 
 A **compute action** is an app method that runs outside the log, on a **job node**, over sealed input files, and writes sealed output files.
 A call cannot do this work: it stops at 2 s, its whole log entry stays under 1 MiB, and its result is copied to every replica.
-A compute run may take up to 15 minutes and 4 GiB, reads up to 64 input files (2 GiB in all), writes up to 2 GiB across its output files (each file at most 47 MiB), and leaves only a small result in the log.
+A compute run may take up to 15 minutes and 4 GiB, reads up to 64 input files (2 GiB in all), writes up to 2 GiB across its output files (each file at most 2 GiB), and leaves only a small result in the log.
 
 Raw data leaves the attested machines only where an app sends it out over outbound HTTP from a call or an action.
 Files are sealed at rest and in transit.
@@ -265,7 +265,7 @@ A job node exposes no usage series.
 | Fuel of a run | 10^12 | `MAX_COMPUTE_FUEL` |
 | Arguments of a start | 64 KiB | `MAX_COMPUTE_ARGS_BYTES` |
 | Inputs of a run | 64 files, 2 GiB in all | `MAX_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
-| One file (input or output) | 47 MiB | `MAX_FILE_BYTES` |
+| One file (input or output) | 2 GiB | `MAX_FILE_BYTES` |
 | All files written by one compute run | 2 GiB | `MAX_COMPUTE_FILE_BYTES` |
 | All files written by one call | 64 MiB | `MAX_RUN_FILE_BYTES` |
 | Open files in one run | 16 | `MAX_OPEN_FILES` |

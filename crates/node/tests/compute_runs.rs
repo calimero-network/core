@@ -1030,6 +1030,22 @@ async fn a_forty_mib_output_is_fetched_a_segment_at_a_time_and_a_cut_fetch_resum
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_hundred_mib_file_is_uploaded_read_by_a_run_and_written_back() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let plain: Vec<u8> = (0..100 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let file = rig.upload(&plain).await;
+    assert_eq!(rig.segments(&file).len(), 7);
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let outcome = rig.outcome_within(&run, 300).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    let seed = noise_seed(&rig.leader().app_file_key(&rig.app), &run);
+    assert_eq!(
+        outcome["sha256"],
+        json!(sha256_hex(&expected_output(&plain, seed)))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_the_run_open() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {

@@ -1513,11 +1513,6 @@ mod tests {
         assert!(mark.segment_hashes().is_none());
     }
 
-    #[test]
-    fn a_file_never_outgrows_the_blob_cap() {
-        assert!(host::MAX_FILE_BYTES <= crate::node::MAX_BLOB_BYTES as u64);
-    }
-
     /// D76: a logged run's outbound exchange is part of the outcome its entry carries,
     /// whatever the status, and reads back from the entry's bytes as it was recorded.
     #[test]

@@ -459,11 +459,7 @@ impl Files for NodeFiles {
             .sealed(id)
             .filter(|(_, s)| s.output)
             .ok_or_else(not_an_output)?;
-        if record.size > calimero_app_host::MAX_FILE_BYTES {
-            return Err(FileError::Failed(
-                calimero_app_host::FILE_TOO_LARGE.to_owned(),
-            ));
-        }
+        publishable(record.size)?;
         Ok(PublishedFile {
             source: id.to_owned(),
             id: hex::encode(&seal.sha256.0),
@@ -509,6 +505,17 @@ impl NodeFiles {
             bytes.extend_from_slice(&chunk);
         }
     }
+}
+
+/// Whether a file of `size` plaintext bytes may be published: the plain blob it becomes must
+/// reach the other nodes in one request.
+fn publishable(size: u64) -> Result<(), FileError> {
+    if size > MAX_BLOB_BYTES as u64 {
+        return Err(FileError::Failed(
+            calimero_app_host::FILE_TOO_LARGE.to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Seals what the guest writes and stores each segment here as it completes, so a writer holds
@@ -1375,6 +1382,18 @@ mod tests {
     use super::*;
     use crate::component::FileMark;
     use crate::files::CHUNK_BYTES;
+
+    #[test]
+    fn a_file_over_the_blob_cap_is_too_large_to_publish() {
+        let cap = MAX_BLOB_BYTES as u64;
+        assert!(publishable(cap).is_ok());
+        assert_eq!(
+            publishable(cap + 1),
+            Err(FileError::Failed(
+                calimero_app_host::FILE_TOO_LARGE.to_owned()
+            ))
+        );
+    }
 
     #[test]
     fn an_uploader_a_peer_names_is_an_account_id_not_free_text() {
