@@ -128,6 +128,18 @@ it: the first system leader on a release that makes them writes
 cluster requires them from genesis). The mark is written once and only
 tightens.
 
+Commands also carry flags that name an earlier release's rule when they are
+left `false` (`owner_in_org`, `owner_in_team`, `apps_need_consent`,
+`teams_seen`, `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+`member_child_teams`, `revoke_api_keys`), so a log that release wrote
+replays as it applied it. The first system leader on a release that requires
+the current rules writes `RequireCurrentRules`; from that entry on, every such
+flag is read as set whatever the entry says, and an organization's upgrade run
+is derived from the state where it applies
+([Upgrades](/protocol/upgrades/#organization-wide-upgrade-runs)). Nodes keep
+setting the flags, so a replica on the release before applies these entries
+the same way.
+
 Still without a proof: `RefreshReused`, `RevokeSession`, `RevokeAllSessions`,
 labels and aliases, and the rest of the account and app housekeeping; they
 are trusted from any node of the cluster. Splitting the system group into

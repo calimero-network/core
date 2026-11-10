@@ -147,7 +147,13 @@ the apps of the teams below it — to `version`.
 - **Record.** `StartUpgradeRun` stores an `UpgradeRun` on the organization (run id,
   package, version, team, cascade, who started it, its apps, which are done and
   which failed, and whether it finished); the organization keeps its newest 20
-  runs.
+  runs. Where it applies, the run's apps are derived from the state and what
+  the consent covers (the organization's apps of `package` in the scope, a
+  publisher's instances the starter may upgrade, or the apps the retried run
+  failed on), never taken from the entry, and it starts with nothing done.
+  Each app's `UpgradeApp` must be one the run names and has not moved yet,
+  still on a release of `package`, and not to an older version than it runs;
+  an app that fails this is recorded as failed without running anything.
 - **Progress.** A background task on the node that started it upgrades the apps
   one by one; each `UpgradeApp` or `UpgradeFailed` notes the app on the run and
   on the instance. An app already on the target bundle is recorded as done.

@@ -477,6 +477,16 @@ pub struct SystemState {
     /// so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_proofs_from: Option<u64>,
+    /// The log index from which every entry applies under this release's
+    /// rules ([`SystemCmd::hold_to_current_rules`]): the
+    /// [`SystemCmd::RequireCurrentRules`] the first system leader on a release
+    /// that makes it wrote. Entries before it, logged by releases whose
+    /// commands named an older rule with a flag left `false`, apply as they
+    /// did when a restart replays them. `None` (state from before): none
+    /// required yet. Left out when `None`, so state from before reads and
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_rules_from: Option<u64>,
     /// Who may install apps where deployments are granted
     /// ([`Governance::deployments`]), by [`Deployer::key`]
     /// (`account:<id>`, `org:<id>`); [`SystemState::may_deploy`] judges them.
@@ -1356,6 +1366,126 @@ impl SystemState {
                 .outbound_approvals
                 .get(signer),
         }
+    }
+
+    /// The release `app` runs, if installed: the one it records
+    /// (`AppRecord::release`), else the one its bundle came out of (as
+    /// `Node::release_of_app`).
+    fn app_release(&self, app: &AppRecord) -> Option<&PackageRef> {
+        let at = match &app.release {
+            Some(at) => at,
+            None => self.bundles.get(&app.bundle)?.package.as_ref()?,
+        };
+        let _installed = self.packages.get(&at.package)?.versions.get(&at.version)?;
+        Some(at)
+    }
+
+    /// The apps an organization's upgrade run of `package` covers: its apps
+    /// (with `team`, that team's, and with `cascade` the teams below it too)
+    /// that run a release of `package`.
+    #[must_use]
+    pub fn org_run_apps(
+        &self,
+        org: &str,
+        package: &str,
+        team: Option<&str>,
+        cascade: bool,
+    ) -> Vec<AppId> {
+        let Some(o) = self.orgs.get(org) else {
+            return Vec::new();
+        };
+        let teams: Option<Vec<String>> = team.map(|t| {
+            if cascade {
+                o.subtree(t)
+            } else {
+                vec![t.to_owned()]
+            }
+        });
+        self.apps
+            .values()
+            .filter(|a| a.org.as_deref() == Some(org))
+            .filter(|a| match (&teams, &a.access) {
+                (None, _) => true,
+                (Some(ts), Access::Team { team }) => ts.contains(team),
+                (Some(_), _) => false,
+            })
+            .filter(|a| self.app_release(a).is_some_and(|r| r.package == package))
+            .map(|a| a.app_id.clone())
+            .collect()
+    }
+
+    /// The instances a publisher's run of `package` covers: every one whose
+    /// bundle came out of `package` that `account` may upgrade.
+    #[must_use]
+    pub fn published_run_apps(&self, package: &str, account: &str) -> Vec<AppId> {
+        self.apps
+            .values()
+            .filter(|a| {
+                self.bundles
+                    .get(&a.bundle)
+                    .and_then(|b| b.package.as_ref())
+                    .is_some_and(|at| at.package == package)
+                    && self.may_upgrade(a, account)
+            })
+            .map(|a| a.app_id.clone())
+            .collect()
+    }
+
+    /// The apps a new run of `org` covers, from the state and the method its
+    /// consent names: a publisher's run every instance of its package the
+    /// starter may upgrade, a retry the apps the run it repeats failed on,
+    /// any other the organization's apps in its scope ([`Self::org_run_apps`]).
+    fn upgrade_run_apps(
+        &self,
+        org: &str,
+        run: &crate::types::UpgradeRun,
+        consent: &Value,
+    ) -> Vec<AppId> {
+        let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
+        match st.as_ref().map(|st| st.method.as_str()) {
+            Some("__upgrade_published") => self.published_run_apps(&run.package, &run.by),
+            Some("__upgrade_org_retry") => st
+                .and_then(|st| {
+                    let prev = st.args()["run"].as_str().map(str::to_owned)?;
+                    let prev = self.orgs.get(org)?.upgrade_runs.get(&prev)?;
+                    Some(
+                        prev.failed
+                            .keys()
+                            .filter(|a| self.apps.contains_key(*a))
+                            .cloned()
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default(),
+            _ => self.org_run_apps(org, &run.package, run.team.as_deref(), run.cascade),
+        }
+    }
+
+    /// Whether run `r` may move `app` now: an app it names and has not
+    /// upgraded or failed yet, still on a release of the run's package, to
+    /// the run's version or a newer one.
+    ///
+    /// # Errors
+    /// Why it may not: [`NOT_IN_RUN`], [`RUN_MOVED_APP`],
+    /// [`RUN_OTHER_PACKAGE`] or [`RUN_OLDER_RELEASE`].
+    pub fn run_may_move(
+        &self,
+        r: &crate::types::UpgradeRun,
+        app: &AppRecord,
+    ) -> Result<(), &'static str> {
+        if !r.apps.contains(&app.app_id) {
+            return Err(NOT_IN_RUN);
+        }
+        if r.done.contains(&app.app_id) || r.failed.contains_key(&app.app_id) {
+            return Err(RUN_MOVED_APP);
+        }
+        let Some(at) = self.app_release(app).filter(|at| at.package == r.package) else {
+            return Err(RUN_OTHER_PACKAGE);
+        };
+        if compare_versions(&r.version, &at.version) == std::cmp::Ordering::Less {
+            return Err(RUN_OLDER_RELEASE);
+        }
+        Ok(())
     }
 
     /// Note an app's upgrade on the organization-wide run it belongs to.
@@ -2638,6 +2768,13 @@ impl SystemState {
         self.session_proofs_from.is_some_and(|from| index >= from)
     }
 
+    /// Whether an entry at `index` applies under this release's rules,
+    /// whatever its flags name ([`Self::current_rules_from`]).
+    #[must_use]
+    pub fn holds_current_rules(&self, index: u64) -> bool {
+        self.current_rules_from.is_some_and(|from| index >= from)
+    }
+
     /// Whether a refresh token was ever issued under `hash` and is still
     /// remembered (live or exchanged).
     fn refresh_known(&self, hash: &str) -> bool {
@@ -2994,7 +3131,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
                     .as_ref()
                     .is_some_and(|t| t.package != r.package || t.version != r.version)
             {
-                return Err("the upgrade is not one its run names");
+                return Err(NOT_IN_RUN);
             }
             Ok(None)
         }
@@ -3954,6 +4091,75 @@ impl SystemCmd {
                 | Self::RevokeApiKey { .. }
         )
     }
+
+    /// Read every flag that names an earlier release's rule as this release
+    /// sets it (`true`): what an entry from [`SystemState::current_rules_from`]
+    /// on applies under. Those flags default to `false` so entries an earlier
+    /// release logged replay as it judged them; a later entry with one left
+    /// `false` comes from no node of this release, which always sets them.
+    pub fn hold_to_current_rules(&mut self) {
+        match self {
+            Self::UpgradeApp {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::TransferApp {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::DeleteApp {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::SetAccess {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::CreateApiKey {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::SetAppMetadata {
+                owner_in_org,
+                owner_in_team,
+                ..
+            } => {
+                *owner_in_org = true;
+                *owner_in_team = true;
+            }
+            Self::ScopeApps {
+                owner_in_team,
+                accounts_in_app_team,
+                member_child_teams,
+                ..
+            } => {
+                *owner_in_team = true;
+                *accounts_in_app_team = true;
+                *member_child_teams = true;
+            }
+            Self::CreateTeam {
+                member_child_teams, ..
+            } => *member_child_teams = true,
+            Self::DeleteTeam {
+                apps_need_consent, ..
+            } => *apps_need_consent = true,
+            Self::RemoveTeamMember { subtree, .. } => *subtree = true,
+            Self::CreateInvite { teams_seen, .. } => *teams_seen = true,
+            Self::RedeemInvite {
+                free_when_unchanged,
+                ..
+            } => *free_when_unchanged = true,
+            Self::FinishAccountRecovery {
+                revoke_api_keys, ..
+            } => *revoke_api_keys = true,
+            _ => {}
+        }
+    }
 }
 
 /// A refresh token as the log keeps it: under its hash, with its record.
@@ -4017,6 +4223,15 @@ pub const MAX_SCOPE_INSTANCES: usize = 1024;
 pub const MAX_SCOPE_KEEP: usize = 1024;
 /// The longest app team name, in characters.
 pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
+
+/// An `UpgradeApp { run }` the run does not name.
+pub const NOT_IN_RUN: &str = "the upgrade is not one its run names";
+/// An `UpgradeApp { run }` for an app the run already moved or failed.
+pub const RUN_MOVED_APP: &str = "the run has upgraded this app already";
+/// An `UpgradeApp { run }` for an app that no longer runs the run's package.
+pub const RUN_OTHER_PACKAGE: &str = "the app no longer runs the run's package";
+/// An `UpgradeApp { run }` that would move an app to an older release.
+pub const RUN_OLDER_RELEASE: &str = "an upgrade run does not move an app to an older release";
 
 /// How a logged command judges an app's owner ([`SystemState::owner_acts`]),
 /// by the flags the release that logged it set.
@@ -4533,6 +4748,15 @@ pub enum SystemCmd {
     /// (genesis sets it in a new one). It only ever tightens: a node that
     /// logs it early takes nothing from anyone.
     RequireSessionProofs,
+    /// From this entry on, every command applies under this release's rules
+    /// ([`SystemState::current_rules_from`]): the flags an earlier release
+    /// left `false` to name its older rule (`owner_in_org`, `owner_in_team`,
+    /// `apps_need_consent`, `teams_seen`, ...) are read as set, and an
+    /// organization's upgrade run is derived from the system state
+    /// (`StartUpgradeRun`). Written once by the first system leader on a
+    /// release that makes it. It only ever tightens: a node that logs it
+    /// early takes nothing from anyone.
+    RequireCurrentRules,
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
@@ -5174,7 +5398,12 @@ impl SystemMachine {
     /// Apply `cmd`, only once its proof holds ([`authorize`]): refused if it
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
-    fn run(&mut self, cmd: SystemCmd) -> Result<Value, String> {
+    fn run(&mut self, mut cmd: SystemCmd) -> Result<Value, String> {
+        // From the mark on, a flag naming an older rule is no choice of the
+        // proposer's: this release's nodes always set it.
+        if self.state.holds_current_rules(self.index) {
+            cmd.hold_to_current_rules();
+        }
         // An entry logged before the cluster required session proofs applies
         // as it did then: a restart replays it, and every replica must reach
         // the answer the release that logged it reached.
@@ -5595,6 +5824,18 @@ impl SystemMachine {
                         "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
                     );
                 }
+                // A run moves each app it names once, along its package and
+                // never back: its consent covers that, not whatever an entry
+                // naming it says.
+                if let (Some(run_id), true) = (&run, s.holds_current_rules(index)) {
+                    let r = s
+                        .orgs
+                        .values()
+                        .find_map(|o| o.upgrade_runs.get(run_id))
+                        .ok_or("no such upgrade run")?;
+                    let a = s.apps.get(&app_id).ok_or("no such app")?;
+                    s.run_may_move(r, a)?;
+                }
                 let by = if by_operator {
                     OPERATOR.to_owned()
                 } else {
@@ -5649,9 +5890,28 @@ impl SystemMachine {
             }
             SystemCmd::StartUpgradeRun {
                 org,
-                run,
-                consent: _,
+                mut run,
+                consent,
             } => {
+                if s.holds_current_rules(index) {
+                    // What the run covers and how far it got are the state's,
+                    // not the proposer's: its consent names only the package,
+                    // version and scope. Its id names one run in the cluster,
+                    // as `UpgradeApp { run }` finds it in any organization.
+                    if !s.orgs.contains_key(&org) {
+                        return Err("no such organization");
+                    }
+                    if s.orgs
+                        .values()
+                        .any(|o| o.upgrade_runs.contains_key(&run.run_id))
+                    {
+                        return Err("that run exists");
+                    }
+                    run.apps = s.upgrade_run_apps(&org, &run, &consent);
+                    run.done.clear();
+                    run.failed.clear();
+                    run.finished = false;
+                }
                 let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
                 if o.upgrade_runs.contains_key(&run.run_id) {
                     return Err("that run exists");
@@ -5669,8 +5929,9 @@ impl SystemMachine {
                         None => break,
                     }
                 }
+                let out = serde_json::to_value(&*run).unwrap_or_default();
                 let _prev = o.upgrade_runs.insert(run.run_id.clone(), *run);
-                Ok(Value::Null)
+                Ok(out)
             }
             SystemCmd::FinishUpgradeRun { org, run_id } => {
                 let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
@@ -6458,6 +6719,13 @@ impl SystemMachine {
                     return Err("session proofs are required already");
                 }
                 s.session_proofs_from = Some(index);
+                Ok(Value::Null)
+            }
+            SystemCmd::RequireCurrentRules => {
+                if s.current_rules_from.is_some() {
+                    return Err("the current rules are required already");
+                }
+                s.current_rules_from = Some(index);
                 Ok(Value::Null)
             }
             SystemCmd::SetOperatorRelease {
@@ -8654,6 +8922,146 @@ mod tests {
         let _ = &mut m;
     }
 
+    /// `proven_cluster` plus package `p` with releases 1.0.0, 2.0.0 and
+    /// 3.0.0 (WASM `b-<version>`), and three apps of `org`: `p1` on 1.0.0,
+    /// `p3` on 3.0.0 and `q` on a raw bundle.
+    fn org_with_package_apps() -> (SystemMachine, Soft) {
+        let (mut m, alice, _bob, _carol) = proven_cluster();
+        let versions: serde_json::Map<String, serde_json::Value> = ["1.0.0", "2.0.0", "3.0.0"]
+            .iter()
+            .map(|v| {
+                let release = json!({
+                    "version": v, "mpk": v, "mpkSize": 1, "source": "upload",
+                    "services": { "": format!("b-{v}") }, "installedBy": "alice", "installedAt": 0
+                });
+                ((*v).to_owned(), release)
+            })
+            .collect();
+        let _prev = m.state.packages.insert(
+            "p".into(),
+            serde_json::from_value(json!({
+                "name": "p", "signerId": "did:key:z", "owner": "alice", "versions": versions
+            }))
+            .unwrap(),
+        );
+        for v in ["1.0.0", "2.0.0", "3.0.0"] {
+            let hash = format!("b-{v}");
+            let _prev = m.state.bundles.insert(
+                hash.clone(),
+                serde_json::from_value(json!({
+                    "hash": hash, "size": 1, "uploadedBy": "alice",
+                    "package": { "package": "p", "version": v }
+                }))
+                .unwrap(),
+            );
+        }
+        for (id, bundle, release) in [
+            ("p1", "b-1.0.0", Some("1.0.0")),
+            ("p3", "b-3.0.0", Some("3.0.0")),
+            ("q", "b1", None),
+        ] {
+            let _prev = m.state.apps.insert(
+                id.into(),
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 7, "bundle": bundle, "owner": "alice",
+                    "org": "org", "access": { "kind": "org" }, "replicas": [1, 2, 3],
+                    "createdAt": 0,
+                    "release": release.map(|v| json!({ "package": "p", "version": v })),
+                }))
+                .unwrap(),
+            );
+        }
+        (m, alice)
+    }
+
+    /// From the `RequireCurrentRules` mark on, an organization's upgrade run
+    /// covers what the state says its consent covers, whatever apps or
+    /// progress the entry lists, and moves each app once, along its package
+    /// and never to an older release. Before the mark a run applies as it
+    /// was logged.
+    #[test]
+    fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
+        use super::{NOT_IN_RUN, RUN_MOVED_APP, RUN_OLDER_RELEASE};
+        let (mut m, mut alice) = org_with_package_apps();
+        let start = |alice: &mut Soft, run_id: &str| {
+            let c = consent(
+                alice,
+                "org:org",
+                "__upgrade_org",
+                &json!({
+                    "package": "p", "version": "2.0.0", "team": null,
+                    "cascade": false, "migrate": null,
+                }),
+            );
+            let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+                "runId": run_id, "package": "p", "version": "2.0.0", "by": "alice",
+                "startedAt": 0, "apps": ["p1", "p3", "q", "app"], "done": ["p1"],
+                "failed": { "p3": "made up" }, "finished": true,
+            }))
+            .unwrap();
+            SystemCmd::StartUpgradeRun {
+                org: "org".into(),
+                run: Box::new(run),
+                consent: c,
+            }
+        };
+        let upgrade = |app: &str, bundle: &str, version: &str| SystemCmd::UpgradeApp {
+            compute_bundle: None,
+            app_id: app.into(),
+            bundle: bundle.into(),
+            by_operator: false,
+            actor: "alice".into(),
+            at: 0,
+            run: Some("r1".into()),
+            consent: serde_json::Value::Null,
+            release: Some(super::PackageRef {
+                package: "p".into(),
+                version: version.into(),
+                service: None,
+                compute: false,
+            }),
+            owner_in_org: true,
+            owner_in_team: true,
+        };
+
+        // Logged before the mark: kept as the entry says, as it was.
+        m.index = 5;
+        let _ok = m.run(start(&mut alice, "r0")).unwrap();
+        assert_eq!(m.state.orgs["org"].upgrade_runs["r0"].apps.len(), 4);
+
+        m.index = 10;
+        let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+        m.index = 11;
+        let _ok = m.run(start(&mut alice, "r1")).unwrap();
+        let r = &m.state.orgs["org"].upgrade_runs["r1"];
+        assert_eq!(
+            r.apps,
+            ["p1", "p3"],
+            "the org's apps of `p`, from the state"
+        );
+        assert!(r.done.is_empty() && r.failed.is_empty() && !r.finished);
+
+        assert_eq!(
+            m.run(upgrade("q", "b-2.0.0", "2.0.0")).unwrap_err(),
+            NOT_IN_RUN
+        );
+        assert_eq!(
+            m.run(upgrade("p3", "b-2.0.0", "2.0.0")).unwrap_err(),
+            RUN_OLDER_RELEASE
+        );
+        let _ok = m.run(upgrade("p1", "b-2.0.0", "2.0.0")).unwrap();
+        assert_eq!(m.state.apps["p1"].bundle, "b-2.0.0");
+        assert_eq!(
+            m.run(upgrade("p1", "b-2.0.0", "2.0.0")).unwrap_err(),
+            RUN_MOVED_APP
+        );
+        // A run id is one run in the cluster.
+        assert_eq!(
+            m.run(start(&mut alice, "r1")).unwrap_err(),
+            "that run exists"
+        );
+    }
+
     type Soft = calimero_identity::testing::SoftAuthenticator;
 
     /// The operator's signing key in these tests, and what genesis records.
@@ -10021,6 +10429,87 @@ mod tests {
         assert_eq!(deletion["apps_need_consent"], json!(true), "{deletion}");
     }
 
+    /// From the `RequireCurrentRules` mark on, team commands apply under this
+    /// release's rules whatever flags the entry carries: a removal takes the
+    /// rows below, an invite names only teams its inviter sees, a deletion
+    /// that takes apps needs the passkey, and a redemption that changes
+    /// nothing spends no use.
+    #[test]
+    fn team_commands_after_the_current_rules_mark_apply_under_them() {
+        let (mut m, mut alice, mut bob) = nested_teams();
+        m.index = 10;
+        let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+        m.index = 11;
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__remove_team_member",
+            &json!({ "team": "t", "account": "bob" }),
+        );
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "removeTeamMember", "org": "org", "team": "t", "account": "bob",
+            "actor": "alice", "consent": c,
+        }))
+        .unwrap();
+        let _ok = m.run(old).unwrap();
+        assert!(
+            !m.state.orgs["org"].in_team("bob", "c"),
+            "the row below goes too"
+        );
+
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.teams.insert(
+            "x".into(),
+            serde_json::from_value(json!({
+                "teamId": "x", "name": "X", "join": "invite", "members": {}
+            }))
+            .unwrap(),
+        );
+        let _prev = o
+            .capabilities
+            .insert("bob".into(), crate::types::caps::INVITE_MEMBERS);
+        let key = crate::proof::invite_key("inv_old");
+        let invite: crate::types::Invite = serde_json::from_value(json!({
+            "org": "org", "role": "member", "teams": ["x"], "expiresAt": 100, "usesLeft": 1,
+        }))
+        .unwrap();
+        let c = consent(
+            &mut bob,
+            "org:org",
+            "__create_invite",
+            &super::invite_args(&key, &invite),
+        );
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "createInvite", "invite_key": key, "invite": invite, "actor": "bob",
+            "consent": c,
+        }))
+        .unwrap();
+        assert_eq!(
+            m.run(old).unwrap_err(),
+            "an invite names only teams the inviter sees"
+        );
+
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "deleteTeam", "org": "org", "team": "t", "actor": "alice",
+        }))
+        .unwrap();
+        assert_eq!(m.run(old).unwrap_err(), DELETE_TEAM_NEEDS_CONSENT);
+        assert!(m.state.apps.contains_key("inapp"));
+
+        keep_invite(&mut m, "inv_link", "member", &[], 1);
+        let key = crate::proof::invite_key("inv_link");
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "redeemInvite",
+            "invite_key": &key,
+            "account": "alice",
+            "now": 10,
+            "signature": crate::proof::sign_invite_redeem("inv_link", "alice", 10),
+        }))
+        .unwrap();
+        let _ok = m.run(old).unwrap();
+        assert_eq!(m.state.invites[&key].uses_left, 1, "left for the invitee");
+    }
+
     /// An account an organization's app names (its owner, an `Accounts`
     /// list) reaches it, and receives its events, only while a member.
     #[test]
@@ -10397,6 +10886,7 @@ mod tests {
                 seq: 1,
                 granted: true,
                 refused: false,
+                pool: String::new(),
             },
         )])
     }
@@ -11028,6 +11518,44 @@ mod tests {
         let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("carol");
         let _ok = m.run(old(delete_app("oa", "carol"))).unwrap();
         assert!(!m.state.apps.contains_key("oa"));
+    }
+
+    /// From the `RequireCurrentRules` mark on, an entry's flags naming an
+    /// earlier rule are read as set, whoever proposed it: an owner who left
+    /// the organization does not change, transfer or delete its app by
+    /// leaving `owner_in_org` out. An entry before the mark, replayed after a
+    /// restart, still applies as it did.
+    #[test]
+    fn app_commands_after_the_current_rules_mark_apply_under_them() {
+        let (mut m, _alice, mut bob) = org_app_of_bob();
+        let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+        let old = |cmd: SystemCmd| {
+            let mut v = serde_json::to_value(cmd).unwrap();
+            let _flag = v.as_object_mut().unwrap().remove("owner_in_org");
+            let _flag = v.as_object_mut().unwrap().remove("owner_in_team");
+            serde_json::from_value::<SystemCmd>(v).unwrap()
+        };
+        m.index = 10;
+        let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+        assert_eq!(m.state.current_rules_from, Some(10));
+        assert!(m.run(SystemCmd::RequireCurrentRules).is_err(), "once");
+        m.index = 11;
+        assert!(m.run(old(set_app_metadata("oa", "bob"))).is_err());
+        assert!(m.run(old(set_access("oa", "bob"))).is_err());
+        assert!(m
+            .run(old(transfer_app(&mut bob, "oa", "bob", "carol")))
+            .is_err());
+        assert!(m.run(old(delete_app("oa", "bob"))).is_err());
+        assert_eq!(m.state.apps["oa"].owner, "bob");
+        assert_eq!(m.state.apps["oa"].access, Access::Owner);
+
+        // A restart from a snapshot before the mark replays what came before it.
+        m.index = 4;
+        let _ok = m.run(old(set_access("oa", "bob"))).unwrap();
+        assert_eq!(m.state.apps["oa"].access, Access::Public);
+        // State from before reads without the mark and writes as it did.
+        let before = serde_json::to_value(SystemState::default()).unwrap();
+        assert!(before.get("currentRulesFrom").is_none());
     }
 
     // ---------------------------------------------------- account recovery

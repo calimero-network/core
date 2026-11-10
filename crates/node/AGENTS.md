@@ -158,7 +158,18 @@ is its command line.
   writes (`reconcile`). An entry before it (what an earlier release logged,
   replayed on restart) applies as it did, so replicas never diverge on it
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
-  `old_datadir.rs`).
+  `old_datadir.rs`). The flags that name an earlier release's rule
+  (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
+  `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+  `member_child_teams`, `revoke_api_keys`) work the same way: from
+  `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
+  system leader on this release writes, `reconcile`), `SystemMachine::run`
+  reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
+  and an organization's upgrade run is derived at apply (Upgrade runs below);
+  before it, an entry applies as it was logged. The API keeps setting every
+  flag, so a replica on the release before applies this release's entries
+  alike. Regressions: `app_commands_after_the_current_rules_mark_apply_under_them`,
+  `team_commands_after_the_current_rules_mark_apply_under_them`.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -727,6 +738,14 @@ is its command line.
   the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
   follows it; `.../retry` runs the failed apps again as a new run. A release
   missing from the cluster is installed from the registry first (owner runs).
+  From `SystemState::current_rules_from` on, `apply` derives the run's apps
+  from the state and its consent's method (`SystemState::upgrade_run_apps`:
+  `org_run_apps`, `published_run_apps`, or a retry's failed apps), clears its
+  progress and refuses a run id any organization holds; `UpgradeApp { run }`
+  moves an app once, only while it runs the run's package and never to an
+  older release (`SystemState::run_may_move`, which `api::start_run` asks
+  first and notes as failed, `NOT_IN_RUN`). Regression:
+  `an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once`.
 - **Aliases**: `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
   and `GET /auth/aliases`; an alias names only an app its account reaches.
 - **Metadata and org lifecycle** (org/member/app metadata, device

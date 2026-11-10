@@ -2033,6 +2033,13 @@ impl Node {
             }) {
                 let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
+            // Likewise this release's rules: from here on an entry's flags
+            // naming an earlier rule are read as set (`RequireCurrentRules`).
+            if self.sys(|s| {
+                s.current_rules_from.is_none() && (s.governance.is_some() || !s.accounts.is_empty())
+            }) {
+                let _r = self.sys_write(&SystemCmd::RequireCurrentRules).await;
+            }
             self.admit_registered_nodes();
             self.promote_learners();
         }

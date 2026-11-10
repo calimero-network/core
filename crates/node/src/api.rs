@@ -4733,7 +4733,8 @@ struct OrgUpgradeBody {
     operator_proof: Option<OperatorProofBody>,
 }
 
-/// The apps an organization-wide upgrade of `package` covers.
+/// The apps an organization-wide upgrade of `package` covers, as `apply`
+/// derives them (`SystemState::org_run_apps`).
 fn run_targets(
     node: &Node,
     org: &str,
@@ -4741,34 +4742,12 @@ fn run_targets(
     team: Option<&str>,
     cascade: bool,
 ) -> Vec<crate::types::AppRecord> {
-    let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
-        let Some(o) = s.orgs.get(org) else {
-            return Vec::new();
-        };
-        let teams: Option<Vec<String>> = team.map(|t| {
-            if cascade {
-                o.subtree(t)
-            } else {
-                vec![t.to_owned()]
-            }
-        });
-        s.apps
-            .values()
-            .filter(|a| a.org.as_deref() == Some(org))
-            .filter(|a| match (&teams, &a.access) {
-                (None, _) => true,
-                (Some(ts), Access::Team { team }) => ts.contains(team),
-                (Some(_), _) => false,
-            })
-            .cloned()
+    node.sys(|s| {
+        s.org_run_apps(org, package, team, cascade)
+            .iter()
+            .filter_map(|a| s.apps.get(a).cloned())
             .collect()
-    });
-    apps.into_iter()
-        .filter(|a| {
-            node.release_of_app(a)
-                .is_some_and(|r| r.at.package == package)
-        })
-        .collect()
+    })
 }
 
 /// Where `version` of the package moves an app (same service): its bundle, that
@@ -4841,13 +4820,19 @@ async fn start_run(
         failed: std::collections::BTreeMap::new(),
         finished: false,
     };
-    let _ok = node
+    let stored = node
         .sys_write(&SystemCmd::StartUpgradeRun {
             org: org.clone(),
             run: Box::new(run.clone()),
             consent: who.consent.clone(),
         })
         .await?;
+    // The run as it applied: its apps are the state's (`SystemState::upgrade_run_apps`).
+    let run: crate::types::UpgradeRun = serde_json::from_value(stored).unwrap_or(run);
+    let apps: Vec<crate::types::AppRecord> = apps
+        .into_iter()
+        .filter(|a| run.apps.contains(&a.app_id))
+        .collect();
     let who = Upgrader {
         run: Some(run_id.clone()),
         ..who
@@ -4856,6 +4841,18 @@ async fn start_run(
     let migrate = body.migrate.clone();
     let _task = tokio::spawn(async move {
         for app in apps {
+            // Judged as `UpgradeApp { run }` judges it, before anything runs
+            // on the app's group: an app on another package or a newer
+            // release is noted as failed.
+            let refused = node.sys(|s| {
+                let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
+                s.run_may_move(r, s.apps.get(&app.app_id)?).err()
+            });
+            if let Some(why) = refused {
+                let error = json!({ "code": "NOT_IN_RUN", "message": why });
+                note_failed_upgrade(&node, &app.app_id, "", None, &who, error).await;
+                continue;
+            }
             match target_bundle(&node, &app, &version, &who) {
                 Some(t) if t.bundle == app.bundle => {
                     // Same app component: nothing to run on the app's group,
@@ -5026,16 +5023,9 @@ async fn publisher_upgrade(
     )
     .await?;
     let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
-        s.apps
-            .values()
-            .filter(|a| {
-                s.bundles
-                    .get(&a.bundle)
-                    .and_then(|b| b.package.as_ref())
-                    .is_some_and(|at| at.package == package)
-                    && s.may_upgrade(a, &account)
-            })
-            .cloned()
+        s.published_run_apps(&package, &account)
+            .iter()
+            .filter_map(|a| s.apps.get(a).cloned())
             .collect()
     });
     let who = Upgrader {
