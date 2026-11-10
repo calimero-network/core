@@ -499,12 +499,13 @@ pub fn find(
             ));
         }
     }
+    let snapshot_id = snapshot_id.to_owned();
     Ok(Found {
         path,
         name,
         index,
         group,
-        snapshot_id: snapshot_id.to_owned(),
+        snapshot_id,
         sha256,
         manifest,
     })
