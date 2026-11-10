@@ -214,7 +214,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities?, confirm? }`. `412` first | `group members add` |
 | `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
 | `GET /orgs/{org}/app-teams` | signed in (a member) | `{ mode, appTeams }`: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own) | |
-| `POST /orgs/{org}/app-teams` | session | `{ apps?: [{ package, name?, instances?, join?, keep? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`. `412` first | |
+| `POST /orgs/{org}/app-teams` | session | `{ apps?: [{ package, name?, instances?, join?, keep?, childTeams? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`; `childTeams` lets that team's members make private channels below it (`CREATE_CHILD_TEAM`), or no longer. `412` first | |
 | `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
 | `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |

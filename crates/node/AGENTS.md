@@ -1048,7 +1048,12 @@ is its command line.
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
-  default (standalone teams it makes default to `INVITE_MEMBERS`); bounded by
+  default (standalone teams it makes default to `INVITE_MEMBERS`); a package's
+  `childTeams` (`ScopeApp::child_teams`) adds `CREATE_CHILD_TEAM` to (or takes
+  it from) its app team's default and the rows that set their own
+  capabilities, the only way an app team made before that default gets it
+  (regressions: `an_admin_lets_an_app_teams_members_make_channels`,
+  `system::tests::an_older_app_team_gets_child_teams_when_an_admin_turns_them_on`); bounded by
   `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
   `GET /orgs/{org}/app-teams` (any member; a guest only theirs). `GET
   /orgs/{org}` filters members, capabilities, member metadata and team rows by

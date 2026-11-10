@@ -204,7 +204,7 @@ derived from its app teams, never stored, and answered as `mode` on
 | `standalone` | Every app team open | Everyone in the organization has every app; members may invite to the app (the team's default `INVITE_MEMBERS`) |
 | `shared` | Some app team restricted | Each app lists its people; invites name the app team; only leads and admins invite unless an admin turns on the team's default |
 
-`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances?, join?, keep? }], shared? }`
+`POST /orgs/{org}/app-teams { apps?: [{ package, name?, instances?, join?, keep?, childTeams? }], shared? }`
 (an owner or admin, with a passkey: `__scope_apps { apps, shared }`,
 `SystemCmd::ScopeApps`) gives apps their own access lists in one log entry.
 For each package (absent: every package with an `org`-access instance in the
@@ -215,8 +215,16 @@ team` on it. `shared` (absent: whether the organization then holds two app
 teams or more) closes every app team, everyone it held kept as a direct row,
 and takes `INVITE_MEMBERS` out of its default. Nobody loses an app. A new
 app team's default holds `CREATE_CHILD_TEAM` in either mode (`INVITE_MEMBERS`
-too while standalone), so its members make private channels below it; app
-teams made before keep the default they had until an admin sets it.
+too while standalone), so its members make private channels below it. App
+teams made before keep the default they had (nothing changes on replay or as a
+side effect) until an admin turns it on: a package's `childTeams: true` adds
+`CREATE_CHILD_TEAM` to its app team's default and to every row there that sets
+its own capabilities (a row added one by one keeps what it got then), and
+`childTeams: false` takes it out of both. With `instances: []` the step moves
+no instance, and naming `childTeams` (as naming `join`) leaves `shared`,
+absent, meaning "no other team", so `POST /orgs/{org}/app-teams { apps:
+[{ package, instances: [], childTeams: true }, ...] }` turns it on for every
+app team named, with one passkey, and changes nothing else.
 
 To keep one app apart and leave the others as they are, a package names its
 own `join` in the same request: `invite` closes that app team alone, in the

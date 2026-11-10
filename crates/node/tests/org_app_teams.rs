@@ -1145,3 +1145,59 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
         .unwrap();
     assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
 }
+
+/// An app team whose default lacks `CREATE_CHILD_TEAM` (one made before it
+/// was the default, or one an admin turned it off for) gets it back when an
+/// admin names `childTeams: true` for its package, in one step that changes
+/// nothing else: its members then make private channels below it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_lets_an_app_teams_members_make_channels() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    for p in [CHAT, BLOCKS] {
+        let _app = instance(&alice, &org, p, Value::Null).await.unwrap();
+    }
+    let _done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
+    // Chat's default without it, as an app team made before it had.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let teams = format!("orgs/{org}/teams");
+    let channel = json!({ "name": "design", "join": "invite", "parent": chat_team });
+    refused(
+        &bob.post(&teams, channel.clone()).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+    // Only an admin turns it on.
+    let on = json!({ "apps": [{ "package": CHAT, "instances": [], "childTeams": true }] });
+    let _err = scope(&bob, &mut b, &org, on.clone()).await.unwrap_err();
+
+    let done = scope(&alice, &mut a, &org, on).await.unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let t = app_team(&alice, &org, CHAT).await;
+    assert_eq!(
+        t["defaultCapabilities"],
+        INVITE_MEMBERS | CREATE_CHILD_TEAM,
+        "{t}"
+    );
+    assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
+    let _private = s(&bob.post(&teams, channel).await.unwrap()["teamId"]);
+}
