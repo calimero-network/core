@@ -141,6 +141,23 @@ pub fn run_cost(fuel: u64, memory_mib: u32, wall_secs: u32, t: &PriceTable) -> u
     (vcpu_secs * u128::from(t.vcpu_second)).saturating_add(gib_secs * u128::from(t.gib_second))
 }
 
+/// What a run actually used, priced: the larger of its fuel's and its CPU time's vCPU-seconds
+/// plus its GiB-seconds, each rounded up, and never above `run_cost` of its caps.
+pub fn priced_cost(
+    fuel: u64,
+    gib_micros: u64,
+    cpu_micros: u64,
+    caps: Caps,
+    t: &PriceTable,
+) -> u128 {
+    let by_fuel = u128::from(fuel).div_ceil(u128::from(t.fuel_per_vcpu_second.max(1)));
+    let by_cpu = u128::from(cpu_micros).div_ceil(1_000_000);
+    let gib_secs = u128::from(gib_micros).div_ceil(1_000_000);
+    let used = (by_fuel.max(by_cpu) * u128::from(t.vcpu_second))
+        .saturating_add(gib_secs * u128::from(t.gib_second));
+    used.min(run_cost(caps.fuel, caps.memory_mib, caps.wall_secs, t))
+}
+
 /// Most the pipeline can cost: each step's run cost at its limits (or the method's caps) times
 /// its maximum runs. A step whose module or method is unknown adds nothing.
 pub fn worst_case_cost(p: &Pipeline, env: &Env, t: &PriceTable) -> u128 {

@@ -292,6 +292,17 @@ The view shows `cached` per step (every run of it was a hit) and `cachedItems`, 
 An entry holds its outputs for at most 7 days after it was written or last used and the app keeps at most 4096; the oldest go first, judged by the timestamps of the applied entries, and the outputs then follow normal file retention.
 A start that names a file id the app does not hold answers `410 OUTPUT_EXPIRED`, which cannot tell a file that expired from one that never existed.
 
+### Cost cap
+
+`maxCost` (a decimal string of micro-units) on a start caps what the run may owe.
+It needs the operator's price table (`409 NO_PRICE_TABLE` without one) and is priced by it: the node copies the table onto the run, with the pipeline's `worstCase` under it, which the start answers, so apply never reads system state.
+The cap stops admission and does not refuse the plan: a run whose `worstCase` is above `maxCost` still starts.
+Before every `start` or `more` decision the leader counts what the run may owe: the priced usage of its finished runs (never above `runCost` of their caps) plus the worst case of every active run, and starts only the runs that fit.
+When the next run does not fit, the step is failed with `COST_CAP`: the runs already going finish and are paid for, no more start, dependents are `upstreamFailed` and the run ends `failed`.
+Apply judges the same sum again from the record alone and refuses a decision that would pass the cap.
+Cached runs cost nothing.
+The view shows `cost` (`maxCost`, `priceVersion`, `table`, `worstCase`), `costSoFar` and each step's `cost`.
+
 ## Usage and billing
 
 The job node measures CPU seconds, peak memory times wall time (GiB-seconds) and fuel used, and signs them in its report.

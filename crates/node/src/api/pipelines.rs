@@ -9,13 +9,13 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use calimero_pipeline::{InputKind, Param, ParamType, Pipeline};
+use calimero_pipeline::{worst_case_cost, Env, InputKind, Param, ParamType, Pipeline};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{gate, may_handle_files, read_only_in, typed_id, ApiResult};
 use crate::app::Status;
-use crate::component::{PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS};
+use crate::component::{CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS};
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
 use crate::types::Executor;
@@ -29,6 +29,10 @@ const BAD_INPUTS: &str = "BAD_INPUTS";
 const OUTPUT_EXPIRED: &str = "OUTPUT_EXPIRED";
 const BAD_PARAMS: &str = "BAD_PARAMS";
 const ONE_SERVICE: &str = "PIPELINES_NEED_ONE_SERVICE";
+const NO_PRICE_TABLE: &str = "NO_PRICE_TABLE";
+const BAD_MAX_COST: &str = "BAD_MAX_COST";
+/// The module name pipelines of a package see its own compute methods under.
+const SELF_MODULE: &str = "self";
 
 /// An input that is a file id the app does not hold: a file is forgotten once nothing refers to
 /// it, so this cannot tell one that was never there from one that expired.
@@ -47,6 +51,44 @@ pub(super) struct StartBody {
     inputs: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     params: BTreeMap<String, Value>,
+    /// Micro-units, a decimal string: the run starts no step run that could take it past this.
+    #[serde(default)]
+    max_cost: Option<String>,
+}
+
+/// The cost cap of a start: the operator's price table read fresh, the pipeline's worst case
+/// under it, and the cap. A cap with no table is refused.
+async fn cost_cap(
+    node: &Node,
+    pipeline: &Pipeline,
+    compute_bundle: &str,
+    max_cost: Option<&str>,
+) -> Result<Option<CostCap>, ApiError> {
+    let Some(max) = max_cost else { return Ok(None) };
+    let max_cost = max.parse::<u64>().map_err(|_| {
+        ApiError::bad_request(BAD_MAX_COST, "maxCost is a whole number of micro-units")
+    })?;
+    let _caught_up = node.sys_fresh().await;
+    let Some(table) = node.sys(|s| s.price_table) else {
+        return Err(ApiError::new(
+            409,
+            NO_PRICE_TABLE,
+            "the operator has not set a price table, so a cost cap cannot be priced",
+        ));
+    };
+    let methods = node.caps_of_component(compute_bundle).await?;
+    let env = Env {
+        default_module: Some(SELF_MODULE.to_owned()),
+        modules: BTreeMap::from([(SELF_MODULE.to_owned(), (*methods).clone())]),
+        pools: BTreeMap::new(),
+    };
+    let worst = worst_case_cost(pipeline, &env, &table);
+    Ok(Some(CostCap {
+        max_cost,
+        price_version: table.version,
+        table,
+        worst_case: u64::try_from(worst).unwrap_or(u64::MAX),
+    }))
 }
 
 /// The bound inputs of a start, each within its declaration; an input left unbound must have a
@@ -190,6 +232,7 @@ pub(super) async fn start(
             return Err(expired());
         }
     }
+    let cost = cost_cap(&node, &pipeline, &compute_bundle, body.max_cost.as_deref()).await?;
     let run = typed_id::<12>();
     let entry = PipelineStartEntry {
         id: run.clone(),
@@ -204,13 +247,20 @@ pub(super) async fn start(
         caller: p.caller.clone(),
         payer: crate::usage::payer(&app),
         fail_fast: pipeline.fail_fast,
+        cost,
         ts_ms: 0,
     };
     let a = node
         .start_pipeline_run(&app, entry, p.caller, p.sys_index)
         .await?;
     match (a.status, a.error.as_str()) {
-        (Status::Ok, _) => Ok((StatusCode::ACCEPTED, Json(json!({ "run": run })))),
+        (Status::Ok, _) => {
+            let mut answer = json!({ "run": run });
+            if let Some(cap) = cost {
+                answer["worstCase"] = json!(cap.worst_case.to_string());
+            }
+            Ok((StatusCode::ACCEPTED, Json(answer)))
+        }
         (_, Some(TOO_MANY_PIPELINE_RUNS)) => Err(ApiError::new(
             429,
             TOO_MANY_PIPELINE_RUNS,

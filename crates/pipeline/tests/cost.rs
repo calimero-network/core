@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use calimero_pipeline::{compile, run_cost, worst_case_cost, Caps, Env, PriceTable};
+use calimero_pipeline::{compile, priced_cost, run_cost, worst_case_cost, Caps, Env, PriceTable};
 
 const TABLE: PriceTable = PriceTable {
     version: 1,
@@ -134,4 +134,17 @@ fn the_table_is_camel_case_json_and_refuses_unknown_fields() {
     let mut extra = j;
     extra["surcharge"] = 1.into();
     assert!(serde_json::from_value::<PriceTable>(extra).is_err());
+}
+
+#[test]
+fn priced_cost_rounds_up_and_never_passes_the_caps() {
+    let c = caps(2_000_000_000, 1024, 60);
+    // fuel 1 -> 1 vCPU-second (100); 1 GiB-microsecond -> 1 GiB-second (10)
+    assert_eq!(priced_cost(1, 1, 0, c, &TABLE), 110);
+    assert_eq!(priced_cost(0, 0, 0, c, &TABLE), 0);
+    // CPU time above what the fuel says prices the CPU time: 3 s -> 300
+    assert_eq!(priced_cost(1, 0, 2_500_000, c, &TABLE), 300);
+    let bound = run_cost(c.fuel, c.memory_mib, c.wall_secs, &TABLE);
+    assert_eq!(priced_cost(u64::MAX, u64::MAX, u64::MAX, c, &TABLE), bound);
+    assert!(priced_cost(c.fuel, 60_000_000, 60_000_000, c, &TABLE) <= bound);
 }

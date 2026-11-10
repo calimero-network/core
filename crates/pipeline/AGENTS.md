@@ -24,6 +24,7 @@ cargo test -p calimero-pipeline
 | `check()` | fn | Apply-time checks of modules, methods, limits and pools against an `Env` |
 | `worst_case_fuel()` | fn | Sum over steps of fuel cap times maximum runs |
 | `worst_case_cost()`, `run_cost()` | fn | Upper bound of a pipeline, or of one run, priced by a `PriceTable` (u128, rounded up) |
+| `priced_cost()` | fn | What a run used (fuel, GiB-microseconds, CPU microseconds), priced and never above `run_cost` of its caps |
 | `PriceTable` | struct | The operator's prices; `validate()` refuses a zero fuel rate (`BAD_PRICES`) |
 | `SpecError` | struct | `path`, `code`, `message`; codes are stable identifiers |
 

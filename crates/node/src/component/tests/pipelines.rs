@@ -6,8 +6,8 @@ use ed25519_dalek::SigningKey;
 use super::runs::{job_key, leader, out, report, why, World, DIGEST, INPUT};
 use super::*;
 use crate::component::pipelines::{
-    BAD_START, CACHE_GONE, CANCELLING, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT, NOT_NEXT,
-    NOT_RUNNING, STEP_STOPPING, TOO_MANY_FAILURES,
+    BAD_START, CACHE_GONE, CANCELLING, COST_CAP, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT,
+    NOT_NEXT, NOT_RUNNING, STEP_STOPPING, TOO_MANY_FAILURES,
 };
 use crate::job_wire::{sign_report, FailReason, ReportStatus};
 
@@ -33,6 +33,7 @@ fn start_entry(id: &str, steps: &[&str]) -> PipelineStartEntry {
         },
         payer: "account:alice".into(),
         fail_fast: false,
+        cost: None,
         ts_ms: 5,
     }
 }
@@ -1057,4 +1058,131 @@ fn two_replicas_fed_the_same_entries_expire_the_same_entries() {
         a.r.machine.state.component.head,
         b.r.machine.state.component.head
     );
+}
+
+/// A table whose run at `step_run`'s caps costs 55 at worst: 5 vCPU-seconds at 10 and 1 GiB-second at 5.
+const TABLE: calimero_pipeline::PriceTable = calimero_pipeline::PriceTable {
+    version: 1,
+    fuel_per_vcpu_second: 1,
+    vcpu_second: 10,
+    gib_second: 5,
+    connector_gib: 0,
+    storage_gib_month: 0,
+    egress_gib: 0,
+};
+const UNIT: u64 = 55;
+
+fn begin_capped(w: &mut World, id: &str, max_cost: u64) -> Applied {
+    let entry = PipelineStartEntry {
+        cost: Some(CostCap {
+            max_cost,
+            price_version: 1,
+            table: TABLE,
+            worst_case: 0,
+        }),
+        ..start_entry(id, &["a"])
+    };
+    w.push(&ComponentCmd::PipelineStart(Box::new(entry)))
+}
+
+/// A done final of `run` that burned `fuel`.
+fn run_done_burning(w: &mut World, run: &str, n: u8, fuel: u64) -> Applied {
+    let k = job_key(1);
+    let _a = w.assign(run, &k);
+    let mut entry = done_with(w, run, &k, n);
+    entry.usage.fuel = fuel;
+    if let Some(rep) = entry.report.as_mut() {
+        rep.usage.fuel = fuel;
+        entry.signature = Some(sign_report(&k, &DIGEST, rep).unwrap());
+    }
+    w.finish(entry)
+}
+
+#[test]
+fn a_start_that_would_cross_the_cost_cap_is_refused_and_changes_nothing() {
+    let mut w = World::new();
+    let _b = begin_capped(&mut w, PIPE, 2 * UNIT - 1);
+    let a = fan_start(&mut w, "a", 3, 0, 2);
+    assert_eq!(why(&a), COST_CAP);
+    assert_eq!(status(&w, PIPE, "a"), StepStatus::Pending);
+    assert!(w.r.machine.run_record("p1.a.0").is_none());
+    let a = fan_start(&mut w, "a", 3, 0, 1);
+    assert!(a.status == Status::Ok, "{a:?}");
+    assert_eq!(pipeline(&w, PIPE).committed_cost(), u128::from(UNIT));
+    assert_eq!(why(&more(&mut w, "a", 1, 2)), COST_CAP);
+    assert_eq!(pipeline(&w, PIPE).steps["a"].runs.len(), 1);
+    assert!(w.r.machine.run_record("p1.a.1").is_none());
+}
+
+#[test]
+fn a_cost_cap_counts_what_finished_runs_used_not_their_worst_case() {
+    let mut w = World::new();
+    let _b = begin_capped(&mut w, PIPE, 2 * UNIT);
+    let _s = fan_start(&mut w, "a", 3, 0, 1);
+    let _r = run_done_burning(&mut w, "p1.a.0", 1, 1);
+    let p = pipeline(&w, PIPE);
+    // 1 vCPU-second at 10 and 1 GiB-second at 5
+    assert_eq!((p.cost_so_far, p.steps["a"].cost), (15, 15));
+    assert_eq!(p.committed_cost(), 15);
+    let a = more(&mut w, "a", 1, 3);
+    assert_eq!(why(&a), COST_CAP, "15 and two worst cases pass the cap");
+    let a = more(&mut w, "a", 1, 2);
+    assert!(a.status == Status::Ok, "{a:?}");
+    assert_eq!(pipeline(&w, PIPE).committed_cost(), u128::from(15 + UNIT));
+}
+
+#[test]
+fn a_run_answered_from_the_cache_costs_nothing() {
+    let mut w = World::new();
+    make_entry(&mut w, "e", "k1", 1, 9);
+    let _b = begin_capped(&mut w, PIPE, UNIT);
+    let fan = FanOut {
+        total: 2,
+        items: 2,
+        batch: 1,
+        allowed: 0,
+    };
+    let start = StepVerdict::Start {
+        runs: vec![step_run(PIPE, "a", 0)],
+        fan,
+        cached: vec![hit(1, "k1")],
+    };
+    let a = decide(&mut w, PIPE, "a", start);
+    assert!(a.status == Status::Ok, "{a:?}");
+    let p = pipeline(&w, PIPE);
+    assert_eq!((p.cost_so_far, p.committed_cost()), (0, u128::from(UNIT)));
+}
+
+#[test]
+fn a_capped_step_lets_its_active_runs_finish_then_fails_with_the_cap() {
+    let mut w = World::new();
+    let _b = begin_capped(&mut w, PIPE, UNIT);
+    let _s = fan_start(&mut w, "a", 3, 0, 1);
+    let capped = StepVerdict::Failed {
+        reason: COST_CAP.into(),
+    };
+    let a = decide(&mut w, PIPE, "a", capped.clone());
+    assert!(a.status == Status::Ok, "{a:?}");
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(step.status, StepStatus::Running, "the active run goes on");
+    assert!(step.capped && !w.record("p1.a.0").cancel_requested);
+    assert_eq!(why(&more(&mut w, "a", 1, 2)), COST_CAP);
+    let again = decide(&mut w, PIPE, "a", capped);
+    assert!(again.status == Status::Ok, "a repeated cap is the same cap");
+    let _r = run_done_burning(&mut w, "p1.a.0", 1, 5);
+    let p = pipeline(&w, PIPE);
+    assert_eq!(p.steps["a"].status, StepStatus::Failed);
+    assert_eq!(p.steps["a"].reason.as_deref(), Some(COST_CAP));
+    assert_eq!(p.state, PipelineState::Failed);
+    assert!(p.cost_so_far <= UNIT);
+}
+
+#[test]
+fn a_run_without_a_cost_cap_records_no_cost() {
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a"]);
+    let _s = start_step(&mut w, PIPE, "a");
+    let _r = run_done(&mut w, "p1.a.0", 1);
+    let p = pipeline(&w, PIPE);
+    assert!(p.cost.is_none() && p.cost_so_far == 0 && p.steps["a"].cost == 0);
 }

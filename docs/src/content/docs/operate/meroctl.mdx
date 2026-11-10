@@ -102,7 +102,7 @@ same command (`meroctl package origins list PACKAGE`).
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel` and the canonical `pipeline`. |
-| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. |
+| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
 | `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
 | `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
 | `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |

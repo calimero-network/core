@@ -26,11 +26,14 @@ pub enum PipelineCmd {
         /// Give a param: `NAME=VALUE` (a number or boolean as such, else text); once per param.
         #[arg(long = "param", value_name = "NAME=VALUE")]
         params: Vec<String>,
+        /// Start no step run that could take the run past this many micro-units.
+        #[arg(long, value_name = "MICRO_UNITS")]
+        max_cost: Option<String>,
         /// Wait until the run is no longer running and print it.
         #[arg(long)]
         wait: bool,
     },
-    /// One run: its state and each step's status, runs, outputs, reason and what the step cache answered.
+    /// One run: its state and each step's status, runs, outputs, reason, cost and what the step cache answered.
     Get { app: String, run: String },
     /// Cancel a run: its pending steps end cancelled and its running steps' runs stop.
     Cancel { app: String, run: String },
@@ -73,6 +76,15 @@ pub fn parse_params(args: &[String]) -> eyre::Result<Value> {
     Ok(Value::Object(params))
 }
 
+/// The body of a start: the inputs, the params and the cost cap when one is given.
+fn start_body(inputs: &[String], params: &[String], max_cost: Option<&str>) -> eyre::Result<Value> {
+    let mut body = json!({ "inputs": parse_inputs(inputs)?, "params": parse_params(params)? });
+    if let Some(max) = max_cost {
+        body["maxCost"] = json!(max);
+    }
+    Ok(body)
+}
+
 pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
     Ok(match cmd {
         PipelineCmd::Run {
@@ -80,12 +92,14 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
             name,
             inputs,
             params,
+            max_cost,
             wait,
         } => {
             let app = env.app(&app).await?;
+            let body = start_body(&inputs, &params, max_cost.as_deref())?;
             let started = env
                 .client
-                .start_pipeline_run(&app, &name, parse_inputs(&inputs)?, parse_params(&params)?)
+                .start_pipeline_run_with(&app, &name, body)
                 .await?;
             if !wait {
                 return Ok(started);
@@ -127,6 +141,14 @@ mod tests {
         assert_eq!(v, json!({ "docs": ["a", "b", "c"], "model": ["m"] }));
         assert!(parse_inputs(&strings(&["docs"])).is_err());
         assert!(parse_inputs(&strings(&["=a"])).is_err());
+    }
+
+    #[test]
+    fn a_cost_cap_is_sent_as_the_decimal_text_given() {
+        let body = start_body(&strings(&["docs=a"]), &[], Some("5000")).unwrap();
+        assert_eq!(body["maxCost"], json!("5000"));
+        assert_eq!(body["inputs"], json!({ "docs": ["a"] }));
+        assert!(start_body(&[], &[], None).unwrap().get("maxCost").is_none());
     }
 
     #[test]
