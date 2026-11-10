@@ -2,25 +2,108 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.14] - 2026-11-10
+
+### Added
+
+- **App teams: per-app access inside one organization** (#4890): an invite
+  into one app no longer lets the person into every other app of the
+  organization. Each app installed in an organization can get an **app team**,
+  a top-level team whose `metadata.app.package` names the package (one per
+  package per organization), and its instances use `Access::Team` on it. The
+  organization's mode is derived, never stored: `legacy` (no app team),
+  `standalone` (every app team open) or `shared` (some app team closed).
+  `POST /orgs/{org}/app-teams` (admins, passkey `__scope_apps`) scopes the
+  organization's apps in one log entry: it finds or makes each package's app
+  team, gives a row to everyone who reaches its instances now, and moves them
+  to `Access::Team`; with `shared` it closes every app team and drops
+  `INVITE_MEMBERS` from their default. `GET /orgs/{org}/app-teams` lists the
+  app teams and the mode. Only owners and admins mark, change or drop app
+  teams, or create the first instance of a package with no app team in an
+  organization that has app teams. Once an organization has app teams its
+  guests are app-only; a legacy organization's guests reach its `org`-access
+  apps as before. All routes are additive; mero-js 29.8.0 wraps them
+  (`listAppTeams`, `scopeApps`, `listInvites`, `revokeInvite`,
+  `setTeamDefaultCapabilities`). Invites and teams written before read and
+  write as before.
+- **Invites are listed and revoked** (#4890): `GET /orgs/{org}/invites` and
+  `DELETE /orgs/{org}/invites/{key}` (passkey `__revoke_invite`). An admin sees
+  every invite, its creator their own, and a team's manager the invites that
+  name only teams they manage; a token is never listed. `Invite` gains
+  `createdBy` and `createdAt`.
+- **Team default capabilities** (#4890): a team's `defaultCapabilities` are
+  held by everyone in it on top of their organization capabilities, unless
+  their row sets its own. Set with `POST /orgs/{org}/capabilities { team,
+  capabilities }` (passkey `__set_default_capabilities { team, capabilities
+  }`). App teams made by scoping in standalone mode default to
+  `INVITE_MEMBERS`, so members may invite to their app.
+- **Run usage per app** (#4753): every `componentInit`, `componentCall` and
+  `componentTick` outcome in the log carries `usage { fuel, wallMs, writes,
+  bytesWritten, events }`, and each replica keeps the app's usage book per UTC
+  day, carried by snapshots. `GET /apps/{app}/usage` (the app's owner and its
+  organization's admins) answers today and the 30 days before it;
+  `GET /orgs/{org}/usage` (admins and owner) gives the same for the apps an
+  organization is the developer of; `GET /auth/usage` gains
+  `developerFuelToday` and `developerWritesToday`. Every figure is a decimal
+  string. A timed-out run, views, action runs and compute runs are not counted
+  here. An entry or head written before reads as zero usage, and an rc.13
+  replica ignores the new field. The usage routes have no client methods yet
+  (#4795).
+- **A daily fuel cap per developer** (#4753): the quota
+  `maxFuelPerDeveloperPerDay` (a decimal string, default `"0"`, no limit)
+  follows the developer the app's usage is billed to, so two customers'
+  instances of one deployment share one cap. Over it, a client call or an
+  xcall into any of the developer's apps is refused before it runs with
+  `429 QUOTA_EXCEEDED`, without spending its idempotency key; `init`, timers,
+  event handlers and an action's own calls still run and count. The cap is
+  approximate by one 5 s refresh and fails open for an app no peer has
+  reported. A non-zero cap is written only once every registered node runs
+  this release or newer; until then `POST /ops/quotas` answers
+  `409 UPGRADE_PENDING`, a general code for release gates. After setting the
+  cap, do not add nodes older than `1.0.0-rc.12` (#4809).
+
+### Changed
+
+- **Who may change an app's access** (#4890): `POST /apps/{app}/access` is no
+  longer the owner's alone; anyone holding `MANAGE_APPLICATION` where the app
+  is and where it goes may change it (owners, admins, a team's leads, members
+  granted it). Moving it to non-team access needs the capability
+  organization-wide.
+- **`GET /orgs/{org}` shows only the members the caller sees** (#4890): admins
+  see everyone; members see everyone unless the organization is `shared`, then
+  the people of their teams plus admins; guests only their teams' people.
+  Members, capabilities, member metadata and team rows are filtered alike.
+- **App errors and events name every field (D63)** (#4753): `#[app::error]` and
+  `#[app::event]` refuse a tuple variant, or a tuple struct in place of the
+  enum, with a compile error naming D63; unit variants are still allowed. The
+  positional `"0"`, `"1"` JSON keys are gone. **Apps must** rewrite a variant
+  like `Invalid(String)` as `Invalid { reason: String }`.
+- **`/auth/usage`'s `bundleBytes` is a decimal string** (#4753). **BREAKING**
+  for a client that reads it as a number; none was found in core, mero-js,
+  calimero-client-py or merobox.
+- **A read-only team member's call is refused before it runs** (#4753): `403`
+  for anything but a view, so no run burns the developer's fuel uncounted.
+
 ### Security
 
-- **Leaving an organization ends access to all of its apps.** An organization's
-  app is reached only by the organization's current members: an account an
-  `accounts` rule lists (a private channel, a DM) or the app's owner, once
-  removed from the organization or gone of their own accord, reaches it no more
-  and receives none of its events. **Behaviour change**: an app that relied on
-  an `accounts` list to keep an ex-member in loses them; add them back to the
-  organization (as a guest, say) to restore it.
-- **Removing someone from a team removes them from the teams below it**: their
-  direct rows in a restricted child team (a private channel under an app's
-  team) no longer keep them in.
-- **An invite names only teams the inviter sees**: below admin, an
+- **Leaving an organization ends access to all of its apps** (#4891). An
+  organization's app is reached only by the organization's current members:
+  an account an `accounts` rule lists (a private channel, a DM) or the app's
+  owner, once removed from the organization or gone of their own accord,
+  reaches it no more and receives none of its events. **Behaviour change**:
+  an app that relied on an `accounts` list to keep an ex-member in loses them;
+  add them back to the organization (as a guest, say) to restore it.
+- **Removing someone from a team removes them from the teams below it**
+  (#4891): their direct rows in a restricted child team (a private channel
+  under an app's team) no longer keep them in.
+- **An invite names only teams the inviter sees** (#4891): below admin, an
   organization-wide `INVITE_MEMBERS` no longer mints invites into a restricted
   team the inviter is not in.
-- **Deleting a team that holds apps takes a passkey**: `DELETE
+- **Deleting a team that holds apps takes a passkey** (#4891): `DELETE
   /orgs/{org}/teams/{team}` answers `412 CONFIRM_REQUIRED` with the `apps`
   that go, and the consent names exactly those; an empty team is deleted as
-  before. `meroctl group delete` takes `--dev-passkey`.
+  before. `meroctl group delete` takes `--dev-passkey`, and mero-js 29.8.1's
+  `deleteTeam` takes a passkey.
 
 ## [1.0.0-rc.13] - 2026-11-10
 
