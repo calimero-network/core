@@ -109,20 +109,14 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// Write a file only its owner can read (sessions and passkeys are credentials).
+/// Write a file only its owner can read (sessions and passkeys are credentials),
+/// whatever mode an existing one had.
 pub fn write_private(path: &Path, contents: &str) -> eyre::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut options = std::fs::OpenOptions::new();
-    let _ = options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let _ = options.mode(0o600);
-    }
-    std::io::Write::write_all(&mut options.open(path)?, contents.as_bytes())?;
-    Ok(())
+    calimero_utils_fs::replace_owner_only(path, contents.as_bytes())
+        .wrap_err_with(|| format!("writing {}", path.display()))
 }
 
 pub fn now() -> u64 {
@@ -257,4 +251,28 @@ impl Env {
 /// Keep a development passkey after use: its counter moved.
 pub fn save_passkey(file: &Path, pk: &SoftAuthenticator) -> eyre::Result<()> {
     write_private(file, &pk.to_json())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file that already exists with a wider mode (an older meroctl's, or
+    /// one the user made) is narrowed too: it holds a session.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_file_is_rewritten_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private(&path, "{\"a\":1}").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"a\":1}");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }

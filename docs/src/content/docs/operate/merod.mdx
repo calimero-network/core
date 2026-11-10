@@ -128,8 +128,8 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--kms-disk-evidence FILE` | `MEROD_KMS_DISK_EVIDENCE` | none | The record `kms disk-key --evidence-out` wrote of the KMS that released the data disk's key. Read from tmpfs or ramfs only, and reported (bound into the quote) beside the storage key's at `GET /attestation?purpose=kms`. A file that cannot be read is logged and not reported; the node still starts. |
 | `--rp-id ID` | `MEROD_RP_ID` | `localhost` | The WebAuthn relying-party id passkeys are bound to. It must be a registrable suffix of every host that runs a passkey ceremony: each `--origins` host and `--apps-domain` must equal it or be a subdomain of it (`calimero.network` covers `console.calimero.network` and `{label}.apps.calimero.network`, not `evil-calimero.network`), or the browser fails every sign-in there with a `SecurityError`. The node refuses to start otherwise, naming the flag and host; origins on an IP address are exempt (CORS only). |
 | `--origins URL,...` | `MEROD_ORIGINS` | `http://localhost:3000` | Origins allowed to run passkey ceremonies and to call the API from a browser (CORS). |
-| `--ops-token TOKEN` | `MEROD_OPS_TOKEN` | none | The Ops API bearer token. Without it or `--ops-token-sha256` the Ops API answers `403`. |
-| `--ops-token-sha256 HEX` | `MEROD_OPS_TOKEN_SHA256` | none | The ops token's hex SHA-256 instead of the token, so the machine's configuration holds nothing usable. Conflicts with `--ops-token`. |
+| `--ops-token TOKEN` | `MEROD_OPS_TOKEN` | none | The Ops API bearer token. Without it or `--ops-token-sha256` the Ops API answers `403`. An empty token is refused at startup. |
+| `--ops-token-sha256 HEX` | `MEROD_OPS_TOKEN_SHA256` | none | The ops token's hex SHA-256 instead of the token, so the machine's configuration holds nothing usable: 64 hex digits, not the hash of an empty token. Conflicts with `--ops-token`. |
 | `--operator-key HEX` | `MEROD_OPERATOR_KEY` | none | The operator's Ed25519 verify key (32 bytes, hex). Recorded at genesis; every operator decision governance gives the operator must be signed with it ([Operator](/protocol/operator/#the-credential)). Without one, such decisions are refused. |
 | `--metrics-listen ADDR` | `MEROD_METRICS_LISTEN` | off | A plain-HTTP `host:port` serving only `GET /metrics` (the `/ops/metrics` text) for a Prometheus scraper; no credential, so bind it to a private address. |
 | `--replicas N` | `MEROD_REPLICAS` | `3` | How many nodes hold each new app. |
@@ -139,7 +139,7 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--peer-profiles NAME,...` | `MEROD_PEER_PROFILES` | `--tee-profile` | Profiles a peer's quote may match. |
 | `--peer-min-release VERSION` | `MEROD_PEER_MIN_RELEASE` | client floor (`2.3.109`) | The oldest mero-tee release a peer may run. |
 | `--registry-url URL` | `MEROD_REGISTRY_URL` | none | The package registry nodes fetch signed releases from. Without it, `PACKAGE@VERSION` installs answer `NO_REGISTRY`. |
-| `--allow-unsigned-bundles [BOOL]` | `MEROD_ALLOW_UNSIGNED_BUNDLES` | `false` (on with `--dev`) | Accept raw WASM uploads (`POST /bundles`), which carry no publisher signature. |
+| `--allow-unsigned-bundles [BOOL]` | `MEROD_ALLOW_UNSIGNED_BUNDLES` | `false` (on with `--dev`) | Accept raw WASM uploads (`POST /bundles`), which carry no publisher signature, and releases signed by `mero-sign --dev`'s public key. |
 | `--release-approvals owner\|operator` | `MEROD_RELEASE_APPROVALS` | `owner` | Who approves the mero-tee releases that may hold apps' data. |
 | `--app-upgrades owner\|operator` | `MEROD_APP_UPGRADES` | `owner` | Who upgrades apps to another bundle. |
 | `--outbound-approvals owner\|operator` | `MEROD_OUTBOUND_APPROVALS` | `owner` | Who approves the URL prefixes apps may call out to. |

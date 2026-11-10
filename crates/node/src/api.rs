@@ -7723,9 +7723,10 @@ async fn app_usage(
 async fn internal_usage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let _caller = peer(&node, &headers, key).await?;
     let app_id = body["app"].as_str().unwrap_or_default();
     let g = node
         .sys(|s| s.apps.get(app_id).cloned())
@@ -7740,9 +7741,10 @@ async fn internal_usage(
 async fn internal_usage_today(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let _caller = peer(&node, &headers, key).await?;
     let day = body["day"]
         .as_u64()
         .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "day is a number"))?;
@@ -8034,6 +8036,9 @@ fn operator(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
         ),
         (None, None) => return Err(ApiError::forbidden("the Ops API is disabled on this node")),
     };
+    // No header and an empty bearer are the same nothing: never a credential,
+    // whatever the node was configured with.
+    let ok = ok && !given.is_empty();
     if ok {
         Ok(())
     } else {

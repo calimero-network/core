@@ -239,6 +239,18 @@ impl Node {
         let manifest = bundle.manifest();
         let package = manifest.package.clone();
         let signer_id = bundle.signer_id().to_owned();
+        // The dev key's seed is public: its signature proves no publisher, so
+        // only a node that takes unsigned bundles takes a release it signed.
+        if signer_id == calimero_bundle::DEV_SIGNER_ID && !self.config.allow_unsigned_bundles {
+            return Err(ApiError::new(
+                403,
+                "DEV_SIGNED_PACKAGE",
+                &format!(
+                    "{package} is signed with the public development key (mero-sign --dev); \
+                     this node takes it only with --dev or --allow-unsigned-bundles"
+                ),
+            ));
+        }
         if let Some(pinned) = self.sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone())) {
             if pinned != signer_id {
                 return Err(ApiError::forbidden(&format!(

@@ -366,6 +366,12 @@ mod tests {
         assert_eq!(s, r#"{"a":2,"b":1}"#);
     }
 
+    /// The node refuses the dev key by this constant, so it must name this seed's key.
+    #[test]
+    fn dev_signer_id_is_the_one_nodes_refuse() {
+        assert_eq!(dev_signer_id(), calimero_bundle::DEV_SIGNER_ID);
+    }
+
     #[test]
     fn dev_sign_round_trip() {
         let dir = tempfile::tempdir().unwrap();

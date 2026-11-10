@@ -30,6 +30,7 @@ calimero-identity.workspace = true
 calimero-kms-client.workspace = true
 calimero-log.workspace = true
 calimero-outbound.workspace = true
+calimero-utils-fs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1213,6 +1213,34 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
 
+/// `mero-sign --dev`'s key has a public seed, so a release it signed proves
+/// nothing about its publisher: only a development node takes one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_dev_signed_package_is_refused_outside_development() {
+    let dev = ed25519_dalek::SigningKey::from_bytes(&calimero_identity::sha256(
+        b"calimero-dev-signing-key-v1",
+    ));
+    let kv = kv_wasm();
+
+    let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let e = alice
+        .upload_package(mpk("com.test.dev", "0.1.0", &kv, &dev))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("DEV_SIGNED_PACKAGE"), "{e}");
+    assert_eq!(alice.packages().await.unwrap(), json!([]));
+    drop(c);
+
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let installed = alice
+        .upload_package(mpk("com.test.dev", "0.1.0", &kv, &dev))
+        .await
+        .unwrap();
+    assert_eq!(installed["signerId"], json!(calimero_bundle::DEV_SIGNER_ID));
+}
+
 /// The names of the packages `cl` lists, with the versions it sees of each.
 async fn listed(cl: &Client) -> BTreeMap<String, Vec<String>> {
     cl.packages()
@@ -3696,6 +3724,27 @@ async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
         alice.get_text("ops/metrics").await.is_err(),
         "operators only"
     );
+}
+
+/// An empty ops token, or the hash of one, is never a credential: a request
+/// with no `Authorization` header would carry exactly that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_empty_ops_token_opens_nothing() {
+    use sha2::Digest;
+    let empty_hash = hex::encode(sha2::Sha256::digest(b""));
+    for (token, hash) in [(Some(String::new()), None), (None, Some(empty_hash))] {
+        let c = Cluster::start_with(3, |cfg| {
+            cfg.ops_token = token.clone();
+            cfg.ops_token_sha256 = hash.clone();
+        })
+        .await;
+        let anyone = c.client(0);
+        let e = anyone.get("ops/status").await.unwrap_err();
+        assert!(e.to_string().starts_with("403"), "{e}");
+        anyone.use_api_key("").await;
+        let e = anyone.get("ops/status").await.unwrap_err();
+        assert!(e.to_string().starts_with("403"), "{e}");
+    }
 }
 
 /// `--metrics-listen`: the same counts as `/ops/metrics`, in plain HTTP on an
