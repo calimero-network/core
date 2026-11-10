@@ -1044,7 +1044,9 @@ is its command line.
   creating the first instance of a package with no app team in an org that has
   app teams are admin-only (`ONLY_ADMINS_INSTALL`). `ScopeApps` (`POST
   /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team
-  (id from the entry's `nonce`, `app_team_id`), gives a row to every member who
+  (id from the entry's `nonce`, `app_team_id`; an instance's package is the one
+  its release names, `SystemState::instance_package`, since two packages may
+  ship one component, unless the entry predates `by_release`), gives a row to every member who
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its

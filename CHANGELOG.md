@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
+  `ScopeApps`). An instance's package was taken from its component's bundle
+  record, which names the first package installed with that WASM, so two
+  packages shipping a byte-identical component put both packages' instances
+  in the first one's app team and left the second's empty. `ScopeApps` now
+  takes the package the instance's release names (`AppRecord::release`; the
+  bundle's for a record without one). It carries `by_release` (serde default
+  false), so entries an earlier release logged replay as they did.
+
 ### Security
 
 - **Closing a team takes the channel rows of whoever loses it.** An open
