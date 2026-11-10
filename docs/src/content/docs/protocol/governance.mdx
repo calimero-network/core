@@ -384,15 +384,18 @@ recorded, which leaves the apps unrestricted), the releases the cluster's
 nodes run with whether each is approved (so "2.3.131 runs here, not approved
 yet" is one read), and per app:
 
-- its release, and its publisher: the package's pinned signer and, once the
-  key is bound, the organization it is bound to (`publisher.org`);
+- its release (the one the instance was created at or last upgraded to, so
+  releases sharing a WASM are told apart), and its publisher: the package's
+  pinned signer and, once the key is bound, the organization it is bound to
+  (`publisher.org`);
 - `releasesApprovedBy`: whose approvals decide which releases hold it:
   `operator`, `publisher` (a bound key) or `owner` (the app's organization or
   account). The app's `approvedReleases` is that party's set, which for a
   publisher's package is not the scope's own;
 - `upgradesHeldBy`: who upgrades it: `operator`, or what its release's
   manifest declares, `owner` or `publisher`;
-- newer releases it could upgrade to, its last upgrade with the actor's kind
+- newer releases it could upgrade to (one with the same WASM included: its
+  frontend may differ), its last upgrade (each end's release) with the actor's kind
   (`owner`, `member`, `operator`), and each replica's release and whether it
   is approved.
 

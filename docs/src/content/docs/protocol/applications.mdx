@@ -202,7 +202,9 @@ uses `localhost`.
   names the package, its releases, the deployments offering it (`id`, `name`,
   `app`, `version`) and the cluster's API URLs.
 - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release that
-  instance runs, so a link handed to a customer opens the frontend matching
+  instance runs (the one it was created at or last upgraded to, never simply
+  the newest shipping its WASM: releases may share one and differ only in
+  their frontend), so a link handed to a customer opens the frontend matching
   their instance after a newer release is installed. `GET /d/{deployment}/{path}`
   redirects to `/{version}/{path}?deployment={id}`, the release that deployment
   offers for this package (the newest, if it offers several), so the page

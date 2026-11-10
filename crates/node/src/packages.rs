@@ -372,7 +372,29 @@ impl Node {
         }))
     }
 
-    /// The release a bundle hash belongs to, if it came out of a package.
+    /// The release `app` runs: the one its record names
+    /// (`AppRecord::release`), else, for a record from before, the release
+    /// its bundle came out of ([`Self::release_of`]).
+    pub fn release_of_app(&self, app: &crate::types::AppRecord) -> Option<Release> {
+        let Some(at) = &app.release else {
+            return self.release_of(&app.bundle);
+        };
+        self.sys(|s| {
+            let version = s
+                .packages
+                .get(&at.package)?
+                .versions
+                .get(&at.version)?
+                .clone();
+            Some(Release {
+                at: at.clone(),
+                version,
+            })
+        })
+    }
+
+    /// The release a bundle hash belongs to, if it came out of a package: the
+    /// first recorded, so a guess when releases share the WASM.
     pub fn release_of(&self, hash: &str) -> Option<Release> {
         self.sys(|s| {
             let at = s.bundles.get(hash)?.package.clone()?;
@@ -462,14 +484,15 @@ impl Node {
         actor: &str,
         frontend: bool,
     ) -> Result<String, ApiError> {
-        let (bundle, _compute) = self
+        let (bundle, _compute, _release) = self
             .resolve_release_parts(package, version, service, actor, frontend)
             .await?;
         Ok(bundle)
     }
 
     /// [`Self::resolve_release`], with the compute component the same release ships for
-    /// the service (`None` when it ships none).
+    /// the service (`None` when it ships none) and the release itself (the newest
+    /// visible one when `version` is `None`).
     pub async fn resolve_release_parts(
         &self,
         package: &str,
@@ -477,7 +500,7 @@ impl Node {
         service: Option<&str>,
         actor: &str,
         frontend: bool,
-    ) -> Result<(String, Option<String>), ApiError> {
+    ) -> Result<(String, Option<String>, PackageRef), ApiError> {
         // No version: the latest installed release `actor` sees. A registry
         // install always names its version.
         let version = match version {
@@ -515,10 +538,16 @@ impl Node {
             }
         };
         let key = service.unwrap_or_default();
+        let release = PackageRef {
+            package: package.to_owned(),
+            version: version.clone(),
+            service: (!key.is_empty()).then(|| key.to_owned()),
+            compute: false,
+        };
         let found = services
             .get(key)
             .cloned()
-            .map(|b| (b, compute.get(key).cloned()));
+            .map(|b| (b, compute.get(key).cloned(), release));
         found.ok_or_else(|| {
             let names: Vec<&String> = services.keys().collect();
             ApiError::bad_request(

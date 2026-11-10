@@ -95,8 +95,10 @@ is its command line.
   `__remove_member { account }`, `__set_team_member { team, account, lead,
   role, capabilities }`, `__remove_team_member { team, account }`,
   `__set_capabilities { team, account, capabilities }`,
-  `__set_default_capabilities { capabilities }`, `__create_invite`,
-  `system::invite_args`). A step-up whose arguments the node makes (an API
+  `__set_default_capabilities { capabilities }` (a team's: `{ team,
+  capabilities }`, `system::default_capabilities_args`), `__create_invite`,
+  `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
+  { apps, shared }`, `system::scope_apps_args`). A step-up whose arguments the node makes (an API
   key, an invite token, the registered credential) goes through
   `api::consent_minted`: the first request keeps them, and what the retry
   needs but must not log (`Pending::Confirm::carry`), with the challenge.
@@ -197,6 +199,27 @@ is its command line.
   `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
   `AppRecord::compute_bundle` carries the running release's compute hash next to `bundle`.
+- **An instance's release** (`AppRecord::release`, a `system::PackageRef`): the
+  package release it runs, set at create (the version named, the newest visible
+  one, or the deployment's offer) and by every `UpgradeApp` (one app, an org or
+  publisher run, the operator's, the consent page's), which also checks that the
+  release ships the bundle (`SystemState::release_ships`). A frontend ships in
+  its release's `.mpk` and works with that release's backend only, and releases
+  may share a WASM, so `bundle` alone does not say which release runs: approving
+  a release approves its frontend, and moving to a release with the same WASM is
+  an upgrade like any other (same authority, consent and record; an org run
+  writes `UpgradeApp` without running anything on the app's group, and notes a
+  refusal as failed). `Node::release_of_app` and `report::release_of_app` read
+  it; a record without it (from before, or a raw upload) falls back to the bundle
+  (`Node::release_of`, `report::release_of_bundle`). `UpgradeRecord::from_release`
+  / `to_release` name both ends of an upgrade. Regressions:
+  `a_frontend_only_release_is_an_upgrade_of_its_own`,
+  `an_instance_link_opens_the_release_that_instance_runs`,
+  `report::tests::a_record_without_its_release_falls_back_to_its_bundle`.
+  **Upgrade note (rolling upgrade):** a node on an older release drops the field
+  when it applies a `CreateApp` or `UpgradeApp`, so its own copy of the directory
+  infers the release from the bundle until it runs this release and the app is
+  upgraded again.
   Releases may share an app component and differ in compute, so create and upgrade carry the compute hash of the release they name (`resolve_release_parts`), and apply only checks that a release ships that pair (`SystemState::ships_compute`).
   A create or upgrade by bundle hash alone resolves the compute part of the releases that ship that app component (`SystemState::compute_of`), `400 AMBIGUOUS_COMPUTE` when they differ, and answers `compute: false` when none ships one.
   The app's log carries the pair too: `ComponentCmd::Init` and `Upgrade` name `compute_bundle` beside `bundle`, and apply keeps it in `ComponentHead::compute_bundle`, so a run pins the pair the group runs and never the system record's, which a delayed or failed system write may leave behind.
@@ -632,12 +655,16 @@ is its command line.
 - **Version and approval reports** (`report.rs`, read-only): `GET /ops/apps`,
   `GET /ops/orgs` (operator), `GET /orgs/{org}/apps` (any member; `404` else) and
   `GET /auth/apps` (the account's own apps), paged (`?after&limit`,
-  `report::MAX_REPORT_PAGE`). Per app: scope, bundle digest, package release,
+  `report::MAX_REPORT_PAGE`). Per app: scope, bundle digest, package release
+  (`report::release_of_app`: the one the instance runs, so releases sharing a
+  WASM are told apart),
   `upgradesHeldBy`, `lastUpgrade` (`AppRecord::last_upgrade`, with
   `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
   org's owners as they stand), approved releases, each replica's release and
   whether approved; for accounts also name, the upgrader's account, newer
-  visible releases (`availableVersions`) and `clusterReleases`. The operator
+  visible releases (`availableVersions`, from the release it runs, those with
+  its WASM included) and `clusterReleases`. `lastUpgrade.from`/`to` name each
+  end's release from `UpgradeRecord::from_release`/`to_release` when recorded. The operator
   sees a package name only for releases it installed (`Reader::Operator`,
   `sees_release`), never an account, a name or an upgrade's error text.
   Node releases come from `Node::release_of_node` (attested once, then kept;
@@ -788,13 +815,14 @@ is its command line.
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
   cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
-  `/app/{app}/` → the newest release (`compare_versions`) shipping the WASM that
-  instance runs, `/d/{deployment}/` →
+  `/app/{app}/` → the release that instance runs (`AppRecord::release`; for a
+  record from before, the newest release, by `compare_versions`, shipping its
+  WASM), `/d/{deployment}/` →
   `/{version}/?deployment={id}` of the release it offers (looked up again on
   fresh state when nothing matches); every redirect keeps the request's query
   (after the `deployment` it adds), so `/?invite=...` reaches the page with its
   token (regressions: `frontend_redirects_keep_the_query`,
-  `an_instance_link_opens_the_newest_release_shipping_its_wasm`),
+  `an_instance_link_opens_the_release_that_instance_runs`),
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
   measurements and Intel's collateral; regression
@@ -924,7 +952,37 @@ is its command line.
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
-  app's (a folder's name and colour).
+  app's (a folder's name and colour). A team's `default_capabilities`
+  (`Team`, left out when unset) count for everyone in it without a row of
+  their own, on top of their org-wide caps (`Org::team_caps`, used by `may` and
+  open-team inheritance; a new row takes them too); set by `SetDefaultCapabilities
+  { team }` (`POST /orgs/{org}/capabilities { team, capabilities }`, the team's
+  managers or `MANAGE_MEMBERS`). In an org with app teams a guest inherits no
+  open top-level team and reaches no `Access::Org` app (`Org::app_only`, used
+  by `in_team_at` and `may_reach`); a legacy org's guests are as before.
+- **App teams and modes** (`Team::app_package`: `metadata.app.package` on a
+  top-level team; `Org::app_team`, `Org::mode` = legacy | standalone | shared,
+  derived): one per package per org (`UpdateTeam` refuses a second,
+  `APP_TEAM_EXISTS`); making, changing or dropping the mark, scoping apps and
+  creating the first instance of a package with no app team in an org that has
+  app teams are admin-only (`ONLY_ADMINS_INSTALL`). `ScopeApps` (`POST
+  /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team
+  (id from the entry's `nonce`, `app_team_id`), gives a row to every member who
+  `may_reach` the instances first, moves them to `Access::Team`, and with
+  `shared` (default: two app teams or more) closes every app team after
+  writing its inherited people as rows and drops `INVITE_MEMBERS` from its
+  default (standalone teams it makes default to `INVITE_MEMBERS`); bounded by
+  `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
+  `GET /orgs/{org}/app-teams` (any member; a guest only theirs). `GET
+  /orgs/{org}` filters members, capabilities, member metadata and team rows by
+  `Org::sees_member` (admins all; members all unless shared, then co-team
+  people and admins; guests co-team people). `SetAccess` is also open to
+  `SystemState::may_set_access` (`MANAGE_APPLICATION` where the app is and where
+  it goes, org-wide for non-team access). Invites record `created_by` (set at
+  apply) and `created_at` (both left out when unset); `GET /orgs/{org}/invites`
+  and `DELETE /orgs/{org}/invites/{key}` (`RevokeInvite`) for whoever
+  `SystemState::sees_invite`. Regressions: `tests/org_app_teams.rs`,
+  `invites_teams_and_default_caps_from_before_app_teams_read_and_write_as_before`.
 - **App state on disk** (`app.rs`, `component.rs`): `AppMachine` holds no state in
   memory but its small `Head` (bundle, executor, the component's host records). The
   app's keys are hidden rows of its group (`rows::CKV`), idempotency records too

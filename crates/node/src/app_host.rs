@@ -14,9 +14,9 @@
 //!   last segment and an `Accept` naming HTML, the entry (a single-page app's
 //!   routes survive a reload); otherwise the path with leading segments
 //!   dropped (an entry built with a relative base on a deep link); else 404.
-//! - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the newest
-//!   release of this package shipping the WASM that instance runs (else
-//!   404), so a link
+//! - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release
+//!   of this package that instance runs (`AppRecord::release`; for a record
+//!   from before, the newest release shipping its WASM; else 404), so a link
 //!   handed to a customer opens the frontend matching their instance.
 //! - `GET /d/{deployment}/{path}` redirects to
 //!   `/{version}/{path}?deployment={id}`, the release that deployment offers
@@ -598,11 +598,21 @@ fn with_query(location: String, query: &str) -> String {
     format!("{location}{sep}{query}")
 }
 
-/// `{app}/{tail}`: `/{version}/{tail}` of the newest release of `package`
-/// shipping the WASM that instance runs (releases may share one).
+/// `{app}/{tail}`: `/{version}/{tail}` of the release of `package` that
+/// instance runs (`AppRecord::release`): its frontend works with that
+/// release's backend only, so never simply the newest. A record from before
+/// names none: then the newest release shipping the WASM it runs (releases
+/// may share one).
 fn instance_release(s: &SystemState, node: &Node, package: &str, rest: &str) -> Option<String> {
     let (app, tail) = rest.split_once('/').unwrap_or((rest, ""));
     let a = s.apps.get(&node.canonical_app_id(app))?;
+    if let Some(r) = &a.release {
+        let installed = s
+            .packages
+            .get(package)
+            .is_some_and(|p| p.versions.contains_key(&r.version));
+        return (r.package == package && installed).then(|| format!("/{}/{tail}", r.version));
+    }
     let version = s
         .packages
         .get(package)?
