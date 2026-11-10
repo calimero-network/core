@@ -36,6 +36,21 @@
   `memberCount` and `activeMembers30d` per customer organization (counts
   only). `meroctl namespace members list --security`. No stored format
   changes: everything is read from state the node already keeps.
+- **An account's activity**: `GET /auth/activity[?after=T]` lists what the
+  caller's passkeys did, newest first, the last 100 entries: `{ activity: [{
+  at, passkey, kind, app, origin, method, subject }] }`. `kind: "signIn"` is
+  a sign-up, sign-in or recovery finish, with the package and origin its
+  session is bound to (a refresh is none; a repeat of the newest sign-in only
+  moves its time); `kind: "approval"` is a change the passkey approved with a
+  step-up, with the method and subject its consent states, never its
+  arguments. The account holder's own session only, as `/auth/sessions`;
+  nothing is shown to operators, organization admins or deployment managers.
+  `meroctl account activity`. Stored formats: `SystemState.activity` (by
+  account) is left out when empty, and a step-up's consent carries its
+  time as `at` outside what the passkey signs (left out when 0), so state and entries from before read
+  and write as they did, and a node on the earlier release checks the same
+  consent and keeps no activity. An earlier release's entries carry no time
+  and add no activity when replayed.
 
 ### Security
 

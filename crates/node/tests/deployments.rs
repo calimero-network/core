@@ -147,6 +147,7 @@ fn consent_of(pk: &mut SoftAuthenticator, subject: &str, method: &str, args: &Va
     serde_json::to_value(calimero_node::proof::Consent {
         statement,
         assertion: pk.assert(&challenge),
+        at: 0,
     })
     .unwrap()
 }

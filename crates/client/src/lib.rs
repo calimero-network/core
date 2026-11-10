@@ -1012,6 +1012,18 @@ impl Client {
             .await
     }
 
+    /// This account's activity (`GET /auth/activity`), newest first: `{
+    /// activity: [{ at, passkey, kind, app, origin, method, subject }] }`,
+    /// `kind` being `signIn` (with the `app` and `origin` the session is
+    /// bound to) or `approval` (with the `method` and `subject` the passkey
+    /// approved). `after`: only entries after that time (Unix seconds).
+    pub async fn activity(&self, after: Option<u64>) -> Result<Value> {
+        match after {
+            Some(t) => self.get(&format!("auth/activity?after={t}")).await,
+            None => self.get("auth/activity").await,
+        }
+    }
+
     /// DELETE `path`, answering a `412 CONFIRM_REQUIRED` as
     /// [`Self::post_confirmed`] does.
     pub async fn delete_confirmed(&self, path: &str, passkey: &mut dyn Passkey) -> Result<Value> {
