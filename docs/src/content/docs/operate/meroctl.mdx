@@ -264,6 +264,7 @@ The signed-in account.
 | `account device revoke CREDENTIAL [--dev-passkey FILE]` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. Approved with a passkey. |
 | `account session list` (`ls`) | `GET /auth/sessions` | Its live sessions: the device each was opened with, the application and origin it is bound to, when it opened and was last active (to within about an hour), and the current one. |
 | `account session revoke SESSION` | `DELETE /auth/sessions/{session}` | End one session. |
+| `account activity [--after T]` | `GET /auth/activity` | What its devices did, newest first: the applications and origins each signed in to, and the changes each approved (needs a passkey session). |
 | `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
 | `account api-key revoke KEY_ID [--dev-passkey FILE]` | `DELETE /auth/apikeys/{key}` | Revoke one, approved with a passkey. |

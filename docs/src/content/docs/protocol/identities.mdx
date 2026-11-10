@@ -158,6 +158,9 @@ signed in with (`addedAt`, `lastSignInAt`), and removing a passkey ends that
 device's sessions. `GET /auth/sessions` lists the account's sessions, the
 passkey each was opened with and the package and origin it is bound to, and
 `DELETE /auth/sessions/{session}` ends one ([Sessions](/operate/auth/#sessions)).
+`GET /auth/activity` lists what each passkey did, the last 100 entries: the
+package and origin each sign-in was bound to, and the method and subject of
+each change it approved ([Activity](/operate/auth/#activity)).
 These are the account holder's alone: the times come from the log entries a
 sign-up, a sign-in, an added passkey and a recovery already write (each carries
 its time; a refresh writes none), and no route shows them to operators,

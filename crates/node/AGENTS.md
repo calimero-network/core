@@ -592,7 +592,7 @@ is its command line.
   A cancel whose poll gets no answer ends from the held report if any (while that report only waits on the leader's own writes the run stays open, up to the run ceiling), else cancelled with no usage, without a delete.
   `GET /apps/{app}/runs/{run}` and `GET /apps/{app}/runs?limit=&before=` (`AppMachine::runs_page`, newest `startTsMs` first, ties by run id descending, `limit` 1 to 100, a `before` cursor of `startTsMs:run` bounded by `MAX_RUNS_CURSOR_BYTES`, at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` records read per page) are the reserved view `__run` answered by the leader (`Node::run_view`), one shared `run_json` for both; they show plaintext sizes and hashes of files only to those who may list the files.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
-- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas. `org`/app-team access becomes the target's app team (made open, or closed in a shared target; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`). `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs`, `tests/move_app.rs`.
+- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas. `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`). `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs`, `tests/move_app.rs`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
@@ -803,6 +803,20 @@ is its command line.
   Regressions: `tests/sessions.rs`,
   `passkey_and_session_times_come_from_their_entries`,
   `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`,
+  `tests/old_datadir.rs`.
+- **Activity** (the account holder's alone): `SystemState::activity` (by
+  account, beside `accounts` so `account_args` is unchanged), the last
+  `types::ACTIVITY_KEPT` `ActivityEntry { at, passkey, kind }`, `kind`
+  `signIn { app, origin }` (from a session's opening record: `CreateRefresh`,
+  `CreateAccount`, `FinishAccountRecovery`, via `system::sign_in_of`) or
+  `approval { method, subject }` (one hook in `SystemMachine::run`:
+  `system::approval_of` finds the consent `authorize` verified, by its used
+  marker, before the command applies, and records it after). The time is the
+  step-up's `proof::Consent::at`, outside what the passkey signs; 0 (a
+  sign-in's consent, or an earlier release's) records nothing, so a replayed
+  old log adds nothing. `GET /auth/activity` (`api::activity_list`) is
+  `holder`. Regressions: `tests/activity.rs`,
+  `activity_records_sign_ins_and_step_ups_from_their_times`,
   `tests/old_datadir.rs`.
 - **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
   "Passkeys are each cluster's own"): clusters share an rp-id, so a

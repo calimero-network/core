@@ -256,6 +256,16 @@ fn scenario(root: &Path, url: &str) {
         1
     );
 
+    // account activity: the account's own sign-ins, newest first.
+    let activity = alice.run(&["account", "activity"]);
+    let entries = activity["activity"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["kind"] == "signIn" && s(&e["passkey"]) == device),
+        "{activity}"
+    );
+
     // app: v1's applications are signed packages.
     let installed = alice.run(&["app", "install", "--path", path(&kv_1_0)]);
     assert_eq!(installed["package"], "com.test.kv");
