@@ -539,10 +539,30 @@ async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
-    // Init never ran: the app group holds no app bundle.
+    // The node logs an empty init so the group can hold files and drive runs; no app code runs.
     let node = &c.nodes[0].as_ref().unwrap().node;
     let group = node.hosted(&app).expect("hosted on node 0");
-    assert!(group.read_local(|m, _| m.state.bundle.is_none() && !m.state.initialized));
+    let mut waited = 0;
+    while !group.read_local(|m, _| m.state.initialized) {
+        waited += 1;
+        assert!(
+            waited < 300,
+            "the compute-only app's group was never initialized"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    group.read_local(|m, _| {
+        assert_eq!(
+            m.state.component.head.compute_bundle,
+            Some(sha256_hex(&job))
+        );
+        assert!(m.state.init_error.is_none());
+    });
+    let e = owner
+        .call(&app, "digest", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
