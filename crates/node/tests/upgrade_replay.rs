@@ -32,6 +32,10 @@ const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
 /// Fields that move on their own and say nothing about the replayed state.
 const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
 
+/// A receipt's signature covers the answer's log position (below), so it is
+/// another signature over the same state.
+const SIGNATURES: &[&str] = &["signature"];
+
 /// Log positions an answer was served at. The replaying node elects itself
 /// leader of each group in a new term, which appends a blank entry, so these
 /// only move forward from what the release answered.
@@ -103,6 +107,12 @@ fn holds(got: &Value, want: &Value, path: &str) -> Result<(), String> {
                 let Some(gv) = g.get(k) else {
                     return Err(format!("{at} is gone"));
                 };
+                if path.ends_with(".receipt") && SIGNATURES.contains(&k.as_str()) {
+                    if !gv.is_string() {
+                        return Err(format!("{at} is {gv}, was a signature"));
+                    }
+                    continue;
+                }
                 if LOG_POSITIONS.contains(&k.as_str()) {
                     if let (Some(gn), Some(wn)) = (gv.as_u64(), v.as_u64()) {
                         if gn < wn {
