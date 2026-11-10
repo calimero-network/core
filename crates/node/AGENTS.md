@@ -95,8 +95,10 @@ is its command line.
   `__remove_member { account }`, `__set_team_member { team, account, lead,
   role, capabilities }`, `__remove_team_member { team, account }`,
   `__set_capabilities { team, account, capabilities }`,
-  `__set_default_capabilities { capabilities }`, `__create_invite`,
-  `system::invite_args`). A step-up whose arguments the node makes (an API
+  `__set_default_capabilities { capabilities }` (a team's: `{ team,
+  capabilities }`, `system::default_capabilities_args`), `__create_invite`,
+  `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
+  { apps, shared }`, `system::scope_apps_args`). A step-up whose arguments the node makes (an API
   key, an invite token, the registered credential) goes through
   `api::consent_minted`: the first request keeps them, and what the retry
   needs but must not log (`Pending::Confirm::carry`), with the challenge.
@@ -920,7 +922,37 @@ is its command line.
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
-  app's (a folder's name and colour).
+  app's (a folder's name and colour). A team's `default_capabilities`
+  (`Team`, left out when unset) count for everyone in it without a row of
+  their own, on top of their org-wide caps (`Org::team_caps`, used by `may` and
+  open-team inheritance; a new row takes them too); set by `SetDefaultCapabilities
+  { team }` (`POST /orgs/{org}/capabilities { team, capabilities }`, the team's
+  managers or `MANAGE_MEMBERS`). In an org with app teams a guest inherits no
+  open top-level team and reaches no `Access::Org` app (`Org::app_only`, used
+  by `in_team_at` and `may_reach`); a legacy org's guests are as before.
+- **App teams and modes** (`Team::app_package`: `metadata.app.package` on a
+  top-level team; `Org::app_team`, `Org::mode` = legacy | standalone | shared,
+  derived): one per package per org (`UpdateTeam` refuses a second,
+  `APP_TEAM_EXISTS`); making, changing or dropping the mark, scoping apps and
+  creating the first instance of a package with no app team in an org that has
+  app teams are admin-only (`ONLY_ADMINS_INSTALL`). `ScopeApps` (`POST
+  /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team
+  (id from the entry's `nonce`, `app_team_id`), gives a row to every member who
+  `may_reach` the instances first, moves them to `Access::Team`, and with
+  `shared` (default: two app teams or more) closes every app team after
+  writing its inherited people as rows and drops `INVITE_MEMBERS` from its
+  default (standalone teams it makes default to `INVITE_MEMBERS`); bounded by
+  `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
+  `GET /orgs/{org}/app-teams` (any member; a guest only theirs). `GET
+  /orgs/{org}` filters members, capabilities, member metadata and team rows by
+  `Org::sees_member` (admins all; members all unless shared, then co-team
+  people and admins; guests co-team people). `SetAccess` is also open to
+  `SystemState::may_set_access` (`MANAGE_APPLICATION` where the app is and where
+  it goes, org-wide for non-team access). Invites record `created_by` (set at
+  apply) and `created_at` (both left out when unset); `GET /orgs/{org}/invites`
+  and `DELETE /orgs/{org}/invites/{key}` (`RevokeInvite`) for whoever
+  `SystemState::sees_invite`. Regressions: `tests/org_app_teams.rs`,
+  `invites_teams_and_default_caps_from_before_app_teams_read_and_write_as_before`.
 - **App state on disk** (`app.rs`, `component.rs`): `AppMachine` holds no state in
   memory but its small `Head` (bundle, executor, the component's host records). The
   app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
