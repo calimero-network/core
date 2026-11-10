@@ -34,6 +34,7 @@ pub mod node;
 pub mod origins;
 pub mod packages;
 pub mod placement;
+pub mod policy;
 pub mod presence;
 pub mod proof;
 pub mod report;

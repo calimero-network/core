@@ -761,6 +761,7 @@ is its command line.
   `tests/org_recovery.rs`, `recovery_needs_the_owners_passkey_the_seed_and_the_delay`,
   `rotating_the_recovery_key_retires_the_old_seed`,
   `state_from_before_recovery_reads_with_none_and_writes_as_before`.
+- **Data policy** (`policy.rs`, `Org::data_policy`; docs: protocol organizations "Data policy"): an org's readers, recipients, sources and sinks as chained versions (`version`, `prev` = SHA-256 of the previous RFC 8785 form), approved only by admins' passkeys: `ProposeDataPolicy`, `ApproveDataPolicy`, `WithdrawDataPolicyProposal` (`org:<org> / __propose_data_policy | __approve_data_policy { hash } | __withdraw_data_policy`), and `ApproveDataPolicyByRecovery` (the recovery key over `policy::RECOVERY_SUBJECT`, for an org with fewer than two admins). No operator path. First version needs two admins, later ones `current.threshold` of `current.signers`; storage and signing only, enforcement reads `OrgDataPolicy::current`. Routes `GET|POST /orgs/{org}/data-policy`, `.../approve`, `.../withdraw`, `.../recovery-approve`; `meroctl namespace data-policy`. Regressions: `system::tests` (`a_first_policy_needs_two_distinct_admins` and the tests around it), `tests/org_data_policy.rs`.
 - **Account recovery** (`docs/specs/account-recovery.md`; shaped like
   organization recovery above, same `RECOVERY_DELAY_SECS`): an account may
   hold one recovery code (`calimero_identity::new_recovery_code`, Crockford

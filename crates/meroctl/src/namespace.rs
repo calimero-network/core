@@ -109,6 +109,9 @@ pub enum NamespaceCmd {
     /// The organization's metadata record.
     #[command(subcommand)]
     Metadata(MetadataCmd),
+    /// The organization's data policy: signed versions its admins approve.
+    #[command(subcommand)]
+    DataPolicy(DataPolicyCmd),
     /// Set a member's metadata (theirs, or an admin's); `null` clears it.
     MemberMetadata {
         namespace: String,
@@ -193,6 +196,33 @@ pub enum MetadataCmd {
     Set {
         namespace: String,
         metadata: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataPolicyCmd {
+    /// The current policy, its hash and any proposal waiting for approval.
+    Get { namespace: String },
+    /// Propose the next version (a JSON file); counts as the proposer's approval.
+    Propose {
+        namespace: String,
+        file: PathBuf,
+        /// Approve with this passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Approve the pending version with this hash.
+    Approve {
+        namespace: String,
+        hash: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Clear the pending proposal.
+    Withdraw {
+        namespace: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -306,6 +336,45 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             client
                 .set_org_metadata(&namespace, json_arg(&metadata)?)
                 .await?
+        }
+        NamespaceCmd::DataPolicy(DataPolicyCmd::Get { namespace }) => {
+            client.get(&format!("orgs/{namespace}/data-policy")).await?
+        }
+        NamespaceCmd::DataPolicy(DataPolicyCmd::Propose {
+            namespace,
+            file,
+            dev_passkey,
+        }) => {
+            let policy = json_arg(&String::from_utf8(crate::env::read_file(&file)?)?)?;
+            env.post_approved(
+                &format!("orgs/{namespace}/data-policy"),
+                policy,
+                dev_passkey.as_deref(),
+            )
+            .await?
+        }
+        NamespaceCmd::DataPolicy(DataPolicyCmd::Approve {
+            namespace,
+            hash,
+            dev_passkey,
+        }) => {
+            env.post_approved(
+                &format!("orgs/{namespace}/data-policy/approve"),
+                json!({ "hash": hash }),
+                dev_passkey.as_deref(),
+            )
+            .await?
+        }
+        NamespaceCmd::DataPolicy(DataPolicyCmd::Withdraw {
+            namespace,
+            dev_passkey,
+        }) => {
+            env.post_approved(
+                &format!("orgs/{namespace}/data-policy/withdraw"),
+                json!({}),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         NamespaceCmd::MemberMetadata {
             namespace,
