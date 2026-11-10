@@ -6261,12 +6261,8 @@ impl SystemMachine {
                 }))
             }
             SystemCmd::RevokeApiKey { key_id, actor, .. } => {
-                let before = s.api_keys.len();
-                s.api_keys
-                    .retain(|_, r| !(r.key_id == key_id && r.account == actor));
-                if s.api_keys.len() == before {
-                    return Err("no such key");
-                }
+                // DELIBERATE BREAK (evidence for #4918, never merged): a revocation is not applied.
+                let _ = (key_id, actor);
                 Ok(Value::Null)
             }
             SystemCmd::CreateRefresh { hash, record, .. } => {
