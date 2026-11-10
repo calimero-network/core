@@ -1057,6 +1057,49 @@ impl SystemState {
         self.compute.get(app)?.get(run)
     }
 
+    /// The granted runs each pool holds, and the `(runs, fuel)` each payer holds.
+    fn held(&self) -> (BTreeMap<String, usize>, BTreeMap<String, (u32, u64)>) {
+        let mut granted_in: BTreeMap<String, usize> = BTreeMap::new();
+        let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+        for slot in self.compute.values().flat_map(BTreeMap::values) {
+            if slot.refused || !slot.granted {
+                continue;
+            }
+            *granted_in
+                .entry(self.slot_pool(slot).to_owned())
+                .or_default() += 1;
+            let held = load.entry(slot.payer.clone()).or_default();
+            held.0 += 1;
+            held.1 = held.1.saturating_add(slot.fuel);
+        }
+        (granted_in, load)
+    }
+
+    /// Why a run the queue has not granted waits, by the tests `grant_runs` applies: no place in
+    /// its pool at all, every place held, its payer at the run quota, then at the fuel quota.
+    #[must_use]
+    pub fn wait_reason(&self, app: &str, run: &str) -> Option<&'static str> {
+        let slot = self
+            .run_slot(app, run)
+            .filter(|s| !s.granted && !s.refused)?;
+        let pool = self.slot_pool(slot);
+        let capacity = self.pool_capacity(pool);
+        let (granted_in, load) = self.held();
+        let (max_runs, max_fuel, _) = self.payer_quotas(&slot.payer);
+        let (runs, fuel) = load.get(&slot.payer).copied().unwrap_or_default();
+        if capacity == 0 {
+            Some("NO_CAPACITY")
+        } else if granted_in.get(pool).copied().unwrap_or(0) >= capacity {
+            Some("POOL_FULL")
+        } else if runs >= max_runs {
+            Some("PAYER_AT_RUN_QUOTA")
+        } else if fuel.saturating_add(slot.fuel) > max_fuel {
+            Some("PAYER_AT_FUEL_QUOTA")
+        } else {
+            None
+        }
+    }
+
     /// Grants waiting runs up to the job nodes' places, to the payers in turn (longest served
     /// first); a payer at a quota is passed over for the pass. Granted runs stay.
     fn grant_runs(&mut self) {
@@ -1064,30 +1107,17 @@ impl SystemState {
             let fuel = limits_of(&self.quotas, &self.org_quotas, &slot.payer).1;
             slot.refused |= !slot.granted && slot.fuel > fuel;
         }
-        let mut granted_in: BTreeMap<String, usize> = BTreeMap::new();
-        let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+        let (mut granted_in, mut load) = self.held();
         let mut waiting: BTreeMap<String, Vec<WaitingRun>> = BTreeMap::new();
         for (app, runs) in &self.compute {
-            for (run, slot) in runs {
-                if slot.refused {
-                    continue;
-                }
-                if slot.granted {
-                    *granted_in
-                        .entry(self.slot_pool(slot).to_owned())
-                        .or_default() += 1;
-                    let held = load.entry(slot.payer.clone()).or_default();
-                    held.0 += 1;
-                    held.1 = held.1.saturating_add(slot.fuel);
-                } else {
-                    waiting.entry(slot.payer.clone()).or_default().push((
-                        slot.seq,
-                        app.clone(),
-                        run.clone(),
-                        slot.fuel,
-                        self.slot_pool(slot).to_owned(),
-                    ));
-                }
+            for (run, slot) in runs.iter().filter(|(_, s)| !s.refused && !s.granted) {
+                waiting.entry(slot.payer.clone()).or_default().push((
+                    slot.seq,
+                    app.clone(),
+                    run.clone(),
+                    slot.fuel,
+                    self.slot_pool(slot).to_owned(),
+                ));
             }
         }
         let mut waiting: BTreeMap<String, VecDeque<_>> = waiting
