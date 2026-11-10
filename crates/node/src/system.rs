@@ -593,6 +593,8 @@ pub const ONLY_MANAGERS_TRANSFER: &str =
     "only the app's owner, while a member of its organization, or an organization admin may transfer it";
 /// A refusal: the organization invite is past its expiry.
 pub const INVITE_EXPIRED: &str = "this invite has expired";
+/// A refusal: renaming an organization is its owner's or an admin's.
+pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins rename it";
 /// A refusal: making, changing or dropping an app team, scoping apps, or
 /// creating the first instance of a package without one in an organization
 /// whose apps have app teams, is installing an app there: an admin's.
@@ -701,6 +703,26 @@ pub fn deployment_name_fits(name: &str) -> Result<(), &'static str> {
         || name.chars().any(char::is_control)
     {
         return Err("a deployment's name is 1 to 64 characters on one line");
+    }
+    Ok(())
+}
+
+/// The longest organization name, in characters.
+pub const MAX_ORG_NAME_CHARS: usize = 64;
+
+/// An organization's name, as it is created ([`SystemCmd::CreateOrg`]) and
+/// renamed ([`SystemCmd::RenameOrg`]): what its members and invitees read,
+/// one line of at most [`MAX_ORG_NAME_CHARS`] characters.
+///
+/// # Errors
+/// Empty, too long, padded or holding a control character.
+pub fn org_name_fits(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty()
+        || name.trim() != name
+        || name.chars().count() > MAX_ORG_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err("an organization's name is 1 to 64 characters on one line");
     }
     Ok(())
 }
@@ -3293,6 +3315,18 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::RenameOrg {
+            org,
+            name,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("org:{org}"), "__rename_org", &|a| {
+                *a == json!({ "name": name })
+            })?;
+            Ok(Some(used))
+        }
         // Credentials: the account's own passkey consent. A new passkey is
         // approved by one the account already has (`consent_of` reads the
         // passkeys as they stand, without the new one).
@@ -4504,6 +4538,23 @@ pub enum SystemCmd {
         /// When it was created (Unix seconds; the recovery key's `setAt`).
         #[serde(default)]
         at: u64,
+        /// The name must fit ([`org_name_fits`]). The API always sets it;
+        /// absent (`false`) in an entry an earlier release logged, which
+        /// replays taking any name, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        name_fits: bool,
+    },
+    /// Rename an organization: its owner or an admin, with their passkey
+    /// consent (`org:<org> / __rename_org / { name }`), to a name that fits
+    /// as a new one's must ([`org_name_fits`]). Every reader of the name
+    /// (the organization, `/auth/me`, an invite redeemed later) answers the
+    /// new one: nothing else keeps a copy.
+    RenameOrg {
+        org: OrgId,
+        name: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
     },
     /// The cluster's rules, from the first leader's configuration. Accepted
     /// once, before anyone has an account: after that they are fixed, so an
@@ -6390,9 +6441,13 @@ impl SystemMachine {
                 release,
                 recovery_key,
                 at,
+                name_fits,
             } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
+                }
+                if name_fits {
+                    org_name_fits(&name)?;
                 }
                 let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
                 if s.orgs.contains_key(&org_id) {
@@ -6916,6 +6971,17 @@ impl SystemMachine {
                     s.remove_app(a);
                 }
                 Ok(json!({ "apps": apps }))
+            }
+            SystemCmd::RenameOrg {
+                org, name, actor, ..
+            } => {
+                let o = self.org_mut(&org)?;
+                if o.role(&actor) < Some(OrgRole::Admin) {
+                    return Err(ONLY_ADMINS_RENAME);
+                }
+                org_name_fits(&name)?;
+                o.name.clone_from(&name);
+                Ok(json!({ "orgId": org, "name": name }))
             }
             SystemCmd::SetOrgMetadata {
                 org,
@@ -9540,6 +9606,96 @@ mod tests {
         let _ok = m.run(set(carried, &a)).unwrap();
         assert_eq!(m.state.accounts["alice"].passkeys[0].sign_count, carried);
         assert!(m.run(set(carried, &a)).is_err(), "replayed");
+    }
+
+    /// An organization is renamed by its owner or an admin with their
+    /// passkey consent over exactly the new name, once; a member below
+    /// admin and someone outside it are refused, and so is a name that
+    /// would not make an organization.
+    #[test]
+    fn an_organization_is_renamed_with_an_admins_passkey() {
+        let (mut m, mut alice, mut bob, mut carol) = proven_cluster();
+        let rename = |actor: &str, name: &str, consent: Value| SystemCmd::RenameOrg {
+            org: "org".into(),
+            name: name.into(),
+            actor: actor.into(),
+            consent,
+        };
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__rename_org"),
+            &json!({ "name": "Docs Labs" }),
+            &json!({ "name": "Other" }),
+            |c| rename("alice", "Docs Labs", c),
+        );
+        assert_eq!(m.state.orgs["org"].name, "Docs Labs");
+        for (actor, pk) in [("bob", &mut bob), ("carol", &mut carol)] {
+            let c = consent(pk, "org:org", "__rename_org", &json!({ "name": "Mine" }));
+            assert_eq!(
+                m.run(rename(actor, "Mine", c)).unwrap_err(),
+                super::ONLY_ADMINS_RENAME,
+                "{actor}"
+            );
+        }
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Admin);
+        for bad in [
+            String::new(),
+            " Docs".to_owned(),
+            "Do\ncs".to_owned(),
+            "x".repeat(super::MAX_ORG_NAME_CHARS + 1),
+        ] {
+            assert!(
+                m.run_unproven(rename("bob", &bad, Value::Null)).is_err(),
+                "{bad:?}"
+            );
+        }
+        let long = "y".repeat(super::MAX_ORG_NAME_CHARS);
+        let c = consent(
+            &mut bob,
+            "org:org",
+            "__rename_org",
+            &json!({ "name": long }),
+        );
+        let out = m.run(rename("bob", &long, c)).unwrap();
+        assert_eq!(out, json!({ "orgId": "org", "name": long }));
+        assert_eq!(m.state.orgs["org"].name, long);
+    }
+
+    /// A `CreateOrg` an earlier release logged (no `name_fits`) replays
+    /// taking any name, as that release did; one the API logs now refuses a
+    /// name that does not fit, and the flag is left out when false, so an
+    /// entry from before writes as it did.
+    #[test]
+    fn a_create_org_entry_from_before_takes_any_name() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let cmd: SystemCmd = serde_json::from_value(json!({
+            "op": "createOrg", "org_id": "o1", "name": " padded ", "actor": "alice"
+        }))
+        .unwrap();
+        let back = serde_json::to_value(&cmd).unwrap();
+        assert!(back.get("name_fits").is_none(), "{back}");
+        let _ok = m.run_unproven(cmd).unwrap();
+        assert_eq!(m.state.orgs["o1"].name, " padded ");
+        let create = |id: &str, name: &str| SystemCmd::CreateOrg {
+            org_id: id.into(),
+            name: name.into(),
+            actor: "alice".into(),
+            release: None,
+            recovery_key: None,
+            at: 0,
+            name_fits: true,
+        };
+        assert!(m.run_unproven(create("o2", " padded ")).is_err());
+        assert!(!m.state.orgs.contains_key("o2"));
+        let _ok = m.run_unproven(create("o2", "Fits")).unwrap();
+        assert_eq!(m.state.orgs["o2"].name, "Fits");
     }
 
     /// Membership changes apply only with the actor's passkey consent over
@@ -13359,6 +13515,7 @@ mod tests {
                 release: None,
                 recovery_key: None,
                 at: 0,
+                name_fits: true,
             })
             .unwrap();
         let _prev = m.state.publishers.insert(

@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Rename an organization**: `POST /orgs/{org}/name { name, confirm? }`
+  (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
+  / { name }`), by its owner or an admin; `403` below admin, `404` outside.
+  Before, an organization kept the name it was created with, and Calimero
+  Home could only show a `displayName` from its metadata. Every reader of the
+  name (`GET /orgs/{org}`, `/auth/me`'s `orgs`, an invite redeemed after)
+  answers the new one. An organization's name is now one line of 1 to 64
+  characters without surrounding spaces, at creation (`POST /orgs` answers
+  `400` otherwise) and on a rename; `CreateOrg` carries `name_fits`, which
+  the API always sets, so an entry an earlier release logged replays taking
+  any name, and names already given stay until renamed.
+
 - **Members make private channels under an app's team.** Only a parent
   team's leads and the organization's admins created a team below it, so an
   app could not make a private channel a child team of its app team. A member
