@@ -156,6 +156,9 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/intents` | app access | `{ method, args, idempotencyKey?, confirm? }`: a call. A confirm method answers `412` first. | `call` |
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
+| `GET /apps/{app}/events?watch=true[&stream=ID&last=N]` | app access | A watch stream (PoC, below): server-sent events, first `stream` `{ stream }`, then `view-changed` and `watch-ended`; no app events | `call --view --watch` |
+| `POST /apps/{app}/watches` | app access, as for `/views` of the view | `{ stream, view, args }` → `{ sub, index }`: watch a `subscribable` view | `call --view --watch` |
+| `DELETE /apps/{app}/watches/{sub}` | the watch's holder | Stop a watch | - |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
 | `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, with a passkey step-up; an organization's app only to a member) | `context transfer` |
 | `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
@@ -175,6 +178,39 @@ the release fetches and verifies it again.
 
 Every `/intents` and `/views` answer carries a receipt signed by the answering
 node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
+
+### View subscriptions (PoC)
+
+A client is told, with no app data, when an applied entry changed something a view it
+watches read; it then reads the view again through `/views` with `minIndex`.
+
+- **Stream.** `GET /apps/{app}/events?watch=true` opens a watch stream. A replica of the
+  app serves it (a node that does not host the app proxies it to one), and its first
+  event names it: `event: stream`, `data: {"stream": "<node>.<random>"}`.
+- **Watch.** `POST /apps/{app}/watches { stream, view, args }` runs the view as the caller,
+  through the same gate as `/views` (who reaches the app, an API key's scope, the view's
+  ABI access), on the replica that holds the stream, and records what it read: every key
+  it got and every range it scanned, a scan that stopped early cut at the last key it
+  returned. It answers `{ sub, index }`. Refusals: `400 NOT_A_VIEW`, `400
+  NOT_SUBSCRIBABLE` (the ABI's `subscribable: true`, `#[app::view(subscribable)]`), `422
+  READ_SET_UNBOUNDED` (more than 4,096 keys, 64 ranges or 256 KiB to describe; refused,
+  never cut down), `429 TOO_MANY_WATCHES` (64 per stream, 2,048 per node), `413
+  ARGS_TOO_LARGE` (4 KiB), `404 UNKNOWN_STREAM`, and whatever the view itself answers.
+  Any node takes the request and passes it to the node the stream id names.
+- **Notices.** After each applied entry, every replica checks the diff against the
+  watches of the streams it serves (followers too: each applies every diff). A touched
+  watch gets at most one notice per second, naming the newest entry: `event:
+  view-changed`, `id: <index>:<seq>`, `data: {"sub": "...", "index": N}`. Nothing else is
+  ever in a notice. Before each notice the node checks on fresh system state that the
+  caller still reaches the app, their session or API key still stands (and is still
+  scoped to it), and the ABI still lets them call the view; if not it sends `event:
+  watch-ended`, `data: {"sub": "..."}` and drops the watch. After a notice it runs the
+  view again as the caller to learn what it reads now.
+- **Resume.** A stream's watches outlive its connection for 30 seconds:
+  `?watch=true&stream=<id>` with `Last-Event-ID: <index>:<seq>` (or `&last=<index>`)
+  re-attaches it and sends again a notice for every watch touched after `index`. A stream
+  the node no longer holds is answered with a new one: its first event names another id,
+  the watches are gone, so register them again and read again.
 
 ## Organizations and teams
 
@@ -255,7 +291,8 @@ its value):
 `/internal/raft`, `/internal/system`, `/internal/system/index`,
 `/internal/call`, `/internal/challenge/take`, `/internal/view`, `/internal/blob`, `/internal/blob/get`,
 `/internal/blob/held`, `/internal/blob/delete`, `/internal/storage`, `/internal/last-write`,
-`/internal/presence`, `/internal/app-ready` and `/internal/events` are for the
+`/internal/presence`, `/internal/app-ready`, `/internal/events`, `/internal/watches` and
+`/internal/watches/remove` are for the
 cluster's own nodes: they need the cluster secret (an HMAC of the cluster key
 and the cluster name) inside a sealed channel whose key was attested like any
 client's. Nothing outside the cluster calls them.

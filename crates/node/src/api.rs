@@ -1,7 +1,7 @@
 //! The node's HTTP API. Clients reach it inside the sealed channel; only
 //! `/attestation` and `/health` are served in the clear.
 //!
-//! - Client: `/auth/*`, `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
+//! - Client: `/auth/*`, `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,watches,upgrade,access}`,
 //!   `/orgs/*`, `/invites/{token}/redeem`, `/consent/requests`, `/consent/{id}/result`.
 //! - The consent page (`consent_page`) is served in the clear, outside this
 //!   router, on the node's own origin.
@@ -65,6 +65,7 @@ type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 mod account_proof;
 mod origins;
 mod passkeys;
+mod watches;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
@@ -3763,6 +3764,15 @@ async fn views(
 struct EventsQuery {
     #[serde(default)]
     from: u64,
+    /// A watch stream (PoC, `api::watches`) instead of the app's events.
+    #[serde(default)]
+    watch: bool,
+    /// The watch stream to resume.
+    #[serde(default)]
+    stream: Option<String>,
+    /// The index of the last notice seen, for a client that cannot set `Last-Event-ID`.
+    #[serde(default)]
+    last: Option<u64>,
 }
 
 /// The app's events from `from`, then live. A component's event carries its
@@ -3850,6 +3860,10 @@ async fn events(
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
+    if q.watch {
+        let last = q.last.or_else(|| watches::last_event_index(&headers));
+        return watch_events(&node, &app, &p, q.stream.as_deref(), last, slot).await;
+    }
     if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
         let stream = stream.map(move |e| {
             let _held = &slot;
@@ -3875,6 +3889,73 @@ async fn events(
                 subscriber.unwrap_or_default()
             ),
         )
+        .await
+        .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+    let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
+        let _held = &slot;
+        b
+    }));
+    Ok((
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-store"),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// A watch stream (`api::watches`): served here when this node hosts the app, else
+/// proxied to a replica, the one that holds the stream being resumed if it is one.
+async fn watch_events(
+    node: &Arc<Node>,
+    app: &crate::types::AppRecord,
+    p: &Principal,
+    resume: Option<&str>,
+    last: Option<u64>,
+    slot: StreamSlot,
+) -> Result<Response, ApiError> {
+    let holder = watches::holder_of(p);
+    // An id this cluster made (`<node>.<base64url>`); anything else resumes nothing.
+    let resume = resume.filter(|id| {
+        watches::owner_of(id).is_some()
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    });
+    if let Some(stream) = watches::local_stream(node, &app.app_id, holder.clone(), resume, last)? {
+        let stream = stream.map(move |e| {
+            let _held = &slot;
+            e
+        });
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response());
+    }
+    let owner = resume
+        .and_then(watches::owner_of)
+        .filter(|id| app.replicas.contains(id));
+    let addr = node
+        .sys(|s| {
+            owner
+                .iter()
+                .chain(app.replicas.iter())
+                .find_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+        })
+        .ok_or_else(|| ApiError::unavailable("no replica known"))?;
+    let mut path = format!(
+        "internal/events?app={}&watch=true&holder={}",
+        app.app_id,
+        watches::holder_param(&holder)
+    );
+    if let Some(id) = resume {
+        path.push_str(&format!("&stream={id}"));
+    }
+    if let Some(last) = last {
+        path.push_str(&format!("&last={last}"));
+    }
+    let resp = node
+        .peer_stream(&addr, &path)
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
     let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
@@ -6838,6 +6919,16 @@ struct InternalEvents {
     /// The account a component's events are filtered for; empty: anonymous.
     #[serde(default)]
     subscriber: String,
+    /// A watch stream for `holder` (base64url JSON of `watch::Holder`), resuming `stream`
+    /// after the entry `last` (`api::watches`).
+    #[serde(default)]
+    watch: bool,
+    #[serde(default)]
+    holder: String,
+    #[serde(default)]
+    stream: Option<String>,
+    #[serde(default)]
+    last: Option<u64>,
 }
 
 async fn internal_events(
@@ -6848,6 +6939,14 @@ async fn internal_events(
 ) -> Result<Response, ApiError> {
     let caller = peer(&node, &headers, key).await?;
     caller_may_hold_app(&node, &caller, &q.app).await?;
+    if q.watch {
+        let holder = watches::holder_from_param(&q.holder)?;
+        let stream = watches::local_stream(&node, &q.app, holder, q.stream.as_deref(), q.last)?
+            .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response());
+    }
     let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
     let stream = local_events(&node, &q.app, q.from, subscriber)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -9328,6 +9427,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/views", post(views))
         .route("/apps/{app}/events", get(events))
+        .route("/apps/{app}/watches", post(watches::watch_add))
+        .route("/apps/{app}/watches/{sub}", delete(watches::watch_remove))
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
         .route("/apps/{app}/transfer", post(app_transfer))
@@ -9391,6 +9492,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))
+        .route("/internal/watches", post(watches::internal_watch_add))
+        .route("/internal/watches/remove", post(watches::internal_watch_remove))
         .route("/ops/status", get(ops_status))
         .route("/ops/cluster", get(ops_cluster))
         .route("/ops/metrics", get(ops_metrics))

@@ -917,6 +917,13 @@ impl AppMachine {
                 }
                 deltas.retain(|_, d| *d != 0);
                 c.blobs.count(tx, &deltas, ts_ms);
+                if self.changes_tx.receiver_count() > 0 {
+                    let keys = outcome.diff.iter().map(|w| w.key.0.clone()).collect();
+                    let _receivers = self.changes_tx.send(Arc::new(crate::app::Changed {
+                        index,
+                        keys: Some(keys),
+                    }));
+                }
             }
             self.apply_run_changes(tx, ts_ms, starter, outcome);
             self.note_touched(index, touched);
@@ -1507,6 +1514,7 @@ mod tests {
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             usage: host::Usage::default(),
+            read_set: None,
         });
         let entry: Outcome = serde_json::from_slice(&serde_json::to_vec(&out).unwrap()).unwrap();
         assert_eq!(entry.http.len(), 1);
@@ -1534,6 +1542,7 @@ mod tests {
             compute_starts: Vec::new(),
             compute_cancels: Vec::new(),
             published: Vec::new(),
+            read_set: None,
             new_files: vec![host::NewFile {
                 id: fid(1),
                 size: 5,

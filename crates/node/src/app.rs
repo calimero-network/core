@@ -12,6 +12,7 @@
 //! no-op on every replica alike.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use calimero_log::{Bytes, GroupState, Machine, StateTx};
 use serde::{Deserialize, Serialize};
@@ -271,13 +272,28 @@ struct LegacyAppState {
     timer_ticks: BTreeMap<String, u64>,
 }
 
+/// Changes a slow watcher may fall behind by before it treats every watch as changed.
+pub const CHANGES_BUFFER: usize = 1024;
+
 /// Entities touched per entry, kept in memory for search to catch up from.
 pub const TOUCHED_RING: usize = 4096;
+
+/// What an applied entry changed in a component's storage, for watched views (PoC): the
+/// stored keys its diff wrote, or `None` for everything (a snapshot install or restart
+/// replaced the state).
+#[derive(Clone, Debug)]
+pub struct Changed {
+    /// The entry (`AppState::last_index` once it applied).
+    pub index: u64,
+    pub keys: Option<Vec<Vec<u8>>>,
+}
 
 pub struct AppMachine {
     pub app_id: AppId,
     pub state: AppState,
     pub events_tx: broadcast::Sender<EventRecord>,
+    /// Every applied change to a component's storage, while anyone watches (PoC).
+    pub changes_tx: broadcast::Sender<Arc<Changed>>,
     /// `(index, record keys)` of recent entries that touched any; empty after a
     /// restart or a snapshot, which makes search rebuild instead.
     pub touched: VecDeque<(u64, Vec<String>)>,
@@ -296,10 +312,12 @@ impl AppMachine {
     #[must_use]
     pub fn new(app_id: AppId) -> Self {
         let (events_tx, _) = broadcast::channel(1024);
+        let (changes_tx, _) = broadcast::channel(CHANGES_BUFFER);
         Self {
             app_id,
             state: AppState::default(),
             events_tx,
+            changes_tx,
             touched: VecDeque::new(),
             touched_since: u64::MAX,
             #[cfg(feature = "testing")]
@@ -526,6 +544,13 @@ impl Machine for AppMachine {
         // What search knows to catch up from is gone with the old state.
         self.touched.clear();
         self.touched_since = u64::MAX;
+        // Watched views may have read anything that changed.
+        if self.changes_tx.receiver_count() > 0 {
+            let _receivers = self.changes_tx.send(Arc::new(Changed {
+                index: self.state.last_index,
+                keys: None,
+            }));
+        }
         Ok(())
     }
 

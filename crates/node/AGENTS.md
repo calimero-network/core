@@ -155,7 +155,7 @@ is its command line.
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
   `old_datadir.rs`).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
-  `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
+  `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,watches,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
   (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`, `__blob_revoke`) run only for a
@@ -1109,6 +1109,36 @@ API and system group:
   the event stream (`api::local_events`, the subscriber passed to a peer's
   `internal/events`) and a call's answer check `SystemState::receives` when they
   send it, so a removed member stops receiving at once.
+- **View subscriptions** (PoC; `watch.rs`, `api/watches.rs`; routes and shapes in the
+  admin API docs, "View subscriptions"): a watch stream (`GET /apps/{app}/events?watch=true`,
+  first frame `stream` `{ stream }`, no app events) is held by a replica of the app (an id
+  `<node>.<random>`); a node that does not host the app proxies it there
+  (`internal/events?watch=true&holder=..`), and `POST /apps/{app}/watches` /
+  `DELETE /apps/{app}/watches/{sub}` are passed to the node the id names
+  (`internal/watches`, `internal/watches/remove`) after this node's `gate` for the view.
+  Registering runs the view on that replica as the caller with the read-set recorder
+  (`Node::view_component(.., record: true)`, the ABI gate included), refuses a non-view
+  (`NOT_A_VIEW`), a view without `subscribable` (`NOT_SUBSCRIBABLE`) and an unbounded read
+  set (`422 READ_SET_UNBOUNDED`), and keeps `{ view, args, read set, since }` where
+  `since` is the app's last entry the view read. Every replica applies every diff and
+  `apply_component_outcome` sends its keys on `AppMachine::changes_tx` (only while
+  someone listens; a `restore` sends "everything"); each stream's task (`drive`) marks
+  the watches a change after their `since` touches (a lagged receiver marks all), and every
+  `NOTICE_INTERVAL` (1 s) `flush` sends one `view-changed` `{ sub, index }` per marked
+  watch (the newest index; `id` `<index>:<seq>`), first judging on fresh system state that
+  the holder still reaches the app, its session (revocation, passkey) or API key (expiry,
+  app and method scope) stands and the ABI still admits the view, else `watch-ended`
+  `{ sub }` and the watch is dropped; after a notice it runs the view again as the holder
+  and takes the new read set (`WatchStream::refresh`). A change applied while a set is
+  being replaced is caught by comparing the app's last entry once the set is in place
+  (`caught_up`). A stream outlives its connection by `RESUME_GRACE` (30 s): `stream=<id>`
+  with `Last-Event-ID` (or `last=`) re-attaches it and marks every watch touched after
+  that index; an unknown stream is answered with a new one. Limits:
+  `MAX_WATCHES_PER_STREAM` (64), `MAX_WATCHES_PER_NODE` (2,048), `MAX_WATCH_ARGS_BYTES`
+  (4 KiB), streams held at most `api::MAX_EVENT_STREAMS`, the read-set caps of
+  `calimero-app-host`. Not covered: a change in what the view sees that is not a diff of
+  the app (roles, teams, blob records, the clock); a package-bound session's binding is
+  judged at registration only. Tests: `tests/watches.rs`, `watch::tests`.
 - **Upgrades**: the node's route and authority (`POST /apps/{app}/upgrade`,
   passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.

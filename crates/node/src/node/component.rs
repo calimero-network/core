@@ -330,11 +330,22 @@ fn moves_runs(outcome: &Outcome) -> bool {
 
 /// A finished run: its outcome, and the ciphertext of the files it made, which stays
 /// out of the outcome (the log carries marks only).
+/// A view run on this replica ([`Node::view_component`]).
+pub(crate) struct ViewRun {
+    pub answer: ViewAnswer,
+    /// What it read, when recorded.
+    pub read_set: Option<calimero_app_host::ReadSet>,
+    /// The app's last entry (`AppState::last_index`) in the state it read.
+    pub last_entry: u64,
+}
+
 struct Ran {
     outcome: Outcome,
     blobs: Vec<Blob>,
     /// Keeps the node's budget for `blobs` until the run's entry is proposed or refused.
     _pending: Option<Arc<PendingBytes>>,
+    /// What a view read, when its run recorded it (`RunExtras::read_set`).
+    read_set: Option<calimero_app_host::ReadSet>,
 }
 
 impl Node {
@@ -680,6 +691,7 @@ impl Node {
         extras: RunExtras,
         search: Option<Arc<dyn calimero_app_host::SearchHost>>,
     ) -> Ran {
+        let record = extras.read_set;
         let http = extras.outbound.then(|| {
             let meter = self.meter(app_id, &prepared.hash);
             Arc::new(TimedHttp {
@@ -738,7 +750,9 @@ impl Node {
                     Some(http) => host.with_http(http),
                     None => host,
                 };
+                let host = if record { host.with_read_set() } else { host };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
+                let read_set = out.read_set.take();
                 // PoC: an app's log lines (the SDK's host-collections guest-path lines among them).
                 for line in &out.logs {
                     debug!(app = app_id, "app log: {line}");
@@ -766,12 +780,14 @@ impl Node {
                     outcome,
                     blobs,
                     _pending: Some(pending),
+                    read_set,
                 }
             }
             Err(e) => Ran {
                 outcome: Outcome::trap(TrapKind::Fault, &e.to_string()),
                 blobs: Vec::new(),
                 _pending: None,
+                read_set: None,
             },
         }
     }
@@ -992,6 +1008,7 @@ impl Node {
                         outcome: Outcome::trap(TrapKind::Fault, why),
                         blobs: Vec::new(),
                         _pending: None,
+                        read_set: None,
                     },
                 };
                 let outcome = ran.outcome;
@@ -1180,6 +1197,7 @@ impl Node {
                         outbound: true,
                         runs: Some(m.runs_provider(None)),
                         compute_component: m.state.component.head.compute_bundle.is_some(),
+                        read_set: false,
                     },
                 );
                 let outcome = ran.outcome;
@@ -1364,6 +1382,7 @@ impl Node {
                         },
                         blobs: Vec::new(),
                         _pending: None,
+                        read_set: None,
                     }
                 } else {
                     let started = Instant::now();
@@ -1397,6 +1416,7 @@ impl Node {
                             outbound: !read_only,
                             runs: Some(m.runs_provider(None)),
                             compute_component: m.state.component.head.compute_bundle.is_some(),
+                            read_set: false,
                         },
                     );
                     ran_for = Some(started.elapsed());
@@ -1639,6 +1659,18 @@ impl Node {
         if req.method == RUN_VIEW {
             return self.run_view(g, req);
         }
+        Ok(self.view_component(g, req, false).await?.answer)
+    }
+
+    /// A view of a component on this replica, as of what it has applied. With `record`, the
+    /// run's read set comes back too (a watched view, PoC), with the app's last entry the
+    /// state it read includes.
+    pub(crate) async fn view_component(
+        &self,
+        g: &Group<AppMachine>,
+        req: &ViewRequest,
+        record: bool,
+    ) -> Result<ViewRun, ApiError> {
         let bundle = g
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
@@ -1646,7 +1678,7 @@ impl Node {
         abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
-        let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
+        let (bundle_now, state, applied, ts_ms, search, last_entry) = g.read_local(|m, applied| {
             (
                 m.component_bundle(),
                 (m.view(), m.blob_view()),
@@ -1654,6 +1686,7 @@ impl Node {
                 m.state.component.head.last_ts_ms,
                 self.component_search
                     .for_view(&bundle, &prepared.abi.search, m, applied),
+                m.state.last_index,
             )
         });
         if bundle_now.as_deref() != Some(bundle.as_str()) {
@@ -1695,25 +1728,30 @@ impl Node {
                         outbound: false,
                         runs: None,
                         compute_component: false,
+                        read_set: record,
                     },
                     search,
                 )
-                .outcome
             })
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+        let (out, read_set) = (out.outcome, out.read_set);
         self.usage.ran(&meter, run);
         crate::metrics::wasm_run(InvocationKind::View, run.wall);
         if !out.is_retryable() {
             self.usage.called(&meter, RunKind::View);
         }
-        Ok(ViewAnswer {
-            index: applied,
-            timeout: out.is_retryable(),
-            status: out.status,
-            result: out.result,
-            error: out.error,
+        Ok(ViewRun {
+            answer: ViewAnswer {
+                index: applied,
+                timeout: out.is_retryable(),
+                status: out.status,
+                result: out.result,
+                error: out.error,
+            },
+            read_set,
+            last_entry,
         })
     }
 
@@ -2308,6 +2346,8 @@ struct RunExtras {
     runs: Option<Arc<dyn Runs>>,
     /// Whether the app's group runs a release that ships a compute component.
     compute_component: bool,
+    /// Record what the run reads (a watched view's read set).
+    read_set: bool,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the

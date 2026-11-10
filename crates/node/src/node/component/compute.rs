@@ -1301,6 +1301,7 @@ impl Drive<'_> {
                         ),
                         blobs: Vec::new(),
                         _pending: None,
+                        read_set: None,
                     }
                 };
                 let entry = FinalEntry {
