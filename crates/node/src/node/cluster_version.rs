@@ -61,7 +61,8 @@ impl Node {
 
     /// What every node the system log reaches (each registered replica node
     /// and each member of the system group) supports now, by id.
-    async fn advertised_versions(&self) -> BTreeMap<NodeId, Option<String>> {
+    #[doc(hidden)]
+    pub async fn advertised_versions(&self) -> BTreeMap<NodeId, Option<String>> {
         let status = self.system.status();
         let mut ids: Vec<NodeId> = self.sys(|s| {
             s.replica_nodes()

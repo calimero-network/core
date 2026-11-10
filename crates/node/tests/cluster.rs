@@ -3004,8 +3004,24 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert_eq!(placement["clusterVersion"], supported, "{placement}");
-    assert!(logged_everywhere(&c));
+    if placement["clusterVersion"] != supported || !logged_everywhere(&c) {
+        // What the system leader would judge by, to tell a node that never
+        // answered from an entry that was refused.
+        let mut seen = Vec::new();
+        for (i, n) in c.nodes.iter().enumerate() {
+            if let Some(n) = n {
+                let logged = n.node.sys(|s| s.cluster_version.clone());
+                let advertised = n.node.advertised_versions().await;
+                seen.push(format!(
+                    "node {i}: logged {logged:?}, advertised {advertised:?}"
+                ));
+            }
+        }
+        panic!(
+            "the cluster version was not raised: {placement}\n{}",
+            seen.join("\n")
+        );
+    }
 
     // A node on this build supports it, so it joins and learns it.
     let new = c.join().await;
