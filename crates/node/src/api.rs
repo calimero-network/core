@@ -5697,6 +5697,7 @@ async fn team_create(
             parent: body.parent,
             join: body.join,
             actor,
+            member_child_teams: true,
         })
         .await?;
     Ok(Json(v))
@@ -6275,6 +6276,7 @@ async fn app_teams_scope(
             actor,
             consent,
             owner_in_team: true,
+            member_child_teams: true,
         })
         .await?,
     ))

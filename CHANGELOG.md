@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Members make private channels under an app's team.** Only a parent
+  team's leads and the organization's admins created a team below it, so an
+  app could not make a private channel a child team of its app team. A member
+  who writes a team and holds the new `CREATE_CHILD_TEAM` capability (`1 <<
+  11`) there now creates a restricted team below it and leads it (`POST
+  /orgs/{org}/teams { parent, join: invite }`); never an open one. A new app
+  team's default capabilities hold it (`ScopeApps`), so it is on for app teams
+  unless an admin turns it off; app teams made before keep their default. As
+  before, removing someone from a team, or their leaving it, takes their rows
+  in the teams below it. `CreateTeam` and `ScopeApps` carry
+  `member_child_teams` (serde default false), so entries an earlier release
+  logged replay as they did.
+
 - **Move an app to another organization**: `POST /apps/{app}/move { toOrg,
   bringMembers?, confirm? }` (`SystemCmd::MoveApp`, a passkey step-up over
   `<app> / __move { toOrg, bringMembers }`; `meroctl context move`). Whoever

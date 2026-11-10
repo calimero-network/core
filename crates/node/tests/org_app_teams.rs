@@ -32,6 +32,7 @@ const BLOCKS: &str = "com.test.blocks";
 const NOTES: &str = "com.test.notes";
 const INVITE_MEMBERS: u32 = 1 << 1;
 const CREATE_APP: u32 = 1 << 0;
+const CREATE_CHILD_TEAM: u32 = 1 << 11;
 
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
@@ -614,7 +615,11 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     let chat_team = s(&done["teams"][0]["teamId"]);
     let t = app_team(&bob, &org, CHAT).await;
     assert_eq!(t["join"], "everyone", "{t}");
-    assert_eq!(t["defaultCapabilities"], INVITE_MEMBERS, "{t}");
+    assert_eq!(
+        t["defaultCapabilities"],
+        INVITE_MEMBERS | CREATE_CHILD_TEAM,
+        "{t}"
+    );
     assert!(reaches(&bob, &org).await.contains(&chat));
     // A guest is not in an open team by inheritance, reaches no
     // organization-access app here, and sees no one but themselves.
@@ -697,6 +702,117 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     assert!(directory(&eve, &org).await.contains(&bob_id));
     let teams = eve.get(&format!("orgs/{org}/app-teams")).await.unwrap();
     assert_eq!(teams["appTeams"].as_array().unwrap().len(), 1, "{teams}");
+}
+
+/// Any member of an app team makes a private channel below it (a restricted
+/// child team, `CREATE_CHILD_TEAM` in the app team's default) and leads it;
+/// never an open one. Someone out of the app team (kicked, never in it, of
+/// another organization) makes none, and someone removed from the app team,
+/// or who leaves it, is out of the channels below it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn members_of_an_app_team_make_private_channels_below_it() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
+    let (dave, _d) = signed_up(&c, 0, "dave").await;
+    let (gail, _g) = signed_up(&c, 1, "gail").await;
+    let (erin, _e) = signed_up(&c, 2, "erin").await;
+    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let org = new_org(&alice).await;
+    for p in [&bob, &carol, &dave] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (bob_id, carol_id, dave_id) = (id(&bob).await, id(&carol).await, id(&dave).await);
+    let _chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    // Chat's team, closed, with everyone in it.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": true }))
+        .await
+        .unwrap();
+    let chat_team = s(&done["teams"][0]["teamId"]);
+    let t = app_team(&alice, &org, CHAT).await;
+    assert_eq!(t["defaultCapabilities"], CREATE_CHILD_TEAM, "{t}");
+    // Gail joins after: not in Chat.
+    join(
+        &gail,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let channel = |join: &str| json!({ "name": "design", "join": join, "parent": chat_team });
+    let teams = format!("orgs/{org}/teams");
+
+    // Carol makes a private channel and leads it: she adds Dave.
+    let private = s(&carol.post(&teams, channel("invite")).await.unwrap()["teamId"]);
+    let _ok = carol
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{private}/members"),
+            json!({ "account": dave_id, "role": "member" }),
+            &mut cpk,
+        )
+        .await
+        .unwrap();
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .unwrap();
+    assert!(
+        view.to_string().contains(&carol_id) && view.to_string().contains(&dave_id),
+        "{view}"
+    );
+    // Never an open one; never by someone out of Chat.
+    refused(
+        &carol.post(&teams, channel("everyone")).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+    refused(
+        &gail.post(&teams, channel("invite")).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+    let _outside = erin.post(&teams, channel("invite")).await.unwrap_err();
+    let _ok = alice
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{bob_id}"),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    refused(
+        &bob.post(&teams, channel("invite")).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+
+    // Dave, removed from Chat, and Carol, who leaves it, are out of the
+    // channel below it.
+    let _ok = alice
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{dave_id}"),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let _ok = carol
+        .delete_confirmed(
+            &format!("orgs/{org}/teams/{chat_team}/members/{carol_id}"),
+            &mut cpk,
+        )
+        .await
+        .unwrap();
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .unwrap();
+    assert!(
+        !view.to_string().contains(&carol_id) && !view.to_string().contains(&dave_id),
+        "a row is left below: {view}"
+    );
+    assert!(dave
+        .get(&format!("orgs/{org}/teams/{private}"))
+        .await
+        .is_err());
 }
 
 /// An admin closes one app's team and no other, in one step, keeping either
