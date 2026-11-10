@@ -45,16 +45,20 @@ pub enum Feature {
     /// `UpdateTeam` closing a team with `close_drops_below` (#4911): an
     /// earlier release ignores the field and keeps the rows below.
     TeamCloseDropsBelow,
+    /// `MoveApp` with `accounts_in_app_team` (#4912): an earlier release
+    /// ignores the field and gives a moved DM's people no app-team row.
+    MoveAccountsAppTeam,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 6] = [
+pub const FEATURES: [Feature; 7] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
     Feature::ComputePools,
     Feature::ClusterVersion,
     Feature::TeamCloseDropsBelow,
+    Feature::MoveAccountsAppTeam,
 ];
 
 impl Feature {
@@ -68,6 +72,7 @@ impl Feature {
             Self::OrgQuotas => "orgQuotas",
             Self::ComputePools => "computePools",
             Self::TeamCloseDropsBelow => "teamCloseDropsBelow",
+            Self::MoveAccountsAppTeam => "moveAccountsAppTeam",
         }
     }
 
@@ -79,7 +84,9 @@ impl Feature {
             Self::MoveApp | Self::AppTeamJoin | Self::OrgQuotas | Self::ComputePools => {
                 "1.0.0-rc.15"
             }
-            Self::ClusterVersion | Self::TeamCloseDropsBelow => "1.0.0-rc.16",
+            Self::ClusterVersion | Self::TeamCloseDropsBelow | Self::MoveAccountsAppTeam => {
+                "1.0.0-rc.16"
+            }
         }
     }
 }
@@ -262,7 +269,16 @@ impl SystemCmd {
     pub fn features(&self) -> Vec<Feature> {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
-            Self::MoveApp { .. } => vec![Feature::MoveApp],
+            Self::MoveApp {
+                accounts_in_app_team,
+                ..
+            } => {
+                let mut f = vec![Feature::MoveApp];
+                if *accounts_in_app_team {
+                    f.push(Feature::MoveAccountsAppTeam);
+                }
+                f
+            }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps { apps, .. } => scope_app_features(apps.as_deref()),
@@ -409,6 +425,16 @@ mod tests {
                 consent: Value::Null,
                 bring_members: false,
                 nonce: "n".into(),
+                accounts_in_app_team: false,
+            },
+            Feature::MoveAccountsAppTeam => SystemCmd::MoveApp {
+                app_id: "app".into(),
+                to_org: "org-b".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                bring_members: true,
+                nonce: "n".into(),
+                accounts_in_app_team: true,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),

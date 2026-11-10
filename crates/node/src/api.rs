@@ -5482,7 +5482,8 @@ async fn app_move(
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
-    node.require_features(&[Feature::MoveApp]).await?;
+    node.require_features(&[Feature::MoveApp, Feature::MoveAccountsAppTeam])
+        .await?;
     let args = crate::system::move_app_args(&body.to_org, body.bring_members);
     let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
     Ok(Json(
