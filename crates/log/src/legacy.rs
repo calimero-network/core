@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 #[cfg(test)]
 use serde::Serialize;
