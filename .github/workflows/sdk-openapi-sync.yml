@@ -1,0 +1,533 @@
+name: SDK OpenAPI sync
+
+# The one OpenAPI sync every SDK runs, called from each SDK's own
+# .github/workflows/openapi-sync.yml (mero-js, calimero-client-py, swift-sdk,
+# kotlin-sdk: the `openapi` surface in .github/fleet.json), pinned by commit:
+#
+#   jobs:
+#     sync:
+#       uses: calimero-network/core/.github/workflows/sdk-openapi-sync.yml@<full sha>
+#       with: { ref: ..., dry-run: ..., vendor-path: ..., generate: ..., ... }
+#       secrets:
+#         app-private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+#
+# core's openapi-sync.yml sends `core-openapi` (client_payload.commit: the core
+# commit) when master's docs/public/openapi.json changes. This checks out the
+# SDK's default branch, runs the SDK's `generate` command (which vendors the
+# document at that commit and regenerates the client), and, when anything it
+# owns changed, opens or refreshes ONE pull request on the machine-owned branch
+# `chore/core-openapi`, force-pushed on every sync.
+#
+# The pull request is titled by what the change does to callers, so the SDK's
+# semantic-release (conventionalcommits) picks the right version:
+#
+#   feat(api)!: sync with core <sha>   + a BREAKING-CHANGE: footer  -> major
+#   feat(api): sync with core <sha>    something was added           -> minor
+#   chore(api): sync with core <sha>   nothing a caller sees changed -> patch
+#
+# scripts/openapi-classify.py decides, by diffing the document the SDK's default
+# branch vendors now against the new one. That base, not core's previous commit,
+# is what the merge moves the SDK across, so a pull request that has gathered
+# several core changes carries the largest of them, and a refresh can move the
+# title either way. The SDK's `summary` command may also exit 3 to say its own
+# diff of the generated surface found a removed or changed method; that is
+# breaking too.
+#
+# The title is on the branch's single commit as well as on the pull request:
+# the SDKs squash with "default to the commit's title and message" for a
+# one-commit pull request, and semantic-release reads that commit. The footer is
+# in its message, and at the very end of the pull request body for a repository
+# that squashes with the body instead.
+#
+# The pull request is pushed and opened with a GitHub App installation token
+# (the org-shared vars.ACTIONS_APP_ID / secrets.ACTIONS_APP_PRIVATE_KEY, passed
+# in by the caller), NOT GITHUB_TOKEN: a pull request GITHUB_TOKEN opens runs no
+# workflows, so it would arrive with no CI and read as green. The App must be
+# installed on the SDK with contents and pull-requests write.
+#
+# The classifier and its pinned oasdiff are read from core at the commit the
+# caller pinned this workflow to, so a caller's pin moves both together.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "A core branch, tag or full commit to sync to by hand (workflow_dispatch's `ref`); blank = master"
+        required: false
+        default: ""
+        type: string
+      dry-run:
+        description: "Regenerate and classify, write the title and body to the step summary, push nothing"
+        required: false
+        default: false
+        type: boolean
+      runs-on:
+        description: "The runner (swift-sdk generates on macos-15)"
+        required: false
+        default: ubuntu-latest
+        type: string
+      timeout-minutes:
+        required: false
+        default: 30
+        type: number
+      node-version:
+        description: "Set up Node.js at this version (blank: none)"
+        required: false
+        default: ""
+        type: string
+      pnpm:
+        description: "Set up pnpm (packageManager's version) before Node.js, with its store cached"
+        required: false
+        default: false
+        type: boolean
+      python-version:
+        description: "Set up Python at this version (blank: none)"
+        required: false
+        default: ""
+        type: string
+      java-version:
+        description: "Set up Temurin at this version, and Gradle (blank: none)"
+        required: false
+        default: ""
+        type: string
+      setup:
+        description: "Shell run after the toolchains: install what `generate` needs"
+        required: false
+        default: ""
+        type: string
+      generate:
+        description: >-
+          Shell that vendors core's document and regenerates. It reads CORE_TARGET (the
+          commit core sent, the ref asked for, or master), CORE_RECORDED (the ref to record:
+          master for a full commit), CORE_DISPATCHED (true when core sent the commit),
+          and GH_TOKEN / GITHUB_TOKEN (this run's token, for reading core).
+        required: true
+        type: string
+      vendor-path:
+        description: "Where the SDK vendors docs/public/openapi.json"
+        required: true
+        type: string
+      source-file:
+        description: "The file recording the vendored commit: JSON (*.json) or KEY=VALUE lines"
+        required: true
+        type: string
+      source-key:
+        description: "The key in source-file that holds the full core commit"
+        required: true
+        type: string
+      owned-paths:
+        description: "Space-separated paths the sync owns and commits; anything else that changes is reported, not committed"
+        required: true
+        type: string
+      changed-paths:
+        description: "Space-separated paths whose change is worth a pull request (blank: owned-paths)"
+        required: false
+        default: ""
+        type: string
+      summary:
+        description: >-
+          Shell printing Markdown about the SDK's generated surface (methods added, removed,
+          changed). SYNC_BEFORE is a checkout of the default branch to compare with. Exit 3
+          says a method was removed or changed: the sync is then breaking.
+        required: false
+        default: ""
+        type: string
+      summary-title:
+        required: false
+        default: "Generated methods"
+        type: string
+      check:
+        description: "Shell run on the regenerated tree before anything is pushed (a typecheck)"
+        required: false
+        default: ""
+        type: string
+      pr-notes:
+        description: "Markdown appended to the pull request body"
+        required: false
+        default: ""
+        type: string
+      app-id:
+        description: "The GitHub App that pushes and opens the pull request (vars.ACTIONS_APP_ID)"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      app-private-key:
+        description: "That App's private key (secrets.ACTIONS_APP_PRIVATE_KEY); not needed for a dry run"
+        required: false
+    outputs:
+      class:
+        description: "breaking, additive, other or none (blank: nothing changed)"
+        value: ${{ jobs.sync.outputs.class }}
+      title:
+        value: ${{ jobs.sync.outputs.title }}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync with core's OpenAPI document
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+      title: ${{ steps.classify.outputs.title }}
+    steps:
+      # The default branch (blank on a schedule: the checkout's default). The
+      # SDK's openapi-sync.yml keeps its triggers; whatever fired it, the sync
+      # starts from what is merged.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        if: inputs.pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - name: Set up Node.js
+        if: inputs.node-version != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.pnpm && 'pnpm' || '' }}
+
+      - name: Set up Python
+        if: inputs.python-version != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up JDK
+        if: inputs.java-version != ''
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Validate the Gradle wrapper
+        if: inputs.java-version != ''
+        uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Set up Gradle
+        if: inputs.java-version != ''
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Install the SDK's tools
+        if: inputs.setup != ''
+        env:
+          SETUP: ${{ inputs.setup }}
+        run: bash -euo pipefail -c "$SETUP"
+
+      # The classifier comes from core at the commit the caller pinned this
+      # workflow to: the `uses:` line of the caller's workflow at the commit
+      # that ran it (github.workflow_ref / workflow_sha name the caller's file).
+      - name: Fetch the classifier this workflow was pinned with
+        id: tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_REF: ${{ github.workflow_ref }}
+          CALLER_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          file="${CALLER_REF#"${GITHUB_REPOSITORY}/"}"; file="${file%%@*}"
+          sha=$(gh api -H "Accept: application/vnd.github.raw" "repos/${GITHUB_REPOSITORY}/contents/${file}?ref=${CALLER_SHA}" \
+            | sed -nE 's#^[[:space:]]*uses:[[:space:]]*calimero-network/core/\.github/workflows/sdk-openapi-sync\.yml@([0-9a-f]{40}).*#\1#p' | head -n1)
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${file} must call calimero-network/core/.github/workflows/sdk-openapi-sync.yml at a full commit sha"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/core-tools"
+          mkdir -p "$dir"
+          for f in scripts/openapi-classify.py scripts/install-oasdiff.sh; do
+            curl -fsSL -o "$dir/$(basename "$f")" "https://raw.githubusercontent.com/calimero-network/core/${sha}/${f}"
+          done
+          chmod +x "$dir/install-oasdiff.sh"
+          echo "oasdiff=$("$dir/install-oasdiff.sh" "$dir/bin")" >> "$GITHUB_OUTPUT"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "core tools at ${sha}"
+
+      # What to vendor: the commit core sent (on its master), or the ref asked
+      # for by hand, or master. A full commit is recorded as on master.
+      - name: Decide which core commit to vendor
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          PAYLOAD_COMMIT: ${{ github.event.client_payload.commit }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          dispatched=false
+          case "$EVENT" in
+            repository_dispatch)
+              if ! [[ "$PAYLOAD_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::client_payload.commit must be a full core commit sha, got '$PAYLOAD_COMMIT'"
+                exit 1
+              fi
+              target="$PAYLOAD_COMMIT"; dispatched=true ;;
+            *)
+              target="${INPUT_REF:-master}" ;;
+          esac
+          if ! [[ "$target" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::'$target' is not a branch, tag or commit"
+            exit 1
+          fi
+          recorded="$target"
+          if [[ "$target" =~ ^[0-9a-f]{40}$ ]]; then recorded=master; fi
+          {
+            echo "target=$target"
+            echo "recorded=$recorded"
+            echo "dispatched=$dispatched"
+          } >> "$GITHUB_OUTPUT"
+          echo "Syncing to core $target"
+
+      # The default branch as it is, for `summary` to compare with.
+      - name: Keep the default branch to compare with
+        run: git worktree add --detach "$RUNNER_TEMP/before" HEAD
+
+      - name: Vendor core's document and regenerate
+        env:
+          GENERATE: ${{ inputs.generate }}
+          CORE_TARGET: ${{ steps.target.outputs.target }}
+          CORE_RECORDED: ${{ steps.target.outputs.recorded }}
+          CORE_DISPATCHED: ${{ steps.target.outputs.dispatched }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash -euo pipefail -c "$GENERATE"
+
+      - name: Decide whether anything changed
+        id: diff
+        env:
+          SOURCE_FILE: ${{ inputs.source-file }}
+          SOURCE_KEY: ${{ inputs.source-key }}
+          OWNED: ${{ inputs.owned-paths }}
+          CHANGED: ${{ inputs.changed-paths }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_FILE" in
+            *.json) commit=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$SOURCE_FILE" "$SOURCE_KEY") ;;
+            *) commit=$(sed -n "s/^${SOURCE_KEY}=//p" "$SOURCE_FILE" | tr -d "\"'" | head -n1) ;;
+          esac
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${SOURCE_FILE} records no full commit under ${SOURCE_KEY} (got '$commit')"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "short=${commit:0:9}" >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2086 # space-separated path lists
+          if [ -z "$(git status --porcelain --untracked-files=all -- ${CHANGED:-$OWNED})" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::already in sync with core ${commit:0:9}: nothing to do"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          # New files count in the diffs below.
+          # shellcheck disable=SC2086
+          git add --intent-to-add -- $OWNED
+          git --no-pager diff --stat
+
+      - name: Check the regenerated code
+        if: steps.diff.outputs.changed == 'true' && inputs.check != ''
+        env:
+          CHECK: ${{ inputs.check }}
+        run: bash -euo pipefail -c "$CHECK"
+
+      - name: Classify the change and write the pull request
+        if: steps.diff.outputs.changed == 'true'
+        id: classify
+        env:
+          OASDIFF: ${{ steps.tools.outputs.oasdiff }}
+          TOOLS: ${{ steps.tools.outputs.dir }}
+          VENDOR: ${{ inputs.vendor-path }}
+          SUMMARY: ${{ inputs.summary }}
+          SUMMARY_TITLE: ${{ inputs.summary-title }}
+          PR_NOTES: ${{ inputs.pr-notes }}
+          GENERATE: ${{ inputs.generate }}
+          COMMIT: ${{ steps.diff.outputs.commit }}
+          SHORT: ${{ steps.diff.outputs.short }}
+          SYNC_BEFORE: ${{ runner.temp }}/before
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/sync"
+          mkdir -p "$out"
+
+          # The document the default branch vendors (none on a first sync)
+          # against the one just vendored.
+          git show "HEAD:${VENDOR}" > "$out/base.json" 2>/dev/null || : > "$out/base.json"
+          python3 "$TOOLS/openapi-classify.py" "$out/base.json" "$VENDOR" \
+            --markdown "$out/api.md" --footer "$out/footer.txt" > "$out/class.json"
+          class=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["class"])' "$out/class.json")
+          counts=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["summary"])' "$out/class.json")
+
+          sdk_breaking=false
+          : > "$out/summary.md"
+          if [ -n "$SUMMARY" ]; then
+            set +e
+            bash -euo pipefail -c "$SUMMARY" > "$out/summary.md"
+            code=$?
+            set -e
+            case "$code" in
+              0) ;;
+              3) sdk_breaking=true ;;
+              *) echo "::error::the summary command failed ($code)"; exit "$code" ;;
+            esac
+          fi
+          if [ "$sdk_breaking" = true ] && [ "$class" != breaking ]; then
+            class=breaking
+            [ -s "$out/footer.txt" ] || echo "BREAKING-CHANGE: core's node API changed in a way callers of the generated client see:" > "$out/footer.txt"
+          fi
+          if [ "$sdk_breaking" = true ]; then
+            echo "- the SDK's diff of its generated methods found one removed or changed (see the pull request)" >> "$out/footer.txt"
+          fi
+
+          case "$class" in
+            breaking) title="feat(api)!: sync with core $SHORT"; release="**Major release.**" ;;
+            additive) title="feat(api): sync with core $SHORT"; release="**Minor release.**" ;;
+            *) title="chore(api): sync with core $SHORT"; release="**Patch release.**" ;;
+          esac
+
+          {
+            echo "$title"
+            echo
+            echo "Vendors calimero-network/core@$COMMIT's docs/public/openapi.json into $VENDOR and regenerates the client."
+            echo "Generated by openapi-sync.yml (calimero-network/core's sdk-openapi-sync.yml)."
+            echo
+            echo "API change against the vendored document: $class ($counts)."
+            if [ -s "$out/footer.txt" ]; then
+              echo
+              cat "$out/footer.txt"
+            fi
+          } > "$out/commit-message.txt"
+
+          {
+            echo "Vendors core's node API document from [calimero-network/core@$SHORT](https://github.com/calimero-network/core/commit/$COMMIT) (\`docs/public/openapi.json\`) into \`$VENDOR\` and regenerates the client:"
+            echo
+            echo '```sh'
+            printf '%s\n' "$GENERATE"
+            echo '```'
+            echo
+            case "$class" in
+              breaking)
+                echo "$release Callers of the generated client must change, so this is titled \`feat(api)!:\` and its commit ends with a breaking-change footer, which semantic-release reads as a major version. Merge it as it is (a squash of this one commit keeps that commit's title and message); if you edit the title, keep the \`!\`." ;;
+              additive)
+                echo "$release Something was added and nothing a caller relies on was removed or changed, so this is titled \`feat(api):\`." ;;
+              *)
+                echo "$release Nothing a caller of the generated client sees changed, so this is titled \`chore(api):\`." ;;
+            esac
+            echo
+            echo "### API changes (the vendored document against core@$SHORT)"
+            echo
+            cat "$out/api.md"
+            if [ -n "$SUMMARY" ]; then
+              echo
+              echo "### $SUMMARY_TITLE"
+              echo
+              cat "$out/summary.md"
+            fi
+            if [ -n "$PR_NOTES" ]; then
+              echo
+              printf '%s\n' "$PR_NOTES"
+            fi
+            echo
+            echo "<details><summary>Files: $(git --no-pager diff --shortstat | sed 's/^ *//')</summary>"
+            echo
+            echo '```'
+            git --no-pager diff --stat=100
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "Opened by \`.github/workflows/openapi-sync.yml\` (calimero-network/core's \`sdk-openapi-sync.yml\`) on the machine-owned branch \`chore/core-openapi\`, which is force-pushed on every sync: push fixes to a branch of your own."
+            if [ -s "$out/footer.txt" ]; then
+              # Last, so a repository that squashes with the pull request body
+              # still ends its commit with the footer.
+              echo
+              cat "$out/footer.txt"
+            fi
+          } > "$out/pr-body.md"
+
+          echo "class=$class" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          {
+            echo "## $title"
+            echo
+            cat "$out/pr-body.md"
+            echo
+            echo "<details><summary>Commit message</summary>"
+            echo
+            echo '```'
+            cat "$out/commit-message.txt"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::core@$SHORT: $class ($counts) -> $title"
+
+      - name: Name this repository
+        if: steps.diff.outputs.changed == 'true' && !inputs.dry-run
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint a token for this repository
+        if: steps.diff.outputs.changed == 'true' && !inputs.dry-run
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo.outputs.name }}
+          # Only what pushing the branch and opening the pull request needs.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Identify the app
+        if: steps.diff.outputs.changed == 'true' && !inputs.dry-run
+        id: app
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+        run: echo "uid=$(gh api "/users/${SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or refresh the pull request
+        if: steps.diff.outputs.changed == 'true' && !inputs.dry-run
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          APP_UID: ${{ steps.app.outputs.uid }}
+          TITLE: ${{ steps.classify.outputs.title }}
+          OWNED: ${{ inputs.owned-paths }}
+        run: |
+          set -euo pipefail
+          branch="chore/core-openapi"
+          out="$RUNNER_TEMP/sync"
+
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${APP_UID}+${SLUG}[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          # shellcheck disable=SC2086 # space-separated path list
+          git add -A -- $OWNED
+          leftover=$(git status --porcelain --untracked-files=all | grep -vE '^[MADR] ' || true)
+          if [ -n "$leftover" ]; then
+            echo "::warning::files the sync does not own changed and were NOT committed:"
+            printf '%s\n' "$leftover"
+          fi
+          git commit -q -F "$out/commit-message.txt"
+
+          # Machine-owned: a later sync replaces it rather than stacking commits
+          # or opening a second pull request. The checkout kept no credentials;
+          # the App's token pushes, so the pull request's own workflows run.
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$branch"
+
+          # The title is edited too: a later sync can change the class. No
+          # --base: the pull request goes to the default branch.
+          if gh pr view "$branch" --repo "$REPO" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            gh pr edit "$branch" --repo "$REPO" --title "$TITLE" --body-file "$out/pr-body.md"
+            echo "::notice::refreshed the open pull request for $branch"
+          else
+            gh pr create --repo "$REPO" --head "$branch" --title "$TITLE" --body-file "$out/pr-body.md"
+          fi
+          gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

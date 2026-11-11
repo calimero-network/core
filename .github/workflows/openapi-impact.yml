@@ -1,0 +1,82 @@
+name: OpenAPI impact
+
+# What a pull request's change to docs/public/openapi.json does to the SDKs
+# generated from it, before it merges: scripts/openapi-classify.py against the
+# base, written to the run's summary as the release each SDK's sync will be
+# titled with (breaking: major, additive: minor, other: patch). Informational:
+# the `impact` job never fails a pull request.
+#
+# The `test` job runs the classifier's tests whenever it, its pinned oasdiff or
+# sdk-openapi-sync.yml (the reusable workflow the SDKs call, which runs it) change.
+
+on:
+  pull_request:
+    paths:
+      - docs/public/openapi.json
+      - scripts/openapi-classify.py
+      - scripts/install-oasdiff.sh
+      - scripts/tests/openapi-classify-test.py
+      - scripts/tests/fixtures/openapi-classify-base.json
+      - .github/workflows/openapi-impact.yml
+      - .github/workflows/sdk-openapi-sync.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Classifier tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the classifier against the pinned oasdiff
+        run: |
+          set -euo pipefail
+          OASDIFF=$(scripts/install-oasdiff.sh)
+          export OASDIFF
+          python3 scripts/tests/openapi-classify-test.py
+
+  impact:
+    name: SDK impact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The merge commit: HEAD^1 is what it merges into.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify the change against the base
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          OASDIFF=$(scripts/install-oasdiff.sh)
+          export OASDIFF
+          git show HEAD^1:docs/public/openapi.json > "$RUNNER_TEMP/base.json" 2>/dev/null || : > "$RUNNER_TEMP/base.json"
+          python3 scripts/openapi-classify.py "$RUNNER_TEMP/base.json" docs/public/openapi.json \
+            --markdown "$RUNNER_TEMP/api.md" > "$RUNNER_TEMP/class.json"
+          class=$(jq -r .class "$RUNNER_TEMP/class.json")
+          summary=$(jq -r .summary "$RUNNER_TEMP/class.json")
+          case "$class" in
+            breaking) release="a major release of each SDK (feat(api)!:)" ;;
+            additive) release="a minor release of each SDK (feat(api):)" ;;
+            other) release="a patch release of each SDK (chore(api):)" ;;
+            *) release="no SDK sync" ;;
+          esac
+          {
+            echo "## OpenAPI change: $class ($summary)"
+            echo
+            echo "Merged, this is $release."
+            echo
+            cat "$RUNNER_TEMP/api.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::OpenAPI change: $class ($summary): $release"
