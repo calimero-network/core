@@ -27,6 +27,7 @@
 
 pub mod action;
 pub mod blobs;
+mod pipelines;
 mod runs;
 pub mod search;
 pub mod xcall;
@@ -47,9 +48,15 @@ use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
 
+pub use pipelines::{
+    PipelineCancelEntry, PipelineRun, PipelineStartEntry, PipelineState, StepDecisionEntry,
+    StepRun, StepState, StepStatus, StepVerdict, FINISHED_PIPELINE_RUNS_KEPT, INPUT_NOT_HELD,
+    MAX_ACTIVE_PIPELINE_RUNS, MAX_STEP_RESULT_BYTES, NO_ROOM, TOO_MANY_PIPELINE_RUNS,
+};
 pub use runs::{
-    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome, RunCaps,
-    RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT, MAX_ATTEMPTS,
+    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome,
+    PipelineLink, RunCaps, RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT,
+    MAX_ATTEMPTS,
 };
 
 /// An event a run emitted, with its audience (R9).
@@ -649,6 +656,15 @@ pub enum ComponentCmd {
     /// A run's end, with the outcome of its result method. The first valid one wins.
     #[serde(rename = "computeFinal")]
     ComputeFinal(Box<FinalEntry>),
+    /// A pipeline run begins, its inputs pinned. The node's own command.
+    #[serde(rename = "pipelineStart")]
+    PipelineStart(Box<PipelineStartEntry>),
+    /// The leader's decision for one pending step of a pipeline run; the first one wins.
+    #[serde(rename = "pipelineStep")]
+    PipelineStep(Box<StepDecisionEntry>),
+    /// A pipeline run was cancelled.
+    #[serde(rename = "pipelineCancel")]
+    PipelineCancel(Box<PipelineCancelEntry>),
 }
 
 impl ComponentCmd {
@@ -808,6 +824,12 @@ pub struct ComponentHead {
     /// The last finished runs, oldest first; their records are kept until they leave it.
     #[serde(default)]
     pub finished_runs: VecDeque<String>,
+    /// The ids of the pipeline runs that are running (at most `MAX_ACTIVE_PIPELINE_RUNS`).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub active_pipelines: BTreeSet<String>,
+    /// The last finished pipeline runs, oldest first; their records are kept until they leave it.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub finished_pipelines: VecDeque<String>,
     /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
     /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
     /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
@@ -1301,6 +1323,9 @@ impl AppMachine {
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
             Ok(ComponentCmd::ComputeFinal(done)) => Some(done.ts_ms),
+            Ok(ComponentCmd::PipelineStart(start)) => Some(start.ts_ms),
+            Ok(ComponentCmd::PipelineStep(step)) => Some(step.ts_ms),
+            Ok(ComponentCmd::PipelineCancel(cancel)) => Some(cancel.ts_ms),
             Ok(
                 ComponentCmd::Blob { ts_ms, .. }
                 | ComponentCmd::File { ts_ms, .. }
@@ -1467,6 +1492,11 @@ impl AppMachine {
                 self.apply_compute_attempt(tx, index, &attempt)
             }
             Ok(ComponentCmd::ComputeFinal(done)) => self.apply_compute_final(tx, index, &done),
+            Ok(ComponentCmd::PipelineStart(start)) => self.apply_pipeline_start(tx, index, &start),
+            Ok(ComponentCmd::PipelineStep(step)) => self.apply_pipeline_step(tx, index, &step),
+            Ok(ComponentCmd::PipelineCancel(cancel)) => {
+                self.apply_pipeline_cancel(tx, index, &cancel)
+            }
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
                 let forgotten = parse_hex32(&id).and_then(|raw| c.blobs.forget_blob(tx, &raw));
@@ -1686,6 +1716,7 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 mod tests {
     use super::*;
 
+    mod pipelines;
     mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
 

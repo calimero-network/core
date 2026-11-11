@@ -249,6 +249,20 @@ The sizes and hashes follow the same rule as the single run.
   Hitting the fuel or memory cap ends the run failed with `fuel` or `memory`; nothing is recorded as done and no output is registered.
   The wall cap is a lost attempt (see CA25), because how fast a machine runs is not the app's doing.
 
+## Pipeline runs
+
+A release that registers pipelines (`pipelines` in its manifest, checked at install) can run them in the group of any app made from it, compute-only apps included.
+`POST /apps/{app}/pipelines/{name}/runs { inputs, params }` starts one and answers `202 { run }`.
+The node judges the request against the pinned pipeline before logging anything: `NO_SUCH_PIPELINE`, `BAD_INPUTS` (an input unbound, past its `maxItems`, or a file the app does not hold), `BAD_PARAMS` (typed, within `min`, `max` and `enum`, defaults filled), `TOO_MANY_PIPELINE_RUNS` (8 running per app, `429`), `PIPELINES_NEED_ONE_SERVICE` and `409 CLUSTER_NOT_UPGRADED` until every node runs this release.
+The run pins the release's pipeline by hash and its compute component, so an upgrade of the app changes neither a run that started before it.
+A step's work is ordinary compute runs (`RunRecord.pipeline` names the step), so placement, retries, caps, quotas and billing are the run driver's, unchanged.
+Their ids are `<run>.<step>.<index>`, and they have no result method: the step keeps the job's result (at most 64 KiB) and its outputs, which are held until the pipeline run's record is dropped (the last 64 finished runs are kept).
+The leader decides each pending step and logs it as a `pipelineStep` entry (start with its runs, skipped, upstream failed, cancelled, or failed with a code); apply accepts the first decision for a step and nothing after it, so a leader that changes mid-run never runs a step twice.
+A step starts when every step it needs succeeded; one whose need failed is `upstreamFailed`; the run is `succeeded` when every step succeeded or was skipped, `cancelled` when it was cancelled, else `failed`.
+A step that cannot be built fails with `NOT_YET_SUPPORTED` (`forEach`, `collect`), `TOO_MANY_INPUTS` (past 64 files), `ARGS_TOO_LARGE`, `BAD_REF`, `NO_RESULT` or `BAD_RESULT`.
+`GET /apps/{app}/pipeline-runs/{run}` answers the record, `GET /apps/{app}/pipeline-runs` the recent ones, and `POST /apps/{app}/pipeline-runs/{run}/cancel` stops a run.
+Output sizes, hashes and step results are shown only to those who may list the app's files.
+
 ## Usage and billing
 
 The job node measures CPU seconds, peak memory times wall time (GiB-seconds) and fuel used, and signs them in its report.

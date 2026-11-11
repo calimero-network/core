@@ -192,6 +192,17 @@ pub struct RunRecord {
     pub attempts: Vec<Attempt>,
     #[serde(rename = "final")]
     pub final_: Option<Final>,
+    /// The pipeline step this run belongs to, if a pipeline started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<PipelineLink>,
+}
+
+/// The step of a pipeline run that a compute run was started for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineLink {
+    pub run: String,
+    pub step: String,
 }
 
 impl RunRecord {
@@ -397,6 +408,7 @@ impl AppMachine {
             .iter()
             .filter_map(|run| self.run_record(run))
             .map(|record| record.result_method)
+            .filter(|method| !method.is_empty())
             .collect()
     }
 
@@ -455,12 +467,12 @@ impl AppMachine {
         }
     }
 
-    fn read_run(tx: &StateTx<'_>, run: &str) -> Option<RunRecord> {
+    pub(super) fn read_run(tx: &StateTx<'_>, run: &str) -> Option<RunRecord> {
         let raw = tx.get_hidden(rows::CRUN, run.as_bytes())?;
         serde_json::from_slice(&raw).ok()
     }
 
-    fn write_run(tx: &mut StateTx<'_>, record: &RunRecord) {
+    pub(super) fn write_run(tx: &mut StateTx<'_>, record: &RunRecord) {
         match serde_json::to_vec(record) {
             Ok(row) => tx.put_hidden(rows::CRUN, record.run.as_bytes(), &row),
             Err(e) => tx.fail(e),
@@ -506,6 +518,7 @@ impl AppMachine {
                 cancel_requested: false,
                 attempts: Vec::new(),
                 final_: None,
+                pipeline: None,
             };
             Self::write_run(tx, &record);
             let _new = self
@@ -608,6 +621,8 @@ impl AppMachine {
                 .blobs
                 .add_output(tx, output, entry.ts_ms);
         }
+        let result = entry.report.as_ref().map_or(&[][..], |r| &r.result[..]);
+        self.settle_step_run(tx, &record, &entry.outputs, result, entry.ts_ms);
         self.apply_component_outcome(
             tx,
             index,
@@ -638,7 +653,13 @@ impl AppMachine {
     }
 
     /// Counts the inputs of a run as references while it is active, so retention keeps them.
-    fn pin_inputs(&mut self, tx: &mut StateTx<'_>, inputs: &[RunInputRef], delta: i64, ts_ms: u64) {
+    pub(super) fn pin_inputs(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        inputs: &[RunInputRef],
+        delta: i64,
+        ts_ms: u64,
+    ) {
         let mut deltas = BTreeMap::new();
         for id in inputs.iter().filter_map(|i| parse_hex32(&i.id)) {
             *deltas.entry(id).or_insert(0) += delta;

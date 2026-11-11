@@ -34,12 +34,12 @@ pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 pub use component::ComputeLimits;
 pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 
-pub(crate) use component::RUN_VIEW;
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
 
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
@@ -279,7 +279,14 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 4] = ["__upgrade", "__blob", "__blob_forget", "__blob_revoke"];
+pub const HOST_METHODS: [&str; 6] = [
+    "__upgrade",
+    "__blob",
+    "__blob_forget",
+    "__blob_revoke",
+    "__pipeline_start",
+    "__pipeline_cancel",
+];
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -2055,7 +2062,6 @@ impl Node {
             // may be given a bundle by an upgrade before its init applied (its init
             // timed out), and still needs its init then, on that bundle.
             let needs_init = app.executor == Kind::Component
-                && app.components.is_app()
                 && g.read_local(|m, _| {
                     !m.state.initialized
                         && (m.state.bundle.is_none()
@@ -2878,6 +2884,15 @@ impl Node {
         {
             return self.component_blob_cmd(g, req).await;
         }
+        if executor == Some(Kind::Component)
+            && req.host
+            && matches!(
+                req.method.as_str(),
+                "__pipeline_start" | "__pipeline_cancel"
+            )
+        {
+            return self.component_pipeline_cmd(g, req).await;
+        }
         let why = match executor {
             Some(Kind::Component) => COMPONENT_REFUSES,
             _ => crate::app::WASMER_GONE,
@@ -3079,8 +3094,13 @@ impl Node {
         if app.executor == Kind::Wasmer {
             return Err(ApiError::unsupported_engine());
         }
-        app.require_app_component()?;
-        if req.method != component::RUN_VIEW {
+        if !matches!(
+            req.method.as_str(),
+            component::RUN_VIEW | component::PIPELINE_VIEW
+        ) {
+            app.require_app_component()?;
+        }
+        if req.method != component::RUN_VIEW && req.method != component::PIPELINE_VIEW {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;
         }

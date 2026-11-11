@@ -528,6 +528,22 @@ async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
     let job = common::components("compute").compute.clone().unwrap();
     install_compute_only(&owner, "1.0.0", &job).await.unwrap();
     let app = create_compute_only(&owner, "1.0.0").await;
+    // Creating answers once the group's empty init committed, so a pipeline can start at once.
+    let initialized: Vec<_> = c
+        .nodes
+        .iter()
+        .flatten()
+        .filter_map(|r| r.node.hosted(&app))
+        .filter(|g| g.read_local(|m, _| m.state.initialized))
+        .collect();
+    let group = initialized.first().expect("a replica applied the init");
+    group.read_local(|m, _| {
+        assert_eq!(
+            m.state.component.head.compute_bundle,
+            Some(sha256_hex(&job))
+        );
+        assert!(m.state.init_error.is_none());
+    });
 
     let e = owner
         .call(&app, "digest", json!({}), None)
@@ -539,10 +555,6 @@ async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
-    // Init never ran: the app group holds no app bundle.
-    let node = &c.nodes[0].as_ref().unwrap().node;
-    let group = node.hosted(&app).expect("hosted on node 0");
-    assert!(group.read_local(|m, _| m.state.bundle.is_none() && !m.state.initialized));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

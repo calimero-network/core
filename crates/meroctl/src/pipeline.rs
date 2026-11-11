@@ -1,0 +1,149 @@
+//! `meroctl pipeline`: start, read and cancel the pipeline runs of an app instance. A pipeline
+//! is registered by the release the instance runs (`meroctl app pipelines`); its inputs are the
+//! instance's sealed files (`meroctl file upload`).
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use clap::Subcommand;
+use eyre::{bail, eyre};
+use serde_json::{json, Value};
+
+use crate::env::Env;
+
+const WAIT_POLL: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Subcommand)]
+pub enum PipelineCmd {
+    /// Start a run of the pipeline `name`; prints `{ run }`, or with `--wait` the ended run.
+    Run {
+        /// The context (alias or id).
+        app: String,
+        name: String,
+        /// Bind an input to file ids: `NAME=ID[,ID...]`; once per input.
+        #[arg(long = "input", value_name = "NAME=ID[,ID...]")]
+        inputs: Vec<String>,
+        /// Give a param: `NAME=VALUE` (a number or boolean as such, else text); once per param.
+        #[arg(long = "param", value_name = "NAME=VALUE")]
+        params: Vec<String>,
+        /// Wait until the run is no longer running and print it.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// One run: its state and each step's status, runs, outputs and reason.
+    Get { app: String, run: String },
+    /// Cancel a run: its pending steps end cancelled and its running steps' runs stop.
+    Cancel { app: String, run: String },
+    /// The context's recent runs, newest first.
+    Runs { app: String },
+}
+
+fn split(arg: &str) -> eyre::Result<(&str, &str)> {
+    arg.split_once('=')
+        .filter(|(name, _)| !name.is_empty())
+        .ok_or_else(|| eyre!("`{arg}` is not NAME=VALUE"))
+}
+
+/// `--input NAME=ID,ID` as the files bound to each input.
+pub fn parse_inputs(args: &[String]) -> eyre::Result<Value> {
+    let mut inputs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for arg in args {
+        let (name, ids) = split(arg)?;
+        inputs
+            .entry(name)
+            .or_default()
+            .extend(ids.split(',').filter(|id| !id.is_empty()));
+    }
+    Ok(json!(inputs))
+}
+
+/// `--param NAME=VALUE`, a value that reads as JSON (a number, a boolean) as that, else as text.
+pub fn parse_params(args: &[String]) -> eyre::Result<Value> {
+    let mut params = serde_json::Map::new();
+    for arg in args {
+        let (name, value) = split(arg)?;
+        let value = serde_json::from_str(value)
+            .ok()
+            .filter(|v: &Value| v.is_number() || v.is_boolean())
+            .unwrap_or_else(|| json!(value));
+        if params.insert(name.to_owned(), value).is_some() {
+            bail!("param `{name}` is given twice");
+        }
+    }
+    Ok(Value::Object(params))
+}
+
+pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
+    Ok(match cmd {
+        PipelineCmd::Run {
+            app,
+            name,
+            inputs,
+            params,
+            wait,
+        } => {
+            let app = env.app(&app).await?;
+            let started = env
+                .client
+                .start_pipeline_run(&app, &name, parse_inputs(&inputs)?, parse_params(&params)?)
+                .await?;
+            if !wait {
+                return Ok(started);
+            }
+            let id = started["run"]
+                .as_str()
+                .ok_or_else(|| eyre!("the node named no run"))?;
+            loop {
+                let run = env.client.pipeline_run(&app, id).await?;
+                if run["state"] != "running" {
+                    return Ok(run);
+                }
+                tokio::time::sleep(WAIT_POLL).await;
+            }
+        }
+        PipelineCmd::Get { app, run } => {
+            env.client.pipeline_run(&env.app(&app).await?, &run).await?
+        }
+        PipelineCmd::Cancel { app, run } => {
+            env.client
+                .cancel_pipeline_run(&env.app(&app).await?, &run)
+                .await?
+        }
+        PipelineCmd::Runs { app } => env.client.pipeline_runs(&env.app(&app).await?).await?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn inputs_bind_names_to_file_ids() {
+        let v = parse_inputs(&strings(&["docs=a,b", "docs=c", "model=m"])).unwrap();
+        assert_eq!(v, json!({ "docs": ["a", "b", "c"], "model": ["m"] }));
+        assert!(parse_inputs(&strings(&["docs"])).is_err());
+        assert!(parse_inputs(&strings(&["=a"])).is_err());
+    }
+
+    #[test]
+    fn params_read_numbers_and_booleans_and_keep_the_rest_as_text() {
+        let v = parse_params(&strings(&[
+            "t=0.5",
+            "on=true",
+            "mode=fast",
+            "n=\"7\"",
+            "s=1e",
+        ]))
+        .unwrap();
+        assert_eq!(
+            v,
+            json!({ "t": 0.5, "on": true, "mode": "fast", "n": "\"7\"", "s": "1e" })
+        );
+        assert!(parse_params(&strings(&["t=1", "t=2"])).is_err());
+        assert!(parse_params(&strings(&["t"])).is_err());
+    }
+}
