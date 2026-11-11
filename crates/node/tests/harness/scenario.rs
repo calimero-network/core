@@ -1313,8 +1313,10 @@ pub async fn run_cluster_scenario(path: &Path) -> Result<(), String> {
     let c = Cluster::start_with(sc.nodes, move |cfg| {
         cfg.registry = Some(url.clone());
         cfg.outbound.clone_from(&outbound);
-        // What `merod` reports as its release (the scenarios read it back).
-        cfg.release = env!("CARGO_PKG_VERSION").to_owned();
+        // What `merod` reports as its release (the scenarios read it back), and the
+        // runtime a package's `minRuntimeVersion` is judged against: the workspace
+        // release, not this crate's `0.0.0` package version.
+        cfg.release = calimero_node::RELEASE_VERSION.to_owned();
     })
     .await;
     let mut runner = Runner::new(&c, registry, &sc);
