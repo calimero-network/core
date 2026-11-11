@@ -602,6 +602,8 @@ is its command line.
   A run whose pinned compute component is no longer installed (a fresh system read confirms it) ends `Failed{refused}` at once.
   A wall clock that ran out on a job node is a lost attempt, so such a run is retried and ends `Failed{lost}` after `MAX_ATTEMPTS`.
   A new term keeps the outputs staged for the same attempt (`ComputeState::take`) so they are charged once, and a charge that failed is refunded only if it may have committed (`charge_may_have_landed`).
+  A queued run's view also carries `queue { state: unplaced | waiting | granted, pool, capacity, reason? }` for those who may list the app's files, read from the leader's system state (`Node::queue_json`); a waiting run's `reason` is `SystemState::wait_reason`, the tests `grant_runs` applies in the order `NO_CAPACITY`, `POOL_FULL`, `PAYER_AT_RUN_QUOTA`, `PAYER_AT_FUEL_QUOTA`.
+  A run that has waited `NO_CAPACITY` for `NO_CAPACITY_WARN_AFTER` (60 s) of healthy time logs one `warn!` per leadership term.
   The run's record and the `GET /apps/{app}/runs/{run}` answer show progress and the failure text (`final.message`, the job's signed `Report::message`) only to those who may list the app's files.
   The leader assigns and pushes only the run's compute component (`RunRecord.compute_bundle`, named by `Assignment.bundle`, fetched by `push_bundle` through `bundle_wasm` and signed with `sign_bundle`), never the app component.
   A queued run recorded without one (only a record from before compute components existed) ends `Failed{refused}` at once, before a slot is taken or a job node contacted.
