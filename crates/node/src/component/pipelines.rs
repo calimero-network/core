@@ -100,12 +100,20 @@ impl StepStatus {
 #[serde(rename_all = "camelCase")]
 pub struct StepState {
     pub status: StepStatus,
-    /// The compute runs the step started so far, in index order.
+    /// How many runs the step started so far, cached ones included.
+    pub started: u32,
+    /// The ids of the compute runs the step started, in index order. Read from `started`, never
+    /// stored: apply leaves it empty.
     pub runs: Vec<String>,
     /// The files each run made by run index, pinned until the pipeline run's record is dropped.
+    /// Read from the step's item rows, never stored.
     pub run_outputs: BTreeMap<u32, Vec<RunInputRef>>,
-    /// What each run returned by run index, each at most [`MAX_STEP_RESULT_BYTES`].
+    /// What each run returned by run index, each at most [`MAX_STEP_RESULT_BYTES`]. Read from the
+    /// step's item rows, never stored.
     pub run_results: BTreeMap<u32, Bytes>,
+    /// What `run_results` holds in all, bounded by [`MAX_STEP_RESULTS_BYTES`].
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub results_bytes: u32,
     /// Set once the results passed [`MAX_STEP_RESULTS_BYTES`]; none are kept then.
     pub results_too_large: bool,
     pub reason: Option<String>,
@@ -115,10 +123,12 @@ pub struct StepState {
     pub finished: u32,
     /// Items of the runs that failed or were cancelled.
     pub failed_items: u32,
-    /// Indices of the runs answered from the step cache, which started no compute run.
+    /// Indices of the runs answered from the step cache, which started no compute run. Read from
+    /// the step's item rows, never stored.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub cached_runs: BTreeSet<u32>,
-    /// The step cache key each cached run was answered under, by run index.
+    /// The step cache key each cached run was answered under, by run index. Read from the step's
+    /// item rows, never stored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cached_keys: BTreeMap<u32, String>,
     /// What the step's finished runs used, priced by the run's table; zero without a cost cap.
@@ -133,6 +143,10 @@ pub struct StepState {
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -160,6 +174,29 @@ impl StepState {
     #[must_use]
     pub fn result(&self) -> Option<&Bytes> {
         self.run_results.get(&0)
+    }
+
+    /// Reads the step's runs, outputs, results and cached keys back from its item rows.
+    fn fill(&mut self, run: &str, name: &str, read: impl Fn(&str) -> Option<Vec<u8>>) {
+        self.runs = (0..self.started as usize)
+            .map(|i| run_id(run, name, i))
+            .collect();
+        for index in 0..self.started {
+            let raw = read(&item_key(run, name, index));
+            let Some(item) = raw.and_then(|r| serde_json::from_slice::<ItemRow>(&r).ok()) else {
+                continue;
+            };
+            if let Some(key) = item.cached_key {
+                let _new = self.cached_runs.insert(index);
+                let _prev = self.cached_keys.insert(index, key);
+            }
+            if !item.outputs.is_empty() {
+                let _prev = self.run_outputs.insert(index, item.outputs);
+            }
+            if let (Some(result), false) = (item.result, self.results_too_large) {
+                let _prev = self.run_results.insert(index, result);
+            }
+        }
     }
 
     /// Items the run at `index` carries.
@@ -199,6 +236,19 @@ impl FanOut {
             && u64::from(self.items) > batch * (u64::from(self.total) - 1)
             && self.allowed <= self.items
     }
+}
+
+/// What a step keeps of one run that made something, a row of `rows::CITEM`.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemRow {
+    /// The step cache key the run was answered under; none for a run that ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cached_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    outputs: Vec<RunInputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<Bytes>,
 }
 
 /// The cost cap of a run: what the caller allows, and the price table the run was admitted under,
@@ -281,11 +331,7 @@ impl PipelineRun {
             .values()
             .map(|s| {
                 let active = if s.status == StepStatus::Running {
-                    u128::from(
-                        u32::try_from(s.runs.len())
-                            .unwrap_or(u32::MAX)
-                            .saturating_sub(s.finished),
-                    )
+                    u128::from(s.started.saturating_sub(s.finished))
                 } else {
                     0
                 };
@@ -407,7 +453,7 @@ pub struct PipelineCancelEntry {
 }
 
 fn name_fits(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.contains('.')
+    !name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.contains(['.', '/'])
 }
 
 /// The reason a run that did not finish done gives its step.
@@ -431,12 +477,13 @@ impl AppMachine {
     /// The record of pipeline run `run`, active or among the last finished.
     #[must_use]
     pub fn pipeline_run(&self, run: &str) -> Option<PipelineRun> {
-        let raw = self
-            .state
-            .kv
-            .group()?
-            .get_hidden(rows::CPIPE, run.as_bytes())?;
-        serde_json::from_slice(&raw).ok()
+        let group = self.state.kv.group()?;
+        let raw = group.get_hidden(rows::CPIPE, run.as_bytes())?;
+        let mut record: PipelineRun = serde_json::from_slice(&raw).ok()?;
+        for (name, step) in &mut record.steps {
+            step.fill(run, name, |key| group.get_hidden(rows::CITEM, key.as_bytes()));
+        }
+        Some(record)
     }
 
     /// The ids of the pipeline runs that are running, in order.
@@ -464,6 +511,24 @@ impl AppMachine {
         all.sort_by(|a, b| (b.start_ts_ms, &b.id).cmp(&(a.start_ts_ms, &a.id)));
         all.truncate(limit);
         all
+    }
+
+    fn write_item(tx: &mut StateTx<'_>, run: &str, step: &str, index: u32, item: &ItemRow) {
+        put_json(tx, rows::CITEM, &item_key(run, step, index), item);
+    }
+
+    /// Deletes the item rows of `pipeline` and answers the files they pinned.
+    fn drop_step_items(tx: &mut StateTx<'_>, pipeline: &PipelineRun) -> Vec<String> {
+        let mut files = Vec::new();
+        for (name, step) in &pipeline.steps {
+            for index in 0..step.started {
+                let key = item_key(&pipeline.id, name, index);
+                let item = get_json::<ItemRow>(tx, rows::CITEM, &key);
+                files.extend(item.into_iter().flat_map(|i| i.outputs).map(|o| o.id));
+                tx.delete_hidden(rows::CITEM, key.as_bytes());
+            }
+        }
+        files
     }
 
     /// The marks of `ids` as the app's sealed files hold them; none when one is not held.
@@ -598,7 +663,7 @@ impl AppMachine {
         let Some(step) = pipeline.steps.get(&entry.step) else {
             return no_op(NO_SUCH_STEP);
         };
-        let between_waves = step.runs.len() < step.fan.total as usize;
+        let between_waves = step.started < step.fan.total;
         let running = step.status == StepStatus::Running;
         match (&entry.decision, step.status) {
             (StepVerdict::More { .. }, StepStatus::Running) => {}
@@ -637,7 +702,7 @@ impl AppMachine {
                 match started {
                     Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
-                            step.runs = wave.ids;
+                            step.started = wave.started;
                             step.fan = *fan;
                         }
                         hit_any = !wave.hits.is_empty();
@@ -660,7 +725,7 @@ impl AppMachine {
                 match self.start_more_runs(tx, &pipeline, &entry.step, (runs, cached), ts_ms) {
                     Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
-                            step.runs.extend(wave.ids);
+                            step.started += wave.started;
                         }
                         hit_any = !wave.hits.is_empty();
                         pipeline.reserve(&entry.step, runs);
@@ -730,7 +795,7 @@ impl AppMachine {
         if state.failed_items > state.fan.allowed || state.capped {
             return Err(Refusal::Failed(STEP_STOPPING));
         }
-        let first = state.runs.len();
+        let first = state.started as usize;
         let n = wave.0.len() + wave.1.len();
         if n == 0 || first + n > state.fan.total as usize {
             return Err(Refusal::Failed(NOT_NEXT));
@@ -781,10 +846,8 @@ impl AppMachine {
             })
             .collect();
         self.start_runs_from(tx, pipeline, step, &fresh, ts_ms)?;
-        let ids = (first..first + kept)
-            .map(|i| run_id(&pipeline.id, step, i))
-            .collect();
-        Ok(Wave { ids, hits })
+        let started = u32::try_from(kept).unwrap_or(u32::MAX);
+        Ok(Wave { started, hits })
     }
 
     /// Takes the cache hits of a wave into the step as finished runs.
@@ -800,12 +863,12 @@ impl AppMachine {
             self.pin_files(tx, entry.outputs.iter().map(|o| &o.id), 1, ts_ms);
             if let Some(state) = pipeline.steps.get_mut(step) {
                 state.finished += 1;
-                let _new = state.cached_runs.insert(index);
-                let _prev = state.cached_keys.insert(index, key.clone());
-                let _prev = state.run_outputs.insert(index, entry.outputs.clone());
-                if let Some(result) = &entry.result {
-                    keep_result(state, index, &result.0);
-                }
+                let item = ItemRow {
+                    cached_key: Some(key.clone()),
+                    outputs: entry.outputs.clone(),
+                    result: entry.result.as_ref().and_then(|r| keep_result(state, &r.0)),
+                };
+                Self::write_item(tx, &pipeline.id, step, index, &item);
             }
             self.touch_cache(tx, &key, entry, ts_ms);
         }
@@ -898,26 +961,27 @@ impl AppMachine {
         Ok(())
     }
 
-    /// Tells the active runs of `runs` to stop.
-    fn flag_cancel<'a>(&self, tx: &mut StateTx<'_>, runs: impl IntoIterator<Item = &'a String>) {
-        for run in runs {
-            if !self.state.component.head.active_runs.contains(run) {
+    /// Tells the active runs of pipeline run `pipeline` (of its `step`, or of every step) to stop.
+    fn flag_cancel(&self, tx: &mut StateTx<'_>, pipeline: &str, step: Option<&str>) {
+        let prefix = format!("{pipeline}.");
+        let active = self.state.component.head.active_runs.iter();
+        for run in active.filter(|r| r.starts_with(&prefix)) {
+            let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, run) else {
                 continue;
-            }
-            match get_json::<RunRecord>(tx, rows::CRUN, run) {
-                Some(mut record) if !record.cancel_requested => {
-                    record.cancel_requested = true;
-                    put_json(tx, rows::CRUN, &record.run, &record);
-                }
-                _ => {}
+            };
+            let linked = record
+                .pipeline
+                .as_ref()
+                .is_some_and(|l| l.run == pipeline && step.is_none_or(|s| l.step == s));
+            if linked && !record.cancel_requested {
+                record.cancel_requested = true;
+                put_json(tx, rows::CRUN, &record.run, &record);
             }
         }
     }
 
     fn stop_step_runs(&self, tx: &mut StateTx<'_>, pipeline: &PipelineRun, step: &str) {
-        if let Some(state) = pipeline.steps.get(step) {
-            self.flag_cancel(tx, &state.runs);
-        }
+        self.flag_cancel(tx, &pipeline.id, Some(step));
     }
 
     /// `pipelineCancel`: the run stops starting steps, and its running steps' runs are told to
@@ -940,7 +1004,7 @@ impl AppMachine {
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(entry.ts_ms);
         pipeline.cancel_requested = true;
-        self.flag_cancel(tx, pipeline.steps.values().flat_map(|s| &s.runs));
+        self.flag_cancel(tx, &pipeline.id, None);
         self.settle_running_steps(tx, &mut pipeline);
         self.settle_pipeline(tx, &mut pipeline, entry.ts_ms);
         put_json(tx, rows::CPIPE, &pipeline.id, &pipeline);
@@ -1019,8 +1083,13 @@ impl AppMachine {
             None => {
                 self.pin_files(tx, made.iter().map(|o| &o.id), 1, ts_ms);
                 if let Some(step) = pipeline.steps.get_mut(&link.step) {
-                    step.run_outputs.insert(link.index, made);
-                    keep_result(step, link.index, result);
+                    let result = keep_result(step, result);
+                    let item = ItemRow {
+                        cached_key: None,
+                        outputs: made,
+                        result,
+                    };
+                    Self::write_item(tx, &pipeline.id, &link.step, link.index, &item);
                 }
             }
         }
@@ -1052,14 +1121,14 @@ impl AppMachine {
         let over = step.failed_items > allowed;
         let stopped = over || step.capped || pipeline.cancel_requested || pipeline.stopping;
         if over {
-            self.flag_cancel(tx, &step.runs);
+            self.flag_cancel(tx, &pipeline.id, Some(name));
         }
-        let started = step.runs.len();
-        let all_final = step.finished as usize == started;
-        if !all_final || !(started == step.fan.total as usize || stopped) {
+        let started = step.started;
+        let all_final = step.finished == started;
+        if !all_final || !(started == step.fan.total || stopped) {
             return;
         }
-        let complete = started == step.fan.total as usize;
+        let complete = started == step.fan.total;
         let ok = complete && !over;
         let own_reason = if over && step.fan.allowed > 0 && allowed > 0 {
             Some(TOO_MANY_FAILURES.to_owned())
@@ -1111,7 +1180,7 @@ impl AppMachine {
                     step.status = StepStatus::Cancelled;
                 }
             }
-            self.flag_cancel(tx, pipeline.steps.values().flat_map(|s| &s.runs));
+            self.flag_cancel(tx, &pipeline.id, None);
             self.settle_running_steps(tx, pipeline);
         }
         self.settle_pipeline(tx, pipeline, ts_ms);
@@ -1147,31 +1216,33 @@ impl AppMachine {
             };
             if let Some(dropped) = get_json::<PipelineRun>(tx, rows::CPIPE, &old) {
                 Self::drop_step_proofs(tx, &dropped);
-                let outputs = dropped
-                    .steps
-                    .values()
-                    .flat_map(StepState::outputs)
-                    .map(|o| &o.id);
-                self.pin_files(tx, outputs, -1, ts_ms);
+                let outputs = Self::drop_step_items(tx, &dropped);
+                self.pin_files(tx, &outputs, -1, ts_ms);
             }
             tx.delete_hidden(rows::CPIPE, old.as_bytes());
         }
     }
 }
 
-/// Keeps `result` for run `index` while the step's results stay within [`MAX_STEP_RESULTS_BYTES`];
-/// past it none are kept, so a reference to them fails whatever the order the runs ended in.
-fn keep_result(step: &mut StepState, index: u32, result: &[u8]) {
+/// The result to keep for a run while the step's results stay within [`MAX_STEP_RESULTS_BYTES`];
+/// past it none are kept (those already stored are hidden when read), so a reference to them
+/// fails whatever the order the runs ended in.
+fn keep_result(step: &mut StepState, result: &[u8]) -> Option<Bytes> {
     if result.is_empty() || result.len() > MAX_STEP_RESULT_BYTES || step.results_too_large {
-        return;
+        return None;
     }
-    let held: usize = step.run_results.values().map(|b| b.0.len()).sum();
-    if held + result.len() > MAX_STEP_RESULTS_BYTES {
-        step.run_results.clear();
+    let held = step.results_bytes as usize + result.len();
+    if held > MAX_STEP_RESULTS_BYTES {
         step.results_too_large = true;
-    } else {
-        let _prev = step.run_results.insert(index, Bytes(result.to_vec()));
+        return None;
     }
+    step.results_bytes = u32::try_from(held).unwrap_or(u32::MAX);
+    Some(Bytes(result.to_vec()))
+}
+
+/// The key of run `index` of `step` in `rows::CITEM`; the index is padded so keys sort by it.
+pub(super) fn item_key(pipeline: &str, step: &str, index: u32) -> String {
+    format!("{pipeline}/{step}/{index:08}")
 }
 
 /// The id of run `index` of `step`, fixed by the pipeline run so a repeated start is no new run.
@@ -1190,9 +1261,9 @@ enum Refusal {
     Failed(&'static str),
 }
 
-/// A wave as apply took it: the ids of the indices it covers, and the cache hits among them.
+/// A wave as apply took it: how many indices it covers, and the cache hits among them.
 struct Wave {
-    ids: Vec<String>,
+    started: u32,
     hits: Vec<(u32, String, CacheEntry)>,
 }
 

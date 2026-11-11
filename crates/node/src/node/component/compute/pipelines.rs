@@ -612,6 +612,7 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
         };
         let _gone = (shown.remove("runOutputs"), shown.remove("runResults"));
         let _gone = (shown.remove("cachedRuns"), shown.remove("runCost"));
+        let _gone = (shown.remove("started"), shown.remove("resultsBytes"));
         if run.cost.is_some() {
             let _prev = shown.insert("cost".to_owned(), json!(step.cost.to_string()));
         }
@@ -1339,6 +1340,7 @@ steps:
         step.status = StepStatus::Running;
         step.fan = fan;
         step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.started = 3;
         assert!(plan(&p, &run, &caps(), 10).is_empty(), "three are active");
         run.steps.get_mut("each").unwrap().finished = 1;
         let decided = plan(&p, &run, &caps(), 10);
@@ -1446,6 +1448,7 @@ steps:
         step.status = StepStatus::Running;
         step.fan = fan;
         step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.started = 3;
         step.run_cost = 20;
         let decided = plan(&p, &run, &caps(), 10);
         assert_eq!(decided.len(), 1, "no wave, only the stop: {decided:?}");
@@ -1470,6 +1473,7 @@ steps:
         step.status = StepStatus::Running;
         step.fan = fan;
         step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.started = 3;
         step.run_cost = 20;
         step.finished = 3;
         step.cost = 6;
@@ -1491,6 +1495,7 @@ steps:
         step.status = StepStatus::Running;
         step.fan = fan;
         step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.started = 3;
         step.finished = 3;
         step.failed_items = 1;
         assert_eq!(plan(&p, &run, &caps(), 10).len(), 1, "at the allowance");

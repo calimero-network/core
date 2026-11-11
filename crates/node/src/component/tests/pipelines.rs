@@ -5,6 +5,7 @@ use ed25519_dalek::SigningKey;
 
 use super::runs::{job_key, leader, out, report, why, World, DIGEST, INPUT};
 use super::*;
+use crate::app::rows;
 use crate::component::pipelines::{
     BAD_START, CACHE_GONE, CANCELLING, COST_CAP, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT,
     NOT_NEXT, NOT_RUNNING, STEP_STOPPING, TOO_MANY_FAILURES,
@@ -1486,4 +1487,133 @@ fn a_receipt_marks_cached_runs_with_their_key_and_keeps_index_order() {
         matches!(&runs[1], RunEntry::Ran(p) if p.index == 1),
         "{runs:?}"
     );
+}
+
+fn group(w: &World) -> &calimero_log::GroupState {
+    w.r.machine.state.kv.group().expect("no group")
+}
+
+fn record_len(w: &World, id: &str) -> usize {
+    group(w)
+        .get_hidden(rows::CPIPE, id.as_bytes())
+        .unwrap()
+        .len()
+}
+
+fn item_row_exists(w: &World, run: &str, step: &str, index: u32) -> bool {
+    let key = crate::component::pipelines::item_key(run, step, index);
+    group(w).get_hidden(rows::CITEM, key.as_bytes()).is_some()
+}
+
+/// Runs `0..total` of step `a` to done, `wave` at a time, each finishing in reverse order within
+/// its wave, run `i` making output `i + 1` and result `i`. `seen` gets the record's size after
+/// each completion.
+fn finish_fan_out(w: &mut World, total: usize, wave: usize, mut seen: impl FnMut(&World)) {
+    let _a = begin(w, PIPE, &["a"]);
+    let _s = fan_start(w, "a", total as u32, 0, wave.min(total));
+    for first in (0..total).step_by(wave) {
+        let end = (first + wave).min(total);
+        if first > 0 {
+            let a = more(w, "a", first, end);
+            assert!(a.status == Status::Ok, "{a:?}");
+        }
+        for i in (first..end).rev() {
+            let n = u8::try_from(i + 1).unwrap();
+            let _r = run_done_with_result(w, &format!("p1.a.{i}"), n, i.to_string().as_bytes());
+            seen(w);
+        }
+    }
+}
+
+#[test]
+fn a_step_completion_rewrites_a_record_whose_size_does_not_grow_with_the_fan_out() {
+    let mut w = World::new();
+    let mut sizes = Vec::new();
+    finish_fan_out(&mut w, 200, 32, |w| sizes.push(record_len(w, PIPE)));
+    let (first, before_last) = (sizes[0], sizes[sizes.len() - 2]);
+    assert!(
+        before_last <= first + 32,
+        "the record grew from {first} to {before_last} bytes"
+    );
+}
+
+#[test]
+fn a_step_s_runs_read_back_in_index_order() {
+    let mut w = World::new();
+    finish_fan_out(&mut w, 105, 60, |_| {});
+    let step = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!(step.status, StepStatus::Succeeded);
+    let ids: Vec<String> = step.outputs().map(|o| o.id.clone()).collect();
+    let want: Vec<String> = (0..105).map(|i| out(i + 1).id).collect();
+    assert_eq!(ids, want);
+    let results: Vec<String> = step
+        .run_results
+        .values()
+        .map(|b| String::from_utf8(b.0.clone()).unwrap())
+        .collect();
+    let want: Vec<String> = (0..105).map(|i| i.to_string()).collect();
+    assert_eq!(results, want);
+    assert_eq!(step.runs.len(), 105);
+    assert_eq!(step.runs[104], "p1.a.104");
+}
+
+#[test]
+fn an_item_row_key_sorts_by_index() {
+    let key = |i| crate::component::pipelines::item_key("p1", "a", i);
+    assert_eq!(key(7), "p1/a/00000007");
+    let mut keys: Vec<_> = [100, 9, 10, 1].into_iter().map(key).collect();
+    keys.sort();
+    assert_eq!(keys, [key(1), key(9), key(10), key(100)]);
+}
+
+#[test]
+fn dropping_an_ended_run_deletes_its_item_rows_and_unpins_its_outputs() {
+    let mut w = World::new();
+    let _a = begin(&mut w, "first", &["a"]);
+    let _s = decide(
+        &mut w,
+        "first",
+        "a",
+        StepVerdict::Start {
+            runs: runs_of("first", "a", 0, 2),
+            fan: FanOut {
+                total: 2,
+                items: 2,
+                batch: 1,
+                allowed: 0,
+            },
+            cached: Vec::new(),
+        },
+    );
+    let _r = run_done_with_result(&mut w, "first.a.0", 1, b"x");
+    let _r = run_done(&mut w, "first.a.1", 2);
+    assert_eq!(pipeline(&w, "first").state, PipelineState::Succeeded);
+    assert!(item_row_exists(&w, "first", "a", 0) && item_row_exists(&w, "first", "a", 1));
+    assert_eq!((refs(&w, 1), refs(&w, 2)), (1, 1));
+    for i in 0..FINISHED_PIPELINE_RUNS_KEPT {
+        let id = format!("n{i}");
+        let _b = begin(&mut w, &id, &["a"]);
+        let _d = decide(&mut w, &id, "a", StepVerdict::Skipped);
+    }
+    assert!(w.r.machine.pipeline_run("first").is_none());
+    assert!(!item_row_exists(&w, "first", "a", 0) && !item_row_exists(&w, "first", "a", 1));
+    assert_eq!((refs(&w, 1), refs(&w, 2)), (0, 0));
+}
+
+#[test]
+fn a_later_step_fans_out_over_an_earlier_step_s_outputs_from_rows() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 3);
+    for i in [2, 0, 1] {
+        let _r = run_done_with_result(&mut w, &format!("p1.a.{i}"), i + 1, &[b'0' + i]);
+    }
+    let p = pipeline(&w, PIPE);
+    let a = &p.steps["a"];
+    let ids: Vec<&str> = a.outputs().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, [out(1).id, out(2).id, out(3).id]);
+    let results: Vec<&[u8]> = a.run_results.values().map(|b| &b.0[..]).collect();
+    assert_eq!(results, [&b"0"[..], b"1", b"2"]);
+    assert!(a.status.is_ok() && p.steps["b"].status == StepStatus::Pending);
+    assert!(item_row_exists(&w, PIPE, "a", 2));
 }

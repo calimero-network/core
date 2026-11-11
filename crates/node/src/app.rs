@@ -86,6 +86,8 @@ pub(crate) mod rows {
     pub const CRUN: u8 = b'u';
     /// A component's pipeline runs: one record per run, keyed by pipeline run id.
     pub const CPIPE: u8 = b'p';
+    /// A component's pipeline step runs: one row per run, keyed `<pipeline run>/<step>/<index>`.
+    pub const CITEM: u8 = b'y';
     /// A component's step run proofs: one per step run that ran, keyed by run id.
     pub const CPROOF: u8 = b'v';
     /// A component's pipeline step cache: one entry per cache key.
