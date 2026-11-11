@@ -67,6 +67,7 @@ mod account_proof;
 mod deprecation;
 mod origins;
 mod passkeys;
+mod restore;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
@@ -3440,6 +3441,7 @@ async fn app_create(
                 deployment: body.deployment,
                 compute_bundle,
                 release,
+                restore: None,
             }),
         })
         .await?;
@@ -10850,6 +10852,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/nodes/{id}/receipt-key", get(account_proof::ops_receipt_key))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
+        .route("/ops/apps/{app}/restore", post(restore::ops_restore))
         .route("/ops/releases", post(ops_release))
         .route(
             "/ops/releases/{version}/deadline",

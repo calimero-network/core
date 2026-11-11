@@ -40,6 +40,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.decide.outputs.rust }}
+      upgrade_path: ${{ steps.decide.outputs.upgrade_path }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,14 +103,14 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain, compat, previous-release]
+    needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
     runs-on: ubuntu-latest
     steps:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust"}'
+          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust","upgrade-path":"upgrade_path"}'
         run: |
           jq -e --argjson gates "$GATES" '
             .scope.outputs as $scope
@@ -386,3 +387,52 @@ jobs:
         run: |
           # A feature-only dep reads as unused; list it in `[package.metadata.cargo-machete] ignored`.
           cargo machete
+
+  # Every cluster must roll forward from the release pinned in .github/upgrade-from
+  # (the latest published one) to this tree. A 3-node cluster and a job node start on
+  # that release's published merod; its meroctl writes accounts, keys, an organization
+  # with teams and app teams, a signed package's app with history, blobs, sealed files
+  # of several segments and a finished compute run. The cluster is then rolled onto
+  # this tree's merod as mdma rolls a Calimero Cloud cluster (approve the release, add
+  # three nodes, move every app, remove the old nodes), checked while both releases
+  # hold apps, read back, extended (an app upgrade, a new sealed file, compute over the
+  # old files), and read again after a new node restarts from its data
+  # (crates/node/tests/fault/upgrade_path.py, scripts/upgrade-path.sh). A change that
+  # breaks it ships a reader or migration, or declares a hard cutover in
+  # .github/upgrade-from (docs: contribute/testing, "Upgrade path").
+  upgrade-path:
+    name: Upgrade path (from the pinned release)
+    needs: scope
+    if: needs.scope.outputs.upgrade_path == 'true'
+    runs-on: big-machine
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # wasm32-wasip2: this tree's kv and the release's compute fixture. The release
+      # group: the same release build of merod and meroctl as e2e's process suite.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-wasip2
+          shared-key: release
+          save-if: false
+
+      - name: Upgrade path
+        run: scripts/upgrade-path.sh
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-path
+          # A failed run keeps its work directory: each node's nodeN.log and data.
+          path: |
+            target/upgrade-path.json
+            target/upgrade-path
+          if-no-files-found: ignore
+          retention-days: 14

@@ -11,7 +11,8 @@ Calimero Core is tested in layers that trade scope for speed. Most of the node i
 covered by real clusters in one process: three nodes, sealed channels, real
 WASM, driven only through the client. Multi-process behaviour (crashes,
 freezes, restarts, upgrades) is covered by the process suite, which runs one
-`merod` process per node.
+`merod` process per node, and data written by the last release by the upgrade
+path.
 
 | Layer | Where | What it proves | Speed |
 | --- | --- | --- | --- |
@@ -22,6 +23,7 @@ freezes, restarts, upgrades) is covered by the process suite, which runs one
 | App logic | `TestApp` in `crates/sdk/src/testing` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |
 | Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
 | Process suite | `crates/node/tests/fault/suite.py` | Separate `merod run --dev` processes: a crash, a freeze and a restart, a frozen leader, orgs and keys, signed packages, a rolling upgrade under load, the kv-store soak | Minutes |
+| Upgrade path | `crates/node/tests/fault/upgrade_path.py` | A cluster on the latest published release's `merod`, its data written through the public API, rolled onto this tree's `merod` as production rolls it, then read back, extended and read again after a restart | About two minutes, plus the builds |
 
 Use both ends. A green cluster test does not prove a process restart or a
 frozen leader behaves, and a green scenario does not localize a logic bug.
@@ -407,6 +409,88 @@ release build on a shared runner) are for comparing runs of the same job; the
 release image's runs measure the binary that ships. The pass rate (99 %)
 gates; latency gates nothing.
 
+## Upgrade path
+
+Every Calimero Cloud cluster on a release must be able to roll forward to every
+later core release without losing data. `crates/node/tests/fault/upgrade_path.py`
+proves it for the release pinned in [`.github/upgrade-from`](https://github.com/calimero-network/core/blob/master/.github/upgrade-from),
+the latest published one, against this tree:
+
+<Steps>
+
+1. **The old cluster.** Three `merod run --dev` nodes and a job node start on
+   the release's own `merod`, downloaded from its GitHub release and checked
+   against its `SHA256SUMS` (`scripts/fetch-release.sh`). The nodes attest a
+   mero-tee release of their own (`--tee-release`), the operator decides
+   releases (`--release-approvals operator`, `--operator-key`), and packages
+   come from a registry on loopback.
+2. **Seed.** With the release's own `meroctl`, over the public API: accounts
+   with passkeys, sessions and API keys (a read-only one scoped to an app); an
+   organization with members, a team, an invite not yet redeemed and an app
+   team; the release's signed kv package (`kv-store-test-fixture.mpk`) installed
+   and an app of it with a history of writes, overwrites, removals and a note;
+   plain blobs, one referenced from the app's state; the compute fixture, built
+   from the release's tag and signed with its `mero-sign`
+   (`scripts/build-release-fixtures.sh`), with a sealed file of three segments
+   and a compute run finished on the job node.
+3. **Roll forward**, as mdma's rollout does it (`rollout.py`): the operator
+   approves the new release (`POST /ops/releases`), three nodes on this tree's
+   `merod` join one at a time (`POST /ops/nodes`, each a system-group learner),
+   every app moves onto them (`POST /ops/apps/{app}/replicas`, until
+   `GET /ops/placement` shows it), and the old nodes are removed one at a time
+   while the system group has a leader and its voters (`DELETE /ops/nodes/{id}`).
+   Every decision is signed with the operator key. Once the first app has moved,
+   apps sit on both releases and everything is read back (**mixed**).
+4. **Verify, extend, restart.** With this tree's `meroctl`, every value is read
+   back on the new nodes, the saved sessions included (issued by a node that is
+   gone, refreshed by the client); then new data is written: an account, a key,
+   the old invite redeemed, a team, the app upgraded to this tree's kv (signed as
+   kv 2.0.0, its history kept), a blob, a new sealed file, and compute runs on a
+   new job node over the old sealed files and the new one. One new node is
+   restarted from its data directory and everything is read again.
+
+</Steps>
+
+What is written and checked lives in cases, `upgrade_cases/NN_*.py`, each a
+`Case` with `seed`, `mixed`, `verify` and `extend` steps (the
+[module's docstring](https://github.com/calimero-network/core/blob/master/crates/node/tests/fault/upgrade_path.py)
+says when each runs); a new kind of stored data gets a case. Run it locally, as
+CI does, with `scripts/upgrade-path.sh` (it builds this tree's `merod`,
+`meroctl` and kv, fetches the release and builds its fixture), or with the
+binaries in hand:
+
+```bash
+scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
+scripts/build-release-fixtures.sh 1.0.0-rc.15 target/upgrade-from
+python3 -I crates/node/tests/fault/upgrade_path.py --from-dir target/upgrade-from \
+  --to-merod target/release/merod --to-meroctl target/release/meroctl \
+  --kv-next target/upgrade-path-fixtures/kv-next.mpk --only kv-package,blobs
+```
+
+**The rule.** A change that turns the upgrade path red has broken every
+existing cluster. It merges only with one of:
+
+- a reader or migration, so the data the old release wrote keeps working (the
+  usual answer: the new node reads both formats, as `calimero-log` reads the
+  old `log.redb`);
+- a declared **hard cutover**: the PR replaces the version in
+  `.github/upgrade-from` with `hard-cutover: <PR> <why>`, marks it in
+  `CHANGELOG.md` ("no interop with earlier nodes ...; existing clusters are
+  recreated"), and mdma adds it to `mdma_common/release_compat.py`'s
+  `CUTOVERS`, whose epochs refuse to roll a cluster across it. The job reports
+  the cutover instead of running until the next release puts a version back.
+
+Never silently: #4884 (sealed files to segments) shipped "one-way" and forced a
+wipe of every cluster holding sealed files; run from 1.0.0-rc.14, this test
+fails on exactly that (`no such file in this app` for the old sealed files on
+the new nodes).
+
+**Keeping the pin current.** `.github/upgrade-from` names the latest published
+release: once a release's assets are up, the pin moves to it, at the latest in
+the next release PR (CONTRIBUTING.md, "Cutting a release"); the job warns when
+a newer version is tagged. A pinned tag that does not exist yet is reported and
+not run; a tag whose release lacks an artifact fails the job.
+
 ## In CI
 
 `.github/workflows/e2e.yml` runs on every PR that touches code:
@@ -435,6 +519,14 @@ gates; latency gates nothing.
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+
+`ci-checks.yml`'s `Upgrade path (from the pinned release)` job
+(`upgrade-path`) runs the [upgrade path](#upgrade-path) through
+`scripts/upgrade-path.sh` on every PR that reaches `merod`'s, `meroctl`'s or the
+kv fixture's dependency closure, the test or its scripts, and on master; the
+required `Rust` check waits on it. The job summary has the rollout's steps and
+each case's result; the artifact `upgrade-path` holds the results and, for a
+failed run, every node's log and data.
 
 `ci-checks.yml`'s `Rust tests` job runs each component app's own `cargo test`
 (its `tests/harness.rs` and its app-level scenarios on `TestApp`), then clippy
@@ -549,12 +641,15 @@ built and link-checked (`docs-ci.yml`) but not deployed.
 Every node in a scenario run is the same build on fresh state, and so is
 every node in the process suite (its rolling upgrade moves to a copy of the
 same binary unless `--upgrade-merod` names another), so neither tests data
-written by an older version. A change to an on-disk or wire format
-needs its own migration test, as `calimero-log`'s `migration_tests.rs` does for
-the `log.redb` store. What does test across releases, and what a change that
-breaks one declares, is in [Compatibility](/operate/compatibility/): ci-checks'
-`Compatibility` job (no route, field, WIT or ABI version dropped) and `Apps of
-the previous release` (the last release's kv bundle on this tree's node).
+written by an older version. The [upgrade path](#upgrade-path) does, for the
+data its cases write, from the last release only. A change to an on-disk or
+wire format also needs its own migration test, as `calimero-log`'s
+`migration_tests.rs` does for the `log.redb` store, and a case in the upgrade
+path when it stores a kind of data none of its cases writes. What else tests
+across releases, and what a change that breaks one declares, is in
+[Compatibility](/operate/compatibility/): ci-checks' `Compatibility` job (no
+route, field, WIT or ABI version dropped) and `Apps of the previous release`
+(the last release's kv bundle on this tree's node).
 
 ## Proving a fix
 

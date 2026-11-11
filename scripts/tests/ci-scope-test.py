@@ -16,14 +16,18 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "ci-scope.py"
 sys.dont_write_bytecode = True  # imports a sibling script; leave no __pycache__ in the tree
-ALL = {"rust"}
+ALL = {"rust", "upgrade_path"}
 R = {"rust"}
 
 CASES = [
     # (name, changed paths, ci-checks jobs that must run; every other job must skip)
-    ("a node-only change runs the workspace jobs", ["crates/node/src/lib.rs"], R),
-    ("merod runs the workspace jobs", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], R),
-    ("the component SDK runs the workspace jobs", ["crates/sdk/src/lib.rs"], R),
+    ("a node-only change runs every job", ["crates/node/src/lib.rs"], ALL),
+    ("merod runs every job", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], ALL),
+    ("the upgrade path's test runs every job", ["crates/node/tests/fault/upgrade_path.py"], ALL),
+    ("the pinned release runs every job (Apps of the previous release fetches its kv)", [".github/upgrade-from"], ALL),
+    ("the release fetcher runs every job (ci-checks.yml runs it)", ["scripts/fetch-release.sh"], ALL),
+    ("a tool no node links skips the upgrade path", ["tools/search-bench/src/main.rs"], R),
+    ("the component SDK runs the workspace jobs and the upgrade path (this tree's kv)", ["crates/sdk/src/lib.rs"], ALL),
     ("a component app runs the workspace jobs", ["apps/kv-store/src/lib.rs"], R),
     ("a lint script runs the workspace jobs", ["scripts/check-naming.sh"], R),
     ("a file no job reads runs nothing", ["scripts/profiling/collect.sh", ".github/workflows/fuzz.yml"], set()),
