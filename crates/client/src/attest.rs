@@ -310,6 +310,34 @@ pub fn job_key_binding(
     h.finalize().into()
 }
 
+/// Domain separator for [`orchestrator_binding`].
+pub const ATTEST_ORCHESTRATOR_DOMAIN: &[u8] = b"calimero.tee-attest.orchestrator.v1";
+
+/// What an orchestrator attestation's report data binds after the nonce: the
+/// node's transport key and the cluster identity it is a replica of.
+#[must_use]
+pub fn orchestrator_binding(transport_key: &[u8; 32], cluster_identity: &[u8; 32]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(ATTEST_ORCHESTRATOR_DOMAIN);
+    h.update(transport_key);
+    h.update(cluster_identity);
+    h.finalize().into()
+}
+
+/// The report data of a `purpose=orchestrator` attestation.
+#[must_use]
+pub fn orchestrator_report_data(
+    nonce: &[u8; 32],
+    transport_key: &[u8; 32],
+    cluster_identity: &[u8; 32],
+) -> [u8; 64] {
+    let mut out = [0; 64];
+    out[..32].copy_from_slice(nonce);
+    out[32..].copy_from_slice(&orchestrator_binding(transport_key, cluster_identity));
+    out
+}
+
 /// A node's signed statement that `app`'s entry `index` produced the result
 /// whose canonical JSON (RFC 8785) hashes to `result_hash`. The signing key is
 /// the node's attested receipt key, so anyone holding the node's attestation
@@ -639,6 +667,25 @@ pub async fn verify_job_key(
     Ok((transport_key, job_key))
 }
 
+/// Verify an orchestrator attestation (`purpose=orchestrator`): [`verify`]'s
+/// checks over a quote binding the transport key and `cluster_identity`, the
+/// one the caller expects the node to be a replica of. Answers the transport
+/// key, so a request sealed to it reaches that replica only.
+pub async fn verify_orchestrator(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    cluster_identity: &[u8; 32],
+    policy: &Policy,
+) -> eyre::Result<[u8; 32]> {
+    if doc.cluster_identity.as_deref() != Some(hex::encode(cluster_identity).as_str()) {
+        eyre::bail!("the attestation names another cluster identity than the expected one");
+    }
+    let transport_key = hex32(&doc.transport_key)?;
+    let expected = orchestrator_report_data(nonce, &transport_key, cluster_identity);
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok(transport_key)
+}
+
 /// The quote is genuine (or an allowed mock), from a trusted image, and its
 /// report data is `expected`.
 async fn verify_report(
@@ -952,6 +999,173 @@ mod tests {
         assert!(verify_job_key(&good, &nonce, &Policy::default())
             .await
             .is_err());
+    }
+
+    fn mock_orchestrator_doc(
+        transport: [u8; 32],
+        identity: [u8; 32],
+        nonce: [u8; 32],
+    ) -> AttestationDoc {
+        let report = orchestrator_report_data(&nonce, &transport, &identity);
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        AttestationDoc {
+            quote: STANDARD.encode(quote),
+            transport_key: hex::encode(transport),
+            cluster_identity: Some(hex::encode(identity)),
+            mock: true,
+            nonce: hex::encode(nonce),
+            ..doc("2.4.0")
+        }
+    }
+
+    fn mock_allowed() -> Policy {
+        Policy {
+            allow_mock: true,
+            ..Policy::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_answers_the_bound_transport_key() {
+        let nonce = [7; 32];
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        let key = verify_orchestrator(&good, &nonce, &[4; 32], &mock_allowed())
+            .await
+            .unwrap();
+        assert_eq!(key, [1; 32]);
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_a_wrong_or_replayed_nonce() {
+        let good = mock_orchestrator_doc([1; 32], [4; 32], [7; 32]);
+        assert!(
+            verify_orchestrator(&good, &[8; 32], &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_an_unapproved_release() {
+        let nonce = [7; 32];
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        // A mock quote is refused unless the policy allows one.
+        let err = verify_orchestrator(&good, &nonce, &[4; 32], &Policy::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("mock"), "{err}");
+        // A release below the floor is refused whatever its quote binds.
+        let old = AttestationDoc {
+            release: Release {
+                version: "2.3.9".into(),
+                ..good.release.clone()
+            },
+            ..good
+        };
+        let policy = Policy {
+            allow_mock: false,
+            measurements: Measurements::Release {
+                allowed_profiles: vec!["locked-read-only".into()],
+                min_version: Some("2.4.0".into()),
+            },
+            ..Policy::default()
+        };
+        assert!(verify_orchestrator(&old, &nonce, &[4; 32], &policy)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_a_transport_key_the_quote_does_not_bind() {
+        let nonce = [7; 32];
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        let swapped = AttestationDoc {
+            transport_key: hex::encode([2; 32]),
+            ..good
+        };
+        let err = verify_orchestrator(&swapped, &nonce, &[4; 32], &mock_allowed())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not bind"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_another_cluster_identity() {
+        let nonce = [7; 32];
+        // A replica of another cluster, honestly attested.
+        let theirs = mock_orchestrator_doc([1; 32], [5; 32], nonce);
+        assert!(
+            verify_orchestrator(&theirs, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        // A document that names the expected identity over a quote binding another.
+        let relabelled = AttestationDoc {
+            cluster_identity: Some(hex::encode([4; 32])),
+            ..theirs
+        };
+        assert!(
+            verify_orchestrator(&relabelled, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        // A document that names another identity than its quote binds.
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        let named_other = AttestationDoc {
+            cluster_identity: Some(hex::encode([5; 32])),
+            ..good.clone()
+        };
+        let err = verify_orchestrator(&named_other, &nonce, &[4; 32], &mock_allowed())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cluster identity"), "{err}");
+        let unnamed = AttestationDoc {
+            cluster_identity: None,
+            ..good
+        };
+        assert!(
+            verify_orchestrator(&unnamed, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+    }
+
+    /// A quote of another purpose, over the same keys, never verifies as
+    /// `orchestrator`: the domain separators differ.
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_a_quote_of_another_purpose() {
+        let nonce = [7; 32];
+        let jobs = mock_job_doc([1; 32], [4; 32], nonce);
+        assert!(
+            verify_orchestrator(&jobs, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        let transport = report_data(&nonce, &[0; 32], &[1; 32]);
+        let plain = mock_doc(transport, None);
+        assert!(
+            verify_orchestrator(&plain, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        // And an orchestrator quote is no job-node, plain or receipt attestation.
+        let orch = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        assert!(verify_job_key(&orch, &nonce, &mock_allowed())
+            .await
+            .is_err());
+        assert!(verify(&orch, &nonce, &mock_allowed()).await.is_err());
+    }
+
+    #[test]
+    fn the_orchestrator_binding_matches_the_published_vector() {
+        assert_eq!(
+            hex::encode(orchestrator_binding(&[0x11; 32], &[0x22; 32])),
+            "76ab4fa834964fb72f38273d59bd11135f054970e06c991ff73a137cfbe45bdb"
+        );
+        assert_ne!(
+            orchestrator_binding(&[0x11; 32], &[0x22; 32]),
+            orchestrator_binding(&[0x22; 32], &[0x11; 32])
+        );
     }
 
     #[test]

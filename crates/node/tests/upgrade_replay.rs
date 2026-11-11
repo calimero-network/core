@@ -80,6 +80,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         metrics_listen: None,
         replicas: 1,
         backup_dir: None,
+        restore_from: None,
         raft: calimero_log::Config::default(),
         read_wait: Duration::from_secs(2),
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
@@ -98,7 +99,6 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         governance: Default::default(),
         apps_domain: None,
         operator_key: None,
-        restore_from: None,
     }
 }
 

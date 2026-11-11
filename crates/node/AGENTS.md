@@ -31,6 +31,13 @@ is its command line.
   wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
   `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
   `a_wasmer_entry_never_applies_to_a_component_app`.
+- **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
+  starts `{"v":N,` is format `N`; no marker (every entry so far) is format 1. One newer than
+  this release reads applies as a no-op naming its format (`Trap`/`Fault`, `conflict`), so a
+  replica never applies part of it; a release that raises it writes the new format only once
+  every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
+  (`STORE_FORMAT`, `SNAPSHOT_FORMAT`; docs: protocol/storage "Format versions"). Test:
+  `an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -380,9 +387,15 @@ is its command line.
     `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
     `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
     over `system::publisher_binding_message` (cluster name, org, key, the key's
-    generation from `GET /publishers/{signer}`), verified at apply; each binding
-    bumps the generation, so a signature never replays; rebinding needs a new
-    signature from the pinned key; `SystemState::publishers`). `PackageRecord::owner`
+    generation from `GET /publishers/{signer}`), verified at apply over
+    `SystemMachine::cluster` (the node's `--cluster`), not the command's own
+    `cluster`; each binding bumps the generation, so a signature never
+    replays; rebinding needs a new signature from the pinned key;
+    `SystemState::publishers`). `DeleteOrg` unbinds the organization's keys and
+    keeps their generations (`SystemState::unbound_publishers`), so a later
+    organization of the same id is not their publisher. Regressions:
+    `a_binding_signed_for_another_cluster_binds_nothing_here`,
+    `a_deleted_organization_takes_its_publisher_bindings_with_it`. `PackageRecord::owner`
     is only the first installer and is never the publisher. The publisher's
     `Org::approved_releases` cover every instance of every package the key
     signs, customers' included. Unbound key or raw bundle: the app's own org's
@@ -485,6 +498,7 @@ is its command line.
   KMS quote merod accepted for its storage key, and the boot script's record for the
   data disk's, `--kms-disk-evidence`) and binds it (`kms_report_data`). Without a
   record, or without `purpose=kms`, the answer is the plain transport form.
+- **Orchestrator attestation**: `GET /attestation?purpose=orchestrator` on a replica binds the transport key and `Node::cluster_identity` (`orchestrator_report_data`) and carries `clusterIdentity`; a job node answers `404 NOT_FOUND`. Test: `a_replica_attests_as_the_orchestrator_and_a_job_node_refuses`.
 - **Release attestations** (`attest.rs`, `release_attestation`, `serve_release`): a
   quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
   has any key. Not a route of a running node: `serve_release` is its own tiny server
@@ -605,6 +619,8 @@ is its command line.
   A run whose pinned compute component is no longer installed (a fresh system read confirms it) ends `Failed{refused}` at once.
   A wall clock that ran out on a job node is a lost attempt, so such a run is retried and ends `Failed{lost}` after `MAX_ATTEMPTS`.
   A new term keeps the outputs staged for the same attempt (`ComputeState::take`) so they are charged once, and a charge that failed is refunded only if it may have committed (`charge_may_have_landed`).
+  A queued run's view also carries `queue { state: unplaced | waiting | granted, pool, capacity, reason? }` for those who may list the app's files, read from the leader's system state (`Node::queue_json`); a waiting run's `reason` is `SystemState::wait_reason`, the tests `grant_runs` applies in the order `NO_CAPACITY`, `POOL_FULL`, `PAYER_AT_RUN_QUOTA`, `PAYER_AT_FUEL_QUOTA`.
+  A run that has waited `NO_CAPACITY` for `NO_CAPACITY_WARN_AFTER` (60 s) of healthy time logs one `warn!` per leadership term.
   The run's record and the `GET /apps/{app}/runs/{run}` answer show progress and the failure text (`final.message`, the job's signed `Report::message`) only to those who may list the app's files.
   The leader assigns and pushes only the run's compute component (`RunRecord.compute_bundle`, named by `Assignment.bundle`, fetched by `push_bundle` through `bundle_wasm` and signed with `sign_bundle`), never the app component.
   A queued run recorded without one (only a record from before compute components existed) ends `Failed{refused}` at once, before a slot is taken or a job node contacted.
@@ -715,8 +731,10 @@ is its command line.
   `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
   org's owners as they stand), approved releases, each replica's release and
   whether approved; for accounts also name, the upgrader's account, newer
-  visible releases (`availableVersions`, from the release it runs, those with
-  its WASM included) and `clusterReleases`. `lastUpgrade.from`/`to` name each
+  visible releases (`availableVersions`, the newest `MAX_AVAILABLE_VERSIONS`, from
+  the release it runs, those with its WASM included), the newest of all of them it
+  can reach (`latestReachable`) and why the latest is not it (`latestBlocked`:
+  `runtime`, `authority`), and `clusterReleases`. `lastUpgrade.from`/`to` name each
   end's release from `UpgradeRecord::from_release`/`to_release` when recorded. The operator
   sees a package name only for releases it installed (`Reader::Operator`,
   `sees_release`), never an account, a name or an upgrade's error text.
@@ -758,7 +776,25 @@ is its command line.
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a
   change (`stateVersion`), as no migration runs. The directory records the new bundle only
-  once the upgrade succeeded.
+  once the upgrade succeeded. An app moves to any newer release in one upgrade:
+  there is no migration step to chain.
+- **Runtime requirements** (`runtime.rs`, `node/runtime.rs`): a release's
+  `minRuntimeVersion` is kept on `PackageVersion::min_runtime_version` (absent in
+  releases from before, and dropped by an older node: then `Node::min_runtime_of`
+  reads it from the `.mpk`, `consent_page::declared_min_runtime`). A node's runtime
+  is `Config::release`, asked over the sealed channel (`POST /internal/runtime`,
+  `Node::runtime_of_node`, kept `RUNTIME_KEPT`; a `404` is a node from before,
+  `NodeRuntime::Before` the asker's own; no answer or a non-version is `Unknown`
+  and not judged). `Node::require_runtime` refuses `409 RUNTIME_TOO_OLD` an upgrade
+  with a replica below (`upgrade_app` before the step-up, the consent request,
+  and `run_upgrade`, which records it), a replica move onto a joining node below
+  (`ops_set_replicas`); `Node::place` leaves such nodes out of a new app's
+  replicas. The reports name `latestReachable` and `latestBlocked`
+  (`report::upgrade_targets`). Regressions:
+  `an_upgrade_needing_a_newer_runtime_than_a_replica_has_is_refused_and_reported`,
+  `placement_and_moves_keep_an_app_off_nodes_below_its_runtime`
+  (`tests/component_packages.rs`),
+  `the_newest_reachable_release_is_reported_with_why_the_latest_is_not`.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
   passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the

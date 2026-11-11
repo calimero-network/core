@@ -682,7 +682,21 @@ impl DiskCluster {
         drop(engine);
         let _ = self.groups.remove(&id);
         let dir = self.dirs.remove(&id).unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Tasks of the stopped engine may hold the store a moment longer; the
+        // files are handed back once its RocksDB lock is free, never on a timer.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match Db::open(dir.path(), &KEY) {
+                Ok(db) => {
+                    drop(db);
+                    break;
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => panic!("node {id}'s store is still held: {e}"),
+            }
+        }
         dir
     }
 

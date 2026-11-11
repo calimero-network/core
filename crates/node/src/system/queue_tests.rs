@@ -879,3 +879,52 @@ fn org_quotas_are_decimal_strings_and_the_file_override_is_read() {
         Quotas::default().max_file_bytes_per_org
     );
 }
+
+#[test]
+fn a_waiting_run_names_why_it_waits() {
+    let mut m = machine();
+    m.run(acquire("a1", "r0", 1)).unwrap();
+    assert_eq!(m.state.wait_reason("a1", "r0"), Some("NO_CAPACITY"));
+
+    job_node(&mut m, 5);
+    assert_eq!(m.state.wait_reason("a1", "r0"), None, "granted");
+    m.run(acquire("b1", "r1", 1)).unwrap();
+    m.run(acquire("a2", "r2", 1)).unwrap();
+    assert_eq!(m.state.wait_reason("a2", "r2"), Some("POOL_FULL"));
+    assert_eq!(m.state.wait_reason("a1", "nobody"), None, "no slot");
+}
+
+#[test]
+fn a_payer_at_a_quota_waits_for_it_and_a_missing_place_is_named_first() {
+    let mut m = machine();
+    m.state.quotas.max_concurrent_runs_per_org = 1;
+    m.state.quotas.compute_fuel_per_org = 10;
+    for id in [5, 6] {
+        job_node(&mut m, id);
+    }
+    m.run(acquire("a1", "r1", 6)).unwrap();
+    m.run(acquire("a1", "r2", 1)).unwrap();
+    assert_eq!(m.state.wait_reason("a1", "r2"), Some("PAYER_AT_RUN_QUOTA"));
+
+    m.state.quotas.max_concurrent_runs_per_org = 4;
+    m.run(acquire("a2", "r3", 6)).unwrap();
+    assert_eq!(m.state.wait_reason("a2", "r3"), Some("PAYER_AT_FUEL_QUOTA"));
+
+    // Every place held and the payer over its quota: the place is named, it is what frees first.
+    m.run(acquire("b1", "r4", 1)).unwrap();
+    m.run(acquire("b1", "r5", 1)).unwrap();
+    m.run(acquire("b2", "r6", 1)).unwrap();
+    assert_eq!(m.state.wait_reason("a2", "r3"), Some("POOL_FULL"));
+}
+
+#[test]
+fn a_run_whose_pool_has_no_job_node_waits_for_capacity_while_another_pool_is_free() {
+    let mut m = machine();
+    set_pools(&mut m, &[("small", 2, 512), ("big", 2, 4096)]).unwrap();
+    pool_node(&mut m, 5, "big");
+    m.run(acquire_mem("a1", "r1", 256)).unwrap();
+    assert_eq!(m.state.run_slot("a1", "r1").unwrap().pool, "small");
+    assert_eq!(m.state.wait_reason("a1", "r1"), Some("NO_CAPACITY"));
+    pool_node(&mut m, 6, "small");
+    assert_eq!(m.state.wait_reason("a1", "r1"), None);
+}
