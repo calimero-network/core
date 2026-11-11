@@ -30,16 +30,14 @@ const CLUSTER: &str = "upgrade-replay";
 /// The ops token `rv2.py` starts every node with.
 const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
 /// Fields that move on their own and say nothing about the replayed state.
-/// `developerFuelToday` and `today` are totals of the UTC day the read is made
-/// on, so a replay on a later day than the release's reads starts them at 0.
-const VOLATILE: &[&str] = &[
-    "fresh",
-    "lastActiveAt",
-    "lastActiveDay",
-    "sessions",
-    "developerFuelToday",
-    "today",
-];
+const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
+
+/// Totals of the UTC day the read is made on (`today`, `developerFuelToday`,
+/// `developerWritesToday`, ...): a replay on a later day than the release's
+/// reads them from 0.
+fn of_today(key: &str) -> bool {
+    key == "today" || key.ends_with("Today")
+}
 
 /// A receipt's signature covers the answer's log position (below), so it is
 /// another signature over the same state.
@@ -109,7 +107,7 @@ fn holds(got: &Value, want: &Value, path: &str) -> Result<(), String> {
     match (got, want) {
         (Value::Object(g), Value::Object(w)) => {
             for (k, v) in w {
-                if VOLATILE.contains(&k.as_str()) {
+                if VOLATILE.contains(&k.as_str()) || of_today(k) {
                     continue;
                 }
                 let at = format!("{path}.{k}");
