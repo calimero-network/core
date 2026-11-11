@@ -4,6 +4,14 @@
 //! A package whose WASM is a component runs on the component executor like a raw
 //! component upload does.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 
 use std::collections::BTreeMap;

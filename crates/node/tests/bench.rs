@@ -7,6 +7,14 @@
 //! fresh instance, spin) invoke the node's own engine on the leader's applied state with
 //! the node's own directory, because the API does not return an outcome's usage.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 
 use std::sync::atomic::{AtomicU64, Ordering};

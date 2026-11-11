@@ -46,6 +46,7 @@ members = [
 
     "./crates/utils/fs",
 
+    "./tools/client-gen",
     "./tools/mero-compute",
     "./tools/mero-sign",
     "./tools/search-bench",

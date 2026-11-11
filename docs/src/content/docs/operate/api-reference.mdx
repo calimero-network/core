@@ -56,7 +56,15 @@ change the API, change the handler and its entry, then regenerate:
 
 ```bash
 UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
+cargo run -p calimero-client-gen
 ```
+
+The second command regenerates the Rust client's route layer from the document
+(`crates/client/src/generated/`, by `tools/client-gen`): one method per
+operation on its `x-calimero-group`'s accessor (`client.orgs().invite_create(..)`,
+`client.apps().call(..)`), named as the other SDKs name it. Its test fails while
+the checked-in code differs from what the document generates, so a route change
+regenerates both in the same pull request.
 
 The SDKs (mero-js, calimero-client-py, swift-sdk and kotlin-sdk, the `openapi`
 repositories in `.github/fleet.json`) each vendor this document and generate

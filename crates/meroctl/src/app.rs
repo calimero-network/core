@@ -145,7 +145,9 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             }
             (None, None) => unreachable!("clap requires one"),
         },
-        AppCmd::List => json!({ "packages": env.client.packages().await? }),
+        AppCmd::List => {
+            json!({ "packages": serde_json::to_value(env.client.packages().list().await?)?["packages"] })
+        }
         AppCmd::Get { package } => env.client.package(&package).await?,
         AppCmd::Versions { package } => {
             json!({ "package": package, "versions": versions(&env.client.package(&package).await?) })
