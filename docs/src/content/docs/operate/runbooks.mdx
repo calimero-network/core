@@ -1,6 +1,6 @@
 ---
 title: Runbooks
-description: Step-by-step operations on a merod cluster — add a node, move replicas, back up, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
+description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
 sidebar:
   order: 9
 ---
@@ -137,24 +137,96 @@ set the app already has answers `unchanged: true`.
 
 With `--backup-dir` set, every node writes, every 60 seconds, a snapshot of
 each app group it leads that has moved since its last one:
-`{backup-dir}/{app-id}/{index:020}.{group}.{snapshot-id}.snap`. Force one now
-on a node with `meroctl ops backup` (it answers `{ written }`).
+`{backup-dir}/{app-id}/{index:020}.{group}.{snapshot-id}.snap`, with its
+manifest beside it (`….snap.manifest`). Force one now on a node with
+`meroctl ops backup` (it answers `{ written }`).
 
 - Snapshots are the Raft snapshot files as written, sealed frame by frame under
-  the cluster key K_c; only a node of the same cluster, on any release (or a
-  tool holding K_c), opens them.
+  the cluster key K_c. The manifest names the app, group, log index, the
+  file's SHA-256, the backup format and the `merod` version and mero-tee
+  release that wrote it, sealed under a key derived from K_c and bound to the
+  app and the file name. Only a node holding this cluster's K_c, on any
+  release, opens either.
 - Only leaders write, so collect `--backup-dir` from every node; the newest
-  file per app is the newest backup.
+  file per app is the newest backup. Copy the manifest with its file: a
+  backup without one is taken only as a pre-manifest backup (below).
 - Copy them off the machine; the directory stands in for object storage.
 
-<Aside type="caution" title="Restore is not implemented">
-  There is no route or command that restores a snapshot into a running
-  cluster (the node's notes list it as not done). `calimero_node::backup::latest`
-  opens the newest snapshot of an app with K_c (`Node::cluster_key`), which is what a restore tool
-  would build on. The system group (accounts, organizations, the directory) is
-  not in these backups; it lives in memory on every node and in their Raft
-  snapshots.
-</Aside>
+### Schedule, RPO and RTO
+
+- **RPO** (what a restore loses) is the time since the backup restored, at
+  most the 60-second interval plus however long your copy job takes to take
+  it off the machine. Copy `--backup-dir` off every node at least as often as
+  you can afford to lose; keep several generations per app (the files are
+  named by index, so a plain sync keeps them all) and prune by age.
+- **RTO** (how long a restore takes) is about the time to read the backup
+  once on the seed and stream it once to each other replica: seconds for
+  megabytes, minutes for gigabytes. The app answers `409 APP_RESTORING`
+  meanwhile; every other app keeps serving.
+- Before an app upgrade you may need to undo (an app's code cannot be
+  downgraded, and a bad release is otherwise only fixed forward), take a
+  backup by hand: `meroctl ops backup` on the app's leader.
+- Test a restore regularly, on a development cluster or on a scratch app.
+
+## Restore an app
+
+Restoring puts an app back to the state of a backup, on every replica: what
+the app wrote after the backup is gone, and it runs the bundle the backup's
+state ran (an upgrade made since is undone with it). Use it for an app whose
+state a bad release or a bad write corrupted, or one whose replicas were lost.
+
+<Steps>
+
+1. Pick the backup: `{backup-dir}/{app}/{name}` and its `.manifest`, the
+   newest one before the damage. Put both into the `--backup-dir` of a node
+   that holds app replicas, under `{backup-dir}/{app}/` (the node that wrote
+   it already has them). That node will seed the restore and become the
+   app's first replica.
+
+2. Restore, against that node:
+
+   ```bash
+   meroctl --operator-key-file operator.key ops restore <app> [--backup <name>]
+   ```
+
+   Without `--backup` the node takes its newest backup of the app. A restore
+   is an operator decision: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
+   over `<app> / __restore_app / { backup, sha256 }` and meroctl signs it.
+
+3. The node checks everything before it asks for the signature: the backup
+   opens under this cluster's key for this app (`400 BAD_BACKUP` otherwise:
+   another cluster's, another app's, a swapped or truncated file), this
+   release reads its format (`409 UNKNOWN_BACKUP_FORMAT`), a `merod` no newer
+   than this node's wrote it (`409 BACKUP_FROM_NEWER_RELEASE`), the bundle its
+   state runs is still installed (`409 BUNDLE_GONE`: install that release
+   again), and every node runs this release (`409 UPGRADE_PENDING`).
+
+4. The app moves to a new group: the node seeds it from the backup alone,
+   then adds the app's other replicas, which copy the restored state, and
+   makes them voters. The answer is `{ app, group, rows, backup: { name,
+   index, format, merod, release }, status }`. The old group is dropped on
+   every node. Calls and views answer `409 APP_RESTORING` until then.
+
+</Steps>
+
+If the restore stops half way (the seed restarts, a replica never catches
+up: `503`), the app stays in `APP_RESTORING`; send the same restore again,
+which starts over in a newer group. One move or restore of an app runs at a
+time (`409 MOVE_IN_PROGRESS`).
+
+**Versions.** A backup restores on the release that wrote it or any later
+one: a later release reads every earlier backup format and state, and
+refuses, by name, a format it has no reader for. A backup is never restored
+on an older release than the one that wrote it. A backup from before
+manifests (format 0, a lone `.snap` file) restores only into the group it
+was taken from, since nothing seals its file name: take a new backup once
+the cluster runs a release that writes manifests.
+
+**Trust.** A backup is sealed under the cluster key K_c, so only a node of
+the same cluster opens it, whatever its release; the operator holding the
+files reads nothing in them. What the operator can do is choose which
+backup an app goes back to: a restore is a rollback of the app's data, which
+is why it needs the operator's signature, and why the log records it.
 
 ## Set quotas
 

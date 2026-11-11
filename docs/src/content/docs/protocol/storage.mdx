@@ -83,9 +83,13 @@ and switches generations in one batch ([Replication](/protocol/replication/#stat
 ## Backups
 
 A backup is a copy of a group's current snapshot file under
-`{backup-dir}/{app}/{index:020}.{group}.{snapshot}.snap`
-([The operator](/protocol/operator/#backups)). `backup::latest` opens the newest
-one with K_r and returns its index and rows.
+`{backup-dir}/{app}/{index:020}.{group}.{snapshot}.snap`, with its sealed
+manifest beside it (`….snap.manifest`, backup format 1; a lone snapshot file is
+format 0) ([The operator](/protocol/operator/#backups)). `backup::find` checks a
+backup against its manifest; `backup::latest` opens the newest one with K_c and
+returns its index and rows. A restore writes a backup's rows into a new group
+(`Group::replace_state`): each row is opened and sealed again for that group,
+and a hidden key is hidden again under it.
 
 ## Format versions
 
