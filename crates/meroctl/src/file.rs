@@ -1,10 +1,13 @@
 //! `meroctl file`: a context's sealed files.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use eyre::WrapErr;
 use serde_json::{json, Value};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 use crate::env::Env;
 
@@ -17,7 +20,7 @@ pub enum FileCmd {
         context: String,
     },
     /// Download a sealed file's plaintext to `--out`: the node sends ciphertext and the file's key
-    /// wrapped to a key made here, and every byte is checked before anything is written.
+    /// wrapped to a key made here, and `--out` appears only after every byte is checked.
     Download {
         /// The context (alias or id).
         app: String,
@@ -27,13 +30,51 @@ pub enum FileCmd {
     },
 }
 
+/// A download in progress: written to `<target>.part`, moved onto the target by [`Part::commit`],
+/// and removed when dropped first, so a failed download leaves the target as it was.
+struct Part {
+    file: File,
+    part: Option<PathBuf>,
+}
+
+impl Part {
+    async fn create(target: &Path) -> eyre::Result<Self> {
+        let mut name = OsString::from(target.as_os_str());
+        name.push(".part");
+        let part = PathBuf::from(name);
+        let file = File::create(&part)
+            .await
+            .wrap_err_with(|| part.display().to_string())?;
+        Ok(Self {
+            file,
+            part: Some(part),
+        })
+    }
+
+    async fn commit(mut self, target: &Path) -> eyre::Result<()> {
+        self.file.flush().await?;
+        let part = self.part.take().expect("committed once");
+        tokio::fs::rename(&part, target)
+            .await
+            .wrap_err_with(|| target.display().to_string())
+    }
+}
+
+impl Drop for Part {
+    fn drop(&mut self) {
+        if let Some(part) = &self.part {
+            let _gone = std::fs::remove_file(part);
+        }
+    }
+}
+
 /// Exports file `id` of `app` and writes its plaintext to `out`; prints `{ id, size, path }`.
+/// `out` appears only once every check passed.
 pub async fn download(env: &Env, app: &str, id: &str, out: &Path) -> eyre::Result<Value> {
-    let bytes = env.client.export_file(app, id).await?;
-    tokio::fs::write(out, &bytes)
-        .await
-        .wrap_err_with(|| out.display().to_string())?;
-    Ok(json!({ "id": id, "size": bytes.len(), "path": out.display().to_string() }))
+    let mut part = Part::create(out).await?;
+    let done = env.client.export_file_to(app, id, &mut part.file).await?;
+    part.commit(out).await?;
+    Ok(json!({ "id": id, "size": done.size, "path": out.display().to_string() }))
 }
 
 pub async fn run(cmd: FileCmd, env: &Env) -> eyre::Result<Value> {
@@ -50,4 +91,53 @@ pub async fn run(cmd: FileCmd, env: &Env) -> eyre::Result<Value> {
             download(env, &env.app(&app).await?, &id, &out).await?
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn a_part_dropped_before_commit_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        let mut part = Part::create(&target).await.unwrap();
+        part.file.write_all(b"half").await.unwrap();
+        assert_eq!(names(dir.path()), ["out.bin.part"]);
+        drop(part);
+        assert!(names(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_part_leaves_an_existing_target_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        std::fs::write(&target, b"old").unwrap();
+        let mut part = Part::create(&target).await.unwrap();
+        part.file.write_all(b"new but failed").await.unwrap();
+        drop(part);
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert_eq!(names(dir.path()), ["out.bin"]);
+    }
+
+    #[tokio::test]
+    async fn a_committed_part_replaces_the_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        std::fs::write(&target, b"old").unwrap();
+        let mut part = Part::create(&target).await.unwrap();
+        part.file.write_all(b"new").await.unwrap();
+        part.commit(&target).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(names(dir.path()), ["out.bin"]);
+    }
 }

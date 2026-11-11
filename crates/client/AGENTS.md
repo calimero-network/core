@@ -105,7 +105,11 @@ retried on `503` with backoff; any other refusal (`413`, `429`) aborts the sessi
 Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
 the connection.
 
-`Client::export_file(app, id)` (`files.rs`, `meroctl file download`, `meroctl pipeline download`) returns a sealed file's plaintext: it makes a fresh X25519 key pair, asks `POST .../files/{id}/export`, unwraps the data key with `calimero_sealed::wrap::unwrap_export`, fetches each segment from `GET .../segments/{k}`, and checks the segment list against the file id, each segment against its hash and the size and SHA-256 of the plaintext before returning any byte.
+`Client::export_file_to(app, id, out)` (`files.rs`, used by `meroctl file download` and `meroctl pipeline download`) streams a sealed file's plaintext to an `AsyncWrite` and returns `ExportedFile { size, sha256 }`.
+It makes a fresh X25519 key pair, asks `POST .../files/{id}/export`, unwraps the data key with `calimero_sealed::wrap::unwrap_export`, and fetches each segment from `GET .../segments/{k}` one at a time, so memory stays bounded by one segment.
+It checks the segment list against the file id, each segment against its hash before opening it, and the size and SHA-256 of the plaintext at the end.
+Until it returns `Ok`, `out` holds authentic bytes that may be a prefix of the file, so a caller writing to disk writes a temporary file and moves it into place after success (as `meroctl` does with `<target>.part`).
+`Client::export_file(app, id)` is the same call into a `Vec<u8>`.
 
 `receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
 

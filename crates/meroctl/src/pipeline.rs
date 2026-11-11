@@ -97,6 +97,7 @@ pub enum PipelineCmd {
         out: Option<PathBuf>,
     },
     /// Download the files every step of an ended run made, as `STEP-INDEX.bin` in `--out`.
+    /// Each appears only after every check on it passed.
     Download {
         app: String,
         run: String,
@@ -169,8 +170,12 @@ async fn receipt(
     let receipt = env.client.verify_receipt(app, &answer).await?;
     let mut checked = Vec::new();
     for (step, id, sha256) in receipt_outputs(&receipt) {
-        let bytes = env.client.export_file(app, id).await?;
-        checked.push(json!({ "step": step, "id": id, "matches": hex::encode(calimero_identity::sha256(&bytes)) == sha256 }));
+        let done = env
+            .client
+            .export_file_to(app, id, &mut tokio::io::sink())
+            .await?;
+        checked
+            .push(json!({ "step": step, "id": id, "matches": hex::encode(done.sha256) == sha256 }));
     }
     if checked.iter().any(|c| c["matches"] != true) {
         bail!("an output does not match its receipt: {}", json!(checked));

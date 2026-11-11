@@ -7,7 +7,7 @@ use calimero_sealed::file::{file_id, SegmentReader};
 use calimero_sealed::wrap::{export_keypair, unwrap_export, ExportWrap};
 use eyre::WrapErr;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use super::{retry_unavailable, route, Client, Error, Result};
 use crate::types::UploadCompleteResponse;
@@ -70,6 +70,14 @@ where
     Ok(buf.into())
 }
 
+/// What an export wrote, as proven against the file's mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportedFile {
+    pub size: u64,
+    /// SHA-256 of the plaintext.
+    pub sha256: [u8; 32],
+}
+
 /// A 32-byte value an export answer names in hex.
 fn hex32(text: &str, what: &str) -> eyre::Result<[u8; 32]> {
     hex::decode(text)
@@ -84,16 +92,38 @@ fn names_requested_file(requested: &str, named: &[u8; 32], segments: &[[u8; 32]]
     !segments.is_empty() && file_id(segments) == *named && hex::encode(named) == requested
 }
 
+async fn write_plaintext<W: AsyncWrite + Unpin>(out: &mut W, bytes: &[u8]) -> Result<()> {
+    out.write_all(bytes)
+        .await
+        .map_err(|e| eyre::Report::new(e).wrap_err("writing the exported file"))?;
+    Ok(())
+}
+
 impl Client {
-    /// The plaintext of sealed file `id` (64 hex characters) of component app `app`.
-    /// The node answers only ciphertext and the file's data key wrapped to a key made here for
-    /// this call; every segment, the segment list, the size and the plaintext hash are checked
-    /// before any byte is returned.
+    /// The plaintext of sealed file `id` (64 hex characters) of component app `app`, in memory.
+    /// Prefer [`Self::export_file_to`] for a file that may be large.
     ///
     /// # Errors
-    /// The node's refusal (`403`, `404`, `429 TOO_MANY_EXPORTS`, ...), or an answer that does not
-    /// check out.
+    /// As [`Self::export_file_to`].
     pub async fn export_file(&self, app: &str, id: &str) -> Result<Vec<u8>> {
+        let mut plaintext = Vec::new();
+        let _proof = self.export_file_to(app, id, &mut plaintext).await?;
+        Ok(plaintext)
+    }
+
+    /// Writes the plaintext of sealed file `id` (64 hex characters) of component app `app` to `out`,
+    /// one segment at a time. The node answers only ciphertext and the file's data key wrapped to a
+    /// key made here for this call. Each segment is checked against its hash before it is opened,
+    /// and the segment list, size and plaintext hash are checked against the file's mark at the end.
+    /// Until this returns `Ok`, what `out` received is authentic but may be a prefix of the file.
+    ///
+    /// # Errors
+    /// The node's refusal (`403`, `404`, `429 TOO_MANY_EXPORTS`, ...), an answer that does not
+    /// check out, or a failed write to `out`.
+    pub async fn export_file_to<W>(&self, app: &str, id: &str, out: &mut W) -> Result<ExportedFile>
+    where
+        W: AsyncWrite + Unpin,
+    {
         let (secret, public) = export_keypair();
         let export = self
             .apps()
@@ -122,13 +152,16 @@ impl Client {
                 .map_err(|_| eyre::eyre!("the node answered a bad wrapped key"))?,
         )?;
         let mut reader = SegmentReader::new(&data_key, segments.clone());
-        let mut plaintext = Vec::new();
+        let sha256 = hex32(&export.sha256, "sha256")?;
         for k in 0..segments.len() {
             let segment = self.apps().exports_segment(app, id, &k.to_string()).await?;
-            plaintext.extend(reader.push(&segment)?);
+            write_plaintext(out, &reader.push(&segment)?).await?;
         }
-        plaintext.extend(reader.finish_expecting(export.size, &hex32(&export.sha256, "sha256")?)?);
-        Ok(plaintext)
+        write_plaintext(out, &reader.finish_expecting(export.size, &sha256)?).await?;
+        Ok(ExportedFile {
+            size: export.size,
+            sha256,
+        })
     }
 
     /// Upload a sealed file of `size` bytes for component app `app`; answers `{ blobId, id, size, sha256, index }`.
@@ -290,6 +323,8 @@ mod tests {
     use axum::response::{IntoResponse, Response};
     use axum::routing::any;
     use axum::{Json, Router};
+    use calimero_sealed::file::{file_id, SegmentWriter, CHUNK_BYTES};
+    use calimero_sealed::wrap::{wrap_export, ExportWrap};
     use calimero_sealed::{intercept, SealedOptions, SealedTransport as Server};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
@@ -297,8 +332,8 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Notify;
 
-    use super::names_requested_file;
     use super::FILE_PART_BYTES;
+    use super::{names_requested_file, ExportedFile};
     use crate::{Client, Error, Policy};
 
     /// What a scripted fault does to the request it matches, once.
@@ -321,6 +356,7 @@ mod tests {
 
     enum Outcome {
         Say(u16, Value),
+        Bytes(Vec<u8>),
         Cut,
     }
 
@@ -337,6 +373,51 @@ mod tests {
         hashes: Vec<Option<[u8; 32]>>,
         /// Where a new session starts: a node already ahead of the client.
         begin_next: u64,
+        file: Option<Stored>,
+    }
+
+    /// A file sealed by the real sealer, as the node would hold and answer it.
+    struct Stored {
+        key: [u8; 32],
+        segments: Vec<Vec<u8>>,
+        /// The list the export answer names; tests change it to cut or reorder the file.
+        listed: Vec<[u8; 32]>,
+        size: u64,
+        sha256: [u8; 32],
+    }
+
+    fn seal(data: &[u8]) -> Stored {
+        let mut writer = SegmentWriter::new();
+        let key = *writer.data_key();
+        let mut done = writer.write(data).unwrap();
+        let file = writer.finish().unwrap();
+        done.push(file.last);
+        Stored {
+            key,
+            listed: file.segments,
+            segments: done.into_iter().map(|s| s.bytes).collect(),
+            size: file.size,
+            sha256: file.sha256,
+        }
+    }
+
+    impl Stored {
+        fn export(&self, requested: &str, recipient: [u8; 32]) -> Value {
+            let wrap = ExportWrap {
+                app_id: "app",
+                file_id: requested,
+            };
+            let (ephemeral, wrapped) = wrap_export(&recipient, &wrap, &self.key).unwrap();
+            json!({
+                "id": hex::encode(file_id(&self.listed)),
+                "app": "app",
+                "size": self.size,
+                "sha256": hex::encode(self.sha256),
+                "segments": self.listed.iter().map(hex::encode).collect::<Vec<_>>(),
+                "ephemeral": hex::encode(ephemeral),
+                "wrapped": hex::encode(wrapped),
+            })
+        }
     }
 
     impl Node {
@@ -384,6 +465,18 @@ mod tests {
                         "sha256": hex::encode(Sha256::digest(body)),
                         "index": 1,
                     }),
+                ),
+                ("POST", [_, "export"]) => {
+                    let recipient = serde_json::from_slice::<Value>(body).unwrap()["recipient"]
+                        .as_str()
+                        .and_then(|r| hex::decode(r).ok())
+                        .and_then(|r| <[u8; 32]>::try_from(r).ok())
+                        .unwrap();
+                    let id = path.split('/').next().unwrap();
+                    Outcome::Say(200, self.file.as_ref().unwrap().export(id, recipient))
+                }
+                ("GET", [_, "segments", k]) => Outcome::Bytes(
+                    self.file.as_ref().unwrap().segments[k.parse::<usize>().unwrap()].clone(),
                 ),
                 ("POST", ["uploads"]) => {
                     let size = serde_json::from_slice::<Value>(body).unwrap()["size"]
@@ -495,6 +588,7 @@ mod tests {
             Outcome::Say(status, v) => {
                 (StatusCode::from_u16(status).unwrap(), Json(v)).into_response()
             }
+            Outcome::Bytes(bytes) => bytes.into_response(),
             Outcome::Cut => {
                 mock.cut.notify_waiters();
                 std::future::pending().await
@@ -868,6 +962,116 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Api { status: 503, .. }), "{err:?}");
         assert_eq!(mock.log(), ["POST files"]);
+    }
+
+    /// More than one segment: the first is a whole 16 MiB, the second is one byte.
+    const TWO_SEGMENTS: u64 = FILE_PART_BYTES + 1;
+
+    async fn exporting(data: &[u8]) -> (Client, Arc<Mock>, String) {
+        let (client, mock) = rig().await;
+        let stored = seal(data);
+        let id = hex::encode(file_id(&stored.listed));
+        mock.node.lock().unwrap().file = Some(stored);
+        (client, mock, id)
+    }
+
+    fn stored(mock: &Mock, change: impl FnOnce(&mut Stored)) {
+        change(mock.node.lock().unwrap().file.as_mut().unwrap());
+    }
+
+    #[tokio::test]
+    async fn export_streams_every_segment_to_the_writer() {
+        let plain = data(TWO_SEGMENTS);
+        let (client, mock, id) = exporting(&plain).await;
+        let mut out = Vec::new();
+        let done = client.export_file_to("app", &id, &mut out).await.unwrap();
+        assert!(out == plain, "the plaintext, byte for byte");
+        let sha256: [u8; 32] = Sha256::digest(&plain).into();
+        assert_eq!(
+            done,
+            ExportedFile {
+                size: TWO_SEGMENTS,
+                sha256
+            }
+        );
+        assert_eq!(
+            mock.log(),
+            [
+                format!("POST {id}/export"),
+                format!("GET {id}/segments/0"),
+                format!("GET {id}/segments/1")
+            ]
+        );
+        assert!(
+            client.export_file("app", &id).await.unwrap() == plain,
+            "the in-memory wrapper"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tampered_segment_fails_before_any_of_its_bytes_are_written() {
+        let plain = data(TWO_SEGMENTS);
+        let (client, mock, id) = exporting(&plain).await;
+        stored(&mock, |f| f.segments[1][0] ^= 1);
+        let mut out = Vec::new();
+        client
+            .export_file_to("app", &id, &mut out)
+            .await
+            .unwrap_err();
+        let kept = FILE_PART_BYTES as usize - CHUNK_BYTES; // the opener holds back a possible last chunk
+        assert!(
+            out == plain[..kept],
+            "only the first segment's opened chunks"
+        );
+        stored(&mock, |f| f.segments[0][0] ^= 1);
+        let mut out = Vec::new();
+        client
+            .export_file_to("app", &id, &mut out)
+            .await
+            .unwrap_err();
+        assert!(out.is_empty(), "nothing of a segment that fails its hash");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_final_hash_fails() {
+        let (client, mock, id) = exporting(&data(TWO_SEGMENTS)).await;
+        stored(&mock, |f| f.sha256[0] ^= 1);
+        let err = client
+            .export_file_to("app", &id, &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not the one that was sealed"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_size_fails() {
+        let (client, mock, id) = exporting(&data(TWO_SEGMENTS)).await;
+        stored(&mock, |f| f.size -= 1);
+        client
+            .export_file_to("app", &id, &mut Vec::new())
+            .await
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn a_truncated_or_reordered_segment_list_fails() {
+        let (client, mock, id) = exporting(&data(TWO_SEGMENTS)).await;
+        stored(&mock, |f| f.listed.truncate(1));
+        client
+            .export_file_to("app", &id, &mut Vec::new())
+            .await
+            .unwrap_err();
+        let (client, mock, id) = exporting(&data(TWO_SEGMENTS)).await;
+        stored(&mock, |f| f.listed.reverse());
+        let mut out = Vec::new();
+        client
+            .export_file_to("app", &id, &mut out)
+            .await
+            .unwrap_err();
+        assert!(out.is_empty());
     }
 
     /// The client trusts no list the node answers: it must hash to the id the caller asked for.
