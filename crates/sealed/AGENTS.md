@@ -17,6 +17,14 @@ The sealed transport (wire format v2) between clients and the node.
   to NK. Peers only: clients stay on NK, so mero-js is unaffected. Tests:
   `an_identified_session_names_its_caller`,
   `an_identified_handshake_with_another_nodes_key_is_refused`.
+- **Limits apart** (`server::handshake`, `session::Sessions`): identified
+  handshakes draw on their own token bucket (`IDENTIFIED_HANDSHAKES_PER_SECOND`)
+  and identified sessions on their own cap (`MAX_IDENTIFIED_SESSIONS`), so a
+  flood of anonymous handshakes neither starves peers' handshakes nor evicts
+  their sessions. The version byte picks the bucket, so at most a handshake's
+  length is read first. Tests:
+  `a_flood_of_anonymous_handshakes_leaves_peers_their_own`,
+  `session::tests::anonymous_sessions_never_displace_a_peers`.
 - A refused envelope (`Refusal`: too large, unknown session, busy) is answered in
   the clear, after the rest of its body is read and dropped (`discard`, up to
   `MAX_DISCARDED_BYTES`): a server that answers and closes with the body unread

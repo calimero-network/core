@@ -9,6 +9,7 @@
 //! - Ops (mdma, operator token): `/ops/*`.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
@@ -155,12 +156,34 @@ impl Pending {
             | Self::Confirm { expires, .. } => *expires,
         }
     }
+
+    /// The account whose holder the ceremony is for, when the caller proved
+    /// it (a session, an API key, a recovery code): such ceremonies draw on
+    /// that account's budget, the rest on the anonymous one.
+    fn account(&self) -> Option<&str> {
+        match self {
+            Self::AddPasskey { account, .. }
+            | Self::RecoverStart { account, .. }
+            | Self::Confirm { account, .. } => Some(account),
+            Self::Register { .. }
+            | Self::Login { .. }
+            | Self::SignUp { .. }
+            | Self::RecoverFinish { .. } => None,
+        }
+    }
 }
 
-/// The most passkey ceremonies a node holds open at once. Each lives at most
+/// The most ceremonies a node holds open for callers it does not know yet
+/// (sign-in, sign-up, a recovery's finish). Each lives at most
 /// `CHALLENGE_TTL`; past this the node answers 429 instead of growing without
-/// bound (Xil's review, issue 12).
+/// bound (Xil's review, issue 12). Ceremonies of known accounts do not count
+/// here, so a full anonymous pool never blocks an account's step-up.
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
+/// The most ceremonies a node holds open for known accounts, all together.
+pub const MAX_ACCOUNT_CHALLENGES: usize = 10_000;
+/// The most ceremonies a node holds open for one account, so no account
+/// fills the pool the others share.
+pub const MAX_CHALLENGES_PER_ACCOUNT: usize = 64;
 
 fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
     let id = format!("{}.{}", node.config.node_id, b64url(&random::<16>()));
@@ -168,17 +191,39 @@ fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
         .challenges
         .lock()
         .map_err(|_| ApiError::internal("challenge store poisoned"))?;
-    let now = now_secs();
+    admit_pending(&mut c, &pending, now_secs())?;
+    let _prev = c.insert(id.clone(), pending);
+    Ok(id)
+}
+
+/// Drop expired ceremonies, then refuse `pending` when its budget is full:
+/// the anonymous pool, or its account's share of the accounts' pool.
+fn admit_pending(
+    c: &mut HashMap<String, Pending>,
+    pending: &Pending,
+    now: u64,
+) -> Result<(), ApiError> {
     c.retain(|_, p| p.expires() > now);
-    if c.len() >= MAX_PENDING_CHALLENGES {
+    let full = match pending.account() {
+        None => c.values().filter(|p| p.account().is_none()).count() >= MAX_PENDING_CHALLENGES,
+        Some(account) => {
+            let (mine, all) = c
+                .values()
+                .filter_map(Pending::account)
+                .fold((0, 0), |(mine, all), a| {
+                    (mine + usize::from(a == account), all + 1)
+                });
+            mine >= MAX_CHALLENGES_PER_ACCOUNT || all >= MAX_ACCOUNT_CHALLENGES
+        }
+    };
+    if full {
         return Err(ApiError::new(
             429,
             "RATE_LIMITED",
-            "too many sign-ins in progress; try again shortly",
+            "too many passkey ceremonies in progress; try again shortly",
         ));
     }
-    let _prev = c.insert(id.clone(), pending);
-    Ok(id)
+    Ok(())
 }
 
 fn unknown_challenge() -> ApiError {
@@ -11285,7 +11330,64 @@ fn typed_id<const N: usize>() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::typed_id;
+    use std::collections::HashMap;
+
+    use super::{
+        admit_pending, typed_id, Pending, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
+    };
+
+    fn sign_up(expires: u64) -> Pending {
+        Pending::Register {
+            challenge: [0; 32],
+            name: String::new(),
+            expires,
+        }
+    }
+
+    fn step_up(account: &str, expires: u64) -> Pending {
+        Pending::Confirm {
+            challenge: [0; 32],
+            app: "app".to_owned(),
+            method: "m".to_owned(),
+            args: Vec::new(),
+            nonce: String::new(),
+            account: account.to_owned(),
+            expires,
+            carry: None,
+        }
+    }
+
+    fn put(c: &mut HashMap<String, Pending>, p: Pending, now: u64) -> Result<(), u16> {
+        admit_pending(c, &p, now).map_err(|e| e.status)?;
+        let _prev = c.insert(format!("1.{}", c.len()), p);
+        Ok(())
+    }
+
+    /// Anonymous ceremonies have their own pool: filling it refuses the next
+    /// sign-in, but an account's step-up and passkey add still begin.
+    #[test]
+    fn a_full_anonymous_pool_does_not_block_an_accounts_step_up() {
+        let mut c = HashMap::new();
+        for _ in 0..MAX_PENDING_CHALLENGES {
+            assert_eq!(put(&mut c, sign_up(100), 0), Ok(()));
+        }
+        assert_eq!(put(&mut c, sign_up(100), 0), Err(429));
+        assert_eq!(put(&mut c, step_up("alice", 100), 0), Ok(()));
+        // Expired ones free the pool.
+        assert_eq!(put(&mut c, sign_up(200), 100), Ok(()));
+    }
+
+    /// One account's step-ups are capped, and the cap is its own.
+    #[test]
+    fn one_account_cannot_fill_the_accounts_pool() {
+        let mut c = HashMap::new();
+        for _ in 0..MAX_CHALLENGES_PER_ACCOUNT {
+            assert_eq!(put(&mut c, step_up("mallory", 100), 0), Ok(()));
+        }
+        assert_eq!(put(&mut c, step_up("mallory", 100), 0), Err(429));
+        assert_eq!(put(&mut c, step_up("alice", 100), 0), Ok(()));
+        assert_eq!(put(&mut c, sign_up(100), 0), Ok(()));
+    }
 
     #[test]
     fn a_typed_id_never_starts_with_a_dash() {
