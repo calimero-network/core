@@ -169,13 +169,21 @@ def eq(got, want, what):
 
 
 def subset(got, want, what, path="$"):
-    """`got` holds every key `want` holds, with the same value (lists compared whole):
-    a new release may add fields, never drop or change one."""
+    """`got` holds every key `want` holds, with the same value; a list holds the
+    same items in the same order, each compared the same way: a new release may
+    add fields (to an object, or to every object in a list), never drop or change
+    one, nor add, drop or reorder a list's items."""
     if isinstance(want, dict):
         check(isinstance(got, dict), f"{what}: {path} is {_short(got)}, want an object")
         for k, v in want.items():
             check(k in got, f"{what}: {path}.{k} is gone (have {sorted(got)})")
             subset(got[k], v, what, f"{path}.{k}")
+        return
+    if isinstance(want, list):
+        check(isinstance(got, list) and len(got) == len(want),
+              f"{what}: {path} is {_short(got)}, want {_short(want)}")
+        for i, (g, v) in enumerate(zip(got, want)):
+            subset(g, v, what, f"{path}[{i}]")
         return
     if got != want:
         raise Failed(f"{what}: {path} is {_short(got)}, want {_short(want)}")
