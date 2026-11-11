@@ -8,9 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use calimero_client::{Client, Measurements, Policy, Session};
+use calimero_client::{Client, Measurements, Passkey, Policy, Request, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use eyre::WrapErr;
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -209,47 +210,68 @@ impl Env {
         if self.api_key.is_none() && self.home.session(&self.url).is_none() {
             return Ok(name.to_owned());
         }
-        Ok(match self.client.alias(name).await {
-            Ok(v) => v["appId"].as_str().unwrap_or(name).to_owned(),
+        Ok(match self.client.auth().alias_get(name).await {
+            Ok(a) => a.app_id,
             Err(_) => name.to_owned(),
         })
     }
 
-    /// DELETE that a person approves (an organization, a passkey, a
-    /// member), as [`Self::post_approved`].
-    pub async fn delete_approved(
+    /// Any route by its path (`meroctl raw`): `method` with `body`, and with
+    /// `--dev-passkey` a `412 CONFIRM_REQUIRED` answered with that file's
+    /// passkey; without it the request is sent as is.
+    pub async fn raw(
         &self,
+        method: Method,
         path: &str,
+        body: Option<Value>,
         dev_passkey: Option<&Path>,
     ) -> eyre::Result<Value> {
-        match dev_passkey {
-            Some(file) => {
-                let mut pk = load_dev_passkey(file)?;
-                let out = self.client.delete_confirmed(path, &mut pk).await;
-                save_passkey(file, &pk)?;
-                Ok(out?)
-            }
-            None => Ok(self.client.delete(path).await?),
+        let mut req = Request::new(method, path);
+        if let Some(body) = body {
+            req = req.json(body);
         }
+        let mut pk = DevPasskey::load(dev_passkey)?;
+        let out = match pk.get() {
+            Some(pk) => self.client.transport().confirmed(req, pk).await,
+            None => self.client.transport().json(req).await,
+        };
+        pk.save()?;
+        Ok(out?)
+    }
+}
+
+/// A command's typed answer as the JSON it prints.
+pub fn to_json<T: Serialize>(answer: &T) -> eyre::Result<Value> {
+    Ok(serde_json::to_value(answer)?)
+}
+
+/// The development passkey a command approves with (`--dev-passkey`), if any:
+/// loaded for the request and saved after it, whatever the answer (its
+/// counter moved). Without one, a route that needs approval answers `412
+/// CONFIRM_REQUIRED` and the owner approves in the console.
+pub struct DevPasskey {
+    file: Option<PathBuf>,
+    passkey: Option<SoftAuthenticator>,
+}
+
+impl DevPasskey {
+    pub fn load(file: Option<&Path>) -> eyre::Result<Self> {
+        let passkey = file.map(load_dev_passkey).transpose()?;
+        Ok(Self {
+            file: file.map(Path::to_path_buf),
+            passkey,
+        })
     }
 
-    /// POST that an owner approves: with `--dev-passkey`, the challenge is
-    /// signed with that file's passkey; without it, a real cluster answers
-    /// `412 CONFIRM_REQUIRED` and the owner approves in the console.
-    pub async fn post_approved(
-        &self,
-        path: &str,
-        body: Value,
-        dev_passkey: Option<&Path>,
-    ) -> eyre::Result<Value> {
-        match dev_passkey {
-            Some(file) => {
-                let mut pk = load_dev_passkey(file)?;
-                let out = self.client.post_confirmed(path, body, &mut pk).await;
-                save_passkey(file, &pk)?;
-                Ok(out?)
-            }
-            None => Ok(self.client.post(path, body).await?),
+    /// The passkey for a generated method's `passkey` argument.
+    pub fn get(&mut self) -> Option<&mut dyn Passkey> {
+        self.passkey.as_mut().map(|p| p as &mut dyn Passkey)
+    }
+
+    pub fn save(self) -> eyre::Result<()> {
+        match (self.file, self.passkey) {
+            (Some(file), Some(pk)) => save_passkey(&file, &pk),
+            _ => Ok(()),
         }
     }
 }
