@@ -133,6 +133,7 @@ on:
         default: ""
         type: string
       summary-title:
+        description: "The heading over the summary's output (blank: none, when the output has its own)"
         required: false
         default: "Generated methods"
         type: string
@@ -422,13 +423,15 @@ jobs:
             cat "$out/api.md"
             if [ -n "$SUMMARY" ]; then
               echo
-              echo "### $SUMMARY_TITLE"
-              echo
+              if [ -n "$SUMMARY_TITLE" ]; then
+                echo "### $SUMMARY_TITLE"
+                echo
+              fi
               cat "$out/summary.md"
             fi
             if [ -n "$PR_NOTES" ]; then
               echo
-              printf '%s\n' "$PR_NOTES"
+              printf '%s\n' "${PR_NOTES%$'\n'}"
             fi
             echo
             echo "<details><summary>Files: $(git --no-pager diff --shortstat | sed 's/^ *//')</summary>"
