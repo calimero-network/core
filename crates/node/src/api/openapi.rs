@@ -9,15 +9,18 @@
 //! - an entry's request body and query are the ones its handler extracts (`Json<T>`,
 //!   `Option<Json<T>>`, `Query<T>`, raw bytes), and their shapes match `T`: the same field
 //!   names (from `T`'s `Deserialize`), a sample of the shape deserializes into `T`, and a
-//!   field is optional in the shape exactly when `T` accepts the body without it;
+//!   field is optional in the shape exactly when `T` accepts the body without it, at any
+//!   depth: each struct `T` reads inside the body, in a list or a property, is held to the
+//!   object the shape has there ([`trace`]);
 //! - each error code the handler raises with a literal code is listed for it;
 //! - the committed document is the one [`document`] builds now. `UPDATE_OPENAPI=1 cargo
 //!   test -p calimero-node --lib openapi` rewrites it.
 //!
 //! Response shapes are written here by hand from the handlers' answers. A component the node
 //! answers by serializing a Rust type names that type (`Component::ty`), and is held to it:
-//! the same field names, a sample of the shape read into the type writes back as a value of
-//! the shape, and a field is optional in the shape exactly when the type may leave it out.
+//! the same field names (of each struct it reads, at any depth), a sample of the shape read
+//! into the type writes back as a value of the shape, and a field is optional in the shape
+//! exactly when the type may leave it out.
 //! The rest, built with `json!`, are not checked.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,6 +31,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 mod shape;
+mod trace;
 
 use shape::{parse, Shape};
 
@@ -93,6 +97,8 @@ struct Ty {
     parse: fn(&Value, bool) -> Result<(), String>,
     /// The field names its `Deserialize` reads, when it is a plain struct.
     fields: fn() -> Option<&'static [&'static str]>,
+    /// The structs it reads from a JSON body, at any depth.
+    structs: fn(&Value) -> Result<Vec<trace::Read>, String>,
 }
 
 fn ty<T: DeserializeOwned>() -> Ty {
@@ -112,6 +118,7 @@ fn ty<T: DeserializeOwned>() -> Ty {
         name: std::any::type_name::<T>(),
         parse: parse::<T>,
         fields: fields_of::<T>,
+        structs: trace::structs::<T>,
     }
 }
 
@@ -440,6 +447,8 @@ struct OutTy {
     round_trip: fn(&Value) -> Result<Value, String>,
     /// The field names its `Deserialize` reads, when it is a plain struct.
     fields: fn() -> Option<&'static [&'static str]>,
+    /// The structs it reads from a JSON value, at any depth.
+    structs: fn(&Value) -> Result<Vec<trace::Read>, String>,
 }
 
 fn out_ty<T: DeserializeOwned + Serialize>() -> OutTy {
@@ -451,6 +460,7 @@ fn out_ty<T: DeserializeOwned + Serialize>() -> OutTy {
         name: std::any::type_name::<T>(),
         round_trip: round_trip::<T>,
         fields: fields_of::<T>,
+        structs: trace::structs::<T>,
     }
 }
 
@@ -1455,8 +1465,8 @@ fn operations() -> Vec<Op> {
             .ok(r#"{ mode: "legacy" | "standalone" | "shared", appTeams: { package: string, teamId: string, name: string, join: #TeamJoin, memberCount: uint, defaultCapabilities: uint | null, member: bool, manages: bool }[] }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/app-teams", "app_teams_scope", Session, "Give apps app teams, or open or close one")
-            .about("The owner or an admin; `keep` names who stays when a team closes. `412` first.")
-            .json::<super::ScopeAppsBody>("{ apps?: { package: string, name?: string, instances?: string[], join?: #TeamJoin, keep?: string[] }[], shared?: bool, confirm?: #Confirm }")
+            .about("The owner or an admin; `keep` names who stays when a team closes; `childTeams` says whether the app team's members make restricted teams below it (private channels), adding or removing `CREATE_CHILD_TEAM` (absent: as they are). Naming `join` or `childTeams` on any package leaves `shared` unset to mean no other team. `412` first.")
+            .json::<super::ScopeAppsBody>("{ apps?: { package: string, name?: string, instances?: string[], join?: #TeamJoin, keep?: string[], childTeams?: bool }[], shared?: bool, confirm?: #Confirm }")
             .ok(r#"{ mode: "legacy" | "standalone" | "shared", teams: { package: string, teamId: string, created: bool, apps: string[], added: uint, join: #TeamJoin | null, dropped: uint }[] }"#)
             .step_up()
             .errors(&[(400, "TOO_MANY_PACKAGES"), (409, "FEATURE_NOT_ACTIVE")]),
@@ -2135,6 +2145,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::shape::{parse, Shape};
+    use super::trace::{self, Step};
     use super::{
         components, document, fields_of, operations, shapes, Body, Input, Op, ERROR_DETAILS,
     };
@@ -2302,6 +2313,124 @@ mod tests {
         }
     }
 
+    /// `shape` as it stands for `v`: a `#Name` resolved, and of a union the alternative
+    /// `v` is a value of (the first, when none is).
+    fn resolved(shape: &Shape, v: Option<&Value>, refs: &dyn Fn(&str) -> Shape) -> Shape {
+        match shape {
+            Shape::Ref(name) => resolved(&refs(name), v, refs),
+            Shape::OneOf(alts) => {
+                let some = alts.iter().filter(|a| **a != Shape::Null);
+                let fits = some
+                    .clone()
+                    .find(|a| v.is_some_and(|v| a.admits(v, refs)))
+                    .or_else(|| some.clone().next())
+                    .unwrap_or(&Shape::Null);
+                resolved(fits, v, refs)
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// The shape of the value at `path` in `sample`, a value of `shape`; `None` where the
+    /// shape says nothing of it (`any`).
+    fn shape_at(
+        shape: &Shape,
+        sample: &Value,
+        path: &[Step],
+        refs: &dyn Fn(&str) -> Shape,
+    ) -> Option<Shape> {
+        let mut shape = resolved(shape, Some(sample), refs);
+        let mut value = Some(sample);
+        for step in path {
+            let inner = match (&shape, step) {
+                (Shape::Object(fields, rest), Step::Key(k)) => fields
+                    .iter()
+                    .find(|f| f.name == *k)
+                    .map(|f| f.shape.clone())
+                    .or_else(|| rest.as_deref().cloned())?,
+                (Shape::List(item), Step::Item(_)) => (**item).clone(),
+                _ => return None,
+            };
+            value = value.and_then(|v| match step {
+                Step::Key(k) => v.get(k),
+                Step::Item(i) => v.get(i),
+            });
+            shape = resolved(&inner, value, refs);
+        }
+        Some(shape)
+    }
+
+    /// The value at `path` in `v`.
+    fn value_at_mut<'v>(v: &'v mut Value, path: &[Step]) -> Option<&'v mut Value> {
+        path.iter().try_fold(v, |v, step| match step {
+            Step::Key(k) => v.get_mut(k),
+            Step::Item(i) => v.get_mut(i),
+        })
+    }
+
+    /// Below the top level, each struct the type reads from `sample` (a value of `shape`)
+    /// against the object the shape has there: the same field names. An object that also
+    /// takes other properties (`[string]: ..`) names those clients rely on, so a subset.
+    /// With `accepts` (whether the type reads a value), a field is also optional there
+    /// exactly when the type reads the sample without it. `checked` counts the structs.
+    fn nested_mismatches(
+        at: &str,
+        shape: &Shape,
+        sample: &Value,
+        reads: Result<Vec<trace::Read>, String>,
+        refs: &dyn Fn(&str) -> Shape,
+        accepts: Option<&dyn Fn(&Value) -> bool>,
+        checked: &mut usize,
+    ) -> Vec<String> {
+        let reads = match reads {
+            Ok(reads) => reads,
+            Err(e) => return vec![format!("{at}: the type does not read its sample: {e}")],
+        };
+        let mut wrong = Vec::new();
+        for read in reads.iter().filter(|r| !r.path.is_empty()) {
+            *checked += 1;
+            let actual: BTreeSet<&str> = read.fields.iter().copied().collect();
+            let where_ = trace::show(&read.path);
+            match shape_at(shape, sample, &read.path, refs) {
+                Some(Shape::Object(fields, rest)) => {
+                    let named: BTreeSet<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                    let fits = if rest.is_some() {
+                        named.is_subset(&actual)
+                    } else {
+                        named == actual
+                    };
+                    if !fits {
+                        wrong.push(format!(
+                            "{at}: at `{where_}` the type reads {actual:?}, the shape names {named:?}"
+                        ));
+                        continue;
+                    }
+                    let Some(accepts) = accepts else { continue };
+                    for f in &fields {
+                        let mut without = sample.clone();
+                        let _gone = value_at_mut(&mut without, &read.path)
+                            .and_then(Value::as_object_mut)
+                            .and_then(|o| o.remove(&f.name));
+                        let accepted = accepts(&without);
+                        if accepted != f.optional {
+                            wrong.push(format!(
+                                "{at}: at `{where_}`, `{}` is {} in the shape but {} by the type",
+                                f.name,
+                                if f.optional { "optional" } else { "required" },
+                                if accepted { "optional" } else { "required" },
+                            ));
+                        }
+                    }
+                }
+                Some(Shape::Any) | None => {}
+                Some(other) => wrong.push(format!(
+                    "{at}: at `{where_}` the type reads a struct {actual:?}, the shape has {other:?}"
+                )),
+            }
+        }
+        wrong
+    }
+
     #[test]
     fn the_registry_covers_the_router() {
         let routed: BTreeSet<(String, String, String)> = routes()
@@ -2375,6 +2504,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no component {name}"))
         };
         let mut wrong = Vec::new();
+        let mut nested = 0;
         let comps = components();
         let ops = operations();
         let inputs = ops.iter().flat_map(|op: &Op| {
@@ -2438,6 +2568,27 @@ mod tests {
                     }
                 }
             }
+            // The objects inside it, at any depth, each alternative of a union too. A query
+            // is flat.
+            if !query {
+                let alts = match &shape {
+                    Shape::OneOf(alts) => alts.clone(),
+                    other => vec![other.clone()],
+                };
+                for alt in alts.iter().filter(|a| **a != Shape::Null) {
+                    let sample = alt.sample(&refs);
+                    let accepts = |v: &Value| (ty.parse)(v, false).is_ok();
+                    wrong.extend(nested_mismatches(
+                        &at,
+                        alt,
+                        &sample,
+                        (ty.structs)(&sample),
+                        &refs,
+                        Some(&accepts),
+                        &mut nested,
+                    ));
+                }
+            }
             for f in shape.fields() {
                 let mut without = sample.clone();
                 let _gone = without.as_object_mut().and_then(|o| o.remove(&f.name));
@@ -2452,6 +2603,10 @@ mod tests {
                 }
             }
         }
+        assert!(
+            nested > 0,
+            "no request type reads a struct below its top level"
+        );
         assert!(
             wrong.is_empty(),
             "request shapes that differ from their types:\n{}",
@@ -2474,6 +2629,7 @@ mod tests {
         };
         let mut wrong = Vec::new();
         let mut checked = 0;
+        let mut nested = 0;
         for c in components() {
             let Some(ty) = c.ty else { continue };
             checked += 1;
@@ -2496,6 +2652,15 @@ mod tests {
             };
             for alt in alts.iter().filter(|a| **a != Shape::Null) {
                 let sample = alt.sample(&refs);
+                wrong.extend(nested_mismatches(
+                    &at,
+                    alt,
+                    &sample,
+                    (ty.structs)(&sample),
+                    &refs,
+                    None,
+                    &mut nested,
+                ));
                 match (ty.round_trip)(&sample) {
                     Ok(out) if shape.admits(&out, &refs) => {}
                     Ok(out) => wrong.push(format!(
@@ -2545,6 +2710,10 @@ mod tests {
             }
         }
         assert!(checked > 0, "no component names its type");
+        assert!(
+            nested > 0,
+            "no response type reads a struct below its top level"
+        );
         assert!(
             wrong.is_empty(),
             "response shapes that differ from their types:\n{}",
