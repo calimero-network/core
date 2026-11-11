@@ -105,8 +105,10 @@ def _run_id(v):
 
 
 def _finished(status, apps):
-    """The run's status once every app of it is done."""
-    if sorted(status.get("done") or []) != sorted(apps):
+    """The run's status once every app of it is done and the run says it has
+    finished: `done` fills before `finished` is set, so a status read between
+    the two is not the one every later read answers."""
+    if sorted(status.get("done") or []) != sorted(apps) or status.get("finished") is False:
         raise Failed(f"the run is still going: {json.dumps(status)[:300]}")
     return status
 
