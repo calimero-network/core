@@ -91,6 +91,12 @@ pub const SNAPSHOT_CHUNK_BYTES: u64 = 1024 * 1024;
 /// applied its own log ([`Group::propose_led`]).
 pub const CATCH_UP: Duration = Duration::from_secs(2);
 
+/// How long a strong read on a voter waits for the voters to elect a leader when it knows none
+/// of them leads ([`Group::read_strong`]): past the default election timeout
+/// ([`Config::election_max_ms`]) and a vote round, and under the 5 s a node gives a peer to
+/// answer a request it forwards, so the asking node still has time to ask the winner.
+pub const ELECTION_WAIT: Duration = Duration::from_secs(4);
+
 /// What the leadership check that admitted a proposal found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Leadership {
@@ -148,6 +154,13 @@ pub struct Group<M: Machine> {
     /// The term this node last caught up in ([`Group::propose_led`]): it applied
     /// its whole log once after taking the lead in that term. 0: never.
     caught_up: std::sync::atomic::AtomicU64,
+}
+
+/// Whether `node` is one of the voters `m` names and knows no voter that leads them.
+fn electing(node: NodeId, m: &openraft::RaftMetrics<NodeId, BasicNode>) -> bool {
+    let membership = m.membership_config.membership();
+    let voter = |id: NodeId| membership.voter_ids().any(|v| v == id);
+    voter(node) && !m.current_leader.is_some_and(voter)
 }
 
 fn forward<E>(leader_id: Option<NodeId>, leader_node: Option<BasicNode>) -> Result<E, WriteError> {
@@ -385,10 +398,26 @@ impl<M: Machine> Group<M> {
         }
     }
 
-    /// A linearizable read, served by the confirmed leader.
+    /// A linearizable read, served by the confirmed leader. A voter that knows no leader among
+    /// the voters (a move took the leader off, and they are electing one) waits up to
+    /// [`ELECTION_WAIT`] for one first: then it answers if it won, or names the winner.
     pub async fn read_strong<R>(&self, f: impl FnOnce(&M, u64) -> R) -> Result<R, WriteError> {
-        let _read = self.confirm_leader().await?;
+        let _read = match self.confirm_leader().await {
+            Err(WriteError::NotLeader { .. }) if self.electing() => {
+                let node = self.node;
+                let _led = (self.raft.wait(Some(ELECTION_WAIT)))
+                    .metrics(move |m| !electing(node, m), "a voter leads")
+                    .await;
+                self.confirm_leader().await?
+            }
+            read => read?,
+        };
         Ok(self.read_local(f))
+    }
+
+    /// Whether this node is a voter and knows no voter that leads.
+    fn electing(&self) -> bool {
+        electing(self.node, &self.raft.metrics().borrow())
     }
 
     /// Read this node's applied state.
