@@ -1279,3 +1279,211 @@ fn a_step_runs_in_a_module_the_run_pinned_and_in_no_other() {
     );
     assert!(w.r.machine.run_record("p1.b.0").is_none());
 }
+
+fn proof_of(w: &World, run: &str) -> calimero_client::receipt::StepRunProof {
+    w.r.machine.step_proof(run).expect("no proof")
+}
+
+#[test]
+fn a_linked_done_final_writes_a_proof_with_the_attempts_key_and_digest() {
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a"]);
+    let _s = start_step(&mut w, PIPE, "a");
+    let _r = run_done(&mut w, "p1.a.0", 1);
+    let p = proof_of(&w, "p1.a.0");
+    let k = job_key(1);
+    assert_eq!((p.step.as_str(), p.index, p.attempt), ("a", 0, 1));
+    assert_eq!(p.outcome, "done");
+    assert_eq!(
+        p.job_key.as_deref(),
+        Some(hex::encode(k.verifying_key().to_bytes()).as_str())
+    );
+    assert_eq!(
+        p.assignment_digest.as_deref(),
+        Some(hex::encode(DIGEST).as_str())
+    );
+    let rep = report("p1.a.0", 1, ReportStatus::Done, None, &[out(1)]);
+    let message = crate::job_wire::report_message(&rep, &DIGEST).unwrap();
+    assert_eq!(
+        p.report_sha256.as_deref(),
+        Some(hex::encode(calimero_identity::sha256(&message)).as_str())
+    );
+    assert_eq!(
+        p.signature,
+        Some(sign_report(&k, &DIGEST, &rep).unwrap()),
+        "the job's own signature"
+    );
+    assert_eq!(p.outputs.len(), 1);
+    assert_eq!(p.outputs[0].id, out(1).id);
+}
+
+#[test]
+fn a_leader_ended_run_has_a_proof_without_report_fields() {
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a"]);
+    let _s = start_step(&mut w, PIPE, "a");
+    let k = job_key(1);
+    let _a = w.assign("p1.a.0", &k);
+    let _c = w.push(&ComponentCmd::PipelineCancel(Box::new(
+        PipelineCancelEntry {
+            run: PIPE.into(),
+            ts_ms: 7,
+        },
+    )));
+    let entry = leader(&w, "p1.a.0", FinalOutcome::Cancelled);
+    let _f = w.finish(entry);
+    let p = proof_of(&w, "p1.a.0");
+    assert_eq!(p.outcome, "cancelled");
+    assert!(p.report_sha256.is_none() && p.signature.is_none());
+    assert!(p.job_key.is_some(), "the attempt it was assigned to");
+    assert!(p.outputs.is_empty());
+}
+
+#[test]
+fn a_failed_job_run_keeps_its_proof_with_the_reason() {
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a"]);
+    let _s = start_step(&mut w, PIPE, "a");
+    let k = job_key(1);
+    let _a = w.assign("p1.a.0", &k);
+    let failed = trapped(&w, "p1.a.0", &k);
+    let _f = w.finish(failed);
+    let p = proof_of(&w, "p1.a.0");
+    assert_eq!(p.outcome, "failed:trap");
+    assert!(p.signature.is_some());
+}
+
+#[test]
+fn a_cached_run_writes_no_proof_and_the_step_remembers_its_key() {
+    let mut w = World::new();
+    make_entry(&mut w, PIPE, "k1", 1, 9);
+    let _a = start_cached(&mut w, "p2", vec![hit(0, "k1")], 20);
+    assert!(w.r.machine.step_proof("p2.a.0").is_none());
+    let step = &pipeline(&w, "p2").steps["a"];
+    assert_eq!(step.cached_keys.get(&0).map(String::as_str), Some("k1"));
+}
+
+#[test]
+fn a_dropped_pipeline_run_drops_its_proofs() {
+    let mut w = World::new();
+    let _a = begin(&mut w, "first", &["a"]);
+    let _s = start_step(&mut w, "first", "a");
+    let _r = run_done(&mut w, "first.a.0", 1);
+    assert!(w.r.machine.step_proof("first.a.0").is_some());
+    for i in 0..FINISHED_PIPELINE_RUNS_KEPT {
+        let id = format!("n{i}");
+        let _b = begin(&mut w, &id, &["a"]);
+        let _d = decide(&mut w, &id, "a", StepVerdict::Skipped);
+    }
+    assert!(w.r.machine.pipeline_run("first").is_none());
+    assert!(w.r.machine.step_proof("first.a.0").is_none());
+}
+
+#[test]
+fn two_replicas_fed_the_same_entries_hold_the_same_proofs() {
+    let run = || {
+        let mut w = World::new();
+        let _b = begin(&mut w, PIPE, &["a"]);
+        let _s = start_step(&mut w, PIPE, "a");
+        let _r = run_done(&mut w, "p1.a.0", 1);
+        w
+    };
+    let (a, b) = (run(), run());
+    assert_eq!(proof_of(&a, "p1.a.0"), proof_of(&b, "p1.a.0"));
+}
+
+#[test]
+fn a_pipeline_run_records_its_input_files_as_they_were_at_start() {
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a"]);
+    let run = pipeline(&w, PIPE);
+    let held = &run.input_files[&fid(INPUT)];
+    assert_eq!(held.id, fid(INPUT));
+}
+
+#[test]
+fn a_receipt_still_lists_every_run_after_the_run_records_were_dropped() {
+    let total = FINISHED_RUNS_KEPT + 20;
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a"]);
+    let n = u32::try_from(total).unwrap();
+    let _s = fan_start(&mut w, "a", n, n, 16);
+    let mut from = 0;
+    while from < total {
+        let to = (from + 16).min(total);
+        if from > 0 {
+            let m = more(&mut w, "a", from, to);
+            assert!(m.status == Status::Ok, "{from}: {m:?}");
+        }
+        for i in from..to {
+            let _r = run_failed(&mut w, &format!("p1.a.{i}"));
+        }
+        from = to;
+    }
+    assert_eq!(
+        pipeline(&w, PIPE).state,
+        PipelineState::SucceededWithFailures
+    );
+    assert!(
+        w.r.machine.run_record("p1.a.0").is_none(),
+        "the first run's record is gone"
+    );
+    let source = crate::api::pipeline_receipt::ReceiptSource {
+        proofs: (0..total)
+            .filter_map(|i| {
+                let id = format!("p1.a.{i}");
+                Some((id.clone(), w.r.machine.step_proof(&id)?))
+            })
+            .collect(),
+        run: pipeline(&w, PIPE),
+    };
+    let receipt = crate::api::pipeline_receipt::build_receipt(
+        &"cc".repeat(32),
+        "app",
+        &source.run,
+        &source.proofs,
+    );
+    assert_eq!(receipt.steps["a"].runs.len(), total);
+    assert_eq!(receipt.modules["self"], "compute-v1");
+    assert_eq!(receipt.inputs["in"].len(), 1);
+}
+
+#[test]
+fn a_receipt_marks_cached_runs_with_their_key_and_keeps_index_order() {
+    use calimero_client::receipt::RunEntry;
+    let mut w = World::new();
+    make_entry(&mut w, PIPE, "k1", 1, 9);
+    let _b = begin(&mut w, "p3", &["a"]);
+    let fan = FanOut {
+        total: 2,
+        items: 2,
+        batch: 1,
+        allowed: 0,
+    };
+    let _d = decide(
+        &mut w,
+        "p3",
+        "a",
+        StepVerdict::Start {
+            runs: vec![step_run("p3", "a", 1)],
+            fan,
+            cached: vec![hit(0, "k1")],
+        },
+    );
+    let _r = run_done(&mut w, "p3.a.1", 2);
+    let run = pipeline(&w, "p3");
+    let proofs = std::iter::once("p3.a.1")
+        .filter_map(|id| Some((id.to_owned(), w.r.machine.step_proof(id)?)))
+        .collect();
+    let receipt =
+        crate::api::pipeline_receipt::build_receipt(&"cc".repeat(32), "app", &run, &proofs);
+    let runs = &receipt.steps["a"].runs;
+    assert!(
+        matches!(&runs[0], RunEntry::Cached(c) if c.index == 0 && c.cache_key == "k1"),
+        "{runs:?}"
+    );
+    assert!(
+        matches!(&runs[1], RunEntry::Ran(p) if p.index == 1),
+        "{runs:?}"
+    );
+}

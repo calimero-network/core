@@ -17,6 +17,7 @@ use url::Url;
 
 pub mod attest;
 mod files;
+pub mod receipt;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
 
@@ -803,6 +804,39 @@ impl Client {
             path_segment(run)
         ))
         .await
+    }
+
+    /// The signed receipt of an ended pipeline run; check it with
+    /// [`Client::verify_receipt`].
+    pub async fn pipeline_receipt(&self, app: &str, run: &str) -> Result<receipt::ReceiptAnswer> {
+        let v = self
+            .get(&format!(
+                "apps/{}/pipeline-runs/{}/receipt",
+                path_segment(app),
+                path_segment(run)
+            ))
+            .await?;
+        serde_json::from_value(v)
+            .map_err(|e| eyre::eyre!("the receipt is not well formed: {e}").into())
+    }
+
+    /// Checks that the node that answered holds a receipt key attested under this client's
+    /// policy ([`Client::verify_app_cluster`]) and signed `answer` with it, and that the receipt
+    /// is for `app`. Answers the receipt.
+    pub async fn verify_receipt(
+        &self,
+        app: &str,
+        answer: &receipt::ReceiptAnswer,
+    ) -> Result<receipt::PipelineReceipt> {
+        let cluster = self.verify_app_cluster(app).await?;
+        let key = cluster.keys.get(&answer.node).ok_or_else(|| {
+            eyre::eyre!("node {} is not an attested replica of {app}", answer.node)
+        })?;
+        let verified = receipt::verify_pipeline_receipt(answer, key)?;
+        if verified.app != app {
+            return Err(eyre::eyre!("the receipt is for app {}, not {app}", verified.app).into());
+        }
+        Ok(verified)
     }
 
     /// The app's recent pipeline runs, newest first.

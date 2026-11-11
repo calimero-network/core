@@ -1620,3 +1620,204 @@ async fn a_named_pool_waits_until_every_node_runs_this_release() {
         "placed by memory, not by the named pool"
     );
 }
+
+/// What the customer checks: the receipt is signed by an attested node, every step's run has a
+/// proof, and the outputs the run view lists are the ones the receipt names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_finished_run_has_a_receipt_signed_by_an_attested_node() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
+    let run = rig
+        .start_run("chain", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+
+    let answer = rig.alice.pipeline_receipt(&rig.app, &run).await.unwrap();
+    let receipt = rig.alice.verify_receipt(&rig.app, &answer).await.unwrap();
+    assert_eq!(
+        (receipt.app.as_str(), receipt.run.as_str()),
+        (rig.app.as_str(), run.as_str())
+    );
+    assert_eq!(receipt.state, "succeeded");
+    assert_eq!(receipt.pipeline, "chain");
+    assert_eq!(receipt.release, "1.0.0");
+    assert_eq!(receipt.modules["self"], sha256_hex(&rig.compute));
+    assert_eq!(receipt.inputs["docs"].len(), 1);
+    assert_eq!(receipt.inputs["docs"][0].id, file);
+    assert_eq!(
+        receipt.inputs["docs"][0].size,
+        u64::try_from(INPUT_LEN).unwrap()
+    );
+
+    let hex64 = |s: &Option<String>| {
+        s.as_ref()
+            .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    for step in ["a", "b", "c"] {
+        let runs = &receipt.steps[step].runs;
+        assert_eq!(runs.len(), 1, "{step}");
+        let calimero_client::receipt::RunEntry::Ran(proof) = &runs[0] else {
+            panic!("step {step} ran");
+        };
+        assert!(
+            hex64(&proof.job_key) && hex64(&proof.assignment_digest),
+            "{proof:?}"
+        );
+        assert!(hex64(&proof.report_sha256), "{proof:?}");
+        assert_eq!(proof.outcome, "done");
+        assert_eq!(proof.run, step_run(&done, step));
+        let listed: Vec<(String, u64, String)> = done["steps"][step]["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| {
+                (
+                    o["id"].as_str().unwrap().to_owned(),
+                    o["size"].as_u64().unwrap(),
+                    o["sha256"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let named: Vec<(String, u64, String)> = proof
+            .outputs
+            .iter()
+            .map(|o| (o.id.clone(), o.size, o.sha256.clone()))
+            .collect();
+        assert_eq!(named, listed, "step {step}");
+    }
+
+    // A downloaded output hashes to what the receipt names.
+    let calimero_client::receipt::RunEntry::Ran(a) = &receipt.steps["a"].runs[0] else {
+        panic!("a ran");
+    };
+    let bytes = rig
+        .alice
+        .export_file(&rig.app, &a.outputs[0].id)
+        .await
+        .unwrap();
+    assert_eq!(sha256_hex(&bytes), a.outputs[0].sha256);
+
+    // Another node's key, or an edited receipt, does not verify.
+    let mut forged = answer.clone();
+    forged.receipt["state"] = json!("failed");
+    assert!(rig.alice.verify_receipt(&rig.app, &forged).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_running_run_has_no_receipt_yet() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let e = rig
+        .alice
+        .pipeline_receipt(&rig.app, &run)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("RUN_NOT_ENDED"), "{e}");
+    rig.until("step a is assigned", async || {
+        let v = rig.run(&run).await;
+        v["steps"]["a"]["runs"]
+            .as_array()
+            .and_then(|r| r.first())
+            .and_then(Value::as_str)
+            .is_some_and(|id| !rig.record(id).attempts.is_empty())
+    })
+    .await;
+    let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+    let _done = rig.ended(&run).await;
+    let answer = rig.alice.pipeline_receipt(&rig.app, &run).await.unwrap();
+    let receipt = rig.alice.verify_receipt(&rig.app, &answer).await.unwrap();
+    assert_eq!(receipt.state, "cancelled");
+    let calimero_client::receipt::RunEntry::Ran(a) = &receipt.steps["a"].runs[0] else {
+        panic!("a ran");
+    };
+    assert!(
+        ["cancelled", "failed:cancelled"].contains(&a.outcome.as_str()),
+        "{a:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fan_out_with_cached_items_marks_them_cached_in_its_receipt() {
+    use calimero_client::receipt::RunEntry;
+    let rig = Rig::start(&[JOB_A]).await;
+    let files = rig
+        .uploads(&["item one".to_owned(), "item two".to_owned()])
+        .await;
+    let first = rig
+        .start_run("small", json!({ "docs": files }), json!({}))
+        .await;
+    let _first = rig.ended(&first).await;
+    let again = rig
+        .start_run("small", json!({ "docs": files }), json!({}))
+        .await;
+    let again = rig.ended(&again).await;
+    assert!(cached(&again, "each"), "{again}");
+
+    let answer = rig
+        .alice
+        .pipeline_receipt(&rig.app, again["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    let receipt = rig.alice.verify_receipt(&rig.app, &answer).await.unwrap();
+    let runs = &receipt.steps["each"].runs;
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    for (i, r) in runs.iter().enumerate() {
+        match r {
+            RunEntry::Cached(c) => {
+                assert_eq!((c.index, c.cached), (u32::try_from(i).unwrap(), true));
+                assert_eq!(c.cache_key.len(), 64);
+            }
+            RunEntry::Ran(p) => panic!("item {i} ran: {p:?}"),
+        }
+    }
+    let first_answer = rig.alice.pipeline_receipt(&rig.app, &first).await.unwrap();
+    let first_receipt = rig
+        .alice
+        .verify_receipt(&rig.app, &first_answer)
+        .await
+        .unwrap();
+    assert!(
+        first_receipt.steps["each"]
+            .runs
+            .iter()
+            .all(|r| matches!(r, RunEntry::Ran(_))),
+        "the first run ran its items"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_cannot_read_a_receipt() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let public = rig
+        .alice
+        .create_app_from_package(
+            "open",
+            "com.test.job",
+            Some("1.0.0"),
+            None,
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let doc = rig
+        .alice
+        .upload_bytes(&public, b"private".to_vec())
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run = rig
+        .alice
+        .start_pipeline_run(&public, "chain", json!({ "docs": [doc] }), json!({}))
+        .await
+        .unwrap()["run"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _c = rig.alice.cancel_pipeline_run(&public, &run).await.unwrap();
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let e = bob.pipeline_receipt(&public, &run).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}

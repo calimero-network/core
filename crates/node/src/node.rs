@@ -1742,6 +1742,19 @@ impl Node {
         }
     }
 
+    /// A pipeline run's receipt with this node's receipt key's signature over it
+    /// (`calimero_client::receipt::receipt_message`), as the receipt route answers it.
+    #[must_use]
+    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> serde_json::Value {
+        use ed25519_dalek::Signer;
+        let message = calimero_client::receipt::receipt_message(&receipt);
+        serde_json::json!({
+            "receipt": receipt,
+            "node": self.config.node_id,
+            "signature": hex::encode(self.receipt_key.sign(&message).to_bytes()),
+        })
+    }
+
     /// The mero-tee release this node runs, as its attestation names it.
     #[must_use]
     pub fn own_release(&self) -> String {

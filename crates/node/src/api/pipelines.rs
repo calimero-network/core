@@ -211,7 +211,10 @@ async fn may_run(
     Ok(())
 }
 
-async fn component_app(node: &Node, app_id: &str) -> Result<crate::types::AppRecord, ApiError> {
+pub(super) async fn component_app(
+    node: &Node,
+    app_id: &str,
+) -> Result<crate::types::AppRecord, ApiError> {
     let app = node.app(app_id).await?;
     if app.executor != Executor::Component {
         return Err(ApiError::not_found("no such pipeline run"));

@@ -633,6 +633,7 @@ impl AppMachine {
                 .add_output(tx, output, entry.ts_ms);
         }
         let result = entry.report.as_ref().map_or(&[][..], |r| &r.result[..]);
+        Self::write_step_proof(tx, &record, entry);
         self.settle_step_run(tx, &record, &entry.outputs, result, entry.ts_ms);
         self.apply_component_outcome(
             tx,
