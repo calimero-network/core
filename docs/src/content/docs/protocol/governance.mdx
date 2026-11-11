@@ -77,12 +77,16 @@ key signs only by **binding** the key, with the key's own signature:
   `POST /orgs/{org}/publishers { signerId, publicKey, signature }`
   (`BindPublisher`).
 - `apply` verifies the signature itself (Ed25519, the key must derive the
-  `did:key`), so no node, operator or member binds a key without its holder.
-  Each binding moves the generation on, so a signature binds once: it cannot
-  be replayed on this cluster or another, nor after the key moved on.
+  `did:key`) over the cluster's own name (`--cluster`, never the name the
+  command carries), so no node, operator or member binds a key without its
+  holder. Each binding moves the generation on, so a signature binds once: it
+  cannot be replayed on this cluster or another, nor after the key moved on.
 - Binding again (to another organization) takes a new signature from the same
   key; the organization it leaves cannot keep it. The pinned key never
   changes, so a package's publisher is always whoever its key last signed for.
+- Deleting the organization unbinds its keys (`DeleteOrg`); each keeps its
+  generation (`SystemState::unbound_publishers`), so an organization created
+  later under the same id publishes nothing until the key signs for it anew.
 
 `GET /orgs/{org}` lists the keys an organization publishes (`publishes`).
 

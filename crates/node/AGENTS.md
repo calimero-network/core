@@ -31,6 +31,13 @@ is its command line.
   wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
   `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
   `a_wasmer_entry_never_applies_to_a_component_app`.
+- **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
+  starts `{"v":N,` is format `N`; no marker (every entry so far) is format 1. One newer than
+  this release reads applies as a no-op naming its format (`Trap`/`Fault`, `conflict`), so a
+  replica never applies part of it; a release that raises it writes the new format only once
+  every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
+  (`STORE_FORMAT`, `SNAPSHOT_FORMAT`; docs: protocol/storage "Format versions"). Test:
+  `an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -380,9 +387,15 @@ is its command line.
     `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
     `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
     over `system::publisher_binding_message` (cluster name, org, key, the key's
-    generation from `GET /publishers/{signer}`), verified at apply; each binding
-    bumps the generation, so a signature never replays; rebinding needs a new
-    signature from the pinned key; `SystemState::publishers`). `PackageRecord::owner`
+    generation from `GET /publishers/{signer}`), verified at apply over
+    `SystemMachine::cluster` (the node's `--cluster`), not the command's own
+    `cluster`; each binding bumps the generation, so a signature never
+    replays; rebinding needs a new signature from the pinned key;
+    `SystemState::publishers`). `DeleteOrg` unbinds the organization's keys and
+    keeps their generations (`SystemState::unbound_publishers`), so a later
+    organization of the same id is not their publisher. Regressions:
+    `a_binding_signed_for_another_cluster_binds_nothing_here`,
+    `a_deleted_organization_takes_its_publisher_bindings_with_it`. `PackageRecord::owner`
     is only the first installer and is never the publisher. The publisher's
     `Org::approved_releases` cover every instance of every package the key
     signs, customers' included. Unbound key or raw bundle: the app's own org's
