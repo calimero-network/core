@@ -79,7 +79,99 @@ an `abiVersion` bump.
 
 - `GET /apps/{app}/abi` returns an installed app's ABI
   ([Node API](/core/operate/admin-api/)); `meroctl context abi` prints it.
-- mero-js and calimero-client-py read it to build typed calls.
+- `GET /apps/{app}/openapi.json` returns it as an OpenAPI 3.1 document (below),
+  under the same access.
+- mero-js and calimero-client-py read it to build typed calls;
+  `mero-app-build codegen` writes a typed client for an app from it
+  ([Typed clients for your app](/core/build/guides/typed-clients/)).
+
+## As OpenAPI
+
+`calimero_app_abi::openapi` turns an ABI into an OpenAPI 3.1 document. The node
+serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
+(`info.title` the app's name, `info.version` its bundle hash), and
+`mero-app-build codegen --lang openapi` writes it for a built app.
+
+- **One operation per method a client calls**: `POST /apps/{app}/methods/{name}`,
+  `operationId` the method's name, tagged `call` or `view`. Init, timers,
+  actions, compute methods, `computeResult` and `allow(action)` methods are left
+  out: no client calls them. The node runs this route exactly as `/intents`
+  (a call, or a `confirm` view) or `/views` (any other view) with the same
+  `method`: the same authentication, gating, step-up and limits.
+- **Request**: the body of `/intents` or `/views` without `method`. `args` is the
+  parameters by name (`<Method>Args`; an `option<..>` parameter may be left out),
+  with `idempotencyKey` (and `confirm` on a `confirm` method) for a call,
+  `consistency` and `minIndex` for a view.
+- **Answer** (`<Method>Response`): `{ index, result, receipt }`, plus `events` for a
+  call; `result` is typed from `returns`.
+- **Errors**: `{ error, message, details }`, as the rest of the node API.
+  `422` is `APP_ERROR` with `details.code` one of the app's `errors` and
+  `details.fields` its fields (`<Code>Error`), or `TRAP`. The ABI lists errors for
+  the whole app, so every method documents all of them. A `confirm` method
+  documents the `412 CONFIRM_REQUIRED` step-up and its retry with `confirm`;
+  a `public` one may be called without a session (`security: [{}, ...]`), and its
+  `rate` is in `x-calimero-method`.
+- **Events**: `GET /apps/{app}/events` answers `text/event-stream`; each frame's
+  `event` is an event's name and `data` its fields (`<Name>Event`). An app with
+  actions also gets the node's `ActionFailed { actionId, method, reason }`.
+- **Transport**: every request travels inside the node's sealed channel, so a
+  client generated from the document needs mero-js or calimero-client-py
+  underneath (the clients `mero-app-build codegen` writes are built on them).
+
+### Types
+
+The JSON form of every ABI type, as the SDK's macros write and read it (D20):
+
+| ABI type | JSON | JSON Schema |
+| --- | --- | --- |
+| `bool` | `true` / `false` | `{ "type": "boolean" }` |
+| `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | number | `integer` with the type's `minimum`/`maximum` (`format: int32` for `i32`) |
+| `usize`, `isize` | number | `integer`, 32-bit range (apps run on wasm32) |
+| `u64`, `i64` | **decimal string** (`"18446744073709551615"`) | `string` with a decimal `pattern`; `x-calimero-type` names it |
+| `u128`, `i128` | number, only within 64 bits | `integer` with the 64-bit range; past 2^53 JavaScript loses precision, so prefer `u64` or a string |
+| `f32`, `f64` | number (no NaN or infinity) | `number`, `format: float` / `double` |
+| `char` | a one-character string | `string`, length 1 |
+| `string` | string | `string` |
+| `bytes` (`Vec<u8>`) | **base64url** without padding | `string`, `contentEncoding: base64url` |
+| `unit` / `returns: null` | `null` | `{ "type": "null" }` |
+| `option<T>` | `T` or `null`; a parameter may be left out | `anyOf: [T, null]`, not `required` |
+| `list<T>`, `Vec<T>`, `[T]` | array | `array` of `T` |
+| `[T; N]` | array of exactly `N` | `array`, `minItems` = `maxItems` = `N` |
+| `BTreeSet<T>`, `HashSet<T>` | array of distinct values | `array`, `uniqueItems` |
+| `tuple<A, B>` | array `[a, b]` | `array` with `prefixItems` |
+| `BTreeMap<K, V>`, `HashMap<K, V>` | object, keys as strings | `object` with `additionalProperties: V` (integer keys get a `propertyNames` pattern) |
+| `Box<T>`, `Rc<T>`, `Arc<T>`, `&T` | as `T` | as `T` |
+| any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`) that accepts any JSON |
+
+A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
+(Ruling 27), so the string forms above hold wherever these types appear.
+ABI version 1 names an app's own types without describing their fields: they
+are open schemas (`x-calimero-abi-type` keeps the Rust name), and a typed client
+types them `unknown` / `Any`.
+
+## Check a new version against the last
+
+`mero-app-build abi-diff <old> <new>` (each a `.wasm`, `.mpk` or ABI JSON) lists
+what changed and whether existing callers notice, and exits `1` on a breaking
+change; `--json` prints it as JSON. Parameters may widen and results narrow:
+
+| Breaking | Compatible |
+| --- | --- |
+| A method a client, the node or another app calls is removed or renamed (a rename is named) | A method added |
+| `kind` changed (a call becomes a view, ...) | An `option<..>` parameter added |
+| A parameter removed, added without `option<..>`, or changed to a type that does not hold the old values (`u32` -> `u64` moves from a number to a string) | A parameter widened (`u16` -> `u32`, `T` -> `option<T>`, `char` -> `string`) |
+| A result changed to a type outside the old one (`T` -> `option<T>`, `u16` -> `u32`) | A result narrowed (`option<T>` -> `T`), or a method that returned nothing now returns a value |
+| `confirm` added; `public`, `allowSystem` or an `allowApps` entry removed; `allow(action)` added | The reverse of each; parameters reordered (JSON passes them by name); `rate`, `every` or compute caps changed |
+| An error or event removed, or one of its fields removed or changed outside its old type | An error, event or field added |
+| `abiVersion` changed; `world` moved to another minor | `world` moved to another patch |
+| A state field removed or its collection kind changed; the state version going down or up by more than one | A state field added; the state version up by one (the upgrade runs its `#[app::migrate]` edge); search fields changed |
+
+`mero-sign sign --previous <last release>` (and
+`scripts/pack-component.py --previous`) runs the same check before signing: it prints the changes, warns
+about breaking ones, and **refuses to sign** when a state field was removed or
+changed kind while `#[app::state(version = N)]` stayed the same, since the
+upgrade to that release would leave the app's data unreadable
+([Upgrades & state](/core/build/migrations/)).
 
 <Aside type="note">
   Upgrades compare the state section of the two ABIs: see

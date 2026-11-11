@@ -660,9 +660,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-app-abi"
+version = "0.0.0"
+dependencies = [
+ "calimero-bundle",
+ "eyre",
+ "flate2",
+ "serde_json",
+ "tar",
+ "wasmparser 0.263.0",
+]
+
+[[package]]
 name = "calimero-app-build"
 version = "0.0.0"
 dependencies = [
+ "calimero-app-abi",
  "calimero-app-wit",
  "eyre",
  "serde_json",
@@ -876,6 +889,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "borsh",
+ "calimero-app-abi",
  "calimero-app-build",
  "calimero-app-downloader",
  "calimero-app-engine-wasmtime",
@@ -3758,6 +3772,7 @@ name = "mero-sign"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-app-abi",
  "calimero-bundle",
  "calimero-utils-fs",
  "clap",

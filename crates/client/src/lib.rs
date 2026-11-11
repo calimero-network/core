@@ -722,6 +722,26 @@ impl Client {
         self.get(&format!("apps/{}/abi", path_segment(app))).await
     }
 
+    /// The app's OpenAPI 3.1 document, generated from the ABI its bundle embeds: one
+    /// operation per method (`POST /apps/{app}/methods/{method}`) and its event stream.
+    ///
+    /// # Errors
+    /// As [`Self::get`]; the access is `app_abi`'s.
+    pub async fn app_openapi(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/openapi.json", path_segment(app)))
+            .await
+    }
+
+    /// Run `method` by its own route, `POST /apps/{app}/methods/{method}`, which the node
+    /// answers as `/intents` (a call) or `/views` (a view). `body` is theirs without
+    /// `method`: `{ args, idempotencyKey?, confirm? }` or `{ args, consistency?, minIndex? }`.
+    ///
+    /// # Errors
+    /// As [`Self::post`].
+    pub async fn call_method(&self, app: &str, method: &str, body: Value) -> Result<Value> {
+        self.post(&method_path(app, method), body).await
+    }
+
     /// What this account uses, with the cluster's quotas, and what its apps ran
     /// as a developer today (`developerFuelToday`, `developerWritesToday`).
     pub async fn usage(&self) -> Result<Value> {
@@ -1399,6 +1419,16 @@ impl Client {
 #[must_use]
 pub fn package_origins_path(package: &str) -> String {
     format!("package-origins/{}", path_segment(package))
+}
+
+/// `apps/{app}/methods/{method}`.
+#[must_use]
+fn method_path(app: &str, method: &str) -> String {
+    format!(
+        "apps/{}/methods/{}",
+        path_segment(app),
+        path_segment(method)
+    )
 }
 
 fn path_segment(s: &str) -> String {
