@@ -712,8 +712,10 @@ is its command line.
   `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
   org's owners as they stand), approved releases, each replica's release and
   whether approved; for accounts also name, the upgrader's account, newer
-  visible releases (`availableVersions`, from the release it runs, those with
-  its WASM included) and `clusterReleases`. `lastUpgrade.from`/`to` name each
+  visible releases (`availableVersions`, the newest `MAX_AVAILABLE_VERSIONS`, from
+  the release it runs, those with its WASM included), the newest of all of them it
+  can reach (`latestReachable`) and why the latest is not it (`latestBlocked`:
+  `runtime`, `authority`), and `clusterReleases`. `lastUpgrade.from`/`to` name each
   end's release from `UpgradeRecord::from_release`/`to_release` when recorded. The operator
   sees a package name only for releases it installed (`Reader::Operator`,
   `sees_release`), never an account, a name or an upgrade's error text.
@@ -755,7 +757,25 @@ is its command line.
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a
   change (`stateVersion`), as no migration runs. The directory records the new bundle only
-  once the upgrade succeeded.
+  once the upgrade succeeded. An app moves to any newer release in one upgrade:
+  there is no migration step to chain.
+- **Runtime requirements** (`runtime.rs`, `node/runtime.rs`): a release's
+  `minRuntimeVersion` is kept on `PackageVersion::min_runtime_version` (absent in
+  releases from before, and dropped by an older node: then `Node::min_runtime_of`
+  reads it from the `.mpk`, `consent_page::declared_min_runtime`). A node's runtime
+  is `Config::release`, asked over the sealed channel (`POST /internal/runtime`,
+  `Node::runtime_of_node`, kept `RUNTIME_KEPT`; a `404` is a node from before,
+  `NodeRuntime::Before` the asker's own; no answer or a non-version is `Unknown`
+  and not judged). `Node::require_runtime` refuses `409 RUNTIME_TOO_OLD` an upgrade
+  with a replica below (`upgrade_app` before the step-up, the consent request,
+  and `run_upgrade`, which records it), a replica move onto a joining node below
+  (`ops_set_replicas`); `Node::place` leaves such nodes out of a new app's
+  replicas. The reports name `latestReachable` and `latestBlocked`
+  (`report::upgrade_targets`). Regressions:
+  `an_upgrade_needing_a_newer_runtime_than_a_replica_has_is_refused_and_reported`,
+  `placement_and_moves_keep_an_app_off_nodes_below_its_runtime`
+  (`tests/component_packages.rs`),
+  `the_newest_reachable_release_is_reported_with_why_the_latest_is_not`.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
   passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the

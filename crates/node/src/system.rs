@@ -290,6 +290,13 @@ pub struct PackageVersion {
     /// manifest ([`UpgradeAuthority`]); left out when `owner`.
     #[serde(default, skip_serializing_if = "UpgradeAuthority::is_owner")]
     pub upgrades: UpgradeAuthority,
+    /// The oldest runtime its signed manifest says it runs on
+    /// (`minRuntimeVersion`), kept so placement and the reports judge it
+    /// without the `.mpk` ([`crate::runtime`]). Absent in releases recorded
+    /// before, and dropped by a node on an earlier release: then it is read
+    /// from the `.mpk` where it decides something (`Node::min_runtime_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_runtime_version: Option<String>,
 }
 
 impl PackageVersion {
@@ -9050,6 +9057,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m
@@ -9141,6 +9149,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
@@ -9178,6 +9187,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();

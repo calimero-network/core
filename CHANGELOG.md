@@ -22,6 +22,30 @@
   same before signing and refuses a state field removed or changed in kind
   without a state version bump. The type mapping: [App interface](docs/src/content/docs/build/app-abi.mdx#types).
 
+- **A release's runtime requirement holds across the cluster** (#4919). A
+  release's `minRuntimeVersion` was checked only on the node that installed it,
+  so in a cluster moving to a new release an app could be placed on, moved to,
+  or upgraded while on a node whose runtime is too old to run it. Now an
+  upgrade with a replica on such a node is refused `409 RUNTIME_TOO_OLD`
+  (`details: { minRuntimeVersion, nodes: [{ node, runtime }] }`, before the
+  passkey step-up and in every upgrade path, organization runs and publisher
+  runs included, where it is recorded as the app's failed upgrade);
+  placement leaves such nodes out of a new app's replicas (`409` when none is
+  left); and `POST /ops/apps/{app}/replicas` refuses one the app is not on yet.
+  Each node names its runtime over the sealed channel (`POST
+  /internal/runtime`); a node on an earlier release answers `404` and is
+  judged older than the asker. Releases keep their requirement
+  (`PackageVersion::min_runtime_version`, serde default: a release recorded
+  before, or by an older node, is read from its `.mpk` where it decides).
+- **The reports name the newest release an app can reach** (#4919). Each app
+  in `GET /auth/apps` and `GET /orgs/{org}/apps` carries `latestReachable`
+  (the newest newer release the upgrade would take, over every visible
+  release, not only the 16 `availableVersions` lists) and, when the newest is
+  not it, `latestBlocked: { version, reason, message, minRuntimeVersion?,
+  nodes? }` (`runtime` or `authority`). Upgrades are code only, so an app
+  several releases behind reaches the newest in one upgrade; `upgrades.mdx`
+  no longer describes the migration planner removed with SDK 0.12.
+
 - **Stored formats say their version** (#4926). The store
   keeps its format in a sealed node row (`format`, `calimero_log::STORE_FORMAT` = 1):
   a store a later release wrote is refused at start ("the store is in format N,
