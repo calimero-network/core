@@ -1,0 +1,18 @@
+[package]
+name = "chain-top"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+chain-dep = { path = "../dep" }
+wit-bindgen = "=0.63.0"
+
+[workspace]
+
+# Present only so cargo emits its wasm first, which is what the test needs.
+[package.metadata.cargo-machete]
+ignored = ["chain-dep"]
