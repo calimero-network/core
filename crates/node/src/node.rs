@@ -121,6 +121,11 @@ pub struct Config {
     pub replicas: usize,
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
     pub backup_dir: Option<PathBuf>,
+    /// Found the cluster again from the backups in this directory
+    /// (`--restore-from`, with `--bootstrap` on an empty data directory): K_c
+    /// from its kept copies, the system state from its newest system backup
+    /// (`node::restore`).
+    pub restore_from: Option<PathBuf>,
     pub raft: calimero_log::Config,
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
@@ -927,7 +932,20 @@ impl Node {
         });
 
         if node.config.bootstrap {
-            node.system.initialize(node.config.peers.clone()).await?;
+            // Founding the cluster again from its backups, the founder forms
+            // the system group alone and seeds it (`restore::refound`); the
+            // other nodes join as registered learners, as added nodes do.
+            let voters = match node.config.restore_from {
+                Some(_) => node
+                    .config
+                    .peers
+                    .iter()
+                    .filter(|(id, _)| **id == node.config.node_id)
+                    .map(|(id, addr)| (*id, addr.clone()))
+                    .collect(),
+                None => node.config.peers.clone(),
+            };
+            node.system.initialize(voters).await?;
         }
         Ok(node)
     }
@@ -1800,7 +1818,10 @@ impl Node {
     async fn start_app_group_if_replica(&self, group: GroupId) -> bool {
         let app = self.sys(|s| s.apps.values().find(|a| a.group == group).cloned());
         match app {
-            Some(app) if app.replicas.contains(&self.config.node_id) => {
+            Some(app)
+                if app.replicas.contains(&self.config.node_id)
+                    && !app.restore.as_ref().is_some_and(|r| r.awaits_backup()) =>
+            {
                 self.ensure_app_group(&app).await.is_ok()
             }
             _ => false,
@@ -2025,7 +2046,12 @@ impl Node {
         // the operator's signed `/ops/nodes` (`RegisterNode` carries the
         // operator's signature, checked where it applies).
         if self.system.status().is_leader {
-            if self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
+            let empty = self.sys(|s| s.governance.is_none() && s.accounts.is_empty());
+            if empty && self.config.restore_from.is_some() {
+                if let Err(e) = self.refound().await {
+                    warn!(error = %format!("{e:#}"), "the cluster was not founded again from its backups");
+                }
+            } else if empty {
                 let nodes: Vec<NodeRecord> = self
                     .config
                     .peers
@@ -2060,10 +2086,12 @@ impl Node {
             self.admit_registered_nodes();
             self.promote_learners();
         }
+        // An app waiting for its backup (a cluster founded again) is hosted nowhere.
         let mine: Vec<AppRecord> = self.sys(|s| {
             s.apps
                 .values()
                 .filter(|a| a.replicas.contains(&self.config.node_id))
+                .filter(|a| !a.restore.as_ref().is_some_and(|r| r.awaits_backup()))
                 .cloned()
                 .collect()
         });
@@ -3231,59 +3259,129 @@ impl Node {
         self.sys(|s| crate::placement::replicas(s, &allowed, self.config.replicas))
     }
 
-    /// Write encrypted snapshots of the app groups this node leads.
+    /// Write encrypted snapshots of the app groups this node leads, and of
+    /// the system group when it leads it ([`Self::back_up`]).
+    pub async fn backup(&self) -> eyre::Result<usize> {
+        self.back_up(false).await
+    }
+
+    /// [`Self::backup`] of every group this node holds, leader or not: what a
+    /// node of a cluster that lost a majority (no leader anywhere) still has,
+    /// for founding the cluster again (`node::restore`).
+    pub async fn backup_everything(&self) -> eyre::Result<usize> {
+        self.back_up(true).await
+    }
+
+    /// Write backups into `--backup-dir`: a snapshot of each group this node
+    /// leads (all of them with `everything`), each with its manifest
+    /// ([`crate::backup`]), and beside them K_c wrapped under this node's K_r
+    /// (once per release, `backup::keep_cluster_key`) and, with the system
+    /// group's, the code its state names (`backup::keep_code`). Answers how
+    /// many snapshots it wrote.
     ///
     /// A backup is the group's snapshot file as the log wrote it: streamed
     /// from disk, sealed frame by frame, never the whole state in memory.
-    pub async fn backup(&self) -> eyre::Result<usize> {
+    async fn back_up(&self, everything: bool) -> eyre::Result<usize> {
         let Some(dir) = self.config.backup_dir.clone() else {
             return Ok(0);
         };
+        let _kept = crate::backup::keep_cluster_key(
+            &dir,
+            &self.own_release(),
+            &self.config.storage_key,
+            &self.cluster_key,
+        )?;
+        let mut written = 0;
+        if everything || self.system.status().is_leader {
+            if self
+                .back_up_group(&dir, crate::backup::SYSTEM, &self.system)
+                .await?
+            {
+                written += 1;
+            }
+            self.keep_code(&dir)?;
+        }
         let groups: Vec<Arc<Group<AppMachine>>> = self
             .apps
             .read()
             .map(|a| a.values().cloned().collect())
             .unwrap_or_default();
-        let mut written = 0;
         for g in groups {
-            if !g.status().is_leader {
+            if !everything && !g.status().is_leader {
                 continue;
             }
-            let (app_id, applied) = g.read_local(|m, applied| (m.app_id.clone(), applied));
-            // Bring the snapshot up to what this node has applied first.
-            let fresh =
-                |s: &Option<(u64, String, PathBuf)>| s.as_ref().is_some_and(|s| s.0 >= applied);
-            let mut snap = self.engine.snapshot_file(g.id())?;
-            if !fresh(&snap) {
-                g.snapshot_now().await?;
-                for _ in 0..100 {
-                    snap = self.engine.snapshot_file(g.id())?;
-                    if fresh(&snap) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }
-            let Some((index, snapshot_id, file)) = snap else {
-                continue;
-            };
-            let manifest = crate::backup::Manifest {
-                format: crate::backup::FORMAT,
-                merod: env!("CARGO_PKG_VERSION").to_owned(),
-                release: self.own_release(),
-                app: app_id,
-                group: g.id(),
-                index,
-                snapshot_id,
-                sha256: String::new(),
-                written_at: crate::types::now_secs(),
-                node: self.config.node_id,
-            };
-            if crate::backup::write(&dir, &self.cluster_key, &file, &manifest)? {
+            let app_id = g.read_local(|m, _| m.app_id.clone());
+            if self.back_up_group(&dir, &app_id, &g).await? {
                 written += 1;
             }
         }
         Ok(written)
+    }
+
+    /// Back up group `g` of `subject` (an app id, or `backup::SYSTEM`) into
+    /// `dir`, first bringing its snapshot up to what this node has applied.
+    /// Answers whether it wrote one (`false`: that snapshot is there already).
+    async fn back_up_group<M: calimero_log::Machine>(
+        &self,
+        dir: &std::path::Path,
+        subject: &str,
+        g: &Group<M>,
+    ) -> eyre::Result<bool> {
+        let applied = g.applied();
+        let fresh = |s: &Option<(u64, String, PathBuf)>| s.as_ref().is_some_and(|s| s.0 >= applied);
+        let mut snap = self.engine.snapshot_file(g.id())?;
+        if !fresh(&snap) {
+            g.snapshot_now().await?;
+            for _ in 0..100 {
+                snap = self.engine.snapshot_file(g.id())?;
+                if fresh(&snap) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let Some((index, snapshot_id, file)) = snap else {
+            return Ok(false);
+        };
+        let manifest = crate::backup::Manifest {
+            format: crate::backup::FORMAT,
+            merod: env!("CARGO_PKG_VERSION").to_owned(),
+            release: self.own_release(),
+            app: subject.to_owned(),
+            group: g.id(),
+            index,
+            snapshot_id,
+            sha256: String::new(),
+            written_at: crate::types::now_secs(),
+            node: self.config.node_id,
+        };
+        crate::backup::write(dir, &self.cluster_key, &file, &manifest)
+    }
+
+    /// Keep in `dir` the code the system state names that this node holds:
+    /// every bundle and package, by hash ([`crate::backup::keep_code`]).
+    fn keep_code(&self, dir: &std::path::Path) -> eyre::Result<()> {
+        let hashes: BTreeSet<String> = self.sys(|s| {
+            s.bundles
+                .keys()
+                .cloned()
+                .chain(
+                    s.packages
+                        .values()
+                        .flat_map(|p| p.versions.values().map(|v| v.mpk.clone())),
+                )
+                .collect()
+        });
+        let code = dir.join(crate::backup::CODE);
+        for hash in hashes {
+            if code.join(&hash).exists() {
+                continue;
+            }
+            if let Some(bytes) = self.engine.get_blob(&hash)? {
+                let _kept = crate::backup::keep_code(dir, &self.cluster_key, &hash, &bytes)?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -102,7 +102,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'build' },
             {
               label: 'Get started',
-              items: ['build/quickstart', 'build/tutorial'],
+              items: ['build/quickstart', 'build/tutorial', 'build/ship-v2'],
             },
             {
               label: 'How-to guides',
@@ -155,6 +155,7 @@ export default defineConfig({
                 'operate/observability',
                 'operate/troubleshooting',
                 'operate/runbooks',
+                'operate/plain-http',
               ],
             },
             {

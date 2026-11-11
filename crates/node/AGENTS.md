@@ -1139,6 +1139,20 @@ is its command line.
   (`reconcile` drops a stopped group's files only for a deleted app). Tests:
   `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
   (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
+- **Founding again** (`--restore-from DIR` with `--bootstrap`, `Node::refound`): backups
+  also hold the system group (`backup::SYSTEM`, written by its leader, or by every node
+  with `ops/backup?all=true`), the code it names (`backup::keep_code`, sealed under
+  `HMAC(K_c, "calimero.backup.code.v1")`) and K_c wrapped under each release's K_r
+  (`backup::keep_cluster_key`). `cluster_key::resolve` takes K_c from the copy this
+  node's K_r opens (`backup::cluster_key_from`); `Node::start` forms the system group
+  with the founder alone; `reconcile` (empty state) calls `refound`: governance and
+  operator key must match the backup's, no old replica node may still answer at an
+  address `--peers` does not reuse, then `Group::replace_machine_data` with the state
+  `system::refound` made (fleet = `--peers`, every app `PendingRestore::AWAITING_BACKUP`,
+  hosted nowhere), `snapshot_through` + `purge_log_through`; the other peers join as
+  registered learners. Tests: `a_cluster_is_founded_again_from_its_backups`,
+  `a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor`,
+  `a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
