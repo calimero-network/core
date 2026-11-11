@@ -98,6 +98,9 @@ is its command line.
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
+  `__set_all_apps { account, allApps }` (`Org::all_apps`: each app team made
+  after gives them a row; `all_apps_rows` on `ScopeApps`, `MoveApp`,
+  `UpdateTeam`),
   `__set_default_capabilities { capabilities }` (a team's: `{ team,
   capabilities }`, `system::default_capabilities_args`), `__create_invite`,
   `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
@@ -1059,7 +1062,9 @@ is its command line.
   creating the first instance of a package with no app team in an org that has
   app teams are admin-only (`ONLY_ADMINS_INSTALL`). `ScopeApps` (`POST
   /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team
-  (id from the entry's `nonce`, `app_team_id`), gives a row to every member who
+  (id from the entry's `nonce`, `app_team_id`; an instance's package is the one
+  its release names, `SystemState::instance_package`, since two packages may
+  ship one component, unless the entry predates `by_release`), gives a row to every member who
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its

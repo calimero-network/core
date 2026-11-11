@@ -2,7 +2,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Every app added later, for a member**: an organization member may hold a
+  standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
+  team made from then on (by `ScopeApps`, by a move into the organization,
+  or a team marked as one) gives them a plain row, so in an organization
+  that keeps its apps apart a new app reaches them though nobody named them.
+  Before, a new app's team held only those named. The owner or an admin gives
+  it on an invite (`POST /orgs/{org}/invites { allApps: true }`, named in the
+  consent) or later (`POST /orgs/{org}/all-apps { account, allApps }`,
+  `SystemCmd::SetAllApps`, a passkey step-up over `__set_all_apps`); it ends
+  with the membership. Apps already there are untouched. `ScopeApps`,
+  `MoveApp` and `UpdateTeam` carry `all_apps_rows`, which the API always
+  sets, so entries an earlier release logged replay as they did; the new
+  fields are left out when empty, so state and invites from before read and
+  write as they did.
+
 ### Fixed
+
+- **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
+  `ScopeApps`). An instance's package was taken from its component's bundle
+  record, which names the first package installed with that WASM, so two
+  packages shipping a byte-identical component put both packages' instances
+  in the first one's app team and left the second's empty. `ScopeApps` now
+  takes the package the instance's release names (`AppRecord::release`; the
+  bundle's for a record without one). It carries `by_release` (serde default
+  false), so entries an earlier release logged replay as they did.
 
 - **Dead letters survive an app's move to new replicas.** A replica catching up
   from the log applies many entries in one batch, and `componentXcallDone` read
