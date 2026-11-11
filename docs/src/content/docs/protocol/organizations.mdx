@@ -160,7 +160,12 @@ it (`member_child_teams`).
 
 - Removing someone from a team, or their leaving it, also removes their direct
   rows in every team below it, so a restricted child team (a private channel
-  under an app's team) does not keep them in.
+  under an app's team) does not keep them in. Closing an open team (`POST
+  /orgs/{org}/teams/{team} { join: invite }`) does the same for whoever loses
+  it then, being in it by inheritance alone: their rows below it go, and they
+  are not barred, so opening it again lets them back into the team (not into
+  the channels). An `UpdateTeam` an earlier release logged replays keeping
+  those rows (`close_drops_below`).
 - A member who leaves a team, or whom a manager removes, does not come back by
   inheritance (`Team::removed`), so
   leaving an open team sticks. They return only when a manager adds them again
@@ -232,7 +237,8 @@ removal from the team takes them; they are not barred, so opening the team
 again lets them back in. Each package's answer names its team's `join` after the step and
 how many people it `dropped`. A single team also opens or closes with `POST
 /orgs/{org}/teams/{team} { join }` (`MANAGE_VISIBILITY`, an admin's anywhere),
-which fills no rows: closing that way, only the existing direct rows stay.
+which fills no rows: closing that way, only the existing direct rows stay, and
+whoever loses the team loses their rows in the teams below it too.
 `GET /orgs/{org}/app-teams` lists, to any member, each app team's package, id,
 name, `join`, member count, default capabilities and whether the caller is in
 it or manages it (a guest: only their own).
@@ -271,7 +277,10 @@ app of one organization into another this way.
   package), get `org` access instead, so moving an app in never changes the
   target's mode. `owner`, `accounts` and `public`
   access stay as they are, though only the target's members reach a
-  non-public app from then on. An app on any other team (a restricted team
+  non-public app from then on; an `accounts` instance whose package has a
+  closed app team in the target is reached there only through that team (see
+  App access), so its owner and the people it brings get a row on it (below).
+  An app on any other team (a restricted team
   below the app team, a plain team) is refused: that team's leads, read-only
   rows and capabilities are grants of the source, which the target's admins
   never saw. Give it `org` or app-team access first.
@@ -283,8 +292,13 @@ app of one organization into another this way.
 - **`bringMembers`**: every member of the source who reaches the app joins the
   target at their role there, capped at `member` (a guest stays a guest; an
   admin comes in as a member, and the target's admins grant more themselves),
-  and gets a row on the target's app team. Someone already in the target keeps
-  their role. A personal app brings nobody.
+  and gets a row on the target's app team: the one an `org` or `team`
+  instance moves to, or, for an `accounts` instance (a DM, a private
+  channel), its package's app team there when that team is closed, so they
+  keep reaching it (an open one needs no row). Someone already in the target
+  keeps their role. A personal app brings nobody. A `MoveApp` an earlier
+  release logged (without `accounts_in_app_team`) replays giving an
+  `accounts` instance's people no such row.
 - **Invites**: the source's invites naming the team the app leaves are revoked
   once no app of the source is on that team.
 
