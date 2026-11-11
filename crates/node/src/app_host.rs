@@ -189,6 +189,9 @@ pub struct Frontend {
 /// ships none).
 type OpenFrontends = HashMap<(String, String), (u64, Option<Arc<Frontend>>)>;
 
+/// `(package, version)` -> the lock its load in progress holds.
+type LoadingFrontends = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
+
 /// Frontends opened from their `.mpk`, newest use last, and the releases known
 /// to ship none. One load runs per release at a time, and at most
 /// [`FRONTEND_LOADS`] across releases.
@@ -196,7 +199,7 @@ pub struct FrontendCache {
     open: Mutex<OpenFrontends>,
     clock: std::sync::atomic::AtomicU64,
     /// The load of each release in progress, which a second request waits on.
-    loading: Mutex<HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>>,
+    loading: Mutex<LoadingFrontends>,
     loads: Semaphore,
 }
 
