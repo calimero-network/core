@@ -1005,11 +1005,17 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .step_up(),
         post("/orgs/{org}/invites", "invite_create", Session, "Make an invite")
-            .about("A token for `role` and `teams`, `uses` times within `ttlSecs`. `412` first.")
-            .json::<super::InviteBody>("{ role: #OrgRole, teams?: string[], ttlSecs?: uint, uses?: uint, confirm?: #Confirm }")
+            .about("A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later. `412` first.")
+            .json::<super::InviteBody>("{ role: #OrgRole, teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool, confirm?: #Confirm }")
             .ok("{ token: string }")
             .step_up()
             .errors(&[(400, "WRONG_CHALLENGE")]),
+        post("/orgs/{org}/all-apps", "org_all_apps", Session, "Give a member every app added later")
+            .about("Or stop it (`allApps: false`); apps already there are not touched. The owner or an admin; `412` first.")
+            .json::<super::AllAppsBody>("{ account: string, allApps: bool, confirm?: #Confirm }")
+            .ok("{}")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         get("/orgs/{org}/invites", "invite_list", Session, "The organization's invites")
             .about("Their keys and terms, never a token.")
             .ok("{ [string]: any }")
@@ -1106,6 +1112,12 @@ fn operations() -> Vec<Op> {
             .ok("{ status: string, unchanged: bool }")
             .operator()
             .errors(&[(400, "DUPLICATE_REPLICA"), (400, "JOB_NODE"), (400, "TOO_FEW"), (400, "UNKNOWN_NODE"), (409, "MOVE_IN_PROGRESS"), (421, "NOT_LEADER")]),
+        post("/ops/apps/{app}/restore", "restore::ops_restore", Ops, "Restore an app from its sealed backup")
+            .about("Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state.")
+            .json::<super::restore::RestoreBody>("{ backup?: string, operatorProof?: #OperatorProof }")
+            .ok("{ app: string, group: uint, rows: uint, backup: any, status: string }")
+            .operator()
+            .errors(&[(400, "BAD_BACKUP"), (400, "NOT_A_REPLICA_NODE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
         post("/ops/backup", "ops_backup", Ops, "Snapshot the apps this node leads")
             .about("Into `--backup-dir`.")
             .ok("{ written: any }"),
