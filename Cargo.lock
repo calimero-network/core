@@ -988,6 +988,7 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "bytes",
+ "calimero-identity",
  "criterion",
  "curve25519-dalek 5.0.0",
  "eyre",
@@ -999,6 +1000,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "snow",
  "thiserror 2.0.21",
  "tokio",

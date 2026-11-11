@@ -445,6 +445,8 @@ pub struct Node {
     uploads: component::Uploads,
     /// Pins on blobs an entry stored but did not commit, and deletions in flight.
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
+    /// How many exports each account has asked of this node lately.
+    pub(crate) export_limits: crate::api::ExportLimits,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -863,6 +865,7 @@ impl Node {
             segment_sweep: Mutex::default(),
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
+            export_limits: crate::api::ExportLimits::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -2664,6 +2667,32 @@ impl Node {
     /// Whether `id` is one of `app`'s sealed files, as its leader answers it.
     pub async fn file_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
         self.blob_asked_strong(app, id, true, false).await
+    }
+
+    /// `id`'s size and seal if it is one of `app`'s sealed files, as its leader answers it;
+    /// `None` if no replica answered as leader.
+    pub async fn file_record_strong(
+        &self,
+        app: &AppRecord,
+        id: &[u8; 32],
+    ) -> Option<Option<(u64, crate::component::blobs::FileSeal)>> {
+        let body = json!({
+            "app": app.app_id, "id": hex::encode(id), "strong": true, "file": true, "record": true
+        });
+        self.ask_leader(
+            app,
+            body,
+            |m| m.file_record(id),
+            |v| {
+                let Some(record) = v.get("record") else {
+                    return Some(None);
+                };
+                let size = record["size"].as_u64()?;
+                let seal = serde_json::from_value(record["seal"].clone()).ok()?;
+                Some(Some((size, seal)))
+            },
+        )
+        .await
     }
 
     /// `id` as `app`'s leader holds it: `None` if no replica answered as leader, `Some(None)` if

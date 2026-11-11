@@ -23,6 +23,9 @@ The sealed transport (wire format v2) between clients and the node.
   resets the connection, and a client still sending never sees the answer.
   Regression: `a_request_past_the_cap_is_answered_after_it_is_sent`.
 
+- `file` and `wrap`: what the node and the client share about sealed files, which are not transport.
+  `file.rs` is the file STREAM format (`FileSealer`, `FileOpener`, segments, `file_id`); `wrap.rs` holds the AES-GCM key-wrap helpers the node's job wraps use and the export wrap (`wrap_export`, `unwrap_export`, `export_keypair`) a client opens, over `derive_shared`.
+
 Removed relative to the server copy: forward-auth, admin-path inner scopes and
 prometheus metrics (plain atomic counters instead).
 

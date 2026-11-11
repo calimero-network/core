@@ -423,6 +423,26 @@ fn scenario(root: &Path, url: &str) {
     assert_eq!(std::fs::read(&out).unwrap(), b"hello blob");
     let _ = alice.run(&["blob", "delete", &blob, "--context", "notes"]);
 
+    // file: upload a sealed file, then download its plaintext through a key made for the call.
+    let sealed = write("sealed.txt", b"hello sealed file");
+    let up = alice.run(&["file", "upload", path(&sealed), "--context", "notes"]);
+    let id = s(up.get("id").unwrap());
+    let back = root.join("sealed.out");
+    let done = alice.run(&["file", "download", "notes", &id, "--out", path(&back)]);
+    assert_eq!(done["size"], json!(17));
+    assert_eq!(std::fs::read(&back).unwrap(), b"hello sealed file");
+    let missing = alice
+        .try_run(&[
+            "file",
+            "download",
+            "notes",
+            &"11".repeat(32),
+            "--out",
+            path(&back),
+        ])
+        .unwrap_err();
+    assert!(missing.contains("NOT_FOUND"), "{missing}");
+
     // pipeline: a release without pipelines has none to run; its list is empty.
     let none = alice
         .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs=ab"])

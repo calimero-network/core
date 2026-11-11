@@ -3,6 +3,7 @@
 //! instance's sealed files (`meroctl file upload`).
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Subcommand;
@@ -54,6 +55,38 @@ pub enum PipelineCmd {
     Cancel { app: String, run: String },
     /// The context's recent runs, newest first.
     Runs { app: String },
+    /// Download the files every step of an ended run made, as `STEP-INDEX.bin` in `--out`.
+    Download {
+        app: String,
+        run: String,
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+}
+
+/// Exports every output of every step of `run` into `out`; prints what it wrote.
+async fn download_outputs(env: &Env, app: &str, run: &str, out: &Path) -> eyre::Result<Value> {
+    let view = env.client.pipeline_run(app, run).await?;
+    if view["state"] == "running" {
+        bail!("the run is still running");
+    }
+    tokio::fs::create_dir_all(out).await?;
+    let mut written = Vec::new();
+    for (step, state) in view["steps"].as_object().into_iter().flatten() {
+        for (i, output) in state["outputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let id = output["id"]
+                .as_str()
+                .ok_or_else(|| eyre!("an output of step {step} has no id"))?;
+            let path = out.join(format!("{step}-{i}.bin"));
+            written.push(crate::file::download(env, app, id, &path).await?);
+        }
+    }
+    Ok(json!({ "files": written }))
 }
 
 fn split(arg: &str) -> eyre::Result<(&str, &str)> {
@@ -186,6 +219,9 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
                 .await?
         }
         PipelineCmd::Runs { app } => env.client.pipeline_runs(&env.app(&app).await?).await?,
+        PipelineCmd::Download { app, run, out } => {
+            download_outputs(env, &env.app(&app).await?, &run, &out).await?
+        }
     })
 }
 

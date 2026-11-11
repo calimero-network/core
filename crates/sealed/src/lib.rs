@@ -18,9 +18,11 @@
 //! ```
 
 pub mod client;
+pub mod file;
 pub mod identity;
 pub mod server;
 mod session;
+pub mod wrap;
 
 pub use identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use server::{

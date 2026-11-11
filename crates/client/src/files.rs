@@ -3,6 +3,8 @@
 use std::io::SeekFrom;
 use std::time::Duration;
 
+use calimero_sealed::file::{file_id, SegmentReader};
+use calimero_sealed::wrap::{export_keypair, unwrap_export, ExportWrap};
 use eyre::WrapErr;
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
@@ -62,7 +64,64 @@ where
     Ok(buf.into())
 }
 
+/// A 32-byte value an export answer names in hex.
+fn hex32(v: &Value, what: &str) -> eyre::Result<[u8; 32]> {
+    let text = v.as_str().unwrap_or_default();
+    hex::decode(text)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or_else(|| eyre::eyre!("the node answered a bad {what}"))
+}
+
 impl Client {
+    /// The plaintext of sealed file `id` (64 hex characters) of component app `app`.
+    /// The node answers only ciphertext and the file's data key wrapped to a key made here for
+    /// this call; every segment, the segment list, the size and the plaintext hash are checked
+    /// before any byte is returned.
+    ///
+    /// # Errors
+    /// The node's refusal (`403`, `404`, `429 TOO_MANY_EXPORTS`, ...), or an answer that does not
+    /// check out.
+    pub async fn export_file(&self, app: &str, id: &str) -> Result<Vec<u8>> {
+        let (secret, public) = export_keypair();
+        let base = format!("apps/{}/files/{}", path_segment(app), path_segment(id));
+        let body = json!({ "recipient": hex::encode(public) });
+        let export = self.post(&format!("{base}/export"), body).await?;
+        let (size, segments) = (export["size"].as_u64(), export["segments"].as_array());
+        let (Some(size), Some(segments)) = (size, segments) else {
+            return Err(eyre::eyre!("the node answered a bad export: {export}").into());
+        };
+        let segments = segments
+            .iter()
+            .map(|h| hex32(h, "segment hash"))
+            .collect::<eyre::Result<Vec<_>>>()?;
+        let named = hex32(&export["id"], "file id")?;
+        if segments.is_empty() || file_id(&segments) != named || hex::encode(named) != id {
+            return Err(
+                eyre::eyre!("the node answered segments that are not the file {id}").into(),
+            );
+        }
+        let wrap = ExportWrap {
+            app_id: export["app"].as_str().unwrap_or_default(),
+            file_id: id,
+        };
+        let data_key = unwrap_export(
+            &secret,
+            &hex32(&export["ephemeral"], "ephemeral key")?,
+            &wrap,
+            &hex::decode(export["wrapped"].as_str().unwrap_or_default())
+                .map_err(|_| eyre::eyre!("the node answered a bad wrapped key"))?,
+        )?;
+        let mut reader = SegmentReader::new(&data_key, segments.clone());
+        let mut plaintext = Vec::new();
+        for k in 0..segments.len() {
+            let segment = self.get_bytes(&format!("{base}/segments/{k}")).await?;
+            plaintext.extend(reader.push(&segment)?);
+        }
+        plaintext.extend(reader.finish_expecting(size, &hex32(&export["sha256"], "sha256")?)?);
+        Ok(plaintext)
+    }
+
     /// Upload a sealed file of `size` bytes for component app `app`; answers `{ id, size, sha256, index }`.
     /// Up to [`FILE_PART_BYTES`] it is one request, else a session of parts, each resent after a `503`.
     ///

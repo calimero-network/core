@@ -83,6 +83,8 @@ retried on `503` with backoff; any other refusal (`413`, `429`) aborts the sessi
 Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
 the connection.
 
+`Client::export_file(app, id)` (`files.rs`, `meroctl file download`, `meroctl pipeline download`) returns a sealed file's plaintext: it makes a fresh X25519 key pair, asks `POST .../files/{id}/export`, unwraps the data key with `calimero_sealed::wrap::unwrap_export`, fetches each segment from `GET .../segments/{k}`, and checks the segment list against the file id, each segment against its hash and the size and SHA-256 of the plaintext before returning any byte.
+
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash

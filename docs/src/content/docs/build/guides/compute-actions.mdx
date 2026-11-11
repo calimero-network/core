@@ -153,6 +153,15 @@ pub fn submit(&mut self, file: BlobRef, rows_per_part: Option<u32>) -> app::Resu
 `files::uploader(&file)` is the account the node recorded from the authenticated upload.
 It is `None` for a file a call or a run made, and cannot be called inside a compute run.
 
+## Exporting a file
+
+The node never hands out a sealed file's plaintext or its key in the clear.
+`Client::export_file(app, id)` makes a fresh X25519 key pair for the call and asks `POST /apps/{app}/files/{id}/export { recipient }`.
+The node answers the file's segment hashes and its data key wrapped to that public key, and serves each ciphertext segment at `GET /apps/{app}/files/{id}/segments/{k}`.
+The client checks the segment list against the file id, each segment against its hash, then the plaintext size and SHA-256, and returns bytes only when all of it matches.
+Only the app's owner and members of its organization may export, even on a public app, and one account gets `429 TOO_MANY_EXPORTS` past 30 exports a minute on a node.
+`meroctl file download APP ID --out PATH` runs it on one file, and `meroctl pipeline download APP RUN [--out DIR]` on every output of every step of an ended run, as `STEP-INDEX.bin`.
+
 ## Start, list and cancel runs
 
 There is no "start a run" route.

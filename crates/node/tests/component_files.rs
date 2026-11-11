@@ -2642,3 +2642,167 @@ async fn a_failed_push_is_retried_and_complete_answers_503_until_it_lands() {
     f.until("one mark on each replica", || f.marks() == 3).await;
     assert_eq!(f.charged().await, plain.len() as u64);
 }
+
+const ORDER_8: &str = "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owner_exports_a_sealed_file_and_reads_exactly_its_plaintext() {
+    let f = start().await;
+    // Just past one segment of plaintext, so the file is two segments.
+    for (len, seed) in [(LEN, 31), (17 * MIB + 123, 32)] {
+        let up = f.upload(0, len, seed).await.unwrap();
+        let id = up["id"].as_str().unwrap();
+        for client in &f.clients {
+            let got = client.export_file(&f.app, id).await.unwrap();
+            assert!(got == stream(len, seed), "{len} bytes through a node");
+        }
+        assert_eq!(f.segments_of(id).len(), if len > 16 * MIB { 2 } else { 1 });
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_export_answer_holds_only_ciphertext_hashes_and_a_wrapped_key() {
+    let f = start().await;
+    let up = f.upload(0, 5_000, 33).await.unwrap();
+    let id = up["id"].as_str().unwrap();
+    let (secret, public) = calimero_sealed::wrap::export_keypair();
+    let path = format!("apps/{}/files/{id}/export", f.app);
+    let answer = f.clients[0]
+        .post(&path, json!({ "recipient": hex::encode(public) }))
+        .await
+        .unwrap();
+    let mut keys: Vec<_> = answer.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "app",
+            "ephemeral",
+            "id",
+            "segments",
+            "sha256",
+            "size",
+            "wrapped"
+        ]
+    );
+    // The wrapped key opens only for the key pair it was made for, and is not the data key.
+    let seal = f.mark(0, id).unwrap().file.unwrap();
+    let data_key =
+        unwrap_key(&f.node(0).app_file_key(&f.app), &f.app, &seal.wrapped_key.0).unwrap();
+    let wrapped = hex::decode(answer["wrapped"].as_str().unwrap()).unwrap();
+    assert!(!wrapped.windows(32).any(|w| w == *data_key));
+    let ephemeral =
+        <[u8; 32]>::try_from(hex::decode(answer["ephemeral"].as_str().unwrap()).unwrap()).unwrap();
+    let wrap = calimero_sealed::wrap::ExportWrap {
+        app_id: &f.app,
+        file_id: id,
+    };
+    let opened = calimero_sealed::wrap::unwrap_export(&secret, &ephemeral, &wrap, &wrapped);
+    assert_eq!(*opened.unwrap(), *data_key);
+    let other = calimero_sealed::wrap::export_keypair().0;
+    assert!(calimero_sealed::wrap::unwrap_export(&other, &ephemeral, &wrap, &wrapped).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stranger_on_a_public_app_cannot_export_or_fetch_segments() {
+    let f = start().await;
+    let o = org_with_a_public_app(&f).await;
+    let up = f.clients[0]
+        .upload_bytes(&o.app, stream(5_000, 3))
+        .await
+        .unwrap();
+    let id = up["id"].as_str().unwrap();
+    let recipient = hex::encode(calimero_sealed::wrap::export_keypair().1);
+    for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
+        let e = c.export_file(&o.app, id).await.unwrap_err();
+        assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who} export");
+        let path = format!("apps/{}/files/{id}/export", o.app);
+        let e = c
+            .post(&path, json!({ "recipient": recipient }))
+            .await
+            .unwrap_err();
+        assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who} raw export");
+        let e = c
+            .get(&format!("apps/{}/files/{id}/segments/0", o.app))
+            .await
+            .unwrap_err();
+        assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who} segment");
+    }
+    for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
+        assert!(
+            c.export_file(&o.app, id).await.unwrap() == stream(5_000, 3),
+            "{who}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exporting_a_file_the_app_does_not_hold_answers_404() {
+    let f = start().await;
+    let alice = &f.clients[0];
+    let blob = alice.upload_blob(&f.app, vec![7; 100]).await.unwrap();
+    let up = f.upload(0, 5_000, 34).await.unwrap();
+    let real = up["id"].as_str().unwrap();
+    let missing = "11".repeat(32);
+    for id in [missing.as_str(), blob["id"].as_str().unwrap()] {
+        let e = alice.export_file(&f.app, id).await.unwrap_err();
+        assert_eq!(status(e), (404, "NOT_FOUND".to_owned()), "{id}");
+        let e = alice
+            .get(&format!("apps/{}/files/{id}/segments/0", f.app))
+            .await
+            .unwrap_err();
+        assert_eq!(status(e), (404, "NOT_FOUND".to_owned()), "{id} segment");
+    }
+    let past = format!("apps/{}/files/{real}/segments/1", f.app);
+    let e = alice.get(&past).await.unwrap_err();
+    assert_eq!(status(e), (404, "NO_SUCH_SEGMENT".to_owned()));
+    let e = alice
+        .get(&format!("apps/{}/files/{real}/segments/x", f.app))
+        .await
+        .unwrap_err();
+    assert_eq!(status(e), (404, "NO_SUCH_SEGMENT".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bad_recipient_is_refused() {
+    let f = start().await;
+    let up = f.upload(0, 5_000, 35).await.unwrap();
+    let path = format!("apps/{}/files/{}/export", f.app, up["id"].as_str().unwrap());
+    let one = format!("01{}", "00".repeat(31));
+    for bad in [
+        "".to_owned(),
+        "zz".repeat(32),
+        "ab".repeat(31),
+        "ab".repeat(33),
+        "00".repeat(32),
+        one,
+        ORDER_8.to_owned(),
+    ] {
+        let e = f.clients[0]
+            .post(&path, json!({ "recipient": bad }))
+            .await
+            .unwrap_err();
+        assert_eq!(status(e), (400, "BAD_RECIPIENT".to_owned()), "{bad}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exports_are_rate_limited() {
+    let f = start().await;
+    let up = f.upload(0, 5_000, 36).await.unwrap();
+    let path = format!("apps/{}/files/{}/export", f.app, up["id"].as_str().unwrap());
+    let body = json!({ "recipient": hex::encode(calimero_sealed::wrap::export_keypair().1) });
+    let mut refused = None;
+    for n in 0..60 {
+        match f.clients[0].post(&path, body.clone()).await {
+            Ok(_) => {}
+            Err(e) => {
+                refused = Some((n, status(e)));
+                break;
+            }
+        }
+    }
+    let (n, refusal) = refused.expect("a loop of exports is stopped");
+    assert_eq!(refusal, (429, "TOO_MANY_EXPORTS".to_owned()));
+    assert!((20..=45).contains(&n), "stopped after {n}");
+}

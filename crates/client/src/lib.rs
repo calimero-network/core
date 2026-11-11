@@ -972,9 +972,12 @@ impl Client {
     }
 
     pub async fn download_blob(&self, app: &str, id: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .send(Method::GET, &format!("apps/{app}/blobs/{id}"), None)
-            .await?;
+        self.get_bytes(&format!("apps/{app}/blobs/{id}")).await
+    }
+
+    /// `GET path` answered as raw bytes.
+    async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let resp = self.send(Method::GET, path, None).await?;
         let status = resp.status().as_u16();
         if status >= 400 {
             let v: Value = resp.json().await.unwrap_or(Value::Null);
