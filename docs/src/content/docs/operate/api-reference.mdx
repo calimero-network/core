@@ -57,4 +57,13 @@ change the API, change the handler and its entry, then regenerate:
 UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
 ```
 
+The SDKs (mero-js, calimero-client-py, swift-sdk and kotlin-sdk, the `openapi`
+repositories in `.github/fleet.json`) each vendor this document and generate
+their client from it. When a push to master changes it, `openapi-sync.yml`
+sends each of them a `core-openapi` event with the commit. Each SDK's own
+`openapi-sync.yml` then re-vendors the document at that commit, regenerates,
+and opens or refreshes one pull request (`chore/core-openapi`), so that SDK's
+CI judges the change before anything is released. Run the workflow by hand
+(dry run by default) to resend the event.
+
 <OpenApiReference />
