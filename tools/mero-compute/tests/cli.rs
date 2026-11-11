@@ -26,12 +26,19 @@ fn built() -> &'static Built {
         let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("components");
         std::fs::create_dir_all(&out).expect("components dir");
         let (compute, app) = (out.join("compute.wasm"), out.join("app.wasm"));
-        std::fs::write(
+        // nextest runs each test in its own process, so every process builds
+        // and writes these: write aside, then rename into place, so no test
+        // ever reads one another process has just truncated.
+        let put = |path: &Path, bytes: &[u8]| {
+            let aside = path.with_extension(format!("wasm.{}", std::process::id()));
+            std::fs::write(&aside, bytes).expect("write a component");
+            std::fs::rename(&aside, path).expect("move a component into place");
+        };
+        put(
             &compute,
-            both.compute.expect("a compute component").component,
-        )
-        .expect("write compute");
-        std::fs::write(&app, both.app.component).expect("write app");
+            &both.compute.expect("a compute component").component,
+        );
+        put(&app, &both.app.component);
         Built { compute, app }
     })
 }
