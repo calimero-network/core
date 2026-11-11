@@ -12042,7 +12042,69 @@
                   "type": "object",
                   "properties": {
                     "status": {
-                      "type": "string"
+                      "type": "object",
+                      "properties": {
+                        "group": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "leader": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "is_leader": {
+                          "type": "boolean"
+                        },
+                        "term": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "last_log": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "applied": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "voters": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "learners": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      "required": [
+                        "group",
+                        "leader",
+                        "is_leader",
+                        "term",
+                        "last_log",
+                        "applied",
+                        "voters",
+                        "learners"
+                      ]
                     }
                   },
                   "required": [
