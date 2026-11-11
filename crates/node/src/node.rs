@@ -2601,6 +2601,25 @@ impl Node {
         None
     }
 
+    /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
+    /// replica's if it hosts the app, else the first replica that answers
+    /// `internal/xcalls`, as [`Self::storage_stats`].
+    pub async fn app_xcalls(&self, app: &AppRecord) -> Result<Value, ApiError> {
+        if let Some(g) = self.hosted(&app.app_id) {
+            return Ok(g.read_local(|m, _| m.xcalls_report()));
+        }
+        let body = json!({ "app": app.app_id });
+        for id in &app.replicas {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
+                continue;
+            };
+            if let Ok(v) = self.peer_forward(&addr, "internal/xcalls", &body).await {
+                return Ok(v);
+            }
+        }
+        Err(ApiError::unavailable("no replica answered"))
+    }
+
     /// After an app forgot blob `id`: delete its bytes on every node, unless
     /// another app still marks it or it is a bundle or a package release.
     pub async fn collect_blob(&self, id: &[u8; 32]) {

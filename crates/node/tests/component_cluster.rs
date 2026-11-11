@@ -3652,6 +3652,95 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
+/// The upgrade suite's case: an app's dead letters move with it. A new replica catches
+/// up from the log, the send and its dead-lettering applied in one batch, and lists the
+/// dead letter its leader wrote; a node that no longer holds a replica answers
+/// `GET /apps/{app}/xcalls` from one, as the other app routes do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
+    let c = Cluster::start(4).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let source = alice
+        .create_app("source", &bundle, json!({}))
+        .await
+        .unwrap();
+    let _r = alice
+        .call(
+            &source,
+            "relay",
+            json!({ "app": "no-such-app", "key": "a", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let dead_of = |x: &Value| x["deadLetters"].as_array().cloned().unwrap_or_default();
+    let mut before = Vec::new();
+    for _ in 0..100 {
+        before = dead_of(&alice.app_xcalls(&source).await.unwrap());
+        if !before.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before[0]["app"], json!("no-such-app"));
+
+    // Move it off a follower onto the spare node, a learner catching up from the log.
+    let info = alice.get(&format!("apps/{source}")).await.unwrap();
+    let replicas: Vec<u64> = serde_json::from_value(info["replicas"].clone()).unwrap();
+    let spare = (1..=4).find(|n| !replicas.contains(n)).unwrap();
+    let leader = c.app_leader(&source).unwrap() as u64 + 1;
+    let off = *replicas.iter().find(|r| **r != leader).unwrap();
+    let moved: Vec<u64> = replicas
+        .iter()
+        .copied()
+        .filter(|r| *r != off)
+        .chain([spare])
+        .collect();
+    let ops = c.client(leader as usize - 1);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops
+        .post_operator_signed(
+            &format!("ops/apps/{source}/replicas"),
+            json!({ "replicas": moved }),
+            &common::operator_sign,
+        )
+        .await
+        .unwrap();
+
+    // The new replica's own state, once it applied the dead-lettering: the letter is there.
+    let node = &c.nodes[spare as usize - 1].as_ref().unwrap().node;
+    let mut caught_up = None;
+    for _ in 0..200 {
+        caught_up = node.hosted(&source).and_then(|g| {
+            g.read_local(|m, _| (m.state.component.head.xcall.first == 1).then(|| m.dead_letters()))
+        });
+        if caught_up.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let local = caught_up.expect("the new replica never applied the dead-lettering");
+    assert_eq!(
+        serde_json::to_value(&local).unwrap(),
+        Value::Array(before.clone()),
+        "the new replica lost the dead letter"
+    );
+
+    // Every node lists it: the new replica, and the node the app moved off, by forwarding.
+    let session = alice.session().await.unwrap();
+    for n in [spare, off] {
+        let cl = c.client(n as usize - 1);
+        cl.use_session(session.clone()).await;
+        let x = cl
+            .app_xcalls(&source)
+            .await
+            .unwrap_or_else(|e| panic!("node {n}: {e}"));
+        assert_eq!(dead_of(&x), before, "node {n}");
+    }
+}
+
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
 /// URL prefixes `outbound` (S9), signed by `key`.
 fn mpk_declaring(
