@@ -167,6 +167,23 @@ is its command line.
   replayed on restart) applies as it did, so replicas never diverge on it
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
   `old_datadir.rs`).
+- **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
+  a new command or field ships with a feature gate. Each log entry shape an
+  older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
+  named in the exhaustive `SystemCmd::features`); `Node::sys_write` refuses one
+  above the active cluster version `409 FEATURE_NOT_ACTIVE`
+  (`Node::require_features`, judged on `SystemState::cluster_version`, or on
+  what every node's `/health` `clusterVersion` says now when that is newer).
+  The system leader raises the logged version (`SetClusterVersion { version,
+  nodes }`, only forward, naming every registered node; `reconcile` ->
+  `raise_cluster_version`, at most every 10 s) once every node supports it,
+  and admits no node below it to the system group (`joins_at_cluster_version`).
+  Apply never reads it, so a log replays unchanged. A skipped undecodable
+  entry logs an error and counts in `calimero_log_undecodable_entries_total`.
+  Regressions: `system::cluster_version::tests`
+  (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
+  `an_entry_an_older_node_cannot_decode_splits_the_state`),
+  `the_cluster_version_rises_to_what_every_node_supports`.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
