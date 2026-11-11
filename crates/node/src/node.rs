@@ -756,6 +756,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if reason == crate::system::MODULE_IN_USE {
+        ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
         ApiError::new(409, code, reason)
     } else {

@@ -24,6 +24,7 @@ fn start_entry(id: &str, steps: &[&str]) -> PipelineStartEntry {
         version: "1.0.0".into(),
         hash: "ab".repeat(32),
         compute_bundle: "compute-v1".into(),
+        modules: BTreeMap::new(),
         owner: "alice".into(),
         steps: steps.iter().map(|s| (*s).to_owned()).collect(),
         inputs: BTreeMap::from([("in".to_owned(), vec![fid(INPUT)])]),
@@ -57,6 +58,7 @@ fn step_run(pipeline: &str, step: &str, i: usize) -> StepRun {
             memory_mib: 64,
             wall_secs: 7,
         },
+        compute_bundle: None,
         cache_key: None,
     }
 }
@@ -1231,4 +1233,48 @@ fn a_run_without_a_cost_cap_records_no_cost() {
     let _r = run_done(&mut w, "p1.a.0", 1);
     let p = pipeline(&w, PIPE);
     assert!(p.cost.is_none() && p.cost_so_far == 0 && p.steps["a"].cost == 0);
+}
+
+#[test]
+fn a_step_runs_in_a_module_the_run_pinned_and_in_no_other() {
+    let mut w = World::new();
+    let mut entry = start_entry(PIPE, &["a", "b"]);
+    entry.modules = BTreeMap::from([("pdf@1".to_owned(), "module-v1".to_owned())]);
+    let _a = w.push(&ComponentCmd::PipelineStart(Box::new(entry)));
+
+    let mut pinned = step_run(PIPE, "a", 0);
+    pinned.compute_bundle = Some("module-v1".into());
+    let _d = decide(
+        &mut w,
+        PIPE,
+        "a",
+        StepVerdict::Start {
+            runs: vec![pinned],
+            fan: FanOut::SINGLE,
+            cached: Vec::new(),
+        },
+    );
+    assert_eq!(
+        w.record("p1.a.0").compute_bundle.as_deref(),
+        Some("module-v1")
+    );
+
+    let mut other = step_run(PIPE, "b", 0);
+    other.compute_bundle = Some("module-v2".into());
+    let _d = decide(
+        &mut w,
+        PIPE,
+        "b",
+        StepVerdict::Start {
+            runs: vec![other],
+            fan: FanOut::SINGLE,
+            cached: Vec::new(),
+        },
+    );
+    assert_eq!(status(&w, PIPE, "b"), StepStatus::Failed);
+    assert_eq!(
+        pipeline(&w, PIPE).steps["b"].reason.as_deref(),
+        Some("UNKNOWN_MODULE")
+    );
+    assert!(w.r.machine.run_record("p1.b.0").is_none());
 }

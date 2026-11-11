@@ -20,6 +20,7 @@ use crate::app::Status;
 use crate::component::{CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS};
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
+use crate::packages::pipelines::SELF_MODULE;
 use crate::types::{AppRecord, Caller, Executor};
 
 const MAX_INPUT_FILES: usize = 1024; // file ids across all inputs of one run, which the log entry carries
@@ -36,8 +37,6 @@ const BAD_MAX_COST: &str = "BAD_MAX_COST";
 const BAD_LIMITS: &str = "BAD_LIMITS";
 const LIMIT_EXCEEDS_CAP: &str = "LIMIT_EXCEEDS_CAP";
 const STILL_RUNNING: &str = "STILL_RUNNING";
-/// The module name pipelines of a package see its own compute methods under.
-const SELF_MODULE: &str = "self";
 
 /// An input that is a file id the app does not hold: a file is forgotten once nothing refers to
 /// it, so this cannot tell one that was never there from one that expired.
@@ -61,12 +60,32 @@ pub(super) struct StartBody {
     max_cost: Option<String>,
 }
 
+/// The compute methods of each module a pipeline names, by the name as written.
+type Methods = BTreeMap<String, BTreeMap<String, Caps>>;
+
+/// `self` (the run's own compute component) and every pinned module with their methods.
+async fn module_methods(
+    node: &Node,
+    compute_bundle: &str,
+    modules: &BTreeMap<String, String>,
+) -> Result<Methods, ApiError> {
+    let mut out = Methods::new();
+    let own = (SELF_MODULE, compute_bundle);
+    for (name, hash) in
+        std::iter::once(own).chain(modules.iter().map(|(n, h)| (n.as_str(), h.as_str())))
+    {
+        let methods = node.caps_of_component(hash).await?;
+        let _prev = out.insert(name.to_owned(), (*methods).clone());
+    }
+    Ok(out)
+}
+
 /// The cost cap of a start: the operator's price table read fresh, the pipeline's worst case
 /// under it, and the cap. A cap with no table is refused.
 async fn cost_cap(
     node: &Node,
     pipeline: &Pipeline,
-    compute_bundle: &str,
+    modules: &Methods,
     max_cost: Option<&str>,
 ) -> Result<Option<CostCap>, ApiError> {
     let Some(max) = max_cost else { return Ok(None) };
@@ -81,10 +100,9 @@ async fn cost_cap(
             "the operator has not set a price table, so a cost cap cannot be priced",
         ));
     };
-    let methods = node.caps_of_component(compute_bundle).await?;
     let env = Env {
         default_module: Some(SELF_MODULE.to_owned()),
-        modules: BTreeMap::from([(SELF_MODULE.to_owned(), (*methods).clone())]),
+        modules: modules.clone(),
         pools: BTreeMap::new(),
     };
     let worst = worst_case_cost(pipeline, &env, &table);
@@ -242,6 +260,11 @@ pub(super) async fn start(
             ))
         }
     };
+    let modules = registered
+        .modules
+        .iter()
+        .map(|(name, pin)| (name.clone(), pin.compute.clone()))
+        .collect();
     let pipeline = node.pipeline_by_hash(&registered.hash).await?;
     let inputs = check_inputs(&pipeline, &body.inputs)?;
     let params = check_params(&pipeline, &body.params)?;
@@ -250,6 +273,7 @@ pub(super) async fn start(
         version: release.at.version.clone(),
         hash: registered.hash.clone(),
         compute_bundle,
+        modules,
         pipeline,
         inputs,
         params,
@@ -267,6 +291,7 @@ struct Launch {
     version: String,
     hash: String,
     compute_bundle: String,
+    modules: BTreeMap<String, String>,
     pipeline: Arc<Pipeline>,
     inputs: BTreeMap<String, Vec<String>>,
     params: BTreeMap<String, Value>,
@@ -288,6 +313,7 @@ async fn start_launch(
         version,
         hash,
         compute_bundle,
+        modules,
         pipeline,
         inputs,
         params,
@@ -305,7 +331,8 @@ async fn start_launch(
         }
     }
     let priced = with_limits(&pipeline, &limits);
-    let cost = cost_cap(node, &priced, &compute_bundle, max_cost.as_deref()).await?;
+    let methods = module_methods(node, &compute_bundle, &modules).await?;
+    let cost = cost_cap(node, &priced, &methods, max_cost.as_deref()).await?;
     let run = typed_id::<12>();
     let entry = PipelineStartEntry {
         id: run.clone(),
@@ -313,6 +340,7 @@ async fn start_launch(
         version,
         hash,
         compute_bundle,
+        modules,
         owner: app.owner.clone(),
         steps: pipeline.steps.keys().cloned().collect(),
         inputs,
@@ -367,7 +395,7 @@ fn with_limits(pipeline: &Pipeline, limits: &BTreeMap<String, Limits>) -> Pipeli
 /// method's caps.
 fn check_limits(
     pipeline: &Pipeline,
-    methods: &BTreeMap<String, Caps>,
+    modules: &Methods,
     limits: &BTreeMap<String, Limits>,
 ) -> Result<(), ApiError> {
     let bad = |message: String| ApiError::bad_request(BAD_LIMITS, &message);
@@ -376,8 +404,10 @@ fn check_limits(
             .steps
             .get(name)
             .ok_or_else(|| bad(format!("`{name}` is not a step of the pipeline")))?;
-        let cap = methods
-            .get(&step.method)
+        let module = step.module.as_deref().or(pipeline.module.as_deref());
+        let cap = modules
+            .get(module.unwrap_or(SELF_MODULE))
+            .and_then(|methods| methods.get(&step.method))
             .ok_or_else(|| bad(format!("step `{name}` runs a method the component lacks")))?;
         let given = [
             ("fuel", l.fuel.map(u128::from), u128::from(cap.fuel)),
@@ -464,13 +494,18 @@ pub(super) async fn retry(
     let hash = field("hash")?;
     let compute_bundle = field("computeBundle")?;
     let pipeline = node.pipeline_by_hash(&hash).await?;
-    let methods = node.caps_of_component(&compute_bundle).await?;
+    let modules: BTreeMap<String, String> = match &original["modules"] {
+        Value::Null => BTreeMap::new(),
+        v => serde_json::from_value(v.clone()).map_err(unreadable)?,
+    };
+    let methods = module_methods(&node, &compute_bundle, &modules).await?;
     check_limits(&pipeline, &methods, &body.limits)?;
     let launch = Launch {
         name: field("pipeline")?,
         version: field("version")?,
         hash,
         compute_bundle,
+        modules,
         pipeline,
         inputs: serde_json::from_value(original["inputs"].clone()).map_err(unreadable)?,
         params: serde_json::from_value(original["params"].clone()).map_err(unreadable)?,
@@ -628,13 +663,16 @@ steps:
     #[test]
     fn limits_are_for_steps_above_zero_and_within_the_methods_caps() {
         let p = pipeline();
-        let methods = BTreeMap::from([(
-            "m".to_owned(),
-            Caps {
-                fuel: 100,
-                memory_mib: 64,
-                wall_secs: 30,
-            },
+        let methods = Methods::from([(
+            SELF_MODULE.to_owned(),
+            BTreeMap::from([(
+                "m".to_owned(),
+                Caps {
+                    fuel: 100,
+                    memory_mib: 64,
+                    wall_secs: 30,
+                },
+            )]),
         )]);
         let of = |step: &str, l: Limits| BTreeMap::from([(step.to_owned(), l)]);
         let fuel = |n| Limits {
