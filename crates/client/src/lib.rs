@@ -1031,6 +1031,17 @@ impl Client {
             .await
     }
 
+    /// DELETE `path` with a JSON `body`, answering a `412 CONFIRM_REQUIRED`
+    /// as [`Self::post_confirmed`] does (`confirm` goes into `body`).
+    pub async fn delete_confirmed_with(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.confirmed(Method::DELETE, path, body, passkey).await
+    }
+
     /// POST an operator decision (Ops API): when the node answers `428
     /// OPERATOR_SIGNATURE_REQUIRED`, sign the bytes it names (`message`,
     /// base64) with `sign` (the operator's Ed25519 key) and send it again
