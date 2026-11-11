@@ -81,6 +81,17 @@ before it starts.
 ## Organizations
 
 `POST /orgs { name }` creates an organization with its creator as **owner**.
+Its name is one line of 1 to 64 characters with no space at either end
+(`400` otherwise). The owner or an admin renames it, with a passkey: `POST
+/orgs/{org}/name { name }` (`412 CONFIRM_REQUIRED` first; the consent is
+`org:<org> / __rename_org / { name }`, `SystemCmd::RenameOrg`), answered
+with `{ orgId, name }`; a member below admin gets `403`, and someone outside
+it `404`. Nothing keeps a copy of the name, so `GET /orgs/{org}`, the `orgs`
+of `/auth/me` and an invite redeemed after the rename all answer the new
+one. A name is checked where the command applies: a `CreateOrg` an earlier
+release logged (without `name_fits`) replays taking any name, and an
+organization keeps the name it has until renamed.
+
 Members have one role each, ordered `guest < member < admin < owner`:
 
 | Role | May |
