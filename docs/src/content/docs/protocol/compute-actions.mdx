@@ -283,14 +283,24 @@ Output sizes, hashes and step results are shown only to those who may list the a
 
 ### Step cache
 
-A step run whose compute component, method, arguments, input contents and caps equal those of an earlier successful run in the same app reuses that run's outputs and result: it makes no run record, no job and no usage.
+A step run whose compute component, method, arguments and input contents equal those of an earlier successful run in the same app reuses that run's outputs and result: it makes no run record, no job and no usage.
 Inputs are compared by the SHA-256 of their plaintext, so the same content under another file id is a hit; those hashes never leave the app.
 The leader makes the key when it builds a run and looks it up before deciding the step; apply checks that the entry and every output are still held and takes the hit as a finished run.
 `cache: false` on a step turns it off for that step.
 Modules are assumed deterministic for equal inputs, so a module whose output varies must be run with `cache: false`.
+Caps are not part of the key: an output that succeeded under some caps is the same under any, which is what lets a retry with raised limits reuse the items that already succeeded.
 The view shows `cached` per step (every run of it was a hit) and `cachedItems`, the items of a fan-out answered from the cache.
 An entry holds its outputs for at most 7 days after it was written or last used and the app keeps at most 4096; the oldest go first, judged by the timestamps of the applied entries, and the outputs then follow normal file retention.
 A start that names a file id the app does not hold answers `410 OUTPUT_EXPIRED`, which cannot tell a file that expired from one that never existed.
+
+### Retries
+
+Below the pipeline a step run is already retried by the run driver: a lost job node, or an attempt that is refused or fails attestation, gets up to three attempts, and the lost ones are unbilled.
+A fuel, memory, trap or app-error failure is final for that run and is never retried automatically.
+`POST /apps/{app}/pipeline-runs/{run}/retry { limits?, maxCost? }` starts a new pipeline run from an ended one: the same pipeline at the same release version, hash and compute component (even if the app upgraded since), the same inputs and params, `retryOf` set, and the given per-step limits replacing the pipeline's own for those fields.
+An override above the method's cap is `400 LIMIT_EXCEEDS_CAP` and a step the pipeline lacks is `400 BAD_LIMITS`; a run that is still running is `409 STILL_RUNNING`.
+Steps and items that succeeded before are step cache hits and cost nothing, so only failed or unfinished work runs again; the cache key leaves caps out for that reason.
+The inputs must still be held: a retry after they were forgotten answers `410 OUTPUT_EXPIRED`.
 
 ### Cost cap
 

@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_app_host as host;
 use calimero_log::{Bytes, StateTx};
-use calimero_pipeline::{priced_cost, run_cost, Caps, PriceTable};
+use calimero_pipeline::{priced_cost, run_cost, Caps, Limits, PriceTable};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -275,6 +275,12 @@ pub struct PipelineRun {
     /// What the finished runs of all steps used, priced.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cost_so_far: u64,
+    /// The run this one retries, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
+    /// Per-step limits a retry raised; each replaces the same field of the pipeline's own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub limits: BTreeMap<String, Limits>,
 }
 
 impl PipelineRun {
@@ -336,6 +342,10 @@ pub struct PipelineStartEntry {
     pub fail_fast: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostCap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub limits: BTreeMap<String, Limits>,
     pub ts_ms: u64,
 }
 
@@ -518,7 +528,9 @@ impl AppMachine {
         let well_formed = name_fits(&entry.id)
             && !entry.steps.is_empty()
             && entry.steps.len() <= MAX_PIPELINE_STEPS
-            && entry.steps.iter().all(|s| name_fits(s));
+            && entry.steps.iter().all(|s| name_fits(s))
+            && entry.retry_of.as_deref().is_none_or(name_fits)
+            && entry.limits.keys().all(|s| entry.steps.contains(s));
         if !well_formed {
             return no_op(BAD_START);
         }
@@ -564,6 +576,8 @@ impl AppMachine {
             end_ts_ms: None,
             cost: entry.cost,
             cost_so_far: 0,
+            retry_of: entry.retry_of.clone(),
+            limits: entry.limits.clone(),
         };
         Self::write_pipeline(tx, &record);
         let _new = self
@@ -1227,6 +1241,8 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
         && known.caller == entry.caller
         && known.fail_fast == entry.fail_fast
         && known.cost == entry.cost
+        && known.retry_of == entry.retry_of
+        && known.limits == entry.limits
         && known
             .steps
             .keys()

@@ -1,7 +1,7 @@
 //! `POST /apps/{app}/pipelines/{name}/runs`, `GET /apps/{app}/pipeline-runs[/{run}]` and
 //! `POST /apps/{app}/pipeline-runs/{run}/cancel`: starting, reading and cancelling a pipeline
-//! run of the release the app runs. Who may call the app starts and cancels; who may reach it
-//! reads. A start is judged against the pinned pipeline before anything is logged.
+//! run of the release the app runs. Those who may handle the app's files start, cancel and
+//! retry; who may reach it reads. A start is judged against the pinned pipeline first.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,7 +9,9 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use calimero_pipeline::{worst_case_cost, Env, InputKind, Param, ParamType, Pipeline};
+use calimero_pipeline::{
+    worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -18,7 +20,7 @@ use crate::app::Status;
 use crate::component::{CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS};
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
-use crate::types::Executor;
+use crate::types::{AppRecord, Caller, Executor};
 
 const MAX_INPUT_FILES: usize = 1024; // file ids across all inputs of one run, which the log entry carries
 const MAX_PARAM_STRING_BYTES: usize = 4096; // a string param's value
@@ -31,6 +33,9 @@ const BAD_PARAMS: &str = "BAD_PARAMS";
 const ONE_SERVICE: &str = "PIPELINES_NEED_ONE_SERVICE";
 const NO_PRICE_TABLE: &str = "NO_PRICE_TABLE";
 const BAD_MAX_COST: &str = "BAD_MAX_COST";
+const BAD_LIMITS: &str = "BAD_LIMITS";
+const LIMIT_EXCEEDS_CAP: &str = "LIMIT_EXCEEDS_CAP";
+const STILL_RUNNING: &str = "STILL_RUNNING";
 /// The module name pipelines of a package see its own compute methods under.
 const SELF_MODULE: &str = "self";
 
@@ -169,6 +174,25 @@ pub fn check_params(
     Ok(out)
 }
 
+/// A run reads the app's sealed files and spends its payer's compute: only those who may handle
+/// the app's files start, cancel or retry one, and never from a read-only team row.
+async fn may_run(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    account: &str,
+    sys_index: Option<u64>,
+) -> Result<(), ApiError> {
+    if !node.sys(|s| may_handle_files(s, app, Some(account))) {
+        return Err(ApiError::forbidden(
+            "only the app's owner and its organization's members run its pipelines",
+        ));
+    }
+    if read_only_in(node, app, Some(account), sys_index).await {
+        return Err(ApiError::forbidden("read-only in this team"));
+    }
+    Ok(())
+}
+
 async fn component_app(node: &Node, app_id: &str) -> Result<crate::types::AppRecord, ApiError> {
     let app = node.app(app_id).await?;
     if app.executor != Executor::Component {
@@ -190,9 +214,7 @@ pub(super) async fn start(
     let Some(account) = p.caller.account() else {
         return Err(ApiError::unauthenticated("sign in to start a pipeline run"));
     };
-    if read_only_in(&node, &app, Some(account), p.sys_index).await {
-        return Err(ApiError::forbidden("read-only in this team"));
-    }
+    may_run(&node, &app, account, p.sys_index).await?;
     node.require_upgraded_nodes().await?;
     let no_pipeline = || {
         ApiError::new(
@@ -223,41 +245,97 @@ pub(super) async fn start(
     let pipeline = node.pipeline_by_hash(&registered.hash).await?;
     let inputs = check_inputs(&pipeline, &body.inputs)?;
     let params = check_params(&pipeline, &body.params)?;
+    let launch = Launch {
+        name,
+        version: release.at.version.clone(),
+        hash: registered.hash.clone(),
+        compute_bundle,
+        pipeline,
+        inputs,
+        params,
+        limits: BTreeMap::new(),
+        retry_of: None,
+        max_cost: body.max_cost,
+    };
+    start_launch(&node, &app, p.caller, p.sys_index, launch).await
+}
+
+/// Everything a new pipeline run is made of: what a start takes from the request and the pinned
+/// release, or a retry from the run it repeats.
+struct Launch {
+    name: String,
+    version: String,
+    hash: String,
+    compute_bundle: String,
+    pipeline: Arc<Pipeline>,
+    inputs: BTreeMap<String, Vec<String>>,
+    params: BTreeMap<String, Value>,
+    limits: BTreeMap<String, Limits>,
+    retry_of: Option<String>,
+    max_cost: Option<String>,
+}
+
+/// Checks the inputs are held, prices the cost cap and logs the start on the app's leader.
+async fn start_launch(
+    node: &Node,
+    app: &AppRecord,
+    caller: Caller,
+    sys_index: Option<u64>,
+    launch: Launch,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let Launch {
+        name,
+        version,
+        hash,
+        compute_bundle,
+        pipeline,
+        inputs,
+        params,
+        limits,
+        retry_of,
+        max_cost,
+    } = launch;
     for id in inputs.values().flatten() {
         let raw = <[u8; 32]>::try_from(hex::decode(id).unwrap_or_default())
             .ok()
             .filter(|raw| hex::encode(raw) == *id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
-        if node.file_held_strong(&app, &raw).await != Some(true) {
+        if node.file_held_strong(app, &raw).await != Some(true) {
             return Err(expired());
         }
     }
-    let cost = cost_cap(&node, &pipeline, &compute_bundle, body.max_cost.as_deref()).await?;
+    let priced = with_limits(&pipeline, &limits);
+    let cost = cost_cap(node, &priced, &compute_bundle, max_cost.as_deref()).await?;
     let run = typed_id::<12>();
     let entry = PipelineStartEntry {
         id: run.clone(),
         pipeline: name,
-        version: release.at.version.clone(),
-        hash: registered.hash.clone(),
+        version,
+        hash,
         compute_bundle,
         owner: app.owner.clone(),
         steps: pipeline.steps.keys().cloned().collect(),
         inputs,
         params,
-        caller: p.caller.clone(),
-        payer: crate::usage::payer(&app),
+        caller: caller.clone(),
+        payer: crate::usage::payer(app),
         fail_fast: pipeline.fail_fast,
         cost,
+        retry_of: retry_of.clone(),
+        limits,
         ts_ms: 0,
     };
     let a = node
-        .start_pipeline_run(&app, entry, p.caller, p.sys_index)
+        .start_pipeline_run(app, entry, caller, sys_index)
         .await?;
     match (a.status, a.error.as_str()) {
         (Status::Ok, _) => {
             let mut answer = json!({ "run": run });
             if let Some(cap) = cost {
                 answer["worstCase"] = json!(cap.worst_case.to_string());
+            }
+            if let Some(of) = retry_of {
+                answer["retryOf"] = json!(of);
             }
             Ok((StatusCode::ACCEPTED, Json(answer)))
         }
@@ -272,6 +350,135 @@ pub(super) async fn start(
             why.unwrap_or("no reason")
         ))),
     }
+}
+
+/// The pipeline with each step's limits overridden, for pricing what a retry may cost.
+fn with_limits(pipeline: &Pipeline, limits: &BTreeMap<String, Limits>) -> Pipeline {
+    let mut priced = pipeline.clone();
+    for (name, over) in limits {
+        if let Some(step) = priced.steps.get_mut(name) {
+            step.limits = Some(step.limits.unwrap_or_default().overridden_by(*over));
+        }
+    }
+    priced
+}
+
+/// The limits of a retry: only steps of the pipeline, each field above zero and within the
+/// method's caps.
+fn check_limits(
+    pipeline: &Pipeline,
+    methods: &BTreeMap<String, Caps>,
+    limits: &BTreeMap<String, Limits>,
+) -> Result<(), ApiError> {
+    let bad = |message: String| ApiError::bad_request(BAD_LIMITS, &message);
+    for (name, l) in limits {
+        let step = pipeline
+            .steps
+            .get(name)
+            .ok_or_else(|| bad(format!("`{name}` is not a step of the pipeline")))?;
+        let cap = methods
+            .get(&step.method)
+            .ok_or_else(|| bad(format!("step `{name}` runs a method the component lacks")))?;
+        let given = [
+            ("fuel", l.fuel.map(u128::from), u128::from(cap.fuel)),
+            (
+                "memoryMib",
+                l.memory_mib.map(u128::from),
+                u128::from(cap.memory_mib),
+            ),
+            (
+                "wallSecs",
+                l.wall_secs.map(u128::from),
+                u128::from(cap.wall_secs),
+            ),
+        ];
+        for (field, value, most) in given {
+            match value {
+                Some(0) => return Err(bad(format!("`{name}.{field}` must be above zero"))),
+                Some(v) if v > most => {
+                    return Err(ApiError::bad_request(
+                        LIMIT_EXCEEDS_CAP,
+                        &format!("`{name}.{field}` is above the method's cap of {most}"),
+                    ))
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RetryBody {
+    #[serde(default)]
+    limits: BTreeMap<String, Limits>,
+    #[serde(default)]
+    max_cost: Option<String>,
+}
+
+/// Starts a new run of the same pipeline, release, inputs and params as an ended run, with the
+/// given limits raised; the step cache answers what already succeeded.
+pub(super) async fn retry(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, run)): Path<(String, String)>,
+    Json(body): Json<RetryBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = component_app(&node, &app_id).await?;
+    let p = gate(&node, &headers, &app, "*", true).await?;
+    let Some(account) = p.caller.account() else {
+        return Err(ApiError::unauthenticated("sign in to retry a pipeline run"));
+    };
+    may_run(&node, &app, account, p.sys_index).await?;
+    node.require_upgraded_nodes().await?;
+    let answer = node
+        .view(&crate::node::ViewRequest {
+            app_id,
+            method: PIPELINE_VIEW.to_owned(),
+            args: json!({ "run": run, "files": false }),
+            caller: p.caller.clone(),
+            strong: true,
+            min_index: 0,
+        })
+        .await?;
+    let original = answer.result;
+    if original.is_null() {
+        return Err(ApiError::not_found("no such pipeline run"));
+    }
+    if original["state"] == "running" {
+        return Err(ApiError::new(
+            409,
+            STILL_RUNNING,
+            "the pipeline run is still running; cancel it or wait",
+        ));
+    }
+    let field = |name: &str| -> Result<String, ApiError> {
+        original[name]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| ApiError::internal("the pipeline run's record is not readable"))
+    };
+    let unreadable = |_| ApiError::internal("the pipeline run's record is not readable");
+    let hash = field("hash")?;
+    let compute_bundle = field("computeBundle")?;
+    let pipeline = node.pipeline_by_hash(&hash).await?;
+    let methods = node.caps_of_component(&compute_bundle).await?;
+    check_limits(&pipeline, &methods, &body.limits)?;
+    let launch = Launch {
+        name: field("pipeline")?,
+        version: field("version")?,
+        hash,
+        compute_bundle,
+        pipeline,
+        inputs: serde_json::from_value(original["inputs"].clone()).map_err(unreadable)?,
+        params: serde_json::from_value(original["params"].clone()).map_err(unreadable)?,
+        limits: body.limits,
+        retry_of: Some(run),
+        max_cost: body.max_cost,
+    };
+    start_launch(&node, &app, p.caller, p.sys_index, launch).await
 }
 
 /// One pipeline run's record, as the leader holds it.
@@ -351,9 +558,7 @@ pub(super) async fn cancel(
             "sign in to cancel a pipeline run",
         ));
     };
-    if read_only_in(&node, &app, Some(account), p.sys_index).await {
-        return Err(ApiError::forbidden("read-only in this team"));
-    }
+    may_run(&node, &app, account, p.sys_index).await?;
     let a = node
         .cancel_pipeline_run(&app, &run, p.caller, p.sys_index)
         .await?;
@@ -418,6 +623,84 @@ steps:
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn limits_are_for_steps_above_zero_and_within_the_methods_caps() {
+        let p = pipeline();
+        let methods = BTreeMap::from([(
+            "m".to_owned(),
+            Caps {
+                fuel: 100,
+                memory_mib: 64,
+                wall_secs: 30,
+            },
+        )]);
+        let of = |step: &str, l: Limits| BTreeMap::from([(step.to_owned(), l)]);
+        let fuel = |n| Limits {
+            fuel: Some(n),
+            ..Limits::default()
+        };
+        assert!(
+            check_limits(&p, &methods, &of("one", fuel(100))).is_ok(),
+            "at the cap"
+        );
+        assert!(check_limits(&p, &methods, &BTreeMap::new()).is_ok());
+        for (name, limits, code) in [
+            ("over the cap", of("one", fuel(101)), LIMIT_EXCEEDS_CAP),
+            ("zero", of("one", fuel(0)), BAD_LIMITS),
+            ("not a step", of("two", fuel(1)), BAD_LIMITS),
+            (
+                "memory over",
+                of(
+                    "one",
+                    Limits {
+                        memory_mib: Some(65),
+                        ..Limits::default()
+                    },
+                ),
+                LIMIT_EXCEEDS_CAP,
+            ),
+            (
+                "wall over",
+                of(
+                    "one",
+                    Limits {
+                        wall_secs: Some(31),
+                        ..Limits::default()
+                    },
+                ),
+                LIMIT_EXCEEDS_CAP,
+            ),
+        ] {
+            let err = check_limits(&p, &methods, &limits).unwrap_err();
+            assert_eq!((err.status, err.code.as_str()), (400, code), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_retrys_worst_case_is_priced_with_its_raised_limits() {
+        let mut p = pipeline();
+        let step = p.steps.get_mut("one").unwrap();
+        step.limits = Some(Limits {
+            fuel: Some(10),
+            wall_secs: Some(5),
+            ..Limits::default()
+        });
+        let raised = BTreeMap::from([(
+            "one".to_owned(),
+            Limits {
+                fuel: Some(50),
+                ..Limits::default()
+            },
+        )]);
+        let priced = with_limits(&p, &raised);
+        let l = priced.steps["one"].limits.unwrap();
+        assert_eq!(
+            (l.fuel, l.wall_secs),
+            (Some(50), Some(5)),
+            "only the named field moves"
+        );
     }
 
     #[test]

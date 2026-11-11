@@ -381,7 +381,10 @@ fn build_step(
     view: &CacheView<'_>,
 ) -> Result<Built, &'static str> {
     let cap = caps.get(&step.method).ok_or("UNKNOWN_METHOD")?;
-    let limits = step.limits.unwrap_or_default();
+    let limits = step
+        .limits
+        .unwrap_or_default()
+        .overridden_by(run.limits.get(name).copied().unwrap_or_default());
     let caps = RunCaps {
         fuel: limits.fuel.map_or(cap.fuel, |v| v.min(cap.fuel)),
         memory_mib: limits
@@ -395,7 +398,7 @@ fn build_step(
         let args = resolve_args(pipeline, run, step, item)?;
         let key = step
             .cache
-            .then(|| step_key(run, step, &args, &inputs, caps, view))
+            .then(|| step_key(run, step, &args, &inputs, view))
             .flatten();
         Ok::<_, &'static str>(StepRun {
             run: run_id(&run.id, name, index),
@@ -466,20 +469,13 @@ fn step_key(
     step: &Step,
     args: &[u8],
     inputs: &[String],
-    caps: RunCaps,
     view: &CacheView<'_>,
 ) -> Option<String> {
     let hashes: Vec<String> = inputs
         .iter()
         .map(|i| (view.sha)(i))
         .collect::<Option<_>>()?;
-    Some(cache_key(
-        &run.compute_bundle,
-        &step.method,
-        args,
-        &hashes,
-        caps,
-    ))
+    Some(cache_key(&run.compute_bundle, &step.method, args, &hashes))
 }
 
 /// A batch's `item`: the value itself for a batch of one, else the list of them.
@@ -895,6 +891,8 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
+    use calimero_pipeline::Limits;
+
     use super::*;
     use crate::component::{PipelineState, StepState};
     use crate::types::Caller;
@@ -961,6 +959,8 @@ steps:
             end_ts_ms: None,
             cost: None,
             cost_so_far: 0,
+            retry_of: None,
+            limits: BTreeMap::new(),
         }
     }
 
@@ -1337,6 +1337,29 @@ steps:
     }
 
     #[test]
+    fn a_retrys_limits_replace_the_pipelines_own_within_the_methods_caps() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let mut run = run_of(&p);
+        // `a` has fuel 7 and wallSecs 9 in the pipeline; the cap is 100 fuel.
+        run.limits = BTreeMap::from([(
+            "a".to_owned(),
+            Limits {
+                fuel: Some(60),
+                ..Limits::default()
+            },
+        )]);
+        let a = start_of(&plan(&p, &run, &caps(), 10), "a");
+        assert_eq!(
+            (a.caps.fuel, a.caps.wall_secs),
+            (60, 9),
+            "fuel raised, wall kept"
+        );
+        run.limits.get_mut("a").unwrap().fuel = Some(5_000);
+        let a = start_of(&plan(&p, &run, &caps(), 10), "a");
+        assert_eq!(a.caps.fuel, 100, "never above the method's cap");
+    }
+
+    #[test]
     fn a_wave_the_parallelism_cuts_anyway_is_not_stopped_by_the_cap() {
         let p = fan_pipeline(
             "  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 2 }\n",
@@ -1526,7 +1549,7 @@ steps:
     }
 
     #[test]
-    fn the_key_changes_with_each_of_what_a_run_computes_and_not_with_a_file_id() {
+    fn the_key_changes_with_what_a_run_computes_and_not_with_a_file_id_or_its_caps() {
         let p = calimero_pipeline::compile(SOURCE).unwrap();
         let run = run_of(&p);
         let base = key_of(&p, &run, &caps(), &[]);
@@ -1561,7 +1584,7 @@ steps:
         let mut lower = caps();
         lower.get_mut("digest").unwrap().fuel = 50;
         let tight = calimero_pipeline::compile(&SOURCE.replace("fuel: 7, ", "fuel: 90, ")).unwrap();
-        assert_ne!(base, key_of(&tight, &run_of(&tight), &lower, &[]), "caps");
+        assert_eq!(base, key_of(&tight, &run_of(&tight), &lower, &[]), "caps");
 
         let mut renamed = run.clone();
         renamed

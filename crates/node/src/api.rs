@@ -10736,6 +10736,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/pipeline-runs", get(pipelines::list))
         .route("/apps/{app}/pipeline-runs/{run}", get(pipelines::get))
         .route("/apps/{app}/pipeline-runs/{run}/cancel", post(pipelines::cancel))
+        .route("/apps/{app}/pipeline-runs/{run}/retry", post(pipelines::retry))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
         .route("/apps/{app}/presence/stream", get(presence_stream))
         .route("/apps/{app}/intents", post(intents))

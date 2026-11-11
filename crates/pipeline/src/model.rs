@@ -210,6 +210,18 @@ pub struct Limits {
     pub wall_secs: Option<u32>,
 }
 
+impl Limits {
+    /// These limits with every field `over` sets taken from it.
+    #[must_use]
+    pub fn overridden_by(self, over: Self) -> Self {
+        Self {
+            fuel: over.fuel.or(self.fuel),
+            memory_mib: over.memory_mib.or(self.memory_mib),
+            wall_secs: over.wall_secs.or(self.wall_secs),
+        }
+    }
+}
+
 /// Tolerated failed items: a percentage ("5%") or a count (3 or "3").
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AllowFailures {

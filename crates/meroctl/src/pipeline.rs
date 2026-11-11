@@ -33,6 +33,21 @@ pub enum PipelineCmd {
         #[arg(long)]
         wait: bool,
     },
+    /// Start a new run of an ended run's pipeline, release, inputs and params with some limits
+    /// raised; steps that already succeeded are answered from the step cache.
+    Retry {
+        app: String,
+        run: String,
+        /// Raise a step's limit: `STEP.fuel=N`, `STEP.memoryMib=N` or `STEP.wallSecs=N`; repeatable.
+        #[arg(long = "limit", value_name = "STEP.FIELD=N")]
+        limits: Vec<String>,
+        /// Start no step run that could take the run past this many micro-units.
+        #[arg(long, value_name = "MICRO_UNITS")]
+        max_cost: Option<String>,
+        /// Wait until the new run is no longer running and print it.
+        #[arg(long)]
+        wait: bool,
+    },
     /// One run: its state and each step's status, runs, outputs, reason, cost and what the step cache answered.
     Get { app: String, run: String },
     /// Cancel a run: its pending steps end cancelled and its running steps' runs stop.
@@ -76,6 +91,44 @@ pub fn parse_params(args: &[String]) -> eyre::Result<Value> {
     Ok(Value::Object(params))
 }
 
+/// `--limit STEP.FIELD=N` as `{ STEP: { FIELD: N } }`; the node judges the field and the bounds.
+fn parse_limits(args: &[String]) -> eyre::Result<Value> {
+    let mut limits: BTreeMap<&str, serde_json::Map<String, Value>> = BTreeMap::new();
+    for arg in args {
+        let (path, value) = split(arg)?;
+        let (step, field) = path
+            .rsplit_once('.')
+            .filter(|(step, field)| !step.is_empty() && !field.is_empty())
+            .ok_or_else(|| eyre!("`{path}` is not STEP.FIELD"))?;
+        let n: u64 = value
+            .parse()
+            .map_err(|_| eyre!("`{value}` is not a whole number"))?;
+        if limits
+            .entry(step)
+            .or_default()
+            .insert(field.to_owned(), json!(n))
+            .is_some()
+        {
+            bail!("limit `{path}` is given twice");
+        }
+    }
+    Ok(json!(limits))
+}
+
+/// Polls a started run until it is no longer running and returns it.
+async fn wait_for(env: &Env, app: &str, started: &Value) -> eyre::Result<Value> {
+    let id = started["run"]
+        .as_str()
+        .ok_or_else(|| eyre!("the node named no run"))?;
+    loop {
+        let run = env.client.pipeline_run(app, id).await?;
+        if run["state"] != "running" {
+            return Ok(run);
+        }
+        tokio::time::sleep(WAIT_POLL).await;
+    }
+}
+
 /// The body of a start: the inputs, the params and the cost cap when one is given.
 fn start_body(inputs: &[String], params: &[String], max_cost: Option<&str>) -> eyre::Result<Value> {
     let mut body = json!({ "inputs": parse_inputs(inputs)?, "params": parse_params(params)? });
@@ -104,16 +157,25 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
             if !wait {
                 return Ok(started);
             }
-            let id = started["run"]
-                .as_str()
-                .ok_or_else(|| eyre!("the node named no run"))?;
-            loop {
-                let run = env.client.pipeline_run(&app, id).await?;
-                if run["state"] != "running" {
-                    return Ok(run);
-                }
-                tokio::time::sleep(WAIT_POLL).await;
+            wait_for(env, &app, &started).await?
+        }
+        PipelineCmd::Retry {
+            app,
+            run,
+            limits,
+            max_cost,
+            wait,
+        } => {
+            let app = env.app(&app).await?;
+            let mut body = json!({ "limits": parse_limits(&limits)? });
+            if let Some(max) = max_cost {
+                body["maxCost"] = json!(max);
             }
+            let started = env.client.retry_pipeline_run(&app, &run, body).await?;
+            if !wait {
+                return Ok(started);
+            }
+            wait_for(env, &app, &started).await?
         }
         PipelineCmd::Get { app, run } => {
             env.client.pipeline_run(&env.app(&app).await?, &run).await?
@@ -141,6 +203,25 @@ mod tests {
         assert_eq!(v, json!({ "docs": ["a", "b", "c"], "model": ["m"] }));
         assert!(parse_inputs(&strings(&["docs"])).is_err());
         assert!(parse_inputs(&strings(&["=a"])).is_err());
+    }
+
+    #[test]
+    fn limits_name_a_step_and_a_field_and_a_whole_number() {
+        let v = parse_limits(&strings(&["a.fuel=9", "a.wallSecs=3", "b.memoryMib=64"])).unwrap();
+        assert_eq!(
+            v,
+            json!({ "a": { "fuel": 9, "wallSecs": 3 }, "b": { "memoryMib": 64 } })
+        );
+        assert_eq!(parse_limits(&[]).unwrap(), json!({}));
+        for bad in [
+            &["fuel=9"][..],
+            &["a.fuel=x"],
+            &["a.fuel"],
+            &[".fuel=1"],
+            &["a.fuel=1", "a.fuel=2"],
+        ] {
+            assert!(parse_limits(&strings(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

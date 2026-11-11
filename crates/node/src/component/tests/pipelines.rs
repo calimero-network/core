@@ -34,6 +34,8 @@ fn start_entry(id: &str, steps: &[&str]) -> PipelineStartEntry {
         payer: "account:alice".into(),
         fail_fast: false,
         cost: None,
+        retry_of: None,
+        limits: BTreeMap::new(),
         ts_ms: 5,
     }
 }
@@ -1175,6 +1177,50 @@ fn a_capped_step_lets_its_active_runs_finish_then_fails_with_the_cap() {
     assert_eq!(p.steps["a"].reason.as_deref(), Some(COST_CAP));
     assert_eq!(p.state, PipelineState::Failed);
     assert!(p.cost_so_far <= UNIT);
+}
+
+#[test]
+fn a_retry_records_what_it_repeats_and_the_limits_it_raised() {
+    let mut w = World::new();
+    let limits = BTreeMap::from([(
+        "a".to_owned(),
+        calimero_pipeline::Limits {
+            fuel: Some(9),
+            ..Default::default()
+        },
+    )]);
+    let entry = PipelineStartEntry {
+        retry_of: Some("old".into()),
+        limits: limits.clone(),
+        ..start_entry(PIPE, &["a"])
+    };
+    let a = w.push(&ComponentCmd::PipelineStart(Box::new(entry.clone())));
+    assert!(a.status == Status::Ok, "{a:?}");
+    let p = pipeline(&w, PIPE);
+    assert_eq!((p.retry_of.as_deref(), &p.limits), (Some("old"), &limits));
+    let again = w.push(&ComponentCmd::PipelineStart(Box::new(entry)));
+    assert!(
+        again.status == Status::Ok,
+        "the same start repeated is the same run"
+    );
+    let other = PipelineStartEntry {
+        retry_of: Some("newer".into()),
+        ..start_entry(PIPE, &["a"])
+    };
+    let a = w.push(&ComponentCmd::PipelineStart(Box::new(other)));
+    assert_eq!(why(&a), KNOWN, "another retry of it is not the same run");
+}
+
+#[test]
+fn limits_for_a_step_the_run_lacks_are_refused() {
+    let mut w = World::new();
+    let entry = PipelineStartEntry {
+        limits: BTreeMap::from([("ghost".to_owned(), calimero_pipeline::Limits::default())]),
+        ..start_entry(PIPE, &["a"])
+    };
+    let a = w.push(&ComponentCmd::PipelineStart(Box::new(entry)));
+    assert_eq!(why(&a), BAD_START);
+    assert!(w.r.machine.pipeline_run(PIPE).is_none());
 }
 
 #[test]
