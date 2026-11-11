@@ -1,0 +1,18 @@
+[package]
+name = "calimero-pipeline"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+serde_norway.workspace = true
+serde_path_to_error.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,0 +1,29 @@
+apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: invoice-risk
+module: sha256:7a9c…41d2          # default module; "self" inside an app
+params:
+  threshold: { type: number, default: 0.8, min: 0, max: 1 }
+inputs:
+  invoices: { kind: files, accept: [application/pdf], maxItems: 1000, maxFileSize: 50MiB }
+  model:    { kind: artifact, accept: [application/onnx], default: fraud-model@4 }
+  vendors:  { kind: table, format: csv, schema: { vendor_id: string, iban_hash: string } }
+sources:
+  invoices: { connector: s3, uri: s3://acme-invoices/2026/11/*.pdf, connection: s3-acme }
+sinks:
+  results:  { connector: s3, uri: s3://acme-results/risk/, connection: s3-acme-rw }
+failFast: false
+steps:
+  extract:  { module: calimero/pdf-extract@1, method: extract,
+              forEach: inputs.invoices, maxItems: 1000, maxParallel: 16 }
+  score:    { method: score, pool: highmem, forEach: extract.outputs, maxItems: 1000,
+              batch: 25, inputs: [inputs.model, inputs.vendors],
+              args: { threshold: params.threshold }, allowFailures: 5% }
+  escalate: { method: escalate, when: "score.results.exists(r, r.flagged)" }
+  report:   { method: report, collect: score.outputs }
+  incident: { method: incident_summary, needs: [score, report], runIf: failure }
+publish:
+  - { from: report.outputs, to: sinks.results }
+notify:
+  - { on: [failed, succeeded_with_failures], to: "slack:#risk-alerts" }
+outputs: [report.outputs, escalate.outputs]
