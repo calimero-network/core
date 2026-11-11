@@ -6274,8 +6274,10 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
-    node.require_features(&scope_app_features(body.apps.as_deref()))
-        .await?;
+    // The API always sets `by_release` (#4931).
+    let mut features = scope_app_features(body.apps.as_deref());
+    features.push(Feature::ScopeByRelease);
+    node.require_features(&features).await?;
     let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
     let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
     Ok(Json(

@@ -73,7 +73,8 @@
   `SetPools` (rc.15); on a cluster whose nodes all run rc.15 or newer they
   work as before. Closing a team (`UpdateTeam` with `join: invite`, which
   now takes the rows below it, see above) is gated to rc.16, as is a move that gives a DM's people
-  app-team rows (`MoveApp.accounts_in_app_team`). Once a version is logged, no node below it joins the
+  app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
+  instance by its release (`ScopeApps.by_release`). Once a version is logged, no node below it joins the
   system group. A skipped undecodable entry now logs an error and counts in
   `calimero_log_undecodable_entries_total{log}`. Stored format:
   `SystemState.clusterVersion` is left out when unset; a node on an earlier

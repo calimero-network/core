@@ -225,6 +225,7 @@ every feature gated it stays at zero.
 | `computePools` | `SetPools` (also `409 UPGRADE_PENDING` first) | 1.0.0-rc.15 |
 | `teamCloseDropsBelow` | `UpdateTeam` closing a team (`join: invite`), which takes the rows below it of whoever loses it; an earlier release keeps them | 1.0.0-rc.16 |
 | `moveAccountsAppTeam` | `MoveApp` giving a moved DM's people a row on its closed app team (`accounts_in_app_team`); an earlier release gives none | 1.0.0-rc.16 |
+| `scopeByRelease` | `ScopeApps` judging an instance's package by its release (`by_release`); an earlier release judges by the bundle | 1.0.0-rc.16 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

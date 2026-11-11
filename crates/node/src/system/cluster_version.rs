@@ -48,10 +48,13 @@ pub enum Feature {
     /// `MoveApp` with `accounts_in_app_team` (#4912): an earlier release
     /// ignores the field and gives a moved DM's people no app-team row.
     MoveAccountsAppTeam,
+    /// `ScopeApps` with `by_release` (#4931): an earlier release judges an
+    /// instance's package by its bundle and can put it on another app team.
+    ScopeByRelease,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 7] = [
+pub const FEATURES: [Feature; 8] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -59,6 +62,7 @@ pub const FEATURES: [Feature; 7] = [
     Feature::ClusterVersion,
     Feature::TeamCloseDropsBelow,
     Feature::MoveAccountsAppTeam,
+    Feature::ScopeByRelease,
 ];
 
 impl Feature {
@@ -73,6 +77,7 @@ impl Feature {
             Self::ComputePools => "computePools",
             Self::TeamCloseDropsBelow => "teamCloseDropsBelow",
             Self::MoveAccountsAppTeam => "moveAccountsAppTeam",
+            Self::ScopeByRelease => "scopeByRelease",
         }
     }
 
@@ -84,9 +89,10 @@ impl Feature {
             Self::MoveApp | Self::AppTeamJoin | Self::OrgQuotas | Self::ComputePools => {
                 "1.0.0-rc.15"
             }
-            Self::ClusterVersion | Self::TeamCloseDropsBelow | Self::MoveAccountsAppTeam => {
-                "1.0.0-rc.16"
-            }
+            Self::ClusterVersion
+            | Self::TeamCloseDropsBelow
+            | Self::MoveAccountsAppTeam
+            | Self::ScopeByRelease => "1.0.0-rc.16",
         }
     }
 }
@@ -281,7 +287,15 @@ impl SystemCmd {
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
             Self::SetPools { .. } => vec![Feature::ComputePools],
-            Self::ScopeApps { apps, .. } => scope_app_features(apps.as_deref()),
+            Self::ScopeApps {
+                apps, by_release, ..
+            } => {
+                let mut f = scope_app_features(apps.as_deref());
+                if *by_release {
+                    f.push(Feature::ScopeByRelease);
+                }
+                f
+            }
             // Only a close changes what the flag does.
             Self::UpdateTeam {
                 join: Some(TeamJoin::Invite),
@@ -452,6 +466,19 @@ mod tests {
                 owner_in_team: true,
                 accounts_in_app_team: true,
                 member_child_teams: true,
+                by_release: false,
+            },
+            Feature::ScopeByRelease => SystemCmd::ScopeApps {
+                org: "org".into(),
+                apps: None,
+                shared: Some(true),
+                nonce: "n".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                owner_in_team: true,
+                accounts_in_app_team: true,
+                member_child_teams: true,
+                by_release: true,
             },
             Feature::OrgQuotas => SystemCmd::SetOrgQuotas {
                 payer: "org".into(),
@@ -653,7 +680,11 @@ mod tests {
         }
         assert!(propose(&mut nodes, &uses(Feature::ClusterVersion)).is_err());
         // rc.16's fields on an rc.15 command are held back by their own name.
-        for feature in [Feature::TeamCloseDropsBelow, Feature::MoveAccountsAppTeam] {
+        for feature in [
+            Feature::TeamCloseDropsBelow,
+            Feature::MoveAccountsAppTeam,
+            Feature::ScopeByRelease,
+        ] {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(refused.feature, feature);
             assert_eq!(refused.active.as_deref(), Some(RC15));
