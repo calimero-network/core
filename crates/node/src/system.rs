@@ -378,6 +378,48 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// Make `s`, a system state restored from a backup, that of the cluster
+/// founded again on `founders` (`node::restore`, `--restore-from`): the
+/// founders are the replica nodes now and every other replica node of the
+/// cluster backed up is removed (job nodes, which hold nothing, stay), each
+/// app keeps the founders among its replicas and is filled up to `replicas`
+/// from them, and every app waits for its own backup
+/// ([`crate::types::PendingRestore::AWAITING_BACKUP`]): its group is hosted
+/// nowhere until the operator restores it. Accounts, organizations, teams,
+/// packages, governance and the operator key are kept as they were.
+pub fn refound(s: &mut SystemState, founders: &[NodeRecord], replicas: usize) {
+    let new: BTreeSet<u64> = founders.iter().map(|n| n.id).collect();
+    let gone: Vec<u64> = s
+        .replica_nodes()
+        .filter(|n| !new.contains(&n.id))
+        .map(|n| n.id)
+        .collect();
+    for id in gone {
+        let _gone = s.nodes.remove(&id);
+        let _new = s.removed_nodes.insert(id);
+        *s.node_epoch.entry(id).or_default() += 1;
+    }
+    for node in founders {
+        let _was = s.removed_nodes.remove(&node.id);
+        *s.node_epoch.entry(node.id).or_default() += 1;
+        let _prev = s.nodes.insert(node.id, node.clone());
+    }
+    let fleet: Vec<u64> = s.replica_nodes().map(|n| n.id).collect();
+    let want = replicas.min(fleet.len()).max(1);
+    for app in s.apps.values_mut() {
+        app.replicas.retain(|id| fleet.contains(id));
+        for id in &fleet {
+            if app.replicas.len() >= want {
+                break;
+            }
+            if !app.replicas.contains(id) {
+                app.replicas.push(*id);
+            }
+        }
+        app.restore = Some(crate::types::PendingRestore::AWAITING_BACKUP);
+    }
+}
+
 /// Everything the system group replicates.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -6437,7 +6479,10 @@ impl SystemMachine {
                 app.compute_bundle = compute_bundle;
                 app.group = group;
                 app.replicas = replicas;
-                app.restore = Some(crate::types::PendingRestore { seed, source });
+                app.restore = Some(crate::types::PendingRestore {
+                    seed: Some(seed),
+                    source: Some(source),
+                });
                 Ok(json!({ "group": group }))
             }
             SystemCmd::FinishRestore { app_id, group } => {
@@ -13135,8 +13180,8 @@ mod tests {
         assert_eq!(
             app.restore,
             Some(crate::types::PendingRestore {
-                seed: 2,
-                source: source("7.2.x.snap")
+                seed: Some(2),
+                source: Some(source("7.2.x.snap"))
             })
         );
         assert_eq!(
@@ -13151,6 +13196,46 @@ mod tests {
         let _ok = m.run(finish(app.group)).unwrap();
         assert_eq!(m.state.apps["app"].restore, None);
         assert!(m.run(finish(app.group)).is_err(), "nothing under way");
+    }
+
+    /// A cluster founded again keeps who is who and what is installed, takes
+    /// the founders as its replica nodes, removes the others (job nodes
+    /// stay), and leaves every app waiting for its own backup on replicas it
+    /// still has.
+    #[test]
+    fn a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps() {
+        let (mut m, ..) = proven_cluster();
+        register(&mut m, 9, "job");
+        let before = m.state.clone();
+        let node = |id: u64| crate::types::NodeRecord {
+            id,
+            addr: format!("http://new{id}/"),
+            zone: String::new(),
+            role: crate::types::NodeRole::Replica,
+            pool: String::new(),
+        };
+        let mut s = before.clone();
+        super::refound(&mut s, &[node(1), node(5)], 3);
+        let ids: Vec<u64> = s.nodes.keys().copied().collect();
+        assert_eq!(ids, [1, 5, 9]);
+        assert_eq!(s.nodes[&1].addr, "http://new1/");
+        assert!(s.removed_nodes.contains(&2) && s.removed_nodes.contains(&4));
+        assert!(s.node_epoch[&1] > before.node_epoch.get(&1).copied().unwrap_or(0));
+        let app = &s.apps["app"];
+        assert_eq!(
+            app.replicas,
+            [1, 5],
+            "kept node 1, filled from the founders"
+        );
+        assert_eq!(
+            app.restore,
+            Some(crate::types::PendingRestore::AWAITING_BACKUP)
+        );
+        assert!(app.restore.as_ref().unwrap().awaits_backup());
+        assert_eq!(s.accounts.len(), before.accounts.len());
+        assert_eq!(s.operator_key, before.operator_key);
+        assert_eq!(s.orgs.len(), before.orgs.len());
+        assert_eq!(s.next_group, before.next_group);
     }
 
     /// An organization of `who` (account -> role), each holding `caps`

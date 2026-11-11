@@ -23,20 +23,30 @@
 //! is why it is the operator's signed decision. A seed that stops half way
 //! leaves the restore under way (calls answer `409 APP_RESTORING`); sending
 //! the restore again starts over in a newer group.
+//!
+//! A cluster is founded again from its backups the same way, one level up
+//! ([`Node::refound`], `merod run --bootstrap --restore-from DIR`): the
+//! founder takes the cluster's own K_c from the copy kept for its release
+//! (`backup::cluster_key_from`), forms the system group alone, seeds it with
+//! the newest system backup, made the state of the new fleet
+//! (`system::refound`), snapshots and purges its log, and the other nodes join
+//! as registered learners, catching up from that snapshot. Every app then
+//! waits for its own backup (`PendingRestore::AWAITING_BACKUP`).
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use calimero_log::{Group, GroupId, NodeId};
 use serde_json::{json, Value};
 use tracing::info;
 
-use super::Node;
+use super::{Node, SYSTEM_GROUP};
 use crate::app::AppMachine;
 use crate::backup::Found;
 use crate::component::ComponentCmd;
 use crate::error::ApiError;
-use crate::system::SystemCmd;
-use crate::types::AppRecord;
+use crate::system::{normalize_addr, SystemCmd, SystemState};
+use crate::types::{AppRecord, NodeRecord, NodeRole};
 
 /// How long the seed waits for its new group to elect it, for a snapshot and
 /// for the purge.
@@ -96,7 +106,139 @@ pub(crate) fn backup_code(
     Ok((bundle, compute))
 }
 
+/// How long the founder waits for a node of the cluster backed up to answer
+/// at its old address, before founding the cluster again.
+pub const OLD_NODE_PROBE: Duration = Duration::from_secs(3);
+
+/// The system state a system backup holds: its in-memory machine's checkpoint.
+fn system_state_of(cluster_key: &[u8; 32], found: &Found) -> eyre::Result<SystemState> {
+    if found.group != SYSTEM_GROUP {
+        eyre::bail!("{} is not a backup of the system group", found.name);
+    }
+    let mut data = None;
+    calimero_log::read_snapshot_file(
+        cluster_key,
+        found.group,
+        &found.snapshot_id,
+        &found.path,
+        |key, value| {
+            if key == calimero_log::machine::CHECKPOINT_KEY {
+                data = Some(value.to_vec());
+            }
+            Ok(())
+        },
+    )?;
+    let data = data.ok_or_else(|| eyre::eyre!("{} holds no system state", found.name))?;
+    Ok(serde_json::from_slice(&data)?)
+}
+
 impl Node {
+    /// On the founder of a cluster founded again (`--bootstrap
+    /// --restore-from DIR`), while its system state is empty: seed the system
+    /// group, which it is the only member of, with the newest system backup in
+    /// `DIR`, made the state of this fleet (`system::refound`), and make that
+    /// the only way the other nodes catch up.
+    ///
+    /// Refused, leaving the state empty, when the backup is not this
+    /// release's to read, when it names another governance or operator key
+    /// than this node's configuration (the node attests its governance), or
+    /// while a replica node of the cluster backed up still answers at an
+    /// address the new fleet does not reuse: two live clusters must never
+    /// share one K_c.
+    pub(crate) async fn refound(&self) -> eyre::Result<()> {
+        let Some(dir) = self.config.restore_from.clone() else {
+            return Ok(());
+        };
+        let key = self.cluster_key;
+        let found =
+            super::off_workers(|| crate::backup::find(&dir, &key, crate::backup::SYSTEM, None))?;
+        found.check_release(env!("CARGO_PKG_VERSION"))?;
+        let mut state = super::off_workers(|| system_state_of(&key, &found))?;
+        if state.governance.clone().unwrap_or_default() != self.config.governance {
+            eyre::bail!(
+                "the backed-up cluster was deployed with governance {:?}; start the founder with \
+                 the same flags",
+                state.governance.unwrap_or_default()
+            );
+        }
+        let operator = self.operator_key().map(|k| k.key);
+        if state.operator_key.as_ref().map(|k| &k.key) != operator.as_ref() {
+            eyre::bail!(
+                "the backed-up cluster's operator key is {:?}; start the founder with that \
+                 --operator-key",
+                state.operator_key.as_ref().map(|k| &k.key)
+            );
+        }
+        self.refuse_while_old_nodes_answer(&state).await?;
+        for (hash, bytes) in crate::backup::code(&dir, &key)? {
+            self.engine.put_blob(&hash, &bytes)?;
+        }
+        let founders: Vec<NodeRecord> = self
+            .config
+            .peers
+            .iter()
+            .map(|(id, addr)| NodeRecord {
+                id: *id,
+                addr: addr.clone(),
+                zone: String::new(),
+                role: NodeRole::Replica,
+                pool: String::new(),
+            })
+            .collect();
+        crate::system::refound(&mut state, &founders, self.config.replicas);
+        let apps = state.apps.len();
+        let accounts = state.accounts.len();
+        self.system
+            .replace_machine_data(&serde_json::to_vec(&state)?)?;
+        let index = self.system.applied();
+        self.system.snapshot_through(index, SEED_WAIT).await?;
+        self.system.purge_log_through(index, SEED_WAIT).await?;
+        info!(
+            backup = %found.name,
+            index = found.index,
+            apps,
+            accounts,
+            "founded the cluster again from its system backup; restore each app from its own"
+        );
+        Ok(())
+    }
+
+    /// Refuse while a replica node of the cluster backed up, at an address the
+    /// new fleet does not reuse, answers as a node of this cluster.
+    async fn refuse_while_old_nodes_answer(&self, state: &SystemState) -> eyre::Result<()> {
+        let reused: BTreeSet<String> = self
+            .config
+            .peers
+            .values()
+            .map(|a| normalize_addr(a))
+            .collect();
+        for node in state.replica_nodes() {
+            if reused.contains(&normalize_addr(&node.addr)) {
+                continue;
+            }
+            let url = format!(
+                "{}/attestation?nonce={}",
+                node.addr.trim_end_matches('/'),
+                hex::encode([0_u8; 32])
+            );
+            let answer = tokio::time::timeout(OLD_NODE_PROBE, async {
+                self.http.get(&url).send().await?.json::<Value>().await
+            })
+            .await;
+            if let Ok(Ok(doc)) = answer {
+                if doc["cluster"].as_str() == Some(self.config.cluster.as_str()) {
+                    eyre::bail!(
+                        "node {} of the cluster backed up still answers at {}: stop every node \
+                         of that cluster before founding it again",
+                        node.id,
+                        node.addr
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// On the seed, once `RestoreApp` put `app_id` in `group`: seed the group
     /// from `found` and grow it to the app's replicas (see the module docs).
     pub(crate) async fn seed_restore(

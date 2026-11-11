@@ -165,7 +165,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [x] R25. Tested backup/restore with RPO/RTO guidance (`crates/node/tests/restore.rs`; `operate/runbooks` "Schedule, RPO and RTO").
 - [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
 - [ ] R27. Cross-version upgrade runbook (node binary + app together).
-- [ ] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot).
+- [x] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot): `operate/runbooks` "Disaster recovery", "Found a cluster again from its backups", "Restore an app".
 - [ ] R29. ~~Bootstrap-node / relay-node operator guide~~ (dropped — a cluster has no p2p network).
 - [ ] R30. Log reference (what each warn/error means, what to do).
 
