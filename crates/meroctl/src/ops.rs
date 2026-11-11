@@ -62,6 +62,15 @@ pub enum OpsCmd {
     },
     /// Write encrypted snapshots of the contexts this node leads.
     Backup,
+    /// Restore a context from a sealed backup in this node's `--backup-dir`
+    /// (`{backup-dir}/{context}/{name}`); this node seeds it and becomes its
+    /// first replica. Everything the context wrote after the backup is lost.
+    Restore {
+        context: String,
+        /// The backup's file name; the newest one when left out.
+        #[arg(long)]
+        backup: Option<String>,
+    },
     /// The compute pools and the runs each takes at once.
     Pools,
     /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib } }`.
@@ -199,6 +208,19 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             }
         }
         OpsCmd::Backup => client.post("ops/backup", json!({})).await?,
+        OpsCmd::Restore { context, backup } => {
+            let mut body = json!({});
+            if let Some(name) = backup {
+                body["backup"] = json!(name);
+            }
+            decide_at(
+                env,
+                client,
+                Some(body),
+                &format!("ops/apps/{context}/restore"),
+            )
+            .await?
+        }
         OpsCmd::Pools => client.get("ops/pools").await?,
         OpsCmd::SetPools { pools } => {
             let body = json!({ "pools": json_arg(&pools)? });
