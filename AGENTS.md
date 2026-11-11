@@ -26,6 +26,7 @@ A confidential cloud for collaborative apps. Apps are written in Rust or JavaScr
 - **Gates**: run `./scripts/check-like-ci.py` before opening a PR; it reads `.github/workflows/ci-checks.yml` and runs every job the required `Rust` check waits on (`--list` shows them, `--only <name>` runs a subset).
   Run clippy by hand with `-D warnings`, as CI does; `-A warnings` allows every lint and can only pass.
 - **Proof**: a bug fix's PR description shows the reproduction (test, command or scenario file) and its before and after output; the reproducing test stays as the regression test.
+- **Upgrade case**: a PR that adds user-visible functionality adds a `DeepCase` for it in `crates/node/tests/fault/upgrade_cases/` (`since` = the release it ships in) and pastes the regenerated coverage matrix into [Deep cases](docs/src/content/docs/contribute/testing.mdx#deep-cases-every-functionality); what cannot be tested there yet goes in `NOT_COVERED` with the reason.
 - **Docs**: update the README, `AGENTS.md`, crate docs or `docs/` page the change makes stale, no later than one day after merge.
 - **Merge**: a PR merges when CI is green, every meroreviewer and Cursor Bugbot thread is fixed or answered and resolved, and branch protection's human review is approved.
   The `resolve-bot-review-comments`, `babysit` and `code-review` skills drive that loop.
