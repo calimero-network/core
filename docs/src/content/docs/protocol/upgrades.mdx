@@ -1,15 +1,14 @@
 ---
 title: Upgrades & migrations
-description: How an app instance moves to new code — who may upgrade it, how the migration is planned from the two ABIs and run once on the leader, what a failure leaves behind, and organization-wide upgrade runs.
+description: How an app instance moves to new code — who may upgrade it, what an upgrade runs, the runtime a release needs, which release an app can reach, what a failure leaves behind, and organization-wide upgrade runs.
 sidebar:
   order: 19
 ---
 
 An **upgrade** moves an app instance to another bundle, usually another release
-of its package, and reshapes its state if the new code expects a different
-shape. Writing the migration itself is covered in
-[Migrations](/build/migrations/); this page is about what the cluster does
-with it. How a release is parsed, verified and trusted when it is installed is
+of its package, and keeps its state: the new code reads what the old code
+stored ([Upgrades & state](/build/migrations/)). This page is about what the
+cluster does with it. How a release is parsed, verified and trusted when it is installed is
 in [Packages & frontends](/protocol/applications/#installing-a-release).
 
 ## Who may upgrade
@@ -41,8 +40,8 @@ step-up, and the node refuses it everything else. Who may upgrade and the
 deadline below are judged for it exactly as for a passkey.
 
 Past a [release deadline](/protocol/governance/#release-deadlines) its
-approver has not met, an upgrade is refused `409 RELEASE_DEADLINE` before the
-migration runs.
+approver has not met, an upgrade is refused `409 RELEASE_DEADLINE` before
+anything runs.
 
 A version alone means the app's own package and service.
 
@@ -73,20 +72,75 @@ the capability sheet (outbound, frontend origins, interfaces, methods,
 events, timers, migration, build) and takes the owner's passkey there
 ([The consent page](/protocol/consent-page/)).
 
-## Planning the migration
+## What an upgrade runs
 
-Unless the request names a migration (`migrate`), the leader plans one from the
-two bundles' embedded ABIs (`services::plan_upgrade`):
+An upgrade is **code only**: the app's state stays as the old code wrote it,
+and the new code must read it ([Upgrades & state](/build/migrations/)).
+`calimero-sdk` has no migration export yet, so nothing is planned from the
+two ABIs and nothing reshapes the state; a named `migrate` is refused
+`MigrationsNotSupported`. The state version each side declares
+(`#[app::state(version = N)]`) does not decide whether an upgrade runs: the
+consent page shows it, and flags a change, since the new code reads the old
+data as it is.
 
-| Current → target state version | Plan |
-| --- | --- |
-| Same version | Code-only: switch the bundle, run nothing |
-| One version up | Run the target's `#[app::migrate]` edge from the current version |
-| Down | Refused: no silent downgrade |
-| More than one up | Refused: upgrade one version at a time |
-| One up, no edge from the current version | Refused |
-| One side embeds an ABI and the other does not | Refused |
-| Neither embeds an ABI | Code-only |
+So an app moves to **any newer release** of its package in one upgrade,
+however many releases or state versions that skips: nothing has to be
+applied one release at a time, and an app several releases behind is
+offered the newest one it can reach (below).
+
+## The runtime a release needs
+
+A release's signed manifest names the oldest runtime it runs on
+(`minRuntimeVersion`): the merod release a node was built as. The node that
+installs a release checks it against its own runtime
+([Installing a release](/protocol/applications/#installing-a-release)), and
+records it with the release (`PackageVersion::min_runtime_version`). The
+other nodes take the release's WASM without verifying the `.mpk`, and a
+cluster runs several releases while its nodes move to a new one, so the
+cluster judges the requirement against the runtime of every node that would
+run the app:
+
+- **Upgrades.** An upgrade is refused `409 RUNTIME_TOO_OLD` when any of the
+  app's replicas is on a node whose runtime is older than the target release
+  needs; `details` names the requirement and each such node
+  (`{ minRuntimeVersion, nodes: [{ node, runtime }] }`). It is asked before
+  the passkey step-up and on the consent page, and again where every
+  upgrade path goes through (`run_upgrade`), which records the refusal as
+  the app's last upgrade. Nothing runs on the app's group.
+- **New apps.** Placement leaves out the nodes whose runtime is older than
+  the release the app is created from; when none is left, the create is
+  refused `409 RUNTIME_TOO_OLD`.
+- **Replica moves.** `POST /ops/apps/{app}/replicas` refuses `409
+  RUNTIME_TOO_OLD` a node the app is not on yet whose runtime is older than
+  the release the app runs. A node it is on already is not judged, so an app
+  can always be moved off one.
+
+Each node names its runtime over the sealed peer channel (`POST
+/internal/runtime`, an attested node's own answer), kept for 30 s. A node on
+a release from before this answers `404`: it is older than the asking
+node, and judged so. A node that does not answer, or whose release is not a
+version (a development build), is not judged, as before.
+
+## Which release an app can reach
+
+Each app's entry in `GET /auth/apps` and `GET /orgs/{org}/apps` names the
+newer releases of its package its reader may see and move it to:
+
+- `availableVersions`: the newest 16, oldest first;
+- `latestReachable`: the newest of all of them the upgrade would take now,
+  or `null`. It may be older than every release in `availableVersions`;
+- `latestBlocked`, only when the newest release is not `latestReachable`:
+  its `version`, the `reason` and a `message`. `runtime`: a replica's node
+  runs an older runtime than it needs, with `minRuntimeVersion` and `nodes`
+  as the `409` names them; `authority`: the app's owner upgrades it and the
+  release would give its upgrades to the publisher.
+
+Who may upgrade and [release deadlines](/protocol/governance/#release-deadlines)
+are the same for every release of a package, so they decide whether to
+upgrade, not which release to: the report leaves them to the app's
+`upgradesHeldBy` and approvals. A release recorded before releases kept
+their runtime requirement is not judged by it here; the upgrade reads it
+from the release's `.mpk` and still refuses it.
 
 ## Running it
 
@@ -94,39 +148,29 @@ The upgrade is an entry in the app's own log, so it is ordered against the
 app's calls: every call before it ran on the old code, every call after it runs
 on the new.
 
-1. The leader runs the migration export on the target bundle over the current
-   state (`Executor::migrate`). The export returns the new root state (borsh).
-2. If the target exports `__calimero_migration_check`, it runs over the migrated
-   state and an optional **witness** the migration returned (a value the new
-   schema no longer keeps). It must return `true`; anything else, or a trap,
-   refuses the upgrade. Whatever the check writes is dropped, and the witness is
-   never stored.
-3. A migration that addresses the host's key space is refused.
-4. The host writes the returned state as the app's root entry, stamped after
-   whatever the root entry held so it wins (`write_root_state`), and the
-   writes become the entry's diff.
-5. The leader appends `AppCmd::Upgrade { bundle, base_index, outcome }`. Every
-   replica applies the diff and, if the outcome succeeded, switches to the new
-   bundle. As with every entry, followers do not run the migration.
-6. Only then does the node record the new bundle and release in the system
+1. The app group's leader prepares the target bundle, and refuses the
+   upgrade while an active compute run will call a result method the target
+   does not declare.
+2. It appends `Upgrade { bundle, computeBundle, base_index }`. Every replica
+   switches to the new bundle at that entry; no replica switches on its own,
+   so there is no window in which replicas run different code.
+3. Only then does the node record the new bundle and release in the system
    directory (`UpgradeApp`, which checks the upgrader's authority again, checks
    the release ships the bundle, and notes `lastUpgrade`). An upgrade to a
    release with the same bundle runs nothing on the app's group in an
    organization-wide run; it is recorded the same way.
 
-A migration runs once, on the leader, and its result is replicated like any
-other entry: no replica migrates on its own, so there is no window in which
-replicas hold different schemas.
-
 ## Failure
 
-A refused plan, a failing migration or a failing check leaves the app on its
-bundle with its state untouched. The node answers `422 UPGRADE_FAILED` with the
-reason and records it on the instance (`UpgradeFailed` sets the app's `lastUpgrade` with
-`ok: false` and the error), so a client can see why. The app's members read the last upgrade, with the
-release it went from and to and the kind of actor, in `GET /orgs/{org}/apps`
-or `GET /auth/apps`; the operator reads it without the account or the error
-in `GET /ops/apps` ([Deployment governance](/protocol/governance/#reading-the-approvals)).
+A refused upgrade leaves the app on its bundle with its state untouched.
+Refused before anything runs: `409 RUNTIME_TOO_OLD` (above) and `409
+RELEASE_DEADLINE`; refused by the app's group: `422 UPGRADE_FAILED` with the
+reason. Either is recorded on the instance (`UpgradeFailed` sets the app's
+`lastUpgrade` with `ok: false` and the error), so a client can see why. The
+app's members read the last upgrade, with the release it went from and to
+and the kind of actor, in `GET /orgs/{org}/apps` or `GET /auth/apps`; the
+operator reads it without the account or the error in `GET /ops/apps`
+([Deployment governance](/protocol/governance/#reading-the-approvals)).
 
 ## Organization-wide upgrade runs
 
@@ -157,6 +201,9 @@ the apps of the teams below it — to `version`.
 - **Progress.** A background task on the node that started it upgrades the apps
   one by one; each `UpgradeApp` or `UpgradeFailed` notes the app on the run and
   on the instance. An app already on the target bundle is recorded as done.
+  Each app is judged on its own: one with a replica on a node older than the
+  release's runtime is recorded as failed (`RUNTIME_TOO_OLD`) and the rest
+  move; a retry once those nodes run a newer runtime moves it.
   `FinishUpgradeRun` marks the end.
 - **Follow and retry.** `GET /orgs/{org}/upgrades/{run}` shows the run;
   `POST …/retry` starts a new run over the apps that failed.

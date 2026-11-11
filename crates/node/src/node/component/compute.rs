@@ -44,6 +44,8 @@ const FINAL_CONFLICT_TRIES: usize = 5;
 const MAX_PROPOSED_KEPT: usize = 8;
 /// How long a granted run may wait for a job node that can take it before it ends refused.
 const QUEUED_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How long a run may wait for a pool with no job node before the leader warns about it.
+const NO_CAPACITY_WARN_AFTER: Duration = Duration::from_secs(60);
 /// How many times its healthy limit the lost and cancel clocks may run in wall time.
 const WALL_FALLBACK_FACTOR: u32 = 10;
 /// The reserved view that answers a run's record: the node's own, never an app's method.
@@ -118,6 +120,10 @@ pub(super) struct Watch {
     unplaced_since: Option<(Duration, u64)>,
     /// The same for a run the queue has not granted a place.
     waiting_since: Option<(Duration, u64)>,
+    /// The healthy time since which the run has waited for a pool with no job node, and whether
+    /// the leader warned about it.
+    no_capacity_since: Option<Duration>,
+    warned_no_capacity: bool,
 }
 
 impl Watch {
@@ -143,6 +149,8 @@ impl Watch {
             refused: None,
             unplaced_since: None,
             waiting_since: None,
+            no_capacity_since: None,
+            warned_no_capacity: false,
         }
     }
 
@@ -215,6 +223,19 @@ impl Watch {
             ceiling,
             now_ms,
         )
+    }
+
+    /// Whether to warn now: the run has waited for a pool with no job node (`stuck`) for `limit`
+    /// of healthy time. True once per watch.
+    fn no_capacity_too_long(&mut self, stuck: bool, limit: Duration) -> bool {
+        if !stuck {
+            self.no_capacity_since = None;
+            return false;
+        }
+        let since = *self.no_capacity_since.get_or_insert(self.healthy);
+        let due = !self.warned_no_capacity && self.healthy.saturating_sub(since) >= limit;
+        self.warned_no_capacity |= due;
+        due
     }
 
     fn over(
@@ -464,8 +485,13 @@ fn run_path(app: &str, run: &str, attempt: u32) -> String {
 }
 
 /// The record of a run as the API shows it: no arguments, no keys, and the plaintext sizes and
-/// hashes of its files, its progress and its failure text only when `files`.
-fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Value {
+/// hashes of its files, its progress, queue state and failure text only when `files`.
+fn run_json(
+    rec: &RunRecord,
+    progress: Option<(u8, String)>,
+    queue: Option<Value>,
+    files: bool,
+) -> Value {
     let marks = |outputs: &[FileMark]| -> Vec<Value> {
         outputs
             .iter()
@@ -489,7 +515,7 @@ fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Val
             }
         })
         .collect();
-    json!({
+    let mut out = json!({
         "run": rec.run,
         "method": rec.method,
         "state": rec.state,
@@ -513,7 +539,11 @@ fn run_json(rec: &RunRecord, progress: Option<(u8, String)>, files: bool) -> Val
         "progress": progress
             .filter(|_| files)
             .map(|(percent, step)| json!({ "percent": percent, "step": step })),
-    })
+    });
+    if let Some(queue) = queue.filter(|_| files && rec.state == RunState::Queued) {
+        out["queue"] = queue;
+    }
+    out
 }
 
 impl Node {
@@ -688,9 +718,39 @@ impl Node {
         Ok(ViewAnswer {
             index: applied,
             status: Status::Ok,
-            result: record.map_or(Value::Null, |r| run_json(&r, progress, files)),
+            result: record.map_or(Value::Null, |r| {
+                let queue = self.queue_json(&req.app_id, &r, files);
+                run_json(&r, progress, queue, files)
+            }),
             error: Value::Null,
             timeout: false,
+        })
+    }
+
+    /// Where the queue holds a queued run, read from this node's system state; for `files` only.
+    fn queue_json(&self, app_id: &str, rec: &RunRecord, files: bool) -> Option<Value> {
+        (files && rec.state == RunState::Queued).then(|| {
+            self.sys(|s| {
+                let slot = s.run_slot(app_id, &rec.run);
+                let pool = match slot {
+                    Some(_) => s.dispatch_pool(app_id, &rec.run).unwrap_or_default(),
+                    None => s.pool_for(rec.caps.memory_mib).unwrap_or_default(),
+                };
+                let state = match slot {
+                    None => "unplaced",
+                    Some(slot) if slot.granted => "granted",
+                    Some(_) => "waiting",
+                };
+                let mut queue = json!({
+                    "state": state,
+                    "capacity": s.pool_capacity(&pool),
+                    "pool": pool,
+                });
+                if let Some(reason) = s.wait_reason(app_id, &rec.run) {
+                    queue["reason"] = json!(reason);
+                }
+                queue
+            })
         })
     }
 
@@ -734,7 +794,8 @@ impl Node {
                 let progress = (status.is_leader && r.state.is_active())
                     .then(|| self.compute.progress(&req.app_id, &r.run, status.term))
                     .flatten();
-                run_json(r, progress, files)
+                let queue = self.queue_json(&req.app_id, r, files);
+                run_json(r, progress, queue, files)
             })
             .collect();
         Ok(ViewAnswer {
@@ -769,6 +830,7 @@ impl Drive<'_> {
         }
         match self.acquire().await {
             Acquired::Waiting => {
+                self.warn_without_capacity(watch);
                 let limits = self.node.limits();
                 let now_ms = self.node.clock.now_ms();
                 if watch.waiting_too_long(limits.queued_timeout, limits.outage_credit, now_ms) {
@@ -791,6 +853,20 @@ impl Drive<'_> {
                     }
                 }
             }
+        }
+    }
+
+    /// Warns once when the run's pool has had no job node for `NO_CAPACITY_WARN_AFTER`.
+    fn warn_without_capacity(&self, watch: &mut Watch) {
+        let (app_id, run) = (&self.app.app_id, &self.rec.run);
+        let (reason, pool) = self.node.sys(|s| {
+            (
+                s.wait_reason(app_id, run),
+                s.dispatch_pool(app_id, run).unwrap_or_default(),
+            )
+        });
+        if watch.no_capacity_too_long(reason == Some("NO_CAPACITY"), NO_CAPACITY_WARN_AFTER) {
+            warn!(app = %app_id, run, pool, "run waits for a pool with no job node");
         }
     }
 
@@ -1621,15 +1697,45 @@ mod tests {
             f.message = "Denied: no".into();
         }
         let progress = Some((40, "hashing".to_owned()));
-        let seen = run_json(&rec, progress.clone(), true);
+        let seen = run_json(&rec, progress.clone(), None, true);
         assert_eq!(
             seen["progress"],
             json!({ "percent": 40, "step": "hashing" })
         );
         assert_eq!(seen["final"]["message"], json!("Denied: no"));
-        let hidden = run_json(&rec, progress, false);
+        let hidden = run_json(&rec, progress, None, false);
         assert!(hidden["progress"].is_null(), "{hidden}");
         assert!(hidden["final"]["message"].is_null(), "{hidden}");
+    }
+
+    #[test]
+    fn a_pool_without_a_job_node_is_warned_about_once_after_its_limit_of_healthy_time() {
+        let mut watch = Watch::new(1, 0);
+        let (start, limit) = (Instant::now(), Duration::from_secs(60));
+        watch.tick(start, true);
+        assert!(!watch.no_capacity_too_long(true, limit));
+        watch.tick(start + limit - Duration::from_secs(1), true);
+        assert!(!watch.no_capacity_too_long(true, limit));
+        watch.tick(start + limit, true);
+        assert!(watch.no_capacity_too_long(true, limit));
+        watch.tick(start + limit * 2, true);
+        assert!(!watch.no_capacity_too_long(true, limit), "once per run");
+    }
+
+    #[test]
+    fn a_wait_that_stops_being_for_capacity_restarts_the_warning_clock() {
+        let mut watch = Watch::new(1, 0);
+        let (start, limit) = (Instant::now(), Duration::from_secs(60));
+        watch.tick(start, true);
+        assert!(!watch.no_capacity_too_long(true, limit));
+        watch.tick(start + limit, true);
+        assert!(!watch.no_capacity_too_long(false, limit));
+        assert!(
+            !watch.no_capacity_too_long(true, limit),
+            "the clock began again"
+        );
+        watch.tick(start + limit * 2, true);
+        assert!(watch.no_capacity_too_long(true, limit));
     }
 
     #[test]
