@@ -5487,6 +5487,7 @@ async fn app_move(
             consent,
             bring_members: body.bring_members,
             nonce: b64url(&random::<16>()),
+            accounts_in_app_team: true,
         })
         .await?,
     ))
@@ -7467,12 +7468,7 @@ async fn app_xcalls(
     if app.executor != crate::types::Executor::Component {
         return Err(ApiError::unsupported_engine());
     }
-    let g = node
-        .hosted(&app.app_id)
-        .ok_or_else(|| ApiError::unavailable("ask a node that hosts the app"))?;
-    let (pending, dead) =
-        g.read_local(|m, _| (m.state.component.head.xcall.pending(), m.dead_letters()));
-    Ok(Json(json!({ "pending": pending, "deadLetters": dead })))
+    Ok(Json(node.app_xcalls(&app).await?))
 }
 
 /// What the app's storage holds: keys, bytes, blobs, and when it last
@@ -7798,7 +7794,24 @@ async fn internal_last_write(
     ))
 }
 
-/// `internal/last-write`'s body: the app.
+/// A hosted app's xcalls, for a peer's `GET /apps/{app}/xcalls`
+/// ([`Node::app_xcalls`]), which judged the caller. App data, so only for a
+/// release approved to hold the app, as `internal/storage`.
+async fn internal_xcalls(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<LastWriteBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &body.app).await?;
+    let g = node
+        .hosted(&body.app)
+        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+    Ok(Json(g.read_local(|m, _| m.xcalls_report())))
+}
+
+/// `internal/last-write`'s and `internal/xcalls`' body: the app.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LastWriteBody {
@@ -10752,6 +10765,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/usage", post(internal_usage))
         .route("/internal/usage/today", post(internal_usage_today))
         .route("/internal/last-write", post(internal_last_write))
+        .route("/internal/xcalls", post(internal_xcalls))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
