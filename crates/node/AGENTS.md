@@ -758,7 +758,9 @@ is its command line.
   while a member for an org app, or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
   `Account::passkey_labels` (`POST /auth/passkeys/{cred} { label }`).
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
-  and takes the org's teams, invites and apps. Ownership moves with
+  and takes the org's teams, invites and apps. `POST /orgs/{org}/name`
+  renames it (`RenameOrg`: owner or admin, passkey `__rename_org { name }`,
+  `system::org_name_fits`, as `CreateOrg { name_fits }` checks a new one). Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
 - **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
   `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
