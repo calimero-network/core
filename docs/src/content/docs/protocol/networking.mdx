@@ -92,8 +92,9 @@ attestation, judges the quote against its own measurement policy, and opens a
 sealed session to the attested key (`HttpAttestor`). In TDX mode the policy is
 the signed mero-tee release the peer names, with the profiles in
 `--peer-profiles` (default: this node's own `MERO_TEE_PROFILE`) and the floor
-`--peer-min-release`; a TDX node refuses to start without them. A node trusts a
-debug-profile peer only if it runs a debug image itself. The release each
+`--peer-min-release` (at least the built-in `2.3.109`); a TDX node refuses to
+start without them. A node trusts a debug-profile peer only if it runs a debug
+image itself, which it checks against its own registers at start. The release each
 peer's attestation named is remembered, which is what the
 [release gate](/protocol/governance/#release-approvals) reads.
 

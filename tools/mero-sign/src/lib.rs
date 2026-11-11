@@ -213,6 +213,61 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
     Ok(())
 }
 
+/// What [`check_abi`] found.
+#[derive(Debug)]
+pub struct AbiCheck {
+    /// The report to show: every change since the previous release, per service.
+    pub report: String,
+    /// Whether a change breaks the app's existing callers (a warning; signing goes on).
+    pub breaking: bool,
+}
+
+/// Compare the ABI of every component `manifest_path` names (read beside it) with the ABI of
+/// `previous`: the last published release (`.mpk`), its component, or its ABI JSON. A change
+/// that breaks callers is reported; a state change the old data cannot be read through,
+/// with the state version unchanged, is an error, since signing it would publish a release
+/// whose upgrade strands the app's data.
+pub fn check_abi(manifest_path: &Path, previous: &Path) -> Result<AbiCheck> {
+    use calimero_app_abi::diff::diff;
+    use calimero_app_abi::load::load_path;
+
+    let new = load_path(manifest_path)?;
+    let old = load_path(previous)?;
+    let single = old.len() == 1 && new.len() == 1;
+    let mut report = String::new();
+    let mut breaking = false;
+    let mut errors = Vec::new();
+    for o in &old {
+        let label = o.service.as_deref().unwrap_or("app");
+        let n = if single {
+            new.first()
+        } else {
+            new.iter().find(|n| n.service == o.service)
+        };
+        let Some(n) = n else {
+            report.push_str(&format!("breaking   service {label}: removed\n"));
+            breaking = true;
+            continue;
+        };
+        let r = diff(&o.abi, &n.abi);
+        breaking |= r.is_breaking();
+        if !single {
+            report.push_str(&format!("[{label}]\n"));
+        }
+        report.push_str(&r.to_string());
+        if let Some(e) = r.state_error {
+            errors.push(format!("{label}: {e}"));
+        }
+    }
+    if !errors.is_empty() {
+        bail!(
+            "refusing to sign: the state changed without a version bump\n{report}{}",
+            errors.join("\n")
+        );
+    }
+    Ok(AbiCheck { report, breaking })
+}
+
 /// Verify a signed manifest end to end: re-canonicalize (RFC 8785, signature and
 /// underscore fields excluded), hash, and check the ed25519 signature against the
 /// embedded public key, then confirm `signerId` derives from that same key.
@@ -674,5 +729,96 @@ mod tests {
 
         assert!(!shown.contains("private-secret"), "{shown}");
         assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    /// A wasm module holding only a `calimero:abi` section with `abi`.
+    fn wasm_with_abi(abi: &serde_json::Value) -> Vec<u8> {
+        let name = b"calimero:abi";
+        let data = serde_json::to_vec(abi).unwrap();
+        let mut section = vec![u8::try_from(name.len()).unwrap()];
+        section.extend_from_slice(name);
+        section.extend_from_slice(&data);
+        let mut out = b"\0asm\x01\0\0\0".to_vec();
+        out.push(0);
+        let mut len = section.len();
+        loop {
+            let byte = u8::try_from(len & 0x7f).unwrap();
+            len >>= 7;
+            if len == 0 {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+        out.extend_from_slice(&section);
+        out
+    }
+
+    fn release(dir: &Path, abi: &serde_json::Value) -> std::path::PathBuf {
+        let wasm = wasm_with_abi(abi);
+        fs::write(dir.join("app.wasm"), &wasm).unwrap();
+        let manifest = json!({
+            "version": "1.0", "package": "com.example.kv", "appVersion": "1.1.0",
+            "minRuntimeVersion": "0.1.0",
+            "wasm": { "path": "app.wasm", "hash": "00", "size": wasm.len() },
+        });
+        let path = dir.join("manifest.json");
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        path
+    }
+
+    fn kv_abi(set_kind: &str, entries: &str, version: u64) -> serde_json::Value {
+        json!({
+            "abiVersion": 1,
+            "methods": {
+                "set": { "kind": set_kind, "params": [["key", "string"]], "returns": null },
+            },
+            "state": { "fields": { "entries": entries }, "version": version },
+        })
+    }
+
+    #[test]
+    fn check_abi_warns_on_breaking_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let previous = dir.path().join("previous.json");
+        fs::write(
+            &previous,
+            serde_json::to_vec(&kv_abi("call", "table", 1)).unwrap(),
+        )
+        .unwrap();
+
+        let same = release(dir.path(), &kv_abi("call", "table", 1));
+        let check = check_abi(&same, &previous).unwrap();
+        assert!(!check.breaking);
+        assert_eq!(check.report, "no changes\n");
+
+        let broken = release(dir.path(), &kv_abi("view", "table", 1));
+        let check = check_abi(&broken, &previous).unwrap();
+        assert!(check.breaking);
+        assert!(check.report.contains("method set: kind call -> view"));
+    }
+
+    #[test]
+    fn check_abi_refuses_a_state_change_without_a_version_bump() {
+        let dir = tempfile::tempdir().unwrap();
+        let previous = dir.path().join("previous.json");
+        fs::write(
+            &previous,
+            serde_json::to_vec(&kv_abi("call", "table", 1)).unwrap(),
+        )
+        .unwrap();
+
+        let unbumped = release(dir.path(), &kv_abi("call", "unorderedMap", 1));
+        let err = check_abi(&unbumped, &previous).unwrap_err().to_string();
+        assert!(err.contains("refusing to sign"), "{err}");
+        assert!(
+            err.contains("`entries` changed from table to unorderedMap"),
+            "{err}"
+        );
+
+        let bumped = release(dir.path(), &kv_abi("call", "unorderedMap", 2));
+        let check = check_abi(&bumped, &previous).unwrap();
+        assert!(check.breaking);
+        assert!(check.report.contains("state: version 1 -> 2"));
     }
 }

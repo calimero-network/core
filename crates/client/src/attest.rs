@@ -310,6 +310,34 @@ pub fn job_key_binding(
     h.finalize().into()
 }
 
+/// Domain separator for [`orchestrator_binding`].
+pub const ATTEST_ORCHESTRATOR_DOMAIN: &[u8] = b"calimero.tee-attest.orchestrator.v1";
+
+/// What an orchestrator attestation's report data binds after the nonce: the
+/// node's transport key and the cluster identity it is a replica of.
+#[must_use]
+pub fn orchestrator_binding(transport_key: &[u8; 32], cluster_identity: &[u8; 32]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(ATTEST_ORCHESTRATOR_DOMAIN);
+    h.update(transport_key);
+    h.update(cluster_identity);
+    h.finalize().into()
+}
+
+/// The report data of a `purpose=orchestrator` attestation.
+#[must_use]
+pub fn orchestrator_report_data(
+    nonce: &[u8; 32],
+    transport_key: &[u8; 32],
+    cluster_identity: &[u8; 32],
+) -> [u8; 64] {
+    let mut out = [0; 64];
+    out[..32].copy_from_slice(nonce);
+    out[32..].copy_from_slice(&orchestrator_binding(transport_key, cluster_identity));
+    out
+}
+
 /// A node's signed statement that `app`'s entry `index` produced the result
 /// whose canonical JSON (RFC 8785) hashes to `result_hash`. The signing key is
 /// the node's attested receipt key, so anyone holding the node's attestation
@@ -484,6 +512,73 @@ pub fn is_debug_profile(name: &str) -> bool {
     name.to_ascii_lowercase().contains("debug")
 }
 
+/// A release floor a node is configured with (`--peer-min-release`), refused
+/// below [`DEFAULT_MIN_RELEASE`]: the floor protects against releases with
+/// known issues, so whoever sets a node's flags cannot lower it.
+pub fn configured_min_release(floor: &str) -> eyre::Result<String> {
+    use calimero_tee_release::{
+        compare_release_versions, normalize_release_version, NODE_RELEASE_TAG_PREFIX,
+    };
+    let version = normalize_release_version(floor, NODE_RELEASE_TAG_PREFIX)
+        .map_err(|e| eyre::eyre!("--peer-min-release {floor}: {e}"))?;
+    match compare_release_versions(&version, DEFAULT_MIN_RELEASE) {
+        Some(std::cmp::Ordering::Less) => eyre::bail!(
+            "--peer-min-release {version} is below the built-in floor {DEFAULT_MIN_RELEASE}; \
+             a node never trusts peers on older releases"
+        ),
+        Some(_) => Ok(version),
+        None => eyre::bail!(
+            "--peer-min-release {version} cannot be compared with {DEFAULT_MIN_RELEASE}"
+        ),
+    }
+}
+
+/// Check that this TD's own registers (`measured`, read from its TDX module)
+/// are listed under `declared` (`MERO_TEE_PROFILE`) in its signed `release`.
+/// The profile decides whether the node trusts debug peers, so it must be the
+/// image's own, not a name the host passes in.
+pub fn check_own_profile(
+    release: &calimero_tee_release::NodeRelease,
+    declared: &str,
+    measured: &QuoteMeasurements,
+) -> eyre::Result<()> {
+    let m = measured;
+    let matches = |names: &[String]| {
+        release
+            .matching_profile(names, &m.mrtd, &m.rtmr0, &m.rtmr1, &m.rtmr2, &m.rtmr3)
+            .map(str::to_owned)
+    };
+    if matches(&[declared.to_owned()]).is_some() {
+        return Ok(());
+    }
+    let all: Vec<String> = release.profiles.keys().cloned().collect();
+    match matches(&all) {
+        Some(actual) => eyre::bail!(
+            "MERO_TEE_PROFILE is {declared} but this TD measures as profile {actual} of \
+             release {}",
+            release.version
+        ),
+        None => eyre::bail!(
+            "this TD's measurements match no profile of release {} (MERO_TEE_PROFILE {declared})",
+            release.version
+        ),
+    }
+}
+
+/// [`check_own_profile`] against the signed release `version` names, fetched
+/// and Sigstore-verified.
+pub async fn verify_own_profile(
+    version: &str,
+    declared: &str,
+    measured: &QuoteMeasurements,
+) -> eyre::Result<()> {
+    let version = claimed_release(version, None)?;
+    let release = fetch_release(version.clone())
+        .await
+        .map_err(|e| eyre::eyre!("mero-tee release {version}: {e:#}"))?;
+    check_own_profile(&release, declared, measured)
+}
+
 /// How a real quote's measurement registers are judged.
 #[derive(Clone, Debug, Default)]
 pub enum Measurements {
@@ -637,6 +732,25 @@ pub async fn verify_job_key(
     ));
     verify_report(doc, nonce, policy, &expected).await?;
     Ok((transport_key, job_key))
+}
+
+/// Verify an orchestrator attestation (`purpose=orchestrator`): [`verify`]'s
+/// checks over a quote binding the transport key and `cluster_identity`, the
+/// one the caller expects the node to be a replica of. Answers the transport
+/// key, so a request sealed to it reaches that replica only.
+pub async fn verify_orchestrator(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    cluster_identity: &[u8; 32],
+    policy: &Policy,
+) -> eyre::Result<[u8; 32]> {
+    if doc.cluster_identity.as_deref() != Some(hex::encode(cluster_identity).as_str()) {
+        eyre::bail!("the attestation names another cluster identity than the expected one");
+    }
+    let transport_key = hex32(&doc.transport_key)?;
+    let expected = orchestrator_report_data(nonce, &transport_key, cluster_identity);
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok(transport_key)
 }
 
 /// The quote is genuine (or an allowed mock), from a trusted image, and its
@@ -954,6 +1068,173 @@ mod tests {
             .is_err());
     }
 
+    fn mock_orchestrator_doc(
+        transport: [u8; 32],
+        identity: [u8; 32],
+        nonce: [u8; 32],
+    ) -> AttestationDoc {
+        let report = orchestrator_report_data(&nonce, &transport, &identity);
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        AttestationDoc {
+            quote: STANDARD.encode(quote),
+            transport_key: hex::encode(transport),
+            cluster_identity: Some(hex::encode(identity)),
+            mock: true,
+            nonce: hex::encode(nonce),
+            ..doc("2.4.0")
+        }
+    }
+
+    fn mock_allowed() -> Policy {
+        Policy {
+            allow_mock: true,
+            ..Policy::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_answers_the_bound_transport_key() {
+        let nonce = [7; 32];
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        let key = verify_orchestrator(&good, &nonce, &[4; 32], &mock_allowed())
+            .await
+            .unwrap();
+        assert_eq!(key, [1; 32]);
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_a_wrong_or_replayed_nonce() {
+        let good = mock_orchestrator_doc([1; 32], [4; 32], [7; 32]);
+        assert!(
+            verify_orchestrator(&good, &[8; 32], &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_an_unapproved_release() {
+        let nonce = [7; 32];
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        // A mock quote is refused unless the policy allows one.
+        let err = verify_orchestrator(&good, &nonce, &[4; 32], &Policy::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("mock"), "{err}");
+        // A release below the floor is refused whatever its quote binds.
+        let old = AttestationDoc {
+            release: Release {
+                version: "2.3.9".into(),
+                ..good.release.clone()
+            },
+            ..good
+        };
+        let policy = Policy {
+            allow_mock: false,
+            measurements: Measurements::Release {
+                allowed_profiles: vec!["locked-read-only".into()],
+                min_version: Some("2.4.0".into()),
+            },
+            ..Policy::default()
+        };
+        assert!(verify_orchestrator(&old, &nonce, &[4; 32], &policy)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_a_transport_key_the_quote_does_not_bind() {
+        let nonce = [7; 32];
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        let swapped = AttestationDoc {
+            transport_key: hex::encode([2; 32]),
+            ..good
+        };
+        let err = verify_orchestrator(&swapped, &nonce, &[4; 32], &mock_allowed())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not bind"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_another_cluster_identity() {
+        let nonce = [7; 32];
+        // A replica of another cluster, honestly attested.
+        let theirs = mock_orchestrator_doc([1; 32], [5; 32], nonce);
+        assert!(
+            verify_orchestrator(&theirs, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        // A document that names the expected identity over a quote binding another.
+        let relabelled = AttestationDoc {
+            cluster_identity: Some(hex::encode([4; 32])),
+            ..theirs
+        };
+        assert!(
+            verify_orchestrator(&relabelled, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        // A document that names another identity than its quote binds.
+        let good = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        let named_other = AttestationDoc {
+            cluster_identity: Some(hex::encode([5; 32])),
+            ..good.clone()
+        };
+        let err = verify_orchestrator(&named_other, &nonce, &[4; 32], &mock_allowed())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cluster identity"), "{err}");
+        let unnamed = AttestationDoc {
+            cluster_identity: None,
+            ..good
+        };
+        assert!(
+            verify_orchestrator(&unnamed, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+    }
+
+    /// A quote of another purpose, over the same keys, never verifies as
+    /// `orchestrator`: the domain separators differ.
+    #[tokio::test]
+    async fn an_orchestrator_attestation_refuses_a_quote_of_another_purpose() {
+        let nonce = [7; 32];
+        let jobs = mock_job_doc([1; 32], [4; 32], nonce);
+        assert!(
+            verify_orchestrator(&jobs, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        let transport = report_data(&nonce, &[0; 32], &[1; 32]);
+        let plain = mock_doc(transport, None);
+        assert!(
+            verify_orchestrator(&plain, &nonce, &[4; 32], &mock_allowed())
+                .await
+                .is_err()
+        );
+        // And an orchestrator quote is no job-node, plain or receipt attestation.
+        let orch = mock_orchestrator_doc([1; 32], [4; 32], nonce);
+        assert!(verify_job_key(&orch, &nonce, &mock_allowed())
+            .await
+            .is_err());
+        assert!(verify(&orch, &nonce, &mock_allowed()).await.is_err());
+    }
+
+    #[test]
+    fn the_orchestrator_binding_matches_the_published_vector() {
+        assert_eq!(
+            hex::encode(orchestrator_binding(&[0x11; 32], &[0x22; 32])),
+            "76ab4fa834964fb72f38273d59bd11135f054970e06c991ff73a137cfbe45bdb"
+        );
+        assert_ne!(
+            orchestrator_binding(&[0x11; 32], &[0x22; 32]),
+            orchestrator_binding(&[0x22; 32], &[0x11; 32])
+        );
+    }
+
     #[test]
     fn a_document_without_a_job_key_serializes_as_before() {
         let v = serde_json::to_value(doc("2.4.0")).unwrap();
@@ -1030,6 +1311,62 @@ mod tests {
             ..proof
         };
         assert!(!other.verify(&key));
+    }
+
+    /// A node's configured peer floor may raise the built-in one, never lower it.
+    #[test]
+    fn a_configured_floor_is_never_below_the_built_in_one() {
+        assert_eq!(configured_min_release("2.4.0").unwrap(), "2.4.0");
+        assert_eq!(
+            configured_min_release(&format!("mero-tee-v{DEFAULT_MIN_RELEASE}")).unwrap(),
+            DEFAULT_MIN_RELEASE
+        );
+        let err = configured_min_release("2.3.7").unwrap_err().to_string();
+        assert!(err.contains("below the built-in floor"), "{err}");
+        assert!(configured_min_release("latest").is_err());
+    }
+
+    /// The profile a node runs as is the one its own registers match in the
+    /// signed release, not the one it is told.
+    #[test]
+    fn a_nodes_own_profile_is_the_one_its_registers_match() {
+        let reg = |c: char| c.to_string().repeat(96);
+        let profile = |rtmr3: char| calimero_tee_release::ProfileMeasurements {
+            allowed_mrtd: vec![reg('a')],
+            allowed_rtmr0: Vec::new(),
+            allowed_rtmr1: vec![reg('1')],
+            allowed_rtmr2: vec![reg('2')],
+            allowed_rtmr3: vec![reg(rtmr3)],
+        };
+        let release = calimero_tee_release::NodeRelease {
+            version: "2.4.0".into(),
+            profiles: [
+                ("locked-read-only".to_owned(), profile('3')),
+                ("debug-read-only".to_owned(), profile('d')),
+            ]
+            .into(),
+        };
+        let measured = |rtmr3: char| QuoteMeasurements {
+            mrtd: reg('a'),
+            rtmr0: reg('0'),
+            rtmr1: reg('1'),
+            rtmr2: reg('2'),
+            rtmr3: reg(rtmr3),
+        };
+        check_own_profile(&release, "locked-read-only", &measured('3')).unwrap();
+        check_own_profile(&release, "debug-read-only", &measured('d')).unwrap();
+        // A locked image told it is a debug one (so it would trust debug peers).
+        let err = check_own_profile(&release, "debug-read-only", &measured('3'))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("measures as profile locked-read-only"),
+            "{err}"
+        );
+        let err = check_own_profile(&release, "locked-read-only", &measured('9'))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("match no profile"), "{err}");
     }
 
     #[tokio::test]

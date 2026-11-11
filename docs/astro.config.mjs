@@ -116,6 +116,7 @@ export default defineConfig({
                 'build/guides/outbound',
                 'build/guides/compute-actions',
                 'build/guides/access-control',
+                'build/guides/typed-clients',
                 'build/packaging-signing',
                 'build/examples',
                 'build/testing',

@@ -1,0 +1,17 @@
+[package]
+name = "calimero-app-abi"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "An app's calimero:abi read for clients: its OpenAPI document, typed clients, and breaking-change checks"
+publish = false
+
+[dependencies]
+calimero-bundle.workspace = true
+eyre.workspace = true
+flate2.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+wasmparser.workspace = true

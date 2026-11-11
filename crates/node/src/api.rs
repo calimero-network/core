@@ -1,7 +1,7 @@
 //! The node's HTTP API. Clients reach it inside the sealed channel; only
 //! `/attestation` and `/health` are served in the clear.
 //!
-//! - Client: `/auth/*`, `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
+//! - Client: `/auth/*`, `/bundles`, `/apps`, `/apps/{app}/{intents,views,methods/{method},openapi.json,events,upgrade,access}`,
 //!   `/orgs/*`, `/invites/{token}/redeem`, `/consent/requests`, `/consent/{id}/result`.
 //! - The consent page (`consent_page`) is served in the clear, outside this
 //!   router, on the node's own origin.
@@ -788,6 +788,7 @@ struct AttestQuery {
     /// `receipts`: attest this node's receipt key instead of its transport key.
     /// `kms`: the transport key and what this node verified of its KMS, when
     /// it has a record (otherwise the transport key alone, as with none).
+    /// `orchestrator`: the transport key and the cluster identity this replica holds.
     #[serde(default)]
     purpose: Option<String>,
 }
@@ -827,7 +828,14 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     // The rules the cluster was deployed with, as this replica's state holds
     // them: bound with the receipt key, so a user proves both at once.
     let governance = node.sys(crate::system::SystemState::governance);
-    let report = if receipts {
+    let orchestrator = q.purpose.as_deref() == Some("orchestrator");
+    let report = if orchestrator {
+        calimero_client::attest::orchestrator_report_data(
+            &nonce,
+            &transport_key,
+            &node.cluster_identity(),
+        )
+    } else if receipts {
         let mut r = [0; 64];
         r[..32].copy_from_slice(&nonce);
         r[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
@@ -855,7 +863,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         governance: receipts.then_some(governance),
         kms,
         job_key: None,
-        cluster_identity: None,
+        cluster_identity: orchestrator.then(|| hex::encode(node.cluster_identity())),
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -6848,9 +6856,10 @@ pub const MAX_CONCURRENT_KEY_RELEASES: usize = 4;
 
 /// `POST /internal/cluster-key`: a new node (often of another mero-tee
 /// release, so without the cluster secret) asks for K_c. It is delivered, not
-/// answered: to the address the cluster has for that node id (registered, or
-/// in this node's `--peers`), inside a sealed channel to the key the TD there
-/// attests (`cluster_key::deliver`). Refused for another cluster, an unknown
+/// answered: to the address the cluster has for that node id
+/// (`Node::key_recipient_addr`: registered or a system member; this node's
+/// `--peers` only before genesis), inside a sealed channel to the key the TD
+/// there attests (`cluster_key::deliver`). Refused for another cluster, an unknown
 /// or removed node id; at most `MAX_CONCURRENT_KEY_RELEASES` at once.
 async fn internal_cluster_key(
     State(node): State<Arc<Node>>,
@@ -6872,10 +6881,7 @@ async fn internal_cluster_key(
             "a job node never holds the cluster key",
         ));
     }
-    let addr = (!node.sys(|s| s.removed_nodes.contains(&id)))
-        .then(|| node.replica_addr(id))
-        .flatten();
-    let Some(addr) = addr else {
+    let Some(addr) = node.key_recipient_addr(id) else {
         return Err(ApiError::forbidden(
             "not a node of this cluster: register it (/ops/nodes) first",
         ));
@@ -7782,6 +7788,92 @@ async fn app_abi(
     let wasm = node.bundle_wasm(&bundle).await?;
     let abi = crate::component::embedded_abi(&wasm);
     Ok(Json(json!({ "bundle": bundle, "abi": abi })))
+}
+
+/// The app's OpenAPI document, generated from the ABI of the bundle the app group runs
+/// (`calimero_app_abi::openapi`), under the access `app_abi` has.
+async fn app_openapi(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    if app.executor != crate::types::Executor::Component {
+        return Err(ApiError::unsupported_engine());
+    }
+    let bundle = node.running_bundle(&app);
+    let wasm = node.bundle_wasm(&bundle).await?;
+    let Some(abi) = crate::component::embedded_abi(&wasm) else {
+        return Err(ApiError::not_found("this app's bundle embeds no ABI"));
+    };
+    let abi = calimero_app_abi::AppAbi::from_json(&abi)
+        .map_err(|e| ApiError::new(422, "BAD_ABI", &format!("the app's ABI: {e}")))?;
+    let info = calimero_app_abi::openapi::Info {
+        title: app.name.clone(),
+        version: bundle,
+        app: Some(app_id),
+    };
+    Ok(Json(calimero_app_abi::openapi::document(&abi, &info)))
+}
+
+/// `POST /apps/{app}/methods/{method}`: the body of `/intents` or `/views` without
+/// `method`, which the path names.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MethodBody {
+    #[serde(default)]
+    args: Value,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+    #[serde(default)]
+    consistency: Option<String>,
+    #[serde(default)]
+    min_index: u64,
+}
+
+/// One route per method, as the app's OpenAPI document lists them: a view (one the ABI of
+/// the running bundle declares a view, without `confirm`) is answered by [`views`], anything
+/// else by [`intents`], each with its own gate, step-up and limits, so the two spellings of a
+/// call behave the same. A method the ABI does not declare, or an ABI this node cannot read
+/// yet, goes to `intents`, which refuses it as it would.
+async fn app_method(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, method)): Path<(String, String)>,
+    Json(body): Json<MethodBody>,
+) -> Result<Response, ApiError> {
+    not_reserved(&method)?;
+    let app = node.app(&node.canonical_app_id(&app_id)).await?;
+    let view = app.executor == crate::types::Executor::Component
+        && node
+            .prepared_for(&node.running_bundle(&app))
+            .await
+            .is_ok_and(|p| {
+                p.abi
+                    .methods
+                    .get(&method)
+                    .is_some_and(|m| m.kind == calimero_app_host::MethodKind::View && !m.confirm)
+            });
+    if view {
+        let body = ViewBody {
+            method,
+            args: body.args,
+            consistency: body.consistency,
+            min_index: body.min_index,
+        };
+        return views(State(node), headers, Path(app_id), Json(body)).await;
+    }
+    let body = IntentBody {
+        method,
+        args: body.args,
+        idempotency_key: body.idempotency_key,
+        confirm: body.confirm,
+    };
+    intents(State(node), headers, Path(app_id), Json(body)).await
 }
 
 /// A compute run's record without its arguments or keys: whoever reaches the app may read it, but
@@ -10986,6 +11078,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/usage", get(app_usage))
         .route("/apps/{app}/abi", get(app_abi))
+        .route("/apps/{app}/openapi.json", get(app_openapi))
+        .route("/apps/{app}/methods/{method}", post(app_method))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))

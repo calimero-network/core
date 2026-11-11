@@ -3,7 +3,7 @@
 Rust client for Calimero nodes: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
 signs in with a `Passkey` (feature `testing`: `SoftAuthenticator`) or an API key,
-and calls `/apps/{app}/{intents,views,events}`.
+and calls `/apps/{app}/{intents,views,events}` (and `methods/{method}`, `openapi.json`).
 
 The attestation check (`attest::verify`) is the one place clients and peers decide
 trust: quote genuine (or an allowed mock), report data =
@@ -13,6 +13,10 @@ refuses every real quote, `Pinned` checks fixed allowlists, `Release` fetches th
 Sigstore-verified `published-mrtds.json` of the release the node names and requires a
 matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash binding).
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
+Node-only helpers beside it (no client or mero-js counterpart): `configured_min_release`
+refuses a node's `--peer-min-release` below `DEFAULT_MIN_RELEASE`, and `check_own_profile` /
+`verify_own_profile` check that a TD's own registers match its declared profile in its signed
+release (`calimero_node::attest::check_own_profile`, at start on TDX).
 The quote step itself (`verify_quote`, then `judge` for a real quote's registers) is
 shared by `verify`, `verify_receipt_key` and `attest::release::verify_release`.
 A document that carries `kms` (`KmsKeys`: what the node verified of the KMS its storage
@@ -34,6 +38,12 @@ absent from every other document) shares `verify_report`: report data =
 `nonce || SHA-256("calimero.tee-attest.job-key.v1" || x25519 transport key || ed25519 job key || release || cluster || node id)`
 (text length-prefixed), so swapping any of them breaks it. It answers `(transport_key, job_key)`; only nodes use it
 (the leader checking a job node), mero-js needs nothing.
+
+`verify_orchestrator` (`purpose=orchestrator`, any replica of a cluster; `AttestationDoc::cluster_identity`) shares `verify_report`: report data =
+`nonce || SHA-256("calimero.tee-attest.orchestrator.v1" || x25519 transport key || ed25519 cluster identity)`
+(`orchestrator_report_data`, one function for node and client), so a quote of another purpose never verifies as it.
+The caller passes the identity it expects (`GET /ops/cluster`) and gets the transport key back; a job node answers `404`.
+mero-js has no counterpart yet; the vector is `the_orchestrator_binding_matches_the_published_vector`.
 
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data

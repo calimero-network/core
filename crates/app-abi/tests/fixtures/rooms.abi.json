@@ -1,0 +1,192 @@
+{
+  "abiVersion": 1,
+  "errors": {
+    "Duplicate": {
+      "index": "string"
+    },
+    "Forbidden": {},
+    "Invalid": {
+      "reason": "string"
+    },
+    "LoginRequired": {},
+    "NotFound": {},
+    "Taken": {
+      "start": "u64"
+    }
+  },
+  "events": {
+    "Booked": {
+      "id": "string",
+      "title": "string"
+    },
+    "BookingReleased": {
+      "id": "string",
+      "reason": "string"
+    },
+    "SlotsTaken": {
+      "end": "u64",
+      "roomId": "string",
+      "start": "u64"
+    }
+  },
+  "methods": {
+    "addRoom": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "name",
+          "string"
+        ],
+        [
+          "capacity",
+          "u32"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "adminRelease": {
+      "allowSystem": false,
+      "confirm": true,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "reason",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "availability": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "roomId",
+          "string"
+        ],
+        [
+          "dayStart",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": "list<SlotView>"
+    },
+    "book": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "roomId",
+          "string"
+        ],
+        [
+          "start",
+          "u64"
+        ],
+        [
+          "slotCount",
+          "u32"
+        ],
+        [
+          "title",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "booking": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "Booking"
+    },
+    "cancel": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "checkIn": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "init": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "init",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "myBookings": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<Booking>"
+    },
+    "releaseNoShows": {
+      "allowSystem": true,
+      "confirm": false,
+      "every": "1m",
+      "kind": "timer",
+      "params": [],
+      "public": false,
+      "returns": null
+    }
+  },
+  "state": {
+    "fields": {
+      "bookings": "table",
+      "rooms": "table",
+      "slots": "table"
+    },
+    "search": {
+      "bookings": [],
+      "rooms": [],
+      "slots": []
+    },
+    "version": 1
+  },
+  "world": "calimero:app@0.5.1"
+}
