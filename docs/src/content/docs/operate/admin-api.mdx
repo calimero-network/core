@@ -179,6 +179,8 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/blobs` | app access | List blobs (plain blobs only) | `blob list` |
 | `POST /apps/{app}/files` | owner, org member | Upload a sealed file of up to 16 MiB: `{ id, blobId, size, sha256, index }` | `file upload` |
 | `GET /apps/{app}/files`, `GET /apps/{app}/files/{id}` | owner, org member | List a component's files; one file's size and plaintext SHA-256 | - |
+| `POST /apps/{app}/files/{id}/export` | owner, org member | `{ recipient }` (64 hex, an X25519 public key; `400 BAD_RECIPIENT` for a bad or low-order one): the file's `{ app, id, size, sha256, segments, ephemeral, wrapped }`, its data key wrapped to `recipient`; `404` for a file the app does not hold, `429 TOO_MANY_EXPORTS` past 30 a minute per account | `file download` |
+| `GET /apps/{app}/files/{id}/segments/{k}` | owner, org member | Segment `k` of the file's ciphertext, raw; `404 NO_SUCH_SEGMENT` past the last | `file download` |
 | `POST /apps/{app}/files/uploads` | owner, org member | Begin an upload session for `{ size }`: `{ uploadId, partBytes, parts, expiresAt }` | `file upload` |
 | `PUT /apps/{app}/files/uploads/{upload}/parts/{k}` | session's account | One part, raw bytes: `{ next }` | `file upload` |
 | `GET /apps/{app}/files/uploads/{upload}`, `DELETE ...` | session's account | Where the session is (`next`); abort it | `file upload` |

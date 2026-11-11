@@ -439,6 +439,11 @@ impl Node {
         self.clock.advance(ms);
     }
 
+    /// The key `app`'s file data keys are wrapped under.
+    pub(crate) fn file_key_of(&self, app: &str) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(crate::backup::file_key(&self.cluster_key, app))
+    }
+
     /// The key `app`'s file data keys are wrapped under. Tests only.
     #[cfg(feature = "testing")]
     #[must_use]

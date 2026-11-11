@@ -395,6 +395,37 @@ async fn a_three_step_pipeline_completes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pipeline_output_is_downloaded_by_its_owner() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
+    let run = rig
+        .start_run("chain", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+
+    // `a` made noise from its input and `b` hashed `a`'s output, so the downloaded bytes must hash
+    // to what `b` reported, and `b`'s own output must be what its record says.
+    let a_out = rig
+        .alice
+        .export_file(&rig.app, output_ids(&done, "a")[0].as_str())
+        .await
+        .unwrap();
+    assert_eq!(a_out.len(), INPUT_LEN);
+    assert_eq!(done["steps"]["b"]["result"], json!([sha256_hex(&a_out)]));
+    assert_ne!(a_out, vec![5u8; INPUT_LEN], "the output is not its input");
+
+    let b_ref = &done["steps"]["b"]["outputs"][0];
+    let b_out = rig
+        .alice
+        .export_file(&rig.app, b_ref["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(b_out.len(), INPUT_LEN);
+    assert_eq!(b_ref["sha256"], json!(sha256_hex(&b_out)), "{b_ref}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn killing_the_leader_mid_run_resumes_with_no_item_run_twice() {
     let mut rig = Rig::start(&[JOB_A]).await;
     let file = rig.upload(&vec![5u8; INPUT_LEN]).await;

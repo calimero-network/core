@@ -430,6 +430,13 @@ impl AppMachine {
             .is_some_and(|r| r.file.is_some())
     }
 
+    /// A sealed file's plaintext size and seal; `None` for anything else.
+    #[must_use]
+    pub fn file_record(&self, id: &[u8; 32]) -> Option<(u64, crate::component::blobs::FileSeal)> {
+        let record = self.state.component.blobs.records.get(id)?;
+        Some((record.size, record.file.clone()?))
+    }
+
     /// The app's blobs and what its storage holds besides. A component's storage
     /// is its own keyspace, in memory; its blobs are host records beside it (R8). An
     /// SDK 0.12 app's is not read: it is reported empty.

@@ -107,6 +107,7 @@ same command (`meroctl package origins list PACKAGE`).
 | `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
 | `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
 | `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
+| `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
 | `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
@@ -206,6 +207,7 @@ A context's sealed files.
 | Command | Route | Meaning |
 | --- | --- | --- |
 | `file upload FILE -c CONTEXT` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
+| `file download APP ID --out PATH` | `POST /apps/{app}/files/{id}/export`, `GET /apps/{app}/files/{id}/segments/{k}` | Download a sealed file's plaintext: the node sends ciphertext and the file key wrapped to a key made for the call, and every byte is checked before anything is written. |
 
 ## namespace
 
