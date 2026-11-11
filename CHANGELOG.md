@@ -4,6 +4,42 @@
 
 ### Added
 
+- **A release's runtime requirement holds across the cluster** (#4919). A
+  release's `minRuntimeVersion` was checked only on the node that installed it,
+  so in a cluster moving to a new release an app could be placed on, moved to,
+  or upgraded while on a node whose runtime is too old to run it. Now an
+  upgrade with a replica on such a node is refused `409 RUNTIME_TOO_OLD`
+  (`details: { minRuntimeVersion, nodes: [{ node, runtime }] }`, before the
+  passkey step-up and in every upgrade path, organization runs and publisher
+  runs included, where it is recorded as the app's failed upgrade);
+  placement leaves such nodes out of a new app's replicas (`409` when none is
+  left); and `POST /ops/apps/{app}/replicas` refuses one the app is not on yet.
+  Each node names its runtime over the sealed channel (`POST
+  /internal/runtime`); a node on an earlier release answers `404` and is
+  judged older than the asker. Releases keep their requirement
+  (`PackageVersion::min_runtime_version`, serde default: a release recorded
+  before, or by an older node, is read from its `.mpk` where it decides).
+- **The reports name the newest release an app can reach** (#4919). Each app
+  in `GET /auth/apps` and `GET /orgs/{org}/apps` carries `latestReachable`
+  (the newest newer release the upgrade would take, over every visible
+  release, not only the 16 `availableVersions` lists) and, when the newest is
+  not it, `latestBlocked: { version, reason, message, minRuntimeVersion?,
+  nodes? }` (`runtime` or `authority`). Upgrades are code only, so an app
+  several releases behind reaches the newest in one upgrade; `upgrades.mdx`
+  no longer describes the migration planner removed with SDK 0.12.
+
+- **Stored formats say their version** (#4926). The store
+  keeps its format in a sealed node row (`format`, `calimero_log::STORE_FORMAT` = 1):
+  a store a later release wrote is refused at start ("the store is in format N,
+  which a later release wrote"), an older one is brought forward through registered
+  steps, the marker written after each. A store without the row (every release up
+  to 1.0.0-rc.15) is format 0, whose rows are format 1's: it opens as before and is
+  marked. A snapshot or backup file of a later format is refused by its first line
+  (`CALIMERO-SNAPSHOT-<n>`, `SNAPSHOT_FORMAT` = 1), not by its frames; a component
+  app's log entry may start `{"v":N,` (`ENTRY_FORMAT` = 1; no entry so far carries
+  it), and one of a later format applies as a no-op that names it. Nothing written
+  so far changes: the snapshot and entry bytes are those of rc.15.
+
 - **Compatibility, written down and checked** (#4927). The policy and
   matrix of what each release keeps for the releases, apps, clients and data before
   it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.

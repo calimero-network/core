@@ -290,6 +290,13 @@ pub struct PackageVersion {
     /// manifest ([`UpgradeAuthority`]); left out when `owner`.
     #[serde(default, skip_serializing_if = "UpgradeAuthority::is_owner")]
     pub upgrades: UpgradeAuthority,
+    /// The oldest runtime its signed manifest says it runs on
+    /// (`minRuntimeVersion`), kept so placement and the reports judge it
+    /// without the `.mpk` ([`crate::runtime`]). Absent in releases recorded
+    /// before, and dropped by a node on an earlier release: then it is read
+    /// from the `.mpk` where it decides something (`Node::min_runtime_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_runtime_version: Option<String>,
 }
 
 impl PackageVersion {
@@ -507,6 +514,12 @@ pub struct SystemState {
     /// ([`SystemState::may_upgrade`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub publishers: BTreeMap<String, PublisherBinding>,
+    /// Package signing keys whose organization was deleted (`DeleteOrg`), and
+    /// how many bindings each has had: the generation its next binding signs,
+    /// so a signature that bound it once never binds it again. Left out when
+    /// empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbound_publishers: BTreeMap<String, u64>,
     /// When each session in `revoked_sessions` was revoked (Unix seconds), so
     /// it can be forgotten once no token of it can still be valid.
     #[serde(default)]
@@ -1130,6 +1143,49 @@ impl SystemState {
         self.compute.get(app)?.get(run)
     }
 
+    /// The granted runs each pool holds, and the `(runs, fuel)` each payer holds.
+    fn held(&self) -> (BTreeMap<String, usize>, BTreeMap<String, (u32, u64)>) {
+        let mut granted_in: BTreeMap<String, usize> = BTreeMap::new();
+        let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+        for slot in self.compute.values().flat_map(BTreeMap::values) {
+            if slot.refused || !slot.granted {
+                continue;
+            }
+            *granted_in
+                .entry(self.slot_pool(slot).to_owned())
+                .or_default() += 1;
+            let held = load.entry(slot.payer.clone()).or_default();
+            held.0 += 1;
+            held.1 = held.1.saturating_add(slot.fuel);
+        }
+        (granted_in, load)
+    }
+
+    /// Why a run the queue has not granted waits, by the tests `grant_runs` applies: no place in
+    /// its pool at all, every place held, its payer at the run quota, then at the fuel quota.
+    #[must_use]
+    pub fn wait_reason(&self, app: &str, run: &str) -> Option<&'static str> {
+        let slot = self
+            .run_slot(app, run)
+            .filter(|s| !s.granted && !s.refused)?;
+        let pool = self.slot_pool(slot);
+        let capacity = self.pool_capacity(pool);
+        let (granted_in, load) = self.held();
+        let (max_runs, max_fuel, _) = self.payer_quotas(&slot.payer);
+        let (runs, fuel) = load.get(&slot.payer).copied().unwrap_or_default();
+        if capacity == 0 {
+            Some("NO_CAPACITY")
+        } else if granted_in.get(pool).copied().unwrap_or(0) >= capacity {
+            Some("POOL_FULL")
+        } else if runs >= max_runs {
+            Some("PAYER_AT_RUN_QUOTA")
+        } else if fuel.saturating_add(slot.fuel) > max_fuel {
+            Some("PAYER_AT_FUEL_QUOTA")
+        } else {
+            None
+        }
+    }
+
     /// Grants waiting runs up to the job nodes' places, to the payers in turn (longest served
     /// first); a payer at a quota is passed over for the pass. Granted runs stay.
     fn grant_runs(&mut self) {
@@ -1137,30 +1193,17 @@ impl SystemState {
             let fuel = limits_of(&self.quotas, &self.org_quotas, &slot.payer).1;
             slot.refused |= !slot.granted && slot.fuel > fuel;
         }
-        let mut granted_in: BTreeMap<String, usize> = BTreeMap::new();
-        let mut load: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+        let (mut granted_in, mut load) = self.held();
         let mut waiting: BTreeMap<String, Vec<WaitingRun>> = BTreeMap::new();
         for (app, runs) in &self.compute {
-            for (run, slot) in runs {
-                if slot.refused {
-                    continue;
-                }
-                if slot.granted {
-                    *granted_in
-                        .entry(self.slot_pool(slot).to_owned())
-                        .or_default() += 1;
-                    let held = load.entry(slot.payer.clone()).or_default();
-                    held.0 += 1;
-                    held.1 = held.1.saturating_add(slot.fuel);
-                } else {
-                    waiting.entry(slot.payer.clone()).or_default().push((
-                        slot.seq,
-                        app.clone(),
-                        run.clone(),
-                        slot.fuel,
-                        self.slot_pool(slot).to_owned(),
-                    ));
-                }
+            for (run, slot) in runs.iter().filter(|(_, s)| !s.refused && !s.granted) {
+                waiting.entry(slot.payer.clone()).or_default().push((
+                    slot.seq,
+                    app.clone(),
+                    run.clone(),
+                    slot.fuel,
+                    self.slot_pool(slot).to_owned(),
+                ));
             }
         }
         let mut waiting: BTreeMap<String, VecDeque<_>> = waiting
@@ -1246,7 +1289,10 @@ impl SystemState {
     /// The generation the next binding of `signer` signs.
     #[must_use]
     pub fn binding_generation(&self, signer: &str) -> u64 {
-        self.publishers.get(signer).map_or(0, |b| b.generation)
+        self.publishers.get(signer).map_or_else(
+            || self.unbound_publishers.get(signer).copied().unwrap_or(0),
+            |b| b.generation,
+        )
     }
 
     /// Whether `account` holds `APPROVE_RELEASES` in `org`, whoever holds
@@ -5689,6 +5735,21 @@ pub struct SystemMachine {
     /// The log index of the entry being applied (0 outside the log, in
     /// tests): what [`SystemState::session_proofs_from`] is judged against.
     index: u64,
+    /// This cluster's name (`--cluster`): what a publisher binding is checked
+    /// against at apply. It is fixed for a cluster's life (the storage key is
+    /// derived from it), so every replica and every replay judges alike.
+    cluster: String,
+}
+
+impl SystemMachine {
+    /// The system machine of the cluster named `cluster`.
+    #[must_use]
+    pub fn new(cluster: String) -> Self {
+        Self {
+            cluster,
+            ..Self::default()
+        }
+    }
 }
 
 fn ok(v: Value) -> Vec<u8> {
@@ -5785,6 +5846,7 @@ impl SystemMachine {
     #[allow(clippy::too_many_lines, reason = "one arm per command")]
     fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
         let index = self.index;
+        let here = self.cluster.as_str();
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node, .. } => {
@@ -7111,16 +7173,22 @@ impl SystemMachine {
                 {
                     return Err("a signer id or cluster name is at most 128 bytes");
                 }
+                // The signature is checked over this cluster's own name: one
+                // the key made for another cluster binds nothing here.
+                if cluster != here {
+                    return Err("the binding names another cluster");
+                }
                 if !s.holds_approve_releases(&org, &actor) {
                     return Err(
                         "binding a publisher key needs APPROVE_RELEASES in the organization",
                     );
                 }
                 let generation = s.binding_generation(&signer_id);
-                let message = publisher_binding_message(&cluster, &org, &signer_id, generation);
+                let message = publisher_binding_message(here, &org, &signer_id, generation);
                 if !proof.proves(&signer_id, &message) {
                     return Err("the proof is not that key's signature over this binding");
                 }
+                let _was = s.unbound_publishers.remove(&signer_id);
                 let _prev = s.publishers.insert(
                     signer_id,
                     PublisherBinding {
@@ -7525,6 +7593,19 @@ impl SystemMachine {
                 }
                 let _gone = s.orgs.remove(&org);
                 s.invites.retain(|_, i| i.org != org);
+                // Its publisher keys go with it, each keeping its generation:
+                // an organization created later under this id is not their
+                // publisher, and the signatures that bound them stay spent.
+                let unbound: Vec<(String, u64)> = s
+                    .publishers
+                    .iter()
+                    .filter(|(_, b)| b.org == org)
+                    .map(|(k, b)| (k.clone(), b.generation))
+                    .collect();
+                for (signer, generation) in unbound {
+                    let _gone = s.publishers.remove(&signer);
+                    let _prev = s.unbound_publishers.insert(signer, generation);
+                }
                 let apps: Vec<String> = s
                     .apps
                     .values()
@@ -9006,6 +9087,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m
@@ -9097,6 +9179,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
@@ -9134,6 +9217,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
@@ -13527,16 +13611,28 @@ mod tests {
     fn bind(
         key: &ed25519_dalek::SigningKey,
         signer: &str,
+        orgs: (&str, &str),
+        generation: u64,
+        actor: &str,
+    ) -> SystemCmd {
+        bind_on("test", key, signer, orgs, generation, actor)
+    }
+
+    /// [`bind`], signed for (and naming) the cluster `cluster`.
+    fn bind_on(
+        cluster: &str,
+        key: &ed25519_dalek::SigningKey,
+        signer: &str,
         (org, as_org): (&str, &str),
         generation: u64,
         actor: &str,
     ) -> SystemCmd {
         use ed25519_dalek::Signer as _;
-        let message = super::publisher_binding_message("test", as_org, signer, generation);
+        let message = super::publisher_binding_message(cluster, as_org, signer, generation);
         SystemCmd::BindPublisher {
             signer_id: signer.into(),
             org: org.into(),
-            cluster: "test".into(),
+            cluster: cluster.into(),
             proof: super::PublisherProof {
                 public_key: calimero_identity::b64url(&key.verifying_key().to_bytes()),
                 signature: calimero_identity::b64url(&key.sign(&message).to_bytes()),
@@ -13551,7 +13647,7 @@ mod tests {
     /// (release 1.0.0 ships `b1`, `upgrades` as given), a raw bundle `raw`,
     /// and the customer's instances `inst` (of `p`) and `rawapp`.
     fn publishing(signer: &str, upgrades: &str) -> SystemMachine {
-        let mut m = SystemMachine::default();
+        let mut m = SystemMachine::new("test".into());
         let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
         for who in ["pam", "bob", "cora", "dan"] {
             let _ok = m.run_unproven(account(who)).unwrap();
@@ -13731,6 +13827,70 @@ mod tests {
             .run_unproven(bind(&key, &signer, ("cust", "cust"), 1, "cora"))
             .unwrap();
         assert_eq!(m.state.publisher_of("b1"), Some(&"cust".to_owned()));
+        assert_eq!(m.state.binding_generation(&signer), 2);
+    }
+
+    /// A binding is checked against this cluster's own name, never the one
+    /// the command names: a key's genuine signature for another cluster
+    /// binds nothing here.
+    #[test]
+    fn a_binding_signed_for_another_cluster_binds_nothing_here() {
+        let (key, signer) = publisher_key(7);
+        let mut m = publishing(&signer, "owner");
+        let elsewhere = bind_on("another", &key, &signer, ("pub", "pub"), 0, "pam");
+        assert!(m.run_unproven(elsewhere).is_err());
+        assert!(m.state.publishers.is_empty());
+        assert_eq!(m.state.binding_generation(&signer), 0);
+        let _ok = m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+            .unwrap();
+        assert_eq!(
+            m.state.publisher_of_signer(&signer),
+            Some(&"pub".to_owned())
+        );
+    }
+
+    /// Deleting an organization drops the keys bound to it: an organization
+    /// created later under the same id is not their publisher, and each key
+    /// keeps its generation, so the signature that bound it stays spent.
+    #[test]
+    fn a_deleted_organization_takes_its_publisher_bindings_with_it() {
+        let (key, signer) = publisher_key(7);
+        let mut m = publishing(&signer, "owner");
+        let _ok = m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::DeleteOrg {
+                org: "pub".into(),
+                actor: "pam".into(),
+                consent: Value::Null,
+            })
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::CreateOrg {
+                org_id: "pub".into(),
+                name: "pub".into(),
+                actor: "dan".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+                name_fits: true,
+            })
+            .unwrap();
+        assert_eq!(m.state.publisher_of_signer(&signer), None);
+        assert_eq!(m.state.publisher_of("b1"), None);
+        assert_eq!(m.state.binding_generation(&signer), 1);
+        assert!(m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "dan"))
+            .is_err());
+        let _ok = m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 1, "dan"))
+            .unwrap();
+        assert_eq!(
+            m.state.publisher_of_signer(&signer),
+            Some(&"pub".to_owned())
+        );
         assert_eq!(m.state.binding_generation(&signer), 2);
     }
 

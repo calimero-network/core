@@ -766,3 +766,70 @@ async fn a_job_node_on_a_retired_release_is_not_attested() {
     assert!(e.to_string().contains("retired"), "{e}");
     assert!(node.attest_job(JOB + 1, &record).await.is_ok());
 }
+
+/// A replica attests the cluster identity it holds with its transport key; a job node
+/// refuses the purpose, so a quote naming this cluster never comes from one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_replica_attests_as_the_orchestrator_and_a_job_node_refuses() {
+    let c = Cluster::start(3).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let identity = node.cluster_identity();
+    let policy = calimero_client::attest::Policy {
+        allow_mock: true,
+        ..Default::default()
+    };
+    let nonce = [5_u8; 32];
+    let ask = |url: String, purpose: &'static str| async move {
+        reqwest::get(format!(
+            "{url}attestation?nonce={}&purpose={purpose}",
+            hex::encode(nonce)
+        ))
+        .await
+        .unwrap()
+    };
+
+    let doc: calimero_client::attest::AttestationDoc = ask(c.urls[0].clone(), "orchestrator")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(doc.cluster_identity, Some(hex::encode(identity)));
+    let key = calimero_client::attest::verify_orchestrator(&doc, &nonce, &identity, &policy)
+        .await
+        .unwrap();
+    assert_eq!(hex::encode(key), doc.transport_key);
+    // Another cluster's identity, and another nonce, refuse it.
+    let theirs = calimero_node::backup::cluster_identity_key(&[9; 32]).verifying_key();
+    let wrong =
+        calimero_client::attest::verify_orchestrator(&doc, &nonce, &theirs.to_bytes(), &policy)
+            .await;
+    assert!(wrong.is_err());
+    assert!(
+        calimero_client::attest::verify_orchestrator(&doc, &[6; 32], &identity, &policy)
+            .await
+            .is_err()
+    );
+    // The plain transport attestation of the same node is not an orchestrator one.
+    let plain: calimero_client::attest::AttestationDoc = reqwest::get(format!(
+        "{}attestation?nonce={}",
+        c.urls[0],
+        hex::encode(nonce)
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        calimero_client::attest::verify_orchestrator(&plain, &nonce, &identity, &policy)
+            .await
+            .is_err()
+    );
+
+    let job = c.start_job_node(JOB, |_| {}).await;
+    c.register_job_node(JOB, &job.url).await;
+    let refused = ask(job.url.clone(), "orchestrator").await;
+    assert_eq!(refused.status(), 404);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"], "NOT_FOUND");
+}

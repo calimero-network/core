@@ -38,6 +38,7 @@ pub mod presence;
 pub mod proof;
 pub mod report;
 pub mod rollback;
+pub mod runtime;
 pub mod signing_key;
 pub mod system;
 #[cfg(feature = "testing")]

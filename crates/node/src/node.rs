@@ -28,6 +28,7 @@ mod cluster_version;
 mod component;
 mod job;
 pub(crate) mod restore;
+mod runtime;
 mod segments;
 
 pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
@@ -484,6 +485,8 @@ pub struct Node {
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
+    /// The runtime each peer named, by node, and when (`Self::runtime_of_node`).
+    peer_runtimes: Mutex<HashMap<NodeId, (tokio::time::Instant, crate::runtime::NodeRuntime)>>,
     /// Peers that called this node identified, by the transport key they
     /// proved: the node registered at the address that attests that key, and
     /// the release that attestation named ([`Self::identify_peer`]).
@@ -824,7 +827,7 @@ impl Node {
             None => None,
         };
         let system = engine
-            .start_group(SYSTEM_GROUP, SystemMachine::default())
+            .start_group(SYSTEM_GROUP, SystemMachine::new(config.cluster.clone()))
             .await?;
         let sealed = Arc::new(calimero_sealed::SealedTransport::generate(
             &calimero_sealed::SealedOptions {
@@ -893,6 +896,7 @@ impl Node {
             promoting: std::sync::atomic::AtomicBool::new(false),
             cluster_version: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
+            peer_runtimes: Mutex::default(),
             callers: Mutex::new(HashMap::new()),
             identifying: Arc::default(),
             identifications: Mutex::default(),
@@ -3227,13 +3231,15 @@ impl Node {
     #[must_use]
     /// Pick replicas for a new app among the nodes whose release is in
     /// `approved` (when the app's owner restricted releases) and not
-    /// [retired](crate::system::SystemState::retired) at `now`: spread over
-    /// as many zones as those nodes are in, least loaded first
-    /// ([`crate::placement::replicas`]).
+    /// [retired](crate::system::SystemState::retired) at `now`, and whose
+    /// runtime is not known to be older than `min_runtime` (its release's
+    /// `minRuntimeVersion`, [`crate::runtime`]): spread over as many zones as
+    /// those nodes are in, least loaded first ([`crate::placement::replicas`]).
     pub async fn place(
         &self,
         approved: Option<&std::collections::BTreeSet<String>>,
         now: u64,
+        min_runtime: Option<&semver::Version>,
     ) -> Vec<NodeId> {
         // Past a release's deadline, a node on an older one keeps its apps
         // but takes no new one.
@@ -3249,6 +3255,10 @@ impl Node {
             if ok {
                 allowed.push(id);
             }
+        }
+        if let Some(min) = min_runtime {
+            let runtimes = self.runtimes(&allowed).await;
+            allowed.retain(|id| runtimes.get(id).is_none_or(|rt| !rt.short_of(min)));
         }
         self.sys(|s| crate::placement::replicas(s, &allowed, self.config.replicas))
     }

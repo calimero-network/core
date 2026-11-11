@@ -104,7 +104,7 @@ use crate::api::{
 };
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::{PackageVersion, ReleaseScope};
+use crate::system::{PackageRef, PackageVersion, ReleaseScope};
 use crate::types::{now_secs, Caller};
 
 mod diff;
@@ -450,6 +450,21 @@ async fn release_facts(
     });
     node.consent.cache(&v.mpk, Arc::clone(&facts));
     Ok(facts)
+}
+
+/// The `minRuntimeVersion` release `v` of `package` declares, from its
+/// verified `.mpk` (cached with its other facts): for a release recorded
+/// without it (`PackageVersion::min_runtime_version`).
+pub(crate) async fn declared_min_runtime(
+    node: &Node,
+    package: &str,
+    v: &PackageVersion,
+) -> Result<String, ApiError> {
+    Ok(release_facts(node, package, v)
+        .await?
+        .manifest
+        .min_runtime_version
+        .clone())
 }
 
 /// The signed-manifest hash of the release an upgrade targets: `release`
@@ -1268,6 +1283,19 @@ async fn upgrade_request(
         ));
     }
     crate::api::refuse_stalled(node, &app, &bundle, now_secs())?;
+    let to_release = PackageRef {
+        package: package.clone(),
+        version: subject.to_version.clone(),
+        service: service.clone(),
+        compute: false,
+    };
+    node.require_runtime(
+        &app.replicas,
+        Some(&to_release),
+        &bundle,
+        &crate::api::release_label(Some(&to_release), &bundle),
+    )
+    .await?;
     let target = node
         .sys(|s| {
             s.packages

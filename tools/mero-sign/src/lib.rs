@@ -609,9 +609,14 @@ mod tests {
         let content = std::fs::read_to_string(&key_path).unwrap();
         assert!(
             content.contains("private_key"),
-            "junk content must be replaced by the key JSON"
+            "the old content must be replaced by the key JSON"
         );
-        assert!(!content.contains("junk"), "stale content must not survive");
+        // The exact text written above: a bare "junk" can occur in a random
+        // base64url key (about one run in 10^5), "junk, not a key" cannot.
+        assert!(
+            !content.contains("junk, not a key"),
+            "stale content must not survive"
+        );
     }
 
     #[cfg(unix)]

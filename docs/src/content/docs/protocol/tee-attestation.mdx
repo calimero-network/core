@@ -28,6 +28,7 @@ answers, unsealed:
 | `receiptKey`, `governance` | With `purpose=receipts` only: the node's receipt key and the cluster's governance |
 | `kms` | With `purpose=kms` only, and only when the node has a record: what it verified of the mero-kms replica each key came from (below) |
 | `jobKey` | With `purpose=jobs` only, on a job node: its Ed25519 job signing key |
+| `clusterIdentity` | With `purpose=jobs` (the identity a job node takes work from) or `purpose=orchestrator` (the identity a replica holds): the cluster identity public key, hex |
 
 The quote's 64 bytes of report data bind the request to the key:
 
@@ -35,6 +36,7 @@ The quote's 64 bytes of report data bind the request to the key:
 transport:  report_data = nonce ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)
 receipts:   report_data = nonce ‖ SHA-256("calimero.tee-attest.receipt-key.v3" ‖ receipt_key ‖ SHA-256(governance JSON) ‖ u32_be(len(cluster)) ‖ cluster ‖ u64_be(node))
 kms:        report_data = nonce ‖ SHA-256("calimero.tee-attest.kms-evidence.v1" ‖ transport_binding ‖ SHA-256(JCS(kms)))
+orchestrator: report_data = nonce ‖ SHA-256("calimero.tee-attest.orchestrator.v1" ‖ transport_key ‖ cluster_identity)
 ```
 
 `governance JSON` is `Governance::canonical`: its fields in declaration
@@ -190,6 +192,13 @@ So the channels a cluster node opens after attesting a transport key (the cluste
 A cluster node answers `purpose=jobs` with `404`.
 The cluster's leader attests a job node this way, under its `--peer-profiles` and `--peer-min-release`, and uses it only if the release it names is one the app's owner approved.
 Clients never need it.
+
+## The orchestrator
+
+`GET /attestation?purpose=orchestrator&nonce=` on a replica binds its transport key and the cluster identity key it holds (the key `GET /ops/cluster` answers as `identity`) in one quote, so a caller learns in one verification that the node runs an approved release, is a member of the cluster with that identity, and owns the transport key it is about to seal requests to.
+The 32 bytes after the nonce are `SHA-256("calimero.tee-attest.orchestrator.v1" ‖ transportKey ‖ clusterIdentity)`, both keys as their raw 32 bytes.
+A job node holds no cluster key and answers `404 NOT_FOUND`, as it does for every purpose but `jobs`.
+`calimero_client::attest::verify_orchestrator(doc, nonce, cluster_identity, policy)` checks it with the same quote and measurement policy as every other attestation, refuses a document that names another identity, and answers the transport key.
 
 ## Verifying the whole app cluster
 
