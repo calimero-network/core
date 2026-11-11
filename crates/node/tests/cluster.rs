@@ -2938,6 +2938,14 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
         .await,
     );
     forbidden(
+        "give a member every app added later",
+        site.post(
+            &format!("orgs/{org}/all-apps"),
+            json!({ "account": bob_id, "allApps": true }),
+        )
+        .await,
+    );
+    forbidden(
         "mint an invite",
         site.post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
             .await,

@@ -5360,6 +5360,9 @@ async fn org_get(
             }
         }
     }
+    if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
+        m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
+    }
     for field in ["members", "capabilities", "memberMetadata"] {
         if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
             m.retain(|a, _| o.sees_member(&account, a));
@@ -5495,6 +5498,7 @@ async fn app_move(
             consent,
             bring_members: body.bring_members,
             nonce: b64url(&random::<16>()),
+            all_apps_rows: true,
             accounts_in_app_team: true,
         })
         .await?,
@@ -5534,6 +5538,57 @@ async fn org_delete(
         })
         .await?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AllAppsBody {
+    account: String,
+    all_apps: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Give a member every app added to the organization from now on, or stop
+/// it (`SystemCmd::SetAllApps`): the owner's or an admin's, with a passkey
+/// assertion over exactly that (a 412 asks for it). Judged on fresh state;
+/// `404` outside the organization.
+async fn org_all_apps(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<AllAppsBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let Some(role) = role else {
+        return Err(ApiError::not_found("no such organization"));
+    };
+    if role < OrgRole::Admin {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
+    }
+    let args = crate::system::all_apps_args(&body.account, body.all_apps);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__set_all_apps",
+        &args,
+        body.confirm,
+    )
+    .await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetAllApps {
+            org,
+            account: body.account,
+            all_apps: body.all_apps,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
 }
 
 async fn org_metadata(
@@ -5856,6 +5911,7 @@ async fn team_update(
             parent: body.parent,
             metadata: body.metadata,
             actor,
+            all_apps_rows: true,
             close_drops_below: true,
         })
         .await?;
@@ -6021,6 +6077,9 @@ struct InviteBody {
     ttl_secs: Option<u64>,
     #[serde(default)]
     uses: Option<u32>,
+    /// Whoever redeems it also gets every app added later (an admin's).
+    #[serde(default)]
+    all_apps: bool,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
@@ -6037,6 +6096,9 @@ async fn invite_create(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
+    if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
+    }
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),
@@ -6046,6 +6108,7 @@ async fn invite_create(
         uses_left: body.uses.unwrap_or(1).max(1),
         created_by: actor.clone(),
         created_at: now_secs(),
+        all_apps: body.all_apps,
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
@@ -6128,6 +6191,7 @@ fn invite_json(key: &str, inv: &Invite, now: u64) -> Value {
         "expired": inv.expires_at <= now,
         "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
         "createdAt": (inv.created_at != 0).then_some(inv.created_at),
+        "allApps": inv.all_apps,
     })
 }
 
@@ -6288,6 +6352,8 @@ async fn app_teams_scope(
             owner_in_team: true,
             accounts_in_app_team: true,
             member_child_teams: true,
+            all_apps_rows: true,
+            by_release: true,
         })
         .await?,
     ))
@@ -10710,6 +10776,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/teams", post(team_create))
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
+        .route("/orgs/{org}/all-apps", post(org_all_apps))
         .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/publishers/{signer}", get(publisher_binding))
