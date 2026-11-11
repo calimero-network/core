@@ -78,6 +78,11 @@ doc comment. Their end-to-end tests are scenario files:
   is always `owner`).
 - `scenarios/cluster/<name>.json`: steps only a real cluster can run (teams
   changed mid-run, packages, upgrades).
+- `migrations/<version>.json`: a scenario with one `{ "op": "upgrade" }` step,
+  run by the app's `tests/migrations.rs` (`run_migration`) from the component in
+  `releases/<version>.mpk`, the signed bundle that release shipped, to the
+  crate's build: the new code must read what every shipped release stored
+  (`apps/kv-store`; `build/testing.mdx`).
 
 ## App Structure
 

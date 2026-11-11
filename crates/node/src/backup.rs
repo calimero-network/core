@@ -64,6 +64,145 @@ pub fn file_name(index: u64, group: u64, snapshot_id: &str) -> String {
     format!("{index:020}.{group}.{snapshot_id}.snap")
 }
 
+/// The subject of the system group's backups: `{backup-dir}/system/`, where
+/// an app's id would be. No app id is this word.
+pub const SYSTEM: &str = "system";
+
+/// Where the cluster key K_c is kept in a backup directory: one file per
+/// mero-tee release, K_c wrapped under that release's K_r
+/// ([`crate::cluster_key::wrap`]). A node of that release and cluster name,
+/// attested by that release's mero-kms, unwraps it, so a cluster can be
+/// founded again on its own K_c ([`cluster_key_from`]); nothing else can.
+pub const KEYS: &str = "cluster-key";
+
+/// Where code is kept in a backup directory: every bundle and package the
+/// system state names, by hash, sealed under [`code_key`].
+pub const CODE: &str = "code";
+
+/// A kept cluster key file is never larger: magic, nonce, the key and a tag.
+pub const MAX_KEY_FILE_BYTES: u64 = 4096;
+
+/// A kept code file is never larger: the largest blob, sealed.
+pub const MAX_CODE_FILE_BYTES: u64 = crate::node::MAX_BLOB_BYTES as u64 + 64;
+
+/// The key code in a backup directory is sealed under: a bundle a raw upload
+/// made may be private to its owner.
+fn code_sealer(cluster_key: &[u8; 32]) -> Sealer {
+    Sealer::new(&tag(cluster_key, "calimero.backup.code.v1"))
+}
+
+/// Whether `name` can name a file in a backup directory's key or code
+/// directory: no path.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' || b == b'+')
+}
+
+/// Keep K_c in `dir` wrapped under `storage_key`, the K_r of `release`, once
+/// per release. Answers whether it wrote one.
+pub fn keep_cluster_key(
+    dir: &Path,
+    release: &str,
+    storage_key: &[u8; 32],
+    cluster_key: &[u8; 32],
+) -> eyre::Result<bool> {
+    if !plain_name(release) {
+        eyre::bail!("release {release:?} cannot name a file");
+    }
+    let path = dir.join(KEYS);
+    if path.join(release).exists() {
+        return Ok(false);
+    }
+    crate::cluster_key::write_secret(
+        &path,
+        release,
+        &crate::cluster_key::wrap(storage_key, cluster_key)?,
+    )?;
+    Ok(true)
+}
+
+/// The cluster key K_c a backup directory keeps, unwrapped with this node's
+/// K_r: the copy one of the cluster's nodes on this node's release wrote.
+///
+/// # Errors
+/// No copy opens with this K_r: the cluster name or the release differs from
+/// every node that wrote one.
+pub fn cluster_key_from(dir: &Path, storage_key: &[u8; 32]) -> eyre::Result<[u8; 32]> {
+    let path = dir.join(KEYS);
+    let mut releases = Vec::new();
+    for entry in std::fs::read_dir(&path)
+        .map_err(|e| eyre::eyre!("{} holds no cluster key: {e}", path.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !plain_name(&name) || entry.metadata()?.len() > MAX_KEY_FILE_BYTES {
+            continue;
+        }
+        if let Ok(key) = crate::cluster_key::unwrap(storage_key, &std::fs::read(entry.path())?) {
+            return Ok(key);
+        }
+        releases.push(name);
+    }
+    releases.sort();
+    eyre::bail!(
+        "no cluster key in {} opens with this node's storage key: it holds copies for releases \
+         {releases:?}. Found the cluster again on one of those releases, under the same cluster \
+         name, while its mero-kms still serves; then upgrade it as usual",
+        path.display()
+    )
+}
+
+/// Keep `bytes`, code named by its SHA-256 `hash`, in `dir`. Answers whether
+/// it wrote it.
+pub fn keep_code(
+    dir: &Path,
+    cluster_key: &[u8; 32],
+    hash: &str,
+    bytes: &[u8],
+) -> eyre::Result<bool> {
+    if !plain_name(hash) {
+        eyre::bail!("{hash:?} cannot name a file");
+    }
+    let path = dir.join(CODE);
+    if path.join(hash).exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&path)?;
+    let tmp = path.join(format!(".{hash}.tmp"));
+    std::fs::write(&tmp, code_sealer(cluster_key).seal(hash.as_bytes(), bytes)?)?;
+    std::fs::rename(&tmp, path.join(hash))?;
+    Ok(true)
+}
+
+/// The code a backup directory keeps: `(hash, bytes)` for every file that
+/// opens under this cluster's key and whose bytes hash to its name.
+pub fn code(dir: &Path, cluster_key: &[u8; 32]) -> eyre::Result<Vec<(String, Vec<u8>)>> {
+    let path = dir.join(CODE);
+    let Ok(entries) = std::fs::read_dir(&path) else {
+        return Ok(Vec::new());
+    };
+    let sealer = code_sealer(cluster_key);
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let hash = entry.file_name().to_string_lossy().into_owned();
+        if !plain_name(&hash) || entry.metadata()?.len() > MAX_CODE_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = sealer.open(hash.as_bytes(), &std::fs::read(entry.path())?) else {
+            continue;
+        };
+        if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) == hash {
+            out.push((hash, bytes));
+        }
+    }
+    Ok(out)
+}
+
 /// One row of an app's state: `(key, value)`.
 pub type Row = (Vec<u8>, Vec<u8>);
 
@@ -539,6 +678,42 @@ mod tests {
         let e = open_manifest(&key, "app", &name, &sealed).unwrap_err();
         assert_eq!(e.code(), "UNKNOWN_BACKUP_FORMAT", "{e}");
         assert!(e.to_string().contains("9.0.0"), "{e}");
+    }
+
+    #[test]
+    fn the_cluster_key_is_kept_per_release_and_opens_only_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let k_c = [3; 32];
+        assert!(keep_cluster_key(dir.path(), "1.0.0", &[1; 32], &k_c).unwrap());
+        assert!(!keep_cluster_key(dir.path(), "1.0.0", &[1; 32], &k_c).unwrap());
+        assert!(keep_cluster_key(dir.path(), "1.1.0", &[2; 32], &k_c).unwrap());
+        assert!(keep_cluster_key(dir.path(), "../x", &[2; 32], &k_c).is_err());
+        assert_eq!(cluster_key_from(dir.path(), &[1; 32]).unwrap(), k_c);
+        assert_eq!(cluster_key_from(dir.path(), &[2; 32]).unwrap(), k_c);
+        let e = cluster_key_from(dir.path(), &[9; 32]).unwrap_err();
+        assert!(e.to_string().contains("\"1.0.0\", \"1.1.0\""), "{e}");
+    }
+
+    #[test]
+    fn code_is_kept_sealed_and_read_back_only_when_it_matches_its_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"\0asm component".to_vec();
+        let hash = hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes));
+        assert!(keep_code(dir.path(), &[7; 32], &hash, &bytes).unwrap());
+        assert!(!keep_code(dir.path(), &[7; 32], &hash, &bytes).unwrap());
+        let raw = std::fs::read(dir.path().join(CODE).join(&hash)).unwrap();
+        assert!(!raw.windows(9).any(|w| w == b"component"), "sealed on disk");
+        assert_eq!(
+            code(dir.path(), &[7; 32]).unwrap(),
+            vec![(hash.clone(), bytes)]
+        );
+        assert!(
+            code(dir.path(), &[8; 32]).unwrap().is_empty(),
+            "another cluster's"
+        );
+        // Bytes kept under another hash are not taken.
+        assert!(keep_code(dir.path(), &[7; 32], "00ff", b"other").unwrap());
+        assert_eq!(code(dir.path(), &[7; 32]).unwrap().len(), 1);
     }
 
     #[test]

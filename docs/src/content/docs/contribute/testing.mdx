@@ -127,6 +127,7 @@ without saying why; a stale or reasonless entry fails too.
 | `SCENARIO_TIMEOUT_SECS` | `600` | A scenario still running after this, plus its own fuzzing (each `fuzzy_test` step's `SCENARIO_FUZZY_SECONDS`), fails |
 | `SCENARIO_REPEAT_CAP` | none | Most iterations of a `repeat` step |
 | `CORE_WASM_DIR` | `$CARGO_TARGET_DIR/workflow-wasm` | Where `{{env.CORE_WASM_DIR}}` fixtures live |
+| `SCENARIO_FILES` | none | Comma-separated cluster scenario files to run instead of the discovered ones (`crates/node/tests/previous-release/kv-store.json`, which needs the previous release's bundle in `PREVIOUS_RELEASE_DIR`: `scripts/fetch-release-app.py`) |
 
 After each `call` the runner waits, up to 10 s, until every replica has applied
 it. A call that does not settle
@@ -166,6 +167,14 @@ in a result reads back as its name). The app clock starts at
 `1_700_000_100_000` (a 15-minute slot boundary, the harness tests' time zero);
 `advance` moves every node's clock, `tick` waits until the timer's due slot is
 applied everywhere. Events are each account's live stream from the log's start.
+
+A migration scenario, `apps/<app>/migrations/<version>.json`, is the same step
+array with one `{ "op": "upgrade" }` step: the app's own `tests/migrations.rs`
+runs it with `run_migration`, from the component in `apps/<app>/releases/<version>.mpk`
+to the crate's current build ([Testing apps](/core/build/testing/#upgrades-test-against-a-shipped-releases-state)).
+The cluster runner does not discover these files (they are not in a
+`scenarios` directory); a node-level upgrade is a cluster scenario's
+`upgrade_app` step.
 
 ### Cluster scenarios
 
@@ -785,7 +794,23 @@ written by an older version. The [upgrade path](#upgrade-path) does, for the
 data its cases write, from the last release only. A change to an on-disk or
 wire format also needs its own migration test, as `calimero-log`'s
 `migration_tests.rs` does for the `log.redb` store, and a case in the upgrade
-path when it stores a kind of data none of its cases writes.
+path when it stores a kind of data none of its cases writes. What else tests
+across releases, and what a change that breaks one declares, is in
+[Compatibility](/operate/compatibility/): ci-checks' `Compatibility` job (no
+route, field, WIT or ABI version dropped) and `Apps of the previous release`
+(the last release's kv bundle on this tree's node).
+
+Nor do they run two releases in one cluster, so they cannot catch an entry an
+older node skips. **A new command or field ships with a feature gate**
+([The cluster version](/protocol/upgrades/#the-cluster-version)): add a
+`Feature` with the release it ships in, name it in `SystemCmd::features`, and
+give it a case in `uses` in `crates/node/src/system/cluster_version.rs`'s
+tests. There, `a_feature_is_never_proposed_while_an_older_node_holds_the_log`
+replays every feature through the proposal gate on a cluster holding an older
+node (modelled as a release that skips what it cannot decode, as
+`SystemMachine::apply` does) and checks that nothing is proposed and every
+replica keeps the same state, then that each feature works once the older
+node leaves and the leader raises the cluster version.
 
 ## Proving a fix
 

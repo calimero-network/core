@@ -25,6 +25,11 @@ this one API.
 - A node started with `--dev` also accepts plain requests; a TDX node refuses
   them.
 - Requests are limited to 64 MiB.
+- The path carries no version: the API changes additively, and a route on its
+  way out answers with a `Deprecation` header (RFC 9745, the day it was
+  deprecated) and a `Link` (`rel="deprecation"`) to
+  [Compatibility](/operate/compatibility/), which says how long it stays
+  (`crates/node/api-deprecations.toml` lists them).
 
 Use a client that does this: `meroctl`, `calimero-client` (Rust), mero-js
 `CalimeroClient`, or calimero-client-py `CloudClient`. A hand-written `curl`
@@ -80,7 +85,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 401 | `PASSKEY_UNKNOWN_HERE` | A sign-in or step-up with a passkey no account of this cluster has: one from another cluster under the same rp-id, or a removed one. |
 | 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
-| 409 | `CONFLICT`, `UPGRADE_PENDING` | The state does not allow it now; a fuel cap waits for every node to run this release. |
+| 409 | `CONFLICT`, `UPGRADE_PENDING`, `FEATURE_NOT_ACTIVE` | The state does not allow it now; a fuel cap waits for every node to run this release; a command or field waits for every node to support its [cluster version](/protocol/upgrades/#the-cluster-version) (`details: { feature, needs, active }`). |
 | 409 | `APP_RESTORING` | The app is being restored from a backup; retry once the restore answers. |
 | 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
 | 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
@@ -93,7 +98,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `GET /health` | anyone | `{ ok, node, systemLeader, release }` | `network status` |
+| `GET /health` | anyone | `{ ok, node, systemLeader, release, clusterVersion }` (`clusterVersion`: the newest [cluster version](/protocol/upgrades/#the-cluster-version) this node supports) | `network status` |
 | `GET /attestation?nonce=HEX[&app=ID \| &appHash=HEX][&purpose=receipts]` | anyone | The node's attestation document: quote, transport key, app hash, nonce, release and profile. `purpose=receipts` attests the receipt key and the governance instead. | `attest` |
 
 ## Accounts and credentials (`/auth`)
@@ -202,6 +207,8 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/members` | session | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
 | `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
+| `POST /orgs/{org}/members/{account}/teams` | session | `{ teams: [{ team, role?, capabilities? }], confirm? }`: the account's row in each team (1 to 64, each once), each judged as `POST /orgs/{org}/teams/{team}/members`; all or nothing. `400 BAD_TEAMS`; `412` first | |
+| `DELETE /orgs/{org}/members/{account}/teams` | session | `{ teams: [team], confirm? }`: out of each team (or leave them), the teams below included, each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`; all or nothing. `400 BAD_TEAMS`; `412` first | |
 | `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
 | `POST /orgs/{org}/all-apps` | session | `{ account, allApps, confirm? }`: give a member every app added to the organization from now on, or stop it (owner or admin; `412` first). `403` below admin, `404` outside the organization ([Every app added later](/protocol/organizations/#every-app-added-later)) | - |
 | `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `namespace invite` |
@@ -217,7 +224,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities?, confirm? }`. `412` first | `group members add` |
 | `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
 | `GET /orgs/{org}/app-teams` | signed in (a member) | `{ mode, appTeams }`: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own) | |
-| `POST /orgs/{org}/app-teams` | session | `{ apps?: [{ package, name?, instances?, join?, keep? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`. `412` first | |
+| `POST /orgs/{org}/app-teams` | session | `{ apps?: [{ package, name?, instances?, join?, keep?, childTeams? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`; `childTeams` lets that team's members make private channels below it (`CREATE_CHILD_TEAM`), or no longer. `412` first | |
 | `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
 | `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |
@@ -237,14 +244,14 @@ there.
 | --- | --- | --- |
 | `GET /ops/status` | `{ node, system, governance, groups, nodes, apps, accounts }` | `ops status` |
 | `GET /ops/metrics` | Prometheus text, including per-app usage for billing; see [Observability](/operate/observability/) and [usage metering](/operate/observability/#usage-metering) | `ops metrics` |
-| `GET /ops/placement` | `{ fresh, apps: [{ app, group, replicas }], nodes: [{ id, zone, release, apps }] }`: where every app's replicas are, ids and counts only, read after a read index (`fresh`: this node caught up with the system leader); `release` is the node's attested release, `null` when unknown | `ops placement` |
+| `GET /ops/placement` | `{ fresh, apps: [{ app, group, replicas }], nodes: [{ id, zone, release, apps }], clusterVersion }`: where every app's replicas are, ids and counts only, read after a read index (`fresh`: this node caught up with the system leader); `release` is the node's attested release, `null` when unknown; `clusterVersion` is the logged [cluster version](/protocol/upgrades/#the-cluster-version), `null` until the first | `ops placement` |
 | `GET /ops/apps[?after=ID&limit=N]` | `{ fresh, governance, apps: [{ app, group, scope, bundle, package, publisher: { signer, org }, upgradesHeldBy, releasesApprovedBy, lastUpgrade, approvedReleases, replicas: [{ node, release, approved }], lastWriteAt }], next }`: what each app runs and which releases may hold it; `lastWriteAt` is when the app last committed a write (Unix seconds, the timestamp the leader stamped into the entry, so every node names the same one; `null` before its first write or when no replica answered within 2 s); `package` only for a release the operator installed, the upgrade's actor by kind only ([What runs where](/protocol/operator/#what-runs-where)) | |
 | `GET /ops/orgs[?after=ID&limit=N]` | `{ fresh, governance, orgs: [{ org, approvedReleases }], next }` | |
 | `GET /ops/served-origins` | `{ fresh, origins: [{ origin, host, label, addedAt }] }`: every custom domain a package's manager registered as a served origin, by the package's `label` (`app_host::label`), never its name; what certificates and routes are made for | |
 | `POST /ops/nodes` | `{ id, addr, zone?, operatorProof? }`: register a node, signed with the operator key (`428 OPERATOR_SIGNATURE_REQUIRED` first, over `cluster / __register_node / { id, addr, zone }`); the nodes in the first leader's `--peers` are registered at genesis; the system leader adds it as a learner, and promotes caught-up learners while fewer than 3 voters are left (straight to 3, never 2) | `ops add-node` |
 | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`), signed (`428` first, `__remove_node / { id }`; the retry's JSON body is `{ operatorProof }`) | `ops remove-node` |
 | `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …], operatorProof? }`: move an app, signed (`428` first, `<app> / __set_replicas / { replicas }`, the target sorted; asked before the leader redirect, so the signed body goes to the leader as it is) (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |
-| `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir`, each with its sealed manifest → `{ written }` | `ops backup` |
+| `POST /ops/backup[?all=true]` | Snapshot the apps this node leads, and the system group when it leads it, into `--backup-dir`, each with its sealed manifest, beside the cluster key wrapped for this release and the code the directory names → `{ written }`. `all=true`: every group the node holds, leader or not ([disaster recovery](/operate/runbooks/#disaster-recovery-the-system-group-lost-its-majority)) | `ops backup [--all]` |
 | `POST /ops/apps/{app}/restore` | `{ backup?, operatorProof? }`: restore the app from a backup in this node's `--backup-dir` (`{app}/{backup}`, the newest when left out), signed (`428` first, `<app> / __restore_app / { backup, sha256 }`); this node seeds the app's new group and becomes its first replica → `{ app, group, rows, backup: { name, index, format, merod, release }, status }` once every replica holds it. Refused before the signature: `404 BACKUP_NOT_FOUND`, `400 BAD_BACKUP` (another cluster's, another app's, a swapped file), `409 UNKNOWN_BACKUP_FORMAT`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 UPGRADE_PENDING`; `409 MOVE_IN_PROGRESS` while a move or restore of the app runs. The app's calls and views answer `409 APP_RESTORING` until it is done ([Restore an app](/operate/runbooks/#restore-an-app)) | `ops restore` |
 | `POST /ops/sign-up`, `POST\|GET /ops/sign-up/invites`, `DELETE /ops/sign-up/invites/{key}` | Set the [sign-up policy](/operate/auth/#sign-up-policy) (`{ policy }`) and issue, list and withdraw cluster sign-up invites (`{ token, uses?, expiresAt }`); each change signed (`428` first), refused once the cluster's owner runs sign-up | |
 | `GET /ops/quotas`, `POST /ops/quotas` | Read or change the per-account quotas; a change is signed (`428` first, `cluster / __set_quotas / { quotas }` with every limit after the change; `operatorProof` sits beside the limits) | `ops quotas`, `ops set-quotas` |

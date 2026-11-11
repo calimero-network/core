@@ -95,6 +95,11 @@ is its command line.
   `__remove_member { account }`, `__set_team_member { team, account, lead,
   role, capabilities }`, `__remove_team_member { team, account }` (it takes
   the rows below the team too, `RemoveTeamMember { subtree }`),
+  `__set_team_members { account, teams }` and `__remove_team_members
+  { account, teams }` (one account's rows in up to `MAX_TEAM_BATCH` teams,
+  each judged by the single command's rule, all or nothing:
+  `SetTeamMembers`, `RemoveTeamMembers`, `system::team_members_args`,
+  `system::remove_team_members_args`),
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
@@ -167,13 +172,31 @@ is its command line.
   `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`,
   `all_apps_rows`, `name_fits`) work the same way: from
   `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
-  system leader on this release writes, `reconcile`), `SystemMachine::run`
+  system leader on this release writes from `reconcile` once the logged
+  cluster version brings `Feature::CurrentRules`), `SystemMachine::run`
   reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
   and an organization's upgrade run is derived at apply (Upgrade runs below);
   before it, an entry applies as it was logged. The API keeps setting every
   flag, so a replica on the release before applies this release's entries
   alike. Regressions: `app_commands_after_the_current_rules_mark_apply_under_them`,
   `team_commands_after_the_current_rules_mark_apply_under_them`.
+- **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
+  a new command or field ships with a feature gate. Each log entry shape an
+  older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
+  named in the exhaustive `SystemCmd::features`); `Node::sys_write` refuses one
+  above the active cluster version `409 FEATURE_NOT_ACTIVE`
+  (`Node::require_features`, judged on `SystemState::cluster_version`, or on
+  what every node's `/health` `clusterVersion` says now when that is newer).
+  The system leader raises the logged version (`SetClusterVersion { version,
+  nodes }`, only forward, naming every registered node; `reconcile` ->
+  `raise_cluster_version`, at most every 10 s) once every node supports it,
+  and admits no node below it to the system group (`joins_at_cluster_version`).
+  Apply never reads it, so a log replays unchanged. A skipped undecodable
+  entry logs an error and counts in `calimero_log_undecodable_entries_total`.
+  Regressions: `system::cluster_version::tests`
+  (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
+  `an_entry_an_older_node_cannot_decode_splits_the_state`),
+  `the_cluster_version_rises_to_what_every_node_supports`.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -1075,7 +1098,12 @@ is its command line.
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
-  default (standalone teams it makes default to `INVITE_MEMBERS`); bounded by
+  default (standalone teams it makes default to `INVITE_MEMBERS`); a package's
+  `childTeams` (`ScopeApp::child_teams`) adds `CREATE_CHILD_TEAM` to (or takes
+  it from) its app team's default and the rows that set their own
+  capabilities, the only way an app team made before that default gets it
+  (regressions: `an_admin_lets_an_app_teams_members_make_channels`,
+  `system::tests::an_older_app_team_gets_child_teams_when_an_admin_turns_them_on`); bounded by
   `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
   `GET /orgs/{org}/app-teams` (any member; a guest only theirs). `GET
   /orgs/{org}` filters members, capabilities, member metadata and team rows by
@@ -1112,6 +1140,20 @@ is its command line.
   (`reconcile` drops a stopped group's files only for a deleted app). Tests:
   `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
   (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
+- **Founding again** (`--restore-from DIR` with `--bootstrap`, `Node::refound`): backups
+  also hold the system group (`backup::SYSTEM`, written by its leader, or by every node
+  with `ops/backup?all=true`), the code it names (`backup::keep_code`, sealed under
+  `HMAC(K_c, "calimero.backup.code.v1")`) and K_c wrapped under each release's K_r
+  (`backup::keep_cluster_key`). `cluster_key::resolve` takes K_c from the copy this
+  node's K_r opens (`backup::cluster_key_from`); `Node::start` forms the system group
+  with the founder alone; `reconcile` (empty state) calls `refound`: governance and
+  operator key must match the backup's, no old replica node may still answer at an
+  address `--peers` does not reuse, then `Group::replace_machine_data` with the state
+  `system::refound` made (fleet = `--peers`, every app `PendingRestore::AWAITING_BACKUP`,
+  hosted nowhere), `snapshot_through` + `purge_log_through`; the other peers join as
+  registered learners. Tests: `a_cluster_is_founded_again_from_its_backups`,
+  `a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor`,
+  `a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.

@@ -4,21 +4,19 @@
 //! verified first ([`attest`]). People sign in with a passkey ([`Passkey`]);
 //! machines use an API key. Calls, views and events address one app instance.
 
-use std::sync::Arc;
-
 use calimero_identity::{Assertion, Registration};
-use calimero_sealed::client::{SealedRefusal, SealedTransport};
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::RwLock;
-use url::Url;
 
 pub mod attest;
 mod files;
+pub mod transport;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
+use transport::{answer, api_error};
+pub use transport::{Body, Credential, Request, Transport};
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]
@@ -39,45 +37,6 @@ pub enum Error {
     /// The node could not be reached, attested or understood.
     #[error(transparent)]
     Transport(#[from] eyre::Report),
-}
-
-/// The path a session is refreshed at; a `401` there is not refreshed again.
-const REFRESH_PATH: &str = "auth/refresh";
-
-/// What a request carries, kept so it can be sent again after a refresh.
-enum Payload {
-    Empty,
-    Json(Value),
-    Bytes {
-        content_type: std::borrow::Cow<'static, str>,
-        bytes: bytes::Bytes,
-    },
-}
-
-/// The error a node's answer `status` with body `v` stands for.
-fn api_error(status: u16, v: &Value) -> Error {
-    let code = v["error"].as_str().unwrap_or("ERROR").to_owned();
-    let message = v["message"].as_str().unwrap_or_default().to_owned();
-    let details = v.get("details").cloned().unwrap_or(Value::Null);
-    if status == 421 && code == "WRONG_NODE" {
-        return Error::WrongNode { message, details };
-    }
-    Error::Api {
-        status,
-        code,
-        message,
-        details,
-    }
-}
-
-/// `resp`'s JSON body, or the error its status stands for.
-async fn answer(resp: reqwest::Response) -> Result<Value> {
-    let status = resp.status().as_u16();
-    let v: Value = resp.json().await.unwrap_or(Value::Null);
-    if status >= 400 {
-        return Err(api_error(status, &v));
-    }
-    Ok(v)
 }
 
 /// How often [`Client::call`] sends a call again while the node is unavailable,
@@ -116,23 +75,6 @@ where
         }
     }
     attempt().await
-}
-
-/// What a request sealed and sent became: a refusal of its envelope as too
-/// large (`413`) is the answer a caller acts on, the same `TOO_LARGE` the node
-/// gives a body past its own limits, so it is an [`Error::Api`]. It comes back
-/// in the clear, as every refusal of an envelope does: the node refuses it
-/// before the request can be opened, so there is no request to seal it to.
-fn sealed_error(e: eyre::Report) -> Error {
-    match e.downcast_ref::<SealedRefusal>() {
-        Some(refusal) if refusal.status == 413 => Error::Api {
-            status: 413,
-            code: "TOO_LARGE".to_owned(),
-            message: refusal.message.clone(),
-            details: Value::Null,
-        },
-        _ => Error::Transport(e),
-    }
 }
 
 impl Error {
@@ -245,47 +187,28 @@ pub struct AttestedCluster {
     pub governance: attest::Governance,
 }
 
-/// A connection to one node of a cluster.
+/// A connection to one node of a cluster: the route methods over a
+/// [`Transport`], the runtime they are all sent through.
 pub struct Client {
-    base: Url,
-    http: reqwest::Client,
+    transport: Transport,
     policy: Policy,
-    sealed: Arc<SealedTransport>,
-    auth: RwLock<Option<String>>,
-    session: RwLock<Option<Session>>,
-    /// One refresh at a time: requests that got a `401` together refresh once
-    /// (a refresh token presented twice ends the session).
-    refreshing: tokio::sync::Mutex<()>,
 }
 
 impl Client {
     /// Connect to the node at `base`, trusting it only once `policy` accepts its attestation.
     pub fn connect(base: &str, policy: Policy) -> eyre::Result<Self> {
-        let base: Url = if base.ends_with('/') {
-            base.parse()?
-        } else {
-            format!("{base}/").parse()?
-        };
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()?;
-        let sealed = Arc::new(SealedTransport::attested(
-            base.clone(),
-            http.clone(),
-            Arc::new(HttpAttestor {
-                policy: policy.clone(),
-                seen_release: Arc::default(),
-            }),
-        ));
         Ok(Self {
-            base,
-            http,
+            transport: Transport::connect(base, policy.clone())?,
             policy,
-            sealed,
-            auth: RwLock::new(None),
-            session: RwLock::new(None),
-            refreshing: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// The runtime every route of this client is sent through: a route layer
+    /// of its own (one generated from the node's OpenAPI document, say) sends
+    /// through it and shares this client's credential.
+    #[must_use]
+    pub fn transport(&self) -> &Transport {
+        &self.transport
     }
 
     /// Verify every replica of `app`: each one's quote over a fresh nonce,
@@ -328,17 +251,16 @@ impl Client {
 
     /// Use an API key for every request.
     pub async fn use_api_key(&self, key: &str) {
-        *self.auth.write().await = Some(key.to_owned());
+        self.transport.use_api_key(key).await;
     }
 
     /// Use a session token for every request.
     pub async fn use_session(&self, session: Session) {
-        *self.auth.write().await = Some(session.session_token.clone());
-        *self.session.write().await = Some(session);
+        self.transport.use_session(session).await;
     }
 
     pub async fn session(&self) -> Option<Session> {
-        self.session.read().await.clone()
+        self.transport.session().await
     }
 
     async fn send(
@@ -347,80 +269,20 @@ impl Client {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
-        self.send_payload(method, path, body.map_or(Payload::Empty, Payload::Json))
+        self.send_payload(method, path, body.map_or(Body::Empty, Body::Json))
             .await
     }
 
-    /// Send a request with this client's credential. A `401` to a session this
-    /// client can refresh (it holds the refresh token) is refreshed once, on
-    /// this node, and the request sent once more: the node that issued the
-    /// session may be gone, or have been removed, and a refresh works on any
-    /// node. Any other answer, or a refresh that fails, is returned as it is.
+    /// Send a request with this client's credential ([`Transport::send`]).
     async fn send_payload(
         &self,
         method: Method,
         path: &str,
-        payload: Payload,
+        payload: Body,
     ) -> Result<reqwest::Response> {
-        let token = self.auth.read().await.clone();
-        let resp = self
-            .send_once(method.clone(), path, &payload, token.as_deref())
-            .await?;
-        if resp.status().as_u16() != 401 || path == REFRESH_PATH {
-            return Ok(resp);
-        }
-        let Some(sent) = token else { return Ok(resp) };
-        match self.refreshed_after(&sent).await {
-            Some(fresh) => self.send_once(method, path, &payload, Some(&fresh)).await,
-            None => Ok(resp),
-        }
-    }
-
-    /// The session token to send again after `sent` was answered `401`: one a
-    /// concurrent request already refreshed into, else a refresh's. `None` when
-    /// `sent` is not a session this client can refresh (an API key, a session
-    /// without its refresh token) or the refresh fails.
-    async fn refreshed_after(&self, sent: &str) -> Option<String> {
-        let _one = self.refreshing.lock().await;
-        let session = self.session.read().await.clone()?;
-        if session.session_token != sent {
-            let current = self.auth.read().await.clone()?;
-            return (current != sent && current == session.session_token).then_some(current);
-        }
-        if session.refresh_token.is_empty() {
-            return None;
-        }
-        self.refresh().await.ok().map(|s| s.session_token)
-    }
-
-    async fn send_once(
-        &self,
-        method: Method,
-        path: &str,
-        payload: &Payload,
-        token: Option<&str>,
-    ) -> Result<reqwest::Response> {
-        let url = self.base.join(path).map_err(eyre::Report::from)?;
-        let mut req = self.http.request(method, url);
-        if let Some(token) = token {
-            req = req.bearer_auth(token);
-        }
-        req = match payload {
-            Payload::Empty => req,
-            Payload::Json(b) => req.json(b),
-            Payload::Bytes {
-                content_type,
-                bytes,
-            } => req
-                .header("content-type", &**content_type)
-                .body(bytes.clone()),
-        };
-        let req = req.build().map_err(eyre::Report::from)?;
-        self.execute(req).await
-    }
-
-    async fn execute(&self, req: reqwest::Request) -> Result<reqwest::Response> {
-        self.sealed.execute(req).await.map_err(sealed_error)
+        self.transport
+            .send(Request::new(method, path).body(payload))
+            .await
     }
 
     async fn json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -609,18 +471,7 @@ impl Client {
     /// Swap the refresh token for a new session, on this node (any node of
     /// the cluster takes it).
     pub async fn refresh(&self) -> Result<Session> {
-        let current = self
-            .session()
-            .await
-            .ok_or_else(|| eyre::eyre!("no session"))?;
-        let token = self.auth.read().await.clone();
-        let body = Payload::Json(json!({ "refreshToken": current.refresh_token }));
-        let resp = self
-            .send_once(Method::POST, REFRESH_PATH, &body, token.as_deref())
-            .await?;
-        let s: Session = serde_json::from_value(answer(resp).await?).map_err(eyre::Report::from)?;
-        self.use_session(s.clone()).await;
-        Ok(s)
+        self.transport.refresh().await
     }
 
     pub async fn me(&self) -> Result<Value> {
@@ -669,7 +520,7 @@ impl Client {
     }
 
     async fn send_bytes(&self, method: Method, path: &str, bytes: Vec<u8>) -> Result<Value> {
-        let payload = Payload::Bytes {
+        let payload = Body::Bytes {
             content_type: "application/octet-stream".into(),
             bytes: bytes.into(),
         };
@@ -683,7 +534,7 @@ impl Client {
         content_type: impl Into<std::borrow::Cow<'static, str>>,
         bytes: Vec<u8>,
     ) -> Result<Value> {
-        let payload = Payload::Bytes {
+        let payload = Body::Bytes {
             content_type: content_type.into(),
             bytes: bytes.into(),
         };
@@ -1031,6 +882,17 @@ impl Client {
             .await
     }
 
+    /// DELETE `path` with a JSON `body`, answering a `412 CONFIRM_REQUIRED`
+    /// as [`Self::post_confirmed`] does (`confirm` goes into `body`).
+    pub async fn delete_confirmed_with(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.confirmed(Method::DELETE, path, body, passkey).await
+    }
+
     /// POST an operator decision (Ops API): when the node answers `428
     /// OPERATOR_SIGNATURE_REQUIRED`, sign the bytes it names (`message`,
     /// base64) with `sign` (the operator's Ed25519 key) and send it again
@@ -1091,25 +953,9 @@ impl Client {
         body: Value,
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
-        let details = match self.json(method.clone(), path, Some(body.clone())).await {
-            Ok(v) => return Ok(v),
-            Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
-                e.details().cloned().unwrap_or(Value::Null)
-            }
-            Err(e) => return Err(e),
-        };
-        let challenge =
-            calimero_identity::from_b64url(details["challenge"].as_str().unwrap_or_default())
-                .map_err(|e| eyre::eyre!("{e}"))?;
-        let assertion = passkey.get(&challenge);
-        let mut body = body;
-        if let Some(b) = body.as_object_mut() {
-            let _prev = b.insert(
-                "confirm".into(),
-                json!({ "challengeId": details["challengeId"], "assertion": assertion }),
-            );
-        }
-        self.json(method, path, Some(body)).await
+        self.transport
+            .confirmed(Request::new(method, path).json(body), passkey)
+            .await
     }
 
     /// Upgrade every app of `org` that runs `body.package` to
@@ -1520,58 +1366,20 @@ impl Client {
 
     /// A server-sent event stream: `(id, event, data)` per frame.
     async fn sse(&self, path: &str) -> Result<impl Stream<Item = (String, String, Value)>> {
-        let resp = self.send(Method::GET, path, None).await?;
-        if !resp.status().is_success() {
-            return Err(Error::Api {
-                status: resp.status().as_u16(),
-                code: "EVENTS".into(),
-                message: "event stream refused".into(),
-                details: Value::Null,
-            });
-        }
-        let bytes = resp.bytes_stream();
-        let stream = futures_util::stream::unfold(
-            (bytes, String::new()),
-            |(mut bytes, mut buf)| async move {
-                loop {
-                    if let Some(pos) = buf.find("\n\n") {
-                        let frame: String = buf.drain(..pos + 2).collect();
-                        let (mut id, mut kind, mut data) =
-                            (String::new(), String::new(), String::new());
-                        for line in frame.lines() {
-                            if let Some(v) = line.strip_prefix("id:") {
-                                id = v.trim().to_owned();
-                            } else if let Some(v) = line.strip_prefix("event:") {
-                                kind = v.trim().to_owned();
-                            } else if let Some(v) = line.strip_prefix("data:") {
-                                data.push_str(v.trim());
-                            }
-                        }
-                        if kind.is_empty() && data.is_empty() {
-                            continue;
-                        }
-                        let value = serde_json::from_str(&data).unwrap_or(Value::String(data));
-                        return Some(((id, kind, value), (bytes, buf)));
-                    }
-                    match bytes.next().await {
-                        Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                        _ => return None,
-                    }
-                }
-            },
-        );
-        Ok(Box::pin(stream))
+        self.transport.events(Request::new(Method::GET, path)).await
     }
 
     /// The node's attestation, unverified (for display).
     pub async fn attestation(&self) -> Result<AttestationDoc> {
         let nonce = hex::encode([7_u8; 32]);
         let url = self
-            .base
+            .transport
+            .base()
             .join(&format!("attestation?nonce={nonce}"))
             .map_err(eyre::Report::from)?;
         let doc = self
-            .http
+            .transport
+            .http()
             .get(url)
             .send()
             .await

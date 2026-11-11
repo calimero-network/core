@@ -161,6 +161,13 @@ makes them voters; `FinishRestore` ends it. The new group's Raft terms start
 again at 1, so `componentRestored` moves the base of run ids past every term
 the restored state carries (D52). The old group is dropped everywhere.
 
+The system group's leader backs up the system group the same way
+(`{dir}/system/`), with the code it names and K_c wrapped for its release;
+`merod run --bootstrap --restore-from DIR` founds the cluster again from them,
+and every app then waits for its own restore. A node of a cluster that lost
+its system majority backs up every group it holds with `POST
+/ops/backup?all=true`.
+
 What the operator decides is which backup the app goes back to: a restore is a
 rollback of the app's data, never a way to read it. A backup restores only on
 the cluster that sealed it (the same K_c), for the app its manifest names, on

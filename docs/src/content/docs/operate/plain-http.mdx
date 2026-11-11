@@ -1,0 +1,87 @@
+---
+title: Use any HTTP tool
+description: Call a Calimero node with curl, a script or a client generated from the OpenAPI document, through meroctl proxy, a local attested gateway.
+sidebar:
+  order: 14
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A node answers its API only inside the sealed channel, after the client has
+verified the node's attestation ([networking](/protocol/networking/)); a
+production node refuses plain requests. `meroctl proxy` is that client, run
+locally: it attests the node, keeps a sealed session and your sign-in, and
+serves the API as plain HTTP on loopback. Anything that speaks HTTP can then
+call the node: `curl`, a shell script, Postman, or a client generated from the
+node API's OpenAPI document.
+
+## Start the proxy
+
+Sign in as you would for any `meroctl` command, then start it for that node:
+
+```bash
+meroctl node add local http://127.0.0.1:2501/ --allow-mock   # merod local
+meroctl login --dev-passkey ./dev-passkey.json
+meroctl proxy                                                 # http://127.0.0.1:2580
+```
+
+For a real cluster, give the same trust flags as for any command, and the
+node's URL or saved alias:
+
+```bash
+meroctl --node https://node-1.example.cloud --tee-profiles locked-read-only \
+  --min-release 2.3.109 --api-key "$CALIMERO_API_KEY" proxy --listen 127.0.0.1:2580
+```
+
+The proxy attests the node before it takes any request, and refuses to start
+when the quote does not pass. It prints one JSON line with its address.
+
+## Call routes
+
+Paths are the node's ([node API](/operate/admin-api/)):
+
+```bash
+curl -s localhost:2580/auth/me
+curl -s -X POST localhost:2580/apps/$APP/intents \
+  -H 'content-type: application/json' \
+  -d '{"method":"set","args":{"key":"a","value":"1"},"idempotencyKey":"k-1"}'
+curl -N localhost:2580/apps/$APP/events?from=0          # server-sent events, streamed
+```
+
+A request carries your saved session (or `--api-key`), refreshed when it
+expires. To act as someone else, send your own `Authorization: Bearer ...`:
+it is passed through as given.
+
+A route that needs an owner's approval answers `412 CONFIRM_REQUIRED` with a
+challenge in `details`. Sign it with the passkey (a browser's WebAuthn, or a
+development passkey file) and send the same request again with
+`"confirm": { "challengeId", "assertion" }` in the body. The proxy does not
+answer it for you: the approval stays the passkey holder's.
+
+## Generate a client
+
+`GET /openapi.json` on the proxy answers the API's OpenAPI document with
+`servers` pointing at the proxy, so a generator's client works against it as
+is. A node that does not serve the document yet answers `404`; pass core's
+`docs/public/openapi.json` with `--openapi FILE`:
+
+```bash
+meroctl proxy --openapi ./openapi.json
+npx @openapitools/openapi-generator-cli generate -i http://127.0.0.1:2580/openapi.json -g python -o ./client
+```
+
+<Aside type="caution" title="The proxy acts as you">
+Any process on this machine that reaches the port acts with your credential.
+The proxy binds to loopback, refuses a `Host` that is not a loopback name, and
+refuses requests a browser sends for a web page (`Origin`, `Sec-Fetch-Site`),
+so a page you open cannot use it. `--allow-remote` lifts the first two: use it
+only on a network you control, and stop the proxy when you are done. See the
+[proxy reference](/operate/meroctl/#proxy).
+</Aside>
+
+## What it is not
+
+The proxy is a client, not part of the node: nothing reaches the node
+unsealed, and the node trusts the proxy no more than any client. Libraries
+should still use the SDKs (`mero-js`, `calimero-client-py`, `calimero-client`),
+which verify the node in your own process; the proxy is for tools that cannot.
