@@ -647,6 +647,18 @@ impl Node {
         };
         let (result, applied) = g.read_local(|m, applied| {
             let result = match req.args["run"].as_str() {
+                Some(run) if req.args["receipt"].as_bool() == Some(true) => {
+                    m.pipeline_run(run).map_or(Value::Null, |r| {
+                        let proofs = r
+                            .steps
+                            .values()
+                            .flat_map(|s| &s.runs)
+                            .filter_map(|id| Some((id.clone(), m.step_proof(id)?)))
+                            .collect();
+                        let source = crate::api::pipeline_receipt::ReceiptSource { run: r, proofs };
+                        serde_json::to_value(source).unwrap_or(Value::Null)
+                    })
+                }
                 Some(run) => m
                     .pipeline_run(run)
                     .map_or(Value::Null, |r| run_json(&r, files)),
@@ -977,6 +989,7 @@ steps:
             modules: BTreeMap::new(),
             owner: "o".into(),
             inputs: BTreeMap::from([("docs".to_owned(), vec!["f1".to_owned(), "f2".to_owned()])]),
+            input_files: BTreeMap::new(),
             params: BTreeMap::new(),
             caller: Caller::System,
             payer: "p".into(),

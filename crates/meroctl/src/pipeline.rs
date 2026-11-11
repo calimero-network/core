@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use calimero_client::receipt::{PipelineReceipt, RunEntry};
 use clap::Subcommand;
-use eyre::{bail, eyre};
+use eyre::{bail, eyre, WrapErr};
 use serde_json::{json, Value};
 
 use crate::env::Env;
@@ -55,6 +56,17 @@ pub enum PipelineCmd {
     Cancel { app: String, run: String },
     /// The context's recent runs, newest first.
     Runs { app: String },
+    /// The signed receipt of an ended run; with `--verify`, also check its signature under the
+    /// answering node's attested key and every output's hash against the downloaded file.
+    Receipt {
+        app: String,
+        run: String,
+        #[arg(long)]
+        verify: bool,
+        /// Write the receipt answer here.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Download the files every step of an ended run made, as `STEP-INDEX.bin` in `--out`.
     Download {
         app: String,
@@ -87,6 +99,54 @@ async fn download_outputs(env: &Env, app: &str, run: &str, out: &Path) -> eyre::
         }
     }
     Ok(json!({ "files": written }))
+}
+
+/// The `(step, file id, sha256)` of every output the receipt names.
+fn receipt_outputs(receipt: &PipelineReceipt) -> Vec<(&str, &str, &str)> {
+    receipt
+        .steps
+        .iter()
+        .flat_map(|(step, s)| s.runs.iter().map(move |r| (step, r)))
+        .flat_map(|(step, r)| {
+            match r {
+                RunEntry::Ran(p) => p.outputs.as_slice(),
+                RunEntry::Cached(_) => &[],
+            }
+            .iter()
+            .map(move |o| (step.as_str(), o.id.as_str(), o.sha256.as_str()))
+        })
+        .collect()
+}
+
+/// Fetches the receipt; with `verify`, checks the node's signature under its attested key and
+/// each output file against the hash the receipt names.
+async fn receipt(
+    env: &Env,
+    app: &str,
+    run: &str,
+    verify: bool,
+    out: Option<&Path>,
+) -> eyre::Result<Value> {
+    let answer = env.client.pipeline_receipt(app, run).await?;
+    let json = serde_json::to_value(&answer)?;
+    if let Some(path) = out {
+        tokio::fs::write(path, serde_json::to_vec_pretty(&json)?)
+            .await
+            .wrap_err_with(|| path.display().to_string())?;
+    }
+    if !verify {
+        return Ok(json);
+    }
+    let receipt = env.client.verify_receipt(app, &answer).await?;
+    let mut checked = Vec::new();
+    for (step, id, sha256) in receipt_outputs(&receipt) {
+        let bytes = env.client.export_file(app, id).await?;
+        checked.push(json!({ "step": step, "id": id, "matches": hex::encode(calimero_identity::sha256(&bytes)) == sha256 }));
+    }
+    if checked.iter().any(|c| c["matches"] != true) {
+        bail!("an output does not match its receipt: {}", json!(checked));
+    }
+    Ok(json!({ "verified": true, "node": answer.node, "outputs": checked }))
 }
 
 fn split(arg: &str) -> eyre::Result<(&str, &str)> {
@@ -219,6 +279,12 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
                 .await?
         }
         PipelineCmd::Runs { app } => env.client.pipeline_runs(&env.app(&app).await?).await?,
+        PipelineCmd::Receipt {
+            app,
+            run,
+            verify,
+            out,
+        } => receipt(env, &env.app(&app).await?, &run, verify, out.as_deref()).await?,
         PipelineCmd::Download { app, run, out } => {
             download_outputs(env, &env.app(&app).await?, &run, &out).await?
         }
@@ -231,6 +297,49 @@ mod tests {
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_receipts_outputs_are_those_of_the_runs_that_ran() {
+        use calimero_client::receipt::{CachedRun, FileRef, ProofUsage, StepReceipt, StepRunProof};
+        let proof = StepRunProof {
+            run: "r.a.0".into(),
+            step: "a".into(),
+            index: 0,
+            outcome: "done".into(),
+            attempt: 1,
+            node: None,
+            job_key: None,
+            assignment_digest: None,
+            report_sha256: None,
+            signature: None,
+            outputs: vec![FileRef {
+                id: "f1".into(),
+                size: 1,
+                sha256: "h1".into(),
+            }],
+            usage: ProofUsage::default(),
+        };
+        let step = StepReceipt {
+            status: "succeeded".into(),
+            reason: None,
+            runs: vec![
+                RunEntry::Ran(Box::new(proof)),
+                RunEntry::Cached(CachedRun {
+                    index: 1,
+                    cached: true,
+                    cache_key: "k".into(),
+                }),
+            ],
+        };
+        let receipt: PipelineReceipt = serde_json::from_value(json!({
+            "version": 1, "cluster": "c", "app": "a", "run": "r", "pipeline": "p",
+            "release": "1", "pipelineHash": "h", "modules": {}, "inputs": {}, "params": {},
+            "state": "succeeded", "startTsMs": 1, "endTsMs": 2,
+            "steps": { "a": serde_json::to_value(step).unwrap() },
+        }))
+        .unwrap();
+        assert_eq!(receipt_outputs(&receipt), vec![("a", "f1", "h1")]);
     }
 
     #[test]

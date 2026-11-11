@@ -119,6 +119,9 @@ pub struct StepState {
     /// Indices of the runs answered from the step cache, which started no compute run.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub cached_runs: BTreeSet<u32>,
+    /// The step cache key each cached run was answered under, by run index.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cached_keys: BTreeMap<u32, String>,
     /// What the step's finished runs used, priced by the run's table; zero without a cost cap.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cost: u64,
@@ -149,6 +152,7 @@ impl StepState {
             finished: 0,
             failed_items: 0,
             cached_runs: BTreeSet::new(),
+            cached_keys: BTreeMap::new(),
             cost: 0,
             run_cost: 0,
             capped: false,
@@ -259,6 +263,9 @@ pub struct PipelineRun {
     pub owner: String,
     /// Input name to file ids.
     pub inputs: BTreeMap<String, Vec<String>>,
+    /// Each input file as the app held it at start, by file id, for the receipt.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_files: BTreeMap<String, RunInputRef>,
     pub params: BTreeMap<String, Value>,
     pub caller: Caller,
     pub payer: String,
@@ -435,7 +442,7 @@ fn failure_of(record: &RunRecord) -> Option<String> {
     }
 }
 
-fn reason_code(reason: FailedReason) -> String {
+pub(super) fn reason_code(reason: FailedReason) -> String {
     serde_json::to_value(reason)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -561,9 +568,9 @@ impl AppMachine {
             return no_op(TOO_MANY_PIPELINE_RUNS);
         }
         let files: BTreeSet<&String> = entry.inputs.values().flatten().collect();
-        if self.file_refs(files.iter().copied()).is_none() {
+        let Some(held) = self.file_refs(files.iter().copied()) else {
             return no_op(INPUT_NOT_HELD);
-        }
+        };
         let record = PipelineRun {
             id: entry.id.clone(),
             pipeline: entry.pipeline.clone(),
@@ -573,6 +580,7 @@ impl AppMachine {
             modules: entry.modules.clone(),
             owner: entry.owner.clone(),
             inputs: entry.inputs.clone(),
+            input_files: held.into_iter().map(|f| (f.id.clone(), f)).collect(),
             params: entry.params.clone(),
             caller: entry.caller.clone(),
             payer: entry.payer.clone(),
@@ -827,6 +835,7 @@ impl AppMachine {
             if let Some(state) = pipeline.steps.get_mut(step) {
                 state.finished += 1;
                 let _new = state.cached_runs.insert(index);
+                let _prev = state.cached_keys.insert(index, key.clone());
                 let _prev = state.run_outputs.insert(index, entry.outputs.clone());
                 if let Some(result) = &entry.result {
                     keep_result(state, index, &result.0);
@@ -1171,6 +1180,7 @@ impl AppMachine {
                 break;
             };
             if let Some(dropped) = Self::read_pipeline(tx, &old) {
+                Self::drop_step_proofs(tx, &dropped);
                 let outputs = dropped
                     .steps
                     .values()

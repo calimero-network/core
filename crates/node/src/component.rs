@@ -28,6 +28,7 @@
 pub mod action;
 pub mod blobs;
 mod pipelines;
+mod proofs;
 mod runs;
 pub mod search;
 mod step_cache;
