@@ -2938,6 +2938,11 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
         .await,
     );
     forbidden(
+        "rename the organization",
+        site.post(&format!("orgs/{org}/name"), json!({ "name": "Evil" }))
+            .await,
+    );
+    forbidden(
         "give a member every app added later",
         site.post(
             &format!("orgs/{org}/all-apps"),

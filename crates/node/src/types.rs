@@ -169,6 +169,30 @@ pub struct AppRecord {
     /// writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<crate::system::PackageRef>,
+    /// A restore from a backup under way (`SystemCmd::RestoreApp`): the app's
+    /// new group is being seeded, and calls wait for it. Left out when `None`,
+    /// so a record writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<PendingRestore>,
+}
+
+/// The backup a restore takes an app's state from (`crate::backup`): the
+/// snapshot file's name, its SHA-256 and the app log's index it was taken at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreSource {
+    pub name: String,
+    pub sha256: String,
+    pub index: u64,
+}
+
+/// A restore under way: `seed` (the first of the app's replicas) holds the
+/// backup and seeds the app's new group from it, then adds the other replicas.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingRestore {
+    pub seed: u64,
+    pub source: RestoreSource,
 }
 
 /// Which executor runs an app's code.

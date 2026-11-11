@@ -603,6 +603,8 @@ pub const ONLY_MANAGERS_TRANSFER: &str =
     "only the app's owner, while a member of its organization, or an organization admin may transfer it";
 /// A refusal: the organization invite is past its expiry.
 pub const INVITE_EXPIRED: &str = "this invite has expired";
+/// A refusal: renaming an organization is its owner's or an admin's.
+pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins rename it";
 /// A refusal: making, changing or dropping an app team, scoping apps, or
 /// creating the first instance of a package without one in an organization
 /// whose apps have app teams, is installing an app there: an admin's.
@@ -715,6 +717,26 @@ pub fn deployment_name_fits(name: &str) -> Result<(), &'static str> {
         || name.chars().any(char::is_control)
     {
         return Err("a deployment's name is 1 to 64 characters on one line");
+    }
+    Ok(())
+}
+
+/// The longest organization name, in characters.
+pub const MAX_ORG_NAME_CHARS: usize = 64;
+
+/// An organization's name, as it is created ([`SystemCmd::CreateOrg`]) and
+/// renamed ([`SystemCmd::RenameOrg`]): what its members and invitees read,
+/// one line of at most [`MAX_ORG_NAME_CHARS`] characters.
+///
+/// # Errors
+/// Empty, too long, padded or holding a control character.
+pub fn org_name_fits(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty()
+        || name.trim() != name
+        || name.chars().count() > MAX_ORG_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err("an organization's name is 1 to 64 characters on one line");
     }
     Ok(())
 }
@@ -3373,6 +3395,18 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::RenameOrg {
+            org,
+            name,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("org:{org}"), "__rename_org", &|a| {
+                *a == json!({ "name": name })
+            })?;
+            Ok(Some(used))
+        }
         // Credentials: the account's own passkey consent. A new passkey is
         // approved by one the account already has (`consent_of` reads the
         // passkeys as they stand, without the new one).
@@ -4007,6 +4041,17 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             }
             Err("the consent is for another change")
         }
+        SystemCmd::RestoreApp {
+            app_id,
+            source,
+            proof,
+            ..
+        } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            states(&st, app_id, "__restore_app", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -4401,6 +4446,28 @@ pub enum SystemCmd {
         #[serde(default)]
         proof: Value,
     },
+    /// The operator restores an app from its sealed backup
+    /// (`<app> / __restore_app / { backup, sha256 }`, `crate::backup`): the
+    /// app moves to a new group, which `replicas[0]` seeds from the backup
+    /// before it adds the others ([`crate::types::PendingRestore`]), and runs
+    /// the bundle the backup's state names.
+    RestoreApp {
+        app_id: AppId,
+        replicas: Vec<u64>,
+        bundle: String,
+        #[serde(default)]
+        compute_bundle: Option<String>,
+        source: crate::types::RestoreSource,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The seed of a restore holds the backup in `group` on every replica:
+    /// the app takes calls again.
+    FinishRestore {
+        app_id: AppId,
+        group: u64,
+    },
     SetAccess {
         app_id: AppId,
         access: Access,
@@ -4625,6 +4692,23 @@ pub enum SystemCmd {
         /// When it was created (Unix seconds; the recovery key's `setAt`).
         #[serde(default)]
         at: u64,
+        /// The name must fit ([`org_name_fits`]). The API always sets it;
+        /// absent (`false`) in an entry an earlier release logged, which
+        /// replays taking any name, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        name_fits: bool,
+    },
+    /// Rename an organization: its owner or an admin, with their passkey
+    /// consent (`org:<org> / __rename_org / { name }`), to a name that fits
+    /// as a new one's must ([`org_name_fits`]). Every reader of the name
+    /// (the organization, `/auth/me`, an invite redeemed later) answers the
+    /// new one: nothing else keeps a copy.
+    RenameOrg {
+        org: OrgId,
+        name: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
     },
     /// The cluster's rules, from the first leader's configuration. Accepted
     /// once, before anyone has an account: after that they are fixed, so an
@@ -5694,6 +5778,7 @@ impl SystemMachine {
                 }
                 s.next_group = s.next_group.max(1) + 1;
                 app.group = s.next_group;
+                app.restore = None;
                 let out =
                     json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
                 let _prev = s.apps.insert(app.app_id.clone(), app);
@@ -6054,6 +6139,54 @@ impl SystemMachine {
             } => {
                 let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 app.replicas = replicas;
+                Ok(Value::Null)
+            }
+            SystemCmd::RestoreApp {
+                app_id,
+                replicas,
+                bundle,
+                compute_bundle,
+                source,
+                ..
+            } => {
+                if !s.bundles.contains_key(&bundle) {
+                    return Err(RESTORE_BUNDLE_GONE);
+                }
+                if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
+                }
+                let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
+                let Some(&seed) = replicas.first() else {
+                    return Err("a restore names its replicas");
+                };
+                if distinct.len() != replicas.len()
+                    || replicas.iter().any(|id| s.replica_node(id).is_none())
+                {
+                    return Err("a restore's replicas are distinct registered nodes");
+                }
+                if !s.apps.contains_key(&app_id) {
+                    return Err("no such app");
+                }
+                let group = s.next_group.max(1) + 1;
+                s.next_group = group;
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                if app.bundle != bundle {
+                    // Inferred from the bundle again (`report::release_of_bundle`).
+                    app.release = None;
+                }
+                app.bundle = bundle;
+                app.compute_bundle = compute_bundle;
+                app.group = group;
+                app.replicas = replicas;
+                app.restore = Some(crate::types::PendingRestore { seed, source });
+                Ok(json!({ "group": group }))
+            }
+            SystemCmd::FinishRestore { app_id, group } => {
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                if app.group != group || app.restore.is_none() {
+                    return Err("no restore of that app into that group is under way");
+                }
+                app.restore = None;
                 Ok(Value::Null)
             }
             SystemCmd::SetAccess {
@@ -6564,9 +6697,13 @@ impl SystemMachine {
                 release,
                 recovery_key,
                 at,
+                name_fits,
             } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
+                }
+                if name_fits {
+                    org_name_fits(&name)?;
                 }
                 let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
                 if s.orgs.contains_key(&org_id) {
@@ -7091,6 +7228,17 @@ impl SystemMachine {
                     s.remove_app(a);
                 }
                 Ok(json!({ "apps": apps }))
+            }
+            SystemCmd::RenameOrg {
+                org, name, actor, ..
+            } => {
+                let o = self.org_mut(&org)?;
+                if o.role(&actor) < Some(OrgRole::Admin) {
+                    return Err(ONLY_ADMINS_RENAME);
+                }
+                org_name_fits(&name)?;
+                o.name.clone_from(&name);
+                Ok(json!({ "orgId": org, "name": name }))
             }
             SystemCmd::SetOrgMetadata {
                 org,
@@ -7825,6 +7973,9 @@ pub const NO_ACCOUNT_RECOVERY_PENDING: &str = "no recovery of this account is un
 pub const NO_RECOVERY_KEY: &str = "this organization has no recovery key";
 /// A refusal: a recovery is under way already.
 pub const RECOVERY_PENDING: &str = "a recovery of this organization is under way";
+/// A refusal: the bundle a backup's state runs is no longer installed.
+pub const RESTORE_BUNDLE_GONE: &str =
+    "the bundle the backup's state runs is no longer installed: install that release again first";
 /// A refusal: no recovery under way for that account.
 pub const NO_RECOVERY_PENDING: &str =
     "no recovery of this organization is under way for that account";
@@ -9779,6 +9930,96 @@ mod tests {
         let _ok = m.run(set(carried, &a)).unwrap();
         assert_eq!(m.state.accounts["alice"].passkeys[0].sign_count, carried);
         assert!(m.run(set(carried, &a)).is_err(), "replayed");
+    }
+
+    /// An organization is renamed by its owner or an admin with their
+    /// passkey consent over exactly the new name, once; a member below
+    /// admin and someone outside it are refused, and so is a name that
+    /// would not make an organization.
+    #[test]
+    fn an_organization_is_renamed_with_an_admins_passkey() {
+        let (mut m, mut alice, mut bob, mut carol) = proven_cluster();
+        let rename = |actor: &str, name: &str, consent: Value| SystemCmd::RenameOrg {
+            org: "org".into(),
+            name: name.into(),
+            actor: actor.into(),
+            consent,
+        };
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__rename_org"),
+            &json!({ "name": "Docs Labs" }),
+            &json!({ "name": "Other" }),
+            |c| rename("alice", "Docs Labs", c),
+        );
+        assert_eq!(m.state.orgs["org"].name, "Docs Labs");
+        for (actor, pk) in [("bob", &mut bob), ("carol", &mut carol)] {
+            let c = consent(pk, "org:org", "__rename_org", &json!({ "name": "Mine" }));
+            assert_eq!(
+                m.run(rename(actor, "Mine", c)).unwrap_err(),
+                super::ONLY_ADMINS_RENAME,
+                "{actor}"
+            );
+        }
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Admin);
+        for bad in [
+            String::new(),
+            " Docs".to_owned(),
+            "Do\ncs".to_owned(),
+            "x".repeat(super::MAX_ORG_NAME_CHARS + 1),
+        ] {
+            assert!(
+                m.run_unproven(rename("bob", &bad, Value::Null)).is_err(),
+                "{bad:?}"
+            );
+        }
+        let long = "y".repeat(super::MAX_ORG_NAME_CHARS);
+        let c = consent(
+            &mut bob,
+            "org:org",
+            "__rename_org",
+            &json!({ "name": long }),
+        );
+        let out = m.run(rename("bob", &long, c)).unwrap();
+        assert_eq!(out, json!({ "orgId": "org", "name": long }));
+        assert_eq!(m.state.orgs["org"].name, long);
+    }
+
+    /// A `CreateOrg` an earlier release logged (no `name_fits`) replays
+    /// taking any name, as that release did; one the API logs now refuses a
+    /// name that does not fit, and the flag is left out when false, so an
+    /// entry from before writes as it did.
+    #[test]
+    fn a_create_org_entry_from_before_takes_any_name() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let cmd: SystemCmd = serde_json::from_value(json!({
+            "op": "createOrg", "org_id": "o1", "name": " padded ", "actor": "alice"
+        }))
+        .unwrap();
+        let back = serde_json::to_value(&cmd).unwrap();
+        assert!(back.get("name_fits").is_none(), "{back}");
+        let _ok = m.run_unproven(cmd).unwrap();
+        assert_eq!(m.state.orgs["o1"].name, " padded ");
+        let create = |id: &str, name: &str| SystemCmd::CreateOrg {
+            org_id: id.into(),
+            name: name.into(),
+            actor: "alice".into(),
+            release: None,
+            recovery_key: None,
+            at: 0,
+            name_fits: true,
+        };
+        assert!(m.run_unproven(create("o2", " padded ")).is_err());
+        assert!(!m.state.orgs.contains_key("o2"));
+        let _ok = m.run_unproven(create("o2", "Fits")).unwrap();
+        assert_eq!(m.state.orgs["o2"].name, "Fits");
     }
 
     /// Membership changes apply only with the actor's passkey consent over
@@ -12323,6 +12564,97 @@ mod tests {
         assert_eq!(m.state.apps["app"].replicas, [4, 3, 2]);
     }
 
+    /// A restore is the operator's decision over one backup (`<app> /
+    /// __restore_app / { backup, sha256 }`), spent once. It moves the app to
+    /// a new group seeded by its first replica, on the bundle the backup's
+    /// state runs, and only the seed's `FinishRestore` for that group ends it.
+    #[test]
+    fn a_restore_is_signed_over_its_backup_and_ends_in_its_own_group() {
+        let (mut m, ..) = proven_cluster();
+        // The fixture puts the app in group 2 directly; `CreateApp` would have
+        // allocated that group and left `next_group` at it.
+        m.state.next_group = m.state.apps["app"].group;
+        let _prev = m.state.bundles.insert(
+            "b0".into(),
+            serde_json::from_value(json!({ "hash": "b0", "size": 1, "uploadedBy": "alice" }))
+                .unwrap(),
+        );
+        let source = |name: &str| crate::types::RestoreSource {
+            name: name.into(),
+            sha256: "ab".into(),
+            index: 7,
+        };
+        let restore =
+            |bundle: &str, replicas: &[u64], proof: &serde_json::Value| SystemCmd::RestoreApp {
+                app_id: "app".into(),
+                replicas: replicas.to_vec(),
+                bundle: bundle.into(),
+                compute_bundle: None,
+                source: source("7.2.x.snap"),
+                proof: proof.clone(),
+            };
+        let args = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
+        let proof = signed("app", "__restore_app", &args);
+        assert!(m
+            .run(restore("b0", &[2, 1, 3], &serde_json::Value::Null))
+            .is_err());
+        let other = signed(
+            "app",
+            "__restore_app",
+            &json!({ "backup": "8.2.x.snap", "sha256": "ab" }),
+        );
+        assert!(
+            m.run(restore("b0", &[2, 1, 3], &other)).is_err(),
+            "another backup"
+        );
+        let elsewhere = signed("other", "__restore_app", &args);
+        assert!(
+            m.run(restore("b0", &[2, 1, 3], &elsewhere)).is_err(),
+            "another app"
+        );
+        assert_eq!(
+            m.run(restore("gone", &[2, 1, 3], &proof)).unwrap_err(),
+            crate::system::RESTORE_BUNDLE_GONE
+        );
+        assert!(
+            m.run(restore("b0", &[2, 9], &proof)).is_err(),
+            "an unknown node"
+        );
+        assert!(
+            m.run(restore("b0", &[2, 2], &proof)).is_err(),
+            "a node twice"
+        );
+
+        let before = m.state.apps["app"].group;
+        let out = m.run(restore("b0", &[2, 1, 3], &proof)).unwrap();
+        let app = m.state.apps["app"].clone();
+        assert_eq!(out["group"], json!(app.group));
+        assert!(app.group > before && app.group == m.state.next_group);
+        assert_eq!(
+            (app.bundle.as_str(), app.replicas.as_slice()),
+            ("b0", &[2, 1, 3][..])
+        );
+        assert_eq!(
+            app.restore,
+            Some(crate::types::PendingRestore {
+                seed: 2,
+                source: source("7.2.x.snap")
+            })
+        );
+        assert_eq!(
+            m.run(restore("b0", &[2, 1, 3], &proof)).unwrap_err(),
+            "that consent was used already"
+        );
+        let finish = |group: u64| SystemCmd::FinishRestore {
+            app_id: "app".into(),
+            group,
+        };
+        assert!(m.run(finish(before)).is_err(), "the group before");
+        let _ok = m.run(finish(app.group)).unwrap();
+        assert_eq!(m.state.apps["app"].restore, None);
+        assert!(m.run(finish(app.group)).is_err(), "nothing under way");
+    }
+
     /// An organization of `who` (account -> role), each holding `caps`
     /// organization-wide, with `releases` approved.
     fn org(members: &[(&str, &str)], caps: &[(&str, u32)], releases: &[&str]) -> crate::types::Org {
@@ -14086,6 +14418,7 @@ mod tests {
                 release: None,
                 recovery_key: None,
                 at: 0,
+                name_fits: true,
             })
             .unwrap();
         let _prev = m.state.publishers.insert(
