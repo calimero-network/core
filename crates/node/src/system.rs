@@ -1021,6 +1021,12 @@ impl SystemState {
             .map(|(name, _)| name.clone())
     }
 
+    /// `name` when the cluster defines that pool and a run of `memory_mib` fits it.
+    fn named_pool_for(&self, name: String, memory_mib: u32) -> Option<String> {
+        let fits = self.pools.get(&name)?.max_memory_mib >= memory_mib;
+        fits.then_some(name)
+    }
+
     /// The pool `slot` counts against (a slot from before pools belongs to the default one).
     fn slot_pool<'a>(&self, slot: &'a RunSlot) -> &'a str {
         match (self.pools.is_empty(), slot.pool.as_str()) {
@@ -4331,6 +4337,10 @@ pub enum SystemCmd {
         /// The run's memory cap, which picks its pool; absent (0) from a leader that sends none.
         #[serde(default)]
         memory_mib: u32,
+        /// A pipeline step's named pool: the run goes there (it must fit `memory_mib`) instead
+        /// of by memory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pool: Option<String>,
     },
     /// Frees a run's place (finished, or never to run) and grants the next waiting runs.
     ReleaseRun {
@@ -5883,12 +5893,16 @@ impl SystemMachine {
                 payer,
                 fuel,
                 memory_mib,
+                pool: named,
             } => {
                 let Some(record) = s.apps.get(&app) else {
                     return Ok(acquire_refused(RUN_NO_SUCH_APP, false));
                 };
                 if s.run_slot(&app, &run).is_none() {
-                    let pool = s.pool_for(memory_mib);
+                    let pool = match named {
+                        Some(name) => s.named_pool_for(name, memory_mib),
+                        None => s.pool_for(memory_mib),
+                    };
                     let refusal = if payer != crate::usage::payer(record) {
                         Some((RUN_NOT_PAYER, true))
                     } else if fuel > calimero_app_host::MAX_COMPUTE_FUEL {

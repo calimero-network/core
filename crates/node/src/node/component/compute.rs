@@ -833,12 +833,19 @@ impl Drive<'_> {
         else {
             return Acquired::Waiting;
         };
+        // An older node would drop `pool` when it applies the command, so a named pool waits for
+        // every node to run this release; until then the run is placed by its memory.
+        let pool = match &self.rec.pool {
+            Some(_) if !self.node.nodes_behind_release().await.is_empty() => None,
+            named => named.clone(),
+        };
         let cmd = SystemCmd::AcquireRun {
             app: app_id.clone(),
             run: run.clone(),
             payer,
             fuel: self.rec.caps.fuel,
             memory_mib: self.rec.caps.memory_mib,
+            pool,
         };
         let answer = match self.node.sys_write(&cmd).await {
             Ok(answer) => serde_json::from_value::<AcquireAnswer>(answer),

@@ -167,6 +167,16 @@ steps:
   a: { method: digest, inputs: [inputs.docs] }
 ";
 
+const PLACED: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: placed
+inputs:
+  docs: { kind: files }
+steps:
+  named: { method: digest, inputs: [inputs.docs], pool: big }
+  plain: { method: digest, inputs: [inputs.docs] }
+";
+
 const CHAIN_V2: &str = "apiVersion: compute.calimero.network/v1
 kind: Pipeline
 name: chain
@@ -224,6 +234,7 @@ impl Rig {
             ("pipelines/raise.yaml", RAISE),
             ("pipelines/strict.yaml", STRICT),
             ("pipelines/metered.yaml", METERED),
+            ("pipelines/placed.yaml", PLACED),
         ];
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
@@ -1514,4 +1525,67 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
     let again = rig.ended(retried["run"].as_str().unwrap()).await;
     assert_eq!(again["state"], "succeeded", "{again}");
     assert_eq!(again["modules"], done["modules"], "{again}");
+}
+
+async fn two_pools(rig: &mut Rig, extra: &[(u64, &str, Option<&str>)]) {
+    let pools = json!({ "pools": {
+        "standard": { "runsPerNode": 2, "maxMemoryMib": 2048 },
+        "big": { "runsPerNode": 2, "maxMemoryMib": 4096 },
+    } });
+    let ops = rig.c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = common::ops_signed(&ops, "ops/pools", pools).await.unwrap();
+    let mut nodes = vec![(JOB_A, "standard", None), (JOB_B, "big", None)];
+    nodes.extend_from_slice(extra);
+    for (id, pool, release) in nodes {
+        let job = rig
+            .c
+            .start_job_node(id, |cfg| {
+                if let Some(release) = release {
+                    cfg.release = release.into();
+                }
+            })
+            .await;
+        rig.c.register_job_node_in(id, &job.url, Some(pool)).await;
+        rig.jobs.push(job);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_steps_pool_places_its_runs_on_that_pools_job_node() {
+    let mut rig = Rig::start_with(&[], |cfg| cfg.release = "1.0.0".into()).await;
+    two_pools(&mut rig, &[]).await;
+
+    let file = rig.upload(&vec![7u8; 4096]).await;
+    let run = rig
+        .start_run("placed", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    for (step, node, pool) in [("named", JOB_B, Some("big")), ("plain", JOB_A, None)] {
+        let record = rig.record(&step_run(&done, step));
+        let placed = record.attempts.last().map(|a| a.node);
+        assert_eq!(placed, Some(node), "{step}: ran on {placed:?}");
+        assert_eq!(record.pool.as_deref(), pool, "{step}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_named_pool_waits_until_every_node_runs_this_release() {
+    let mut rig = Rig::start_with(&[], |cfg| cfg.release = "1.0.0".into()).await;
+    two_pools(&mut rig, &[(6, "standard", Some("0.9.0"))]).await;
+    let file = rig.upload(&vec![7u8; 4096]).await;
+    let run = rig
+        .start_run("placed", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    let record = rig.record(&step_run(&done, "named"));
+    assert_eq!(record.pool.as_deref(), Some("big"));
+    let placed = record.attempts.last().map(|a| a.node);
+    assert_ne!(
+        placed,
+        Some(JOB_B),
+        "placed by memory, not by the named pool"
+    );
 }

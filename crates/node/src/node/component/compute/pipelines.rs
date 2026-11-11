@@ -433,6 +433,7 @@ fn build_step(
             caps,
             compute_bundle: (bundle != run.compute_bundle).then(|| bundle.to_owned()),
             cache_key: key,
+            pool: step.pool.clone(),
         })
     };
     if let Some(source) = &step.for_each {
@@ -1523,6 +1524,7 @@ steps:
             },
             compute_bundle: None,
             cache_key: None,
+            pool: None,
         }];
         let mut cmd = ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
             run: "r".into(),

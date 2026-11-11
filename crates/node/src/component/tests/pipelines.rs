@@ -60,6 +60,7 @@ fn step_run(pipeline: &str, step: &str, i: usize) -> StepRun {
         },
         compute_bundle: None,
         cache_key: None,
+        pool: None,
     }
 }
 
