@@ -36,6 +36,7 @@ use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
+use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
     Deployments, PackageRef, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
@@ -764,6 +765,9 @@ async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
         "node": node.config.node_id,
         "systemLeader": s.leader,
         "release": node.config.release,
+        // The newest cluster version this build supports: what the system
+        // leader raises the cluster version by (`system::cluster_version`).
+        "clusterVersion": crate::system::cluster_version::supported(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
         "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
@@ -5484,6 +5488,9 @@ async fn app_move(
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::MoveApp, Feature::MoveAccountsAppTeam])
+        .await?;
     let args = crate::system::move_app_args(&body.to_org, body.bring_members);
     let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
     Ok(Json(
@@ -5564,6 +5571,8 @@ async fn org_rename(
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_RENAME));
     }
     crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::RenameOrg]).await?;
     let consent = consent(
         &node,
         &p,
@@ -5613,6 +5622,8 @@ async fn org_all_apps(
     if role < OrgRole::Admin {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AllApps]).await?;
     let args = crate::system::all_apps_args(&body.account, body.all_apps);
     let consent = consent(
         &node,
@@ -5888,6 +5899,8 @@ async fn member_set_teams(
     let actor = p.account()?;
     team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
     let args = crate::system::team_members_args(&account, &body.teams);
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
     let consent = org_consent(&node, &p, &org, "__set_team_members", &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetTeamMembers {
@@ -5917,6 +5930,8 @@ async fn member_remove_teams(
     team_batch(body.teams.iter().map(String::as_str))?;
     let args = crate::system::remove_team_members_args(&account, &body.teams);
     let method = "__remove_team_members";
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
     let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveTeamMembers {
@@ -6221,6 +6236,10 @@ async fn invite_create(
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
+    if body.all_apps {
+        // Before the passkey step-up: an earlier release would drop the flag.
+        node.require_features(&[Feature::AllApps]).await?;
+    }
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),
@@ -6461,6 +6480,10 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
+    // The API always sets `by_release` (#4931).
+    let mut features = scope_app_features(body.apps.as_deref());
+    features.push(Feature::ScopeByRelease);
+    node.require_features(&features).await?;
     let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
     let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
     Ok(Json(
@@ -8588,8 +8611,11 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
+    // The logged cluster version (`null` until the system leader logs one):
+    // a rollout is finished for the system log once it is the new release's.
+    let cluster_version = node.sys(|s| s.cluster_version.clone());
     Ok(Json(
-        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
+        json!({ "fresh": fresh, "apps": apps, "nodes": nodes, "clusterVersion": cluster_version }),
     ))
 }
 
@@ -9294,6 +9320,12 @@ async fn ops_org_quotas_set(
 /// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerDeveloperPerDay`. One
 /// code for every such gate, so the version gate on new entry shapes can share it.
 pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
+/// `409`: a command (or a field of one) that a node of the cluster does not
+/// support yet, refused before it is proposed, so no node skips an entry the
+/// others apply (`system::cluster_version`). The message names the feature and
+/// the version it needs; `details` is `{ feature, needs, active }`.
+pub const FEATURE_NOT_ACTIVE: &str = "FEATURE_NOT_ACTIVE";
 
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
