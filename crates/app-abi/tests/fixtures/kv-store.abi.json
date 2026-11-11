@@ -1,0 +1,169 @@
+{
+  "abiVersion": 1,
+  "errors": {
+    "NotFound": {
+      "key": "string"
+    }
+  },
+  "events": {
+    "Cleared": {},
+    "Inserted": {
+      "key": "string",
+      "value": "string"
+    },
+    "Removed": {
+      "key": "string"
+    },
+    "Updated": {
+      "key": "string",
+      "value": "string"
+    }
+  },
+  "methods": {
+    "clear": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "entries": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "BTreeMap<String,String>"
+    },
+    "get": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "key",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "option<string>"
+    },
+    "getOrInsert": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "getResult": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "key",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "getUnchecked": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "key",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "init": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "init",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "len": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "u64"
+    },
+    "remove": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "key",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "option<string>"
+    },
+    "set": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "updateIfExists": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    }
+  },
+  "state": {
+    "fields": {
+      "entries": "unorderedMap"
+    },
+    "search": {
+      "entries": []
+    },
+    "version": 1
+  },
+  "world": "calimero:app@0.5.1"
+}

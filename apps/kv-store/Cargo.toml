@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 calimero-sdk = { path = "../../crates/sdk" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
+calimero-sdk = { path = "../../crates/sdk", features = ["testing", "releases"] }
 calimero-app-build = { path = "../../crates/app-build" }
 serde_json = "1"
 

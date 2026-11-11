@@ -371,6 +371,7 @@ impl Node {
                 } else {
                     Components::App
                 },
+                min_runtime_version: Some(manifest.min_runtime_version.clone()),
             },
             wasm: wasm_by_hash,
         })

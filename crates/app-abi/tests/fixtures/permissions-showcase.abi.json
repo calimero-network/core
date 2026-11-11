@@ -1,0 +1,332 @@
+{
+  "abiVersion": 1,
+  "errors": {
+    "AlreadyWritten": {
+      "key": "string"
+    },
+    "BadHash": {
+      "hash": "string"
+    },
+    "HasSeparator": {
+      "value": "string"
+    },
+    "NoPage": {
+      "id": "string"
+    },
+    "NotModerator": {}
+  },
+  "events": {
+    "Announced": {
+      "id": "string"
+    },
+    "AnnouncementRemoved": {
+      "id": "string"
+    },
+    "EvidenceFiled": {
+      "hash": "string"
+    },
+    "MessagePosted": {
+      "key": "string"
+    },
+    "PageChanged": {
+      "id": "string"
+    }
+  },
+  "methods": {
+    "addModerator": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "account",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "addRevision": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "revision",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "announce": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ],
+        [
+          "sentAt",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "announcements": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<MessageView>"
+    },
+    "channel": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "channel",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "list<MessageView>"
+    },
+    "createPage": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "title",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "deletePage": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "evidence": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "hash",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "option<Evidence>"
+    },
+    "evidenceOfKind": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "kind",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "list<Evidence>"
+    },
+    "fileEvidence": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "kind",
+          "string"
+        ],
+        [
+          "body",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "founder": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "option<string>"
+    },
+    "founding": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "Founding"
+    },
+    "init": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "init",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "me": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "string"
+    },
+    "moderators": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<string>"
+    },
+    "page": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [
+        [
+          "author",
+          "string"
+        ],
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "option<PageView>"
+    },
+    "postMessage": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "channel",
+          "string"
+        ],
+        [
+          "id",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ],
+        [
+          "sentAt",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "quorum": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "u64"
+    },
+    "removeAnnouncement": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "renamePage": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "title",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    }
+  },
+  "state": {
+    "fields": {
+      "announcements": "table",
+      "evidence": "table",
+      "founding": "unorderedMap",
+      "messages": "table",
+      "moderators": "table",
+      "pages": "table",
+      "revisions": "table"
+    },
+    "search": {
+      "announcements": [],
+      "evidence": [],
+      "founding": [],
+      "messages": [],
+      "moderators": [],
+      "pages": [],
+      "revisions": []
+    },
+    "version": 1
+  },
+  "world": "calimero:app@0.5.1"
+}

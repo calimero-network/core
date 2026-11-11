@@ -118,8 +118,8 @@ an app (handlers, timers, xcalls). See [Who a run acts as](/protocol/authorship/
 **TEE authority** — The author of runs the cluster fires itself (timers, `tee:`
 handlers), the only writer of `TeeOnly` state.
 
-**Organization** — Members with roles `guest < member < admin < owner`, teams,
-approvals, metadata. [Namespace]
+**Organization** — A name (its owner or an admin renames it), members with
+roles `guest < member < admin < owner`, teams, approvals, metadata. [Namespace]
 
 **Team** — A nested group of an organization's members, open or restricted, with
 direct rows of role `lead`, `member` or `read-only`. [Group, subgroup]
@@ -127,8 +127,9 @@ direct rows of role `lead`, `member` or `read-only`. [Group, subgroup]
 **App team** — A top-level team whose `metadata.app.package` marks a package:
 the one team of that app in an organization, whose instances use `team` access
 on it. Open, everyone in the organization has the app; closed (restricted),
-only its rows do, and an admin closes or opens one app team alone. See
-[Organizations](/protocol/organizations/#app-teams).
+only its rows do, and an admin closes or opens one app team alone. A member
+an admin gives every app added later (`allApps`) gets a row on each app team
+made after. See [Organizations](/protocol/organizations/#app-teams).
 
 **Move** — Taking an app instance to another organization (`MoveApp`,
 `POST /apps/{app}/move`): its data stays on its replicas; its organization,
@@ -140,7 +141,8 @@ team's default lets its members make private channels, `CREATE_CHILD_TEAM`). See
 [Organizations](/protocol/organizations/#capabilities).
 
 **Access rule** — Who reaches an app: `owner`, `accounts`, `org`, `team`,
-`public`.
+`public`. In an organization, only its members; an `accounts` instance of a
+package with an app team, only those in the app team.
 
 **Governance** — Who holds release approvals, app upgrades and outbound
 approvals, `owner` or `operator`, fixed at genesis. See

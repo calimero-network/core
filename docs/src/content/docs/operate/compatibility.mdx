@@ -1,0 +1,134 @@
+---
+title: Compatibility and versioning
+description: What each Calimero release keeps working for the releases, apps, clients and data before it — the versions that say so, the guarantees, how a deprecation and a hard cutover are declared, and what CI enforces.
+sidebar:
+  label: Compatibility
+  order: 14
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A Calimero Cloud cluster upgrades by adding nodes on the new release and moving
+each app onto them ([Upgrade the cluster's release](/operate/runbooks/#upgrade-the-clusters-release)),
+so for a while two releases replicate the same apps, and the new nodes take
+over log entries and snapshots the old ones wrote. Apps deployed months ago
+keep running, and clients released alongside an earlier node keep calling the
+newer one. This page says what holds across releases, how each surface says
+which version it is, and how a change that cannot keep it is declared.
+
+<Aside type="caution" title="The numbers are proposals">
+  The guarantees below are a proposal for the release owner to confirm. Until
+  then the CI checks enforce them as written; changing a number is a change to
+  this page and to `MIN_DEPRECATION_RELEASES` in `scripts/check-api-compat.py`.
+</Aside>
+
+## What has a version
+
+| Surface | Version now | Where it is declared | Who reads it |
+| --- | --- | --- | --- |
+| Node release (`merod`, `meroctl`, the SDK) | `1.0.0-rc.15` | `[workspace.metadata.workspaces] version` in `Cargo.toml` | mdma (`release_compat`), the attestation (`--min-release`), a bundle's `minRuntimeVersion` |
+| App world (WIT) | `calimero:app@0.5.1` | `crates/app-wit/wit/calimero-app.wit` | The engine: a component importing `calimero:app/*@0.5.z` with `z` up to the world's links; anything else is refused at install |
+| App ABI | `abiVersion` 1 | the SDK's `ABI_VERSION` (`crates/sdk-macros`), the host's `SUPPORTED_ABI_VERSIONS` (`crates/app-host`) | The host, when it loads a component's ABI |
+| App package (`.mpk`) | manifest `version` `1.0`, `minRuntimeVersion` | the bundle's `manifest.json` (`crates/bundle`) | The node at install: it refuses a package whose `minRuntimeVersion` is above its release |
+| Node API | none in the path | the routes of `crates/node/src/api.rs`; deprecations in `crates/node/api-deprecations.toml` | mero-js, calimero-client-py, `meroctl`, app frontends |
+| Sealed channel and attestation | the envelope's version | `crates/sealed`, `crates/client/src/attest.rs` (mirrored by mero-js) | Every client and every peer |
+| Peer protocol | the node release | `/internal/*` and a job node's `/job/*` routes, Raft RPCs | The other nodes of a cluster, on this release or the one before |
+| Stored formats | store 1, snapshot 1, app entry 1, sealed files v1 | `calimero_log::STORE_FORMAT`, `SNAPSHOT_FORMAT`, `component::ENTRY_FORMAT`, the file domain strings ([Storage schema](/protocol/storage/)) | The node that opens a data directory, installs a snapshot or applies an entry |
+| Clients | mero-js `29.x`, calimero-client-py | their own repositories | Developers; `e2e.yml`'s `clients` job runs both against every PR's `merod` |
+| Operator tooling | mdma | `shared/mdma_common/release_compat.py` (`CUTOVERS`, `FEATURES`) | mdma, which refuses a rollout across a cutover |
+
+## Guarantees
+
+**Apps.** A component built with release `x`'s SDK (its WIT and ABI) installs
+and runs on every later node release with the same WIT minor (`0.5.*` today)
+and an ABI version the host still supports. A WIT minor bump or a dropped ABI
+version is a hard cutover, deprecated at least **3 releases** before it ships
+(proposal). CI runs the previous release's own app bundle on every PR.
+
+**Nodes and data.** A cluster rolls forward in place from the previous release
+(`N-1` to `N`, the two replicating together while apps move). A release reads
+everything every release since the last hard cutover stored: data
+directories, log entries and snapshots keep their readers until a declared
+cutover drops them (proposal; at the least, those of the previous release). A
+node never rolls back across a stored-format change: a store, snapshot or log
+entry from a later release is refused by its version, not misread.
+
+**API.** Between cutovers the API changes additively. A route, or a field of a
+request or an answer, is deprecated for at least **3 releases** (proposal)
+before it is removed; while deprecated, a route answers with the
+[`Deprecation`](https://www.rfc-editor.org/rfc/rfc9745) header (the day it was
+deprecated) and a `Link` to this page (`rel="deprecation"`). A new required
+request field is a removal of the old request.
+
+**Peers.** Nodes of releases `N-1` and `N` serve each other through a rollout.
+A peer route (`/internal/*`, `/job/*`) is an API route: removing one takes the
+same 3 releases, or a cutover.
+
+**Clients.** A client release works against the node release it was tested
+with and every later one until the next cutover, as far as the routes and
+fields it uses are concerned (the API guarantee above); a node release keeps
+every route the clients of the previous 3 releases call.
+
+**Hard cutovers** are the exception, never a side effect. A change that breaks
+any of the above is one only once it is declared (below); an undeclared break
+is a bug, and the CI checks below fail it.
+
+## Declaring a deprecation
+
+1. Keep the route or field working, and add a `[[deprecated]]` entry to
+   `crates/node/api-deprecations.toml`: `route = "METHOD /path"` (as the router
+   names it) or `field = "name"`, `since` (the release that first ships the
+   deprecation), `date` (the day it merges), `remove_after` (at least 3
+   releases after `since`) and `replacement`. The node then answers the route
+   with `Deprecation: @<date>` and the `Link`.
+2. Say so in `CHANGELOG.md` under the release's **Deprecated** heading, and in
+   the clients that use it.
+3. In the release `remove_after` names or later, remove it; the entry may go
+   in the same change.
+
+## Declaring a hard cutover
+
+A hard cutover is declared in the PR that ships it, before the release:
+
+1. The PR body's compatibility block says `Door: one-way` and
+   `Hard cutover: <what breaks and for whom>`.
+2. `CHANGELOG.md` says **Hard cutover** in the release's entry, with what
+   operators must do (for example: clusters holding sealed files are recreated).
+3. An API, WIT or ABI removal gets a `[[cutover]]` entry in
+   `crates/node/api-deprecations.toml` (`route`, `field`, `wit` or `abi`, with
+   `pr` and `why`).
+4. A break of the peer protocol or of a stored format without a reader gets a
+   line in mdma's `CUTOVERS` (`shared/mdma_common/release_compat.py`) naming the
+   first release of the new epoch, so mdma refuses a rollout across it.
+
+## Changing a stored format
+
+A stored or replicated shape (a row, a log entry, a snapshot frame, a sealed
+file record) changes by raising its version and keeping a reader for the old
+one, in the same PR:
+
+- the store: raise `STORE_FORMAT` and append the migration step to
+  `calimero_log::format::MIGRATIONS`; snapshots carry rows, so raise
+  `SNAPSHOT_FORMAT` too;
+- an app's log entry: raise `ENTRY_FORMAT`, keep decoding format 1 (no
+  marker), and write the new format only once every replica of the group
+  reads it;
+- a test opens data in the old shape: a data directory, a row or an entry
+  written as the previous release wrote it (`crates/node/tests/old_datadir.rs`,
+  `calimero-log`'s `migration_tests.rs`).
+
+The PR body says `Door: one-way` and `Reader: <the step or decoder, and its
+test>`. A shape with no reader is a hard cutover.
+
+## What CI enforces
+
+| Check | Where | What fails it |
+| --- | --- | --- |
+| Format markers | the node, at start and at apply | A store, snapshot or app entry of a later format: refused by its version, never misread |
+| `Compatibility` | `ci-checks.yml` (part of the required `Rust` check), `scripts/check-api-compat.py` | A route or JSON field removed without a deprecation past its `remove_after` or a `[[cutover]]`; the WIT changed without a version bump, or a non-additive WIT change without a cutover; an ABI version dropped |
+| `Apps of the previous release` | `ci-checks.yml` (part of `Rust`) | The last published release's `kv-store-test-fixture.mpk` failing to install, run or upgrade to this tree's build on this tree's node (`crates/node/tests/previous-release/kv-store.json`) |
+| `Compatibility door` | `pr-description.yml`, `scripts/check-compat-door.py` | `Door: one-way` with neither `Reader:` nor `Hard cutover:` (and its CHANGELOG line); a format version moved with no door stated |
+| `clients against merod` | `e2e.yml` | mero-js's or calimero-client-py's tests failing against this tree's `merod` |
+
+Scenarios and the process suite run one build on fresh state, so they test
+none of this ([What scenario tests cannot catch](/contribute/testing/#what-scenario-tests-cannot-catch)).

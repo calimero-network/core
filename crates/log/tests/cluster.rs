@@ -682,7 +682,21 @@ impl DiskCluster {
         drop(engine);
         let _ = self.groups.remove(&id);
         let dir = self.dirs.remove(&id).unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Tasks of the stopped engine may hold the store a moment longer; the
+        // files are handed back once its RocksDB lock is free, never on a timer.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match Db::open(dir.path(), &KEY) {
+                Ok(db) => {
+                    drop(db);
+                    break;
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => panic!("node {id}'s store is still held: {e}"),
+            }
+        }
         dir
     }
 
@@ -947,4 +961,90 @@ async fn a_big_state_streams_to_a_new_node() {
     );
     // The snapshot on disk is sealed too.
     assert!(!all_bytes(c.dirs[&4].path()).contains(&value[..64]));
+}
+
+/// A backup (the snapshot file of one group) seeds another group on its sole
+/// voter. Once a snapshot covers the entry after it and the log is purged
+/// through that entry, replicas added afterwards can only catch up from the
+/// snapshot, so they hold the backup's state, and writes go on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_seeds_another_group_that_replicas_then_join() {
+    let c = DiskCluster::new(3).await;
+    let mut last = 0;
+    for i in 0..30 {
+        last = c.put(&format!("k{i}"), &i.to_string()).await;
+    }
+    let lid = c.leader().await;
+    assert!(
+        c.groups[&lid]
+            .wait_applied(last, Duration::from_secs(5))
+            .await
+    );
+    c.groups[&lid]
+        .snapshot_through(last, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let engine = |id: NodeId| Arc::clone(&c.net.engines.read().unwrap()[&id]);
+    let (_index, snapshot_id, file) = engine(lid).snapshot_file(1).unwrap().unwrap();
+    let kept = tempfile::tempdir().unwrap();
+    let backup = kept.path().join("backup.snap");
+    let _bytes = std::fs::copy(&file, &backup).unwrap();
+    // Not in the backup.
+    let _changed = c.put("k0", "changed").await;
+
+    let disk = || DiskKv {
+        state: None,
+        applies: Arc::default(),
+    };
+    let seed = engine(1).start_group(2, disk()).await.unwrap();
+    seed.initialize([(1, "node-1".to_owned())].into_iter().collect())
+        .await
+        .unwrap();
+    wait_for("the seed to lead", || seed.status().is_leader).await;
+    let rows = seed.replace_state(1, &snapshot_id, &backup).unwrap();
+    assert!(rows >= 30, "{rows} rows");
+    assert_eq!(seed.read_local(|m, _| m.get("k0")).as_deref(), Some("0"));
+    let marker = seed
+        .propose(|_m, _applied| Proposal::Append(b"restored=yes".to_vec()))
+        .await
+        .unwrap()
+        .index;
+    seed.snapshot_through(marker, Duration::from_secs(10))
+        .await
+        .unwrap();
+    seed.purge_log_through(marker, Duration::from_secs(10))
+        .await
+        .unwrap();
+
+    let mut joined = Vec::new();
+    for id in [2, 3] {
+        let g = engine(id).start_group(2, disk()).await.unwrap();
+        seed.add_learner(id, format!("node-{id}")).await.unwrap();
+        joined.push(g);
+    }
+    seed.change_voters([1, 2, 3].into_iter().collect())
+        .await
+        .unwrap();
+    // A replace now would leave the others on the state before.
+    assert!(seed.replace_state(1, &snapshot_id, &backup).is_err());
+    let after = seed
+        .propose(|_m, _applied| Proposal::Append(b"after=1".to_vec()))
+        .await
+        .unwrap()
+        .index;
+    for g in &joined {
+        assert!(g.wait_applied(after, Duration::from_secs(10)).await);
+        assert_eq!(g.read_local(|m, _| m.get("k0")).as_deref(), Some("0"));
+        assert_eq!(g.read_local(|m, _| m.get("k29")).as_deref(), Some("29"));
+        assert_eq!(
+            g.read_local(|m, _| m.get("restored")).as_deref(),
+            Some("yes")
+        );
+        assert_eq!(g.read_local(|m, _| m.get("after")).as_deref(), Some("1"));
+    }
+    // The group the backup came from is untouched.
+    assert_eq!(
+        c.groups[&lid].read_local(|m, _| m.get("k0")).as_deref(),
+        Some("changed")
+    );
 }

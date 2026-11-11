@@ -152,7 +152,7 @@ Clients and peers judge a node the same way (`calimero_client::attest::verify`):
 
 | Side | Profiles | Minimum release | Debug profiles |
 | --- | --- | --- | --- |
-| A node judging peers | `--peer-profiles` (default `MERO_TEE_PROFILE`) | `--peer-min-release` (default `2.3.109`) | Only if the node itself runs a debug profile |
+| A node judging peers | `--peer-profiles` (default `MERO_TEE_PROFILE`) | `--peer-min-release` (default and lowest `2.3.109`) | Only if the node itself runs a debug profile, as its own registers show at start |
 | `meroctl` | `--tee-profiles` (required for a real node) | `--min-release` (default `2.3.109`) | `--allow-debug-profiles` |
 
 A profile whose name contains `debug` is a debuggable image: the host can read

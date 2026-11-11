@@ -1,0 +1,38 @@
+{
+  "abiVersion": 1,
+  "world": "calimero:app@0.5.1",
+  "state": {
+    "fields": { "items": "table", "tags": "unorderedMap", "hits": "counter", "owner": "cell" },
+    "search": { "items": ["title"] },
+    "version": 2
+  },
+  "methods": {
+    "init": { "kind": "init", "params": [], "returns": null, "confirm": false, "public": false, "allowSystem": false },
+    "everything": {
+      "kind": "call",
+      "params": [
+        ["flag", "bool"], ["small", "u8"], ["medium", "u16"], ["count", "u32"], ["big", "u64"],
+        ["huge", "u128"], ["size", "usize"], ["delta", "i8"], ["offset", "i32"], ["balance", "i64"],
+        ["ratio", "f32"], ["precise", "f64"], ["letter", "char"], ["title", "string"],
+        ["blob", "bytes"], ["maybe", "option<u64>"], ["names", "list<string>"],
+        ["pair", "tuple<u32, string>"], ["digest", "[u8;32]"],
+        ["scores", "BTreeMap<String,u32>"], ["byId", "HashMap<u32,String>"],
+        ["unique", "BTreeSet<String>"], ["item", "Item"], ["page", "Page<Item>"],
+        ["nested", "option<list<option<Item>>>"]
+      ],
+      "returns": "list<Item>",
+      "confirm": false, "public": false, "allowSystem": false
+    },
+    "wipe": { "kind": "call", "params": [["reason", "option<string>"]], "returns": null, "confirm": true, "public": false, "allowSystem": false },
+    "secret": { "kind": "view", "params": [], "returns": "string", "confirm": true, "public": false, "allowSystem": false },
+    "lookup": { "kind": "view", "params": [["id", "u64"]], "returns": "option<Item>", "confirm": false, "public": true, "rate": "10/s", "allowSystem": false },
+    "fromPeer": { "kind": "call", "params": [["note", "string"]], "returns": null, "confirm": false, "public": false, "allowSystem": true, "allowApps": ["*"] },
+    "tick": { "kind": "timer", "params": [], "returns": null, "every": "1m", "confirm": false, "public": false, "allowSystem": true },
+    "fetchPrice": { "kind": "action", "params": [["symbol", "string"]], "returns": null, "confirm": false, "public": false, "allowSystem": false },
+    "storePrice": { "kind": "call", "params": [["price", "u64"]], "returns": null, "confirm": false, "public": false, "allowSystem": false, "allowAction": true },
+    "digest": { "kind": "compute", "params": [["x", "u32"]], "returns": null, "compute": { "fuel": 100, "result": "onDigest" }, "confirm": false, "public": false, "allowSystem": false },
+    "onDigest": { "kind": "call", "params": [], "returns": null, "computeResult": true, "confirm": false, "public": false, "allowSystem": true }
+  },
+  "errors": { "NotFound": { "id": "u64" }, "Forbidden": {}, "Invalid": { "field": "string", "detail": "option<string>" } },
+  "events": { "Created": { "id": "u64", "item": "Item" }, "Wiped": {} }
+}

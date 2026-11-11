@@ -67,6 +67,25 @@ class PackComponent(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 pack(tmp, "--compute", str(bad))
 
+    def test_previous_reaches_the_signer_with_the_component_beside_the_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seen = Path(tmp) / "seen.json"
+            signer = Path(tmp) / "signer.py"
+            # Records its arguments and what sits beside the manifest it was given.
+            signer.write_text(
+                "import json, sys, pathlib\n"
+                "manifest = pathlib.Path(sys.argv[2])\n"
+                f"pathlib.Path({str(seen)!r}).write_text(json.dumps("
+                "{'argv': sys.argv[1:], 'beside': sorted(p.name for p in manifest.parent.iterdir())}))\n"
+            )
+            previous = Path(tmp) / "old.mpk"
+            previous.write_bytes(b"old")
+            pack(tmp, "--mero-sign", f"{sys.executable} -I {signer}", "--previous", str(previous))
+            got = json.loads(seen.read_text())
+        self.assertEqual(got["argv"][0], "sign")
+        self.assertEqual(got["argv"][-2:], ["--previous", str(previous.resolve())])
+        self.assertEqual(got["beside"], ["app.wasm", "manifest.json"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,7 +70,10 @@ the request verifies the release (`Node::verify_release`):
 1. The publisher's signature over the manifest and every artifact's digest
    (`calimero_bundle::VerifiedBundle`), and that it ships WASM at all.
 2. `minRuntimeVersion` is not newer than this node's release
-   (`CALIMERO_RELEASE_VERSION`).
+   (`CALIMERO_RELEASE_VERSION`). The other nodes do not verify the `.mpk`:
+   placement, replica moves and upgrades judge the requirement against each
+   node that would run the app ([The runtime a release
+   needs](/protocol/upgrades/#the-runtime-a-release-needs)).
 3. The package's **pinned signer**: the first release of a package pins its
    publisher key (`did:key`); a release signed by any other key is refused.
 4. Each service's WASM compiles.

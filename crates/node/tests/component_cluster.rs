@@ -378,8 +378,9 @@ async fn backups_are_encrypted_and_restorable() {
         .unwrap();
     let leader = c.app_leader(&app).unwrap();
     let node = &c.nodes[leader].as_ref().unwrap().node;
+    // The app's snapshot, and the system group's when this node leads it too.
     let written = node.backup().await.unwrap();
-    assert_eq!(written, 1);
+    assert!(written >= 1, "{written}");
     let dir = node.config.backup_dir.clone().unwrap();
     let file = std::fs::read_dir(dir.join(&app))
         .unwrap()
@@ -1578,6 +1579,133 @@ async fn views_refuse_confirm_methods() {
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
     assert_eq!(e.details().unwrap()["code"], "ConfirmNotAView", "{e}");
+}
+
+/// `POST /apps/{app}/methods/{method}` is `/intents` or `/views` under another spelling, and
+/// `GET /apps/{app}/openapi.json` lists exactly those routes, under `/abi`'s access.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn methods_run_as_intents_and_views_and_the_openapi_document_lists_them() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+
+    // The document: one operation per client method, kinds and step-ups from the ABI.
+    let doc = alice.app_openapi(&app).await.unwrap();
+    assert_eq!(doc["openapi"], "3.1.0", "{doc}");
+    assert_eq!(doc["info"]["version"], bundle.as_str());
+    let set = &doc["paths"]["/apps/{app}/methods/set"]["post"];
+    assert_eq!(set["operationId"], "set");
+    assert_eq!(set["tags"], json!(["call"]));
+    assert_eq!(
+        doc["paths"]["/apps/{app}/methods/len"]["post"]["tags"],
+        json!(["view"])
+    );
+    assert!(doc["paths"]["/apps/{app}/methods/clear"]["post"]["responses"]["412"].is_object());
+    assert!(doc["paths"]["/apps/{app}/methods/init"].is_null());
+    assert!(
+        doc["paths"]["/apps/{app}/methods/beat"].is_null(),
+        "a timer is not called"
+    );
+    assert!(doc["paths"]["/apps/{app}/events"]["get"].is_object());
+
+    // A call: the same idempotency key through either route is one run.
+    let by_route = alice
+        .call_method(
+            &app,
+            "set",
+            json!({ "args": { "key": "a", "value": "1" }, "idempotencyKey": "k-1" }),
+        )
+        .await
+        .unwrap();
+    assert!(by_route["events"].is_array(), "{by_route}");
+    let by_intents = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "a", "value": "2" }),
+            Some("k-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_intents.index, by_route["index"].as_u64().unwrap());
+    assert_eq!(
+        strong_view(&alice, &app, "get", json!({ "key": "a" })).await,
+        json!("1"),
+        "the retry under the same key did not run again"
+    );
+
+    // A view: the answer `/views` gives (no `events`), and the same result.
+    let len = alice
+        .call_method(&app, "len", json!({ "args": {} }))
+        .await
+        .unwrap();
+    assert_eq!(
+        len["result"],
+        strong_view(&alice, &app, "len", json!({})).await
+    );
+    assert!(len.get("events").is_none(), "{len}");
+    let stale = alice
+        .call_method(
+            &app,
+            "get",
+            json!({ "args": { "key": "a" }, "consistency": "stale", "minIndex": by_intents.index }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale["result"], json!("1"));
+
+    // The app's own errors and the step-up come back as they do from `/intents`.
+    let err = alice
+        .call_method(&app, "clear", json!({ "args": {} }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("CONFIRM_REQUIRED"), "{err}");
+    let _r = alice
+        .post_confirmed(
+            &format!("apps/{app}/methods/clear"),
+            json!({ "args": {} }),
+            &mut pk,
+        )
+        .await
+        .unwrap();
+    assert_eq!(strong_view(&alice, &app, "len", json!({})).await, json!(0));
+
+    // Reserved names, `method` in the body and unknown fields are refused.
+    let err = alice
+        .call_method(&app, "__upgrade", json!({ "args": {} }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("RESERVED_METHOD"), "{err}");
+    let _err = alice
+        .call_method(&app, "set", json!({ "method": "clear", "args": {} }))
+        .await
+        .unwrap_err();
+
+    // Someone the app does not reach gets what `/abi`, `/intents` and `/views` give them.
+    let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
+    let code = |r: Result<Value, calimero_client::Error>| r.unwrap_err().code().map(str::to_owned);
+    let abi = code(bob.app_abi(&app).await);
+    assert_eq!(code(bob.app_openapi(&app).await), abi);
+    let intents = bob
+        .call(&app, "set", json!({ "key": "b", "value": "1" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        code(
+            bob.call_method(&app, "set", json!({ "args": { "key": "b", "value": "1" } }))
+                .await
+        ),
+        intents.code().map(str::to_owned)
+    );
+    let views = bob
+        .view(&app, "len", json!({}), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        code(bob.call_method(&app, "len", json!({ "args": {} })).await),
+        views.code().map(str::to_owned)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -3649,6 +3777,95 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     // Only the owner reads them.
     let e = bob.app_xcalls(&source).await.unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
+/// The upgrade suite's case: an app's dead letters move with it. A new replica catches
+/// up from the log, the send and its dead-lettering applied in one batch, and lists the
+/// dead letter its leader wrote; a node that no longer holds a replica answers
+/// `GET /apps/{app}/xcalls` from one, as the other app routes do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
+    let c = Cluster::start(4).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let source = alice
+        .create_app("source", &bundle, json!({}))
+        .await
+        .unwrap();
+    let _r = alice
+        .call(
+            &source,
+            "relay",
+            json!({ "app": "no-such-app", "key": "a", "value": "1" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let dead_of = |x: &Value| x["deadLetters"].as_array().cloned().unwrap_or_default();
+    let mut before = Vec::new();
+    for _ in 0..100 {
+        before = dead_of(&alice.app_xcalls(&source).await.unwrap());
+        if !before.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before[0]["app"], json!("no-such-app"));
+
+    // Move it off a follower onto the spare node, a learner catching up from the log.
+    let info = alice.get(&format!("apps/{source}")).await.unwrap();
+    let replicas: Vec<u64> = serde_json::from_value(info["replicas"].clone()).unwrap();
+    let spare = (1..=4).find(|n| !replicas.contains(n)).unwrap();
+    let leader = c.app_leader(&source).unwrap() as u64 + 1;
+    let off = *replicas.iter().find(|r| **r != leader).unwrap();
+    let moved: Vec<u64> = replicas
+        .iter()
+        .copied()
+        .filter(|r| *r != off)
+        .chain([spare])
+        .collect();
+    let ops = c.client(leader as usize - 1);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops
+        .post_operator_signed(
+            &format!("ops/apps/{source}/replicas"),
+            json!({ "replicas": moved }),
+            &common::operator_sign,
+        )
+        .await
+        .unwrap();
+
+    // The new replica's own state, once it applied the dead-lettering: the letter is there.
+    let node = &c.nodes[spare as usize - 1].as_ref().unwrap().node;
+    let mut caught_up = None;
+    for _ in 0..200 {
+        caught_up = node.hosted(&source).and_then(|g| {
+            g.read_local(|m, _| (m.state.component.head.xcall.first == 1).then(|| m.dead_letters()))
+        });
+        if caught_up.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let local = caught_up.expect("the new replica never applied the dead-lettering");
+    assert_eq!(
+        serde_json::to_value(&local).unwrap(),
+        Value::Array(before.clone()),
+        "the new replica lost the dead letter"
+    );
+
+    // Every node lists it: the new replica, and the node the app moved off, by forwarding.
+    let session = alice.session().await.unwrap();
+    for n in [spare, off] {
+        let cl = c.client(n as usize - 1);
+        cl.use_session(session.clone()).await;
+        let x = cl
+            .app_xcalls(&source)
+            .await
+            .unwrap_or_else(|e| panic!("node {n}: {e}"));
+        assert_eq!(dead_of(&x), before, "node {n}");
+    }
 }
 
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound

@@ -45,6 +45,7 @@ fn config(dir: &Path, node_id: u64, counter: Option<Arc<MemoryCounter>>) -> Conf
         metrics_listen: None,
         replicas: 1,
         backup_dir: None,
+        restore_from: None,
         raft: calimero_log::Config {
             heartbeat_ms: 100,
             election_min_ms: 500,

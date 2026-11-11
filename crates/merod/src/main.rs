@@ -395,7 +395,8 @@ fn parse_peers(args: &NodeArgs) -> eyre::Result<BTreeMap<u64, String>> {
 }
 
 /// How this node judges a peer's quote: nothing real in `--dev`, else the
-/// profiles and floor it is given (a TDX node needs them).
+/// profiles and floor it is given (a TDX node needs them; a floor below the
+/// built-in one is refused).
 fn peer_measurements(args: &NodeArgs, dev: bool) -> eyre::Result<Measurements> {
     Ok(if dev {
         Measurements::None
@@ -413,7 +414,11 @@ fn peer_measurements(args: &NodeArgs, dev: bool) -> eyre::Result<Measurements> {
         }
         Measurements::Release {
             allowed_profiles: profiles,
-            min_version: args.peer_min_release.clone(),
+            min_version: args
+                .peer_min_release
+                .as_deref()
+                .map(calimero_client::attest::configured_min_release)
+                .transpose()?,
         }
     })
 }
@@ -485,8 +490,8 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     let dev = args.dev.unwrap_or(false);
     let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
     let peers = parse_peers(&args)?;
-    let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
     let peer_measurements = peer_measurements(&args, dev)?;
+    let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
     let outbound = match (&args.settings, &args.outbound) {
         (Some(path), _) => Some(read_settings(path)?),
         (None, o) => o.clone(),
@@ -524,6 +529,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         metrics_listen: args.metrics_listen,
         replicas: args.replicas.unwrap_or(3),
         backup_dir: args.backup_dir.clone(),
+        restore_from: args.restore_from.clone(),
         raft: calimero_log::Config::default(),
         read_wait: std::time::Duration::from_secs(2),
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,

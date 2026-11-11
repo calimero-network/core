@@ -57,6 +57,15 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `meta` under group id `NODE_ROWS` (`u64::MAX`, which no group takes), sealed and
   synced like a vote: the node's rollback counter lives in the same store as the
   data, so a copy of the store carries the counter it had.
+- Format versions (`format.rs`, `machine::SNAPSHOT_FORMAT`): the store keeps its format in
+  the sealed node row `format` (`STORE_FORMAT`, 1). `Engine::open` settles it before anything
+  else: a newer store is refused (`NewerStore`, the node does not start), an empty one is
+  marked current, an older one (no row: format 0, every release up to 1.0.0-rc.15, whose rows
+  are format 1's) goes through `MIGRATIONS` one step at a time, the marker written after each.
+  A snapshot file's first line is `CALIMERO-SNAPSHOT-<SNAPSHOT_FORMAT>`; a later format is
+  refused by it, not by its frames. A change to any row's shape raises `STORE_FORMAT` (and
+  `SNAPSHOT_FORMAT`, since snapshots carry rows) and appends its step. Tests:
+  `format::tests`, `machine::snapshot_format`, the node's `old_datadir.rs`.
 - Migration (`legacy.rs`): a data dir holding the previous redb file (`log.redb`) is
   migrated on `Engine::open` (entries, vote, commit and purge marks, blobs; the old
   whole-state snapshot is imported by the group's machine via `Machine::import`) and

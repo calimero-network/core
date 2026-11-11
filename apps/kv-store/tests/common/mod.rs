@@ -32,8 +32,12 @@ pub fn app(org: Org) -> TestApp {
 
 /// The scenario files under `scenarios/` (not the `.org.json` beside them), sorted.
 pub fn scenarios() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+    scenarios_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios"))
+}
+
+/// The scenario files in `dir` (not the `.org.json` beside them), sorted.
+pub fn scenarios_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .map(|e| e.expect("dir entry").path())
         .filter(|p| {

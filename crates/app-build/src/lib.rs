@@ -121,16 +121,24 @@ fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built
         );
     }
 
+    let manifest = crate_dir.join("Cargo.toml").canonicalize()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // A cdylib dependency also emits a .wasm, so pick the one of the crate being built.
     let artifact = stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter(|msg| msg["reason"] == "compiler-artifact")
+        .filter(|msg| {
+            msg["manifest_path"]
+                .as_str()
+                .and_then(|path| Path::new(path).canonicalize().ok())
+                .is_some_and(|path| path == manifest)
+        })
         .filter_map(|msg| msg["filenames"].as_array().cloned())
         .flatten()
         .filter_map(|name| name.as_str().map(str::to_owned))
         .find(|name| name.ends_with(".wasm"))
-        .ok_or_else(|| eyre::eyre!("cargo produced no .wasm artifact"))?;
+        .ok_or_else(|| eyre::eyre!("{} produced no .wasm artifact", crate_dir.display()))?;
 
     let raw = std::fs::read(&artifact)?;
     let (stripped, abi) = lift_abi(&raw)?;

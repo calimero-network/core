@@ -24,8 +24,11 @@ use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
 pub(crate) mod blob_guards;
+mod cluster_version;
 mod component;
 mod job;
+pub(crate) mod restore;
+mod runtime;
 mod segments;
 
 pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
@@ -118,6 +121,11 @@ pub struct Config {
     pub replicas: usize,
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
     pub backup_dir: Option<PathBuf>,
+    /// Found the cluster again from the backups in this directory
+    /// (`--restore-from`, with `--bootstrap` on an empty data directory): K_c
+    /// from its kept copies, the system state from its newest system backup
+    /// (`node::restore`).
+    pub restore_from: Option<PathBuf>,
     pub raft: calimero_log::Config,
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
@@ -129,6 +137,9 @@ pub struct Config {
     pub refresh_rotate_after: Duration,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
+    /// On TDX, `run` refuses to start unless the TD's own registers match
+    /// this profile in that release (`attest::check_own_profile`), so the
+    /// peer policy reads a measured profile.
     pub tee_release: Option<String>,
     pub tee_profile: Option<String>,
     /// Which TD images a peer's real quote may come from.
@@ -201,7 +212,8 @@ impl Config {
 }
 
 /// How a node judges a peer's quote. It trusts debug peers only when it runs a
-/// debug image itself.
+/// debug image itself: `tee_profile` is the profile its own registers match
+/// (checked at start on TDX, `attest::check_own_profile`).
 pub(crate) fn peer_policy(
     allow_mock: bool,
     measurements: &calimero_client::Measurements,
@@ -477,6 +489,8 @@ pub struct Node {
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
+    /// The runtime each peer named, by node, and when (`Self::runtime_of_node`).
+    peer_runtimes: Mutex<HashMap<NodeId, (tokio::time::Instant, crate::runtime::NodeRuntime)>>,
     /// Peers that called this node identified, by the transport key they
     /// proved: the node registered at the address that attests that key, and
     /// the release that attestation named ([`Self::identify_peer`]).
@@ -522,6 +536,9 @@ pub struct Node {
     moving: Mutex<HashSet<String>>,
     /// A promotion of learners to system voters is under way.
     promoting: std::sync::atomic::AtomicBool,
+    /// The system leader's bookkeeping for the cluster version
+    /// ([`Node::raise_cluster_version`]).
+    cluster_version: Mutex<cluster_version::Raising>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here (spec section 7).
@@ -814,7 +831,7 @@ impl Node {
             None => None,
         };
         let system = engine
-            .start_group(SYSTEM_GROUP, SystemMachine::default())
+            .start_group(SYSTEM_GROUP, SystemMachine::new(config.cluster.clone()))
             .await?;
         let sealed = Arc::new(calimero_sealed::SealedTransport::generate(
             &calimero_sealed::SealedOptions {
@@ -881,7 +898,9 @@ impl Node {
             unattested: Mutex::default(),
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
+            cluster_version: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
+            peer_runtimes: Mutex::default(),
             callers: Mutex::new(HashMap::new()),
             identifying: Arc::default(),
             identifications: Mutex::default(),
@@ -917,7 +936,20 @@ impl Node {
         });
 
         if node.config.bootstrap {
-            node.system.initialize(node.config.peers.clone()).await?;
+            // Founding the cluster again from its backups, the founder forms
+            // the system group alone and seeds it (`restore::refound`); the
+            // other nodes join as registered learners, as added nodes do.
+            let voters = match node.config.restore_from {
+                Some(_) => node
+                    .config
+                    .peers
+                    .iter()
+                    .filter(|(id, _)| **id == node.config.node_id)
+                    .map(|(id, addr)| (*id, addr.clone()))
+                    .collect(),
+                None => node.config.peers.clone(),
+            };
+            node.system.initialize(voters).await?;
         }
         Ok(node)
     }
@@ -943,6 +975,15 @@ impl Node {
             Some(n) => Some(n.addr.clone()),
             None => self.config.peers.get(&id).cloned(),
         })
+    }
+
+    /// Where K_c may be delivered for node `id` (`cluster_key::recipient_addr`):
+    /// the directory's address, else the system group's membership's; this
+    /// node's `--peers` only before genesis.
+    #[must_use]
+    pub fn key_recipient_addr(&self, id: NodeId) -> Option<String> {
+        let member = self.system.member_addr(id);
+        self.sys(|s| crate::cluster_key::recipient_addr(s, member, &self.config.peers, id))
     }
 
     /// The address the directory or `--peers` holds for the replica node at
@@ -1106,8 +1147,12 @@ impl Node {
         self.system.read_local(|m, _| f(&m.state))
     }
 
-    /// Commit a system command through the system group's leader.
+    /// Commit a system command through the system group's leader; `409
+    /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
+    /// version ([`Node::require_features`]).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
+        // Nothing is proposed that a node of the cluster would skip.
+        self.require_features(&cmd.features()).await?;
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
@@ -1786,7 +1831,10 @@ impl Node {
     async fn start_app_group_if_replica(&self, group: GroupId) -> bool {
         let app = self.sys(|s| s.apps.values().find(|a| a.group == group).cloned());
         match app {
-            Some(app) if app.replicas.contains(&self.config.node_id) => {
+            Some(app)
+                if app.replicas.contains(&self.config.node_id)
+                    && !app.restore.as_ref().is_some_and(|r| r.awaits_backup()) =>
+            {
                 self.ensure_app_group(&app).await.is_ok()
             }
             _ => false,
@@ -1809,8 +1857,15 @@ impl Node {
             .map_err(|e| eyre::eyre!("{e}"))?
             .insert(app.group, Arc::clone(&g));
         if app.replicas.first() == Some(&self.config.node_id) {
+            // A restore's seed forms the new group alone: it seeds the state,
+            // then adds the others (`restore`).
+            let members = if app.restore.is_some() {
+                &app.replicas[..1]
+            } else {
+                &app.replicas[..]
+            };
             let voters: BTreeMap<NodeId, String> = self.sys(|s| {
-                app.replicas
+                members
                     .iter()
                     .filter_map(|id| s.nodes.get(id).map(|n| (*id, n.addr.clone())))
                     .collect()
@@ -1871,7 +1926,9 @@ impl Node {
             }
             let node = Arc::clone(&me);
             drop(tokio::spawn(async move {
-                if !node.attests_as_replica(id, &addr).await {
+                if !node.attests_as_replica(id, &addr).await
+                    || !node.joins_at_cluster_version(id, &addr).await
+                {
                     if let Ok(mut j) = node.joining.lock() {
                         let _was = j.remove(&id);
                     }
@@ -2002,7 +2059,12 @@ impl Node {
         // the operator's signed `/ops/nodes` (`RegisterNode` carries the
         // operator's signature, checked where it applies).
         if self.system.status().is_leader {
-            if self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
+            let empty = self.sys(|s| s.governance.is_none() && s.accounts.is_empty());
+            if empty && self.config.restore_from.is_some() {
+                if let Err(e) = self.refound().await {
+                    warn!(error = %format!("{e:#}"), "the cluster was not founded again from its backups");
+                }
+            } else if empty {
                 let nodes: Vec<NodeRecord> = self
                     .config
                     .peers
@@ -2033,13 +2095,16 @@ impl Node {
             }) {
                 let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
+            self.raise_cluster_version();
             self.admit_registered_nodes();
             self.promote_learners();
         }
+        // An app waiting for its backup (a cluster founded again) is hosted nowhere.
         let mine: Vec<AppRecord> = self.sys(|s| {
             s.apps
                 .values()
                 .filter(|a| a.replicas.contains(&self.config.node_id))
+                .filter(|a| !a.restore.as_ref().is_some_and(|r| r.awaits_backup()))
                 .cloned()
                 .collect()
         });
@@ -2054,8 +2119,10 @@ impl Node {
             // An SDK 0.12 app runs nothing here, its init included. A component app
             // may be given a bundle by an upgrade before its init applied (its init
             // timed out), and still needs its init then, on that bundle.
+            // A group being restored is seeded from its backup, never initialized.
             let needs_init = app.executor == Kind::Component
                 && app.components.is_app()
+                && app.restore.is_none()
                 && g.read_local(|m, _| {
                     !m.state.initialized
                         && (m.state.bundle.is_none()
@@ -2090,9 +2157,13 @@ impl Node {
                     self.component_search.drop_app(&app);
                 }
                 let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
-                if let Some(g) =
-                    stopped.filter(|_| self.sys(|s| s.apps.values().all(|a| a.group != group)))
-                {
+                // A deleted app's files go with it; an app restored into a new
+                // group keeps them, as the restored state names them.
+                let app_id = stopped
+                    .as_ref()
+                    .map(|g| g.read_local(|m, _| m.app_id.clone()));
+                let deleted = app_id.is_some_and(|id| self.sys(|s| !s.apps.contains_key(&id)));
+                if let Some(g) = stopped.filter(|_| deleted) {
                     self.drop_deleted_files(&g);
                 }
                 let _r = self.engine.remove_group(group).await;
@@ -2558,6 +2629,25 @@ impl Node {
             }
         }
         None
+    }
+
+    /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
+    /// replica's if it hosts the app, else the first replica that answers
+    /// `internal/xcalls`, as [`Self::storage_stats`].
+    pub async fn app_xcalls(&self, app: &AppRecord) -> Result<Value, ApiError> {
+        if let Some(g) = self.hosted(&app.app_id) {
+            return Ok(g.read_local(|m, _| m.xcalls_report()));
+        }
+        let body = json!({ "app": app.app_id });
+        for id in &app.replicas {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
+                continue;
+            };
+            if let Ok(v) = self.peer_forward(&addr, "internal/xcalls", &body).await {
+                return Ok(v);
+            }
+        }
+        Err(ApiError::unavailable("no replica answered"))
     }
 
     /// After an app forgot blob `id`: delete its bytes on every node, unless
@@ -3076,6 +3166,7 @@ impl Node {
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
+        self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {
             return Err(ApiError::unsupported_engine());
         }
@@ -3152,13 +3243,15 @@ impl Node {
     #[must_use]
     /// Pick replicas for a new app among the nodes whose release is in
     /// `approved` (when the app's owner restricted releases) and not
-    /// [retired](crate::system::SystemState::retired) at `now`: spread over
-    /// as many zones as those nodes are in, least loaded first
-    /// ([`crate::placement::replicas`]).
+    /// [retired](crate::system::SystemState::retired) at `now`, and whose
+    /// runtime is not known to be older than `min_runtime` (its release's
+    /// `minRuntimeVersion`, [`crate::runtime`]): spread over as many zones as
+    /// those nodes are in, least loaded first ([`crate::placement::replicas`]).
     pub async fn place(
         &self,
         approved: Option<&std::collections::BTreeSet<String>>,
         now: u64,
+        min_runtime: Option<&semver::Version>,
     ) -> Vec<NodeId> {
         // Past a release's deadline, a node on an older one keeps its apps
         // but takes no new one.
@@ -3175,54 +3268,136 @@ impl Node {
                 allowed.push(id);
             }
         }
+        if let Some(min) = min_runtime {
+            let runtimes = self.runtimes(&allowed).await;
+            allowed.retain(|id| runtimes.get(id).is_none_or(|rt| !rt.short_of(min)));
+        }
         self.sys(|s| crate::placement::replicas(s, &allowed, self.config.replicas))
     }
 
-    /// Write encrypted snapshots of the app groups this node leads.
+    /// Write encrypted snapshots of the app groups this node leads, and of
+    /// the system group when it leads it ([`Self::back_up`]).
+    pub async fn backup(&self) -> eyre::Result<usize> {
+        self.back_up(false).await
+    }
+
+    /// [`Self::backup`] of every group this node holds, leader or not: what a
+    /// node of a cluster that lost a majority (no leader anywhere) still has,
+    /// for founding the cluster again (`node::restore`).
+    pub async fn backup_everything(&self) -> eyre::Result<usize> {
+        self.back_up(true).await
+    }
+
+    /// Write backups into `--backup-dir`: a snapshot of each group this node
+    /// leads (all of them with `everything`), each with its manifest
+    /// ([`crate::backup`]), and beside them K_c wrapped under this node's K_r
+    /// (once per release, `backup::keep_cluster_key`) and, with the system
+    /// group's, the code its state names (`backup::keep_code`). Answers how
+    /// many snapshots it wrote.
     ///
     /// A backup is the group's snapshot file as the log wrote it: streamed
     /// from disk, sealed frame by frame, never the whole state in memory.
-    pub async fn backup(&self) -> eyre::Result<usize> {
+    async fn back_up(&self, everything: bool) -> eyre::Result<usize> {
         let Some(dir) = self.config.backup_dir.clone() else {
             return Ok(0);
         };
+        let _kept = crate::backup::keep_cluster_key(
+            &dir,
+            &self.own_release(),
+            &self.config.storage_key,
+            &self.cluster_key,
+        )?;
+        let mut written = 0;
+        if everything || self.system.status().is_leader {
+            if self
+                .back_up_group(&dir, crate::backup::SYSTEM, &self.system)
+                .await?
+            {
+                written += 1;
+            }
+            self.keep_code(&dir)?;
+        }
         let groups: Vec<Arc<Group<AppMachine>>> = self
             .apps
             .read()
             .map(|a| a.values().cloned().collect())
             .unwrap_or_default();
-        let mut written = 0;
         for g in groups {
-            if !g.status().is_leader {
+            if !everything && !g.status().is_leader {
                 continue;
             }
-            let (app_id, applied) = g.read_local(|m, applied| (m.app_id.clone(), applied));
-            // Bring the snapshot up to what this node has applied first.
-            let fresh =
-                |s: &Option<(u64, String, PathBuf)>| s.as_ref().is_some_and(|s| s.0 >= applied);
-            let mut snap = self.engine.snapshot_file(g.id())?;
-            if !fresh(&snap) {
-                g.snapshot_now().await?;
-                for _ in 0..100 {
-                    snap = self.engine.snapshot_file(g.id())?;
-                    if fresh(&snap) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }
-            let Some((index, id, file)) = snap else {
-                continue;
-            };
-            let path = dir.join(&app_id);
-            std::fs::create_dir_all(&path)?;
-            let out = path.join(crate::backup::file_name(index, g.id(), &id));
-            if !out.exists() {
-                let _bytes = std::fs::copy(&file, &out)?;
+            let app_id = g.read_local(|m, _| m.app_id.clone());
+            if self.back_up_group(&dir, &app_id, &g).await? {
                 written += 1;
             }
         }
         Ok(written)
+    }
+
+    /// Back up group `g` of `subject` (an app id, or `backup::SYSTEM`) into
+    /// `dir`, first bringing its snapshot up to what this node has applied.
+    /// Answers whether it wrote one (`false`: that snapshot is there already).
+    async fn back_up_group<M: calimero_log::Machine>(
+        &self,
+        dir: &std::path::Path,
+        subject: &str,
+        g: &Group<M>,
+    ) -> eyre::Result<bool> {
+        let applied = g.applied();
+        let fresh = |s: &Option<(u64, String, PathBuf)>| s.as_ref().is_some_and(|s| s.0 >= applied);
+        let mut snap = self.engine.snapshot_file(g.id())?;
+        if !fresh(&snap) {
+            g.snapshot_now().await?;
+            for _ in 0..100 {
+                snap = self.engine.snapshot_file(g.id())?;
+                if fresh(&snap) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let Some((index, snapshot_id, file)) = snap else {
+            return Ok(false);
+        };
+        let manifest = crate::backup::Manifest {
+            format: crate::backup::FORMAT,
+            merod: env!("CARGO_PKG_VERSION").to_owned(),
+            release: self.own_release(),
+            app: subject.to_owned(),
+            group: g.id(),
+            index,
+            snapshot_id,
+            sha256: String::new(),
+            written_at: crate::types::now_secs(),
+            node: self.config.node_id,
+        };
+        crate::backup::write(dir, &self.cluster_key, &file, &manifest)
+    }
+
+    /// Keep in `dir` the code the system state names that this node holds:
+    /// every bundle and package, by hash ([`crate::backup::keep_code`]).
+    fn keep_code(&self, dir: &std::path::Path) -> eyre::Result<()> {
+        let hashes: BTreeSet<String> = self.sys(|s| {
+            s.bundles
+                .keys()
+                .cloned()
+                .chain(
+                    s.packages
+                        .values()
+                        .flat_map(|p| p.versions.values().map(|v| v.mpk.clone())),
+                )
+                .collect()
+        });
+        let code = dir.join(crate::backup::CODE);
+        for hash in hashes {
+            if code.join(&hash).exists() {
+                continue;
+            }
+            if let Some(bytes) = self.engine.get_blob(&hash)? {
+                let _kept = crate::backup::keep_code(dir, &self.cluster_key, &hash, &bytes)?;
+            }
+        }
+        Ok(())
     }
 }
 

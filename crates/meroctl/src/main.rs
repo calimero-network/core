@@ -27,6 +27,7 @@ mod group;
 mod namespace;
 mod node;
 mod ops;
+mod proxy;
 
 use env::{json_arg, load_dev_passkey, save_passkey, write_private, Env, Home, Trust};
 
@@ -42,7 +43,8 @@ use env::{json_arg, load_dev_passkey, save_passkey, write_private, Env, Home, Tr
         meroctl --node local app install --path ./kv-store.mpk\n  \
         meroctl --node local context create --package com.example.kv --name notes\n  \
         meroctl --node local call --context notes set --args '{\"key\":\"a\",\"value\":\"1\"}'\n  \
-        meroctl --node local --ops-token $TOKEN ops status"
+        meroctl --node local --ops-token $TOKEN ops status\n  \
+        meroctl --node local proxy --listen 127.0.0.1:2580"
 )]
 struct Cli {
     /// Directory for meroctl's saved nodes and sessions.
@@ -51,8 +53,9 @@ struct Cli {
     /// The node's URL (any node of the cluster).
     #[arg(long, value_name = "URL", env = "CALIMERO_API")]
     api: Option<String>,
-    /// A node saved with `meroctl node add` (default: the one `node use` chose).
-    #[arg(long, value_name = "ALIAS", conflicts_with = "api")]
+    /// A node saved with `meroctl node add` (default: the one `node use` chose),
+    /// or a node's URL (`http://` or `https://`, as `--api`).
+    #[arg(long, value_name = "ALIAS|URL", conflicts_with = "api")]
     node: Option<String>,
     /// Trust mock quotes (development clusters such as `merod local`). A flag
     /// only, never read from the environment, so it cannot linger into a
@@ -183,6 +186,11 @@ enum Cmd {
     /// packages, upgrades, quotas, backups, metrics.
     #[command(subcommand)]
     Ops(ops::OpsCmd),
+    /// Serve the node's API as plain HTTP on loopback: every request is sent
+    /// through the attested, sealed channel with your session (or the
+    /// request's own `Authorization`); `GET /openapi.json` is the API's
+    /// document. For curl, scripts and OpenAPI clients.
+    Proxy(proxy::ProxyArgs),
     /// Any API route: METHOD is get, post, put or delete; BODY is JSON.
     Raw {
         method: String,
@@ -264,6 +272,9 @@ async fn main() -> eyre::Result<()> {
 
     let (url, saved_mock) = match (&cli.api, &cli.node) {
         (Some(url), _) => (url.clone(), false),
+        (None, Some(url)) if url.starts_with("http://") || url.starts_with("https://") => {
+            (url.clone(), false)
+        }
         (None, name) => {
             let nodes = home.nodes();
             let name = name.clone().or(nodes.default.clone()).ok_or_else(|| {
@@ -285,6 +296,9 @@ async fn main() -> eyre::Result<()> {
         let doc =
             calimero_client::attest::release::fetch_release_attestation(&base, &nonce).await?;
         return print(&verified_release(&doc, &nonce, &trust).await?);
+    }
+    if let Cmd::Proxy(args) = cli.cmd {
+        return proxy::run(args, home, url, trust.policy(), cli.api_key.clone()).await;
     }
     let mut env = Env::connect(home, url, trust, cli.api_key.clone(), cli.ops_token.clone())?;
     env.operator_key_file.clone_from(&cli.operator_key_file);
@@ -416,6 +430,7 @@ async fn main() -> eyre::Result<()> {
         | Cmd::Ops(_)
         | Cmd::Login { .. }
         | Cmd::Logout { .. }
+        | Cmd::Proxy(_)
         | Cmd::AttestRelease { .. } => {
             unreachable!("handled above")
         }

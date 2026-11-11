@@ -140,12 +140,38 @@ With `--backup-dir`, every node writes, every 60 seconds (and on
 `POST /ops/backup`), a copy of the current snapshot file of each app group it
 leads, first asking for a fresh snapshot if the last one is older than what it
 has applied. A backup is the log's own snapshot file, sealed frame by frame
-under the cluster's storage key, stored as
-`{dir}/{app}/{index:020}.{group}.{snapshot}.snap`. Only a node holding the
-cluster's K_r can open one (`backup::latest`). The directory stands in for
-object storage.
+under the cluster key K_c, stored as
+`{dir}/{app}/{index:020}.{group}.{snapshot}.snap`, with a manifest beside it
+(`….snap.manifest`) that names the app, group, index, the file's SHA-256, the
+backup format and the `merod` and mero-tee release that wrote it, sealed under
+`HMAC-SHA256(K_c, "calimero.backup.manifest.v1")` and bound to the app and the
+file name. Only a node holding the cluster's K_c can open either
+(`backup::find`, `backup::latest`). The directory stands in for object storage.
 
-Restoring a snapshot into a running cluster is not done yet.
+### Restore
+
+`POST /ops/apps/{app}/restore` puts an app back to a backup the receiving node
+holds, as the operator's signed decision (`<app> / __restore_app / { backup,
+sha256 }`). The log records `RestoreApp`: the app moves to a new group whose
+first replica is that node, the seed. The seed forms the group alone, writes
+the backup's rows into it (each opened and sealed again for the new group),
+appends `componentRestored`, snapshots and purges its log through that entry,
+then adds the other replicas, which can only catch up from that snapshot, and
+makes them voters; `FinishRestore` ends it. The new group's Raft terms start
+again at 1, so `componentRestored` moves the base of run ids past every term
+the restored state carries (D52). The old group is dropped everywhere.
+
+The system group's leader backs up the system group the same way
+(`{dir}/system/`), with the code it names and K_c wrapped for its release;
+`merod run --bootstrap --restore-from DIR` founds the cluster again from them,
+and every app then waits for its own restore. A node of a cluster that lost
+its system majority backs up every group it holds with `POST
+/ops/backup?all=true`.
+
+What the operator decides is which backup the app goes back to: a restore is a
+rollback of the app's data, never a way to read it. A backup restores only on
+the cluster that sealed it (the same K_c), for the app its manifest names, on
+the release that wrote it or a later one ([Restore an app](/operate/runbooks/#restore-an-app)).
 
 ## Offline inspection
 
