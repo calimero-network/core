@@ -104,6 +104,8 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ matrix.repo }}
+          # A repository_dispatch needs contents write and nothing else.
+          permission-contents: write
 
       # The SDK's openapi-sync.yml listens for `core-openapi` and syncs to
       # `client_payload.commit`; with nothing new there it opens no pull request.
