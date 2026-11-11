@@ -23,6 +23,10 @@ TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 FROM_DIR="$TARGET/upgrade-from"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
+# The coverage matrix in the docs is generated from the deep cases; refuse a stale copy
+# before building anything.
+python3 -I crates/node/tests/fault/upgrade_deep.py --check-matrix docs/src/content/docs/contribute/testing.mdx
+
 pinned=$(grep -v '^[[:space:]]*#' .github/upgrade-from | grep -v '^[[:space:]]*$' | head -n 1)
 FROM="${FROM:-$pinned}"
 case "$FROM" in
@@ -57,6 +61,8 @@ if [ "$rc" = 3 ]; then
 fi
 [ "$rc" = 0 ] || exit "$rc"
 scripts/build-release-fixtures.sh "$FROM" "$FROM_DIR"
+# The deep cases' components and packages, from the same tag and tools.
+scripts/build-upgrade-deep-fixtures.sh "$FROM_DIR"
 
 cargo build --release -p merod -p meroctl -p mero-sign
 scripts/install-mero-app-build.sh
