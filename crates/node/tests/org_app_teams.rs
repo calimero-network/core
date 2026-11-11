@@ -37,13 +37,6 @@ const CREATE_CHILD_TEAM: u32 = 1 << 11;
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
 fn release(package: &str) -> Vec<u8> {
-    use sha2::Digest;
-    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
-        path: path.to_owned(),
-        hash: hex::encode(sha2::Sha256::digest(bytes)),
-        size: bytes.len() as u64,
-    };
-    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let mut wasm = kv_wasm();
     let tag = package.as_bytes();
     wasm.extend([
@@ -52,6 +45,18 @@ fn release(package: &str) -> Vec<u8> {
         u8::try_from(tag.len()).unwrap(),
     ]);
     wasm.extend_from_slice(tag);
+    release_shipping(package, wasm)
+}
+
+/// A signed single-service `.mpk` of `package@1.0.0` shipping `wasm`.
+fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
+    use sha2::Digest;
+    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
+        path: path.to_owned(),
+        hash: hex::encode(sha2::Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
@@ -583,6 +588,40 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
         "only the organization's owner and admins",
     );
     let _notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+}
+
+/// Two packages may ship a byte-identical component: each instance belongs to the
+/// package its release names, so scoping gives each package's team its own instances
+/// (it used to judge by the component, whose record names the first package installed,
+/// and put both instances in that package's team).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apart() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    for p in [CHAT, NOTES] {
+        let _ok = alice
+            .upload_package(release_shipping(p, kv_wasm()))
+            .await
+            .unwrap();
+    }
+    // Naming both packages, and naming none (every package with an instance).
+    let both = json!({ "apps": [{ "package": CHAT }, { "package": NOTES }] });
+    for body in [both, json!({})] {
+        let org = new_org(&alice).await;
+        let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+        let notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+        let done = scope(&alice, &mut a, &org, body).await.unwrap();
+        assert_eq!(done["teams"].as_array().unwrap().len(), 2, "{done}");
+        for (app, package) in [(&chat, CHAT), (&notes, NOTES)] {
+            let team = s(&app_team(&alice, &org, package).await["teamId"]);
+            let record = alice.get(&format!("apps/{app}")).await.unwrap();
+            assert_eq!(
+                record["access"],
+                json!({ "kind": "team", "team": team }),
+                "{package}: {record}"
+            );
+        }
+    }
 }
 
 /// G6 and the guest role: in a standalone organization (one open app team)
