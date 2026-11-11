@@ -799,6 +799,31 @@ async fn a_segment_whose_pin_dropped_before_its_entry_applied_waits_out_the_grac
     assert!(!present(), "kept past the grace");
 }
 
+/// `sweep_past_grace` sweeps at now and again past the grace; a segment that became unlisted
+/// between the two (a follower applied the entry that forgot its file) is first seen at the later
+/// time, and the next call must still delete it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_segment_first_seen_unlisted_by_a_later_sweep_goes_with_the_next_sweep_past_the_grace() {
+    let f = start_with(Cluster::start_with(3, more_time).await).await;
+    let bytes = vec![4u8; 2_000];
+    let hash = sha256_hex(&bytes);
+    f.node(0).engine.put_segment(&hash, &bytes).unwrap();
+    let present = || f.node(0).engine.get_segment(&hash).unwrap().is_some();
+    let first = std::time::Instant::now();
+    let pin = f.node(0).pin_segments(std::slice::from_ref(&hash));
+    f.node(0).sweep_segments_at(first);
+    drop(pin);
+    f.node(0)
+        .sweep_segments_at(first + SEGMENT_GRACE + Duration::from_secs(1));
+    assert!(present(), "deleted at first sight");
+
+    f.sweep_past_grace();
+    assert!(
+        !present(),
+        "kept past the grace of the sweep that first saw it"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_segment_a_node_got_before_it_applied_the_entry_survives_the_next_sweep() {
     let f = start_with(Cluster::start_with(3, more_time).await).await;
@@ -2609,26 +2634,38 @@ async fn parts_are_answered_before_a_slow_replica_has_them_and_complete_waits_fo
 async fn with_the_window_full_the_next_parts_answer_waits_for_a_slot() {
     let f = start_with(Cluster::start_with(3, more_time).await).await;
     let leader = f.leader();
-    let slow = (leader + 1) % 3;
+    let followers: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
     f.node(leader).set_upload_window(1);
-    f.node(slow).set_peer_blobs(PeerBlobs::Delay(2_000));
+    // Both followers hold a put back, so no majority holds part 0 before the delay passed: a
+    // slot frees on a majority, never on a particular replica.
+    let delay = Duration::from_secs(3);
+    for i in &followers {
+        f.node(*i).set_peer_blobs(PeerBlobs::Delay(3_000));
+    }
     let plain = stream(40 * MIB, 86);
     let upload = f.begun(leader, plain.len()).await;
 
+    let started = std::time::Instant::now();
     let _next = f.put_part(leader, &upload, 0, &plain).await.unwrap();
     let first: Vec<String> = f.node(leader).engine.list_segments().unwrap();
     assert_eq!(first.len(), 1);
-    assert_eq!(
-        stored_of(&f, slow, &first),
-        0,
-        "part 0 answered while it is on the way"
-    );
+    for i in &followers {
+        assert_eq!(
+            stored_of(&f, *i, &first),
+            0,
+            "part 0 answered while it is on the way"
+        );
+    }
 
     let _next = f.put_part(leader, &upload, 1, &plain).await.unwrap();
-    assert_eq!(
-        stored_of(&f, slow, &first),
-        1,
-        "part 1 was answered once part 0 left the window"
+    assert!(
+        started.elapsed() >= delay,
+        "part 1 was answered before part 0 could reach a majority"
+    );
+    let holding = (0..3).filter(|i| stored_of(&f, *i, &first) == 1).count();
+    assert!(
+        holding >= 2,
+        "part 1 was answered once part 0 was on a majority, not on {holding} nodes"
     );
 }
 
