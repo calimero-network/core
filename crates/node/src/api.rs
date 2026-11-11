@@ -786,6 +786,7 @@ struct AttestQuery {
     /// `receipts`: attest this node's receipt key instead of its transport key.
     /// `kms`: the transport key and what this node verified of its KMS, when
     /// it has a record (otherwise the transport key alone, as with none).
+    /// `orchestrator`: the transport key and the cluster identity this replica holds.
     #[serde(default)]
     purpose: Option<String>,
 }
@@ -825,7 +826,14 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     // The rules the cluster was deployed with, as this replica's state holds
     // them: bound with the receipt key, so a user proves both at once.
     let governance = node.sys(crate::system::SystemState::governance);
-    let report = if receipts {
+    let orchestrator = q.purpose.as_deref() == Some("orchestrator");
+    let report = if orchestrator {
+        calimero_client::attest::orchestrator_report_data(
+            &nonce,
+            &transport_key,
+            &node.cluster_identity(),
+        )
+    } else if receipts {
         let mut r = [0; 64];
         r[..32].copy_from_slice(&nonce);
         r[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
@@ -853,7 +861,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         governance: receipts.then_some(governance),
         kms,
         job_key: None,
-        cluster_identity: None,
+        cluster_identity: orchestrator.then(|| hex::encode(node.cluster_identity())),
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }

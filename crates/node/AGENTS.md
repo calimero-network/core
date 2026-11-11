@@ -482,6 +482,7 @@ is its command line.
   KMS quote merod accepted for its storage key, and the boot script's record for the
   data disk's, `--kms-disk-evidence`) and binds it (`kms_report_data`). Without a
   record, or without `purpose=kms`, the answer is the plain transport form.
+- **Orchestrator attestation**: `GET /attestation?purpose=orchestrator` on a replica binds the transport key and `Node::cluster_identity` (`orchestrator_report_data`) and carries `clusterIdentity`; a job node answers `404 NOT_FOUND`. Test: `a_replica_attests_as_the_orchestrator_and_a_job_node_refuses`.
 - **Release attestations** (`attest.rs`, `release_attestation`, `serve_release`): a
   quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
   has any key. Not a route of a running node: `serve_release` is its own tiny server
