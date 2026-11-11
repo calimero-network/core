@@ -73,6 +73,12 @@ fn hex32(v: &Value, what: &str) -> eyre::Result<[u8; 32]> {
         .ok_or_else(|| eyre::eyre!("the node answered a bad {what}"))
 }
 
+/// Whether `segments` is the segment list of the file the caller asked for: it hashes to the id
+/// the node named, which must be the requested one, so a node cannot hand over another file.
+fn names_requested_file(requested: &str, named: &[u8; 32], segments: &[[u8; 32]]) -> bool {
+    !segments.is_empty() && file_id(segments) == *named && hex::encode(named) == requested
+}
+
 impl Client {
     /// The plaintext of sealed file `id` (64 hex characters) of component app `app`.
     /// The node answers only ciphertext and the file's data key wrapped to a key made here for
@@ -96,7 +102,7 @@ impl Client {
             .map(|h| hex32(h, "segment hash"))
             .collect::<eyre::Result<Vec<_>>>()?;
         let named = hex32(&export["id"], "file id")?;
-        if segments.is_empty() || file_id(&segments) != named || hex::encode(named) != id {
+        if !names_requested_file(id, &named, &segments) {
             return Err(
                 eyre::eyre!("the node answered segments that are not the file {id}").into(),
             );
@@ -287,6 +293,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{Notify, RwLock};
 
+    use super::names_requested_file;
     use super::FILE_PART_BYTES;
     use crate::{Client, Error, Policy};
 
@@ -849,5 +856,29 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Api { status: 503, .. }), "{err:?}");
         assert_eq!(mock.log(), ["POST files"]);
+    }
+
+    /// The client trusts no list the node answers: it must hash to the id the caller asked for.
+    #[test]
+    fn only_the_requested_files_segment_list_is_accepted() {
+        let segments = [[1u8; 32], [2u8; 32]];
+        let id = calimero_sealed::file::file_id(&segments);
+        let requested = hex::encode(id);
+        assert!(names_requested_file(&requested, &id, &segments));
+        let other = [[3u8; 32]];
+        let other_id = calimero_sealed::file::file_id(&other);
+        assert!(
+            !names_requested_file(&requested, &other_id, &other),
+            "another file"
+        );
+        assert!(
+            !names_requested_file(&requested, &id, &segments[..1]),
+            "a list that is not the id's"
+        );
+        assert!(
+            !names_requested_file(&hex::encode(other_id), &id, &segments),
+            "an id not asked for"
+        );
+        assert!(!names_requested_file(&requested, &id, &[]), "no segments");
     }
 }
