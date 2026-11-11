@@ -6,8 +6,8 @@ use ed25519_dalek::SigningKey;
 use super::runs::{job_key, leader, out, report, why, World, DIGEST, INPUT};
 use super::*;
 use crate::component::pipelines::{
-    BAD_START, CANCELLING, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT, NOT_NEXT, NOT_RUNNING,
-    STEP_STOPPING, TOO_MANY_FAILURES,
+    BAD_START, CACHE_GONE, CANCELLING, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT, NOT_NEXT,
+    NOT_RUNNING, STEP_STOPPING, TOO_MANY_FAILURES,
 };
 use crate::job_wire::{sign_report, FailReason, ReportStatus};
 
@@ -54,6 +54,7 @@ fn step_run(pipeline: &str, step: &str, i: usize) -> StepRun {
             memory_mib: 64,
             wall_secs: 7,
         },
+        cache_key: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn start_step(w: &mut World, pipeline: &str, step: &str) -> Applied {
         StepVerdict::Start {
             runs,
             fan: FanOut::SINGLE,
+            cached: Vec::new(),
         },
     )
 }
@@ -235,6 +237,7 @@ fn a_start_that_can_never_work_fails_the_step() {
         StepVerdict::Start {
             runs: vec![gone],
             fan: FanOut::SINGLE,
+            cached: Vec::new(),
         },
     );
     assert_eq!(status(&w, PIPE, "a"), StepStatus::Failed);
@@ -251,6 +254,7 @@ fn a_start_that_can_never_work_fails_the_step() {
         StepVerdict::Start {
             runs: vec![wrong_id],
             fan: FanOut::SINGLE,
+            cached: Vec::new(),
         },
     );
     assert_eq!(
@@ -353,6 +357,41 @@ fn a_cancel_flags_the_running_runs_and_refuses_new_starts() {
     assert_eq!(p.state, PipelineState::Cancelled);
 }
 
+/// The leader re-proposes a start or cancel whose answer was lost: the repeat answers as the
+/// first did and changes nothing, so the caller never hears "not started" for a started run.
+#[test]
+fn a_repeated_start_or_cancel_of_the_same_run_answers_ok_and_changes_nothing() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a", "b"]);
+    let held = refs(&w, INPUT);
+    let again = begin(&mut w, PIPE, &["a", "b"]);
+    assert!(again.status == Status::Ok, "{again:?}");
+    assert_eq!(refs(&w, INPUT), held);
+    assert_eq!(w.r.machine.active_pipelines(), vec![PIPE.to_owned()]);
+
+    let cancel = |w: &mut World| {
+        w.push(&ComponentCmd::PipelineCancel(Box::new(
+            PipelineCancelEntry {
+                run: PIPE.into(),
+                ts_ms: 7,
+            },
+        )))
+    };
+    assert!(cancel(&mut w).status == Status::Ok);
+    let repeat = cancel(&mut w);
+    assert!(repeat.status == Status::Ok, "{repeat:?}");
+    assert!(pipeline(&w, PIPE).cancel_requested);
+    let _a = decide(&mut w, PIPE, "a", StepVerdict::Cancelled);
+    let _b = decide(&mut w, PIPE, "b", StepVerdict::Cancelled);
+    let ended = pipeline(&w, PIPE);
+    assert_eq!(ended.state, PipelineState::Cancelled);
+    // The run ended: a repeat of its cancel or its start still answers as the first did.
+    assert!(cancel(&mut w).status == Status::Ok);
+    assert!(begin(&mut w, PIPE, &["a", "b"]).status == Status::Ok);
+    assert_eq!(pipeline(&w, PIPE).end_ts_ms, ended.end_ts_ms);
+    assert!(w.r.machine.active_pipelines().is_empty());
+}
+
 #[test]
 fn a_cancel_of_an_unknown_or_ended_run_changes_nothing() {
     let mut w = World::new();
@@ -441,12 +480,29 @@ fn fan_start(w: &mut World, step: &str, total: u32, allowed: u32, first: usize) 
         allowed,
     };
     let runs = runs_of(PIPE, step, 0, first);
-    decide(w, PIPE, step, StepVerdict::Start { runs, fan })
+    decide(
+        w,
+        PIPE,
+        step,
+        StepVerdict::Start {
+            runs,
+            fan,
+            cached: Vec::new(),
+        },
+    )
 }
 
 fn more(w: &mut World, step: &str, from: usize, to: usize) -> Applied {
     let runs = runs_of(PIPE, step, from, to);
-    decide(w, PIPE, step, StepVerdict::More { runs })
+    decide(
+        w,
+        PIPE,
+        step,
+        StepVerdict::More {
+            runs,
+            cached: Vec::new(),
+        },
+    )
 }
 
 /// A done final of `run` with output `n` and `result`.
@@ -574,7 +630,16 @@ fn a_failed_batch_run_fails_all_its_items() {
         allowed: 2,
     };
     let runs = runs_of(PIPE, "a", 0, 3);
-    let _s = decide(&mut w, PIPE, "a", StepVerdict::Start { runs, fan });
+    let _s = decide(
+        &mut w,
+        PIPE,
+        "a",
+        StepVerdict::Start {
+            runs,
+            fan,
+            cached: Vec::new(),
+        },
+    );
     let _r = run_failed(&mut w, "p1.a.2");
     assert_eq!(pipeline(&w, PIPE).steps["a"].failed_items, 2, "4,4,2 items");
     let _r = run_done_with_result(&mut w, "p1.a.0", 1, b"1");
@@ -700,4 +765,296 @@ fn a_running_fan_out_between_waves_can_be_failed_but_a_started_one_cannot() {
     assert!(a.status == Status::Ok, "{a:?}");
     assert_eq!(status(&w, PIPE, "a"), StepStatus::Failed);
     assert!(w.record("p1.a.0").cancel_requested);
+}
+
+fn keyed(pipeline: &str, step: &str, i: usize, key: &str) -> StepRun {
+    StepRun {
+        cache_key: Some(key.into()),
+        ..step_run(pipeline, step, i)
+    }
+}
+
+fn hit(index: u32, key: &str) -> CachedRun {
+    CachedRun {
+        index,
+        key: key.into(),
+    }
+}
+
+fn decide_at(w: &mut World, run: &str, step: &str, decision: StepVerdict, ts_ms: u64) -> Applied {
+    w.push(&ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
+        run: run.into(),
+        step: step.into(),
+        decision,
+        ts_ms,
+    })))
+}
+
+fn entry(w: &World, key: &str) -> Option<CacheEntry> {
+    w.r.machine.cache_entry(key)
+}
+
+fn order(w: &World) -> Vec<String> {
+    w.r.machine
+        .state
+        .component
+        .head
+        .step_cache
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// Pipeline `id` runs one keyed step to done at `ts_ms`, leaving a cache entry for output `n`.
+fn make_entry(w: &mut World, id: &str, key: &str, n: u8, ts_ms: u64) {
+    let _b = begin(w, id, &["a"]);
+    let runs = vec![keyed(id, "a", 0, key)];
+    let _s = decide(
+        w,
+        id,
+        "a",
+        StepVerdict::Start {
+            runs,
+            fan: FanOut::SINGLE,
+            cached: Vec::new(),
+        },
+    );
+    let run = format!("{id}.a.0");
+    let k = job_key(1);
+    let _a = w.assign(&run, &k);
+    let mut done = done_with(w, &run, &k, n);
+    done.ts_ms = ts_ms;
+    let a = w.finish(done);
+    assert!(a.status == Status::Ok && !a.conflict, "{a:?}");
+}
+
+fn start_cached(w: &mut World, id: &str, cached: Vec<CachedRun>, ts_ms: u64) -> Applied {
+    let _b = begin(w, id, &["a"]);
+    let start = StepVerdict::Start {
+        runs: Vec::new(),
+        fan: FanOut::SINGLE,
+        cached,
+    };
+    decide_at(w, id, "a", start, ts_ms)
+}
+
+#[test]
+fn a_done_run_with_a_key_writes_an_entry_and_pins_its_outputs() {
+    let mut w = World::new();
+    make_entry(&mut w, PIPE, "k1", 1, 9);
+    let e = entry(&w, "k1").expect("no entry");
+    assert_eq!(e.outputs.len(), 1);
+    assert_eq!(e.outputs[0].id, out(1).id);
+    assert_eq!(e.result, Some(Bytes(b"\"ok\"".to_vec())));
+    assert_eq!((e.ts_ms, e.source_run.as_str()), (9, "p1.a.0"));
+    assert_eq!(order(&w), vec!["k1".to_owned()]);
+    assert_eq!(refs(&w, 1), 2, "the pipeline run and the entry");
+}
+
+#[test]
+fn a_failed_run_or_a_run_without_a_key_writes_no_entry() {
+    let mut w = World::new();
+    let _b = begin(&mut w, PIPE, &["a", "b"]);
+    let runs = vec![keyed(PIPE, "a", 0, "k1")];
+    let _s = decide(
+        &mut w,
+        PIPE,
+        "a",
+        StepVerdict::Start {
+            runs,
+            fan: FanOut::SINGLE,
+            cached: Vec::new(),
+        },
+    );
+    let k = job_key(1);
+    let _a = w.assign("p1.a.0", &k);
+    let failed = trapped(&w, "p1.a.0", &k);
+    let _f = w.finish(failed);
+    assert!(entry(&w, "k1").is_none(), "a failed run");
+    let _s = start_step(&mut w, PIPE, "b");
+    let _r = run_done(&mut w, "p1.b.0", 2);
+    assert!(order(&w).is_empty(), "a run with no key");
+    assert_eq!(refs(&w, 2), 1);
+}
+
+#[test]
+fn a_cached_decision_settles_the_step_with_no_run_record() {
+    let mut w = World::new();
+    make_entry(&mut w, PIPE, "k1", 1, 9);
+    let a = start_cached(&mut w, "p2", vec![hit(0, "k1")], 20);
+    assert!(a.status == Status::Ok, "{a:?}");
+    let step = &pipeline(&w, "p2").steps["a"];
+    assert_eq!(step.status, StepStatus::Succeeded);
+    assert!(step.is_cached());
+    assert_eq!(step.outputs().next().unwrap().id, out(1).id);
+    assert_eq!(step.result(), Some(&Bytes(b"\"ok\"".to_vec())));
+    assert_eq!(step.finished, 1);
+    assert!(w.r.machine.run_record("p2.a.0").is_none());
+    assert_eq!(refs(&w, 1), 3, "the first run, the entry and this run");
+    assert_eq!(
+        entry(&w, "k1").unwrap().ts_ms,
+        20,
+        "a hit refreshes the entry"
+    );
+    assert_eq!(pipeline(&w, "p2").state, PipelineState::Succeeded);
+}
+
+#[test]
+fn a_fan_out_takes_its_cached_items_in_item_order() {
+    let mut w = World::new();
+    make_entry(&mut w, "p1", "k0", 1, 9);
+    make_entry(&mut w, "q1", "k2", 2, 9);
+    let _b = begin(&mut w, "p2", &["a"]);
+    let fan = FanOut {
+        total: 3,
+        items: 3,
+        batch: 1,
+        allowed: 0,
+    };
+    let start = StepVerdict::Start {
+        runs: vec![step_run("p2", "a", 1)],
+        fan,
+        cached: vec![hit(0, "k0"), hit(2, "k2")],
+    };
+    let a = decide(&mut w, "p2", "a", start);
+    assert!(a.status == Status::Ok, "{a:?}");
+    let step = &pipeline(&w, "p2").steps["a"];
+    assert_eq!(step.status, StepStatus::Running);
+    assert_eq!(step.runs.len(), 3);
+    assert_eq!(step.finished, 2);
+    assert_eq!(w.record("p2.a.1").pipeline.unwrap().index, 1);
+    let _r = run_done(&mut w, "p2.a.1", 3);
+    let step = &pipeline(&w, "p2").steps["a"];
+    assert_eq!(step.status, StepStatus::Succeeded);
+    assert!(!step.is_cached());
+    assert_eq!(step.cached_items(), 2);
+    let ids: Vec<String> = step.outputs().map(|o| o.id.clone()).collect();
+    assert_eq!(ids, vec![out(1).id, out(3).id, out(2).id]);
+}
+
+#[test]
+fn a_cached_decision_whose_entry_is_gone_is_refused_from_that_index() {
+    let mut w = World::new();
+    make_entry(&mut w, PIPE, "k0", 1, 9);
+    let _b = begin(&mut w, "p2", &["a"]);
+    let fan = FanOut {
+        total: 2,
+        items: 2,
+        batch: 1,
+        allowed: 0,
+    };
+    let none = StepVerdict::Start {
+        runs: Vec::new(),
+        fan,
+        cached: vec![hit(0, "missing"), hit(1, "k0")],
+    };
+    assert_eq!(why(&decide(&mut w, "p2", "a", none)), CACHE_GONE);
+    assert_eq!(status(&w, "p2", "a"), StepStatus::Pending);
+    let part = StepVerdict::Start {
+        runs: Vec::new(),
+        fan,
+        cached: vec![hit(0, "k0"), hit(1, "missing")],
+    };
+    let a = decide(&mut w, "p2", "a", part);
+    assert!(a.status == Status::Ok, "{a:?}");
+    let step = &pipeline(&w, "p2").steps["a"];
+    assert_eq!(
+        (step.status, step.runs.len(), step.finished),
+        (StepStatus::Running, 1, 1)
+    );
+}
+
+#[test]
+fn a_decision_that_does_not_tile_its_indices_fails_the_step() {
+    let mut w = World::new();
+    make_entry(&mut w, PIPE, "k0", 1, 9);
+    let fan = FanOut {
+        total: 2,
+        items: 2,
+        batch: 1,
+        allowed: 0,
+    };
+    for (id, cached) in [
+        ("p2", vec![hit(0, "k0"), hit(0, "k0")]),
+        ("p3", vec![hit(5, "k0")]),
+    ] {
+        let _b = begin(&mut w, id, &["a"]);
+        let start = StepVerdict::Start {
+            runs: Vec::new(),
+            fan,
+            cached,
+        };
+        let a = decide(&mut w, id, "a", start);
+        assert_eq!(status(&w, id, "a"), StepStatus::Failed, "{a:?}");
+        assert_eq!(
+            pipeline(&w, id).steps["a"].reason.as_deref(),
+            Some("BAD_START")
+        );
+    }
+}
+
+#[test]
+fn past_the_entry_limit_the_oldest_goes_and_releases_its_holds() {
+    let mut w = World::new();
+    for i in 0..=MAX_CACHE_ENTRIES {
+        let n = u8::try_from(i + 1).unwrap();
+        make_entry(&mut w, &format!("e{i}"), &format!("k{i}"), n, 9);
+    }
+    assert!(entry(&w, "k0").is_none());
+    assert_eq!(order(&w).len(), MAX_CACHE_ENTRIES);
+    assert_eq!(
+        refs(&w, 1),
+        1,
+        "only the pipeline run holds the evicted one"
+    );
+    assert_eq!(refs(&w, 2), 2);
+}
+
+fn aged_world() -> World {
+    let mut w = World::new();
+    for (i, ts) in [(0u8, 100u64), (1, 100), (2, 100), (3, 200)] {
+        make_entry(&mut w, &format!("e{i}"), &format!("k{i}"), i + 1, ts);
+    }
+    w
+}
+
+#[test]
+fn entries_expire_by_entry_timestamps_a_few_per_entry() {
+    let mut w = aged_world();
+    let late = 100 + CACHE_TTL_MS;
+    let _b = begin(&mut w, "z", &["a"]);
+    let _d = decide_at(&mut w, "z", "a", StepVerdict::Skipped, late);
+    assert_eq!(
+        order(&w),
+        vec!["k2".to_owned(), "k3".to_owned()],
+        "two dropped at most"
+    );
+    assert!(entry(&w, "k0").is_none() && entry(&w, "k1").is_none());
+    assert_eq!(refs(&w, 1), 1, "the dropped entry released its hold");
+    let _b = begin(&mut w, "y", &["a"]);
+    let _d = decide_at(&mut w, "y", "a", StepVerdict::Skipped, late);
+    assert_eq!(
+        order(&w),
+        vec!["k3".to_owned()],
+        "k3 is younger than the limit"
+    );
+}
+
+#[test]
+fn two_replicas_fed_the_same_entries_expire_the_same_entries() {
+    let run = || {
+        let mut w = aged_world();
+        let _b = begin(&mut w, "z", &["a"]);
+        let _d = decide_at(&mut w, "z", "a", StepVerdict::Skipped, 100 + CACHE_TTL_MS);
+        w
+    };
+    let (a, b) = (run(), run());
+    assert_eq!(order(&a), order(&b));
+    for n in 1..=4 {
+        assert_eq!(refs(&a, n), refs(&b, n));
+    }
+    assert_eq!(
+        a.r.machine.state.component.head,
+        b.r.machine.state.component.head
+    );
 }

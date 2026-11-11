@@ -19,8 +19,9 @@ use tracing::debug;
 use super::{locked, Driving};
 use crate::app::{AppMachine, Status};
 use crate::component::{
-    run_id, ComponentCmd, FanOut, PipelineCancelEntry, PipelineRun, PipelineStartEntry,
-    PipelineState, RunCaps, StepDecisionEntry, StepRun, StepStatus, StepVerdict, MAX_STEP_RUNS,
+    cache_key, run_id, CachedRun, ComponentCmd, FanOut, PipelineCancelEntry, PipelineRun,
+    PipelineStartEntry, PipelineState, RunCaps, StepDecisionEntry, StepRun, StepStatus,
+    StepVerdict, MAX_CACHED_PER_DECISION, MAX_STEP_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::component::entry_bytes;
@@ -48,6 +49,13 @@ fn remember<T>(cache: &std::sync::Mutex<HashMap<String, Arc<T>>>, key: &str, val
     let _prev = cache.insert(key.to_owned(), value);
 }
 
+/// What the step cache knows, as the leader reads it from the group: a file's content hash and
+/// whether a key has an entry whose outputs are all still held.
+pub(super) struct CacheView<'a> {
+    pub(super) sha: &'a dyn Fn(&str) -> Option<String>,
+    pub(super) hit: &'a dyn Fn(&str) -> bool,
+}
+
 /// What each step does now: a pending one starts once its needs succeeded or were skipped, fails
 /// upstream when one did not, and a cancelled run ends it; a running fan-out gets its next runs
 /// while it has items left. `room` is the runs the app can take.
@@ -56,6 +64,7 @@ pub(super) fn plan(
     run: &PipelineRun,
     caps: &BTreeMap<String, Caps>,
     mut room: usize,
+    view: &CacheView<'_>,
 ) -> Vec<(String, StepVerdict)> {
     let mut status: BTreeMap<&str, StepStatus> = run
         .steps
@@ -70,9 +79,10 @@ pub(super) fn plan(
             if run.steps.get(name).map(|s| s.status) == Some(StepStatus::Running)
                 && waved.insert(name.as_str())
             {
-                if let Some(more) = next_wave(pipeline, run, name, step, caps, room) {
-                    room -= more.len();
-                    decided.push((name.clone(), StepVerdict::More { runs: more }));
+                if let Some((runs, cached)) = next_wave(pipeline, run, name, step, caps, room, view)
+                {
+                    room -= runs.len();
+                    decided.push((name.clone(), StepVerdict::More { runs, cached }));
                 }
                 continue;
             }
@@ -96,19 +106,19 @@ pub(super) fn plan(
             } else if broken {
                 Some(StepVerdict::UpstreamFailed)
             } else if ready {
-                match build_step(pipeline, run, name, step, caps) {
+                match build_step(pipeline, run, name, step, caps, view) {
                     Err(reason) => Some(StepVerdict::Failed {
                         reason: reason.to_owned(),
                     }),
                     Ok(Built::Skip) => Some(StepVerdict::Skipped),
-                    Ok(Built::Runs { mut runs, fan }) => {
+                    Ok(Built::Runs { runs, fan }) => {
                         let wave = wave_size(step, 0, runs.len(), room);
-                        if wave == 0 {
+                        let (runs, cached) = take_wave(&runs, 0, wave, view);
+                        if runs.is_empty() && cached.is_empty() {
                             None
                         } else {
-                            room -= wave;
-                            runs.truncate(wave);
-                            Some(StepVerdict::Start { runs, fan })
+                            room -= runs.len();
+                            Some(StepVerdict::Start { runs, fan, cached })
                         }
                     }
                 }
@@ -142,6 +152,29 @@ fn wave_size(step: &Step, active: usize, left: usize, room: usize) -> usize {
     left.min(parallel).min(room).min(MAX_STEP_RUNS)
 }
 
+/// The runs of a step from index `from` on: each run the cache answers goes into the second list,
+/// and at most `wave` others into the first, which ends the wave where it would pass that.
+fn take_wave(
+    runs: &[StepRun],
+    from: usize,
+    wave: usize,
+    view: &CacheView<'_>,
+) -> (Vec<StepRun>, Vec<CachedRun>) {
+    let (mut fresh, mut hits) = (Vec::new(), Vec::new());
+    for (index, run) in runs.iter().enumerate().skip(from) {
+        match run.cache_key.as_ref().filter(|k| (view.hit)(k)) {
+            Some(key) if hits.len() < MAX_CACHED_PER_DECISION => hits.push(CachedRun {
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+                key: key.clone(),
+            }),
+            Some(_) => break,
+            None if fresh.len() < wave => fresh.push(run.clone()),
+            None => break,
+        }
+    }
+    (fresh, hits)
+}
+
 /// The next runs of a running fan-out, if it has items left, tolerates its failures so far and
 /// the run is not being stopped.
 fn next_wave(
@@ -151,7 +184,8 @@ fn next_wave(
     step: &Step,
     caps: &BTreeMap<String, Caps>,
     room: usize,
-) -> Option<Vec<StepRun>> {
+    view: &CacheView<'_>,
+) -> Option<(Vec<StepRun>, Vec<CachedRun>)> {
     let state = run.steps.get(name)?;
     let started = state.runs.len();
     let total = state.fan.total as usize;
@@ -161,11 +195,11 @@ fn next_wave(
     }
     let active = started.saturating_sub(state.finished as usize);
     let wave = wave_size(step, active, total - started, room);
-    if wave == 0 {
-        return None;
-    }
-    match build_step(pipeline, run, name, step, caps) {
-        Ok(Built::Runs { runs, .. }) => runs.get(started..started + wave).map(<[StepRun]>::to_vec),
+    match build_step(pipeline, run, name, step, caps, view) {
+        Ok(Built::Runs { runs, .. }) => {
+            let (fresh, hits) = take_wave(&runs, started, wave, view);
+            (!fresh.is_empty() || !hits.is_empty()).then_some((fresh, hits))
+        }
         _ => None,
     }
 }
@@ -267,6 +301,7 @@ fn build_step(
     name: &str,
     step: &Step,
     caps: &BTreeMap<String, Caps>,
+    view: &CacheView<'_>,
 ) -> Result<Built, &'static str> {
     let cap = caps.get(&step.method).ok_or("UNKNOWN_METHOD")?;
     let limits = step.limits.unwrap_or_default();
@@ -281,12 +316,17 @@ fn build_step(
     };
     let make = |index: usize, inputs: Vec<String>, item: Option<&Value>| {
         let args = resolve_args(pipeline, run, step, item)?;
+        let key = step
+            .cache
+            .then(|| step_key(run, step, &args, &inputs, caps, view))
+            .flatten();
         Ok::<_, &'static str>(StepRun {
             run: run_id(&run.id, name, index),
             method: step.method.clone(),
             args: Bytes(args),
             inputs,
             caps,
+            cache_key: key,
         })
     };
     if let Some(source) = &step.for_each {
@@ -341,6 +381,28 @@ fn build_step(
         runs,
         fan: FanOut::SINGLE,
     })
+}
+
+/// The step cache key of a run, none when an input's content is not known.
+fn step_key(
+    run: &PipelineRun,
+    step: &Step,
+    args: &[u8],
+    inputs: &[String],
+    caps: RunCaps,
+    view: &CacheView<'_>,
+) -> Option<String> {
+    let hashes: Vec<String> = inputs
+        .iter()
+        .map(|i| (view.sha)(i))
+        .collect::<Option<_>>()?;
+    Some(cache_key(
+        &run.compute_bundle,
+        &step.method,
+        args,
+        &hashes,
+        caps,
+    ))
 }
 
 /// A batch's `item`: the value itself for a batch of one, else the list of them.
@@ -428,6 +490,7 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
             continue;
         };
         let _gone = (shown.remove("runOutputs"), shown.remove("runResults"));
+        let _gone = shown.remove("cachedRuns");
         let outputs: Vec<Value> = step
             .outputs()
             .map(|o| {
@@ -439,6 +502,8 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
             })
             .collect();
         let _prev = shown.insert("outputs".to_owned(), Value::Array(outputs));
+        let _prev = shown.insert("cached".to_owned(), json!(step.is_cached()));
+        let _prev = shown.insert("cachedItems".to_owned(), json!(step.cached_items()));
         let json_of =
             |b: &Bytes| serde_json::from_slice(&b.0).unwrap_or_else(|_| json!(hex::encode(&b.0)));
         let result = step.result().filter(|_| files).map(json_of);
@@ -556,8 +621,15 @@ impl Node {
                 return;
             }
         };
-        let room = g.read_local(|m, _| host::MAX_ACTIVE_RUNS.saturating_sub(m.active_runs().len()));
-        for (step, verdict) in plan(&pipeline, run, &caps, room) {
+        let decided = g.read_local(|m, _| {
+            let room = host::MAX_ACTIVE_RUNS.saturating_sub(m.active_runs().len());
+            let view = CacheView {
+                sha: &|id| m.file_sha256(id),
+                hit: &|key| m.cache_hit(key),
+            };
+            plan(&pipeline, run, &caps, room, &view)
+        });
+        for (step, verdict) in decided {
             self.propose_step(g, &run.id, &step, verdict).await;
         }
     }
@@ -595,11 +667,13 @@ impl Node {
                     .filter(|p| p.state == PipelineState::Running)
                     .and_then(|p| p.steps.get(step).cloned());
                 let applies = current.is_some_and(|s| match &decision {
-                    StepVerdict::More { runs } => {
+                    StepVerdict::More { runs, cached } => {
                         s.status == StepStatus::Running
-                            && runs
-                                .first()
-                                .is_some_and(|r| r.run == run_id(run, step, s.runs.len()))
+                            && match (runs.first(), cached.first()) {
+                                (Some(r), _) => r.run == run_id(run, step, s.runs.len()),
+                                (None, Some(c)) => c.index as usize == s.runs.len(),
+                                (None, None) => false,
+                            }
                     }
                     StepVerdict::Failed { .. } => {
                         s.status == StepStatus::Pending
@@ -739,6 +813,20 @@ mod tests {
     use super::*;
     use crate::component::{PipelineState, StepState};
     use crate::types::Caller;
+
+    /// A cache that knows no file and has no entry.
+    fn plan(
+        p: &Pipeline,
+        run: &PipelineRun,
+        caps: &BTreeMap<String, Caps>,
+        room: usize,
+    ) -> Vec<(String, StepVerdict)> {
+        let view = CacheView {
+            sha: &|_| None,
+            hit: &|_| false,
+        };
+        super::plan(p, run, caps, room, &view)
+    }
 
     const SOURCE: &str = "apiVersion: compute.calimero.network/v1
 kind: Pipeline
@@ -948,7 +1036,7 @@ steps:
 
     fn started(plan: &[(String, StepVerdict)], step: &str) -> (Vec<StepRun>, FanOut) {
         match plan.iter().find(|(s, _)| s == step) {
-            Some((_, StepVerdict::Start { runs, fan })) => (runs.clone(), *fan),
+            Some((_, StepVerdict::Start { runs, fan, .. })) => (runs.clone(), *fan),
             other => panic!("{step} did not start: {other:?}"),
         }
     }
@@ -1104,7 +1192,7 @@ steps:
         assert!(plan(&p, &run, &caps(), 10).is_empty(), "three are active");
         run.steps.get_mut("each").unwrap().finished = 1;
         let decided = plan(&p, &run, &caps(), 10);
-        let StepVerdict::More { runs } = &decided[0].1 else {
+        let StepVerdict::More { runs, .. } = &decided[0].1 else {
             panic!("{decided:?}")
         };
         assert_eq!(runs.len(), 1);
@@ -1113,7 +1201,7 @@ steps:
         assert!(plan(&p, &run, &caps(), 0).is_empty());
         run.steps.get_mut("each").unwrap().finished = 3;
         let decided = plan(&p, &run, &caps(), 10);
-        let StepVerdict::More { runs } = &decided[0].1 else {
+        let StepVerdict::More { runs, .. } = &decided[0].1 else {
             panic!("{decided:?}")
         };
         assert_eq!(runs.len(), 3, "up to maxParallel again");
@@ -1189,6 +1277,7 @@ steps:
                 memory_mib: 1,
                 wall_secs: 1,
             },
+            cache_key: None,
         }];
         let mut cmd = ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
             run: "r".into(),
@@ -1196,6 +1285,7 @@ steps:
             decision: StepVerdict::Start {
                 runs,
                 fan: FanOut::SINGLE,
+                cached: Vec::new(),
             },
             ts_ms: 1,
         }));
@@ -1217,5 +1307,147 @@ steps:
             set(&mut run, step, StepStatus::UpstreamFailed);
         }
         assert!(plan(&p, &run, &caps(), 10).is_empty());
+    }
+
+    /// `plan` with a cache that hashes a file as `content` says (its id when not listed) and
+    /// answers the keys in `hits`.
+    fn cplan(
+        p: &Pipeline,
+        run: &PipelineRun,
+        caps: &BTreeMap<String, Caps>,
+        room: usize,
+        content: &BTreeMap<&str, &str>,
+        hits: &HashSet<String>,
+    ) -> Vec<(String, StepVerdict)> {
+        let view = CacheView {
+            sha: &|id| Some((*content.get(id).unwrap_or(&id)).to_owned()),
+            hit: &|key| hits.contains(key),
+        };
+        super::plan(p, run, caps, room, &view)
+    }
+
+    fn key_of(
+        p: &Pipeline,
+        run: &PipelineRun,
+        caps: &BTreeMap<String, Caps>,
+        c: &[(&str, &str)],
+    ) -> String {
+        let content = c.iter().copied().collect();
+        let decided = cplan(p, run, caps, 10, &content, &HashSet::new());
+        start_of(&decided, "a").cache_key.expect("no key")
+    }
+
+    #[test]
+    fn the_key_changes_with_each_of_what_a_run_computes_and_not_with_a_file_id() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let run = run_of(&p);
+        let base = key_of(&p, &run, &caps(), &[]);
+        assert_eq!(base, key_of(&p, &run, &caps(), &[]), "stable");
+
+        let mut other = run.clone();
+        other.compute_bundle = "bundle-2".into();
+        assert_ne!(base, key_of(&p, &other, &caps(), &[]), "bundle");
+
+        let method =
+            calimero_pipeline::compile(&SOURCE.replace("a: { method: digest", "a: { method: echo"))
+                .unwrap();
+        assert_ne!(
+            base,
+            key_of(&method, &run_of(&method), &caps(), &[]),
+            "method"
+        );
+
+        let args = calimero_pipeline::compile(&SOURCE.replace(
+            "a: { method: digest,",
+            "a: { method: digest, args: { n: 1 },",
+        ))
+        .unwrap();
+        assert_ne!(base, key_of(&args, &run_of(&args), &caps(), &[]), "args");
+
+        assert_ne!(
+            base,
+            key_of(&p, &run, &caps(), &[("f1", "changed")]),
+            "an input's content"
+        );
+
+        let mut lower = caps();
+        lower.get_mut("digest").unwrap().fuel = 50;
+        let tight = calimero_pipeline::compile(&SOURCE.replace("fuel: 7, ", "fuel: 90, ")).unwrap();
+        assert_ne!(base, key_of(&tight, &run_of(&tight), &lower, &[]), "caps");
+
+        let mut renamed = run.clone();
+        renamed
+            .inputs
+            .insert("docs".into(), vec!["g1".into(), "g2".into()]);
+        let same = key_of(&p, &renamed, &caps(), &[("g1", "f1"), ("g2", "f2")]);
+        assert_eq!(base, same, "the same content under other file ids");
+    }
+
+    #[test]
+    fn a_step_with_cache_false_has_no_key() {
+        let p = calimero_pipeline::compile(
+            &SOURCE.replace("a: { method: digest,", "a: { method: digest, cache: false,"),
+        )
+        .unwrap();
+        let decided = cplan(
+            &p,
+            &run_of(&p),
+            &caps(),
+            10,
+            &BTreeMap::new(),
+            &HashSet::new(),
+        );
+        assert!(start_of(&decided, "a").cache_key.is_none());
+    }
+
+    #[test]
+    fn hits_go_in_cached_and_misses_in_runs() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 9 }\n");
+        let run = fan_run(&p, 4);
+        let all = cplan(&p, &run, &caps(), 10, &BTreeMap::new(), &HashSet::new());
+        let (runs, _) = started(&all, "each");
+        let hits: HashSet<String> = [0, 2]
+            .iter()
+            .map(|i| runs[*i].cache_key.clone().unwrap())
+            .collect();
+        let decided = cplan(&p, &run, &caps(), 10, &BTreeMap::new(), &hits);
+        let Some((_, StepVerdict::Start { runs, cached, .. })) = decided.first() else {
+            panic!("{decided:?}");
+        };
+        let fresh: Vec<&str> = runs.iter().map(|r| r.run.as_str()).collect();
+        assert_eq!(fresh, ["r.each.1", "r.each.3"]);
+        let hit: Vec<u32> = cached.iter().map(|c| c.index).collect();
+        assert_eq!(hit, [0, 2]);
+    }
+
+    #[test]
+    fn hits_cost_no_room_and_a_wave_ends_at_the_first_miss_past_it() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 9 }\n");
+        let run = fan_run(&p, 4);
+        let all = cplan(&p, &run, &caps(), 10, &BTreeMap::new(), &HashSet::new());
+        let (runs, _) = started(&all, "each");
+        let hits: HashSet<String> = [0, 1, 3]
+            .iter()
+            .map(|i| runs[*i].cache_key.clone().unwrap())
+            .collect();
+        let decided = cplan(&p, &run, &caps(), 0, &BTreeMap::new(), &hits);
+        let Some((_, StepVerdict::Start { runs, cached, .. })) = decided.first() else {
+            panic!("{decided:?}");
+        };
+        assert!(runs.is_empty());
+        assert_eq!(
+            cached.len(),
+            2,
+            "indices 0 and 1, then the miss at 2 ends the wave"
+        );
+        let none = cplan(
+            &p,
+            &fan_run(&p, 4),
+            &caps(),
+            0,
+            &BTreeMap::new(),
+            &HashSet::new(),
+        );
+        assert!(none.is_empty(), "no hit and no room decides nothing");
     }
 }

@@ -30,7 +30,7 @@ pub enum PipelineCmd {
         #[arg(long)]
         wait: bool,
     },
-    /// One run: its state and each step's status, runs, outputs and reason.
+    /// One run: its state and each step's status, runs, outputs, reason and what the step cache answered.
     Get { app: String, run: String },
     /// Cancel a run: its pending steps end cancelled and its running steps' runs stop.
     Cancel { app: String, run: String },

@@ -86,6 +86,8 @@ pub(crate) mod rows {
     pub const CRUN: u8 = b'u';
     /// A component's pipeline runs: one record per run, keyed by pipeline run id.
     pub const CPIPE: u8 = b'p';
+    /// A component's pipeline step cache: one entry per cache key.
+    pub const CCACHE: u8 = b'x';
     /// A component's idempotency records, by `caller|key`.
     pub const CIDEM: u8 = b'j';
     /// A component's idempotency keys per class in the order they were recorded:
