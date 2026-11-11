@@ -2010,6 +2010,10 @@ mod tests {
     use super::shape::{parse, Shape};
     use super::{components, document, operations, shapes, Body, Input, Op};
 
+    /// The area modules `router` merges, each with its own route table and the
+    /// handlers it names without a prefix.
+    const AREAS: &[(&str, &str)] = super::super::AREA_SOURCES;
+
     /// The sources the router's handlers live in, by the prefix `router` names them with.
     const SOURCES: &[(&str, &str)] = &[
         ("", include_str!("../api.rs")),
@@ -2019,12 +2023,32 @@ mod tests {
         ("restore::", include_str!("restore.rs")),
     ];
 
-    /// `(method, path, handler)` of every `.route(..)` in `router`.
+    /// `(method, path, handler)` of every `.route(..)` in `router` and in the
+    /// area routers it merges.
     fn routes() -> Vec<(String, String, String)> {
         let src = SOURCES[0].1;
         let start = src.find("pub fn router(").expect("router");
         let end = start + src[start..].find(".route_layer(").expect("route_layer");
-        let table = &src[start..end];
+        let mut out = routes_in(&src[start..end]);
+        for (area, area_src) in AREAS {
+            assert!(
+                src[start..end].contains(&format!(".merge({area}::routes())")),
+                "`router` does not merge {area}::routes()"
+            );
+            let at = area_src.find("fn routes()").expect("routes");
+            out.extend(routes_in(&area_src[at..]));
+        }
+        let merged = src[start..end].matches(".merge(").count();
+        assert_eq!(
+            merged,
+            AREAS.len(),
+            "`router` merges an area this test does not read: add it to AREAS"
+        );
+        out
+    }
+
+    /// `(method, path, handler)` of every `.route(..)` in `table`.
+    fn routes_in(table: &str) -> Vec<(String, String, String)> {
         let mut out = Vec::new();
         let mut rest = table;
         while let Some(i) = rest.find(".route(") {
@@ -2073,6 +2097,16 @@ mod tests {
             .expect("a source");
         let fname = &name[prefix.len()..];
         let needle = format!("async fn {fname}(");
+        // A handler `router` names without a prefix is in `api.rs` or an area module.
+        let src = if prefix.is_empty() && !src.contains(&needle) {
+            AREAS
+                .iter()
+                .map(|(_, s)| *s)
+                .find(|s| s.contains(&needle))
+                .unwrap_or(src)
+        } else {
+            src
+        };
         let at = src.find(&needle).unwrap_or_else(|| panic!("no {needle}"));
         let open = at + needle.len();
         let mut depth = 1;

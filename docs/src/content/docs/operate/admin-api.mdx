@@ -9,7 +9,8 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 A `merod` node serves one HTTP API on its `--listen` address. The route table is
-`router` in `crates/node/src/api.rs`; this page lists every route in it.
+`router` in `crates/node/src/api.rs` with the area routers it merges
+(`crates/node/src/api/<area>.rs`); this page lists every route in it.
 Calls, reads, events (server-sent events) and administration are all routes of
 this one API.
 
