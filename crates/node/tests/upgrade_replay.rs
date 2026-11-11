@@ -99,7 +99,6 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         governance: Default::default(),
         apps_domain: None,
         operator_key: None,
-        restore_from: None,
     }
 }
 
