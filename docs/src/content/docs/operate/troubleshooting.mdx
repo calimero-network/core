@@ -82,8 +82,8 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `400 NO_REGISTRY` | `PACKAGE@VERSION` with no `--registry-url` | Configure the registry (on a `--dev` cluster you may upload the `.mpk` instead). |
 | `403 UPLOADS_DISABLED` | An uploaded `.mpk` on a node without `--dev` | Publish it to the registry and install `PACKAGE@VERSION`. |
 | `422 INIT_FAILED` | The app's `init` failed; no instance is left behind | Check `initArgs`. |
-| `422 UPGRADE_FAILED` | The migration did not run or its check failed | See `details`; the app stays on its bundle. |
-| an upgrade refused as a downgrade, jump or missing edge | The ABIs give no single migration step | Add the `#[app::migrate]` edge, or upgrade one state version at a time. |
+| `422 UPGRADE_FAILED` | The app's group refused the upgrade (a named `migrate`, which is not supported; an active compute run calling a result method the target drops) | See `details`; the app stays on its bundle. |
+| `409 RUNTIME_TOO_OLD` | An upgrade, a new app or a replica move would have a node run a release needing a newer runtime (`minRuntimeVersion`) than it runs; `details.nodes` names them | Move those nodes to a newer release, or move the app off them (`ops move`); the app's report names the newest release it can reach (`latestReachable`). |
 | uninstall refused | An app still runs that release | Upgrade or delete those apps first. |
 | `429 QUOTA_EXCEEDED` | An account quota | `meroctl ops quotas`; raise with `ops set-quotas`. |
 | `403` "deployed with … decided by its operator" / "by each app's owner" | The other party holds that decision | See [Governance](/operate/security/#governance); it cannot change after genesis. |

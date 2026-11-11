@@ -1,0 +1,41 @@
+{
+  "name": "The previous release's kv bundle on this tree's node",
+  "description": "An app built and packed by the last published release (its SDK, WIT and mero-sign) installs, runs and upgrades on this tree's node",
+  "comment": [
+    "Run only by ci-checks' `Apps of the previous release` job (SCENARIO_FILES), which fetches the release's",
+    "kv-store-test-fixture.mpk and its app.wasm into PREVIOUS_RELEASE_DIR (scripts/fetch-release-app.py);",
+    "discovery never finds this file, so no other job needs the release.",
+    "Only methods the fixture has had since 1.0.0-rc.14 (set, get, len, entries, remove, note, findNotes):",
+    "a method added later would fail here for the fixture's history, not for compatibility."
+  ],
+  "cluster": { "nodes": 3 },
+  "accounts": ["alice", "bob"],
+  "steps": [
+    { "name": "Alice founds an organization", "type": "create_org", "account": "alice", "org_name": "Previous", "outputs": { "org": "orgId" } },
+    { "name": "An invite for Bob", "type": "invite", "account": "alice", "org": "{{org}}", "role": "member", "outputs": { "token": "token" } },
+    { "name": "Bob joins", "type": "redeem_invite", "account": "bob", "token": "{{token}}" },
+
+    { "name": "The release's signed package installs from the registry", "type": "install_package", "account": "alice",
+      "mpk": "{{env.PREVIOUS_RELEASE_DIR}}/kv-store-test-fixture.mpk", "outputs": { "pkg": "package", "ver": "version" } },
+    { "name": "An app is created from that release", "type": "deploy", "account": "alice", "package": "{{pkg}}", "version": "{{ver}}",
+      "app_name": "kv-package", "org": "{{org}}", "outputs": { "pkg_app": "appId" } },
+    { "name": "The owner writes", "type": "call", "account": "alice", "app": "{{pkg_app}}", "method": "set", "args": { "key": "a", "value": "1" } },
+    { "name": "A member writes", "type": "call", "account": "bob", "app": "{{pkg_app}}", "method": "set", "args": { "key": "b", "value": "2" } },
+    { "name": "A member reads the owner's write", "type": "view", "account": "bob", "app": "{{pkg_app}}", "method": "get", "args": { "key": "a" }, "expect": "1" },
+    { "name": "Both writes count", "type": "view", "account": "alice", "app": "{{pkg_app}}", "method": "len", "expect": 2 },
+    { "name": "A removal answers the value it removed", "type": "call", "account": "alice", "app": "{{pkg_app}}", "method": "remove", "args": { "key": "b" }, "expect": "2" },
+    { "name": "A note is written", "type": "call", "account": "bob", "app": "{{pkg_app}}", "method": "note", "args": { "id": "n1", "title": "Release notes", "body": "carried across releases" } },
+    { "name": "Search finds it", "type": "view", "account": "alice", "app": "{{pkg_app}}", "method": "findNotes", "args": { "text": "releases" }, "expect": ["n1"], "retry_for": 10 },
+
+    { "name": "The release's component uploads as a raw bundle", "type": "deploy", "account": "alice", "wasm": "{{env.PREVIOUS_RELEASE_DIR}}/kv.wasm",
+      "app_name": "kv-raw", "org": "{{org}}", "outputs": { "raw_app": "appId" } },
+    { "name": "It writes", "type": "call", "account": "alice", "app": "{{raw_app}}", "method": "set", "args": { "key": "kept", "value": "from the old build" } },
+    { "name": "This tree's kv uploads", "type": "upload_bundle", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/v2_fixture_kv.wasm", "outputs": { "next": "hash" } },
+    { "name": "The app upgrades from the release's build to this tree's", "type": "upgrade_app", "account": "alice", "app": "{{raw_app}}", "bundle": "{{next}}" },
+    { "name": "This tree's build reads what the release's wrote", "type": "view", "account": "bob", "app": "{{raw_app}}", "method": "get", "args": { "key": "kept" },
+      "expect": "from the old build", "retry_for": 10 },
+    { "name": "And writes beside it", "type": "call", "account": "bob", "app": "{{raw_app}}", "method": "set", "args": { "key": "new", "value": "after the upgrade" } },
+    { "name": "Both entries read back", "type": "view", "account": "alice", "app": "{{raw_app}}", "method": "entries",
+      "expect": { "kept": "from the old build", "new": "after the upgrade" } }
+  ]
+}
