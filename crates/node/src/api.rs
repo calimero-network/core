@@ -5568,6 +5568,8 @@ async fn org_all_apps(
     if role < OrgRole::Admin {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AllApps]).await?;
     let args = crate::system::all_apps_args(&body.account, body.all_apps);
     let consent = consent(
         &node,
@@ -6097,6 +6099,10 @@ async fn invite_create(
     let actor = p.account()?;
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
+    }
+    if body.all_apps {
+        // Before the passkey step-up: an earlier release would drop the flag.
+        node.require_features(&[Feature::AllApps]).await?;
     }
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {

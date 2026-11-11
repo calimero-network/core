@@ -51,10 +51,14 @@ pub enum Feature {
     /// `ScopeApps` with `by_release` (#4931): an earlier release judges an
     /// instance's package by its bundle and can put it on another app team.
     ScopeByRelease,
+    /// `SetAllApps`, and an invite that gives every app added later
+    /// (`Invite::all_apps`) (#4914): an earlier release cannot read the
+    /// command and drops the invite's flag.
+    AllApps,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 8] = [
+pub const FEATURES: [Feature; 9] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -63,6 +67,7 @@ pub const FEATURES: [Feature; 8] = [
     Feature::TeamCloseDropsBelow,
     Feature::MoveAccountsAppTeam,
     Feature::ScopeByRelease,
+    Feature::AllApps,
 ];
 
 impl Feature {
@@ -78,6 +83,7 @@ impl Feature {
             Self::TeamCloseDropsBelow => "teamCloseDropsBelow",
             Self::MoveAccountsAppTeam => "moveAccountsAppTeam",
             Self::ScopeByRelease => "scopeByRelease",
+            Self::AllApps => "allApps",
         }
     }
 
@@ -92,7 +98,8 @@ impl Feature {
             Self::ClusterVersion
             | Self::TeamCloseDropsBelow
             | Self::MoveAccountsAppTeam
-            | Self::ScopeByRelease => "1.0.0-rc.16",
+            | Self::ScopeByRelease
+            | Self::AllApps => "1.0.0-rc.16",
         }
     }
 }
@@ -302,6 +309,8 @@ impl SystemCmd {
                 close_drops_below: true,
                 ..
             } => vec![Feature::TeamCloseDropsBelow],
+            Self::SetAllApps { .. } => vec![Feature::AllApps],
+            Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
@@ -440,6 +449,7 @@ mod tests {
                 bring_members: false,
                 nonce: "n".into(),
                 accounts_in_app_team: false,
+                all_apps_rows: false,
             },
             Feature::MoveAccountsAppTeam => SystemCmd::MoveApp {
                 app_id: "app".into(),
@@ -449,6 +459,7 @@ mod tests {
                 bring_members: true,
                 nonce: "n".into(),
                 accounts_in_app_team: true,
+                all_apps_rows: false,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),
@@ -467,6 +478,7 @@ mod tests {
                 accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: false,
+                all_apps_rows: false,
             },
             Feature::ScopeByRelease => SystemCmd::ScopeApps {
                 org: "org".into(),
@@ -479,6 +491,14 @@ mod tests {
                 accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: true,
+                all_apps_rows: false,
+            },
+            Feature::AllApps => SystemCmd::SetAllApps {
+                org: "org".into(),
+                account: "bob".into(),
+                all_apps: true,
+                actor: "alice".into(),
+                consent: Value::Null,
             },
             Feature::OrgQuotas => SystemCmd::SetOrgQuotas {
                 payer: "org".into(),
@@ -501,6 +521,7 @@ mod tests {
                 metadata: None,
                 actor: "alice".into(),
                 close_drops_below: true,
+                all_apps_rows: false,
             },
         }
     }
@@ -684,6 +705,7 @@ mod tests {
             Feature::TeamCloseDropsBelow,
             Feature::MoveAccountsAppTeam,
             Feature::ScopeByRelease,
+            Feature::AllApps,
         ] {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(refused.feature, feature);
@@ -810,6 +832,25 @@ mod tests {
     }
 
     /// This build supports every feature it knows and its own release.
+    /// An invite is an older shape unless it gives every app added later,
+    /// which an earlier release would drop.
+    #[test]
+    fn only_an_invite_giving_every_later_app_needs_all_apps() {
+        let invite = |all_apps: bool| SystemCmd::CreateInvite {
+            invite_key: "k".into(),
+            invite: serde_json::from_value(json!({
+                "org": "org", "role": "member", "expiresAt": 1, "usesLeft": 1,
+                "allApps": all_apps,
+            }))
+            .unwrap(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            teams_seen: true,
+        };
+        assert!(invite(false).features().is_empty());
+        assert_eq!(invite(true).features(), [Feature::AllApps]);
+    }
+
     #[test]
     fn this_build_supports_its_features() {
         for f in FEATURES {
