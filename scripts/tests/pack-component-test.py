@@ -55,6 +55,35 @@ class PackComponent(unittest.TestCase):
         self.assertNotIn("wasm", manifest)
         self.assertEqual(manifest["compute"]["size"], len(files["compute.wasm"]))
 
+    def test_each_pipeline_is_declared_and_shipped_under_pipelines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compute = Path(tmp) / "compute.component.wasm"
+            compute.write_bytes(COMPONENT + b"compute")
+            first, second = Path(tmp) / "first.yaml", Path(tmp) / "second.yaml"
+            first.write_text("name: first\n")
+            second.write_text("name: second\n")
+            files = pack(tmp, "--compute", str(compute), "--pipeline", str(first), "--pipeline", str(second),
+                         with_app=False)
+        self.assertEqual(sorted(files), ["compute.wasm", "manifest.json", "pipelines/first.yaml",
+                                         "pipelines/second.yaml"])
+        declared = json.loads(files["manifest.json"])["pipelines"]
+        self.assertEqual([d["path"] for d in declared], ["pipelines/first.yaml", "pipelines/second.yaml"])
+        self.assertEqual(declared[0]["size"], len(files["pipelines/first.yaml"]))
+
+    def test_without_pipelines_the_manifest_has_no_pipelines_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = pack(tmp)
+        self.assertNotIn("pipelines", json.loads(files["manifest.json"]))
+
+    def test_two_pipeline_files_with_one_name_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            one, two = Path(tmp) / "a" / "p.yaml", Path(tmp) / "b" / "p.yaml"
+            for f in (one, two):
+                f.parent.mkdir()
+                f.write_text("name: p\n")
+            with self.assertRaises(subprocess.CalledProcessError):
+                pack(tmp, "--pipeline", str(one), "--pipeline", str(two))
+
     def test_neither_wasm_nor_compute_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(subprocess.CalledProcessError):

@@ -36,6 +36,13 @@ pub enum AppCmd {
     Versions { package: String },
     /// An application's newest installed version.
     GetLatestVersion { package: String },
+    /// The pipelines a version registers (default: the newest installed): name, hash,
+    /// worst-case fuel and the canonical pipeline.
+    Pipelines {
+        package: String,
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Uninstall one version, or the whole application. Refused while a context runs it.
     Uninstall {
         package: String,
@@ -153,6 +160,16 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
         AppCmd::GetLatestVersion { package } => {
             let p = env.client.package(&package).await?;
             json!({ "package": package, "latest": p["latest"] })
+        }
+        AppCmd::Pipelines { package, version } => {
+            let version = match version {
+                Some(v) => v,
+                None => env.client.package(&package).await?["latest"]
+                    .as_str()
+                    .ok_or_else(|| eyre::eyre!("{package} has no installed version"))?
+                    .to_owned(),
+            };
+            env.client.package_pipelines(&package, &version).await?
         }
         AppCmd::Uninstall { package, version } => {
             env.client

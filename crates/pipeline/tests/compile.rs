@@ -100,7 +100,6 @@ fn each_structural_error_has_a_code_and_path() {
             "params.Bad",
         ),
         ("reserved step name", steps("  inputs: { method: r }\n"), "RESERVED_NAME", "steps.inputs"),
-        ("no module anywhere", "apiVersion: compute.calimero.network/v1\nkind: Pipeline\nname: p\nsteps:\n  a: { method: r }\n".into(), "MISSING_MODULE", "steps.a.module"),
         ("forEach not a ref", steps("  a: { method: r, forEach: nope, maxItems: 1 }\n"), "BAD_REF", "steps.a.forEach"),
         ("forEach over params", steps("  a: { method: r, forEach: params.x, maxItems: 1 }\n"), "BAD_REF", "steps.a.forEach"),
         ("forEach over item", steps("  a: { method: r, forEach: item, maxItems: 1 }\n"), "BAD_REF", "steps.a.forEach"),

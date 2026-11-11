@@ -21,6 +21,8 @@ impl fmt::Display for SpecError {
 /// What the cluster offers: module methods with their caps, and pool memory ceilings.
 #[derive(Clone, Debug, Default)]
 pub struct Env {
+    /// The module a step runs in when neither it nor the pipeline names one.
+    pub default_module: Option<String>,
     pub modules: BTreeMap<String, BTreeMap<String, Caps>>,
     pub pools: BTreeMap<String, u32>,
 }

@@ -62,6 +62,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], frontend: &[(&str, &[u8])]) ->
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();

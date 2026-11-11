@@ -47,6 +47,7 @@ calimero-identity.workspace = true
 calimero-kms-client.workspace = true
 calimero-log.workspace = true
 calimero-outbound.workspace = true
+calimero-pipeline.workspace = true
 calimero-primitives.workspace = true
 calimero-search.workspace = true
 calimero-sealed.workspace = true

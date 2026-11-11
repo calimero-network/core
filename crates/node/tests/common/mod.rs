@@ -398,6 +398,18 @@ pub fn mpk_parts(
     compute: Option<&[u8]>,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
+    mpk_with_pipelines(package, version, wasm, compute, &[], key)
+}
+
+/// [`mpk_parts`] shipping `pipelines` (file name, YAML source) as well.
+pub fn mpk_with_pipelines(
+    package: &str,
+    version: &str,
+    wasm: Option<&[u8]>,
+    compute: Option<&[u8]>,
+    pipelines: &[(&str, &str)],
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
         path: path.to_owned(),
@@ -425,6 +437,10 @@ pub fn mpk_parts(
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: pipelines
+            .iter()
+            .map(|(name, yaml)| artifact(name, yaml.as_bytes()))
+            .collect(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -436,6 +452,7 @@ pub fn mpk_parts(
     let mut entries = vec![("manifest.json", serde_json::to_vec(&manifest).unwrap())];
     entries.extend(wasm.map(|w| ("app.wasm", w.to_vec())));
     entries.extend(compute.map(|c| ("compute.wasm", c.to_vec())));
+    entries.extend(pipelines.iter().map(|(n, y)| (*n, y.as_bytes().to_vec())));
     for (name, bytes) in entries {
         let mut header = tar::Header::new_gnu();
         header.set_path(name).unwrap();

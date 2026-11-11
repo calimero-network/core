@@ -852,6 +852,7 @@ dependencies = [
  "calimero-log",
  "calimero-node",
  "calimero-outbound",
+ "calimero-pipeline",
  "calimero-primitives",
  "calimero-sealed",
  "calimero-search",

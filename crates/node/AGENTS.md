@@ -204,6 +204,11 @@ is its command line.
   Every app-level lookup reads `PackageVersion::app_parts` (the services, or the compute map when compute-only), so a compute-only app's `bundle` and `compute_bundle` are both the compute hash.
   Such an app has `AppRecord::components = ComputeOnly`: it has no app group state, and a call, view, intent, init or tick is `422 NO_APP_COMPONENT` (`AppRecord::require_app_component`).
   An upgrade between compute-only releases only moves the directory record; one that adds or drops the app component is `409 COMPONENTS_CHANGED`.
+  A release may ship pipelines (`pipelines` in the manifest or a service; `packages/pipelines.rs`).
+  Install compiles each (`calimero_pipeline::compile`) and checks it against an `Env` with one module, `self` (the package's compute methods and caps), `self` as the default module for one that names none, and the cluster's pool memory ceilings; anything else is `400 BAD_PIPELINE` with `details: [{file, path, code, message}]` for every error, a package with pipelines but no compute component included (`NO_COMPUTE`) and a repeated name (`DUPLICATE_NAME`).
+  `PackageVersion::pipelines` maps name to `PipelineRef { hash, worstCaseFuel }` (hash of the canonical JSON, fuel a decimal string); the canonical JSON is stored as a blob by its hash beside the wasm parts, and `Node::pipeline_json(hash)` reads it, else recompiles it from the release's `.mpk`.
+  Such a release is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`).
+  `GET /packages/{package}/{version}/pipelines` (who sees the release) answers `{ name: { hash, worstCaseFuel, pipeline } }`; `meroctl app pipelines`.
   `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
   `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.

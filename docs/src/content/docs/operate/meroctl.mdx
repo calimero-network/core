@@ -101,6 +101,7 @@ same command (`meroctl package origins list PACKAGE`).
 | `app get PACKAGE` | `GET /packages/{package}` | One installed application. |
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
+| `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel` and the canonical `pipeline`. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
 | `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
