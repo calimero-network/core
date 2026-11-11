@@ -16,6 +16,17 @@
   it), and one of a later format applies as a no-op that names it. Nothing written
   so far changes: the snapshot and entry bytes are those of rc.15.
 
+- **An admin turns on private channels for an app team made before #4906.**
+  #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
+  nothing changes an existing team's capabilities on replay. `POST
+  /orgs/{org}/app-teams` now takes, per package, `childTeams`: `true` adds
+  `CREATE_CHILD_TEAM` to the app team's default and to every row there that
+  sets its own capabilities, `false` takes it out of both. Like `join`, naming
+  it leaves an absent `shared` meaning "no other team", so `{ apps: [{
+  package, instances: [], childTeams: true }] }` changes nothing else; one
+  passkey covers every package named. `ScopeApp` carries `child_teams`
+  (absent in entries an earlier release logged, which replay as they did).
+
 - **One account in several teams with one approval.** Calimero Home's "give
   all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
   step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
@@ -130,6 +141,41 @@
   barred, so opening the team again lets them back into it (not into the
   channels). `UpdateTeam` carries `close_drops_below`, which the API always
   sets; an entry an earlier release logged replays keeping the rows.
+
+### Added
+
+- **A cluster version gates new log entries during a rollout**. Old and new
+  nodes replicate one system log through a rolling upgrade, and a node skips
+  an entry it cannot decode, so a command (or field) only the new release
+  knows changed the new nodes' state alone: the old nodes kept serving reads
+  and judging access from the state before it, and with an old system leader
+  the caller was refused an entry the new nodes applied. Each such shape is
+  now a feature with the release it ships in
+  (`system::cluster_version::FEATURES`); the system leader logs the active
+  cluster version (`SetClusterVersion`, only forward) once every registered
+  node supports it, and every proposal above it is refused `409
+  FEATURE_NOT_ACTIVE`, naming the feature and the version it needs (`details:
+  { feature, needs, active }`). `GET /health` answers `clusterVersion`, the
+  newest this node supports (a node of an earlier release is judged by its
+  `release`); `GET /ops/placement` answers the logged `clusterVersion`.
+  Retrofitted to rc.15's commands an rc.14 node cannot decode: `MoveApp`,
+  `ScopeApps` naming one app team's `join`/`keep`, `SetOrgQuotas` and
+  `SetPools` (rc.15); on a cluster whose nodes all run rc.15 or newer they
+  work as before. Closing a team (`UpdateTeam` with `join: invite`, which
+  now takes the rows below it, see above) is gated to rc.16, as is a move that gives a DM's people
+  app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
+  instance by its release (`ScopeApps.by_release`), and giving a member every app
+  added later (`SetAllApps`, or an invite with `allApps`), restoring an app
+  from its backup (`RestoreApp`, `FinishRestore`), renaming an organization
+  (`RenameOrg`), and a member's rows in several teams at once (`SetTeamMembers`,
+  `RemoveTeamMembers`). Once a version is logged, no node below it joins the
+  system group. A skipped undecodable entry now logs an error and counts in
+  `calimero_log_undecodable_entries_total{log}`. Stored format:
+  `SystemState.clusterVersion` is left out when unset; a node on an earlier
+  release skips `SetClusterVersion`, which is logged only once every node
+  supports it. **Rollout**: remove the old nodes (`DELETE /ops/nodes/{id}`)
+  to finish one; a registered node that does not answer holds the version
+  back.
 
 ## [1.0.0-rc.15] - 2026-11-10
 
