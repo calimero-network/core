@@ -250,6 +250,30 @@ whoever loses the team loses their rows in the teams below it too.
 name, `join`, member count, default capabilities and whether the caller is in
 it or manages it (a guest: only their own).
 
+### Every app added later
+
+In an organization that keeps its apps apart, a new app's team holds only the
+people named when it is made. A member may instead hold a standing grant,
+**every app added later** (`Org::all_apps`, `allApps` on `GET /orgs/{org}`):
+each app team made from then on gives them a plain row, whoever else it
+names, so they reach every new app, open or closed. That is an app team made
+by `ScopeApps` (closed with a `keep` list too: they are kept), one a move
+makes in the organization ([Moving an app](#moving-an-app)), and a team an
+admin marks as an app team (unless they were removed from that team). It
+gives nothing in an app team already there: an admin adds them to those as
+anyone else.
+
+The grant is the owner's or an admin's to give, with a passkey: on an invite,
+`POST /orgs/{org}/invites { ..., allApps: true }` (the consent's arguments
+then name `allApps: true`; `403` below admin), which gives it to whoever
+redeems it, and later, `POST /orgs/{org}/all-apps { account, allApps }`
+(`__set_all_apps { account, allApps }`, `SystemCmd::SetAllApps`; `false`
+stops it, the rows already made stay). A member redeeming an `allApps`
+invite gets the grant, which spends a use. It ends with their membership:
+leaving, removal, or a recovery that removes them. `ScopeApps`, `MoveApp` and
+`UpdateTeam` carry `all_apps_rows`, which the API always sets; entries an
+earlier release logged replay making no such rows.
+
 While an organization has app teams, creating the first instance of a package
 that has none there is an admin's. In a
 `shared` organization a member sees, in `GET /orgs/{org}`, only the people of
@@ -303,9 +327,11 @@ app of one organization into another this way.
   instance moves to, or, for an `accounts` instance (a DM, a private
   channel), its package's app team there when that team is closed, so they
   keep reaching it (an open one needs no row). Someone already in the target
-  keeps their role. A personal app brings nobody. A `MoveApp` an earlier
-  release logged (without `accounts_in_app_team`) replays giving an
-  `accounts` instance's people no such row.
+  keeps their role. A personal app brings nobody. An app team made in the
+  target gives its members who hold [every app added later](#every-app-added-later)
+  a row too. A `MoveApp` an earlier release logged (without
+  `accounts_in_app_team`) replays giving an `accounts` instance's people no
+  such row.
 - **Invites**: the source's invites naming the team the app leaves are revoked
   once no app of the source is on that team.
 
@@ -343,13 +369,14 @@ rows; `412 CONFIRM_REQUIRED` first); `GET
 
 ## Invites
 
-`POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses? }` returns a token
+`POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps? }` returns a token
 `inv_…`, after the inviter approves it with a passkey (`412 CONFIRM_REQUIRED`
 first; the consent binds `{ inviteKey, role, teams, expiresAt, uses }`). Only
 the token's Ed25519 public key is stored (`inviteKey`, the key whose seed is
 `SHA-256("calimero.invite.v1\0" ‖ token)`). An invite expires (7 days by default) and
 admits `uses` accounts (1 by default). Its role may not exceed the inviter's and
-is never `owner`. An inviter below admin needs `INVITE_MEMBERS` on each team the
+is never `owner`. Only the owner or an admin mints one with `allApps`
+([Every app added later](#every-app-added-later)). An inviter below admin needs `INVITE_MEMBERS` on each team the
 invite names (organization-wide when it names none), and may name only teams
 they see (a member of, or a manager): an organization-wide grant does not open a
 restricted team they are not in.
