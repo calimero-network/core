@@ -1937,6 +1937,125 @@ impl SystemState {
     }
 }
 
+/// `account`'s row in `team` at `role` (with `capabilities`, else what a new
+/// row takes), as `actor` sets it: [`SystemCmd::SetTeamMember`]'s rule, which
+/// [`SystemCmd::SetTeamMembers`] applies to each of its teams.
+fn set_team_row(
+    o: &mut Org,
+    team: &str,
+    account: &str,
+    role: TeamRole,
+    capabilities: Option<u32>,
+    actor: &str,
+) -> Result<(), &'static str> {
+    use crate::types::caps;
+
+    let Some(t) = o.teams.get(team) else {
+        return Err("no such team");
+    };
+    // Joining an open team one reaches anyway writes one's own row.
+    let joins_self = actor == account
+        && role == TeamRole::Member
+        && t.join == TeamJoin::Everyone
+        && o.in_team(actor, team);
+    let manages = o.manages_team(actor, team)
+        || (role != TeamRole::Lead && o.may(actor, Some(team), caps::MANAGE_MEMBERS));
+    if !joins_self && !manages {
+        return Err("not allowed to manage this team");
+    }
+    if o.role(account).is_none() {
+        return Err("only organization members join teams");
+    }
+    // A new row takes what the member holds organization-wide, and the
+    // team's default on top.
+    let default = o
+        .capabilities
+        .get(account)
+        .copied()
+        .unwrap_or(o.default_capabilities)
+        | t.default_capabilities.unwrap_or(0);
+    let t = o.teams.get_mut(team).ok_or("no such team")?;
+    let _was = t.removed.remove(account);
+    let _prev = t.members.insert(account.to_owned(), role == TeamRole::Lead);
+    if role == TeamRole::ReadOnly {
+        let _new = t.read_only.insert(account.to_owned());
+    } else {
+        let _was = t.read_only.remove(account);
+    }
+    match capabilities {
+        Some(c) => {
+            let _prev = t.capabilities.insert(account.to_owned(), c);
+        }
+        None => {
+            let _kept = t.capabilities.entry(account.to_owned()).or_insert(default);
+        }
+    }
+    Ok(())
+}
+
+/// Take `account`'s row in `team` (and, with `subtree`, in every team below
+/// it), as `actor` removes it or `account` leaves: [`SystemCmd::RemoveTeamMember`]'s
+/// rule, which [`SystemCmd::RemoveTeamMembers`] applies to each of its teams.
+fn remove_team_row(
+    o: &mut Org,
+    team: &str,
+    account: &str,
+    actor: &str,
+    subtree: bool,
+) -> Result<(), &'static str> {
+    if actor != account && !o.manages_team(actor, team) {
+        return Err("not allowed to manage this team");
+    }
+    if !o.teams.contains_key(team) {
+        return Err("no such team");
+    }
+    // The teams below go too (a private channel under an app's team): a
+    // direct row there would keep them in. Whoever manages `team` manages
+    // those; a leaver leaves them.
+    let below = if subtree {
+        o.subtree(team)
+    } else {
+        vec![team.to_owned()]
+    };
+    for id in &below {
+        if let Some(t) = o.teams.get_mut(id) {
+            let _prev = t.members.remove(account);
+            let _was = t.read_only.remove(account);
+            let _caps = t.capabilities.remove(account);
+        }
+    }
+    let t = o.teams.get_mut(team).ok_or("no such team")?;
+    // A removal, and a leave too, keeps them from coming back by
+    // inheritance: an open team would otherwise put a leaver straight back,
+    // and a read-only leaver would shed the role. They return only when a
+    // lead re-adds them or an invite names the team.
+    let _new = t.removed.insert(account.to_owned());
+    Ok(())
+}
+
+/// A batch of team rows names 1 to [`MAX_TEAM_BATCH`] teams, each once.
+///
+/// # Errors
+///
+/// When it names none, too many, or one twice.
+pub fn check_team_batch<'a>(
+    teams: impl ExactSizeIterator<Item = &'a str>,
+) -> Result<(), &'static str> {
+    if teams.len() == 0 {
+        return Err("name at least one team");
+    }
+    if teams.len() > MAX_TEAM_BATCH {
+        return Err("too many teams in one step");
+    }
+    let mut seen = BTreeSet::new();
+    for t in teams {
+        if !seen.insert(t) {
+            return Err("a team is named twice");
+        }
+    }
+    Ok(())
+}
+
 /// How the release that logged a [`SystemCmd::ScopeApps`] judged it: each
 /// flag is the entry's own, absent (`false`) in an earlier release's entry.
 #[derive(Clone, Copy, Debug)]
@@ -1990,15 +2109,19 @@ impl SystemState {
                     instances: None,
                     join: None,
                     keep: None,
+                    child_teams: None,
                 })
                 .collect(),
         };
         if specs.len() > MAX_SCOPE_PACKAGES {
             return Err("too many packages in one step");
         }
-        // A package's own `join` decides its team and no other: `shared`
-        // then closes nothing more unless asked, and never one opened here.
-        let per_app = specs.iter().any(|a| a.join.is_some());
+        // A package's own `join` (or `childTeams`) decides its team and no
+        // other: `shared` then closes nothing more unless asked, and never
+        // one opened here.
+        let per_app = specs
+            .iter()
+            .any(|a| a.join.is_some() || a.child_teams.is_some());
         if shared == Some(true) && specs.iter().any(|a| a.join == Some(TeamJoin::Everyone)) {
             return Err("an app team cannot open while the step closes every app team");
         }
@@ -2012,6 +2135,7 @@ impl SystemState {
             reach: BTreeSet<AccountId>,
             join: Option<TeamJoin>,
             keep: Option<BTreeSet<AccountId>>,
+            child_teams: Option<bool>,
         }
         let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
         for spec in specs {
@@ -2099,6 +2223,7 @@ impl SystemState {
                 reach,
                 join: spec.join,
                 keep,
+                child_teams: spec.child_teams,
             });
         }
         let app_teams = o
@@ -2169,6 +2294,27 @@ impl SystemState {
             };
             seed.extend(all_apps.iter().cloned());
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+            // Its members make private channels below it, or no longer do,
+            // as the admin says: its default, and every row that sets its
+            // own capabilities (a row added one by one keeps what it got
+            // then). How an app team made before the default held
+            // `CREATE_CHILD_TEAM` gets it.
+            if let Some(on) = plan.child_teams {
+                let set = |c: u32| {
+                    if on {
+                        c | caps::CREATE_CHILD_TEAM
+                    } else {
+                        c & !caps::CREATE_CHILD_TEAM
+                    }
+                };
+                t.default_capabilities = match t.default_capabilities {
+                    None if !on => None,
+                    c => Some(set(c.unwrap_or(0))),
+                };
+                for c in t.capabilities.values_mut() {
+                    *c = set(*c);
+                }
+            }
             let mut added = 0usize;
             for a in &seed {
                 let _back = t.removed.remove(a);
@@ -3725,6 +3871,34 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::SetTeamMembers {
+            org,
+            account,
+            teams,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = team_members_args(account, teams);
+            states(&st, &format!("org:{org}"), "__set_team_members", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveTeamMembers {
+            org,
+            account,
+            teams,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = remove_team_members_args(account, teams);
+            states(&st, &format!("org:{org}"), "__remove_team_members", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
         // Deleting a team takes the apps below it: with apps there, the
         // actor's passkey over exactly those apps, so one added since the
         // approval is not taken silently.
@@ -4161,6 +4335,38 @@ pub fn default_capabilities_args(team: Option<&str>, capabilities: u32) -> Value
     }
 }
 
+/// The most teams one `SetTeamMembers` or `RemoveTeamMembers` names.
+pub const MAX_TEAM_BATCH: usize = 64;
+
+/// One team of a [`SystemCmd::SetTeamMembers`]: the row as a single
+/// `SetTeamMember` would set it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TeamRow {
+    pub team: TeamId,
+    /// The row's role (absent: `member`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TeamRole>,
+    /// The row's capabilities (absent: a new row takes the organization's
+    /// and the team's default; an existing row keeps its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u32>,
+}
+
+/// What a person consents to when setting one account's rows in several
+/// teams (`org:<org> / __set_team_members`).
+#[must_use]
+pub fn team_members_args(account: &str, teams: &[TeamRow]) -> Value {
+    json!({ "account": account, "teams": teams })
+}
+
+/// What a person consents to when taking one account's rows from several
+/// teams, or leaving them (`org:<org> / __remove_team_members`).
+#[must_use]
+pub fn remove_team_members_args(account: &str, teams: &[TeamId]) -> Value {
+    json!({ "account": account, "teams": teams })
+}
+
 /// The most packages one `ScopeApps` names.
 pub const MAX_SCOPE_PACKAGES: usize = 64;
 /// The most instances one package of a `ScopeApps` names.
@@ -4224,6 +4430,15 @@ pub struct ScopeApp {
     /// team takes them. They are not barred: opening it again lets them in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<Vec<AccountId>>,
+    /// Whether the app team's members make restricted teams below it
+    /// (private channels): `true` adds `CREATE_CHILD_TEAM` to its default
+    /// capabilities and to every row there that sets its own, `false` takes
+    /// it out of both (absent: as they are, or, for a team made here, as a
+    /// new app team's default). An app team made before that default gets
+    /// it only this way. Naming it on any package leaves `shared` unset to
+    /// mean "no other team", as `join` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_teams: Option<bool>,
 }
 
 /// What an admin consents to when scoping apps (`org:<org> / __scope_apps`):
@@ -5077,6 +5292,17 @@ pub enum SystemCmd {
         #[serde(default)]
         consent: Value,
     },
+    /// `account`'s rows in several teams of `org` at once, with one passkey
+    /// consent (`org:<org> / __set_team_members`, [`team_members_args`]):
+    /// each row judged as its own [`SystemCmd::SetTeamMember`] would be, and
+    /// none set unless every one holds.
+    SetTeamMembers {
+        org: OrgId,
+        account: AccountId,
+        teams: Vec<TeamRow>,
+        actor: AccountId,
+        consent: Value,
+    },
     /// Change a team: its name, whether it is open, where it hangs (`parent`:
     /// `Some(None)` moves it to the top), what the app keeps about it.
     UpdateTeam {
@@ -5176,6 +5402,18 @@ pub enum SystemCmd {
         /// earlier release logged, which replays removing the one row.
         #[serde(default)]
         subtree: bool,
+    },
+    /// Take `account` out of several teams of `org` at once (or, `account ==
+    /// actor`, leave them), with one passkey consent (`org:<org> /
+    /// __remove_team_members`, [`remove_team_members_args`]): each judged as
+    /// its own [`SystemCmd::RemoveTeamMember`] (the rows below included)
+    /// would be, and none taken unless every one holds.
+    RemoveTeamMembers {
+        org: OrgId,
+        account: AccountId,
+        teams: Vec<TeamId>,
+        actor: AccountId,
+        consent: Value,
     },
     /// An invite, recorded under its token's public key
     /// ([`crate::proof::invite_key`]); the token itself is never logged.
@@ -7445,58 +7683,39 @@ impl SystemMachine {
                 ..
             } => {
                 let o = self.org_mut(&org)?;
-                if !o.teams.contains_key(&team) {
-                    return Err("no such team");
-                }
                 let role = role.unwrap_or(if lead {
                     TeamRole::Lead
                 } else {
                     TeamRole::Member
                 });
-                // Joining an open team one reaches anyway writes one's own row.
-                let joins_self = actor == account
-                    && role == TeamRole::Member
-                    && o.teams
-                        .get(&team)
-                        .is_some_and(|t| t.join == TeamJoin::Everyone)
-                    && o.in_team(&actor, &team);
-                let manages = o.manages_team(&actor, &team)
-                    || (role != TeamRole::Lead
-                        && o.may(&actor, Some(&team), crate::types::caps::MANAGE_MEMBERS));
-                if !joins_self && !manages {
-                    return Err("not allowed to manage this team");
+                set_team_row(o, &team, &account, role, capabilities, &actor)?;
+                Ok(Value::Null)
+            }
+            SystemCmd::SetTeamMembers {
+                org,
+                account,
+                teams,
+                actor,
+                ..
+            } => {
+                check_team_batch(teams.iter().map(|r| r.team.as_str()))?;
+                // All or nothing: each row is judged as its own
+                // `SetTeamMember` would be, in order, on a copy kept only
+                // when every one holds.
+                let o = self.org_mut(&org)?;
+                let mut next = o.clone();
+                for row in teams {
+                    let role = row.role.unwrap_or(TeamRole::Member);
+                    set_team_row(
+                        &mut next,
+                        &row.team,
+                        &account,
+                        role,
+                        row.capabilities,
+                        &actor,
+                    )?;
                 }
-                if o.role(&account).is_none() {
-                    return Err("only organization members join teams");
-                }
-                // A new row takes what the member holds organization-wide, and
-                // the team's default on top.
-                let default = o
-                    .capabilities
-                    .get(&account)
-                    .copied()
-                    .unwrap_or(o.default_capabilities)
-                    | o.teams
-                        .get(&team)
-                        .and_then(|t| t.default_capabilities)
-                        .unwrap_or(0);
-                if let Some(t) = o.teams.get_mut(&team) {
-                    let _was = t.removed.remove(&account);
-                    let _prev = t.members.insert(account.clone(), role == TeamRole::Lead);
-                    if role == TeamRole::ReadOnly {
-                        let _new = t.read_only.insert(account.clone());
-                    } else {
-                        let _was = t.read_only.remove(&account);
-                    }
-                    match capabilities {
-                        Some(c) => {
-                            let _prev = t.capabilities.insert(account, c);
-                        }
-                        None => {
-                            let _kept = t.capabilities.entry(account).or_insert(default);
-                        }
-                    }
-                }
+                *o = next;
                 Ok(Value::Null)
             }
             SystemCmd::UpdateTeam {
@@ -7728,34 +7947,25 @@ impl SystemMachine {
                 ..
             } => {
                 let o = self.org_mut(&org)?;
-                if actor != account && !o.manages_team(&actor, &team) {
-                    return Err("not allowed to manage this team");
+                remove_team_row(o, &team, &account, &actor, subtree)?;
+                Ok(Value::Null)
+            }
+            SystemCmd::RemoveTeamMembers {
+                org,
+                account,
+                teams,
+                actor,
+                ..
+            } => {
+                check_team_batch(teams.iter().map(String::as_str))?;
+                // All or nothing, each judged as its own `RemoveTeamMember`
+                // (the rows below included) would be.
+                let o = self.org_mut(&org)?;
+                let mut next = o.clone();
+                for team in &teams {
+                    remove_team_row(&mut next, team, &account, &actor, true)?;
                 }
-                if !o.teams.contains_key(&team) {
-                    return Err("no such team");
-                }
-                // The teams below go too (a private channel under an app's
-                // team): a direct row there would keep them in. Whoever
-                // manages `team` manages those; a leaver leaves them.
-                let below = if subtree {
-                    o.subtree(&team)
-                } else {
-                    vec![team.clone()]
-                };
-                for id in &below {
-                    if let Some(t) = o.teams.get_mut(id) {
-                        let _prev = t.members.remove(&account);
-                        let _was = t.read_only.remove(&account);
-                        let _caps = t.capabilities.remove(&account);
-                    }
-                }
-                let t = o.teams.get_mut(&team).ok_or("no such team")?;
-                // A removal, and a leave too, keeps them from
-                // coming back by inheritance: an open team would otherwise put a
-                // leaver straight back, and a read-only leaver would shed the
-                // role. They return only when a lead re-adds them or an invite
-                // names the team.
-                let _new = t.removed.insert(account);
+                *o = next;
                 Ok(Value::Null)
             }
             SystemCmd::CreateInvite {
@@ -10576,6 +10786,7 @@ mod tests {
                 instances: Some(vec!["dm".into()]),
                 join: None,
                 keep: None,
+                child_teams: None,
             }]),
             shared: None,
             nonce: "n".into(),
@@ -10640,6 +10851,7 @@ mod tests {
                         instances: None,
                         join: None,
                         keep: None,
+                        child_teams: None,
                     })
                     .to_vec(),
             ),
@@ -10687,6 +10899,109 @@ mod tests {
         assert_eq!(
             serde_json::to_value(scope(true)).unwrap()["by_release"],
             json!(true)
+        );
+    }
+
+    /// An app team made before its default held `CREATE_CHILD_TEAM` gets it
+    /// only when an admin says so (`ScopeApps` with a package's
+    /// `childTeams`), never on replay or as a side effect: a step without it
+    /// leaves the default and the rows as they are. Naming it decides that
+    /// team alone, as `join` does, so another open app team stays open.
+    #[test]
+    fn an_older_app_team_gets_child_teams_when_an_admin_turns_them_on() {
+        use crate::types::caps;
+
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        chat_org(&mut m);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        // Chat's team as an earlier release made it: inviting, no channels;
+        // Carol's row, added one by one, holds what it got then.
+        let chat = o.teams.get_mut("chat").unwrap();
+        chat.default_capabilities = Some(caps::INVITE_MEMBERS);
+        let _prev = chat.members.insert("carol".into(), false);
+        let _prev = chat
+            .capabilities
+            .insert("carol".into(), caps::INVITE_MEMBERS);
+        let _prev = o.teams.insert(
+            "blocks".into(),
+            serde_json::from_value(json!({
+                "teamId": "blocks", "name": "Blocks", "join": "everyone",
+                "members": { "alice": true },
+                "metadata": { "app": { "package": "com.blocks" } }
+            }))
+            .unwrap(),
+        );
+        let scope = |child_teams: Option<bool>| SystemCmd::ScopeApps {
+            org: "org".into(),
+            apps: Some(vec![super::ScopeApp {
+                package: "com.chat".into(),
+                name: None,
+                instances: Some(vec![]),
+                join: None,
+                keep: None,
+                child_teams,
+            }]),
+            // Absent, a step without `childTeams` would close every app
+            // team here (there are two): this one keeps Blocks open.
+            shared: child_teams.is_none().then_some(false),
+            nonce: "n".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            owner_in_team: true,
+            accounts_in_app_team: true,
+            member_child_teams: true,
+            all_apps_rows: true,
+            by_release: true,
+        };
+        let channel = |id: &str, who: &str| SystemCmd::CreateTeam {
+            org: "org".into(),
+            team_id: id.into(),
+            name: id.into(),
+            parent: Some("chat".into()),
+            join: TeamJoin::Invite,
+            actor: who.into(),
+            member_child_teams: true,
+        };
+        let default = |m: &SystemMachine| m.state.orgs["org"].teams["chat"].default_capabilities;
+        let refused = "not allowed to create this team";
+
+        // Without it (as every entry before it): the default stays, and
+        // Bob and Carol, in Chat, make no channel.
+        let _ok = m.run_authorized(scope(None)).unwrap();
+        assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
+        for who in ["bob", "carol"] {
+            assert_eq!(m.run_authorized(channel(who, who)), Err(refused));
+        }
+
+        // Turned on, the step names Chat alone: both make one (Carol by her
+        // own row too), and Blocks stays open.
+        let _ok = m.run_authorized(scope(Some(true))).unwrap();
+        let both = caps::INVITE_MEMBERS | caps::CREATE_CHILD_TEAM;
+        assert_eq!(default(&m), Some(both));
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.teams["chat"].capabilities["carol"], both);
+        assert_eq!(o.teams["blocks"].join, TeamJoin::Everyone);
+        for who in ["bob", "carol"] {
+            let id = format!("{who}1");
+            let _ok = m.run_authorized(channel(&id, who)).unwrap();
+        }
+
+        // Turned off again: no more.
+        let _ok = m.run_authorized(scope(Some(false))).unwrap();
+        assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
+        for who in ["bob", "carol"] {
+            let id = format!("{who}2");
+            assert_eq!(m.run_authorized(channel(&id, who)), Err(refused));
+        }
+
+        // An earlier release's entry carries no `childTeams`, and one
+        // without it is logged as before.
+        let logged: super::ScopeApp =
+            serde_json::from_value(json!({ "package": "com.chat" })).unwrap();
+        assert_eq!(logged.child_teams, None);
+        assert_eq!(
+            serde_json::to_value(&logged).unwrap(),
+            json!({ "package": "com.chat" })
         );
     }
 
@@ -10833,6 +11148,7 @@ mod tests {
                 instances: None,
                 join: Some(TeamJoin::Invite),
                 keep: Some(Vec::new()),
+                child_teams: None,
             }]),
             shared: None,
             nonce: "n".into(),
@@ -11117,6 +11433,155 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// One account's rows in several teams in one entry, with one passkey
+    /// consent over exactly those rows: each team judged as its own
+    /// `SetTeamMember` (or `RemoveTeamMember`) would be, and the whole batch
+    /// refused, nothing changed, when any one is. A batch names 1 to
+    /// `MAX_TEAM_BATCH` teams, each once.
+    #[test]
+    fn one_accounts_rows_in_several_teams_are_set_and_taken_at_once() {
+        use super::{TeamRow, MAX_TEAM_BATCH};
+        use crate::types::TeamRole;
+
+        let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("carol".into(), OrgRole::Member);
+        for (id, parent) in [("chat", None), ("blocks", None), ("dm", Some("chat"))] {
+            let _prev = o.teams.insert(
+                id.into(),
+                serde_json::from_value(json!({
+                    "teamId": id, "name": id, "join": "invite", "parent": parent,
+                    "members": { "bob": true }
+                }))
+                .unwrap(),
+            );
+        }
+        let row = |team: &str, role: Option<TeamRole>| TeamRow {
+            team: team.into(),
+            role,
+            capabilities: None,
+        };
+        let set = |actor: &str, teams: Vec<TeamRow>| SystemCmd::SetTeamMembers {
+            org: "org".into(),
+            account: "carol".into(),
+            teams,
+            actor: actor.into(),
+            consent: Value::Null,
+        };
+        let remove = |actor: &str, teams: &[&str]| SystemCmd::RemoveTeamMembers {
+            org: "org".into(),
+            account: "carol".into(),
+            teams: teams.iter().map(|t| (*t).to_owned()).collect(),
+            actor: actor.into(),
+            consent: Value::Null,
+        };
+        let rows = |m: &SystemMachine| -> Vec<String> {
+            let o = &m.state.orgs["org"];
+            ["t", "chat", "blocks", "dm"]
+                .into_iter()
+                .filter(|t| o.teams[*t].members.contains_key("carol"))
+                .map(str::to_owned)
+                .collect()
+        };
+
+        // Bob leads Chat and Blocks, not `t`: a batch naming `t` is refused
+        // whole, though the other two would be his to set.
+        let refused = set(
+            "bob",
+            vec![row("chat", None), row("blocks", None), row("t", None)],
+        );
+        assert_eq!(
+            m.run_authorized(refused),
+            Err("not allowed to manage this team")
+        );
+        assert!(rows(&m).is_empty(), "nothing set");
+        for (teams, why) in [
+            (vec![], "name at least one team"),
+            (
+                vec![row("chat", None), row("chat", None)],
+                "a team is named twice",
+            ),
+            (
+                (0..=MAX_TEAM_BATCH)
+                    .map(|i| row(&format!("t{i}"), None))
+                    .collect(),
+                "too many teams in one step",
+            ),
+            (vec![row("nope", None)], "no such team"),
+        ] {
+            assert_eq!(m.run_authorized(set("alice", teams)), Err(why));
+        }
+        // Not a member of the organization: no row anywhere.
+        let mut outsider = set("alice", vec![row("chat", None)]);
+        if let SystemCmd::SetTeamMembers { account, .. } = &mut outsider {
+            *account = "erin".into();
+        }
+        assert_eq!(
+            m.run_authorized(outsider),
+            Err("only organization members join teams")
+        );
+
+        // With one passkey consent over exactly the rows: all three at once.
+        let teams = vec![
+            row("chat", None),
+            row("blocks", Some(TeamRole::ReadOnly)),
+            row("dm", Some(TeamRole::Lead)),
+        ];
+        let args = super::team_members_args("carol", &teams);
+        let mut fewer = teams.clone();
+        let _last = fewer.pop();
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_team_members"),
+            &args,
+            &super::team_members_args("carol", &fewer),
+            |consent| SystemCmd::SetTeamMembers {
+                org: "org".into(),
+                account: "carol".into(),
+                teams: teams.clone(),
+                actor: "alice".into(),
+                consent,
+            },
+        );
+        assert_eq!(rows(&m), ["chat", "blocks", "dm"]);
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.team_role("carol", "blocks"), Some(TeamRole::ReadOnly));
+        assert!(o.manages_team("carol", "dm") && !o.manages_team("carol", "chat"));
+
+        // Taking them: Bob may not take her from `t`, so nothing goes.
+        let _ok = m
+            .run_authorized(set("alice", vec![row("t", None)]))
+            .unwrap();
+        assert_eq!(
+            m.run_authorized(remove("bob", &["chat", "t"])),
+            Err("not allowed to manage this team")
+        );
+        assert_eq!(rows(&m), ["t", "chat", "blocks", "dm"]);
+        // Out of Chat and Blocks with one consent: the channel below Chat
+        // goes too, and `t` stays.
+        needs_consent(
+            &mut m,
+            &mut bob,
+            ("org:org", "__remove_team_members"),
+            &super::remove_team_members_args("carol", &["chat".into(), "blocks".into()]),
+            &super::remove_team_members_args("carol", &["chat".into()]),
+            |consent| SystemCmd::RemoveTeamMembers {
+                org: "org".into(),
+                account: "carol".into(),
+                teams: vec!["chat".into(), "blocks".into()],
+                actor: "bob".into(),
+                consent,
+            },
+        );
+        assert_eq!(rows(&m), ["t"]);
+        let o = &m.state.orgs["org"];
+        assert!(o.teams["chat"].removed.contains("carol"));
+        // She leaves `t` herself, in a batch of one.
+        let _ok = m.run_authorized(remove("carol", &["t"])).unwrap();
+        assert!(rows(&m).is_empty());
     }
 
     // ------------------------------------- an org app's owner, while a member

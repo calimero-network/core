@@ -2938,6 +2938,14 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
         .await,
     );
     forbidden(
+        "set a member's rows in several teams",
+        site.post(
+            &format!("orgs/{org}/members/{bob_id}/teams"),
+            json!({ "teams": [{ "team": "x" }] }),
+        )
+        .await,
+    );
+    forbidden(
         "rename the organization",
         site.post(&format!("orgs/{org}/name"), json!({ "name": "Evil" }))
             .await,
