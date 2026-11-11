@@ -22,6 +22,7 @@ use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, Raf
 use openraft::{BasicNode, ServerState};
 use tokio::sync::{watch, Mutex};
 
+pub mod format;
 mod legacy;
 pub mod machine;
 #[cfg(test)]
@@ -33,8 +34,9 @@ pub mod testing;
 pub mod tuning;
 pub mod types;
 
+pub use format::{NewerStore, STORE_FORMAT};
 pub use legacy::MigrationReport;
-pub use machine::{read_snapshot_file, Applied, Machine, Shared};
+pub use machine::{read_snapshot_file, Applied, Machine, Shared, SNAPSHOT_FORMAT};
 pub use network::{BoxFuture, RpcRequest, RpcResponse, Transport};
 use store::{Db, LogStore};
 pub use store::{GroupState, StateTx};
@@ -565,6 +567,21 @@ impl<M: Machine> Group<M> {
         snapshot_id: &str,
         path: &Path,
     ) -> eyre::Result<u64> {
+        self.sole_leader()?;
+        machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+    }
+
+    /// [`Self::replace_state`] for an in-memory machine: its whole state is
+    /// `data` (what [`Machine::snapshot`] answers) from now on, until a
+    /// snapshot ([`Self::snapshot_through`]) checkpoints it; a restart before
+    /// that replays the log from the checkpoint before. Refused unless this
+    /// node is the group's only voter and leads it.
+    pub fn replace_machine_data(&self, data: &[u8]) -> eyre::Result<()> {
+        self.sole_leader()?;
+        machine::replace_machine_data(&self.shared, data)
+    }
+
+    fn sole_leader(&self) -> eyre::Result<()> {
         let status = self.status();
         if !status.is_leader || status.voters != [self.node] || !status.learners.is_empty() {
             eyre::bail!(
@@ -572,7 +589,7 @@ impl<M: Machine> Group<M> {
                 self.id
             );
         }
-        machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+        Ok(())
     }
 
     /// Build a snapshot and wait, up to `timeout`, until the one this node
@@ -673,8 +690,11 @@ pub struct Engine {
 impl Engine {
     /// Open the node's database under `dir`, sealed under `key`.
     ///
-    /// A directory still holding the previous format (`log.redb`) is migrated
-    /// first; the old file is kept beside, renamed `log.redb.migrated`.
+    /// The store's format is settled first ([`format`]): a store a later
+    /// release wrote is refused ([`NewerStore`]), an older one is brought to
+    /// [`STORE_FORMAT`]. A directory still holding the redb format before the
+    /// store (`log.redb`) is then migrated into it; the old file is kept beside,
+    /// renamed `log.redb.migrated`.
     pub fn open(
         node: NodeId,
         dir: &Path,
@@ -685,6 +705,19 @@ impl Engine {
         let legacy_path = dir.join(legacy::FILE);
         let migrate = legacy_path.exists();
         let db = Db::open(dir, key)?;
+        let settled = format::settle(&db).map_err(|e| {
+            e.wrap_err(format!(
+                "the node store at {}",
+                store::store_path(dir).display()
+            ))
+        })?;
+        if let format::Settled::Migrated { from } = settled {
+            tracing::info!(
+                from,
+                to = STORE_FORMAT,
+                "brought the store to the current format"
+            );
+        }
         if migrate {
             let report = legacy::Legacy::open(&legacy_path, key)?.migrate_into(&db)?;
             std::fs::rename(&legacy_path, dir.join(format!("{}.migrated", legacy::FILE)))?;

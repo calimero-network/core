@@ -328,6 +328,7 @@ impl Node {
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
                 upgrades,
+                min_runtime_version: Some(manifest.min_runtime_version.clone()),
             },
             wasm: wasm_by_hash,
         })

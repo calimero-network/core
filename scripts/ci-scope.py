@@ -85,6 +85,14 @@ WORKFLOWS = {
             "scripts/install-mero-compute.sh",
             # calimero-node's openapi test compares it with what the registry builds.
             "docs/public/openapi.json",
+            "scripts/check-api-compat.py",
+            "scripts/tests/check-api-compat-test.py",
+            "scripts/check-compat-door.py",
+            "scripts/check-trust-boundary.py",
+            "scripts/tests/check-compat-door-test.py",
+            "scripts/fetch-release-app.py",
+            # the release `Apps of the previous release` fetches its kv bundle from
+            ".github/upgrade-from",
             "scripts/fetch-release.sh",
             "scripts/build-release-fixtures.sh",
             "scripts/build-upgrade-deep-fixtures.sh",

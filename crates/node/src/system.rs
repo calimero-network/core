@@ -11,12 +11,15 @@ use calimero_identity::Credential;
 use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
     Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
     NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
+
+pub mod cluster_version;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,6 +290,13 @@ pub struct PackageVersion {
     /// manifest ([`UpgradeAuthority`]); left out when `owner`.
     #[serde(default, skip_serializing_if = "UpgradeAuthority::is_owner")]
     pub upgrades: UpgradeAuthority,
+    /// The oldest runtime its signed manifest says it runs on
+    /// (`minRuntimeVersion`), kept so placement and the reports judge it
+    /// without the `.mpk` ([`crate::runtime`]). Absent in releases recorded
+    /// before, and dropped by a node on an earlier release: then it is read
+    /// from the `.mpk` where it decides something (`Node::min_runtime_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_runtime_version: Option<String>,
 }
 
 impl PackageVersion {
@@ -372,6 +382,48 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
         (Err(_), Ok(_)) => std::cmp::Ordering::Less,
         (Err(_), Err(_)) => a.cmp(b),
+    }
+}
+
+/// Make `s`, a system state restored from a backup, that of the cluster
+/// founded again on `founders` (`node::restore`, `--restore-from`): the
+/// founders are the replica nodes now and every other replica node of the
+/// cluster backed up is removed (job nodes, which hold nothing, stay), each
+/// app keeps the founders among its replicas and is filled up to `replicas`
+/// from them, and every app waits for its own backup
+/// ([`crate::types::PendingRestore::AWAITING_BACKUP`]): its group is hosted
+/// nowhere until the operator restores it. Accounts, organizations, teams,
+/// packages, governance and the operator key are kept as they were.
+pub fn refound(s: &mut SystemState, founders: &[NodeRecord], replicas: usize) {
+    let new: BTreeSet<u64> = founders.iter().map(|n| n.id).collect();
+    let gone: Vec<u64> = s
+        .replica_nodes()
+        .filter(|n| !new.contains(&n.id))
+        .map(|n| n.id)
+        .collect();
+    for id in gone {
+        let _gone = s.nodes.remove(&id);
+        let _new = s.removed_nodes.insert(id);
+        *s.node_epoch.entry(id).or_default() += 1;
+    }
+    for node in founders {
+        let _was = s.removed_nodes.remove(&node.id);
+        *s.node_epoch.entry(node.id).or_default() += 1;
+        let _prev = s.nodes.insert(node.id, node.clone());
+    }
+    let fleet: Vec<u64> = s.replica_nodes().map(|n| n.id).collect();
+    let want = replicas.min(fleet.len()).max(1);
+    for app in s.apps.values_mut() {
+        app.replicas.retain(|id| fleet.contains(id));
+        for id in &fleet {
+            if app.replicas.len() >= want {
+                break;
+            }
+            if !app.replicas.contains(id) {
+                app.replicas.push(*id);
+            }
+        }
+        app.restore = Some(crate::types::PendingRestore::AWAITING_BACKUP);
     }
 }
 
@@ -462,6 +514,12 @@ pub struct SystemState {
     /// ([`SystemState::may_upgrade`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub publishers: BTreeMap<String, PublisherBinding>,
+    /// Package signing keys whose organization was deleted (`DeleteOrg`), and
+    /// how many bindings each has had: the generation its next binding signs,
+    /// so a signature that bound it once never binds it again. Left out when
+    /// empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbound_publishers: BTreeMap<String, u64>,
     /// When each session in `revoked_sessions` was revoked (Unix seconds), so
     /// it can be forgotten once no token of it can still be valid.
     #[serde(default)]
@@ -487,6 +545,12 @@ pub struct SystemState {
     /// so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_proofs_from: Option<u64>,
+    /// The active cluster version ([`cluster_version`]): the newest core
+    /// release every node supports, logged by the system leader
+    /// (`SetClusterVersion`), only ever raised. `None` until the first.
+    /// Left out when `None`, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_version: Option<String>,
     /// Who may install apps where deployments are granted
     /// ([`Governance::deployments`]), by [`Deployer::key`]
     /// (`account:<id>`, `org:<id>`); [`SystemState::may_deploy`] judges them.
@@ -1195,7 +1259,10 @@ impl SystemState {
     /// The generation the next binding of `signer` signs.
     #[must_use]
     pub fn binding_generation(&self, signer: &str) -> u64 {
-        self.publishers.get(signer).map_or(0, |b| b.generation)
+        self.publishers.get(signer).map_or_else(
+            || self.unbound_publishers.get(signer).copied().unwrap_or(0),
+            |b| b.generation,
+        )
     }
 
     /// Whether `account` holds `APPROVE_RELEASES` in `org`, whoever holds
@@ -2109,15 +2176,19 @@ impl SystemState {
                     instances: None,
                     join: None,
                     keep: None,
+                    child_teams: None,
                 })
                 .collect(),
         };
         if specs.len() > MAX_SCOPE_PACKAGES {
             return Err("too many packages in one step");
         }
-        // A package's own `join` decides its team and no other: `shared`
-        // then closes nothing more unless asked, and never one opened here.
-        let per_app = specs.iter().any(|a| a.join.is_some());
+        // A package's own `join` (or `childTeams`) decides its team and no
+        // other: `shared` then closes nothing more unless asked, and never
+        // one opened here.
+        let per_app = specs
+            .iter()
+            .any(|a| a.join.is_some() || a.child_teams.is_some());
         if shared == Some(true) && specs.iter().any(|a| a.join == Some(TeamJoin::Everyone)) {
             return Err("an app team cannot open while the step closes every app team");
         }
@@ -2131,6 +2202,7 @@ impl SystemState {
             reach: BTreeSet<AccountId>,
             join: Option<TeamJoin>,
             keep: Option<BTreeSet<AccountId>>,
+            child_teams: Option<bool>,
         }
         let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
         for spec in specs {
@@ -2218,6 +2290,7 @@ impl SystemState {
                 reach,
                 join: spec.join,
                 keep,
+                child_teams: spec.child_teams,
             });
         }
         let app_teams = o
@@ -2288,6 +2361,27 @@ impl SystemState {
             };
             seed.extend(all_apps.iter().cloned());
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+            // Its members make private channels below it, or no longer do,
+            // as the admin says: its default, and every row that sets its
+            // own capabilities (a row added one by one keeps what it got
+            // then). How an app team made before the default held
+            // `CREATE_CHILD_TEAM` gets it.
+            if let Some(on) = plan.child_teams {
+                let set = |c: u32| {
+                    if on {
+                        c | caps::CREATE_CHILD_TEAM
+                    } else {
+                        c & !caps::CREATE_CHILD_TEAM
+                    }
+                };
+                t.default_capabilities = match t.default_capabilities {
+                    None if !on => None,
+                    c => Some(set(c.unwrap_or(0))),
+                };
+                for c in t.capabilities.values_mut() {
+                    *c = set(*c);
+                }
+            }
             let mut added = 0usize;
             for a in &seed {
                 let _back = t.removed.remove(a);
@@ -4403,6 +4497,15 @@ pub struct ScopeApp {
     /// team takes them. They are not barred: opening it again lets them in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<Vec<AccountId>>,
+    /// Whether the app team's members make restricted teams below it
+    /// (private channels): `true` adds `CREATE_CHILD_TEAM` to its default
+    /// capabilities and to every row there that sets its own, `false` takes
+    /// it out of both (absent: as they are, or, for a team made here, as a
+    /// new app team's default). An app team made before that default gets
+    /// it only this way. Naming it on any package leaves `shared` unset to
+    /// mean "no other team", as `join` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_teams: Option<bool>,
 }
 
 /// What an admin consents to when scoping apps (`org:<org> / __scope_apps`):
@@ -4917,6 +5020,18 @@ pub enum SystemCmd {
     /// (genesis sets it in a new one). It only ever tightens: a node that
     /// logs it early takes nothing from anyone.
     RequireSessionProofs,
+    /// The system leader raises the active cluster version
+    /// ([`SystemState::cluster_version`]) to `version`, once every registered
+    /// node advertises it or newer (`nodes`: each one's, by id). Only forward;
+    /// no proof: like `RequireSessionProofs`, it is the nodes' own.
+    SetClusterVersion {
+        version: String,
+        /// As `[[id, version], ...]`: `SystemCmd` is internally tagged, and
+        /// serde reads such an enum through a buffer that keeps a JSON
+        /// object's keys as strings, which a `u64` key does not take.
+        #[serde(with = "cluster_version::node_versions")]
+        nodes: BTreeMap<u64, String>,
+    },
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
@@ -5590,6 +5705,21 @@ pub struct SystemMachine {
     /// The log index of the entry being applied (0 outside the log, in
     /// tests): what [`SystemState::session_proofs_from`] is judged against.
     index: u64,
+    /// This cluster's name (`--cluster`): what a publisher binding is checked
+    /// against at apply. It is fixed for a cluster's life (the storage key is
+    /// derived from it), so every replica and every replay judges alike.
+    cluster: String,
+}
+
+impl SystemMachine {
+    /// The system machine of the cluster named `cluster`.
+    #[must_use]
+    pub fn new(cluster: String) -> Self {
+        Self {
+            cluster,
+            ..Self::default()
+        }
+    }
 }
 
 fn ok(v: Value) -> Vec<u8> {
@@ -5686,6 +5816,7 @@ impl SystemMachine {
     #[allow(clippy::too_many_lines, reason = "one arm per command")]
     fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
         let index = self.index;
+        let here = self.cluster.as_str();
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node, .. } => {
@@ -6380,7 +6511,10 @@ impl SystemMachine {
                 app.compute_bundle = compute_bundle;
                 app.group = group;
                 app.replicas = replicas;
-                app.restore = Some(crate::types::PendingRestore { seed, source });
+                app.restore = Some(crate::types::PendingRestore {
+                    seed: Some(seed),
+                    source: Some(source),
+                });
                 Ok(json!({ "group": group }))
             }
             SystemCmd::FinishRestore { app_id, group } => {
@@ -6974,6 +7108,9 @@ impl SystemMachine {
                 s.session_proofs_from = Some(index);
                 Ok(Value::Null)
             }
+            SystemCmd::SetClusterVersion { version, nodes } => {
+                cluster_version::apply(s, version, &nodes)
+            }
             SystemCmd::SetOperatorRelease {
                 version,
                 approved,
@@ -7006,16 +7143,22 @@ impl SystemMachine {
                 {
                     return Err("a signer id or cluster name is at most 128 bytes");
                 }
+                // The signature is checked over this cluster's own name: one
+                // the key made for another cluster binds nothing here.
+                if cluster != here {
+                    return Err("the binding names another cluster");
+                }
                 if !s.holds_approve_releases(&org, &actor) {
                     return Err(
                         "binding a publisher key needs APPROVE_RELEASES in the organization",
                     );
                 }
                 let generation = s.binding_generation(&signer_id);
-                let message = publisher_binding_message(&cluster, &org, &signer_id, generation);
+                let message = publisher_binding_message(here, &org, &signer_id, generation);
                 if !proof.proves(&signer_id, &message) {
                     return Err("the proof is not that key's signature over this binding");
                 }
+                let _was = s.unbound_publishers.remove(&signer_id);
                 let _prev = s.publishers.insert(
                     signer_id,
                     PublisherBinding {
@@ -7420,6 +7563,19 @@ impl SystemMachine {
                 }
                 let _gone = s.orgs.remove(&org);
                 s.invites.retain(|_, i| i.org != org);
+                // Its publisher keys go with it, each keeping its generation:
+                // an organization created later under this id is not their
+                // publisher, and the signatures that bound them stay spent.
+                let unbound: Vec<(String, u64)> = s
+                    .publishers
+                    .iter()
+                    .filter(|(_, b)| b.org == org)
+                    .map(|(k, b)| (k.clone(), b.generation))
+                    .collect();
+                for (signer, generation) in unbound {
+                    let _gone = s.publishers.remove(&signer);
+                    let _prev = s.unbound_publishers.insert(signer, generation);
+                }
                 let apps: Vec<String> = s
                     .apps
                     .values()
@@ -8185,7 +8341,16 @@ impl Machine for SystemMachine {
                 Ok(v) => ok(v),
                 Err(e) => err(&e),
             },
-            Err(e) => err(&format!("malformed command: {e}")),
+            Err(e) => {
+                // A feature gate keeps every entry within what each node
+                // applies (`cluster_version`): one that does not decode here
+                // means a node proposed above it, and this node's state now
+                // differs from the nodes that applied it.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
+                error!(index, error = %e, undecodable = n,
+                    "a system entry this node cannot decode was skipped: its state now differs from the nodes that applied it");
+                err(&format!("malformed command: {e}"))
+            }
         }
     }
 
@@ -8892,6 +9057,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m
@@ -8983,6 +9149,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
@@ -9020,6 +9187,7 @@ mod tests {
                 installed_at: 0,
                 installers: BTreeSet::new(),
                 upgrades: UpgradeAuthority::Owner,
+                min_runtime_version: None,
             },
         };
         let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
@@ -10750,6 +10918,7 @@ mod tests {
                 instances: Some(vec!["dm".into()]),
                 join: None,
                 keep: None,
+                child_teams: None,
             }]),
             shared: None,
             nonce: "n".into(),
@@ -10814,6 +10983,7 @@ mod tests {
                         instances: None,
                         join: None,
                         keep: None,
+                        child_teams: None,
                     })
                     .to_vec(),
             ),
@@ -10861,6 +11031,109 @@ mod tests {
         assert_eq!(
             serde_json::to_value(scope(true)).unwrap()["by_release"],
             json!(true)
+        );
+    }
+
+    /// An app team made before its default held `CREATE_CHILD_TEAM` gets it
+    /// only when an admin says so (`ScopeApps` with a package's
+    /// `childTeams`), never on replay or as a side effect: a step without it
+    /// leaves the default and the rows as they are. Naming it decides that
+    /// team alone, as `join` does, so another open app team stays open.
+    #[test]
+    fn an_older_app_team_gets_child_teams_when_an_admin_turns_them_on() {
+        use crate::types::caps;
+
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        chat_org(&mut m);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        // Chat's team as an earlier release made it: inviting, no channels;
+        // Carol's row, added one by one, holds what it got then.
+        let chat = o.teams.get_mut("chat").unwrap();
+        chat.default_capabilities = Some(caps::INVITE_MEMBERS);
+        let _prev = chat.members.insert("carol".into(), false);
+        let _prev = chat
+            .capabilities
+            .insert("carol".into(), caps::INVITE_MEMBERS);
+        let _prev = o.teams.insert(
+            "blocks".into(),
+            serde_json::from_value(json!({
+                "teamId": "blocks", "name": "Blocks", "join": "everyone",
+                "members": { "alice": true },
+                "metadata": { "app": { "package": "com.blocks" } }
+            }))
+            .unwrap(),
+        );
+        let scope = |child_teams: Option<bool>| SystemCmd::ScopeApps {
+            org: "org".into(),
+            apps: Some(vec![super::ScopeApp {
+                package: "com.chat".into(),
+                name: None,
+                instances: Some(vec![]),
+                join: None,
+                keep: None,
+                child_teams,
+            }]),
+            // Absent, a step without `childTeams` would close every app
+            // team here (there are two): this one keeps Blocks open.
+            shared: child_teams.is_none().then_some(false),
+            nonce: "n".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            owner_in_team: true,
+            accounts_in_app_team: true,
+            member_child_teams: true,
+            all_apps_rows: true,
+            by_release: true,
+        };
+        let channel = |id: &str, who: &str| SystemCmd::CreateTeam {
+            org: "org".into(),
+            team_id: id.into(),
+            name: id.into(),
+            parent: Some("chat".into()),
+            join: TeamJoin::Invite,
+            actor: who.into(),
+            member_child_teams: true,
+        };
+        let default = |m: &SystemMachine| m.state.orgs["org"].teams["chat"].default_capabilities;
+        let refused = "not allowed to create this team";
+
+        // Without it (as every entry before it): the default stays, and
+        // Bob and Carol, in Chat, make no channel.
+        let _ok = m.run_authorized(scope(None)).unwrap();
+        assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
+        for who in ["bob", "carol"] {
+            assert_eq!(m.run_authorized(channel(who, who)), Err(refused));
+        }
+
+        // Turned on, the step names Chat alone: both make one (Carol by her
+        // own row too), and Blocks stays open.
+        let _ok = m.run_authorized(scope(Some(true))).unwrap();
+        let both = caps::INVITE_MEMBERS | caps::CREATE_CHILD_TEAM;
+        assert_eq!(default(&m), Some(both));
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.teams["chat"].capabilities["carol"], both);
+        assert_eq!(o.teams["blocks"].join, TeamJoin::Everyone);
+        for who in ["bob", "carol"] {
+            let id = format!("{who}1");
+            let _ok = m.run_authorized(channel(&id, who)).unwrap();
+        }
+
+        // Turned off again: no more.
+        let _ok = m.run_authorized(scope(Some(false))).unwrap();
+        assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
+        for who in ["bob", "carol"] {
+            let id = format!("{who}2");
+            assert_eq!(m.run_authorized(channel(&id, who)), Err(refused));
+        }
+
+        // An earlier release's entry carries no `childTeams`, and one
+        // without it is logged as before.
+        let logged: super::ScopeApp =
+            serde_json::from_value(json!({ "package": "com.chat" })).unwrap();
+        assert_eq!(logged.child_teams, None);
+        assert_eq!(
+            serde_json::to_value(&logged).unwrap(),
+            json!({ "package": "com.chat" })
         );
     }
 
@@ -11007,6 +11280,7 @@ mod tests {
                 instances: None,
                 join: Some(TeamJoin::Invite),
                 keep: Some(Vec::new()),
+                child_teams: None,
             }]),
             shared: None,
             nonce: "n".into(),
@@ -12960,8 +13234,8 @@ mod tests {
         assert_eq!(
             app.restore,
             Some(crate::types::PendingRestore {
-                seed: 2,
-                source: source("7.2.x.snap")
+                seed: Some(2),
+                source: Some(source("7.2.x.snap"))
             })
         );
         assert_eq!(
@@ -12976,6 +13250,46 @@ mod tests {
         let _ok = m.run(finish(app.group)).unwrap();
         assert_eq!(m.state.apps["app"].restore, None);
         assert!(m.run(finish(app.group)).is_err(), "nothing under way");
+    }
+
+    /// A cluster founded again keeps who is who and what is installed, takes
+    /// the founders as its replica nodes, removes the others (job nodes
+    /// stay), and leaves every app waiting for its own backup on replicas it
+    /// still has.
+    #[test]
+    fn a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps() {
+        let (mut m, ..) = proven_cluster();
+        register(&mut m, 9, "job");
+        let before = m.state.clone();
+        let node = |id: u64| crate::types::NodeRecord {
+            id,
+            addr: format!("http://new{id}/"),
+            zone: String::new(),
+            role: crate::types::NodeRole::Replica,
+            pool: String::new(),
+        };
+        let mut s = before.clone();
+        super::refound(&mut s, &[node(1), node(5)], 3);
+        let ids: Vec<u64> = s.nodes.keys().copied().collect();
+        assert_eq!(ids, [1, 5, 9]);
+        assert_eq!(s.nodes[&1].addr, "http://new1/");
+        assert!(s.removed_nodes.contains(&2) && s.removed_nodes.contains(&4));
+        assert!(s.node_epoch[&1] > before.node_epoch.get(&1).copied().unwrap_or(0));
+        let app = &s.apps["app"];
+        assert_eq!(
+            app.replicas,
+            [1, 5],
+            "kept node 1, filled from the founders"
+        );
+        assert_eq!(
+            app.restore,
+            Some(crate::types::PendingRestore::AWAITING_BACKUP)
+        );
+        assert!(app.restore.as_ref().unwrap().awaits_backup());
+        assert_eq!(s.accounts.len(), before.accounts.len());
+        assert_eq!(s.operator_key, before.operator_key);
+        assert_eq!(s.orgs.len(), before.orgs.len());
+        assert_eq!(s.next_group, before.next_group);
     }
 
     /// An organization of `who` (account -> role), each holding `caps`
@@ -13267,16 +13581,28 @@ mod tests {
     fn bind(
         key: &ed25519_dalek::SigningKey,
         signer: &str,
+        orgs: (&str, &str),
+        generation: u64,
+        actor: &str,
+    ) -> SystemCmd {
+        bind_on("test", key, signer, orgs, generation, actor)
+    }
+
+    /// [`bind`], signed for (and naming) the cluster `cluster`.
+    fn bind_on(
+        cluster: &str,
+        key: &ed25519_dalek::SigningKey,
+        signer: &str,
         (org, as_org): (&str, &str),
         generation: u64,
         actor: &str,
     ) -> SystemCmd {
         use ed25519_dalek::Signer as _;
-        let message = super::publisher_binding_message("test", as_org, signer, generation);
+        let message = super::publisher_binding_message(cluster, as_org, signer, generation);
         SystemCmd::BindPublisher {
             signer_id: signer.into(),
             org: org.into(),
-            cluster: "test".into(),
+            cluster: cluster.into(),
             proof: super::PublisherProof {
                 public_key: calimero_identity::b64url(&key.verifying_key().to_bytes()),
                 signature: calimero_identity::b64url(&key.sign(&message).to_bytes()),
@@ -13291,7 +13617,7 @@ mod tests {
     /// (release 1.0.0 ships `b1`, `upgrades` as given), a raw bundle `raw`,
     /// and the customer's instances `inst` (of `p`) and `rawapp`.
     fn publishing(signer: &str, upgrades: &str) -> SystemMachine {
-        let mut m = SystemMachine::default();
+        let mut m = SystemMachine::new("test".into());
         let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
         for who in ["pam", "bob", "cora", "dan"] {
             let _ok = m.run_unproven(account(who)).unwrap();
@@ -13471,6 +13797,69 @@ mod tests {
             .run_unproven(bind(&key, &signer, ("cust", "cust"), 1, "cora"))
             .unwrap();
         assert_eq!(m.state.publisher_of("b1"), Some(&"cust".to_owned()));
+        assert_eq!(m.state.binding_generation(&signer), 2);
+    }
+
+    /// A binding is checked against this cluster's own name, never the one
+    /// the command names: a key's genuine signature for another cluster
+    /// binds nothing here.
+    #[test]
+    fn a_binding_signed_for_another_cluster_binds_nothing_here() {
+        let (key, signer) = publisher_key(7);
+        let mut m = publishing(&signer, "owner");
+        let elsewhere = bind_on("another", &key, &signer, ("pub", "pub"), 0, "pam");
+        assert!(m.run_unproven(elsewhere).is_err());
+        assert!(m.state.publishers.is_empty());
+        assert_eq!(m.state.binding_generation(&signer), 0);
+        let _ok = m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+            .unwrap();
+        assert_eq!(
+            m.state.publisher_of_signer(&signer),
+            Some(&"pub".to_owned())
+        );
+    }
+
+    /// Deleting an organization drops the keys bound to it: an organization
+    /// created later under the same id is not their publisher, and each key
+    /// keeps its generation, so the signature that bound it stays spent.
+    #[test]
+    fn a_deleted_organization_takes_its_publisher_bindings_with_it() {
+        let (key, signer) = publisher_key(7);
+        let mut m = publishing(&signer, "owner");
+        let _ok = m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::DeleteOrg {
+                org: "pub".into(),
+                actor: "pam".into(),
+                consent: Value::Null,
+            })
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::CreateOrg {
+                org_id: "pub".into(),
+                name: "pub".into(),
+                actor: "dan".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+            })
+            .unwrap();
+        assert_eq!(m.state.publisher_of_signer(&signer), None);
+        assert_eq!(m.state.publisher_of("b1"), None);
+        assert_eq!(m.state.binding_generation(&signer), 1);
+        assert!(m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "dan"))
+            .is_err());
+        let _ok = m
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 1, "dan"))
+            .unwrap();
+        assert_eq!(
+            m.state.publisher_of_signer(&signer),
+            Some(&"pub".to_owned())
+        );
         assert_eq!(m.state.binding_generation(&signer), 2);
     }
 

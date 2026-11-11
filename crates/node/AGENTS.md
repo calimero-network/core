@@ -31,6 +31,13 @@ is its command line.
   wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
   `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
   `a_wasmer_entry_never_applies_to_a_component_app`.
+- **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
+  starts `{"v":N,` is format `N`; no marker (every entry so far) is format 1. One newer than
+  this release reads applies as a no-op naming its format (`Trap`/`Fault`, `conflict`), so a
+  replica never applies part of it; a release that raises it writes the new format only once
+  every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
+  (`STORE_FORMAT`, `SNAPSHOT_FORMAT`; docs: protocol/storage "Format versions"). Test:
+  `an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -167,6 +174,23 @@ is its command line.
   replayed on restart) applies as it did, so replicas never diverge on it
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
   `old_datadir.rs`).
+- **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
+  a new command or field ships with a feature gate. Each log entry shape an
+  older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
+  named in the exhaustive `SystemCmd::features`); `Node::sys_write` refuses one
+  above the active cluster version `409 FEATURE_NOT_ACTIVE`
+  (`Node::require_features`, judged on `SystemState::cluster_version`, or on
+  what every node's `/health` `clusterVersion` says now when that is newer).
+  The system leader raises the logged version (`SetClusterVersion { version,
+  nodes }`, only forward, naming every registered node; `reconcile` ->
+  `raise_cluster_version`, at most every 10 s) once every node supports it,
+  and admits no node below it to the system group (`joins_at_cluster_version`).
+  Apply never reads it, so a log replays unchanged. A skipped undecodable
+  entry logs an error and counts in `calimero_log_undecodable_entries_total`.
+  Regressions: `system::cluster_version::tests`
+  (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
+  `an_entry_an_older_node_cannot_decode_splits_the_state`),
+  `the_cluster_version_rises_to_what_every_node_supports`.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -363,9 +387,15 @@ is its command line.
     `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
     `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
     over `system::publisher_binding_message` (cluster name, org, key, the key's
-    generation from `GET /publishers/{signer}`), verified at apply; each binding
-    bumps the generation, so a signature never replays; rebinding needs a new
-    signature from the pinned key; `SystemState::publishers`). `PackageRecord::owner`
+    generation from `GET /publishers/{signer}`), verified at apply over
+    `SystemMachine::cluster` (the node's `--cluster`), not the command's own
+    `cluster`; each binding bumps the generation, so a signature never
+    replays; rebinding needs a new signature from the pinned key;
+    `SystemState::publishers`). `DeleteOrg` unbinds the organization's keys and
+    keeps their generations (`SystemState::unbound_publishers`), so a later
+    organization of the same id is not their publisher. Regressions:
+    `a_binding_signed_for_another_cluster_binds_nothing_here`,
+    `a_deleted_organization_takes_its_publisher_bindings_with_it`. `PackageRecord::owner`
     is only the first installer and is never the publisher. The publisher's
     `Org::approved_releases` cover every instance of every package the key
     signs, customers' included. Unbound key or raw bundle: the app's own org's
@@ -682,8 +712,10 @@ is its command line.
   `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
   org's owners as they stand), approved releases, each replica's release and
   whether approved; for accounts also name, the upgrader's account, newer
-  visible releases (`availableVersions`, from the release it runs, those with
-  its WASM included) and `clusterReleases`. `lastUpgrade.from`/`to` name each
+  visible releases (`availableVersions`, the newest `MAX_AVAILABLE_VERSIONS`, from
+  the release it runs, those with its WASM included), the newest of all of them it
+  can reach (`latestReachable`) and why the latest is not it (`latestBlocked`:
+  `runtime`, `authority`), and `clusterReleases`. `lastUpgrade.from`/`to` name each
   end's release from `UpgradeRecord::from_release`/`to_release` when recorded. The operator
   sees a package name only for releases it installed (`Reader::Operator`,
   `sees_release`), never an account, a name or an upgrade's error text.
@@ -725,7 +757,25 @@ is its command line.
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a
   change (`stateVersion`), as no migration runs. The directory records the new bundle only
-  once the upgrade succeeded.
+  once the upgrade succeeded. An app moves to any newer release in one upgrade:
+  there is no migration step to chain.
+- **Runtime requirements** (`runtime.rs`, `node/runtime.rs`): a release's
+  `minRuntimeVersion` is kept on `PackageVersion::min_runtime_version` (absent in
+  releases from before, and dropped by an older node: then `Node::min_runtime_of`
+  reads it from the `.mpk`, `consent_page::declared_min_runtime`). A node's runtime
+  is `Config::release`, asked over the sealed channel (`POST /internal/runtime`,
+  `Node::runtime_of_node`, kept `RUNTIME_KEPT`; a `404` is a node from before,
+  `NodeRuntime::Before` the asker's own; no answer or a non-version is `Unknown`
+  and not judged). `Node::require_runtime` refuses `409 RUNTIME_TOO_OLD` an upgrade
+  with a replica below (`upgrade_app` before the step-up, the consent request,
+  and `run_upgrade`, which records it), a replica move onto a joining node below
+  (`ops_set_replicas`); `Node::place` leaves such nodes out of a new app's
+  replicas. The reports name `latestReachable` and `latestBlocked`
+  (`report::upgrade_targets`). Regressions:
+  `an_upgrade_needing_a_newer_runtime_than_a_replica_has_is_refused_and_reported`,
+  `placement_and_moves_keep_an_app_off_nodes_below_its_runtime`
+  (`tests/component_packages.rs`),
+  `the_newest_reachable_release_is_reported_with_why_the_latest_is_not`.
 - **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
   passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
@@ -1060,7 +1110,12 @@ is its command line.
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
-  default (standalone teams it makes default to `INVITE_MEMBERS`); bounded by
+  default (standalone teams it makes default to `INVITE_MEMBERS`); a package's
+  `childTeams` (`ScopeApp::child_teams`) adds `CREATE_CHILD_TEAM` to (or takes
+  it from) its app team's default and the rows that set their own
+  capabilities, the only way an app team made before that default gets it
+  (regressions: `an_admin_lets_an_app_teams_members_make_channels`,
+  `system::tests::an_older_app_team_gets_child_teams_when_an_admin_turns_them_on`); bounded by
   `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
   `GET /orgs/{org}/app-teams` (any member; a guest only theirs). `GET
   /orgs/{org}` filters members, capabilities, member metadata and team rows by
@@ -1097,6 +1152,20 @@ is its command line.
   (`reconcile` drops a stopped group's files only for a deleted app). Tests:
   `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
   (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
+- **Founding again** (`--restore-from DIR` with `--bootstrap`, `Node::refound`): backups
+  also hold the system group (`backup::SYSTEM`, written by its leader, or by every node
+  with `ops/backup?all=true`), the code it names (`backup::keep_code`, sealed under
+  `HMAC(K_c, "calimero.backup.code.v1")`) and K_c wrapped under each release's K_r
+  (`backup::keep_cluster_key`). `cluster_key::resolve` takes K_c from the copy this
+  node's K_r opens (`backup::cluster_key_from`); `Node::start` forms the system group
+  with the founder alone; `reconcile` (empty state) calls `refound`: governance and
+  operator key must match the backup's, no old replica node may still answer at an
+  address `--peers` does not reuse, then `Group::replace_machine_data` with the state
+  `system::refound` made (fleet = `--peers`, every app `PendingRestore::AWAITING_BACKUP`,
+  hosted nowhere), `snapshot_through` + `purge_log_through`; the other peers join as
+  registered learners. Tests: `a_cluster_is_founded_again_from_its_backups`,
+  `a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor`,
+  `a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.

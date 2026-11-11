@@ -36,6 +36,7 @@ use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
+use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
     Deployments, PackageRef, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
@@ -64,6 +65,7 @@ const AMBIGUOUS_COMPUTE: &str = "AMBIGUOUS_COMPUTE";
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod account_proof;
+mod deprecation;
 #[cfg(test)]
 mod openapi;
 mod origins;
@@ -766,6 +768,9 @@ async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
         "node": node.config.node_id,
         "systemLeader": s.leader,
         "release": node.config.release,
+        // The newest cluster version this build supports: what the system
+        // leader raises the cluster version by (`system::cluster_version`).
+        "clusterVersion": crate::system::cluster_version::supported(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
         "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
@@ -3409,8 +3414,23 @@ async fn app_create(
         s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
             .cloned()
     });
-    let replicas = node.place(approved.as_ref(), now).await;
+    // Nor a node whose runtime is older than the release needs.
+    let min_runtime = node.min_runtime_of(release.as_ref(), &bundle).await;
+    let replicas = node
+        .place(approved.as_ref(), now, min_runtime.as_ref())
+        .await;
     if replicas.is_empty() {
+        if let Some(min) = &min_runtime {
+            let nodes = node.sys(|s| s.replica_nodes().map(|n| n.id).collect::<Vec<_>>());
+            let short = crate::runtime::short_of(&nodes, &node.runtimes(&nodes).await, min);
+            if !short.is_empty() {
+                return Err(crate::runtime::refusal(
+                    &release_label(release.as_ref(), &bundle),
+                    min,
+                    short,
+                ));
+            }
+        }
         return Err(ApiError::unavailable(
             "no node runs a release this app's owner approved",
         ));
@@ -4496,6 +4516,15 @@ pub(crate) async fn upgrade_app(
         ));
     }
     refuse_stalled(node, &app, &bundle, now_secs())?;
+    // Before the passkey is asked for: an upgrade no replica could run is
+    // refused the same way after it (`run_upgrade`).
+    node.require_runtime(
+        &app.replicas,
+        release.as_ref(),
+        &bundle,
+        &release_label(release.as_ref(), &bundle),
+    )
+    .await?;
     // What the publisher signed for the target: the WASM hash alone would let
     // another manifest (other outbound prefixes, frontend origins) under the
     // same version and WASM pass for the one approved.
@@ -4618,6 +4647,23 @@ async fn run_upgrade(
         s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
             .map(|stall| crate::node::stalled(&stall))
     });
+    // Every replica's node must run the runtime the target needs, or the
+    // replicas below it could not run the app once it moved.
+    let replicas = node
+        .sys(|s| s.apps.get(&app_id).map(|a| a.replicas.clone()))
+        .unwrap_or_default();
+    let refusal = match refusal {
+        Some(e) => Some(e),
+        None => node
+            .require_runtime(
+                &replicas,
+                release.as_ref(),
+                &bundle,
+                &release_label(release.as_ref(), &bundle),
+            )
+            .await
+            .err(),
+    };
     if let Some(e) = refusal {
         let error = json!({ "code": e.code, "message": e.message });
         note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
@@ -4681,6 +4727,15 @@ async fn run_upgrade(
         "error": applied.error,
         "compute": has_compute,
     })))
+}
+
+/// How a refusal names the release an app would run: `{package}@{version}`,
+/// or the bundle of a raw development upload.
+pub(crate) fn release_label(release: Option<&PackageRef>, bundle: &str) -> String {
+    match release {
+        Some(r) => format!("{}@{}", r.package, r.version),
+        None => format!("bundle {bundle}"),
+    }
 }
 
 /// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
@@ -5486,6 +5541,9 @@ async fn app_move(
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::MoveApp, Feature::MoveAccountsAppTeam])
+        .await?;
     let args = crate::system::move_app_args(&body.to_org, body.bring_members);
     let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
     Ok(Json(
@@ -5566,6 +5624,8 @@ async fn org_rename(
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_RENAME));
     }
     crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::RenameOrg]).await?;
     let consent = consent(
         &node,
         &p,
@@ -5615,6 +5675,8 @@ async fn org_all_apps(
     if role < OrgRole::Admin {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AllApps]).await?;
     let args = crate::system::all_apps_args(&body.account, body.all_apps);
     let consent = consent(
         &node,
@@ -5890,6 +5952,8 @@ async fn member_set_teams(
     let actor = p.account()?;
     team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
     let args = crate::system::team_members_args(&account, &body.teams);
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
     let consent = org_consent(&node, &p, &org, "__set_team_members", &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetTeamMembers {
@@ -5919,6 +5983,8 @@ async fn member_remove_teams(
     team_batch(body.teams.iter().map(String::as_str))?;
     let args = crate::system::remove_team_members_args(&account, &body.teams);
     let method = "__remove_team_members";
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
     let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveTeamMembers {
@@ -6223,6 +6289,10 @@ async fn invite_create(
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
+    if body.all_apps {
+        // Before the passkey step-up: an earlier release would drop the flag.
+        node.require_features(&[Feature::AllApps]).await?;
+    }
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),
@@ -6463,6 +6533,10 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
+    // The API always sets `by_release` (#4931).
+    let mut features = scope_app_features(body.apps.as_deref());
+    features.push(Feature::ScopeByRelease);
+    node.require_features(&features).await?;
     let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
     let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
     Ok(Json(
@@ -8155,6 +8229,17 @@ async fn internal_system_index(
     Ok(Json(json!({ "index": index })))
 }
 
+/// This node's runtime (`Config::release`), for a peer judging whether this
+/// node may run a release (`Node::runtime_of_node`).
+async fn internal_runtime(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+) -> ApiResult {
+    let _caller = peer(&node, &headers, key).await?;
+    Ok(Json(json!({ "runtime": node.config.release })))
+}
+
 async fn internal_call(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -8504,8 +8589,11 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
+    // The logged cluster version (`null` until the system leader logs one):
+    // a rollout is finished for the system log once it is the new release's.
+    let cluster_version = node.sys(|s| s.cluster_version.clone());
     Ok(Json(
-        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
+        json!({ "fresh": fresh, "apps": apps, "nodes": nodes, "clusterVersion": cluster_version }),
     ))
 }
 
@@ -8597,7 +8685,7 @@ async fn ops_apps(
         let (page, next) = report::page(s, q.after.as_deref(), limit, |_| true);
         let apps: Vec<Value> = page
             .into_iter()
-            .map(|a| report::app_json(s, a, &releases, Reader::Operator))
+            .map(|a| report::app_json(s, a, &releases, &BTreeMap::new(), Reader::Operator))
             .collect();
         (apps, next, s.governance())
     });
@@ -8669,6 +8757,10 @@ async fn scope_report(
     // so this contacts a node only the first time, at most
     // `PLACEMENT_RELEASE_WAIT` each.
     let releases = attested_releases(node).await;
+    // Each node's runtime, which decides which newer release an app can
+    // reach (`report::app_json`); kept a while (`Node::runtime_of_node`).
+    let nodes: Vec<u64> = node.sys(|s| s.replica_nodes().map(|n| n.id).collect());
+    let runtimes = node.runtimes(&nodes).await;
     let bound = p.bound_app();
     let key_apps = p.api_key.as_ref().and_then(|k| k.apps.as_ref());
     let mut out = node.sys(|s| {
@@ -8690,7 +8782,7 @@ async fn scope_report(
         let (page, next) = report::page(s, q.after.as_deref(), limit, keep);
         let apps: Vec<Value> = page
             .into_iter()
-            .map(|a| report::app_json(s, a, &releases, Reader::Account(account)))
+            .map(|a| report::app_json(s, a, &releases, &runtimes, Reader::Account(account)))
             .collect();
         let approved = s.approved_for(org, account);
         let scope = match org {
@@ -8993,6 +9085,21 @@ async fn ops_set_replicas(
             )));
         }
     }
+    // Nor onto a node whose runtime is older than the app's release needs:
+    // it could not run the app. Nodes it is on already are not judged, so an
+    // app on such a node can always be moved off it.
+    let joining: Vec<u64> = target
+        .iter()
+        .copied()
+        .filter(|id| !app.replicas.contains(id))
+        .collect();
+    node.require_runtime(
+        &joining,
+        app.release.as_ref(),
+        &app.bundle,
+        &release_label(app.release.as_ref(), &app.bundle),
+    )
+    .await?;
     // Only the leader changes membership; others redirect before writing
     // anything. A node holding no replica names a current replica, which
     // redirects again if it does not lead.
@@ -9210,6 +9317,12 @@ async fn ops_org_quotas_set(
 /// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerDeveloperPerDay`. One
 /// code for every such gate, so the version gate on new entry shapes can share it.
 pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
+/// `409`: a command (or a field of one) that a node of the cluster does not
+/// support yet, refused before it is proposed, so no node skips an entry the
+/// others apply (`system::cluster_version`). The message names the feature and
+/// the version it needs; `details` is `{ feature, needs, active }`.
+pub const FEATURE_NOT_ACTIVE: &str = "FEATURE_NOT_ACTIVE";
 
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
@@ -10802,12 +10915,26 @@ async fn ops_upgrade(
     .await
 }
 
-async fn ops_backup(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BackupQuery {
+    /// Every group this node holds, leader or not (`Node::backup_everything`).
+    #[serde(default)]
+    all: bool,
+}
+
+async fn ops_backup(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<BackupQuery>,
+) -> ApiResult {
     operator(&node, &headers)?;
-    let n = node
-        .backup()
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let n = if q.all {
+        node.backup_everything().await
+    } else {
+        node.backup().await
+    }
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(json!({ "written": n })))
 }
 
@@ -10938,6 +11065,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/raft", post(internal_raft))
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
+        .route("/internal/runtime", post(internal_runtime))
         .route("/internal/call", post(internal_call))
         .route(
             "/internal/upload-begin/{app}/{account}/{size}",
@@ -11034,6 +11162,8 @@ pub fn router(node: Arc<Node>) -> Router {
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.
         .route_layer(axum::middleware::from_fn(crate::metrics::track))
+        // `Deprecation` on the routes `api-deprecations.toml` deprecates (docs: compatibility).
+        .route_layer(axum::middleware::from_fn(deprecation::mark))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(
             calimero_sealed::server::MAX_SEALED_BYTES,

@@ -24,7 +24,7 @@ CASES = [
     ("a node-only change runs every job", ["crates/node/src/lib.rs"], ALL),
     ("merod runs every job", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], ALL),
     ("the upgrade path's test runs every job", ["crates/node/tests/fault/upgrade_path.py"], ALL),
-    ("the pinned release runs only the upgrade path", [".github/upgrade-from"], {"upgrade_path"}),
+    ("the pinned release runs every job (Apps of the previous release fetches its kv)", [".github/upgrade-from"], ALL),
     ("the release fetcher runs every job (ci-checks.yml runs it)", ["scripts/fetch-release.sh"], ALL),
     ("a tool no node links skips the upgrade path", ["tools/search-bench/src/main.rs"], R),
     ("the component SDK runs the workspace jobs and the upgrade path (this tree's kv)", ["crates/sdk/src/lib.rs"], ALL),

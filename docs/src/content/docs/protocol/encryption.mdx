@@ -106,6 +106,14 @@ So nothing the nodes share is keyed by K_r itself (`calimero_node::cluster_key`)
   attesting the instance). At most `MAX_CONCURRENT_KEY_RELEASES` (4) requests
   are handled at once.
 
+- **Kept with backups, per release.** A node with `--backup-dir` writes K_c
+  there wrapped under its own K_r (`cluster-key/{release}`, the same wrapping
+  as `<data-dir>/cluster-key`), once per release. A cluster founded again from
+  its backups (`--restore-from`) takes K_c from the copy its founder's K_r
+  opens, so it is the same cluster; no other key opens any copy, and a copy
+  dies with its release's mero-kms
+  ([Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups)).
+
 The route takes no cluster secret, since the new node has none yet. Release
 approvals still decide which apps' data reaches the new node
 (`Node::may_send`): K_c opens what a node holds, not what it may receive.
