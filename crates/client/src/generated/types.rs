@@ -2917,8 +2917,23 @@ impl<'de> Deserialize<'de> for OpsRegisterNodeRequestRole {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRemoveNodeResponseStatus {
+    pub group: u64,
+    pub leader: Option<u64>,
+    pub is_leader: bool,
+    pub term: u64,
+    pub last_log: Option<u64>,
+    pub applied: u64,
+    pub voters: Vec<u64>,
+    pub learners: Vec<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsRemoveNodeResponse {
-    pub status: String,
+    pub status: OpsRemoveNodeResponseStatus,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
