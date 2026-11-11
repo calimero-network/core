@@ -87,6 +87,8 @@ the connection.
 
 `receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
 
+`pipeline_events.rs` holds the typed, metadata-only events of `GET /apps/{app}/pipeline-runs/{run}/events` (`RunEvent`, `StepEvent`, `Snapshot`, `PipelineEvent`) and `RunProgress`, which reads the run view's JSON into only those fields and diffs two views; the node sends them and `Client::pipeline_run_events` (`meroctl pipeline watch`) reads them. A key set test pins each event's fields, so a new record field never reaches a stream.
+
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash

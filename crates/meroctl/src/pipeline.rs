@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use calimero_client::pipeline_events::PipelineEvent;
 use calimero_client::receipt::{PipelineReceipt, RunEntry};
 use clap::Subcommand;
 use eyre::{bail, eyre, WrapErr};
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 use crate::env::Env;
@@ -54,6 +56,9 @@ pub enum PipelineCmd {
     Get { app: String, run: String },
     /// Cancel a run: its pending steps end cancelled and its running steps' runs stop.
     Cancel { app: String, run: String },
+    /// Follow a run live: one JSON line per event (`snapshot`, `run`, `step`), then the `end` event
+    /// as the answer; exits when the run is no longer running.
+    Watch { app: String, run: String },
     /// The context's recent runs, newest first.
     Runs { app: String },
     /// The signed receipt of an ended run; with `--verify`, also check its signature under the
@@ -222,6 +227,19 @@ async fn wait_for(env: &Env, app: &str, started: &Value) -> eyre::Result<Value> 
     }
 }
 
+/// Prints each event of the run as a line and returns the `end` event.
+async fn watch(env: &Env, app: &str, run: &str) -> eyre::Result<Value> {
+    let mut events = Box::pin(env.client.pipeline_run_events(app, run).await?);
+    while let Some(e) = events.next().await {
+        let line = json!({ "event": e.name(), "data": serde_json::from_str::<Value>(&e.data())? });
+        if matches!(e, PipelineEvent::End(_)) {
+            return Ok(line);
+        }
+        println!("{line}");
+    }
+    bail!("the stream closed before the run ended; run it again to reconnect")
+}
+
 /// The body of a start: the inputs, the params and the cost cap when one is given.
 fn start_body(inputs: &[String], params: &[String], max_cost: Option<&str>) -> eyre::Result<Value> {
     let mut body = json!({ "inputs": parse_inputs(inputs)?, "params": parse_params(params)? });
@@ -278,6 +296,7 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
                 .cancel_pipeline_run(&env.app(&app).await?, &run)
                 .await?
         }
+        PipelineCmd::Watch { app, run } => watch(env, &env.app(&app).await?, &run).await?,
         PipelineCmd::Runs { app } => env.client.pipeline_runs(&env.app(&app).await?).await?,
         PipelineCmd::Receipt {
             app,

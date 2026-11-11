@@ -8,6 +8,7 @@ use common::UploadBytes as _;
 
 use std::time::{Duration, Instant};
 
+use calimero_client::pipeline_events::PipelineEvent;
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
@@ -1820,4 +1821,132 @@ async fn a_stranger_cannot_read_a_receipt() {
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
     let e = bob.pipeline_receipt(&public, &run).await.unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}
+
+/// Every event of a run's stream, with its raw text, until the stream closes.
+async fn watch_all(c: &Client, app: &str, run: &str) -> Vec<PipelineEvent> {
+    use futures_util::StreamExt as _;
+    let events = c.pipeline_run_events(app, run).await.unwrap();
+    tokio::time::timeout(WAIT, Box::pin(events).collect::<Vec<_>>())
+        .await
+        .expect("the stream closed after the run ended")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_subscriber_sees_every_step_move_and_the_end() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
+    let run = rig
+        .start_run("chain", json!({ "docs": [file] }), json!({}))
+        .await;
+    let events = watch_all(&rig.alice, &rig.app, &run).await;
+    assert!(
+        matches!(events.first(), Some(PipelineEvent::Snapshot(_))),
+        "{events:?}"
+    );
+    let Some(PipelineEvent::End(end)) = events.last() else {
+        panic!("the stream ends with `end`: {events:?}");
+    };
+    assert_eq!(end.state, "succeeded");
+    for step in ["a", "b", "c"] {
+        let reached = events.iter().any(|e| match e {
+            PipelineEvent::Step(s) => s.step == step && s.status == "succeeded",
+            PipelineEvent::Snapshot(s) => s
+                .steps
+                .iter()
+                .any(|x| x.step == step && x.status == "succeeded"),
+            _ => false,
+        });
+        assert!(reached, "step {step} reached succeeded: {events:?}");
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, PipelineEvent::End(_)))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn events_never_carry_results_or_file_ids() {
+    use futures_util::StreamExt as _;
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
+    let run = rig
+        .start_run("chain", json!({ "docs": [file.clone()] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    let mut secrets = vec![file];
+    for step in ["a", "b", "c"] {
+        secrets.extend(output_ids(&done, step));
+        let result = done["steps"][step]["result"].to_string();
+        if result != "null" {
+            secrets.push(result);
+        }
+    }
+    assert!(
+        secrets.len() > 2,
+        "the run made outputs and results: {done}"
+    );
+    // The raw frames are read through the sealed client's generic stream, not the typed one.
+    let raw = rig
+        .alice
+        .get(&format!("apps/{}/pipeline-runs/{run}", rig.app))
+        .await
+        .unwrap();
+    assert!(
+        raw.to_string().contains(&secrets[1]),
+        "the run view does carry them"
+    );
+    let events = rig.alice.pipeline_run_events(&rig.app, &run).await.unwrap();
+    let text = Box::pin(events)
+        .map(|e| format!("{}{}", e.name(), e.data()))
+        .collect::<Vec<_>>()
+        .await
+        .join("\n");
+    assert!(text.contains("snapshot"), "{text}");
+    for s in &secrets {
+        assert!(
+            !text.contains(s.as_str()),
+            "{s} appears in the events: {text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_cannot_subscribe_to_a_private_apps_run() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let e = bob
+        .pipeline_run_events(&rig.app, &run)
+        .await
+        .err()
+        .expect("refused");
+    let seen = bob.pipeline_run(&rig.app, &run).await.unwrap_err();
+    assert_eq!(e.code(), seen.code(), "{e} vs {seen}");
+    assert!(matches!(e.code(), Some("FORBIDDEN" | "NOT_FOUND")), "{e}");
+    let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn subscribers_are_bounded() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let mut open = Vec::new();
+    for _ in 0..calimero_node::api::MAX_RUN_SUBSCRIBERS_PER_APP {
+        open.push(rig.alice.pipeline_run_events(&rig.app, &run).await.unwrap());
+    }
+    let e = rig
+        .alice
+        .pipeline_run_events(&rig.app, &run)
+        .await
+        .err()
+        .expect("one past the bound is refused");
+    assert_eq!(e.code(), Some("TOO_MANY_SUBSCRIBERS"), "{e}");
+    drop(open.pop());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let _again = rig.alice.pipeline_run_events(&rig.app, &run).await.unwrap();
+    let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
 }

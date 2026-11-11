@@ -108,6 +108,7 @@ same command (`meroctl package origins list PACKAGE`).
 | `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
 | `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
 | `pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
+| `pipeline watch APP RUN` | `GET /apps/{app}/pipeline-runs/{run}/events` | One JSON line per `snapshot`, `run` and `step` event, then the `end` event as the answer. |
 | `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
