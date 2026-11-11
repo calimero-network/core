@@ -17,6 +17,7 @@ use url::Url;
 
 pub mod attest;
 mod files;
+pub mod pipeline_events;
 pub mod receipt;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
@@ -804,6 +805,25 @@ impl Client {
             path_segment(run)
         ))
         .await
+    }
+
+    /// A pipeline run's progress as typed events (metadata only): `Snapshot`, then `Run` and
+    /// `Step` per change, then `End`, after which the stream closes.
+    pub async fn pipeline_run_events(
+        &self,
+        app: &str,
+        run: &str,
+    ) -> Result<impl Stream<Item = pipeline_events::PipelineEvent>> {
+        let frames = self
+            .sse(&format!(
+                "apps/{}/pipeline-runs/{}/events",
+                path_segment(app),
+                path_segment(run)
+            ))
+            .await?;
+        Ok(frames.filter_map(|(_, name, data)| async move {
+            pipeline_events::PipelineEvent::parse(&name, &data)
+        }))
     }
 
     /// The signed receipt of an ended pipeline run; check it with
@@ -1647,12 +1667,12 @@ impl Client {
     async fn sse(&self, path: &str) -> Result<impl Stream<Item = (String, String, Value)>> {
         let resp = self.send(Method::GET, path, None).await?;
         if !resp.status().is_success() {
-            return Err(Error::Api {
-                status: resp.status().as_u16(),
+            return Err(answer(resp).await.err().unwrap_or(Error::Api {
+                status: 0,
                 code: "EVENTS".into(),
                 message: "event stream refused".into(),
                 details: Value::Null,
-            });
+            }));
         }
         let bytes = resp.bytes_stream();
         let stream = futures_util::stream::unfold(

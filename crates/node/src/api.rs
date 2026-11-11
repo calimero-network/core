@@ -68,7 +68,9 @@ mod exports;
 mod origins;
 pub(crate) use exports::ExportLimits;
 mod passkeys;
+mod pipeline_events;
 pub(crate) mod pipeline_receipt;
+pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 mod pipelines;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
@@ -10755,6 +10757,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route(
             "/apps/{app}/pipeline-runs/{run}/receipt",
             get(pipeline_receipt::receipt),
+        )
+        .route(
+            "/apps/{app}/pipeline-runs/{run}/events",
+            get(pipeline_events::events),
         )
         .route("/apps/{app}/pipeline-runs/{run}/retry", post(pipelines::retry))
         .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
