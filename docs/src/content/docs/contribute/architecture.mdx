@@ -27,11 +27,11 @@ Everything a node does is in `calimero-node` (`crates/node`).
 | Part | Where | Does |
 | --- | --- | --- |
 | Log engine | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node: logs, votes, state, blobs and snapshots. |
-| System group | `node/src/system.rs` (group 1) | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
+| System group | `node/src/system.rs` (group 1), commands by area in `system/<area>.rs` | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
 | App groups | `node/src/app.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
 | Engine | `node/component.rs` over `calimero-app-engine-wasmtime` | Run a call's component on the leader against the applied state and return `{ result, diff, events }`. |
 | Node | `node/src/node.rs`, `membership.rs` | Routing to leaders, placement, system voter promotion, reconciling hosted groups with the directory, xcalls and timers, blob replication, backups. |
-| API | `node/src/api.rs` | The HTTP routes (`router`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
+| API | `node/src/api.rs`, handlers by area in `api/<area>.rs` | The HTTP routes (`router`, merging each area's `routes()`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
 | Sealed transport | `calimero-sealed` | Wraps the router from outside; opens sealed requests and routes them afresh. |
 | Identity | `calimero-identity` | WebAuthn verification, session tokens, API keys, confirm challenges. |
 | Attestation | `calimero-tee-attestation`, `calimero-client::attest`, `calimero-tee-release` | Quote generation, and the one verification clients and peers share. |

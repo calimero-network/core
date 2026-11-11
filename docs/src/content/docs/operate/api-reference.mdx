@@ -11,7 +11,8 @@ import OpenApiReference from '../../../components/OpenApiReference.astro';
 
 This page is the node API as a machine-readable
 [OpenAPI 3.1 document](https://spec.openapis.org/oas/v3.1.0), rendered: every
-route of `router` in `crates/node/src/api.rs` outside `/internal/`, with its
+route of `router` in `crates/node/src/api.rs` (and the area routers it merges,
+`api/<area>.rs`) outside `/internal/`, with its
 credential, parameters, request body, answer and error codes.
 [Node API](/core/operate/admin-api/) is the same API as an operator's overview
 with the `meroctl` command for each route.
