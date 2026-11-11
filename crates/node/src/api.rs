@@ -5307,6 +5307,7 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = person(&node, &headers).await?.account()?;
+    crate::system::org_name_fits(&body.name).map_err(malformed)?;
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
@@ -5316,6 +5317,7 @@ async fn org_create(
             release: Some(node.own_release()),
             recovery_key: body.recovery_key,
             at: recovery_now(&node),
+            name_fits: true,
         })
         .await?;
     Ok(Json(v))
@@ -5527,6 +5529,54 @@ async fn org_delete(
     Ok(Json(
         node.sys_write(&SystemCmd::DeleteOrg {
             org,
+            actor,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameOrgBody {
+    name: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Rename an organization: its owner's or an admin's, with a passkey
+/// assertion over the new name (a 412 asks for it), to a name that fits as a
+/// new organization's must. Judged on fresh state; `404` outside it.
+async fn org_rename(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<RenameOrgBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let Some(role) = role else {
+        return Err(ApiError::not_found("no such organization"));
+    };
+    if role < OrgRole::Admin {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_RENAME));
+    }
+    crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__rename_org",
+        &json!({ "name": body.name }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::RenameOrg {
+            org,
+            name: body.name,
             actor,
             consent,
         })
@@ -10837,6 +10887,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
+        .route("/orgs/{org}/name", post(org_rename))
         .route("/orgs/{org}/metadata", post(org_metadata))
         .route("/orgs/{org}/usage", get(org_usage))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
