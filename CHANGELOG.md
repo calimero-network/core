@@ -22,6 +22,18 @@
   same before signing and refuses a state field removed or changed in kind
   without a state version bump. The type mapping: [App interface](docs/src/content/docs/build/app-abi.mdx#types).
 
+- **Rename an organization**: `POST /orgs/{org}/name { name, confirm? }`
+  (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
+  / { name }`), by its owner or an admin; `403` below admin, `404` outside.
+  Before, an organization kept the name it was created with, and Calimero
+  Home could only show a `displayName` from its metadata. Every reader of the
+  name (`GET /orgs/{org}`, `/auth/me`'s `orgs`, an invite redeemed after)
+  answers the new one. An organization's name is now one line of 1 to 64
+  characters without surrounding spaces, at creation (`POST /orgs` answers
+  `400` otherwise) and on a rename; `CreateOrg` carries `name_fits`, which
+  the API always sets, so an entry an earlier release logged replays taking
+  any name, and names already given stay until renamed.
+
 - **Restore an app from its sealed backup**: `POST /ops/apps/{app}/restore {
   backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
   signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a

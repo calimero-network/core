@@ -194,10 +194,11 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /orgs` | session | `{ name, recoveryKey? }` (a recovery key's public half) | `namespace create` |
+| `POST /orgs` | session | `{ name, recoveryKey? }` (a recovery key's public half); `name` is 1 to 64 characters on one line, without surrounding spaces (`400` otherwise) | `namespace create` |
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
 | `GET /orgs/{org}/members?detail=security` | account holder, owner or admin | Each member's lockout risk: `{ orgId, members: [{ account, name, role, teams, passkeys, recoveryCode, lastActiveDay, sessions }] }`, `passkeys` `1`, `2` or `"3+"`, `lastActiveDay` a UTC day (`YYYY-MM-DD`, `null`: unknown). `403` below admin, `404` outside the organization ([Members' security](/protocol/organizations/#members-security)) | `namespace members list --security` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
+| `POST /orgs/{org}/name` | session | `{ name, confirm? }`: rename the organization (owner or admin; `412` first), the name as `POST /orgs` takes it → `{ orgId, name }`. `403` below admin, `404` outside the organization ([Organizations](/protocol/organizations/#organizations)) | - |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
 | `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas (D78); a member gets `403` | |
 | `POST /orgs/{org}/members` | session | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
