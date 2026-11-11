@@ -380,9 +380,15 @@ is its command line.
     `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
     `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
     over `system::publisher_binding_message` (cluster name, org, key, the key's
-    generation from `GET /publishers/{signer}`), verified at apply; each binding
-    bumps the generation, so a signature never replays; rebinding needs a new
-    signature from the pinned key; `SystemState::publishers`). `PackageRecord::owner`
+    generation from `GET /publishers/{signer}`), verified at apply over
+    `SystemMachine::cluster` (the node's `--cluster`), not the command's own
+    `cluster`; each binding bumps the generation, so a signature never
+    replays; rebinding needs a new signature from the pinned key;
+    `SystemState::publishers`). `DeleteOrg` unbinds the organization's keys and
+    keeps their generations (`SystemState::unbound_publishers`), so a later
+    organization of the same id is not their publisher. Regressions:
+    `a_binding_signed_for_another_cluster_binds_nothing_here`,
+    `a_deleted_organization_takes_its_publisher_bindings_with_it`. `PackageRecord::owner`
     is only the first installer and is never the publisher. The publisher's
     `Org::approved_releases` cover every instance of every package the key
     signs, customers' included. Unbound key or raw bundle: the app's own org's
