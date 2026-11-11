@@ -1371,7 +1371,7 @@ impl SystemState {
     /// The release `app` runs, if installed: the one it records
     /// (`AppRecord::release`), else the one its bundle came out of (as
     /// `Node::release_of_app`).
-    fn app_release(&self, app: &AppRecord) -> Option<&PackageRef> {
+    fn app_release<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
         let at = match &app.release {
             Some(at) => at,
             None => self.bundles.get(&app.bundle)?.package.as_ref()?,
