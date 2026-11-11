@@ -947,6 +947,18 @@ fn operations() -> Vec<Op> {
             .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
             .ok("{}")
             .step_up(),
+        post("/orgs/{org}/members/{account}/teams", "member_set_teams", Session, "Set a member's rows in several teams")
+            .about("Each team judged as `POST /orgs/{org}/teams/{team}/members` would judge it, and none set unless every one may be (a row's absent `role` is `member`; absent `capabilities`, a new row takes the defaults and an existing row keeps its own). 1 to 64 distinct teams; one passkey, `412` first.")
+            .json::<super::TeamRowsBody>("{ teams: { team: string, role?: #TeamRole, capabilities?: uint }[], confirm?: #Confirm }")
+            .ok("{}")
+            .step_up()
+            .errors(&[(400, "BAD_TEAMS")]),
+        delete("/orgs/{org}/members/{account}/teams", "member_remove_teams", Session, "Remove a member from several teams, or leave them")
+            .about("Each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}` would judge it, and none taken unless every one may be. 1 to 64 distinct teams; one passkey, `412` first.")
+            .json::<super::TeamIdsBody>("{ teams: string[], confirm?: #Confirm }")
+            .ok("{}")
+            .step_up()
+            .errors(&[(400, "BAD_TEAMS")]),
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
             .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only).")
             .json::<super::TeamBody>("{ name: string, parent?: string, join: #TeamJoin }")
