@@ -1099,6 +1099,42 @@ async fn a_replica_move_hands_the_files_to_the_joining_node() {
     assert_eq!(joined.node.blob_puts_seen(), 3);
 }
 
+/// A move that takes the app's leader off ends with the new replicas still electing one: a
+/// file's info (a read as the leader answers it) asked the moment the move answered is served
+/// once they have, through the node that joined and through the one that left alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_is_read_the_moment_a_move_took_its_leader_off() {
+    let c = Cluster::start_with(4, more_fuel).await;
+    let f = start_with(c).await;
+    let (id, sha, _index) = f.put(150_000, 31).await;
+    let app = f.node(0).sys(|s| s.apps[&f.app].clone());
+    let spare = (1..=4).find(|n| !app.replicas.contains(n)).unwrap();
+    let leader = f.leader() as u64 + 1;
+    let target: Vec<u64> = app
+        .replicas
+        .iter()
+        .copied()
+        .filter(|r| *r != leader)
+        .chain([spare])
+        .collect();
+    let ops = f.c.client(leader as usize - 1);
+    ops.use_api_key("ops-secret").await;
+    let _moved = ops
+        .post_operator_signed(
+            &format!("ops/apps/{}/replicas", f.app),
+            json!({ "replicas": target }),
+            &common::operator_sign,
+        )
+        .await
+        .unwrap();
+    let path = format!("apps/{}/files/{id}", f.app);
+    for (who, node) in [("joined", spare), ("left", leader)] {
+        let info = f.clients[node as usize - 1].get(&path).await.unwrap();
+        assert_eq!(info["size"], json!(150_000), "{who}");
+        assert_eq!(info["sha256"], json!(sha), "{who}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_snapshot_install_carries_the_marks() {
     let mut f = start_with(
