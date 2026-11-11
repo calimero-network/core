@@ -3307,6 +3307,9 @@ pub struct AppTeamsScopeRequestAppsItem {
     pub join: Option<TeamJoin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<Vec<String>>,
+    #[serde(rename = "childTeams")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_teams: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
