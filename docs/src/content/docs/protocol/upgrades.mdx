@@ -229,6 +229,7 @@ every feature gated it stays at zero.
 | `allApps` | `SetAllApps`, and an invite that gives every app added later (`allApps`); an earlier release cannot read the command and drops the invite's flag | 1.0.0-rc.16 |
 | `restoreApp` | `RestoreApp` and `FinishRestore`, an operator's restore of an app from its sealed backup; an earlier release cannot read them | 1.0.0-rc.16 |
 | `renameOrg` | `RenameOrg`, renaming an organization; an earlier release cannot read it | 1.0.0-rc.16 |
+| `teamMembersBatch` | `SetTeamMembers` and `RemoveTeamMembers`, a member's rows in several teams at once; an earlier release cannot read them | 1.0.0-rc.16 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

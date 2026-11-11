@@ -142,9 +142,10 @@
   now takes the rows below it, see above) is gated to rc.16, as is a move that gives a DM's people
   app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
   instance by its release (`ScopeApps.by_release`), and giving a member every app
-  added later (`SetAllApps`, or an invite with `allApps`), and restoring an app
-  from its backup (`RestoreApp`, `FinishRestore`), and renaming an organization
-  (`RenameOrg`). Once a version is logged, no node below it joins the
+  added later (`SetAllApps`, or an invite with `allApps`), restoring an app
+  from its backup (`RestoreApp`, `FinishRestore`), renaming an organization
+  (`RenameOrg`), and a member's rows in several teams at once (`SetTeamMembers`,
+  `RemoveTeamMembers`). Once a version is logged, no node below it joins the
   system group. A skipped undecodable entry now logs an error and counts in
   `calimero_log_undecodable_entries_total{log}`. Stored format:
   `SystemState.clusterVersion` is left out when unset; a node on an earlier

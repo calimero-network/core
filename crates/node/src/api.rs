@@ -5899,6 +5899,8 @@ async fn member_set_teams(
     let actor = p.account()?;
     team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
     let args = crate::system::team_members_args(&account, &body.teams);
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
     let consent = org_consent(&node, &p, &org, "__set_team_members", &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetTeamMembers {
@@ -5928,6 +5930,8 @@ async fn member_remove_teams(
     team_batch(body.teams.iter().map(String::as_str))?;
     let args = crate::system::remove_team_members_args(&account, &body.teams);
     let method = "__remove_team_members";
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
     let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveTeamMembers {

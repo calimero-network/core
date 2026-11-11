@@ -61,10 +61,13 @@ pub enum Feature {
     /// `RenameOrg` (#4913): an earlier release cannot read it, so its
     /// replicas keep the old name.
     RenameOrg,
+    /// `SetTeamMembers` and `RemoveTeamMembers` (#4916): an earlier release
+    /// cannot read them.
+    TeamMembersBatch,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 11] = [
+pub const FEATURES: [Feature; 12] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -76,6 +79,7 @@ pub const FEATURES: [Feature; 11] = [
     Feature::AllApps,
     Feature::RestoreApp,
     Feature::RenameOrg,
+    Feature::TeamMembersBatch,
 ];
 
 impl Feature {
@@ -94,6 +98,7 @@ impl Feature {
             Self::AllApps => "allApps",
             Self::RestoreApp => "restoreApp",
             Self::RenameOrg => "renameOrg",
+            Self::TeamMembersBatch => "teamMembersBatch",
         }
     }
 
@@ -111,7 +116,8 @@ impl Feature {
             | Self::ScopeByRelease
             | Self::AllApps
             | Self::RestoreApp
-            | Self::RenameOrg => "1.0.0-rc.16",
+            | Self::RenameOrg
+            | Self::TeamMembersBatch => "1.0.0-rc.16",
         }
     }
 }
@@ -324,6 +330,9 @@ impl SystemCmd {
             Self::SetAllApps { .. } => vec![Feature::AllApps],
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
+            Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
+                vec![Feature::TeamMembersBatch]
+            }
             Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
@@ -506,6 +515,13 @@ mod tests {
                 member_child_teams: true,
                 by_release: true,
                 all_apps_rows: false,
+            },
+            Feature::TeamMembersBatch => SystemCmd::RemoveTeamMembers {
+                org: "org".into(),
+                account: "bob".into(),
+                teams: vec!["team".into()],
+                actor: "alice".into(),
+                consent: Value::Null,
             },
             Feature::RenameOrg => SystemCmd::RenameOrg {
                 org: "org".into(),
@@ -732,6 +748,7 @@ mod tests {
             Feature::AllApps,
             Feature::RestoreApp,
             Feature::RenameOrg,
+            Feature::TeamMembersBatch,
         ] {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(refused.feature, feature);
