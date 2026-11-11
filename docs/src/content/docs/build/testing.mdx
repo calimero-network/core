@@ -80,7 +80,8 @@ everywhere. Each `scenarios/<name>.json` runs in the org its
 ```
 
 - `op`: `call`, `view`, `tick` (a timer, always as the system), `advance`
-  (milliseconds) or `removeMember`.
+  (milliseconds), `removeMember`, or `upgrade` in a migration scenario
+  ([below](#upgrades-test-against-a-shipped-releases-state)).
 - `as`: an account, `"@anonymous"` or `"@system"`; `"confirmed": true` adds the
   passkey step-up.
 - `expect`: `{ "ok": value }`, `{ "error": code, "fields": {..} }`,
@@ -103,6 +104,93 @@ fn every_scenario_passes() {
     }
 }
 ```
+
+## Upgrades: test against a shipped release's state
+
+An upgrade switches an app's code and keeps its state, so the code you ship
+next must read what every release still in use wrote
+([Upgrades & state](/core/build/migrations/)). Test that against the real
+thing: the signed `.mpk` you shipped, not today's code with an old version
+number. The harness runs that release's component, lets a scenario write state
+with it, upgrades to the build under test as a node does (code only, nothing
+runs) and goes on with the same state.
+
+Lay it out by release, beside `scenarios/`:
+
+```text
+releases/1.0.0.mpk          the bundle 1.0.0 shipped, committed as it was published
+migrations/1.0.0.json       a scenario: steps on 1.0.0, { "op": "upgrade" }, steps on this build
+migrations/1.0.0.org.json   its org, as for any scenario (optional)
+tests/migrations.rs
+```
+
+`apps/kv-store/migrations/0.1.0.json`:
+
+```json
+[
+  { "as": "owner", "op": "call", "method": "set", "args": { "key": "a", "value": "1" } },
+  { "as": "bob", "op": "call", "method": "set", "args": { "key": "b", "value": "2" } },
+  { "op": "upgrade" },
+  { "as": "bob", "op": "view", "method": "entries", "args": {}, "expect": { "ok": { "a": "1", "b": "2" } } },
+  { "as": "bob", "op": "call", "method": "updateIfExists", "args": { "key": "a", "value": "10" }, "expect": { "ok": true } }
+]
+```
+
+`apps/kv-store/tests/migrations.rs` runs every one of them:
+
+```rust
+use calimero_sdk::testing::{release_component, run_migration};
+
+#[test]
+fn every_release_upgrades_to_this_build() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for path in common::scenarios_in(&dir.join("migrations")) {
+        let version = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let mpk = std::fs::read(dir.join("releases").join(format!("{version}.mpk"))).unwrap();
+        let old = release_component(&mpk, None).unwrap();
+        run_migration(&old, common::component(), common::org_of(&path), common::T0, &path)
+            .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+    }
+}
+```
+
+- `release_component(mpk, service)` (feature `releases`) is the component of
+  `service` (`None` for a single-service release) in a signed `.mpk`, after the
+  signature and digest checks a node makes on install.
+- `run_migration(from, to, org, now_ms, path)` starts the app on `from`, runs
+  the scenario, and switches to `to` at its one `{ "op": "upgrade" }` step;
+  saved variables carry across it. It returns the `TestApp` for more asserts.
+- `t.upgrade(component)` does the switch in a test of your own;
+  `Refused { 400, "BAD_BUNDLE" }` for a component that cannot be prepared.
+
+Turn the feature on beside `testing`:
+
+```toml
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { .., features = ["testing", "releases"] }
+```
+
+When the new code cannot read the old state, the step that reads it fails and
+names it:
+
+```text
+migrations/0.1.0.json: step 5: {"as":"bob","method":"entries","op":"view",..}:
+expected ok {"a":"1","b":"2"}, got Ok(Object {})
+```
+
+Keep a release's files for as long as an instance may still run it: an
+instance can skip releases, and every later build must read its state. The
+step-by-step walk through a release is [Ship v2 of your app](/core/build/ship-v2/).
+
+<Aside type="note" title="In the apps repository">
+  An app there (`logic/crates/<service>/`) adds the same three things to its
+  service crate: `releases/<version>.mpk`, the bundle its release workflow
+  published for that version (download it once from the release and commit
+  it), `migrations/<version>.json`, and a `tests/migrations.rs` like the one
+  above, with `calimero-sdk`'s `releases` feature on its dev-dependency. Its
+  `cargo test` then runs them with the app's scenarios; a multi-service
+  release passes the service name to `release_component`.
+</Aside>
 
 ## Unit tests on the host
 
