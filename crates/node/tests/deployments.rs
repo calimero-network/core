@@ -1501,14 +1501,26 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
             .unwrap()
     };
     let today = |v: Value| fuel(&v["today"], "fuel");
-    let globex_fuel = today(carol.get(&format!("apps/{at_globex}/usage")).await.unwrap());
-    let initech_fuel = today(erin.get(&format!("apps/{at_initech}/usage")).await.unwrap());
+    // Usage is counted after a run commits, and each read may be served by
+    // another node: read all three until they agree (Initech's `init` counted
+    // in both its own total and the developer's), then judge them.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let (globex_fuel, initech_fuel, developer) = loop {
+        let globex_fuel = today(carol.get(&format!("apps/{at_globex}/usage")).await.unwrap());
+        let initech_fuel = today(erin.get(&format!("apps/{at_initech}/usage")).await.unwrap());
+        let developer = fuel(&alice.usage().await.unwrap(), "developerFuelToday");
+        if (initech_fuel > 0 && developer == globex_fuel + initech_fuel)
+            || tokio::time::Instant::now() >= deadline
+        {
+            break (globex_fuel, initech_fuel, developer);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert!(
         initech_fuel < globex_fuel,
         "{initech_fuel} vs {globex_fuel}"
     );
     // The developer's total is both instances'.
-    let developer = fuel(&alice.usage().await.unwrap(), "developerFuelToday");
     assert_eq!(developer, globex_fuel + initech_fuel);
     // A customer is the developer of neither.
     assert_eq!(
