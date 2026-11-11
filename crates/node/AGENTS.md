@@ -977,8 +977,11 @@ is its command line.
   from one opens a session bound to its package (`SessionClaims::app`, carried
   by refresh): `Principal::within` keeps it to that package's apps (gate, app
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
-  keys, approvals, upgrades, uninstalls and uploads, and it creates instances
-  of its own package only. Its step-ups come from its own origin only.
+  keys, approvals, upgrades, uninstalls and uploads, organization, team, member
+  and invite changes (redeeming included), and an app's delete and access, and
+  it creates instances of its own package only. Its step-ups come from its own
+  origin only, over one of its package's apps only (`step_up` refuses any other
+  subject). Regression: `a_frontend_session_manages_no_organization_and_no_app`.
 - **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
   identities "Registered origins"): a package's manager
   (`SystemState::manages_package`: the bound publisher's org-wide

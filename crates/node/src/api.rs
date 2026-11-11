@@ -3597,7 +3597,7 @@ async fn app_delete(
     Path(app_id): Path<String>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let app = node.app(&app_id).await?;
     p.within(&node, &app)?;
@@ -3816,6 +3816,14 @@ async fn step_up(
         return Err(ApiError::forbidden(
             "this method needs the account holder's passkey",
         ));
+    }
+    // A package-bound session steps up over its package's apps only: never
+    // for the account, an organization, the cluster or another package.
+    if p.bound_app().is_some() {
+        match node.sys(|s| s.apps.get(app_id).cloned()) {
+            Some(app) => p.within(node, &app)?,
+            None => p.unbound()?,
+        }
     }
     let account = p.account()?;
     let args_bytes = serde_json::to_vec(args).unwrap_or_default();
@@ -5337,7 +5345,7 @@ async fn app_access(
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     p.within(&node, &node.app(&app_id).await?)?;
     let _ok = node
@@ -5369,7 +5377,7 @@ async fn org_create(
     headers: HeaderMap,
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     crate::system::org_name_fits(&body.name).map_err(malformed)?;
     let org_id = typed_id::<16>();
     let v = node
@@ -5619,7 +5627,7 @@ async fn org_rename(
     Path(org): Path<String>,
     Json(body): Json<RenameOrgBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
@@ -5671,7 +5679,7 @@ async fn org_all_apps(
     Path(org): Path<String>,
     Json(body): Json<AllAppsBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
@@ -5812,7 +5820,7 @@ async fn org_set_member(
     Path(org): Path<String>,
     Json(body): Json<MemberBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({ "account": body.account, "role": body.role });
     let consent = org_consent(&node, &p, &org, "__set_org_role", &args, body.confirm).await?;
@@ -5836,7 +5844,7 @@ async fn org_remove_member(
     Path((org, account)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({ "account": account });
     let confirm = body.and_then(|Json(b)| b.confirm);
@@ -5866,7 +5874,7 @@ async fn team_create(
     Path(org): Path<String>,
     Json(body): Json<TeamBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let actor = holder(&node, &headers).await?.account()?;
     let v = node
         .sys_write(&SystemCmd::CreateTeam {
             org,
@@ -5900,7 +5908,7 @@ async fn team_set_member(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamMemberBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({
         "team": team, "account": body.account, "lead": body.lead,
@@ -5954,7 +5962,7 @@ async fn member_set_teams(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<TeamRowsBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
     let args = crate::system::team_members_args(&account, &body.teams);
@@ -5984,7 +5992,7 @@ async fn member_remove_teams(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<TeamIdsBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     team_batch(body.teams.iter().map(String::as_str))?;
     let args = crate::system::remove_team_members_args(&account, &body.teams);
@@ -6097,7 +6105,7 @@ async fn team_update(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamUpdateBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let actor = holder(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
@@ -6123,7 +6131,7 @@ async fn team_delete(
     Path((org, team)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     // Only someone who may delete it learns which apps go (as `DeleteTeam`
     // judges it again where it applies).
@@ -6201,7 +6209,7 @@ async fn org_capabilities(
     Path(org): Path<String>,
     Json(body): Json<CapabilitiesBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let cmd = match body.account {
         Some(account) => {
@@ -6245,7 +6253,7 @@ async fn team_remove_member(
     Path((org, team, account)): Path<(String, String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({ "team": team, "account": account });
     let confirm = body.and_then(|Json(b)| b.confirm);
@@ -6290,7 +6298,7 @@ async fn invite_create(
     Path(org): Path<String>,
     Json(body): Json<InviteBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
@@ -6365,7 +6373,7 @@ async fn invite_redeem(
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let now = now_secs();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {

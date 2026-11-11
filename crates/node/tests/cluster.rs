@@ -2837,6 +2837,160 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .is_ok());
 }
 
+/// A session opened on a package's frontend manages nothing of the account:
+/// no organization, team, member or invite, and not even its own package's
+/// apps' lifetime or access. The same person on the cluster's origin can.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_session_manages_no_organization_and_no_app() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut home_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let html: &[u8] = b"<!doctype html><html><body></body></html>";
+    let _ = alice
+        .upload_package(mpk_full(
+            "com.test.site",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            &[("frontend/index.html", html)],
+            None,
+        ))
+        .await
+        .unwrap();
+    let app = alice
+        .post(
+            "apps",
+            json!({ "name": "mine", "package": "com.test.site" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut home_key,
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Alice signed in on the package's frontend origin: a bound session.
+    let label = calimero_node::app_host::label("com.test.site");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let origin = format!("http://{label}.localhost:{port}");
+    let site = c.client(0);
+    let mut site_key = SoftAuthenticator::with_key(&home_key, "localhost", &origin);
+    let _s = site.sign_in(&mut site_key).await.unwrap();
+    let _ = site
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+
+    let forbidden = |what: &str, r: Result<Value, Error>| {
+        let e = r.expect_err(what);
+        assert!(matches!(e, Error::Api { status: 403, .. }), "{what}: {e}");
+    };
+    forbidden(
+        "create an organization",
+        site.post("orgs", json!({ "name": "Evil" })).await,
+    );
+    forbidden(
+        "add a member",
+        site.post(
+            &format!("orgs/{org}/members"),
+            json!({ "account": bob_id, "role": "admin" }),
+        )
+        .await,
+    );
+    forbidden(
+        "remove a member",
+        site.delete(&format!("orgs/{org}/members/{bob_id}")).await,
+    );
+    forbidden(
+        "create a team",
+        site.post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "t", "join": "invite" }),
+        )
+        .await,
+    );
+    forbidden(
+        "set capabilities",
+        site.post(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "capabilities": 0 }),
+        )
+        .await,
+    );
+    forbidden(
+        "set a member's rows in several teams",
+        site.post(
+            &format!("orgs/{org}/members/{bob_id}/teams"),
+            json!({ "teams": [{ "team": "x" }] }),
+        )
+        .await,
+    );
+    forbidden(
+        "rename the organization",
+        site.post(&format!("orgs/{org}/name"), json!({ "name": "Evil" }))
+            .await,
+    );
+    forbidden(
+        "give a member every app added later",
+        site.post(
+            &format!("orgs/{org}/all-apps"),
+            json!({ "account": bob_id, "allApps": true }),
+        )
+        .await,
+    );
+    forbidden(
+        "mint an invite",
+        site.post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .await,
+    );
+    forbidden(
+        "redeem an invite",
+        site.post(&format!("invites/{token}/redeem"), json!({}))
+            .await,
+    );
+    forbidden(
+        "change an app's access",
+        site.post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await,
+    );
+    forbidden("delete an app", site.delete(&format!("apps/{app}")).await);
+    let still = alice.get(&format!("apps/{app}")).await.unwrap();
+    assert_ne!(still["access"]["kind"], json!("public"), "{still}");
+
+    // On the cluster's own origin the same account still can.
+    let _ = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let _ = alice.delete(&format!("apps/{app}")).await.unwrap();
+}
+
 // ---------------------------------------------------------------- joining nodes
 
 /// A node registered with `/ops/nodes` after the cluster started joins the
