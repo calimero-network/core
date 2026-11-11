@@ -64,10 +64,13 @@ pub enum Feature {
     /// `SetTeamMembers` and `RemoveTeamMembers` (#4916): an earlier release
     /// cannot read them.
     TeamMembersBatch,
+    /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
+    /// `ScopeApp` refuses unknown fields.
+    AppTeamChildTeams,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 12] = [
+pub const FEATURES: [Feature; 13] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -80,6 +83,7 @@ pub const FEATURES: [Feature; 12] = [
     Feature::RestoreApp,
     Feature::RenameOrg,
     Feature::TeamMembersBatch,
+    Feature::AppTeamChildTeams,
 ];
 
 impl Feature {
@@ -99,6 +103,7 @@ impl Feature {
             Self::RestoreApp => "restoreApp",
             Self::RenameOrg => "renameOrg",
             Self::TeamMembersBatch => "teamMembersBatch",
+            Self::AppTeamChildTeams => "appTeamChildTeams",
         }
     }
 
@@ -117,7 +122,8 @@ impl Feature {
             | Self::AllApps
             | Self::RestoreApp
             | Self::RenameOrg
-            | Self::TeamMembersBatch => "1.0.0-rc.16",
+            | Self::TeamMembersBatch
+            | Self::AppTeamChildTeams => "1.0.0-rc.16",
         }
     }
 }
@@ -425,18 +431,19 @@ pub fn may_join(logged: Option<&str>, advertised: Option<&str>) -> bool {
 }
 
 /// The features a `ScopeApps` with `apps` uses: one app team's `join` or
-/// `keep` ([`Feature::AppTeamJoin`]).
+/// `keep` ([`Feature::AppTeamJoin`]), its `childTeams`
+/// ([`Feature::AppTeamChildTeams`]).
 #[must_use]
 pub fn scope_app_features(apps: Option<&[ScopeApp]>) -> Vec<Feature> {
-    let joins = apps
-        .into_iter()
-        .flatten()
-        .any(|a| a.join.is_some() || a.keep.is_some());
-    if joins {
-        vec![Feature::AppTeamJoin]
-    } else {
-        Vec::new()
+    let apps = apps.unwrap_or_default();
+    let mut f = Vec::new();
+    if apps.iter().any(|a| a.join.is_some() || a.keep.is_some()) {
+        f.push(Feature::AppTeamJoin);
     }
+    if apps.iter().any(|a| a.child_teams.is_some()) {
+        f.push(Feature::AppTeamChildTeams);
+    }
+    f
 }
 
 #[cfg(test)]
@@ -492,6 +499,7 @@ mod tests {
                     instances: None,
                     join: Some(TeamJoin::Invite),
                     keep: None,
+                    child_teams: None,
                 }]),
                 shared: None,
                 nonce: "n".into(),
@@ -514,6 +522,26 @@ mod tests {
                 accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: true,
+                all_apps_rows: false,
+            },
+            Feature::AppTeamChildTeams => SystemCmd::ScopeApps {
+                org: "org".into(),
+                apps: Some(vec![ScopeApp {
+                    package: "chat".into(),
+                    name: None,
+                    instances: Some(vec![]),
+                    join: None,
+                    keep: None,
+                    child_teams: Some(true),
+                }]),
+                shared: Some(false),
+                nonce: "n".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                owner_in_team: true,
+                accounts_in_app_team: true,
+                member_child_teams: true,
+                by_release: false,
                 all_apps_rows: false,
             },
             Feature::TeamMembersBatch => SystemCmd::RemoveTeamMembers {
@@ -749,6 +777,7 @@ mod tests {
             Feature::RestoreApp,
             Feature::RenameOrg,
             Feature::TeamMembersBatch,
+            Feature::AppTeamChildTeams,
         ] {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(refused.feature, feature);
