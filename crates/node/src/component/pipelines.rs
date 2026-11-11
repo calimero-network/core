@@ -104,13 +104,20 @@ pub struct StepState {
     pub started: u32,
     /// The ids of the compute runs the step started, in index order. Read from `started`, never
     /// stored: apply leaves it empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<String>,
     /// The files each run made by run index, pinned until the pipeline run's record is dropped.
     /// Read from the step's item rows, never stored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub run_outputs: BTreeMap<u32, Vec<RunInputRef>>,
     /// What each run returned by run index, each at most [`MAX_STEP_RESULT_BYTES`]. Read from the
     /// step's item rows, never stored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub run_results: BTreeMap<u32, Bytes>,
+    /// Set when reading the item rows found one missing or unreadable; the step's data is then
+    /// partial and nothing may be built from it. Never stored.
+    #[serde(skip)]
+    pub items_unreadable: bool,
     /// What `run_results` holds in all, bounded by [`MAX_STEP_RESULTS_BYTES`].
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub results_bytes: u32,
@@ -123,10 +130,11 @@ pub struct StepState {
     pub finished: u32,
     /// Items of the runs that failed or were cancelled.
     pub failed_items: u32,
-    /// Indices of the runs answered from the step cache, which started no compute run. Read from
-    /// the step's item rows, never stored.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub cached_runs: BTreeSet<u32>,
+    /// Runs answered from the step cache, which started no compute run, and the items they carry.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub cached_count: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub cached_items: u32,
     /// The step cache key each cached run was answered under, by run index. Read from the step's
     /// item rows, never stored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -155,14 +163,8 @@ impl StepState {
     #[must_use]
     pub fn is_cached(&self) -> bool {
         self.status == StepStatus::Succeeded
-            && !self.cached_runs.is_empty()
-            && self.cached_runs.len() == self.fan.total as usize
-    }
-
-    /// Items carried by the runs answered from the cache.
-    #[must_use]
-    pub fn cached_items(&self) -> u32 {
-        self.cached_runs.iter().map(|i| self.items_of(*i)).sum()
+            && self.cached_count > 0
+            && self.cached_count == self.fan.total
     }
 
     /// The files the step's runs made, in item order.
@@ -176,18 +178,26 @@ impl StepState {
         self.run_results.get(&0)
     }
 
-    /// Reads the step's runs, outputs, results and cached keys back from its item rows.
+    /// Reads the step's runs, outputs, results and cached keys back from its item rows. Every run
+    /// that finished has a row, so it stops once it found `finished` of them and flags the step
+    /// when a row is unreadable or fewer exist.
     fn fill(&mut self, run: &str, name: &str, read: impl Fn(&str) -> Option<Vec<u8>>) {
         self.runs = (0..self.started as usize)
             .map(|i| run_id(run, name, i))
             .collect();
+        let mut found = 0;
         for index in 0..self.started {
-            let raw = read(&item_key(run, name, index));
-            let Some(item) = raw.and_then(|r| serde_json::from_slice::<ItemRow>(&r).ok()) else {
+            if found == self.finished {
+                break;
+            }
+            let Some(raw) = read(&item_key(run, name, index)) else {
                 continue;
             };
+            let Ok(item) = serde_json::from_slice::<ItemRow>(&raw) else {
+                break;
+            };
+            found += 1;
             if let Some(key) = item.cached_key {
-                let _new = self.cached_runs.insert(index);
                 let _prev = self.cached_keys.insert(index, key);
             }
             if !item.outputs.is_empty() {
@@ -197,6 +207,7 @@ impl StepState {
                 let _prev = self.run_results.insert(index, result);
             }
         }
+        self.items_unreadable = found != self.finished;
     }
 
     /// Items the run at `index` carries.
@@ -477,13 +488,35 @@ impl AppMachine {
     /// The record of pipeline run `run`, active or among the last finished.
     #[must_use]
     pub fn pipeline_run(&self, run: &str) -> Option<PipelineRun> {
-        let group = self.state.kv.group()?;
-        let raw = group.get_hidden(rows::CPIPE, run.as_bytes())?;
-        let mut record: PipelineRun = serde_json::from_slice(&raw).ok()?;
-        for (name, step) in &mut record.steps {
-            step.fill(run, name, |key| group.get_hidden(rows::CITEM, key.as_bytes()));
-        }
+        let mut record = self.pipeline_head(run)?;
+        self.fill_steps(&mut record, |_| true);
         Some(record)
+    }
+
+    /// The record without its steps' runs, outputs and results: counters and flags only.
+    #[must_use]
+    pub fn pipeline_head(&self, run: &str) -> Option<PipelineRun> {
+        let raw = self
+            .state
+            .kv
+            .group()?
+            .get_hidden(rows::CPIPE, run.as_bytes())?;
+        serde_json::from_slice(&raw).ok()
+    }
+
+    /// Reads the item rows of the steps of `record` that `wanted` names into it.
+    pub fn fill_steps(&self, record: &mut PipelineRun, wanted: impl Fn(&str) -> bool) {
+        let Some(group) = self.state.kv.group() else {
+            return;
+        };
+        for (name, step) in record.steps.iter_mut().filter(|(n, _)| wanted(n)) {
+            step.fill(&record.id, name, |key| {
+                group.get_hidden(rows::CITEM, key.as_bytes())
+            });
+            if step.items_unreadable {
+                tracing::warn!(run = %record.id, step = %name, "a step's item rows are missing or unreadable");
+            }
+        }
     }
 
     /// The ids of the pipeline runs that are running, in order.
@@ -498,7 +531,7 @@ impl AppMachine {
             .collect()
     }
 
-    /// Up to `limit` pipeline runs, newest first.
+    /// Up to `limit` pipeline runs, newest first, without their steps' item data.
     #[must_use]
     pub fn pipeline_runs_page(&self, limit: usize) -> Vec<PipelineRun> {
         let head = &self.state.component.head;
@@ -506,7 +539,7 @@ impl AppMachine {
             .active_pipelines
             .iter()
             .chain(&head.finished_pipelines)
-            .filter_map(|run| self.pipeline_run(run))
+            .filter_map(|run| self.pipeline_head(run))
             .collect();
         all.sort_by(|a, b| (b.start_ts_ms, &b.id).cmp(&(a.start_ts_ms, &a.id)));
         all.truncate(limit);
@@ -521,11 +554,16 @@ impl AppMachine {
     fn drop_step_items(tx: &mut StateTx<'_>, pipeline: &PipelineRun) -> Vec<String> {
         let mut files = Vec::new();
         for (name, step) in &pipeline.steps {
+            let mut found = 0;
             for index in 0..step.started {
                 let key = item_key(&pipeline.id, name, index);
                 let item = get_json::<ItemRow>(tx, rows::CITEM, &key);
+                found += u32::from(item.is_some());
                 files.extend(item.into_iter().flat_map(|i| i.outputs).map(|o| o.id));
                 tx.delete_hidden(rows::CITEM, key.as_bytes());
+            }
+            if found != step.finished {
+                tracing::warn!(run = %pipeline.id, step = %name, "a dropped step's item rows were missing or unreadable");
             }
         }
         files
@@ -863,6 +901,8 @@ impl AppMachine {
             self.pin_files(tx, entry.outputs.iter().map(|o| &o.id), 1, ts_ms);
             if let Some(state) = pipeline.steps.get_mut(step) {
                 state.finished += 1;
+                state.cached_count += 1;
+                state.cached_items += state.items_of(index);
                 let item = ItemRow {
                     cached_key: Some(key.clone()),
                     outputs: entry.outputs.clone(),
@@ -1079,6 +1119,8 @@ impl AppMachine {
             Some(code) => {
                 step.failed_items += step.items_of(link.index);
                 step.reason.get_or_insert(code);
+                let none = ItemRow::default();
+                Self::write_item(tx, &pipeline.id, &link.step, link.index, &none);
             }
             None => {
                 self.pin_files(tx, made.iter().map(|o| &o.id), 1, ts_ms);

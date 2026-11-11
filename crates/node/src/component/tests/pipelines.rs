@@ -934,7 +934,7 @@ fn a_fan_out_takes_its_cached_items_in_item_order() {
     let step = &pipeline(&w, "p2").steps["a"];
     assert_eq!(step.status, StepStatus::Succeeded);
     assert!(!step.is_cached());
-    assert_eq!(step.cached_items(), 2);
+    assert_eq!(step.cached_items, 2);
     let ids: Vec<String> = step.outputs().map(|o| o.id.clone()).collect();
     assert_eq!(ids, vec![out(1).id, out(3).id, out(2).id]);
 }
@@ -1616,4 +1616,68 @@ fn a_later_step_fans_out_over_an_earlier_step_s_outputs_from_rows() {
     assert_eq!(results, [&b"0"[..], b"1", b"2"]);
     assert!(a.status.is_ok() && p.steps["b"].status == StepStatus::Pending);
     assert!(item_row_exists(&w, PIPE, "a", 2));
+}
+
+/// Replaces the stored item row of `run`'s step `a` index `index` with `row`, or deletes it.
+fn tamper_item(w: &World, run: &str, index: u32, row: Option<&[u8]>) {
+    let state = w.r.engine.group_state(5);
+    let mut tx = calimero_log::StateTx::new(&state);
+    let key = crate::component::pipelines::item_key(run, "a", index);
+    match row {
+        Some(row) => tx.put_hidden(rows::CITEM, key.as_bytes(), row),
+        None => tx.delete_hidden(rows::CITEM, key.as_bytes()),
+    }
+    tx.commit().unwrap();
+}
+
+fn three_runs_done(w: &mut World) {
+    let _a = begin(w, PIPE, &["a"]);
+    let _s = fan_start(w, "a", 3, 0, 3);
+    for i in 0..3u8 {
+        let _r = run_done_with_result(w, &format!("p1.a.{i}"), i + 1, &[b'0' + i]);
+    }
+}
+
+#[test]
+fn a_missing_or_corrupt_item_row_flags_the_step_instead_of_shortening_it() {
+    let mut w = World::new();
+    three_runs_done(&mut w);
+    assert!(!pipeline(&w, PIPE).steps["a"].items_unreadable);
+    tamper_item(&w, PIPE, 1, None);
+    let a = &pipeline(&w, PIPE).steps["a"];
+    assert!(a.items_unreadable, "a finished run's row is gone");
+    tamper_item(&w, PIPE, 1, Some(b"not json"));
+    assert!(pipeline(&w, PIPE).steps["a"].items_unreadable, "corrupt");
+}
+
+#[test]
+fn a_failed_run_leaves_an_empty_row_so_a_tolerated_failure_is_not_a_lost_row() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let _s = fan_start(&mut w, "a", 2, 1, 2);
+    let _f = run_failed(&mut w, "p1.a.0");
+    let _r = run_done_with_result(&mut w, "p1.a.1", 2, b"1");
+    let a = &pipeline(&w, PIPE).steps["a"];
+    assert_eq!((a.status, a.failed_items), (StepStatus::Succeeded, 1));
+    assert!(!a.items_unreadable);
+    assert!(item_row_exists(&w, PIPE, "a", 0));
+}
+
+#[test]
+fn the_head_read_carries_counters_and_no_item_data() {
+    let mut w = World::new();
+    three_runs_done(&mut w);
+    let head = w.r.machine.pipeline_head(PIPE).unwrap();
+    let a = &head.steps["a"];
+    assert_eq!((a.started, a.finished), (3, 3));
+    assert!(a.runs.is_empty() && a.run_outputs.is_empty() && a.run_results.is_empty());
+    assert_eq!(pipeline(&w, PIPE).steps["a"].run_outputs.len(), 3);
+}
+
+#[test]
+fn a_run_name_or_step_name_with_a_slash_is_refused() {
+    let mut w = World::new();
+    assert_eq!(why(&begin(&mut w, "a/b", &["a"])), BAD_START);
+    assert_eq!(why(&begin(&mut w, PIPE, &["x/y"])), BAD_START);
+    assert!(w.r.machine.active_pipelines().is_empty());
 }

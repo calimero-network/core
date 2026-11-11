@@ -608,7 +608,7 @@ pub(super) async fn retry(
         .view(&crate::node::ViewRequest {
             app_id,
             method: PIPELINE_VIEW.to_owned(),
-            args: json!({ "run": run, "files": false }),
+            args: json!({ "run": run, "files": false, "items": false }),
             caller: p.caller.clone(),
             strong: true,
             min_index: 0,

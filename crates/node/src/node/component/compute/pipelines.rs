@@ -7,7 +7,7 @@
 //! still pending, and apply lets the first decision for a step win, so a change of leader mid-run
 //! never runs a step twice.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use calimero_app_host as host;
@@ -34,6 +34,7 @@ const MAX_PAGE: usize = 100; // the most pipeline runs a list answers
 const MAX_CACHED: usize = 64; // pipelines and compute components kept in memory, by hash
 const MAX_DECISION_RUNS_BYTES: usize = calimero_log::MAX_ENTRY_BYTES - 128 * 1024; // encoded runs of one decision, leaving room for its envelope and cached hits
 const RUN_TOO_LARGE: &str = "RUN_TOO_LARGE"; // the reason of a step with a run too big for one log entry
+const ITEMS_UNREADABLE: &str = "ITEMS_UNREADABLE"; // the reason of a step built from an earlier step whose item rows are missing or unreadable
 const PIPELINE_UNAVAILABLE: &str = "PIPELINE_UNAVAILABLE"; // the reason of a step whose pipeline definition cannot be found
 
 /// The shared-memory state of the loop: what is being driven, and what it has looked up.
@@ -277,7 +278,7 @@ fn next_wave(
     budget: &mut Budget,
 ) -> Option<(Vec<StepRun>, Vec<CachedRun>, bool)> {
     let state = run.steps.get(name)?;
-    let started = state.runs.len();
+    let started = state.started as usize;
     let total = state.fan.total as usize;
     let stopped = run.cancel_requested
         || run.stopping
@@ -339,22 +340,26 @@ impl Items {
 fn items_of(run: &PipelineRun, source: &str) -> Result<Items, &'static str> {
     match parse_ref(source) {
         Some(Ref::Input(n)) => Ok(Items::Files(run.inputs.get(n).cloned().unwrap_or_default())),
-        Some(Ref::Step(s, "outputs")) => Ok(Items::Files(step_outputs(run, s))),
+        Some(Ref::Step(s, "outputs")) => step_outputs(run, s).map(Items::Files),
         Some(Ref::Step(s, "results")) => step_results(run, s).map(Items::Values),
         _ => Err("BAD_REF"),
     }
 }
 
-fn step_outputs(run: &PipelineRun, step: &str) -> Vec<String> {
-    run.steps
-        .get(step)
-        .map(|s| s.outputs().map(|o| o.id.clone()).collect())
-        .unwrap_or_default()
+fn step_outputs(run: &PipelineRun, step: &str) -> Result<Vec<String>, &'static str> {
+    match run.steps.get(step) {
+        Some(s) if s.items_unreadable => Err(ITEMS_UNREADABLE),
+        Some(s) => Ok(s.outputs().map(|o| o.id.clone()).collect()),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// A step's results as JSON, in item order; none are kept once they passed their bound.
 fn step_results(run: &PipelineRun, step: &str) -> Result<Vec<Value>, &'static str> {
     let state = run.steps.get(step).ok_or("BAD_REF")?;
+    if state.items_unreadable {
+        return Err(ITEMS_UNREADABLE);
+    }
     if state.results_too_large {
         return Err("RESULTS_TOO_LARGE");
     }
@@ -392,7 +397,7 @@ fn ordered_inputs(
         match parse_ref(reference) {
             Some(Ref::Item) => add(lead),
             Some(Ref::Input(n)) => add(run.inputs.get(n).map_or(&[][..], Vec::as_slice)),
-            Some(Ref::Step(s, "outputs")) => add(&step_outputs(run, s)),
+            Some(Ref::Step(s, "outputs")) => add(&step_outputs(run, s)?),
             _ => return Err("BAD_REF"),
         }
     }
@@ -495,7 +500,7 @@ fn build_step(
         return Ok(Built::Runs { runs, fan });
     }
     let lead = match step.collect.as_deref().and_then(parse_ref) {
-        Some(Ref::Step(target, "outputs")) => step_outputs(run, target),
+        Some(Ref::Step(target, "outputs")) => step_outputs(run, target)?,
         _ => Vec::new(),
     };
     let inputs = ordered_inputs(step, run, &lead)?;
@@ -574,6 +579,9 @@ fn resolve(
             Some(Ref::Item) => item.cloned().ok_or("BAD_REF"),
             Some(Ref::Step(step, "result")) => {
                 let state = run.steps.get(step).ok_or("NO_RESULT")?;
+                if state.items_unreadable {
+                    return Err(ITEMS_UNREADABLE);
+                }
                 if state.results_too_large {
                     return Err("RESULTS_TOO_LARGE");
                 }
@@ -598,8 +606,9 @@ fn resolve(
 }
 
 /// A pipeline run as the API shows it: sizes, hashes and results only to those who may list
-/// the app's files, a result as JSON when it is.
-fn run_json(run: &PipelineRun, files: bool) -> Value {
+/// the app's files, a result as JSON when it is. Without `items` a step shows counters only: no
+/// `runs`, `outputs`, `result` or `results`.
+fn run_json(run: &PipelineRun, files: bool, items: bool) -> Value {
     let mut v = serde_json::to_value(run).unwrap_or(Value::Null);
     if let Some(cap) = &run.cost {
         v["cost"]["maxCost"] = json!(cap.max_cost.to_string());
@@ -611,11 +620,17 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
             continue;
         };
         let _gone = (shown.remove("runOutputs"), shown.remove("runResults"));
-        let _gone = (shown.remove("cachedRuns"), shown.remove("runCost"));
+        let _gone = shown.remove("runCost");
         let _gone = (shown.remove("started"), shown.remove("resultsBytes"));
         if run.cost.is_some() {
             let _prev = shown.insert("cost".to_owned(), json!(step.cost.to_string()));
         }
+        let _prev = shown.insert("cached".to_owned(), json!(step.is_cached()));
+        let _prev = shown.insert("cachedItems".to_owned(), json!(step.cached_items));
+        if !items {
+            continue;
+        }
+        let _prev = shown.insert("runs".to_owned(), json!(step.runs));
         let outputs: Vec<Value> = step
             .outputs()
             .map(|o| {
@@ -627,8 +642,6 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
             })
             .collect();
         let _prev = shown.insert("outputs".to_owned(), Value::Array(outputs));
-        let _prev = shown.insert("cached".to_owned(), json!(step.is_cached()));
-        let _prev = shown.insert("cachedItems".to_owned(), json!(step.cached_items()));
         let json_of =
             |b: &Bytes| serde_json::from_slice(&b.0).unwrap_or_else(|_| json!(hex::encode(&b.0)));
         let result = step.result().filter(|_| files).map(json_of);
@@ -644,6 +657,45 @@ fn run_json(run: &PipelineRun, files: bool) -> Value {
     v
 }
 
+/// The steps whose outputs or results the pending steps and running fan-outs of `run` refer to:
+/// the only item rows a round of planning needs.
+fn steps_named(pipeline: &Pipeline, run: &PipelineRun) -> BTreeSet<String> {
+    fn walk<'a>(v: &'a Value, out: &mut BTreeSet<&'a str>) {
+        match v {
+            Value::String(s) => note(s, out),
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    fn note<'a>(reference: &'a str, out: &mut BTreeSet<&'a str>) {
+        if let Some(Ref::Step(step, _)) = parse_ref(reference) {
+            let _new = out.insert(step);
+        }
+    }
+    let mut named = BTreeSet::new();
+    for (name, step) in &pipeline.steps {
+        let open = match run.steps.get(name) {
+            Some(s) => {
+                s.status == StepStatus::Pending
+                    || (s.status == StepStatus::Running && s.started < s.fan.total)
+            }
+            None => false,
+        };
+        if !open {
+            continue;
+        }
+        let refs = step
+            .for_each
+            .iter()
+            .chain(&step.collect)
+            .chain(&step.inputs);
+        refs.for_each(|r| note(r, &mut named));
+        step.args.values().for_each(|v| walk(v, &mut named));
+    }
+    named.into_iter().map(str::to_owned).collect()
+}
+
 impl Node {
     /// The reserved view of a pipeline run's record, or of a page of them.
     pub(in crate::node) fn pipeline_view(
@@ -652,6 +704,7 @@ impl Node {
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
         let files = req.args["files"].as_bool().unwrap_or(false);
+        let items = req.args["items"].as_bool().unwrap_or(true);
         let limit = match req.args.get("limit").filter(|l| !l.is_null()) {
             None => DEFAULT_PAGE,
             Some(l) => l
@@ -676,14 +729,19 @@ impl Node {
                         serde_json::to_value(source).unwrap_or(Value::Null)
                     })
                 }
-                Some(run) => m
-                    .pipeline_run(run)
-                    .map_or(Value::Null, |r| run_json(&r, files)),
+                Some(run) => {
+                    let found = if items {
+                        m.pipeline_run(run)
+                    } else {
+                        m.pipeline_head(run)
+                    };
+                    found.map_or(Value::Null, |r| run_json(&r, files, items))
+                }
                 None => json!({
                     "runs": m
                         .pipeline_runs_page(limit)
                         .iter()
-                        .map(|r| run_json(r, files))
+                        .map(|r| run_json(r, files, false))
                         .collect::<Vec<_>>(),
                 }),
             };
@@ -722,7 +780,7 @@ impl Node {
         }
         for id in g.read_local(|m, _| m.active_pipelines()) {
             let running = g
-                .read_local(|m, _| m.pipeline_run(&id))
+                .read_local(|m, _| m.pipeline_head(&id))
                 .filter(|r| r.state == PipelineState::Running);
             if let Some(run) = running {
                 self.drive_pipeline(g, &run).await;
@@ -733,7 +791,7 @@ impl Node {
     async fn drive_pipeline(&self, g: &Group<AppMachine>, run: &PipelineRun) {
         let waiting = |s: &crate::component::StepState| match s.status {
             StepStatus::Pending => true,
-            StepStatus::Running => s.runs.len() < s.fan.total as usize,
+            StepStatus::Running => s.started < s.fan.total,
             _ => false,
         };
         if !run.steps.values().any(waiting) {
@@ -763,7 +821,11 @@ impl Node {
                 }
             }
         }
+        let wanted = steps_named(&pipeline, run);
         let decided = g.read_local(|m, _| {
+            let mut run = run.clone();
+            m.fill_steps(&mut run, |n| wanted.contains(n));
+            let run = &run;
             let room = host::MAX_ACTIVE_RUNS.saturating_sub(m.active_runs().len());
             let view = CacheView {
                 sha: &|id| m.file_sha256(id),
@@ -782,7 +844,7 @@ impl Node {
         for (name, step) in &run.steps {
             let open = match step.status {
                 StepStatus::Pending => true,
-                StepStatus::Running => step.runs.len() < step.fan.total as usize,
+                StepStatus::Running => step.started < step.fan.total,
                 _ => false,
             };
             if open {
@@ -805,22 +867,21 @@ impl Node {
         let proposed = g
             .propose_led(|m, _, _| {
                 let current = m
-                    .pipeline_run(run)
+                    .pipeline_head(run)
                     .filter(|p| p.state == PipelineState::Running)
                     .and_then(|p| p.steps.get(step).cloned());
                 let applies = current.is_some_and(|s| match &decision {
                     StepVerdict::More { runs, cached } => {
                         s.status == StepStatus::Running
                             && match (runs.first(), cached.first()) {
-                                (Some(r), _) => r.run == run_id(run, step, s.runs.len()),
-                                (None, Some(c)) => c.index as usize == s.runs.len(),
+                                (Some(r), _) => r.run == run_id(run, step, s.started as usize),
+                                (None, Some(c)) => c.index == s.started,
                                 (None, None) => false,
                             }
                     }
                     StepVerdict::Failed { .. } => {
                         s.status == StepStatus::Pending
-                            || (s.status == StepStatus::Running
-                                && s.runs.len() < s.fan.total as usize)
+                            || (s.status == StepStatus::Running && s.started < s.fan.total)
                     }
                     _ => s.status == StepStatus::Pending,
                 });
@@ -1616,9 +1677,9 @@ steps:
         let step = run.steps.get_mut("each").unwrap();
         step.status = StepStatus::Running;
         step.fan = fan;
-        step.runs = first.iter().map(|r| r.run.clone()).collect();
+        step.started = first.len() as u32;
         let mut waves = 1;
-        while run.steps["each"].runs.len() < 100 {
+        while run.steps["each"].started < 100 {
             let decided = plan(&p, &run, &caps(), 64);
             let StepVerdict::More { runs, .. } = &decided[0].1 else {
                 panic!("{decided:?}")
@@ -1626,10 +1687,10 @@ steps:
             assert!(!runs.is_empty() && runs.len() < 64);
             assert_eq!(
                 runs[0].run,
-                run_id("r", "each", run.steps["each"].runs.len())
+                run_id("r", "each", run.steps["each"].started as usize)
             );
             let step = run.steps.get_mut("each").unwrap();
-            step.runs.extend(runs.iter().map(|r| r.run.clone()));
+            step.started += runs.len() as u32;
             waves += 1;
         }
         assert!(waves > 2, "{waves}");
@@ -1849,5 +1910,46 @@ steps:
         let _gone = by_bundle.remove("module-v1");
         let decided = super::plan(&p, &run, &by_bundle, 10, &view);
         assert_eq!(failure(&decided, "a"), "UNKNOWN_METHOD");
+    }
+
+    #[test]
+    fn a_step_built_from_an_unreadable_earlier_step_fails_with_a_stable_reason() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let mut run = run_of(&p);
+        set(&mut run, "a", StepStatus::Succeeded);
+        run.steps.get_mut("a").unwrap().items_unreadable = true;
+        assert_eq!(
+            failure(&plan(&p, &run, &caps(), 10), "b"),
+            "ITEMS_UNREADABLE"
+        );
+    }
+
+    #[test]
+    fn only_the_steps_that_open_steps_refer_to_need_their_item_rows() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let mut run = run_of(&p);
+        set(&mut run, "a", StepStatus::Succeeded);
+        let want = |run: &PipelineRun| steps_named(&p, run).into_iter().collect::<Vec<_>>();
+        assert_eq!(want(&run), ["a"], "b is pending and names a");
+        for name in ["b", "c", "d"] {
+            set(&mut run, name, StepStatus::Succeeded);
+        }
+        assert!(want(&run).is_empty(), "nothing is open");
+    }
+
+    #[test]
+    fn a_counters_only_view_has_no_per_run_arrays() {
+        let p = calimero_pipeline::compile(SOURCE).unwrap();
+        let mut run = run_of(&p);
+        run.steps.get_mut("a").unwrap().cached_items = 2;
+        let shown = run_json(&run, true, false);
+        let a = shown["steps"]["a"].as_object().unwrap();
+        for gone in ["runs", "outputs", "result", "results", "started"] {
+            assert!(!a.contains_key(gone), "{gone}");
+        }
+        assert_eq!(a["cachedItems"], json!(2));
+        let full = run_json(&run, true, true);
+        assert_eq!(full["steps"]["a"]["runs"], json!([]));
+        assert_eq!(full["steps"]["a"]["outputs"], json!([]));
     }
 }
