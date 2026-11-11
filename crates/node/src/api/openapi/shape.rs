@@ -217,7 +217,11 @@ impl Shape {
             Self::Number => json!({ "type": "number" }),
             Self::Bool => json!({ "type": "boolean" }),
             Self::Null => json!({ "type": "null" }),
-            Self::Any => json!({}),
+            // Free-form: a value whose shape is the app's, the client's or WebAuthn's, not
+            // this API's; the operation or schema around it says whose.
+            Self::Any => json!({
+                "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is).",
+            }),
             Self::U64 => json!({
                 "type": "string",
                 "pattern": "^(0|[1-9][0-9]*)$",
