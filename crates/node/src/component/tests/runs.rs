@@ -2174,7 +2174,7 @@ fn a_final_stores_its_log_as_a_sealed_file_that_is_not_an_output_or_an_input() {
     assert!(!w.finish(logged_final(&w, "r1", &k, &log)).conflict);
     let rec = w.record("r1");
     assert_eq!(rec.state, RunState::Done);
-    let held = &rec.logs[&1];
+    let held = rec.log.as_ref().unwrap();
     assert_eq!((held.id.as_str(), held.size), (log.id.as_str(), 20));
     let seal = log_blob(&w).unwrap().file.unwrap();
     assert!(seal.log && !seal.output);
@@ -2206,7 +2206,7 @@ fn a_failed_final_keeps_the_log_and_a_final_may_leave_out_the_log_its_report_nam
     };
     assert!(!w.finish(failed).conflict);
     assert_eq!(w.record("r1").state, RunState::Failed);
-    assert!(w.record("r1").logs.contains_key(&1));
+    assert!(w.record("r1").log.is_some());
     assert!(log_blob(&w).is_some());
 
     let mut w = World::new();
@@ -2215,15 +2215,15 @@ fn a_failed_final_keeps_the_log_and_a_final_may_leave_out_the_log_its_report_nam
     let mut entry = logged_final(&w, "r1", &k, &log);
     entry.log = None;
     assert!(!w.finish(entry).conflict);
-    assert!(w.record("r1").logs.is_empty());
+    assert!(w.record("r1").log.is_none());
     assert!(log_blob(&w).is_none());
 }
 
 #[test]
-fn a_log_must_be_the_reports_and_a_file_the_app_does_not_hold() {
+fn a_log_must_be_the_reports() {
     let k = job_key(1);
     let log = FileMark::fixture(LOG, 20);
-    let edits: [Refusal; 6] = [
+    let edits: [Refusal; 2] = [
         (
             "not in the report",
             "the log differs from the report",
@@ -2234,45 +2234,6 @@ fn a_log_must_be_the_reports_and_a_file_the_app_does_not_hold() {
         ("size", "the log differs from the report", |e| {
             e.log.as_mut().unwrap().size += 1
         }),
-        ("a held file", "output is already a file", |e| {
-            let held = FileMark::fixture(INPUT, 20);
-            let mut rep = e.report.take().unwrap();
-            rep.log = Some(reported_as(&held));
-            e.signature = Some(sign_report(&job_key(1), &DIGEST, &rep).unwrap());
-            e.report = Some(rep);
-            e.log = Some(held);
-        }),
-        (
-            "an output of the same run",
-            "output is already a file",
-            |e| {
-                let same = e.outputs[0].clone();
-                let mut rep = e.report.take().unwrap();
-                rep.log = Some(reported_as(&same));
-                e.signature = Some(sign_report(&job_key(1), &DIGEST, &rep).unwrap());
-                e.report = Some(rep);
-                e.log = Some(same);
-            },
-        ),
-        (
-            "over the cap",
-            "the log is not a file of a job report within the cap",
-            |e| {
-                let big = FileMark::fixture(LOG, MAX_RUN_LOG_BYTES as u64 + 1);
-                let mut rep = e.report.take().unwrap();
-                rep.log = Some(reported_as(&big));
-                e.signature = Some(sign_report(&job_key(1), &DIGEST, &rep).unwrap());
-                e.report = Some(rep);
-                e.log = Some(big);
-            },
-        ),
-        (
-            "not a blob id",
-            "the log is not a file of a job report within the cap",
-            |e| {
-                e.log.as_mut().unwrap().id = "zz".into();
-            },
-        ),
     ];
     for (name, reason, edit) in edits {
         let mut w = World::new();
@@ -2337,4 +2298,39 @@ fn a_runs_log_is_collected_with_its_run_record_and_not_before() {
         !held(&w.r).contains(&log.id),
         "collected after the idle time"
     );
+}
+
+#[test]
+fn a_log_that_cannot_be_a_new_file_is_dropped_and_the_run_still_ends() {
+    let k = job_key(1);
+    let big = FileMark::fixture(LOG, MAX_RUN_LOG_BYTES as u64 + 1);
+    let cases: [(&str, FileMark); 3] = [
+        ("a file the app holds", FileMark::fixture(INPUT, 20)),
+        ("an output of the same run", out(1)),
+        ("over the cap", big),
+    ];
+    for (name, log) in cases {
+        let mut w = World::new();
+        w.start("r1");
+        let _a = w.assign("r1", &k);
+        let held_before = held(&w.r);
+        let entry = logged_final(&w, "r1", &k, &log);
+        let ended = w.finish(entry);
+        assert!(
+            !ended.conflict && ended.status == Status::Ok,
+            "{name}: {ended:?}"
+        );
+        let rec = w.record("r1");
+        assert_eq!(rec.state, RunState::Done, "{name}");
+        assert!(rec.log.is_none(), "{name}");
+        let seal =
+            w.r.machine
+                .state
+                .component
+                .blobs
+                .records
+                .get(&parse_hex32(&log.id).unwrap());
+        assert!(seal.is_none_or(|r| !r.file.as_ref().unwrap().log), "{name}");
+        assert!(held(&w.r).len() >= held_before.len(), "{name}");
+    }
 }

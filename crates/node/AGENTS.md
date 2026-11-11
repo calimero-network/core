@@ -607,18 +607,23 @@ is its command line.
   `AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave, so `storage_put` accepts those references.
   A final marks each output `FileSeal.output`, the flag that makes it publishable (only a signed done report carries outputs).
   **Run logs.**
-  After an attempt where the module ran (done, app-error, trap, fuel, memory; not an integrity refusal or a lost attempt) a job node joins `Outcome::logs` (stdout, stderr, `log`) with `\n`.
-  A non-empty log is cut to `MAX_RUN_LOG_BYTES` (1 MiB, on a char boundary, ending with the line `[log truncated]`) and sealed like an output under a key of its own (`exec::sealed_log`), kept as `log-0` in the run's directory.
-  `Report::log` (`Option<OutputRef>`, absent when none) names it, and a failed report may carry one (it still carries no result or outputs).
-  `report_message` signs exactly the bytes it did before when `log` is none, so an older job node's signature verifies; a log appends `calimero.compute.report.log.v1\0` and the ref's fields as an output's (`a_report_without_a_log_signs_the_same_bytes_as_before` pins the old bytes).
-  The job node serves it at `GET /job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key`, behind the run token and the sealed channel like an output, and answers `404 NO_LOG` for a run without one.
-  It puts a log in a report only when the assignment came with the `x-run-log` header (`LOG_HEADER`), which the leader sends: a newer job node reached by an older leader (the registration gate checks the replicas against the node that registers, not the job node's release) keeps its reports readable by it, whose `Report` refuses an unknown field.
-  After the report holds up the leader fetches the log and its key as an output (`Held::Log`, `finish::stage_log`, charged to the payer, wrapped under the app file key, kept in `Watch::staged` after the outputs) and the final entry carries it as `FinalEntry::log` (a `FileMark`).
-  A log that is over the cap, cannot be charged, attested or fetched, or does not match its signed ref is left out with a warn log: the run still commits.
-  `check_final` takes a log only when the signed report names exactly it, never from a leader outcome, and as a file the app does not hold.
-  `apply_compute_final` registers it as a sealed file marked `FileSeal.log` (not `output`: `runs.publish` refuses it, and it is neither a pipeline output nor a run input), records it in `RunRecord::logs` (attempt to `RunInputRef`) and holds it with one reference (`pin_inputs`) until the record is dropped from the last `FINISHED_RUNS_KEPT`, when `finish_run` releases it; it is forgotten `BLOB_IDLE_MS` later.
+  A job node joins `Outcome::logs` (stdout, stderr, `log`) with `\n` after an attempt where the module ran (not a lost attempt or an integrity refusal).
+  A non-empty log is cut to `MAX_RUN_LOG_BYTES` (1 MiB, ending with `[log truncated]`) and sealed like an output under its own key (`exec::sealed_log`).
+  The host keeps at most 64 KiB of log lines per run, so the cap is a backstop.
+  `Report::log` (`Option<OutputRef>`) names it, and a failed report may carry one.
+  With no log `report_message` signs the bytes it always did; a log appends `calimero.compute.report.log.v1\0` and the ref as an output's.
+  `GET /job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key` serve it like an output (`404 NO_LOG` when none).
+  A leader sends `x-run-log` (`LOG_HEADER`) on a request only while every replica runs this release (`Node::replicas_take_logs`).
+  The job node signs the report both ways and answers with the log only to a request with the header, so an older leader or replica never meets the field.
+  The leader fetches the log like an output (`Held::Log`, `finish::stage_log`, charged to the payer) and the final carries it as `FinalEntry::log`.
+  A log that is over the cap, already a file of the app, or cannot be charged, fetched or proved is left out with a warn log, and its pushed segments are deleted.
+  `check_final` takes a log only when it is the report's; `apply_compute_final` keeps it only if it is a new file within the cap (`kept_log`), else drops it and still ends the run.
+  A kept log is a sealed file marked `FileSeal.log` (not `output`), so `runs.publish` refuses it and it is neither a pipeline output nor a run input.
+  `RunRecord::log` names it, held with one reference until `finish_run` drops the record from the last `FINISHED_RUNS_KEPT`.
+  It counts toward the app's file quota like any file, and goes `BLOB_IDLE_MS` after its record.
   The app's code does not see it (`NodeFiles::sealed`), and the file list leaves it out.
-  `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }` behind `files_gate`, so a stranger gets `403` even on a public app; the bytes are read with the files export.
+  `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, behind `files_gate` (a stranger gets `403`).
+  The bytes are read with the files export.
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
   The cluster tests' fixture (`apps/v2-fixtures/compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.

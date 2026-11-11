@@ -633,6 +633,14 @@ impl Node {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = limits;
     }
 
+    /// Makes a replica count as running an older release than this node. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_replica_behind(&self, behind: bool) {
+        self.probes
+            .replica_behind
+            .store(behind, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Makes this node's system reads fail as if the system group had no leader. Tests only.
     #[cfg(feature = "testing")]
     pub fn set_system_outage(&self, on: bool) {

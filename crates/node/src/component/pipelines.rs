@@ -1085,7 +1085,7 @@ impl AppMachine {
                 }),
                 cache_key: r.cache_key.clone(),
                 pool: r.pool.clone(),
-                logs: BTreeMap::new(),
+                log: None,
             };
             put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self.state.component.head.active_runs.insert(r.run.clone());

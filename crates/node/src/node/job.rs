@@ -438,6 +438,20 @@ fn release_at_least(release: Option<&str>, own: &str) -> bool {
 }
 
 impl Node {
+    /// Whether every replica runs at least this release, so each reads a final entry that carries
+    /// a run's log as this node does.
+    pub(crate) async fn replicas_take_logs(&self) -> bool {
+        #[cfg(feature = "testing")]
+        if self
+            .probes
+            .replica_behind
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return false;
+        }
+        self.require_upgraded_nodes().await.is_ok()
+    }
+
     /// Refuses unless every replica node, voter and learner runs at least this
     /// node's release: no older node may read a job record.
     pub(crate) async fn require_upgraded_nodes(&self) -> Result<(), ApiError> {

@@ -534,10 +534,9 @@ fn run_json(
             }
         })
         .collect();
-    let logs: Vec<Value> = rec
-        .logs
-        .iter()
-        .map(|(attempt, l)| json!({ "attempt": attempt, "id": l.id, "size": l.size, "sha256": l.sha256 }))
+    let attempt = rec.final_.as_ref().map_or(0, |f| f.attempt);
+    let logs: Vec<Value> = (rec.log.iter())
+        .map(|l| json!({ "attempt": attempt, "id": l.id, "size": l.size, "sha256": l.sha256 }))
         .collect();
     let mut out = json!({
         "run": rec.run,

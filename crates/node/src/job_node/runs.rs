@@ -37,7 +37,7 @@ const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for
 pub const MAX_ASSIGNMENT_BYTES: usize = 8 * 1024 * 1024; // the most a request to assign a run may weigh; a full collect is about 4 MiB
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
 pub const UNKNOWN_RUN: &str = "UNKNOWN_RUN"; // the code of an answer about a run this node does not hold
-pub const LOG_HEADER: &str = "x-run-log"; // sent by a leader that takes a report's log, so an older one never sees the field
+pub const LOG_HEADER: &str = "x-run-log"; // sent on a request by a leader that reads a report's log; without it the answer has none
 pub const NEED_BUNDLE: &str = "NEED_BUNDLE"; // the code of an assignment whose component this node does not hold
 
 /// A run's secrets, unwrapped at admission and taken by the thread that runs it.
@@ -55,6 +55,8 @@ pub(super) struct OutputFile {
 pub(super) struct Finished {
     pub report: Report,
     pub signature: String,
+    /// The same report without its log, signed on its own: what a request without the log header gets.
+    pub bare: Option<(Report, String)>,
     pub outputs: Vec<OutputFile>,
     /// The sealed module log, if the run kept one.
     pub log: Option<OutputFile>,
@@ -87,8 +89,6 @@ pub(super) struct Run {
     pub keys: Mutex<Option<Keys>>,
     pub dir: PathBuf,
     pub cancel: Arc<AtomicBool>,
-    /// Whether the leader that assigned the run takes a log in its report.
-    pub wants_log: bool,
     created: Instant,
     received: tokio::sync::Mutex<BTreeSet<(usize, usize)>>,
     pub state: Mutex<RunState>,
@@ -113,7 +113,6 @@ impl Run {
             keys: Mutex::new(Some(keys)),
             dir,
             cancel: Arc::default(),
-            wants_log: false,
             created: Instant::now(),
             received: tokio::sync::Mutex::default(),
             state: Mutex::new(RunState {
@@ -160,14 +159,19 @@ impl Run {
         let _ended = self.finished.send_replace(true);
     }
 
-    fn status(&self) -> Value {
-        status_of(&locked(&self.state))
+    /// The status as the request's headers ask for it: a report carries its log only for a
+    /// request with [`LOG_HEADER`].
+    fn status(&self, headers: &HeaderMap) -> Value {
+        status_of(&locked(&self.state), headers.contains_key(LOG_HEADER))
     }
 
     /// The status and whether the run runs, read under one lock.
-    fn snapshot(&self) -> (Value, bool) {
+    fn snapshot(&self, headers: &HeaderMap) -> (Value, bool) {
         let state = locked(&self.state);
-        (status_of(&state), matches!(state.phase, Phase::Running))
+        (
+            status_of(&state, headers.contains_key(LOG_HEADER)),
+            matches!(state.phase, Phase::Running),
+        )
     }
 
     /// A wrong token answers as an unknown run does, so a probe learns nothing of what is held.
@@ -183,7 +187,7 @@ impl Run {
     }
 }
 
-fn status_of(state: &RunState) -> Value {
+fn status_of(state: &RunState, with_log: bool) -> Value {
     match &state.phase {
         Phase::Awaiting => json!({ "state": "awaiting" }),
         Phase::Running => match &state.progress {
@@ -193,7 +197,11 @@ fn status_of(state: &RunState) -> Value {
             None => json!({ "state": "running" }),
         },
         Phase::Done(done) => {
-            json!({ "state": "done", "report": done.report, "signature": done.signature })
+            let (report, signature) = match (&done.bare, with_log) {
+                (Some((report, signature)), false) => (report, signature),
+                _ => (&done.report, &done.signature),
+            };
+            json!({ "state": "done", "report": report, "signature": signature })
         }
         Phase::Lost => json!({ "state": "lost" }),
     }
@@ -429,8 +437,7 @@ pub(super) async fn assign(
     check_shape(&a)?;
     admit_assignment(&job.config, &a)?;
     let message = assignment_message(&a).map_err(|e| ApiError::internal(&e.to_string()))?;
-    let wants_log = headers.contains_key(LOG_HEADER);
-    let (run, is_new) = admit_run(&job, a, message, wants_log)?;
+    let (run, is_new) = admit_run(&job, a, message)?;
     if is_new {
         tokio::fs::create_dir_all(&run.dir).await.map_err(|e| {
             job.runs.remove(&run);
@@ -440,7 +447,7 @@ pub(super) async fn assign(
             exec::start(&job, &run);
         }
     }
-    Ok(Json(run.status()))
+    Ok(Json(run.status(&headers)))
 }
 
 /// Registers the run unless it is already held (then that one answers) or there is no room.
@@ -449,7 +456,6 @@ fn admit_run(
     job: &Arc<JobNode>,
     a: Assignment,
     message: Vec<u8>,
-    wants_log: bool,
 ) -> Result<(Arc<Run>, bool), ApiError> {
     let mut map = locked(&job.runs.map);
     if let Some(held) = map.get(&key_of(&a)) {
@@ -504,9 +510,7 @@ fn admit_run(
     let dir = job.scratch.join(job.next_dir().to_string());
     let token = hash_hex(&a.token).unwrap_or_default();
     let key = key_of(&a);
-    let mut run = Run::new(a, message, token, prepared, keys, dir);
-    run.wants_log = wants_log;
-    let run = Arc::new(run);
+    let run = Arc::new(Run::new(a, message, token, prepared, keys, dir));
     let _none = map.insert(key, Arc::clone(&run));
     Ok((run, true))
 }
@@ -561,7 +565,7 @@ pub(super) async fn put_segment(
     }
     let mut received = run.received.lock().await;
     if received.contains(&(i, k)) {
-        return Ok(Json(run.status()));
+        return Ok(Json(run.status(&headers)));
     }
     if !matches!(locked(&run.state).phase, Phase::Awaiting) {
         return Err(not_awaiting());
@@ -580,7 +584,7 @@ pub(super) async fn put_segment(
     let in_so_far = received.range((i, 0)..=(i, usize::MAX)).count();
     if in_so_far + 1 < hashes.len() {
         let _new = received.insert((i, k));
-        return Ok(Json(run.status()));
+        return Ok(Json(run.status(&headers)));
     }
     let key = locked(&run.keys)
         .as_ref()
@@ -597,7 +601,7 @@ pub(super) async fn put_segment(
     if !matches {
         // What the leader sent is not the file it declared: the report says so, signed.
         exec::fail_integrity(&job, &run);
-        return Ok(Json(run.status()));
+        return Ok(Json(run.status(&headers)));
     }
     #[cfg(feature = "testing")]
     let finished = if job.finish_input_fails.swap(false, Ordering::Relaxed) {
@@ -623,7 +627,7 @@ pub(super) async fn put_segment(
     if complete {
         exec::start(&job, &run);
     }
-    Ok(Json(run.status()))
+    Ok(Json(run.status(&headers)))
 }
 
 /// `GET /job/runs/{app}/{run}/{attempt}`.
@@ -637,7 +641,7 @@ pub(super) async fn status(
     if let Some(stuck) = test_probe(&job).await {
         return Ok(stuck);
     }
-    Ok(Json(run.status()))
+    Ok(Json(run.status(&headers)))
 }
 
 /// What a test makes a job node do instead of answering: hang, or claim to be still running.
@@ -823,7 +827,7 @@ pub(super) async fn cancel(
         let mut ended = run.finished.subscribe();
         let _ = tokio::time::timeout(CANCEL_WAIT, ended.wait_for(|ended| *ended)).await;
     }
-    let (answer, running) = run.snapshot();
+    let (answer, running) = run.snapshot(&headers);
     if running {
         return Ok(Json(answer));
     }
@@ -944,6 +948,7 @@ mod tests {
         Phase::Done(Box::new(Finished {
             report,
             signature: String::new(),
+            bare: None,
             outputs: Vec::new(),
             log: None,
             bytes,
@@ -996,16 +1001,16 @@ mod tests {
     #[test]
     fn the_status_names_the_phase_and_the_last_progress() {
         let r = run("status");
-        assert_eq!(r.status(), json!({ "state": "awaiting" }));
+        assert_eq!(r.status(&HeaderMap::new()), json!({ "state": "awaiting" }));
         locked(&r.state).phase = Phase::Running;
-        assert_eq!(r.status(), json!({ "state": "running" }));
+        assert_eq!(r.status(&HeaderMap::new()), json!({ "state": "running" }));
         locked(&r.state).progress = Some((40, "hashing".to_owned()));
         assert_eq!(
-            r.status(),
+            r.status(&HeaderMap::new()),
             json!({ "state": "running", "progress": { "percent": 40, "step": "hashing" } })
         );
         r.end(Phase::Lost);
-        assert_eq!(r.status(), json!({ "state": "lost" }));
+        assert_eq!(r.status(&HeaderMap::new()), json!({ "state": "lost" }));
     }
 
     #[test]

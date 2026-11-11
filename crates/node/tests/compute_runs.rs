@@ -2666,7 +2666,7 @@ async fn a_compute_run_s_log_reads_back_exactly() {
         rig.alice.export_file(&rig.app, id).await.unwrap(),
         text.as_bytes()
     );
-    assert_eq!(rig.record(&run).logs[&1].id, id);
+    assert_eq!(rig.record(&run).log.unwrap().id, id);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -2690,7 +2690,7 @@ async fn a_run_that_logs_nothing_has_no_log() {
     let (run, outcome) = rig.ended("quiet").await;
     assert_eq!(outcome["status"], "done", "{outcome}");
     assert!(rig.logs(&run).await.is_empty());
-    assert!(rig.record(&run).logs.is_empty());
+    assert!(rig.record(&run).log.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -2750,4 +2750,38 @@ async fn a_log_the_job_node_will_not_hand_over_is_skipped_and_the_run_still_comm
     assert_eq!(outcome["reason"], "app-error", "{outcome}");
     assert_eq!(rig.record(&run).attempts.len(), 1, "no attempt is lost");
     assert!(rig.logs(&run).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_started_while_a_replica_is_behind_keeps_no_log_and_still_commits() {
+    let rig = Rig::start(&[JOB_A]).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(true);
+    }
+    let (run, outcome) = rig.ended("chatter").await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert!(rig.record(&run).log.is_none());
+    assert!(rig.logs(&run).await.is_empty());
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(false);
+    }
+    let (run, _) = rig.ended("chatter").await;
+    assert_eq!(
+        rig.logs(&run).await.len(),
+        1,
+        "logs return with the replicas"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_log_fetched_but_misreported_leaves_none_of_its_bytes_on_the_leader() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let stored = |rig: &Rig| rig.leader().engine.list_segments().unwrap().len();
+    let before = stored(&rig);
+    rig.jobs[0].running.misreport_logs();
+    let (run, outcome) = rig.ended("failLoudly").await;
+    assert_eq!(outcome["reason"], "app-error", "{outcome}");
+    assert!(rig.logs(&run).await.is_empty());
+    rig.until("the log's segment is deleted", || stored(&rig) == before)
+        .await;
 }

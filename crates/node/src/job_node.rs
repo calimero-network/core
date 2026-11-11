@@ -97,6 +97,9 @@ struct JobNode {
     /// While set, every log segment answers one bit off (feature `testing`).
     #[cfg(feature = "testing")]
     log_corrupt: AtomicBool,
+    /// While set, a report names a wrong plaintext hash for its log (feature `testing`).
+    #[cfg(feature = "testing")]
+    log_lie: AtomicBool,
     /// Milliseconds every output route waits before it answers (feature `testing`).
     #[cfg(feature = "testing")]
     outputs_delay_ms: AtomicU64,
@@ -172,6 +175,12 @@ impl RunningJob {
     #[cfg(feature = "testing")]
     pub fn corrupt_logs(&self) {
         self.job.log_corrupt.store(true, Ordering::Relaxed);
+    }
+
+    /// Makes every report name a wrong plaintext hash for its log from now on. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn misreport_logs(&self) {
+        self.job.log_lie.store(true, Ordering::Relaxed);
     }
 
     /// Makes every output route wait `delay` before it answers, as a slow link would. Tests only.
@@ -279,6 +288,8 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         outputs_fail: AtomicBool::new(false),
         #[cfg(feature = "testing")]
         log_corrupt: AtomicBool::new(false),
+        #[cfg(feature = "testing")]
+        log_lie: AtomicBool::new(false),
         #[cfg(feature = "testing")]
         outputs_delay_ms: AtomicU64::new(0),
         #[cfg(feature = "testing")]

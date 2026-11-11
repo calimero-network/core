@@ -237,13 +237,14 @@ impl Drive<'_> {
             return Polled::Lost;
         }
         let token = self.token(attempt.attempt);
+        let headers = self.run_headers(&token).await;
         let answer = self
             .node
             .job_call(
                 &peer,
                 Method::GET,
                 &self.path(attempt.attempt),
-                &[(TOKEN_HEADER, &token)],
+                &headers,
                 Vec::new(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -321,13 +322,25 @@ impl Drive<'_> {
         Ok(())
     }
 
+    /// The headers of a request about a run: its token, and the log header only while every
+    /// replica reads a final entry that carries a log. The job node answers with a log only then.
+    async fn run_headers<'a>(&self, token: &'a str) -> Vec<(&'static str, &'a str)> {
+        let mut headers = vec![(TOKEN_HEADER, token)];
+        if self.node.replicas_take_logs().await {
+            headers.push((LOG_HEADER, "1"));
+        }
+        headers
+    }
+
     async fn assign_call(&self, peer: &JobPeer, body: &[u8]) -> eyre::Result<JobAnswer> {
+        let logging = self.node.replicas_take_logs().await;
+        let headers: &[(&str, &str)] = if logging { &[(LOG_HEADER, "1")] } else { &[] };
         self.node
             .job_transfer(
                 peer,
                 Method::POST,
                 "job/runs",
-                &[(LOG_HEADER, "1")],
+                headers,
                 body.to_vec(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -401,6 +414,7 @@ impl Drive<'_> {
 
     pub(super) async fn delete_on(&self, peer: &JobPeer, attempt: u32) -> Deleted {
         let token = self.token(attempt);
+        let headers = self.run_headers(&token).await;
         let answer = self
             .node
             .job_call_within(
@@ -408,7 +422,7 @@ impl Drive<'_> {
                 peer,
                 Method::DELETE,
                 &self.path(attempt),
-                &[(TOKEN_HEADER, &token)],
+                &headers,
                 Vec::new(),
                 MAX_JOB_STATUS_BYTES,
             )

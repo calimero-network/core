@@ -46,7 +46,6 @@ const BAD_SIGNATURE: &str = "report not signed by the assigned job node";
 const OUTCOME_MISMATCH: &str = "report does not match the outcome";
 const OUTPUTS_MISMATCH: &str = "outputs differ from the report";
 const LOG_MISMATCH: &str = "the log differs from the report";
-const BAD_LOG: &str = "the log is not a file of a job report within the cap";
 const USAGE_MISMATCH: &str = "usage differs from the report";
 const OUTPUT_TAKEN: &str = "output is already a file";
 const BAD_OUTPUT_ID: &str = "output id is not a blob id";
@@ -206,9 +205,9 @@ pub struct RunRecord {
     /// The pool a pipeline step named; its runs go there instead of by memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
-    /// The sealed module log of each attempt that kept one, by attempt; held while the record is.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub logs: BTreeMap<u32, RunInputRef>,
+    /// The sealed module log of the final attempt, if it kept one; held while the record is.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "log")]
+    pub log: Option<RunInputRef>,
 }
 
 /// The step of a pipeline run that a compute run was started for.
@@ -537,7 +536,7 @@ impl AppMachine {
                 pipeline: None,
                 cache_key: None,
                 pool: None,
-                logs: BTreeMap::new(),
+                log: None,
             };
             put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self
@@ -615,14 +614,12 @@ impl AppMachine {
             return Applied::conflict(index, STALE_BASE);
         }
         record.state = entry.outcome.state();
-        let log_ref = entry.log.as_ref().map(|log| RunInputRef {
+        let log = self.kept_log(entry);
+        record.log = log.map(|log| RunInputRef {
             id: log.id.clone(),
             size: log.size,
             sha256: hex::encode(&log.sha256.0),
         });
-        if let Some(log) = &log_ref {
-            let _prev = record.logs.insert(entry.attempt, log.clone());
-        }
         record.final_ = Some(Final {
             attempt: entry.attempt,
             outcome: entry.outcome,
@@ -648,9 +645,9 @@ impl AppMachine {
                 .blobs
                 .add_output(tx, output, entry.ts_ms);
         }
-        if let (Some(log), Some(held)) = (&entry.log, log_ref) {
+        if let (Some(log), Some(held)) = (log, &record.log) {
             self.state.component.blobs.add_log(tx, log, entry.ts_ms);
-            self.pin_inputs(tx, &[held], 1, entry.ts_ms);
+            self.pin_inputs(tx, std::slice::from_ref(held), 1, entry.ts_ms);
         }
         let result = entry.report.as_ref().map_or(&[][..], |r| &r.result[..]);
         Self::write_step_proof(tx, &record, entry);
@@ -712,7 +709,7 @@ impl AppMachine {
         }
         for old in dropped {
             if let Some(record) = get_json::<RunRecord>(tx, rows::CRUN, &old) {
-                let logs: Vec<RunInputRef> = record.logs.into_values().collect();
+                let logs: Vec<RunInputRef> = record.log.into_iter().collect();
                 self.pin_inputs(tx, &logs, -1, ts_ms);
             }
             tx.delete_hidden(rows::CRUN, old.as_bytes());
@@ -739,16 +736,6 @@ impl AppMachine {
                 return Err(OUTPUT_TAKEN);
             }
         }
-        if let Some(log) = &entry.log {
-            let id = parse_hex32(&log.id).filter(|_| log.segment_hashes().is_some());
-            let id = id.filter(|_| log.size <= MAX_RUN_LOG_BYTES as u64);
-            let Some(id) = id else {
-                return Err(BAD_LOG);
-            };
-            if blobs.contains_key(&id) || seen.contains(&id) {
-                return Err(OUTPUT_TAKEN);
-            }
-        }
         if entry.outcome.is_cancel() && !record.cancel_requested {
             return Err(NOT_CANCELLED);
         }
@@ -756,6 +743,17 @@ impl AppMachine {
             Some(reason) => self.check_job_final(record, entry, reason),
             None => Self::check_leader_final(record, entry),
         }
+    }
+
+    /// The entry's log if it can be a new file of the app, else none: a log never refuses a final.
+    /// Every replica judges it on the same state, so all keep it or all drop it.
+    fn kept_log<'a>(&self, entry: &'a FinalEntry) -> Option<&'a FileMark> {
+        let log = entry.log.as_ref()?;
+        let id = parse_hex32(&log.id).filter(|_| log.segment_hashes().is_some())?;
+        let fits = log.size <= MAX_RUN_LOG_BYTES as u64;
+        let taken = self.state.component.blobs.records.contains_key(&id)
+            || entry.outputs.iter().any(|o| o.id == log.id);
+        (fits && !taken).then_some(log)
     }
 
     /// The outputs fit what a run may write: how many, how large each, how large together.

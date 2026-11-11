@@ -221,8 +221,10 @@ impl Drive<'_> {
         let skipped = |why: &str| {
             warn!(app = %app_id, run = %self.rec.run, %why, "a run's log was left out");
         };
-        if log.size > MAX_RUN_LOG_BYTES as u64 {
-            skipped("it is over the cap");
+        let taken = self.g.read_local(|m, _| super::holds_file(m, &log.id))
+            || report.outputs.iter().any(|o| o.id == log.id);
+        if log.size > MAX_RUN_LOG_BYTES as u64 || taken {
+            skipped("it is over the cap or already a file of the app");
             return None;
         }
         let charge = i64::try_from(log.size).ok()?;
@@ -246,7 +248,13 @@ impl Drive<'_> {
             .store_file(&peer, attempt.attempt, log, Held::Log, watch)
             .await;
         let Ok(mark) = stored else {
-            node.discard(app_id, refund);
+            // Its pushed segments go too, once no file of the app lists them.
+            let pushed = Stored {
+                segments: log.segments.clone(),
+                outputs: true,
+                ..refund
+            };
+            node.discard(app_id, pushed);
             skipped("it was not handed over as signed");
             return None;
         };

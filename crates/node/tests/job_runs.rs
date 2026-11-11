@@ -134,18 +134,6 @@ impl JobClient {
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
 
-    /// The assignment as a leader that takes the report's log sends it.
-    async fn post_for_logging(&self, a: &Assignment) -> (u16, Value) {
-        let body = serde_json::to_vec(a).unwrap();
-        let (status, answer) = self
-            .request_with(Method::POST, "job/runs", &[(LOG_HEADER, Some("1"))], body)
-            .await;
-        (
-            status,
-            serde_json::from_slice(&answer).unwrap_or(Value::Null),
-        )
-    }
-
     async fn post(&self, a: &Assignment) -> (u16, Value) {
         let body = serde_json::to_vec(a).unwrap();
         self.json(Method::POST, "job/runs", None, body).await
@@ -1476,33 +1464,38 @@ async fn an_input_that_is_not_its_record_declares_ends_the_run_at_once_as_integr
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_job_node_keeps_the_log_for_a_leader_that_takes_it_and_none_for_one_that_does_not() {
+async fn a_report_carries_its_log_only_in_the_answer_to_a_request_that_asks_for_it() {
     let rig = Rig::start().await;
     let (_a, job) = rig.job(JOB_A).await;
     let (status, answer) = rig.push(&job).await;
     assert_eq!(status, 200, "{answer}");
+    let a = rig.assignment(&job, "per-request", 1, "chatter", DIGEST, &[]);
+    assert_eq!(job.post(&a).await.0, 200);
+    let token = rig.token(&a);
+    let _ = job.finish(&a, &token).await;
 
-    let old = rig.assignment(&job, "no-header", 1, "chatter", DIGEST, &[]);
-    assert_eq!(job.post(&old).await.0, 200);
-    let token = rig.token(&old);
-    let answer = job.finish(&old, &token).await;
-    assert!(report(&answer, &job, &old).log.is_none(), "{answer}");
-    assert!(answer["report"].get("log").is_none(), "{answer}");
-    let path = format!("job/runs/{}/log/key", run_path(&old));
-    let (status, body) = job.json(Method::GET, &path, Some(&token), Vec::new()).await;
-    assert_eq!(
-        (status, body["error"].as_str()),
-        (404, Some("NO_LOG")),
-        "{body}"
-    );
+    // A leader that does not read logs (an older one, or one with an older replica) polls without
+    // the header: the report has no log, and its own signature verifies.
+    let (status, bare) = job.status(&a, &token).await;
+    assert_eq!(status, 200);
+    assert!(report(&bare, &job, &a).log.is_none(), "{bare}");
+    assert!(bare["report"].get("log").is_none(), "{bare}");
 
-    let new = rig.assignment(&job, "header", 1, "chatter", DIGEST, &[]);
-    assert_eq!(job.post_for_logging(&new).await.0, 200);
-    let token = rig.token(&new);
-    let log = report(&job.finish(&new, &token).await, &job, &new)
-        .log
-        .expect("a leader that asked gets the log");
-    let base = format!("job/runs/{}/log", run_path(&new));
+    let path = format!("job/runs/{}", run_path(&a));
+    let (status, bytes) = job
+        .request_with(
+            Method::GET,
+            &path,
+            &[(TOKEN_HEADER, Some(&token)), (LOG_HEADER, Some("1"))],
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let logged: Value = serde_json::from_slice(&bytes).unwrap();
+    let log = report(&logged, &job, &a).log.expect("the log");
+    assert_ne!(logged["signature"], bare["signature"]);
+
+    let base = format!("{path}/log");
     let (status, key) = job
         .json(
             Method::GET,
@@ -1535,4 +1528,15 @@ async fn a_job_node_keeps_the_log_for_a_leader_that_takes_it_and_none_for_one_th
         .request(Method::GET, &format!("{base}/0"), None, Vec::new())
         .await;
     assert_eq!(status, 404, "a wrong token answers as an unknown run");
+
+    let quiet = rig.assignment(&job, "quiet", 1, "quiet", DIGEST, &[]);
+    assert_eq!(job.post(&quiet).await.0, 200);
+    let quiet_token = rig.token(&quiet);
+    let answer = job.finish(&quiet, &quiet_token).await;
+    assert!(report(&answer, &job, &quiet).log.is_none());
+    let path = format!("job/runs/{}/log/key", run_path(&quiet));
+    let (status, body) = job
+        .json(Method::GET, &path, Some(&quiet_token), Vec::new())
+        .await;
+    assert_eq!((status, body["error"].as_str()), (404, Some("NO_LOG")));
 }

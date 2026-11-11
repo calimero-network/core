@@ -220,11 +220,14 @@ Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are k
 A bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
 The sizes and hashes follow the same rule as the single run.
 
-Each attempt where the module ran keeps its log (stdout, stderr and `log` lines, at most 1 MiB, cut with a last line `[log truncated]`) as a sealed file of the app.
-It is not an output: it cannot be published, and it is neither a pipeline output nor an input.
-`GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }` to the app's owner and its organization's members only, and the bytes are read with the files export.
-The logs go with the run's record, and a log the leader cannot fetch as the job node signed it is left out without failing the run.
-`meroctl run logs APP RUN [--attempt N]` prints one, and `meroctl pipeline logs APP RUN --step STEP [--index I]` the log of a step's run.
+A run keeps the log of its final attempt (stdout, stderr and `log` lines) as a sealed file of the app.
+The host keeps at most 64 KiB of log lines per run.
+The log is not an output: it cannot be published, and it is neither a pipeline output nor an input.
+It counts toward the app's file quota and is kept with the last 256 run records.
+`GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, to the app's owner and its organization's members only.
+The bytes are read with the files export.
+A log the leader cannot fetch as the job node signed it is left out, and the run still ends.
+`meroctl run logs APP RUN [--attempt N]` prints it, and `meroctl pipeline logs APP RUN --step STEP [--index I]` prints a step's.
 
 ## Restarts, cancel and caps
 

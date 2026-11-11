@@ -399,11 +399,9 @@ fn ending(
         ReportStatus::Done => (outcome.result, produced),
         ReportStatus::Failed => (Vec::new(), Vec::new()),
     };
-    let log = run
-        .wants_log
-        .then(|| sealed_log(&run.dir, &outcome.logs))
-        .flatten();
-    let report = Report {
+    let log = sealed_log(&run.dir, &outcome.logs);
+    #[allow(unused_mut, reason = "a test may misreport the log")]
+    let mut report = Report {
         app: a.app.clone(),
         run: a.run.clone(),
         attempt: a.attempt,
@@ -420,7 +418,27 @@ fn ending(
             outcome.usage.fuel,
         ),
     };
+    #[cfg(feature = "testing")]
+    if let Some(l) = report
+        .log
+        .as_mut()
+        .filter(|_| job.log_lie.load(Ordering::Relaxed))
+    {
+        l.sha256 = "0".repeat(2 * crate::job_wire::SHA256_LEN);
+    }
     let signature = sign_report(&job.job_key, &run.digest(), &report)?;
+    // A request without the log header gets the report as it was before logs, signed as such.
+    let bare = match report.log {
+        Some(_) => {
+            let bare = Report {
+                log: None,
+                ..report.clone()
+            };
+            let signed = sign_report(&job.job_key, &run.digest(), &bare)?;
+            Some((bare, signed))
+        }
+        None => None,
+    };
     let bytes = kept.iter().chain(&log).map(|p| sealed_len(p.size)).sum();
     let file = |p: SealedFile| OutputFile {
         path: p.path,
@@ -430,6 +448,7 @@ fn ending(
     Ok(Phase::Done(Box::new(Finished {
         report,
         signature,
+        bare,
         outputs,
         log: log.map(file),
         bytes,
@@ -531,6 +550,7 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
         Ok(signature) => Phase::Done(Box::new(Finished {
             report,
             signature,
+            bare: None,
             outputs: Vec::new(),
             log: None,
             bytes: 0,
