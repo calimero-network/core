@@ -19,6 +19,8 @@ A confidential cloud for collaborative apps. Apps are written in Rust or JavaScr
 - **Reproduce first**: write the failing test at the layer a user hits the bug and watch it go red before changing code.
 - **Blind spot**: scenarios and the process suite run one build on fresh state, so they never test backward compatibility; an on-disk or wire format change needs its own migration test.
 - **Feature gate**: a new command or field ships with a feature gate. Old and new nodes share one log through a rollout, and a node skips an entry it cannot decode, so a new log command, or a new field that changes what one does, is a `Feature` in `system::cluster_version::FEATURES` (with the release it ships in) and is refused `409 FEATURE_NOT_ACTIVE` below the cluster version ([The cluster version](docs/src/content/docs/protocol/upgrades.mdx#the-cluster-version)).
+- **Upgrade path**: CI's `Upgrade path` job (required through `Rust`) starts a cluster on the release in `.github/upgrade-from`, writes data, rolls it onto the PR's `merod` as mdma rolls a Cloud cluster and reads it back ([Upgrade path](docs/src/content/docs/contribute/testing.mdx#upgrade-path)); a new kind of stored data gets a case in `crates/node/tests/fault/upgrade_cases/`.
+  A change that turns it red ships a reader or migration for the old data, or declares a hard cutover (`hard-cutover:` in `.github/upgrade-from`, the CHANGELOG, mdma's `release_compat` CUTOVERS); never silently.
 
 ## Definition of Done
 
