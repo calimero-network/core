@@ -31,10 +31,10 @@ use crate::node::MAX_ARGS_BYTES;
 const JOB_RESULT_TTL: Duration = Duration::from_secs(60 * 60); // how long a finished or lost run is kept for its leader to collect
 const AWAITING_INPUTS_TTL: Duration = Duration::from_secs(10 * 60); // how long a run may wait for its inputs before it is dropped
 pub const CANCEL_WAIT: Duration = Duration::from_secs(5); // how long a cancel waits for the run to stop before answering that it still runs
-pub use calimero_app_host::{MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES};
+pub use calimero_app_host::{MAX_PIPELINE_RUN_INPUTS, MAX_RUN_INPUT_BYTES};
 const MAX_ID_BYTES: usize = 256; // longest app, run, method or file id an assignment may carry
 const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for finished runs plus those active and new runs may still hold, past which work is refused
-pub const MAX_ASSIGNMENT_BYTES: usize = 1024 * 1024; // the most a request to assign a run may weigh
+pub const MAX_ASSIGNMENT_BYTES: usize = 8 * 1024 * 1024; // the most a request to assign a run may weigh; a full collect is about 4 MiB
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
 pub const UNKNOWN_RUN: &str = "UNKNOWN_RUN"; // the code of an answer about a run this node does not hold
 pub const NEED_BUNDLE: &str = "NEED_BUNDLE"; // the code of an assignment whose component this node does not hold
@@ -341,7 +341,7 @@ fn check_shape(a: &Assignment) -> Result<(), ApiError> {
             "the budget is zero or over what a run may have",
         ));
     }
-    if a.inputs.len() > MAX_RUN_INPUTS {
+    if a.inputs.len() > MAX_PIPELINE_RUN_INPUTS {
         return Err(ApiError::new(413, "TOO_MANY_INPUTS", "too many inputs"));
     }
     let mut total = 0u64;
@@ -787,6 +787,20 @@ mod tests {
         assert!(input_segments(&input).is_none());
     }
 
+    #[test]
+    fn an_assignment_of_a_full_collect_fits_the_body_limit() {
+        let mut a = sample_assignment();
+        let input = a.inputs[0].clone();
+        a.inputs = (0..MAX_PIPELINE_RUN_INPUTS)
+            .map(|_| RunInput {
+                wrapped: vec![7; 80],
+                ..input.clone()
+            })
+            .collect();
+        let body = serde_json::to_vec(&a).unwrap();
+        assert!(body.len() <= MAX_ASSIGNMENT_BYTES, "{} bytes", body.len());
+    }
+
     fn run(name: &str) -> Arc<Run> {
         let mut a = sample_assignment();
         a.run = name.to_owned();
@@ -969,7 +983,7 @@ mod tests {
             "INPUT_TOO_LARGE"
         );
         assert_eq!(
-            refused(&|a| a.inputs = vec![a.inputs[0].clone(); MAX_RUN_INPUTS + 1]),
+            refused(&|a| a.inputs = vec![a.inputs[0].clone(); MAX_PIPELINE_RUN_INPUTS + 1]),
             "TOO_MANY_INPUTS"
         );
     }

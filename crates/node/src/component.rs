@@ -49,9 +49,10 @@ use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
 
 pub use pipelines::{
-    PipelineCancelEntry, PipelineRun, PipelineStartEntry, PipelineState, StepDecisionEntry,
-    StepRun, StepState, StepStatus, StepVerdict, FINISHED_PIPELINE_RUNS_KEPT, INPUT_NOT_HELD,
-    MAX_ACTIVE_PIPELINE_RUNS, MAX_STEP_RESULT_BYTES, NO_ROOM, TOO_MANY_PIPELINE_RUNS,
+    run_id, FanOut, PipelineCancelEntry, PipelineRun, PipelineStartEntry, PipelineState,
+    StepDecisionEntry, StepRun, StepState, StepStatus, StepVerdict, FINISHED_PIPELINE_RUNS_KEPT,
+    INPUT_NOT_HELD, MAX_ACTIVE_PIPELINE_RUNS, MAX_STEP_RESULTS_BYTES, MAX_STEP_RESULT_BYTES,
+    MAX_STEP_RUNS, NO_ROOM, TOO_MANY_PIPELINE_RUNS,
 };
 pub use runs::{
     Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome,

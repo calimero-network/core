@@ -195,6 +195,7 @@ pub(super) async fn start(
         params,
         caller: p.caller.clone(),
         payer: crate::usage::payer(&app),
+        fail_fast: pipeline.fail_fast,
         ts_ms: 0,
     };
     let a = node

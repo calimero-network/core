@@ -51,13 +51,60 @@ steps:
   b: { method: digest, needs: [a] }
 ";
 
-const FAN: &str = "apiVersion: compute.calimero.network/v1
+const LOTS: &str = "apiVersion: compute.calimero.network/v1
 kind: Pipeline
-name: fan
+name: lots
 inputs:
   docs: { kind: files }
 steps:
-  each: { method: digest, forEach: inputs.docs, maxItems: 4 }
+  each: { method: check, forEach: inputs.docs, maxItems: 200, maxParallel: 6, allowFailures: 5% }
+  all: { method: digest, collect: each.outputs }
+";
+
+const BATCHED: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: batched
+inputs:
+  docs: { kind: files }
+steps:
+  each: { method: check, forEach: inputs.docs, maxItems: 20, batch: 4 }
+";
+
+const EMPTY: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: empty
+steps:
+  none: { method: echo, args: { value: [] } }
+  each: { method: check, forEach: none.outputs, maxItems: 5 }
+";
+
+const SMALL: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: small
+inputs:
+  docs: { kind: files }
+steps:
+  each: { method: check, forEach: inputs.docs, maxItems: 2 }
+";
+
+const EAGER: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: eager
+failFast: true
+steps:
+  bad: { method: burn }
+  slow: { method: spin }
+  later: { method: digest, needs: [slow] }
+";
+
+const RESUME: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: resume
+inputs:
+  docs: { kind: files }
+steps:
+  each: { method: check, forEach: inputs.docs, maxItems: 20, maxParallel: 3 }
+  all: { method: digest, collect: each.outputs }
 ";
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -93,7 +140,12 @@ impl Rig {
             ("pipelines/chain.yaml", CHAIN),
             ("pipelines/broken.yaml", BROKEN),
             ("pipelines/slow.yaml", SLOW),
-            ("pipelines/fan.yaml", FAN),
+            ("pipelines/lots.yaml", LOTS),
+            ("pipelines/batched.yaml", BATCHED),
+            ("pipelines/empty.yaml", EMPTY),
+            ("pipelines/small.yaml", SMALL),
+            ("pipelines/eager.yaml", EAGER),
+            ("pipelines/resume.yaml", RESUME),
         ];
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
@@ -316,17 +368,251 @@ async fn a_failed_step_marks_its_dependents_upstream_failed() {
     assert_eq!(rig.all_records().len(), 1, "only the failed step ran");
 }
 
+fn step_runs(v: &Value, step: &str) -> Vec<String> {
+    v["steps"][step]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn output_ids(v: &Value, step: &str) -> Vec<String> {
+    v["steps"][step]["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+impl Rig {
+    async fn uploads(&self, texts: &[String]) -> Vec<String> {
+        let mut ids = Vec::new();
+        for text in texts {
+            ids.push(self.upload(text.as_bytes()).await);
+        }
+        ids
+    }
+
+    fn active_runs(&self) -> usize {
+        self.leader()
+            .hosted(&self.app)
+            .unwrap()
+            .read_local(|m, _| m.active_runs().len())
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_step_that_fans_out_fails_as_not_yet_supported() {
-    let rig = Rig::start(&[JOB_A]).await;
-    let file = rig.upload(b"some bytes").await;
+async fn a_fan_out_over_many_items_with_a_few_failures_succeeds_with_failures() {
+    let rig = Rig::start(&[JOB_A, JOB_A + 1, JOB_A + 2]).await;
+    let bad = [7, 41, 88];
+    let texts: Vec<String> = (0..100)
+        .map(|i| {
+            if bad.contains(&i) {
+                format!("fail {i}")
+            } else {
+                format!("item {i}")
+            }
+        })
+        .collect();
+    let files = rig.uploads(&texts).await;
     let run = rig
-        .start_run("fan", json!({ "docs": [file] }), json!({}))
+        .start_run("lots", json!({ "docs": files }), json!({}))
+        .await;
+    let started = Instant::now();
+    let mut most = 0;
+    let done = loop {
+        most = most.max(rig.active_runs());
+        let v = rig.run(&run).await;
+        if v["state"] != "running" {
+            break v;
+        }
+        assert!(started.elapsed() < WAIT * 3, "the run did not end: {v}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(done["state"], "succeededWithFailures", "{done}");
+    assert_eq!(done["steps"]["each"]["status"], "succeeded", "{done}");
+    assert_eq!(done["steps"]["each"]["failedItems"], 3, "{done}");
+    assert_eq!(done["steps"]["each"]["fan"]["allowed"], 5);
+    assert!(most <= 6, "at most maxParallel runs at once, saw {most}");
+    let each = step_runs(&done, "each");
+    assert_eq!(each.len(), 100);
+    for (i, r) in each.iter().enumerate() {
+        assert_eq!(r, &format!("{run}.each.{i}"));
+        assert_eq!(
+            rig.record(r).inputs[0].id,
+            files[i],
+            "item {i} is input {i}"
+        );
+    }
+    let outputs = output_ids(&done, "each");
+    assert_eq!(outputs.len(), 97);
+    let all = rig.record(&step_run(&done, "all"));
+    let collected: Vec<&str> = all.inputs.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(
+        collected, outputs,
+        "collect got 97 outputs (over 64) in item order"
+    );
+    assert_eq!(done["steps"]["all"]["status"], "succeeded", "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn batch_groups_items_into_fewer_runs() {
+    let rig = Rig::start(&[JOB_A, JOB_A + 1]).await;
+    let texts: Vec<String> = (0..10).map(|i| format!("item {i}")).collect();
+    let files = rig.uploads(&texts).await;
+    let run = rig
+        .start_run("batched", json!({ "docs": files }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    let runs = step_runs(&done, "each");
+    let sizes: Vec<usize> = runs.iter().map(|r| rig.record(r).inputs.len()).collect();
+    assert_eq!(sizes, [4, 4, 2]);
+    let first: Vec<String> = rig
+        .record(&runs[0])
+        .inputs
+        .iter()
+        .map(|i| i.id.clone())
+        .collect();
+    assert_eq!(first, files[..4]);
+    assert_eq!(done["steps"]["each"]["fan"]["batch"], 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_empty_list_skips_the_step() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.start_run("empty", json!({}), json!({})).await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(done["steps"]["none"]["status"], "succeeded");
+    assert_eq!(done["steps"]["each"]["status"], "skipped", "{done}");
+    assert_eq!(rig.all_records().len(), 1, "only `none` ran");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn more_items_than_max_items_fails_before_any_item_runs() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let files = rig
+        .uploads(&["a".to_owned(), "b".to_owned(), "c".to_owned()])
+        .await;
+    let run = rig
+        .start_run("small", json!({ "docs": files }), json!({}))
         .await;
     let done = rig.ended(&run).await;
     assert_eq!(done["state"], "failed", "{done}");
-    assert_eq!(done["steps"]["each"]["reason"], "NOT_YET_SUPPORTED");
-    assert!(rig.all_records().is_empty());
+    assert_eq!(done["steps"]["each"]["reason"], "TOO_MANY_ITEMS", "{done}");
+    assert!(rig.all_records().is_empty(), "no item ran");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn fail_fast_cancels_the_rest_of_the_run() {
+    let rig = Rig::start(&[JOB_A, JOB_A + 1]).await;
+    let run = rig.start_run("eager", json!({}), json!({})).await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "failed", "{done}");
+    assert_eq!(done["steps"]["bad"]["status"], "failed", "{done}");
+    assert_eq!(done["steps"]["bad"]["reason"], "fuel", "{done}");
+    assert_eq!(done["steps"]["slow"]["status"], "failed", "{done}");
+    assert_eq!(done["steps"]["slow"]["reason"], "cancelled", "{done}");
+    assert_eq!(done["steps"]["later"]["status"], "cancelled", "{done}");
+    let slow = rig.record(&step_run(&done, "slow"));
+    assert_eq!(slow.state, calimero_node::component::RunState::Cancelled);
+    assert!(rig.all_records().iter().all(|r| r.final_.is_some()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pipeline_whose_definition_is_gone_fails() {
+    use calimero_node::component::PipelineStartEntry;
+    use calimero_node::node::CallRequest;
+    use calimero_node::types::Caller;
+    let rig = Rig::start(&[JOB_A]).await;
+    let entry = PipelineStartEntry {
+        id: "gone1".into(),
+        pipeline: "chain".into(),
+        version: "1.0.0".into(),
+        hash: "ab".repeat(32),
+        compute_bundle: sha256_hex(&rig.compute),
+        owner: "alice".into(),
+        steps: vec!["a".into(), "b".into()],
+        inputs: Default::default(),
+        params: Default::default(),
+        caller: Caller::System,
+        payer: "account:alice".into(),
+        fail_fast: false,
+        ts_ms: 0,
+    };
+    let req = CallRequest::host(
+        rig.app.clone(),
+        "__pipeline_start",
+        serde_json::to_value(&entry).unwrap(),
+        Caller::System,
+    );
+    let a = rig.leader().call(&req).await.unwrap();
+    assert!(a.error.is_null(), "{a:?}");
+    let done = rig.ended("gone1").await;
+    assert_eq!(done["state"], "failed", "{done}");
+    for step in ["a", "b"] {
+        assert_eq!(done["steps"][step]["status"], "failed", "{done}");
+        assert_eq!(
+            done["steps"][step]["reason"], "PIPELINE_UNAVAILABLE",
+            "{done}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn killing_the_leader_mid_fan_out_creates_no_run_index_twice() {
+    let mut rig = Rig::start(&[JOB_A, JOB_A + 1]).await;
+    let texts: Vec<String> = (0..12).map(|i| format!("item {i}")).collect();
+    let files = rig.uploads(&texts).await;
+    let run = rig
+        .start_run("resume", json!({ "docs": files }), json!({}))
+        .await;
+    rig.until("some items ran", async || {
+        rig.run(&run).await["steps"]["each"]["runs"]
+            .as_array()
+            .is_some_and(|r| r.len() >= 4)
+    })
+    .await;
+    let old = rig.c.app_leader(&rig.app).unwrap();
+    rig.c.stop(old).await;
+    let alive = usize::from(old == 0);
+    let alice = rig.c.client(alive);
+    let mut pk = rig.pk;
+    let _s = alice.sign_in(&mut pk).await.unwrap();
+    let started = Instant::now();
+    let done = loop {
+        if let Ok(v) = alice.pipeline_run(&rig.app, &run).await {
+            if v["state"] != "running" {
+                break v;
+            }
+        }
+        assert!(
+            started.elapsed() < WAIT * 3,
+            "the run did not end after the leader died"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert_eq!(done["state"], "succeeded", "{done}");
+    let g = rig.c.nodes[alive]
+        .as_ref()
+        .unwrap()
+        .node
+        .hosted(&rig.app)
+        .unwrap();
+    let records = g.read_local(|m, _| m.runs_page(100, None).0);
+    let mut ids: Vec<String> = records.iter().map(|r| r.run.clone()).collect();
+    ids.sort();
+    let mut want: Vec<String> = (0..12).map(|i| format!("{run}.each.{i}")).collect();
+    want.push(format!("{run}.all.0"));
+    want.sort();
+    assert_eq!(ids, want, "every index exactly once");
+    assert_eq!(output_ids(&done, "each").len(), 12);
+    for r in &records {
+        assert!(r.final_.is_some(), "{} has one final", r.run);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

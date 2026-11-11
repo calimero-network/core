@@ -257,9 +257,27 @@ The node judges the request against the pinned pipeline before logging anything:
 The run pins the release's pipeline by hash and its compute component, so an upgrade of the app changes neither a run that started before it.
 A step's work is ordinary compute runs (`RunRecord.pipeline` names the step), so placement, retries, caps, quotas and billing are the run driver's, unchanged.
 Their ids are `<run>.<step>.<index>`, and they have no result method: the step keeps the job's result (at most 64 KiB) and its outputs, which are held until the pipeline run's record is dropped (the last 64 finished runs are kept).
-The leader decides each pending step and logs it as a `pipelineStep` entry (start with its runs, skipped, upstream failed, cancelled, or failed with a code); apply accepts the first decision for a step and nothing after it, so a leader that changes mid-run never runs a step twice.
-A step starts when every step it needs succeeded; one whose need failed is `upstreamFailed`; the run is `succeeded` when every step succeeded or was skipped, `cancelled` when it was cancelled, else `failed`.
-A step that cannot be built fails with `NOT_YET_SUPPORTED` (`forEach`, `collect`), `TOO_MANY_INPUTS` (past 64 files), `ARGS_TOO_LARGE`, `BAD_REF`, `NO_RESULT` or `BAD_RESULT`.
+The leader decides each pending step and logs it as a `pipelineStep` entry (start with its first runs, skipped, upstream failed, cancelled, or failed with a code); apply accepts the first decision for a step, so a leader that changes mid-run never runs a step twice.
+A step starts when every step it needs succeeded; one whose need failed is `upstreamFailed`; the run is `succeeded` when every step succeeded or was skipped, `succeededWithFailures` when besides that a fan-out tolerated failed items, `cancelled` when it was cancelled, else `failed`.
+A step that cannot be built fails with `TOO_MANY_ITEMS`, `TOO_MANY_INPUTS` (past 10,000 files), `ARGS_TOO_LARGE`, `BAD_REF`, `NO_RESULT`, `BAD_RESULT` or `RESULTS_TOO_LARGE`; a pipeline whose definition cannot be found fails its steps with `PIPELINE_UNAVAILABLE`.
+
+### Fan-out
+
+`forEach: inputs.x` makes one item per file of that input, `forEach: <step>.outputs` one per output file of that step in item order, and `forEach: <step>.results` one per result of that fan-out step (each a JSON value).
+No items skips the step, and more than `maxItems` fails it with `TOO_MANY_ITEMS` before any run starts.
+`batch: b` groups the items in order into runs of at most `b`, so a failed run fails all of its items.
+The runs start in waves: the first decision records how many runs the step will have, and a `more` decision starts the next indices while the step runs, so at most `maxParallel` of its runs are active and never more than the app has room for.
+Run ids are `<run>.<step>.<index>`, so a decision repeated after a change of leader changes nothing.
+The input order of a fan-out run is the step's `inputs` references in the order written, with the run's item files where `item` stands, or first when `item` is not listed.
+A step with no `inputs` gets just its item files.
+In `args`, `item` is the item: a result's JSON value, or a file's id (a list of them when `batch` is above 1).
+`<step>.outputs` and `<step>.results` are always in item order, whatever order the runs ended in.
+`collect: <fan-out step>.outputs` is one run whose inputs are all of that step's outputs in item order, then the step's other `inputs`.
+A step keeps its results only while they total at most 1 MiB (`MAX_STEP_RESULTS_BYTES`); past that it still succeeds, but a step that refers to `<step>.results` fails with `RESULTS_TOO_LARGE`.
+`allowFailures` (a count, or a percentage of the items rounded down) lets the step succeed with `failedItems` recorded and only the successful runs' outputs and results kept; one item over it, the step stops creating runs, cancels its active runs and fails.
+Without it any failed item does that.
+`failFast: true` on the pipeline cancels every other step at the first failed one and ends the run `failed`.
+A step's `pool` is not applied yet: its memory picks the pool.
 `GET /apps/{app}/pipeline-runs/{run}` answers the record, `GET /apps/{app}/pipeline-runs` the recent ones, and `POST /apps/{app}/pipeline-runs/{run}/cancel` stops a run.
 Output sizes, hashes and step results are shown only to those who may list the app's files.
 
@@ -279,6 +297,7 @@ A job node exposes no usage series.
 | Fuel of a run | 10^12 | `MAX_COMPUTE_FUEL` |
 | Arguments of a start | 64 KiB | `MAX_COMPUTE_ARGS_BYTES` |
 | Inputs of a run | 64 files, 2 GiB in all | `MAX_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
+| Inputs of a run a pipeline builds | 10,000 files, 2 GiB in all | `MAX_PIPELINE_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
 | One file (input or output) | 2 GiB | `MAX_FILE_BYTES` |
 | All files written by one compute run | 2 GiB | `MAX_COMPUTE_FILE_BYTES` |
 | All files written by one call | 64 MiB | `MAX_RUN_FILE_BYTES` |

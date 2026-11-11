@@ -11,6 +11,11 @@ use calimero_sdk::compute::{self, ComputeOutcome, ComputeStatus, RunId};
 use calimero_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
+#[app::error]
+pub enum Error {
+    Failed,
+}
+
 /// One read or write call's size.
 const PIECE: usize = 64 * 1024;
 
@@ -53,6 +58,25 @@ impl Compute {
     #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_then")]
     pub fn digest_then() -> app::Result<Vec<String>> {
         digest_inputs()
+    }
+
+    /// Copies each input to the output and returns the bytes copied; fails if an input holds
+    /// `fail`.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn check() -> app::Result<u64> {
+        let mut writer = calimero_sdk::files::create()?;
+        let mut total = 0u64;
+        for id in compute::inputs() {
+            let mut bytes = Vec::new();
+            calimero_sdk::files::open(&id)?.read_to_end(&mut bytes)?;
+            if bytes.windows(4).any(|w| w == b"fail") {
+                app::bail!(Error::Failed);
+            }
+            writer.write_all(&bytes)?;
+            total += bytes.len() as u64;
+        }
+        writer.finish()?;
+        Ok(total)
     }
 
     /// Returns its argument, so a pipeline test sees what a step was given.
