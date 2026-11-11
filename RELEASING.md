@@ -32,8 +32,8 @@ section says whether it does), the type picks the version bump:
 | PR title | Release |
 | --- | --- |
 | `feat: ...` | minor |
-| `fix:`, `chore:`, `docs:`, `refactor:`, `perf:` | patch |
-| `test:`, `build:`, `ci:` | none |
+| `fix:`, `chore:`, `refactor:`, `perf:` | patch |
+| `docs:`, `test:`, `build:`, `ci:` | none |
 | `<type>!: ...`, or a `BREAKING-CHANGE:` footer | major |
 
 - Only the hyphenated `BREAKING-CHANGE:` footer keyword makes a major (besides
@@ -45,8 +45,10 @@ section says whether it does), the type picks the version bump:
   `["BREAKING-CHANGE"]`, and prose that says "breaking change" does nothing.
 - Prefer `!` in the title over the footer: the title is visible in review,
   while the squash commit's body is whatever the merge dialog fills in.
-- `chore:` and `docs:` release a patch. A change that must not release
-  anything (CI, tests, build tooling) is `ci:`, `test:` or `build:`.
+- `chore:` releases a patch. A change that must not release anything
+  (documentation, CI, tests, build tooling) is `docs:`, `ci:`, `test:` or
+  `build:`. A change to what users read in the package (a README shipped to
+  npm, docstrings) that should reach them is titled `fix(docs):` (a patch).
 - Choose the type for what the change does to whoever depends on the release,
   not for the size of the diff.
 
