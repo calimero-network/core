@@ -11,12 +11,15 @@ use calimero_identity::Credential;
 use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
     Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
     NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
+
+pub mod cluster_version;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,6 +490,12 @@ pub struct SystemState {
     /// so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_proofs_from: Option<u64>,
+    /// The active cluster version ([`cluster_version`]): the newest core
+    /// release every node supports, logged by the system leader
+    /// (`SetClusterVersion`), only ever raised. `None` until the first.
+    /// Left out when `None`, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_version: Option<String>,
     /// Who may install apps where deployments are granted
     /// ([`Governance::deployments`]), by [`Deployer::key`]
     /// (`account:<id>`, `org:<id>`); [`SystemState::may_deploy`] judges them.
@@ -2109,15 +2118,19 @@ impl SystemState {
                     instances: None,
                     join: None,
                     keep: None,
+                    child_teams: None,
                 })
                 .collect(),
         };
         if specs.len() > MAX_SCOPE_PACKAGES {
             return Err("too many packages in one step");
         }
-        // A package's own `join` decides its team and no other: `shared`
-        // then closes nothing more unless asked, and never one opened here.
-        let per_app = specs.iter().any(|a| a.join.is_some());
+        // A package's own `join` (or `childTeams`) decides its team and no
+        // other: `shared` then closes nothing more unless asked, and never
+        // one opened here.
+        let per_app = specs
+            .iter()
+            .any(|a| a.join.is_some() || a.child_teams.is_some());
         if shared == Some(true) && specs.iter().any(|a| a.join == Some(TeamJoin::Everyone)) {
             return Err("an app team cannot open while the step closes every app team");
         }
@@ -2131,6 +2144,7 @@ impl SystemState {
             reach: BTreeSet<AccountId>,
             join: Option<TeamJoin>,
             keep: Option<BTreeSet<AccountId>>,
+            child_teams: Option<bool>,
         }
         let mut plans: Vec<Plan> = Vec::with_capacity(specs.len());
         for spec in specs {
@@ -2218,6 +2232,7 @@ impl SystemState {
                 reach,
                 join: spec.join,
                 keep,
+                child_teams: spec.child_teams,
             });
         }
         let app_teams = o
@@ -2288,6 +2303,27 @@ impl SystemState {
             };
             seed.extend(all_apps.iter().cloned());
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
+            // Its members make private channels below it, or no longer do,
+            // as the admin says: its default, and every row that sets its
+            // own capabilities (a row added one by one keeps what it got
+            // then). How an app team made before the default held
+            // `CREATE_CHILD_TEAM` gets it.
+            if let Some(on) = plan.child_teams {
+                let set = |c: u32| {
+                    if on {
+                        c | caps::CREATE_CHILD_TEAM
+                    } else {
+                        c & !caps::CREATE_CHILD_TEAM
+                    }
+                };
+                t.default_capabilities = match t.default_capabilities {
+                    None if !on => None,
+                    c => Some(set(c.unwrap_or(0))),
+                };
+                for c in t.capabilities.values_mut() {
+                    *c = set(*c);
+                }
+            }
             let mut added = 0usize;
             for a in &seed {
                 let _back = t.removed.remove(a);
@@ -4403,6 +4439,15 @@ pub struct ScopeApp {
     /// team takes them. They are not barred: opening it again lets them in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<Vec<AccountId>>,
+    /// Whether the app team's members make restricted teams below it
+    /// (private channels): `true` adds `CREATE_CHILD_TEAM` to its default
+    /// capabilities and to every row there that sets its own, `false` takes
+    /// it out of both (absent: as they are, or, for a team made here, as a
+    /// new app team's default). An app team made before that default gets
+    /// it only this way. Naming it on any package leaves `shared` unset to
+    /// mean "no other team", as `join` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_teams: Option<bool>,
 }
 
 /// What an admin consents to when scoping apps (`org:<org> / __scope_apps`):
@@ -4917,6 +4962,18 @@ pub enum SystemCmd {
     /// (genesis sets it in a new one). It only ever tightens: a node that
     /// logs it early takes nothing from anyone.
     RequireSessionProofs,
+    /// The system leader raises the active cluster version
+    /// ([`SystemState::cluster_version`]) to `version`, once every registered
+    /// node advertises it or newer (`nodes`: each one's, by id). Only forward;
+    /// no proof: like `RequireSessionProofs`, it is the nodes' own.
+    SetClusterVersion {
+        version: String,
+        /// As `[[id, version], ...]`: `SystemCmd` is internally tagged, and
+        /// serde reads such an enum through a buffer that keeps a JSON
+        /// object's keys as strings, which a `u64` key does not take.
+        #[serde(with = "cluster_version::node_versions")]
+        nodes: BTreeMap<u64, String>,
+    },
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
@@ -6974,6 +7031,9 @@ impl SystemMachine {
                 s.session_proofs_from = Some(index);
                 Ok(Value::Null)
             }
+            SystemCmd::SetClusterVersion { version, nodes } => {
+                cluster_version::apply(s, version, &nodes)
+            }
             SystemCmd::SetOperatorRelease {
                 version,
                 approved,
@@ -8185,7 +8245,16 @@ impl Machine for SystemMachine {
                 Ok(v) => ok(v),
                 Err(e) => err(&e),
             },
-            Err(e) => err(&format!("malformed command: {e}")),
+            Err(e) => {
+                // A feature gate keeps every entry within what each node
+                // applies (`cluster_version`): one that does not decode here
+                // means a node proposed above it, and this node's state now
+                // differs from the nodes that applied it.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
+                error!(index, error = %e, undecodable = n,
+                    "a system entry this node cannot decode was skipped: its state now differs from the nodes that applied it");
+                err(&format!("malformed command: {e}"))
+            }
         }
     }
 
@@ -10750,6 +10819,7 @@ mod tests {
                 instances: Some(vec!["dm".into()]),
                 join: None,
                 keep: None,
+                child_teams: None,
             }]),
             shared: None,
             nonce: "n".into(),
@@ -10814,6 +10884,7 @@ mod tests {
                         instances: None,
                         join: None,
                         keep: None,
+                        child_teams: None,
                     })
                     .to_vec(),
             ),
@@ -10861,6 +10932,109 @@ mod tests {
         assert_eq!(
             serde_json::to_value(scope(true)).unwrap()["by_release"],
             json!(true)
+        );
+    }
+
+    /// An app team made before its default held `CREATE_CHILD_TEAM` gets it
+    /// only when an admin says so (`ScopeApps` with a package's
+    /// `childTeams`), never on replay or as a side effect: a step without it
+    /// leaves the default and the rows as they are. Naming it decides that
+    /// team alone, as `join` does, so another open app team stays open.
+    #[test]
+    fn an_older_app_team_gets_child_teams_when_an_admin_turns_them_on() {
+        use crate::types::caps;
+
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        chat_org(&mut m);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        // Chat's team as an earlier release made it: inviting, no channels;
+        // Carol's row, added one by one, holds what it got then.
+        let chat = o.teams.get_mut("chat").unwrap();
+        chat.default_capabilities = Some(caps::INVITE_MEMBERS);
+        let _prev = chat.members.insert("carol".into(), false);
+        let _prev = chat
+            .capabilities
+            .insert("carol".into(), caps::INVITE_MEMBERS);
+        let _prev = o.teams.insert(
+            "blocks".into(),
+            serde_json::from_value(json!({
+                "teamId": "blocks", "name": "Blocks", "join": "everyone",
+                "members": { "alice": true },
+                "metadata": { "app": { "package": "com.blocks" } }
+            }))
+            .unwrap(),
+        );
+        let scope = |child_teams: Option<bool>| SystemCmd::ScopeApps {
+            org: "org".into(),
+            apps: Some(vec![super::ScopeApp {
+                package: "com.chat".into(),
+                name: None,
+                instances: Some(vec![]),
+                join: None,
+                keep: None,
+                child_teams,
+            }]),
+            // Absent, a step without `childTeams` would close every app
+            // team here (there are two): this one keeps Blocks open.
+            shared: child_teams.is_none().then_some(false),
+            nonce: "n".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            owner_in_team: true,
+            accounts_in_app_team: true,
+            member_child_teams: true,
+            all_apps_rows: true,
+            by_release: true,
+        };
+        let channel = |id: &str, who: &str| SystemCmd::CreateTeam {
+            org: "org".into(),
+            team_id: id.into(),
+            name: id.into(),
+            parent: Some("chat".into()),
+            join: TeamJoin::Invite,
+            actor: who.into(),
+            member_child_teams: true,
+        };
+        let default = |m: &SystemMachine| m.state.orgs["org"].teams["chat"].default_capabilities;
+        let refused = "not allowed to create this team";
+
+        // Without it (as every entry before it): the default stays, and
+        // Bob and Carol, in Chat, make no channel.
+        let _ok = m.run_authorized(scope(None)).unwrap();
+        assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
+        for who in ["bob", "carol"] {
+            assert_eq!(m.run_authorized(channel(who, who)), Err(refused));
+        }
+
+        // Turned on, the step names Chat alone: both make one (Carol by her
+        // own row too), and Blocks stays open.
+        let _ok = m.run_authorized(scope(Some(true))).unwrap();
+        let both = caps::INVITE_MEMBERS | caps::CREATE_CHILD_TEAM;
+        assert_eq!(default(&m), Some(both));
+        let o = &m.state.orgs["org"];
+        assert_eq!(o.teams["chat"].capabilities["carol"], both);
+        assert_eq!(o.teams["blocks"].join, TeamJoin::Everyone);
+        for who in ["bob", "carol"] {
+            let id = format!("{who}1");
+            let _ok = m.run_authorized(channel(&id, who)).unwrap();
+        }
+
+        // Turned off again: no more.
+        let _ok = m.run_authorized(scope(Some(false))).unwrap();
+        assert_eq!(default(&m), Some(caps::INVITE_MEMBERS));
+        for who in ["bob", "carol"] {
+            let id = format!("{who}2");
+            assert_eq!(m.run_authorized(channel(&id, who)), Err(refused));
+        }
+
+        // An earlier release's entry carries no `childTeams`, and one
+        // without it is logged as before.
+        let logged: super::ScopeApp =
+            serde_json::from_value(json!({ "package": "com.chat" })).unwrap();
+        assert_eq!(logged.child_teams, None);
+        assert_eq!(
+            serde_json::to_value(&logged).unwrap(),
+            json!({ "package": "com.chat" })
         );
     }
 
@@ -11007,6 +11181,7 @@ mod tests {
                 instances: None,
                 join: Some(TeamJoin::Invite),
                 keep: Some(Vec::new()),
+                child_teams: None,
             }]),
             shared: None,
             nonce: "n".into(),

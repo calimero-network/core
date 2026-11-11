@@ -148,6 +148,8 @@ struct Registry {
     response_bytes: BTreeMap<&'static str, u64>,
     /// Raft messages whose addressee did not check out, by [`RaftAddressee`].
     raft_misaddressed: BTreeMap<&'static str, u64>,
+    /// Log entries this node could not decode and skipped, by [`LogKind`].
+    undecodable: [u64; LogKind::ALL.len()],
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
@@ -216,6 +218,33 @@ impl RaftAddressee {
 pub fn raft_misaddressed(reason: RaftAddressee) -> u64 {
     let mut r = registry();
     let n = r.raft_misaddressed.entry(reason.label()).or_default();
+    *n += 1;
+    *n
+}
+
+/// Which log an entry [`undecodable_entry`] counted was in.
+#[derive(Clone, Copy, Debug)]
+pub enum LogKind {
+    System,
+    App,
+}
+
+impl LogKind {
+    const ALL: [Self; 2] = [Self::System, Self::App];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::App => "app",
+        }
+    }
+}
+
+/// Count one log entry this node could not decode and skipped (its state now
+/// differs from the nodes that applied it); returns the count so far for `log`.
+pub fn undecodable_entry(log: LogKind) -> u64 {
+    let mut r = registry();
+    let n = &mut r.undecodable[log as usize];
     *n += 1;
     *n
 }
@@ -429,6 +458,18 @@ pub fn render(out: &mut String) {
         let _w = writeln!(
             out,
             "calimero_http_errors_total{{group=\"{group}\",code=\"{code}\"}} {n}"
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_log_undecodable_entries_total Log entries this node could not decode and skipped, by log (system, app): its state differs from the nodes that applied them. Feature gates keep it at zero; anything else is a bug.\n# TYPE calimero_log_undecodable_entries_total counter"
+    );
+    for log in LogKind::ALL {
+        let n = r.undecodable[log as usize];
+        let _w = writeln!(
+            out,
+            "calimero_log_undecodable_entries_total{{log=\"{}\"}} {n}",
+            log.label()
         );
     }
     let _w = writeln!(

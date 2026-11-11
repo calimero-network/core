@@ -170,7 +170,8 @@ kick, and every 500 ms). On the system leader it also:
 - writes `Genesis` if nothing has;
 - registers configured peers that are not yet in `nodes`;
 - adds every registered replica node that is not in the system group as a **learner**
-  ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted);
+  ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted) and supports the logged cluster version;
+- raises the [cluster version](/protocol/upgrades/#the-cluster-version) once every registered node supports a newer one (`SetClusterVersion`);
 - promotes caught-up learners to voters while there are fewer than three.
 
 On every node it starts the app groups this node is a replica of, stops the
@@ -232,8 +233,10 @@ deliveries, actions) carry no index and run a round of their own.
 
 ## Writes
 
-`Node::sys_write` appends through the system leader: locally if this node
-leads, else by posting the command to the leader's `internal/system` route over
+`Node::sys_write` appends through the system leader, after refusing a
+command that uses a feature above the [cluster
+version](/protocol/upgrades/#the-cluster-version) (`409 FEATURE_NOT_ACTIVE`):
+locally if this node leads, else by posting the command to the leader's `internal/system` route over
 the [peer sealed channel](/protocol/networking/#between-nodes). It retries
 until its 10-second deadline (`SYSTEM_WRITE_TIMEOUT`) to ride out an election,
 then answers `503 UNAVAILABLE` naming the group's leader, voters and the nodes
