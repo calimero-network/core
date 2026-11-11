@@ -197,9 +197,10 @@ const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with th
 /// The refusal when an app names a release that does not ship its bundle.
 const RELEASE_NOT_SHIPPED: &str = "that release does not ship the app's bundle";
 
-/// The refusal when a release ships a WASM another package's release ships.
+/// The refusal when a release ships a WASM a release of another package,
+/// signed by another key, ships.
 pub const SHIPS_IN_OTHER_PACKAGE: &str =
-    "a WASM of this release ships in another package; a WASM belongs to one package";
+    "a WASM of this release ships in another signer's package; a WASM belongs to one signer";
 
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
@@ -1295,15 +1296,22 @@ impl SystemState {
             .filter(move |v| self.sees_release(v, who))
     }
 
-    /// Whether a WASM of `release`, to be installed under `package`, ships in
-    /// a release of another package: a WASM belongs to one package (and so
-    /// to one signer), whose releases alone may name it.
+    /// Whether a WASM of `release`, to be installed under `package` signed by
+    /// `signer_id`, ships in a release of another package signed by another
+    /// key: a WASM belongs to one signer, whose packages alone may name it.
+    /// One signer may ship a WASM in several packages: each instance is
+    /// judged by the release it runs ([`AppRecord::release`]).
     #[must_use]
-    pub fn ships_in_other_package(&self, package: &str, release: &PackageVersion) -> bool {
+    pub fn ships_in_other_package(
+        &self,
+        package: &str,
+        signer_id: &str,
+        release: &PackageVersion,
+    ) -> bool {
         release.parts(package).any(|(hash, _)| {
             self.packages
                 .iter()
-                .filter(|(name, _)| name.as_str() != package)
+                .filter(|(name, p)| name.as_str() != package && p.signer_id != signer_id)
                 .any(|(name, p)| {
                     p.versions
                         .values()
@@ -5468,7 +5476,9 @@ impl SystemMachine {
                         return Ok(json!({ "package": package, "version": release.version }));
                     }
                 }
-                if s.attributes_by_release && s.ships_in_other_package(&package, &release) {
+                if s.attributes_by_release
+                    && s.ships_in_other_package(&package, &signer_id, &release)
+                {
                     return Err(SHIPS_IN_OTHER_PACKAGE);
                 }
                 if s.packages
@@ -12772,14 +12782,16 @@ mod tests {
         assert!(e.contains("not moved"), "never to a publisher release: {e}");
 
         // Replayed before the mark, the bundle's first release judged it.
-        let mut old = SystemMachine::default();
-        old.state = m.state.clone();
+        let mut old = SystemMachine {
+            state: m.state.clone(),
+            ..Default::default()
+        };
         old.state.attributes_by_release = false;
         assert!(may(&old, "own", "pam") && !may(&old, "own", "cora"));
     }
 
-    /// A WASM belongs to one package: a release of another package (so of
-    /// another signer) that ships it is refused, so its signer never gains
+    /// A WASM belongs to one signer: a release of another signer's package
+    /// that ships it is refused, so that signer never gains
     /// the upgrades or the release approvals of the instances that run it.
     /// Where a cluster holds such a release from before, an instance is
     /// judged by the release it runs, and a release installed after an
@@ -12823,12 +12835,14 @@ mod tests {
         };
         let e = m.run_unproven(q("1.0.0", "b1", 0)).unwrap_err();
         assert_eq!(e, SHIPS_IN_OTHER_PACKAGE);
-        assert!(m.state.packages.get("q").is_none());
+        assert!(!m.state.packages.contains_key("q"));
 
         // A cluster that installed one before: the bundle is recorded under
         // `q`, and the instance is still judged by the release it runs.
-        let mut legacy = SystemMachine::default();
-        legacy.state = m.state.clone();
+        let mut legacy = SystemMachine {
+            state: m.state.clone(),
+            ..Default::default()
+        };
         legacy.state.attributes_by_release = false;
         let _ok = legacy.run_unproven(q("1.0.0", "b1", 0)).unwrap();
         if let Some(b) = legacy.state.bundles.get_mut("b1") {
@@ -12870,6 +12884,32 @@ mod tests {
             m.state.approved_releases(&rawapp),
             m.state.orgs.get("cust").map(|o| &o.approved_releases)
         );
+
+        // The same signer may ship the WASM in another package of its own:
+        // each instance is governed by the release it runs.
+        let _ok = m
+            .run_unproven(SystemCmd::InstallPackage {
+                package: "p2".into(),
+                signer_id: signer.clone(),
+                release: serde_json::from_value(json!({
+                    "version": "1.0.0", "mpk": "p2-1", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "installedBy": "pam", "installedAt": 6,
+                    "upgrades": "publisher"
+                }))
+                .unwrap(),
+            })
+            .unwrap();
+        instance_of(
+            &mut m,
+            "twin",
+            "b1",
+            json!({ "package": "p2", "version": "1.0.0" }),
+        );
+        let twin = m.state.apps["twin"].clone();
+        assert!(m.state.may_upgrade(&victim(&m), "cora"));
+        assert!(!m.state.may_upgrade(&victim(&m), "pam"));
+        assert!(m.state.may_upgrade(&twin, "pam"), "p2 says publisher");
+        assert!(!m.state.may_upgrade(&twin, "cora"));
     }
 
     // ------------------------------------------------------------ deployers

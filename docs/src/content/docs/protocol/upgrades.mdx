@@ -64,8 +64,9 @@ and so its approved releases are those of `AppRecord::release`
 same WASM: an instance of an `owner` release stays its owners' even where a
 `publisher` release of the package ships the same WASM, and a release installed
 after an instance took a raw upload of the same WASM takes nothing from its
-owner. A WASM belongs to one package: a release of another package that ships
-it is refused at install. A cluster begun before this rule replays what it
+owner. A WASM belongs to one signer: a release of another signer's package that
+ships it is refused at install. One signer may ship it in several of its
+packages, and each instance is judged by the release it runs. A cluster begun before this rule replays what it
 logged then as it applied it: the first system leader on a release that judges
 by the release writes `AttributeByRelease`, and the rule holds from that entry
 on.

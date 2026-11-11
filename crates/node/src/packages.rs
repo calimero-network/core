@@ -309,6 +309,7 @@ impl Node {
         let shared = self.sys(|s| {
             s.packages.iter().any(|(name, p)| {
                 *name != package
+                    && p.signer_id != signer_id
                     && p.versions.values().any(|v| {
                         v.services
                             .values()

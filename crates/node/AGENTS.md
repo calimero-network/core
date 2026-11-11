@@ -387,9 +387,10 @@ is its command line.
     none (raw upload, by hash, a record from before), the bundle's recorded
     release, only if installed by the time the app took the bundle
     (`created_at`, or its last successful upgrade's `at`). A WASM belongs to
-    one package: `InstallPackage` of a release shipping a WASM another
-    package's release ships is refused (`SHIPS_IN_OTHER_PACKAGE`, `409` in
-    `verify_release`). Both hold from `SystemState::attributes_by_release`
+    one signer: `InstallPackage` of a release shipping a WASM a release of
+    another signer's package ships is refused (`SHIPS_IN_OTHER_PACKAGE`, `409`
+    in `verify_release`); one signer may ship it in several packages, each
+    instance judged by the release it runs. Both hold from `SystemState::attributes_by_release`
     on, set by the `AttributeByRelease` the first system leader on this
     release writes (`reconcile`); entries before it replay judging the
     bundle's first recorded release, as they applied. Regressions:
