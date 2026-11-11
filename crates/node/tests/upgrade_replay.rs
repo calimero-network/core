@@ -30,7 +30,16 @@ const CLUSTER: &str = "upgrade-replay";
 /// The ops token `rv2.py` starts every node with.
 const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
 /// Fields that move on their own and say nothing about the replayed state.
-const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
+/// `developerFuelToday` and `today` are totals of the UTC day the read is made
+/// on, so a replay on a later day than the release's reads starts them at 0.
+const VOLATILE: &[&str] = &[
+    "fresh",
+    "lastActiveAt",
+    "lastActiveDay",
+    "sessions",
+    "developerFuelToday",
+    "today",
+];
 
 /// A receipt's signature covers the answer's log position (below), so it is
 /// another signature over the same state.
