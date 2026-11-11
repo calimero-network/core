@@ -68,7 +68,8 @@ impl Node {
     }
 
     /// Deletes the stored segments no app hosted here lists and nothing pins, once unlisted for
-    /// [`SEGMENT_GRACE`] since first seen so; a pin restarts that time.
+    /// [`SEGMENT_GRACE`] since first seen so (the earliest `now` a sweep saw it unlisted at); a pin
+    /// restarts that time.
     pub fn sweep_segments_at(&self, now: Instant) {
         let stored = match self.engine.list_segments() {
             Ok(stored) => stored,
@@ -95,7 +96,13 @@ impl Node {
                 let _gone = seen.unreferenced.remove(hash);
                 continue;
             }
-            let first = *seen.unreferenced.entry(hash.clone()).or_insert(now);
+            // The earliest sweep that saw it unlisted, whatever order the sweeps' times came in:
+            // a time later than a following sweep's would hold the segment back for good.
+            let first = *seen
+                .unreferenced
+                .entry(hash.clone())
+                .and_modify(|first| *first = (*first).min(now))
+                .or_insert(now);
             if now.saturating_duration_since(first) < SEGMENT_GRACE {
                 continue;
             }

@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Rename an organization**: `POST /orgs/{org}/name { name, confirm? }`
+  (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
+  / { name }`), by its owner or an admin; `403` below admin, `404` outside.
+  Before, an organization kept the name it was created with, and Calimero
+  Home could only show a `displayName` from its metadata. Every reader of the
+  name (`GET /orgs/{org}`, `/auth/me`'s `orgs`, an invite redeemed after)
+  answers the new one. An organization's name is now one line of 1 to 64
+  characters without surrounding spaces, at creation (`POST /orgs` answers
+  `400` otherwise) and on a rename; `CreateOrg` carries `name_fits`, which
+  the API always sets, so an entry an earlier release logged replays taking
+  any name, and names already given stay until renamed.
+
+- **Restore an app from its sealed backup**: `POST /ops/apps/{app}/restore {
+  backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
+  signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a
+  node that holds the backup in its `--backup-dir`. The app moves to a new
+  group that node seeds from the backup (`SystemCmd::RestoreApp`), the other
+  replicas copy it from a snapshot, and `FinishRestore` ends it; meanwhile
+  the app's calls and views answer `409 APP_RESTORING`. What the app wrote
+  after the backup is gone, and it runs the bundle the backup's state ran.
+  Every backup now has a sealed manifest beside it (`….snap.manifest`: app,
+  group, index, SHA-256, backup format 1, the `merod` and mero-tee release
+  that wrote it), bound to the app and file name under a key derived from
+  K_c, so a backup restores only on its own cluster and app; a newer
+  backup format (`UNKNOWN_BACKUP_FORMAT`) or a newer `merod`
+  (`BACKUP_FROM_NEWER_RELEASE`) is refused, and a backup from before
+  manifests (format 0) restores into the group it was taken from. Stored
+  format: `AppRecord.restore` and the `componentRestored` entry and
+  `ComponentHead.idTermBase` are new and left out when unset, so state from
+  before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
+  until every node runs this release. Runbook: operate/runbooks "Restore an
+  app", with backup schedule and RPO/RTO guidance.
+
+- **Every app added later, for a member**: an organization member may hold a
+  standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
+  team made from then on (by `ScopeApps`, by a move into the organization,
+  or a team marked as one) gives them a plain row, so in an organization
+  that keeps its apps apart a new app reaches them though nobody named them.
+  Before, a new app's team held only those named. The owner or an admin gives
+  it on an invite (`POST /orgs/{org}/invites { allApps: true }`, named in the
+  consent) or later (`POST /orgs/{org}/all-apps { account, allApps }`,
+  `SystemCmd::SetAllApps`, a passkey step-up over `__set_all_apps`); it ends
+  with the membership. Apps already there are untouched. `ScopeApps`,
+  `MoveApp` and `UpdateTeam` carry `all_apps_rows`, which the API always
+  sets, so entries an earlier release logged replay as they did; the new
+  fields are left out when empty, so state and invites from before read and
+  write as they did.
+
 ### Fixed
 
 - **Entries apply under this release's rules from a mark on.** Commands carry
@@ -9,7 +59,7 @@
   (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
   `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
   `member_child_teams`, `revoke_api_keys`, `by_release`,
-  `close_drops_below`), so a log it wrote replays as it
+  `close_drops_below`, `all_apps_rows`, `name_fits`), so a log it wrote replays as it
   did, and a new entry was judged by whichever rule it named. The first system
   leader on this release now writes `RequireCurrentRules`
   (`SystemState::current_rules_from`), and from that entry on every such flag
@@ -27,6 +77,11 @@
   the same before anything runs on the app's group and notes a refusal as
   failed (`NOT_IN_RUN`). **Behaviour change**: a run no longer moves an app
   from a newer release of the package back to the run's version.
+- **`GET /ops/quotas` and `GET /ops/pools` read caught-up state**. Each read
+  the node's own system replica as it stood, so an operator who set a quota
+  through the leader and read it back through a follower could see the old
+  value. Both now catch up first (a read index), as other reads do.
+
 - **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
   `ScopeApps`). An instance's package was taken from its component's bundle
   record, which names the first package installed with that WASM, so two

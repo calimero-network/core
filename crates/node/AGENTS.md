@@ -98,6 +98,9 @@ is its command line.
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
+  `__set_all_apps { account, allApps }` (`Org::all_apps`: each app team made
+  after gives them a row; `all_apps_rows` on `ScopeApps`, `MoveApp`,
+  `UpdateTeam`),
   `__set_default_capabilities { capabilities }` (a team's: `{ team,
   capabilities }`, `system::default_capabilities_args`), `__create_invite`,
   `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
@@ -161,7 +164,8 @@ is its command line.
   `old_datadir.rs`). The flags that name an earlier release's rule
   (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
   `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
-  `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`) work the same way: from
+  `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`,
+  `all_apps_rows`, `name_fits`) work the same way: from
   `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
   system leader on this release writes, `reconcile`), `SystemMachine::run`
   reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
@@ -754,7 +758,9 @@ is its command line.
   while a member for an org app, or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
   `Account::passkey_labels` (`POST /auth/passkeys/{cred} { label }`).
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
-  and takes the org's teams, invites and apps. Ownership moves with
+  and takes the org's teams, invites and apps. `POST /orgs/{org}/name`
+  renames it (`RenameOrg`: owner or admin, passkey `__rename_org { name }`,
+  `system::org_name_fits`, as `CreateOrg { name_fits }` checks a new one). Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
 - **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
   `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
@@ -1086,7 +1092,26 @@ is its command line.
   app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
   (`rows::CIDEM`), events a ring of `EVENT_RING` (`rows::EVENT`). The system group
   stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the group's
-  sealed snapshot file; `backup::latest` opens one with K_c.
+  sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
+  group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
+  bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
+  `backup::find` checks one, `backup::latest` opens one with K_c.
+- **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
+  operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
+  signature (`backup::find`, `Found::check_release`, the bundle the backup's head
+  names still installed, `require_current_release`). `SystemCmd::RestoreApp` moves
+  the app to a new group with the receiving node first (`AppRecord.restore`, so
+  `ensure_app_group` forms it with that seed alone and `reconcile` never inits it);
+  the seed `Group::replace_state`s the backup into it (rows opened and sealed again
+  for the new group, hidden keys re-hidden), appends `componentRestored` (sets
+  `ComponentHead::id_term_base` past every restored id term: the new group's terms
+  restart at 1, D52), `snapshot_through` + `purge_log_through` that entry so the
+  others can only catch up from that snapshot, adds them as learners, makes them
+  voters and logs `FinishRestore`. Calls and views answer `409 APP_RESTORING`
+  meanwhile (`restore::refuse_while_restoring`). The old group's files are kept
+  (`reconcile` drops a stopped group's files only for a deleted app). Tests:
+  `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
+  (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -1519,8 +1544,7 @@ API and system group:
 ## Not done yet
 
 keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
-rollback epoch in the attested KMS evidence, snapshot restore into a
-running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
+rollback epoch in the attested KMS evidence, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 

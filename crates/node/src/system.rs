@@ -354,6 +354,16 @@ impl PackageRecord {
     }
 }
 
+/// The rows a `MoveApp` gives, by the flags its entry carries (an entry an
+/// earlier release logged leaves them out, and replays without those rows).
+#[derive(Clone, Copy, Debug)]
+struct MoveRows {
+    /// A new app team gives its members who get every app added later a row.
+    all_apps_rows: bool,
+    /// An `Accounts` instance's people get a row on its closed app team.
+    accounts_in_app_team: bool,
+}
+
 /// Semver order, falling back to the strings for a version that does not parse.
 #[must_use]
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
@@ -603,11 +613,17 @@ pub const ONLY_MANAGERS_TRANSFER: &str =
     "only the app's owner, while a member of its organization, or an organization admin may transfer it";
 /// A refusal: the organization invite is past its expiry.
 pub const INVITE_EXPIRED: &str = "this invite has expired";
+/// A refusal: renaming an organization is its owner's or an admin's.
+pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins rename it";
 /// A refusal: making, changing or dropping an app team, scoping apps, or
 /// creating the first instance of a package without one in an organization
 /// whose apps have app teams, is installing an app there: an admin's.
 pub const ONLY_ADMINS_INSTALL: &str =
     "only the organization's owner and admins install apps in it and change its app teams";
+/// A refusal: a standing grant of every app added later ([`Org::all_apps`]),
+/// by invite or set on a member, is the owner's or an admin's.
+pub const ONLY_ADMINS_ALL_APPS: &str =
+    "only the organization's owner and admins give someone every app added later";
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
@@ -711,6 +727,26 @@ pub fn deployment_name_fits(name: &str) -> Result<(), &'static str> {
         || name.chars().any(char::is_control)
     {
         return Err("a deployment's name is 1 to 64 characters on one line");
+    }
+    Ok(())
+}
+
+/// The longest organization name, in characters.
+pub const MAX_ORG_NAME_CHARS: usize = 64;
+
+/// An organization's name, as it is created ([`SystemCmd::CreateOrg`]) and
+/// renamed ([`SystemCmd::RenameOrg`]): what its members and invitees read,
+/// one line of at most [`MAX_ORG_NAME_CHARS`] characters.
+///
+/// # Errors
+/// Empty, too long, padded or holding a control character.
+pub fn org_name_fits(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty()
+        || name.trim() != name
+        || name.chars().count() > MAX_ORG_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err("an organization's name is 1 to 64 characters on one line");
     }
     Ok(())
 }
@@ -1632,6 +1668,7 @@ impl SystemState {
         }
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
         let unchanged = o.members.get(account).is_some_and(|r| *r >= inv.role)
+            && (!inv.all_apps || o.all_apps.contains(account))
             && inv.teams.iter().all(|t| {
                 o.teams
                     .get(t)
@@ -1653,6 +1690,9 @@ impl SystemState {
             .copied()
             .map_or(inv.role, |r| r.max(inv.role));
         let _prev = o.members.insert(account.to_owned(), role);
+        if inv.all_apps {
+            let _new = o.all_apps.insert(account.to_owned());
+        }
         for t in &inv.teams {
             if let Some(team) = o.teams.get_mut(t) {
                 let _prev = team.members.entry(account.to_owned()).or_insert(false);
@@ -2037,6 +2077,8 @@ struct ScopeAsLogged {
     accounts_in_app_team: bool,
     /// A new app team's default holds `CREATE_CHILD_TEAM`.
     member_child_teams: bool,
+    /// A new app team gives its `all_apps` members a row.
+    all_apps_rows: bool,
     /// An instance's package is the one its release names
     /// ([`SystemState::instance_package`]).
     by_release: bool,
@@ -2234,11 +2276,19 @@ impl SystemState {
                     id
                 }
             };
+            // A new app team is an app added to the organization: whoever
+            // gets every app added later is in it, and stays in on a close
+            // with a list.
+            let all_apps: BTreeSet<AccountId> = if created && logged.all_apps_rows {
+                o.all_apps_members().into_iter().collect()
+            } else {
+                BTreeSet::new()
+            };
             // Closing with a list: the people the admin keeps, whoever
             // reaches the moved instances or not (the other rows go below).
             // Otherwise everyone who reaches them, and, closing, everyone in
             // the team now.
-            let seed: BTreeSet<AccountId> = match (&plan.keep, plan.join) {
+            let mut seed: BTreeSet<AccountId> = match (&plan.keep, plan.join) {
                 (Some(keep), _) => keep.clone(),
                 (None, Some(TeamJoin::Invite)) => {
                     let mut all = plan.reach.clone();
@@ -2247,6 +2297,7 @@ impl SystemState {
                 }
                 (None, _) => plan.reach.clone(),
             };
+            seed.extend(all_apps.iter().cloned());
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
             let mut added = 0usize;
             for a in &seed {
@@ -2273,7 +2324,9 @@ impl SystemState {
                         let out: Vec<AccountId> = t
                             .members
                             .iter()
-                            .filter(|(a, lead)| !**lead && !keep.contains(*a))
+                            .filter(|(a, lead)| {
+                                !**lead && !keep.contains(*a) && !all_apps.contains(*a)
+                            })
                             .map(|(a, _)| a.clone())
                             .collect();
                         for a in &out {
@@ -2393,9 +2446,14 @@ impl SystemState {
         bring_members: bool,
         nonce: &str,
         actor: &str,
-        accounts_in_app_team: bool,
+        rows: MoveRows,
     ) -> Result<Value, &'static str> {
         use crate::types::{caps, OrgMode};
+
+        let MoveRows {
+            all_apps_rows,
+            accounts_in_app_team,
+        } = rows;
 
         let app = self.apps.get(app_id).ok_or("no such app")?;
         let from = app.org.clone();
@@ -2523,6 +2581,13 @@ impl SystemState {
                 .values()
                 .filter(|t| t.app_package().is_some())
                 .all(|t| t.join == TeamJoin::Invite);
+        // An app team made here is an app added to the target: whoever
+        // there gets every app added later has a row on it.
+        let all_apps = if all_apps_rows {
+            target.all_apps_members()
+        } else {
+            Vec::new()
+        };
         // An `Accounts` instance (a DM, a private list) of a package whose
         // app team in the target is closed is reached there only by those in
         // that team: who comes along, and its owner, get a row on it, as
@@ -2584,7 +2649,13 @@ impl SystemState {
                 }
             };
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
-            for m in reached.iter().map(|(m, _)| m).chain(owner_keeps.iter()) {
+            let new_team = if created { all_apps.as_slice() } else { &[] };
+            for m in reached
+                .iter()
+                .map(|(m, _)| m)
+                .chain(owner_keeps.iter())
+                .chain(new_team)
+            {
                 let _back = t.removed.remove(m);
                 let _row = t.members.entry(m.clone()).or_insert(false);
             }
@@ -3461,6 +3532,18 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::RenameOrg {
+            org,
+            name,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("org:{org}"), "__rename_org", &|a| {
+                *a == json!({ "name": name })
+            })?;
+            Ok(Some(used))
+        }
         // Credentials: the account's own passkey consent. A new passkey is
         // approved by one the account already has (`consent_of` reads the
         // passkeys as they stand, without the new one).
@@ -3831,6 +3914,20 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::SetAllApps {
+            org,
+            account,
+            all_apps,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = all_apps_args(account, *all_apps);
+            states(&st, &format!("org:{org}"), "__set_all_apps", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
         SystemCmd::SetDefaultCapabilities {
             org,
             team,
@@ -4081,6 +4178,17 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             }
             Err("the consent is for another change")
         }
+        SystemCmd::RestoreApp {
+            app_id,
+            source,
+            proof,
+            ..
+        } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            states(&st, app_id, "__restore_app", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -4168,20 +4276,32 @@ impl SystemCmd {
                 accounts_in_app_team,
                 member_child_teams,
                 by_release,
+                all_apps_rows,
                 ..
             } => {
                 *owner_in_team = true;
                 *accounts_in_app_team = true;
                 *member_child_teams = true;
                 *by_release = true;
+                *all_apps_rows = true;
             }
             Self::UpdateTeam {
-                close_drops_below, ..
-            } => *close_drops_below = true,
+                close_drops_below,
+                all_apps_rows,
+                ..
+            } => {
+                *close_drops_below = true;
+                *all_apps_rows = true;
+            }
             Self::MoveApp {
                 accounts_in_app_team,
+                all_apps_rows,
                 ..
-            } => *accounts_in_app_team = true,
+            } => {
+                *accounts_in_app_team = true;
+                *all_apps_rows = true;
+            }
+            Self::CreateOrg { name_fits, .. } => *name_fits = true,
             Self::CreateTeam {
                 member_child_teams, ..
             } => *member_child_teams = true,
@@ -4236,13 +4356,26 @@ pub fn account_args(account: &Account, refresh: Option<&RefreshGrant>) -> Value 
 /// ([`crate::proof::invite_key`]) and its terms.
 #[must_use]
 pub fn invite_args(invite_key: &str, invite: &Invite) -> Value {
-    json!({
+    let mut args = json!({
         "inviteKey": invite_key,
         "role": invite.role,
         "teams": invite.teams,
         "expiresAt": invite.expires_at,
         "uses": invite.uses_left,
-    })
+    });
+    // Named only when it is given, so an invite without it is consented to
+    // in the bytes it was before.
+    if invite.all_apps {
+        args["allApps"] = json!(true);
+    }
+    args
+}
+
+/// What a person consents to when giving a member every app added later, or
+/// stopping it (`__set_all_apps`).
+#[must_use]
+pub fn all_apps_args(account: &str, all_apps: bool) -> Value {
+    json!({ "account": account, "allApps": all_apps })
 }
 
 /// What a person consents to when setting default capabilities
@@ -4486,6 +4619,12 @@ pub enum SystemCmd {
         /// ([`app_team_id`]), so every replica makes the same one.
         #[serde(default)]
         nonce: String,
+        /// An app team made in the target gives a row to each of its members
+        /// who gets every app added later ([`crate::types::Org::all_apps`]).
+        /// The API always sets it; absent (`false`) in an entry an earlier
+        /// release logged, which replays filling the rows it filled then.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all_apps_rows: bool,
         /// An `Accounts` instance whose package has a closed app team in the
         /// target is reached there only through that team
         /// ([`SystemState::may_reach`]): who comes along with it, and its
@@ -4542,6 +4681,28 @@ pub enum SystemCmd {
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,
+    },
+    /// The operator restores an app from its sealed backup
+    /// (`<app> / __restore_app / { backup, sha256 }`, `crate::backup`): the
+    /// app moves to a new group, which `replicas[0]` seeds from the backup
+    /// before it adds the others ([`crate::types::PendingRestore`]), and runs
+    /// the bundle the backup's state names.
+    RestoreApp {
+        app_id: AppId,
+        replicas: Vec<u64>,
+        bundle: String,
+        #[serde(default)]
+        compute_bundle: Option<String>,
+        source: crate::types::RestoreSource,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The seed of a restore holds the backup in `group` on every replica:
+    /// the app takes calls again.
+    FinishRestore {
+        app_id: AppId,
+        group: u64,
     },
     SetAccess {
         app_id: AppId,
@@ -4767,6 +4928,23 @@ pub enum SystemCmd {
         /// When it was created (Unix seconds; the recovery key's `setAt`).
         #[serde(default)]
         at: u64,
+        /// The name must fit ([`org_name_fits`]). The API always sets it;
+        /// absent (`false`) in an entry an earlier release logged, which
+        /// replays taking any name, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        name_fits: bool,
+    },
+    /// Rename an organization: its owner or an admin, with their passkey
+    /// consent (`org:<org> / __rename_org / { name }`), to a name that fits
+    /// as a new one's must ([`org_name_fits`]). Every reader of the name
+    /// (the organization, `/auth/me`, an invite redeemed later) answers the
+    /// new one: nothing else keeps a copy.
+    RenameOrg {
+        org: OrgId,
+        name: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
     },
     /// The cluster's rules, from the first leader's configuration. Accepted
     /// once, before anyone has an account: after that they are fixed, so an
@@ -5162,6 +5340,12 @@ pub enum SystemCmd {
         #[serde(default)]
         metadata: Option<Value>,
         actor: AccountId,
+        /// A team marked as an app team here gives a row to each member who
+        /// gets every app added later ([`crate::types::Org::all_apps`]). The
+        /// API always sets it; absent (`false`) in an entry an earlier
+        /// release logged, which replays adding no rows, as it did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all_apps_rows: bool,
         /// Closing the team (`join: invite`) takes, from whoever loses it
         /// then (someone in it by inheritance alone), their direct rows in
         /// the teams below it, as a removal from the team does, so a private
@@ -5195,6 +5379,19 @@ pub enum SystemCmd {
         capabilities: u32,
         actor: AccountId,
         /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Give a member every app added to the organization from now on
+    /// (`all_apps: true`, [`crate::types::Org::all_apps`]), or stop it: the
+    /// owner's or an admin's, with their passkey consent (`org:<org> /
+    /// __set_all_apps / { account, allApps }`). Apps already there are not
+    /// touched.
+    SetAllApps {
+        org: OrgId,
+        account: AccountId,
+        all_apps: bool,
+        actor: AccountId,
         #[serde(default)]
         consent: Value,
     },
@@ -5308,6 +5505,13 @@ pub enum SystemCmd {
         /// logged, which replays making the default it made then.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         member_child_teams: bool,
+        /// A new app team gives a row to each member who gets every app
+        /// added later ([`crate::types::Org::all_apps`]), kept on a close
+        /// with a list too. The API always sets it; absent (`false`) in an
+        /// entry an earlier release logged, which replays filling the rows
+        /// it filled then.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all_apps_rows: bool,
         /// An instance belongs to the package its release names
         /// (`AppRecord::release`), not the one its component's bundle record
         /// names: two packages may ship a byte-identical component. The API
@@ -5824,6 +6028,7 @@ impl SystemMachine {
                 }
                 s.next_group = s.next_group.max(1) + 1;
                 app.group = s.next_group;
+                app.restore = None;
                 let out =
                     json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
                 let _prev = s.apps.insert(app.app_id.clone(), app);
@@ -6080,6 +6285,7 @@ impl SystemMachine {
                 actor,
                 bring_members,
                 nonce,
+                all_apps_rows,
                 accounts_in_app_team,
                 ..
             } => s.move_app(
@@ -6088,7 +6294,10 @@ impl SystemMachine {
                 bring_members,
                 &nonce,
                 &actor,
-                accounts_in_app_team,
+                MoveRows {
+                    all_apps_rows,
+                    accounts_in_app_team,
+                },
             ),
             SystemCmd::DeleteApp {
                 app_id,
@@ -6212,6 +6421,54 @@ impl SystemMachine {
             } => {
                 let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 app.replicas = replicas;
+                Ok(Value::Null)
+            }
+            SystemCmd::RestoreApp {
+                app_id,
+                replicas,
+                bundle,
+                compute_bundle,
+                source,
+                ..
+            } => {
+                if !s.bundles.contains_key(&bundle) {
+                    return Err(RESTORE_BUNDLE_GONE);
+                }
+                if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
+                }
+                let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
+                let Some(&seed) = replicas.first() else {
+                    return Err("a restore names its replicas");
+                };
+                if distinct.len() != replicas.len()
+                    || replicas.iter().any(|id| s.replica_node(id).is_none())
+                {
+                    return Err("a restore's replicas are distinct registered nodes");
+                }
+                if !s.apps.contains_key(&app_id) {
+                    return Err("no such app");
+                }
+                let group = s.next_group.max(1) + 1;
+                s.next_group = group;
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                if app.bundle != bundle {
+                    // Inferred from the bundle again (`report::release_of_bundle`).
+                    app.release = None;
+                }
+                app.bundle = bundle;
+                app.compute_bundle = compute_bundle;
+                app.group = group;
+                app.replicas = replicas;
+                app.restore = Some(crate::types::PendingRestore { seed, source });
+                Ok(json!({ "group": group }))
+            }
+            SystemCmd::FinishRestore { app_id, group } => {
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                if app.group != group || app.restore.is_none() {
+                    return Err("no restore of that app into that group is under way");
+                }
+                app.restore = None;
                 Ok(Value::Null)
             }
             SystemCmd::SetAccess {
@@ -6722,9 +6979,13 @@ impl SystemMachine {
                 release,
                 recovery_key,
                 at,
+                name_fits,
             } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
+                }
+                if name_fits {
+                    org_name_fits(&name)?;
                 }
                 let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
                 if s.orgs.contains_key(&org_id) {
@@ -6755,6 +7016,7 @@ impl SystemMachine {
                         member_metadata: BTreeMap::new(),
                         upgrade_runs: BTreeMap::new(),
                         recovery,
+                        all_apps: BTreeSet::new(),
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -7256,6 +7518,17 @@ impl SystemMachine {
                 }
                 Ok(json!({ "apps": apps }))
             }
+            SystemCmd::RenameOrg {
+                org, name, actor, ..
+            } => {
+                let o = self.org_mut(&org)?;
+                if o.role(&actor) < Some(OrgRole::Admin) {
+                    return Err(ONLY_ADMINS_RENAME);
+                }
+                org_name_fits(&name)?;
+                o.name.clone_from(&name);
+                Ok(json!({ "orgId": org, "name": name }))
+            }
             SystemCmd::SetOrgMetadata {
                 org,
                 metadata,
@@ -7386,6 +7659,7 @@ impl SystemMachine {
                 let _prev = o.members.remove(&account);
                 let _caps = o.capabilities.remove(&account);
                 let _meta = o.member_metadata.remove(&account);
+                let _all = o.all_apps.remove(&account);
                 for t in o.teams.values_mut() {
                     let _prev = t.members.remove(&account);
                     let _was = t.read_only.remove(&account);
@@ -7522,6 +7796,7 @@ impl SystemMachine {
                 parent,
                 metadata,
                 actor,
+                all_apps_rows,
                 close_drops_below,
             } => {
                 let o = self.org_mut(&org)?;
@@ -7586,6 +7861,14 @@ impl SystemMachine {
                         }
                     }
                 }
+                // Marked as an app team now: an app added to the organization.
+                // Someone removed from the team before keeps out of it.
+                let all_apps =
+                    if all_apps_rows && package_before.is_none() && package_after.is_some() {
+                        o.all_apps_members()
+                    } else {
+                        Vec::new()
+                    };
                 // Who is in it before a close: those who lose it go from the
                 // teams below too.
                 let closing = close_drops_below && join == Some(TeamJoin::Invite);
@@ -7599,6 +7882,11 @@ impl SystemMachine {
                     Vec::new()
                 };
                 let t = o.teams.get_mut(&team).ok_or("no such team")?;
+                for a in all_apps {
+                    if !t.removed.contains(&a) {
+                        let _row = t.members.entry(a).or_insert(false);
+                    }
+                }
                 if let Some(n) = name {
                     t.name = n;
                 }
@@ -7671,6 +7959,27 @@ impl SystemMachine {
                         }
                         let _prev = o.capabilities.insert(account, capabilities);
                     }
+                }
+                Ok(Value::Null)
+            }
+            SystemCmd::SetAllApps {
+                org,
+                account,
+                all_apps,
+                actor,
+                ..
+            } => {
+                let o = self.org_mut(&org)?;
+                if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
+                    return Err(ONLY_ADMINS_ALL_APPS);
+                }
+                if o.role(&account).is_none() {
+                    return Err("not a member");
+                }
+                if all_apps {
+                    let _new = o.all_apps.insert(account);
+                } else {
+                    let _was = o.all_apps.remove(&account);
                 }
                 Ok(Value::Null)
             }
@@ -7773,6 +8082,9 @@ impl SystemMachine {
                 if invite.role > role || (invite.role == OrgRole::Owner) {
                     return Err("cannot invite above your own role");
                 }
+                if invite.all_apps && role < OrgRole::Admin {
+                    return Err(ONLY_ADMINS_ALL_APPS);
+                }
                 if s.sign_up_invites.contains_key(&invite_key) {
                     return Err("invite exists");
                 }
@@ -7822,6 +8134,7 @@ impl SystemMachine {
                 owner_in_team,
                 accounts_in_app_team,
                 member_child_teams,
+                all_apps_rows,
                 by_release,
                 ..
             } => s.scope_apps(
@@ -7834,6 +8147,7 @@ impl SystemMachine {
                     owner_in_team,
                     accounts_in_app_team,
                     member_child_teams,
+                    all_apps_rows,
                     by_release,
                 },
             ),
@@ -7916,6 +8230,7 @@ impl SystemMachine {
                     let _prev = o.members.remove(a);
                     let _caps = o.capabilities.remove(a);
                     let _meta = o.member_metadata.remove(a);
+                    let _all = o.all_apps.remove(a);
                     for t in o.teams.values_mut() {
                         let _prev = t.members.remove(a);
                         let _was = t.read_only.remove(a);
@@ -7947,6 +8262,9 @@ pub const NO_ACCOUNT_RECOVERY_PENDING: &str = "no recovery of this account is un
 pub const NO_RECOVERY_KEY: &str = "this organization has no recovery key";
 /// A refusal: a recovery is under way already.
 pub const RECOVERY_PENDING: &str = "a recovery of this organization is under way";
+/// A refusal: the bundle a backup's state runs is no longer installed.
+pub const RESTORE_BUNDLE_GONE: &str =
+    "the bundle the backup's state runs is no longer installed: install that release again first";
 /// A refusal: no recovery under way for that account.
 pub const NO_RECOVERY_PENDING: &str =
     "no recovery of this organization is under way for that account";
@@ -8554,6 +8872,7 @@ mod tests {
             parent,
             metadata: None,
             actor: "a".into(),
+            all_apps_rows: true,
             close_drops_below: true,
         };
         let round = |cmd: &SystemCmd| -> SystemCmd {
@@ -10042,6 +10361,118 @@ mod tests {
         assert!(m.run(set(carried, &a)).is_err(), "replayed");
     }
 
+    /// An organization is renamed by its owner or an admin with their
+    /// passkey consent over exactly the new name, once; a member below
+    /// admin and someone outside it are refused, and so is a name that
+    /// would not make an organization.
+    #[test]
+    fn an_organization_is_renamed_with_an_admins_passkey() {
+        let (mut m, mut alice, mut bob, mut carol) = proven_cluster();
+        let rename = |actor: &str, name: &str, consent: Value| SystemCmd::RenameOrg {
+            org: "org".into(),
+            name: name.into(),
+            actor: actor.into(),
+            consent,
+        };
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__rename_org"),
+            &json!({ "name": "Docs Labs" }),
+            &json!({ "name": "Other" }),
+            |c| rename("alice", "Docs Labs", c),
+        );
+        assert_eq!(m.state.orgs["org"].name, "Docs Labs");
+        for (actor, pk) in [("bob", &mut bob), ("carol", &mut carol)] {
+            let c = consent(pk, "org:org", "__rename_org", &json!({ "name": "Mine" }));
+            assert_eq!(
+                m.run(rename(actor, "Mine", c)).unwrap_err(),
+                super::ONLY_ADMINS_RENAME,
+                "{actor}"
+            );
+        }
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Admin);
+        for bad in [
+            String::new(),
+            " Docs".to_owned(),
+            "Do\ncs".to_owned(),
+            "x".repeat(super::MAX_ORG_NAME_CHARS + 1),
+        ] {
+            assert!(
+                m.run_unproven(rename("bob", &bad, Value::Null)).is_err(),
+                "{bad:?}"
+            );
+        }
+        let long = "y".repeat(super::MAX_ORG_NAME_CHARS);
+        let c = consent(
+            &mut bob,
+            "org:org",
+            "__rename_org",
+            &json!({ "name": long }),
+        );
+        let out = m.run(rename("bob", &long, c)).unwrap();
+        assert_eq!(out, json!({ "orgId": "org", "name": long }));
+        assert_eq!(m.state.orgs["org"].name, long);
+    }
+
+    /// A `CreateOrg` an earlier release logged (no `name_fits`) replays
+    /// taking any name, as that release did; one the API logs now refuses a
+    /// name that does not fit, and the flag is left out when false, so an
+    /// entry from before writes as it did.
+    #[test]
+    fn a_create_org_entry_from_before_takes_any_name() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let cmd: SystemCmd = serde_json::from_value(json!({
+            "op": "createOrg", "org_id": "o1", "name": " padded ", "actor": "alice"
+        }))
+        .unwrap();
+        let back = serde_json::to_value(&cmd).unwrap();
+        assert!(back.get("name_fits").is_none(), "{back}");
+        let _ok = m.run_unproven(cmd).unwrap();
+        assert_eq!(m.state.orgs["o1"].name, " padded ");
+        let create = |id: &str, name: &str| SystemCmd::CreateOrg {
+            org_id: id.into(),
+            name: name.into(),
+            actor: "alice".into(),
+            release: None,
+            recovery_key: None,
+            at: 0,
+            name_fits: true,
+        };
+        assert!(m.run_unproven(create("o2", " padded ")).is_err());
+        assert!(!m.state.orgs.contains_key("o2"));
+        let _ok = m.run_unproven(create("o2", "Fits")).unwrap();
+        assert_eq!(m.state.orgs["o2"].name, "Fits");
+    }
+
+    /// From the current-rules mark on, a `CreateOrg` without `name_fits` is
+    /// judged as the API logs it now: a name that does not fit is refused.
+    /// Before the mark it replays taking any name.
+    #[test]
+    fn a_create_org_after_the_current_rules_mark_needs_a_name_that_fits() {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let old = |id: &str| -> SystemCmd {
+            serde_json::from_value(json!({
+                "op": "createOrg", "org_id": id, "name": " padded ", "actor": "alice"
+            }))
+            .unwrap()
+        };
+        m.index = 10;
+        let _ok = m.run(old("before")).unwrap();
+        assert_eq!(m.state.orgs["before"].name, " padded ");
+        m.index = 11;
+        let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+        m.index = 12;
+        assert!(m.run(old("after")).is_err());
+        assert!(!m.state.orgs.contains_key("after"));
+    }
+
     /// Membership changes apply only with the actor's passkey consent over
     /// exactly that change, once; a member leaving consents too.
     #[test]
@@ -10685,6 +11116,7 @@ mod tests {
             owner_in_team: true,
             accounts_in_app_team: flag,
             member_child_teams: true,
+            all_apps_rows: true,
             by_release: true,
         };
         let rows = |m: &SystemMachine| -> Vec<String> {
@@ -10750,6 +11182,7 @@ mod tests {
             owner_in_team: true,
             accounts_in_app_team: true,
             member_child_teams: true,
+            all_apps_rows: true,
             by_release: flag,
         };
         // The team each instance is on after the step.
@@ -10787,6 +11220,238 @@ mod tests {
             serde_json::to_value(scope(true)).unwrap()["by_release"],
             json!(true)
         );
+    }
+
+    /// A standing grant of every app added later is the owner's or an
+    /// admin's: set on a member with their passkey consent over exactly
+    /// that, once, and minted on an invite only by them. Redeeming such an
+    /// invite gives it (and is a change, so it spends a use even for a
+    /// member at the invite's role); removal from the organization ends it.
+    /// An invite without it is consented to in the bytes it was before.
+    #[test]
+    fn every_app_added_later_is_an_admins_to_give() {
+        let (mut m, mut alice, _bob, _carol) = proven_cluster();
+        let set = |actor: &str, account: &str, on: bool, consent: Value| SystemCmd::SetAllApps {
+            org: "org".into(),
+            account: account.into(),
+            all_apps: on,
+            actor: actor.into(),
+            consent,
+        };
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__set_all_apps"),
+            &super::all_apps_args("bob", true),
+            &super::all_apps_args("bob", false),
+            |c| set("alice", "bob", true, c),
+        );
+        assert!(m.state.orgs["org"].all_apps.contains("bob"));
+        assert_eq!(
+            m.run_unproven(set("bob", "bob", false, Value::Null)),
+            Err(super::ONLY_ADMINS_ALL_APPS.to_owned())
+        );
+        assert!(m
+            .run_unproven(set("alice", "carol", true, Value::Null))
+            .is_err());
+        let _ok = m
+            .run_unproven(set("alice", "bob", false, Value::Null))
+            .unwrap();
+        assert!(m.state.orgs["org"].all_apps.is_empty());
+
+        // Invites: only an admin's carries it, and only then is it named.
+        let invite = |all_apps: bool| -> crate::types::Invite {
+            serde_json::from_value(json!({
+                "org": "org", "role": "member", "expiresAt": 100, "usesLeft": 2,
+                "allApps": all_apps,
+            }))
+            .unwrap()
+        };
+        assert!(super::invite_args("k", &invite(false))
+            .get("allApps")
+            .is_none());
+        assert_eq!(super::invite_args("k", &invite(true))["allApps"], true);
+        let create = |actor: &str, token: &str| SystemCmd::CreateInvite {
+            invite_key: crate::proof::invite_key(token),
+            invite: invite(true),
+            actor: actor.into(),
+            consent: Value::Null,
+            teams_seen: true,
+        };
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o
+            .capabilities
+            .insert("bob".into(), crate::types::caps::INVITE_MEMBERS);
+        assert_eq!(
+            m.run_unproven(create("bob", "by-bob")),
+            Err(super::ONLY_ADMINS_ALL_APPS.to_owned())
+        );
+        let _ok = m.run_unproven(create("alice", "all")).unwrap();
+        // Bob, a member already, redeems it: a change, so a use is spent.
+        let _ok = m.run_unproven(redemption("all", "bob", 1)).unwrap();
+        let key = crate::proof::invite_key("all");
+        assert_eq!(m.state.invites[&key].uses_left, 1);
+        assert!(m.state.orgs["org"].all_apps.contains("bob"));
+        // Again: nothing changes, nothing is spent.
+        let _ok = m.run_unproven(redemption("all", "bob", 2)).unwrap();
+        assert_eq!(m.state.invites[&key].uses_left, 1);
+        // Removed from the organization, the grant goes with them.
+        let _ok = m
+            .run_unproven(SystemCmd::RemoveOrgMember {
+                org: "org".into(),
+                account: "bob".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            })
+            .unwrap();
+        assert!(m.state.orgs["org"].all_apps.is_empty());
+        let back = serde_json::to_value(&m.state.orgs["org"]).unwrap();
+        assert!(back.get("allApps").is_none(), "{back}");
+    }
+
+    /// Each app team made from now on gives a row to the members who get
+    /// every app added later, whoever else it names: one `ScopeApps` makes
+    /// (closed with an empty list, too), one a move makes in the target, and
+    /// a team marked as an app team (unless they were removed from it). An
+    /// app team already there gets nobody. The same entries as an earlier
+    /// release logged them (no `all_apps_rows`) replay filling no such rows.
+    #[test]
+    fn a_new_app_team_gives_its_all_apps_members_a_row() {
+        let fresh = || {
+            let (mut m, _alice, _bob, _carol) = proven_cluster();
+            chat_org(&mut m);
+            let s = &mut m.state;
+            let _prev = s.bundles.insert(
+                "bn".into(),
+                serde_json::from_value(json!({
+                    "hash": "bn", "size": 1, "uploadedBy": "alice",
+                    "package": { "package": "com.notes", "version": "1.0.0" }
+                }))
+                .unwrap(),
+            );
+            let _prev = s.packages.insert(
+                "com.notes".into(),
+                serde_json::from_value(json!({
+                    "name": "com.notes", "signerId": "did:key:zN", "owner": "alice",
+                    "versions": { "1.0.0": {
+                        "version": "1.0.0", "mpk": "00", "mpkSize": 1, "source": "upload",
+                        "services": { "": "bn" }, "installedBy": "alice", "installedAt": 0
+                    } }
+                }))
+                .unwrap(),
+            );
+            let _prev = s.apps.insert(
+                "notes".into(),
+                serde_json::from_value(json!({
+                    "appId": "notes", "name": "notes", "group": 8, "bundle": "bn",
+                    "owner": "alice", "org": "org", "access": { "kind": "org" },
+                    "replicas": [1, 2, 3], "createdAt": 0
+                }))
+                .unwrap(),
+            );
+            let _new = s
+                .orgs
+                .get_mut("org")
+                .unwrap()
+                .all_apps
+                .insert("dave".into());
+            m
+        };
+        let closed = |package: &str, flag: bool| SystemCmd::ScopeApps {
+            org: "org".into(),
+            apps: Some(vec![super::ScopeApp {
+                package: package.into(),
+                name: None,
+                instances: None,
+                join: Some(TeamJoin::Invite),
+                keep: Some(Vec::new()),
+            }]),
+            shared: None,
+            nonce: "n".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            owner_in_team: true,
+            accounts_in_app_team: true,
+            member_child_teams: true,
+            all_apps_rows: flag,
+            by_release: true,
+        };
+        for flag in [true, false] {
+            let mut m = fresh();
+            let out = m.run_unproven(closed("com.notes", flag)).unwrap();
+            let team = out["teams"][0]["teamId"].as_str().unwrap().to_owned();
+            let s = &m.state;
+            let t = &s.orgs["org"].teams[&team];
+            assert_eq!(t.join, TeamJoin::Invite);
+            assert_eq!(t.members.contains_key("dave"), flag, "{flag}");
+            assert_eq!(s.may_reach(&s.apps["notes"], Some("dave")), flag, "{flag}");
+            assert!(!s.may_reach(&s.apps["notes"], Some("carol")));
+        }
+        // Chat's team was there already: closing it again adds nobody.
+        let mut m = fresh();
+        let _instance = m.state.apps.insert("chat".into(), {
+            let mut a = m.state.apps["notes"].clone();
+            a.app_id = "chat".into();
+            a.bundle = "bc".into();
+            a
+        });
+        let _ok = m.run_unproven(closed("com.chat", true)).unwrap();
+        assert!(!m.state.orgs["org"].teams["chat"]
+            .members
+            .contains_key("dave"));
+
+        // A team marked as an app team now.
+        let mark = |team: &str, flag: bool| SystemCmd::UpdateTeam {
+            org: "org".into(),
+            team: team.into(),
+            name: None,
+            join: None,
+            parent: None,
+            metadata: Some(json!({ "app": { "package": "com.notes" } })),
+            actor: "alice".into(),
+            all_apps_rows: flag,
+            close_drops_below: true,
+        };
+        for flag in [true, false] {
+            let mut m = fresh();
+            let _ok = m.run_unproven(mark("t", flag)).unwrap();
+            let t = &m.state.orgs["org"].teams["t"];
+            assert_eq!(t.members.contains_key("dave"), flag, "{flag}");
+        }
+        let mut m = fresh();
+        let _new = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .teams
+            .get_mut("t")
+            .unwrap()
+            .removed
+            .insert("dave".into());
+        let _ok = m.run_unproven(mark("t", true)).unwrap();
+        assert!(!m.state.orgs["org"].teams["t"].members.contains_key("dave"));
+
+        // A move into an organization makes its app team there.
+        for flag in [true, false] {
+            let (mut m, _alice, _bob) = moving();
+            let target = m.state.orgs.get_mut("new").unwrap();
+            let _prev = target.members.insert("bob".into(), OrgRole::Member);
+            let _prev = target.members.insert("carol".into(), OrgRole::Member);
+            let _new = target.all_apps.insert("carol".into());
+            let mut cmd = move_app("oa", "new", "alice", false, Value::Null);
+            if let SystemCmd::MoveApp { all_apps_rows, .. } = &mut cmd {
+                *all_apps_rows = flag;
+            }
+            let out = m.run_unproven(cmd).unwrap();
+            let team = out["access"]["team"].as_str().unwrap();
+            let t = &m.state.orgs["new"].teams[team];
+            assert_eq!(t.members.contains_key("carol"), flag, "{flag}");
+            assert!(t.members.contains_key("bob"), "the owner, as before");
+        }
+        // As an earlier release logged them, without the flag: left out.
+        let back = serde_json::to_value(closed("com.notes", false)).unwrap();
+        assert!(back.get("all_apps_rows").is_none(), "{back}");
     }
 
     /// `org` (alice its owner, bob, carol and dave members) with Chat's
@@ -10955,6 +11620,7 @@ mod tests {
             parent: None,
             metadata: None,
             actor: "alice".into(),
+            all_apps_rows: true,
             close_drops_below: flag,
         };
         let mut m = fresh();
@@ -11121,6 +11787,7 @@ mod tests {
             consent,
             bring_members: bring,
             nonce: "n".into(),
+            all_apps_rows: true,
             accounts_in_app_team: true,
         }
     }
@@ -12465,6 +13132,97 @@ mod tests {
             "the final step replayed"
         );
         assert_eq!(m.state.apps["app"].replicas, [4, 3, 2]);
+    }
+
+    /// A restore is the operator's decision over one backup (`<app> /
+    /// __restore_app / { backup, sha256 }`), spent once. It moves the app to
+    /// a new group seeded by its first replica, on the bundle the backup's
+    /// state runs, and only the seed's `FinishRestore` for that group ends it.
+    #[test]
+    fn a_restore_is_signed_over_its_backup_and_ends_in_its_own_group() {
+        let (mut m, ..) = proven_cluster();
+        // The fixture puts the app in group 2 directly; `CreateApp` would have
+        // allocated that group and left `next_group` at it.
+        m.state.next_group = m.state.apps["app"].group;
+        let _prev = m.state.bundles.insert(
+            "b0".into(),
+            serde_json::from_value(json!({ "hash": "b0", "size": 1, "uploadedBy": "alice" }))
+                .unwrap(),
+        );
+        let source = |name: &str| crate::types::RestoreSource {
+            name: name.into(),
+            sha256: "ab".into(),
+            index: 7,
+        };
+        let restore =
+            |bundle: &str, replicas: &[u64], proof: &serde_json::Value| SystemCmd::RestoreApp {
+                app_id: "app".into(),
+                replicas: replicas.to_vec(),
+                bundle: bundle.into(),
+                compute_bundle: None,
+                source: source("7.2.x.snap"),
+                proof: proof.clone(),
+            };
+        let args = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
+        let proof = signed("app", "__restore_app", &args);
+        assert!(m
+            .run(restore("b0", &[2, 1, 3], &serde_json::Value::Null))
+            .is_err());
+        let other = signed(
+            "app",
+            "__restore_app",
+            &json!({ "backup": "8.2.x.snap", "sha256": "ab" }),
+        );
+        assert!(
+            m.run(restore("b0", &[2, 1, 3], &other)).is_err(),
+            "another backup"
+        );
+        let elsewhere = signed("other", "__restore_app", &args);
+        assert!(
+            m.run(restore("b0", &[2, 1, 3], &elsewhere)).is_err(),
+            "another app"
+        );
+        assert_eq!(
+            m.run(restore("gone", &[2, 1, 3], &proof)).unwrap_err(),
+            crate::system::RESTORE_BUNDLE_GONE
+        );
+        assert!(
+            m.run(restore("b0", &[2, 9], &proof)).is_err(),
+            "an unknown node"
+        );
+        assert!(
+            m.run(restore("b0", &[2, 2], &proof)).is_err(),
+            "a node twice"
+        );
+
+        let before = m.state.apps["app"].group;
+        let out = m.run(restore("b0", &[2, 1, 3], &proof)).unwrap();
+        let app = m.state.apps["app"].clone();
+        assert_eq!(out["group"], json!(app.group));
+        assert!(app.group > before && app.group == m.state.next_group);
+        assert_eq!(
+            (app.bundle.as_str(), app.replicas.as_slice()),
+            ("b0", &[2, 1, 3][..])
+        );
+        assert_eq!(
+            app.restore,
+            Some(crate::types::PendingRestore {
+                seed: 2,
+                source: source("7.2.x.snap")
+            })
+        );
+        assert_eq!(
+            m.run(restore("b0", &[2, 1, 3], &proof)).unwrap_err(),
+            "that consent was used already"
+        );
+        let finish = |group: u64| SystemCmd::FinishRestore {
+            app_id: "app".into(),
+            group,
+        };
+        assert!(m.run(finish(before)).is_err(), "the group before");
+        let _ok = m.run(finish(app.group)).unwrap();
+        assert_eq!(m.state.apps["app"].restore, None);
+        assert!(m.run(finish(app.group)).is_err(), "nothing under way");
     }
 
     /// An organization of `who` (account -> role), each holding `caps`
@@ -14230,6 +14988,7 @@ mod tests {
                 release: None,
                 recovery_key: None,
                 at: 0,
+                name_fits: true,
             })
             .unwrap();
         let _prev = m.state.publishers.insert(
