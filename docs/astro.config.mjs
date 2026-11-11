@@ -166,6 +166,7 @@ export default defineConfig({
                 'operate/config',
                 { label: 'Node API', slug: 'operate/admin-api' },
                 { label: 'Authentication', slug: 'operate/auth' },
+                'operate/compatibility',
               ],
             },
           ],
