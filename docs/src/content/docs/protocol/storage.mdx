@@ -71,7 +71,8 @@ The **system group** keeps its state in memory and writes one checkpoint row
 
 ## Snapshot files
 
-A snapshot is `snapshots/<…>.snap`: a magic line (`CALIMERO-SNAPSHOT-1`), then
+A snapshot is `snapshots/<…>.snap`: a first line naming its format
+(`CALIMERO-SNAPSHOT-1`, [Format versions](#format-versions)), then
 frames of up to about 1 MiB of rows each, each frame sealed with associated
 data naming the group, the snapshot id, the frame's position and whether it is
 the last. It is written from a consistent RocksDB view, so a large state is
@@ -89,6 +90,37 @@ backup against its manifest; `backup::latest` opens the newest one with K_c and
 returns its index and rows. A restore writes a backup's rows into a new group
 (`Group::replace_state`): each row is opened and sealed again for that group,
 and a hidden key is hidden again under it.
+
+## Format versions
+
+Each container of what a node keeps names the format it was written in, so a
+node tells "an older format, which needs its reader" from "damaged", and
+refuses what a later release wrote instead of misreading it:
+
+| Container | Where the version is | This release | Unmarked (written before markers) |
+| --- | --- | --- | --- |
+| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 1 | format 0: every release up to 1.0.0-rc.15, the same rows as format 1 |
+| Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 1 | none: every file so far says 1 |
+| A component app's log entries (with the outcomes and file marks they carry) | `{"v":<n>,` as the start of the entry (`component::ENTRY_FORMAT`) | 1 | format 1: no entry so far carries a marker |
+| Sealed files and their segments | the domain strings the chunk AAD and the file id are bound to (`calimero.file.v1`, `calimero.file.segments.v1`) | v1 | none |
+
+The store's format is settled when the engine opens it, before any group
+starts: a store marked newer than this release reads is refused (`the store is
+in format N, which a later release wrote`), and the node does not start; an
+older one is brought forward one registered step at a time, the marker written
+after each step, so a crash part way resumes where it stopped; an empty store
+takes the current format. A snapshot or backup of a later format is refused
+by its first line, and an app entry of a later format applies as a no-op that
+names its format on every replica of this release (the release that raises the
+entry format writes it only once every replica of the group reads it).
+
+Changing a row, a snapshot's framing or an entry's meaning raises the matching
+number in the same change and keeps a reader (a migration step, or the old
+shape's decoder) for what is already written; a change with no reader is a
+hard cutover, declared in `CHANGELOG.md` and in mdma's release compatibility
+table before it ships. The
+`format` row shows under the node's own rows (group `18446744073709551615`) in
+`merod inspect` with the key.
 
 ## Migration from the previous format
 
