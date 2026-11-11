@@ -356,15 +356,18 @@ impl Cluster {
     /// Registers `addr` as job node `id` through `/ops/nodes` and waits until
     /// the first node's directory shows it.
     pub async fn register_job_node(&self, id: u64, addr: &str) {
+        self.register_job_node_in(id, addr, None).await;
+    }
+
+    /// [`Cluster::register_job_node`] into the pool `pool` names.
+    pub async fn register_job_node_in(&self, id: u64, addr: &str, pool: Option<&str>) {
         let ops = self.client(0);
         ops.use_api_key("ops-secret").await;
-        let _ = ops_signed(
-            &ops,
-            "ops/nodes",
-            serde_json::json!({ "id": id, "addr": addr, "role": "job" }),
-        )
-        .await
-        .unwrap();
+        let mut body = serde_json::json!({ "id": id, "addr": addr, "role": "job" });
+        if let Some(pool) = pool {
+            body["pool"] = pool.into();
+        }
+        let _ = ops_signed(&ops, "ops/nodes", body).await.unwrap();
         let node = &self.nodes[0].as_ref().unwrap().node;
         for _ in 0..100 {
             if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {

@@ -198,6 +198,9 @@ pub struct RunRecord {
     /// The step cache key of a pipeline step run; a done run writes its entry under it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_key: Option<String>,
+    /// The pool a pipeline step named; its runs go there instead of by memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// The step of a pipeline run that a compute run was started for.
@@ -526,6 +529,7 @@ impl AppMachine {
                 final_: None,
                 pipeline: None,
                 cache_key: None,
+                pool: None,
             };
             Self::write_run(tx, &record);
             let _new = self

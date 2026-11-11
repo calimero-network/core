@@ -277,7 +277,9 @@ A step keeps its results only while they total at most 1 MiB (`MAX_STEP_RESULTS_
 `allowFailures` (a count, or a percentage of the items rounded down) lets the step succeed with `failedItems` recorded and only the successful runs' outputs and results kept; one item over it, the step stops creating runs, cancels its active runs and fails.
 Without it any failed item does that.
 `failFast: true` on the pipeline cancels every other step at the first failed one and ends the run `failed`.
-A step's `pool` is not applied yet: its memory picks the pool.
+A step's `pool` places its runs: they take places on that pool's job nodes only, and a run whose pool has no job node waits.
+A step without `pool` is placed by its memory, in the smallest pool that fits.
+A named pool is used only once every node runs this release; until then its runs are placed by memory.
 `GET /apps/{app}/pipeline-runs/{run}` answers the record, `GET /apps/{app}/pipeline-runs` the recent ones, and `POST /apps/{app}/pipeline-runs/{run}/cancel` stops a run.
 Output sizes, hashes and step results are shown only to those who may list the app's files.
 

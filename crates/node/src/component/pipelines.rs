@@ -371,6 +371,9 @@ pub struct StepRun {
     /// The step cache key the leader made for this run; none when the step has `cache: false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_key: Option<String>,
+    /// The pool the step names; none places the run by its memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// What the leader decided for a pending step.
@@ -911,6 +914,7 @@ impl AppMachine {
                     index: u32::try_from(index).unwrap_or(u32::MAX),
                 }),
                 cache_key: r.cache_key.clone(),
+                pool: r.pool.clone(),
             };
             Self::write_run(tx, &record);
             let _new = self.state.component.head.active_runs.insert(r.run.clone());
