@@ -1284,7 +1284,7 @@ impl Drive<'_> {
                 };
                 let ts_ms = node.stamp(m);
                 let (id_term, id_seq) =
-                    node.next_id(self.g.id(), leadership.term, m.state.component.head.last_id);
+                    node.next_id(self.g.id(), leadership.term, &m.state.component.head);
                 *built = Some((id_term, id_seq));
                 let has_result = prepared
                     .abi

@@ -658,6 +658,87 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
     }
 }
 
+/// Replace a disk machine's state with the rows of a snapshot file this
+/// cluster wrote for group `from` (a backup), keeping where the group stands
+/// in its log. Each row is opened and sealed again for the group, and a hidden
+/// key is hidden again under it, so a backup of one group seeds another. The
+/// rows go to the next generation, which the group switches to in one batch,
+/// as a snapshot install does; the snapshot the group served is dropped, as it
+/// holds the state before. Answers how many rows it wrote.
+///
+/// Only the group's sole voter may do this: every other replica would keep
+/// the state before (`calimero_log::Group::replace_state`).
+pub(crate) fn replace_state<M: Machine>(
+    state: &GroupState,
+    shared: &Shared<M>,
+    from: GroupId,
+    snapshot_id: &str,
+    path: &std::path::Path,
+) -> eyre::Result<u64> {
+    if M::IN_MEMORY {
+        eyre::bail!("an in-memory machine's state changes only through its log");
+    }
+    let db = &state.db;
+    let group = state.group;
+    let old = state.generation.load(Ordering::Acquire);
+    let next = old.wrapping_add(1);
+    db.drop_generation(group, next)?;
+    let mut batch = Transaction::default();
+    let mut pending = 0_usize;
+    let mut rows = 0_u64;
+    let read = read_frames(
+        &db.snapshot_sealer,
+        from,
+        snapshot_id,
+        std::fs::File::open(path)?,
+        |key, sealed| {
+            let plain = db.open_state(from, key, sealed)?;
+            let key = rehide(db, from, group, key, &plain);
+            db.stage_state(&mut batch, group, next, &key, Some(&plain))?;
+            pending += key.len() + plain.len();
+            rows += 1;
+            if pending >= INSTALL_BATCH_BYTES {
+                db.commit(&batch, false)?;
+                batch = Transaction::default();
+                pending = 0;
+            }
+            Ok(())
+        },
+    );
+    if let Err(e) = read.and_then(|()| db.commit(&batch, false)) {
+        let _ = db.drop_generation(group, next);
+        return Err(e);
+    }
+    {
+        let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
+        let mut switch = Transaction::default();
+        db.stage_meta(&mut switch, group, "generation", &next)?;
+        db.commit(&switch, true)?;
+        state.generation.store(next, Ordering::Release);
+        st.machine.restore(&[])?;
+    }
+    db.drop_generation(group, old)?;
+    if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
+        db.drop_meta(group, "snapshot")?;
+        let _removed = std::fs::remove_file(db.snapshot_dir.join(&served.file));
+    }
+    Ok(rows)
+}
+
+/// Where a row of group `from` lives in group `to`: a hidden key (its row is an
+/// HMAC over the group, the tag and the key, [`crate::store::hide`]) is hidden
+/// again under `to`; any other key stays as it is.
+fn rehide(db: &Db, from: GroupId, to: GroupId, key: &[u8], plain: &[u8]) -> Vec<u8> {
+    use crate::store::{hide, unwrap_hidden, HIDDEN_LEN};
+    let (Some(tag), Some((inner, _))) = (key.first(), unwrap_hidden(plain)) else {
+        return key.to_vec();
+    };
+    if from == to || key.len() != HIDDEN_LEN || hide(&db.hider, from, *tag, inner) != key {
+        return key.to_vec();
+    }
+    hide(&db.hider, to, *tag, inner)
+}
+
 /// The file of the snapshot a group serves, and the index it is at.
 pub(crate) fn current_snapshot_file(
     db: &Db,
