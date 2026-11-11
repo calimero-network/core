@@ -4,6 +4,17 @@
 
 ### Added
 
+- **An admin turns on private channels for an app team made before #4906.**
+  #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
+  nothing changes an existing team's capabilities on replay. `POST
+  /orgs/{org}/app-teams` now takes, per package, `childTeams`: `true` adds
+  `CREATE_CHILD_TEAM` to the app team's default and to every row there that
+  sets its own capabilities, `false` takes it out of both. Like `join`, naming
+  it leaves an absent `shared` meaning "no other team", so `{ apps: [{
+  package, instances: [], childTeams: true }] }` changes nothing else; one
+  passkey covers every package named. `ScopeApp` carries `child_teams`
+  (absent in entries an earlier release logged, which replay as they did).
+
 - **One account in several teams with one approval.** Calimero Home's "give
   all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
   step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
