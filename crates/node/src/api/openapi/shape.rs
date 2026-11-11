@@ -209,8 +209,11 @@ impl Shape {
     pub(super) fn schema(&self) -> Value {
         match self {
             Self::String => json!({ "type": "string" }),
-            Self::Int => json!({ "type": "integer" }),
-            Self::Uint => json!({ "type": "integer", "minimum": 0 }),
+            // `int64`, so typed clients read them into a 64-bit integer (Kotlin's `Long`,
+            // Swift's `Int64`); the registry's integers are Rust `u64`, `u32` and `i64`. A
+            // value that may pass 2^53 travels as a decimal string (`u64`) instead.
+            Self::Int => json!({ "type": "integer", "format": "int64" }),
+            Self::Uint => json!({ "type": "integer", "format": "int64", "minimum": 0 }),
             Self::Number => json!({ "type": "number" }),
             Self::Bool => json!({ "type": "boolean" }),
             Self::Null => json!({ "type": "null" }),
@@ -220,8 +223,14 @@ impl Shape {
                 "pattern": "^(0|[1-9][0-9]*)$",
                 "description": "an unsigned 64-bit integer as a decimal string (D20)",
             }),
-            Self::B64url => json!({ "type": "string", "contentEncoding": "base64url" }),
-            Self::Lit(s) => json!({ "const": s }),
+            // Not `format: byte`, which is standard base64 (RFC 4648 section 4) with padding.
+            Self::B64url => json!({
+                "type": "string",
+                "contentEncoding": "base64url",
+                "description": "base64url (RFC 4648 section 5) without padding",
+            }),
+            // A one-value enum, not `const`, which some generators type as a bare string.
+            Self::Lit(s) => json!({ "type": "string", "enum": [s] }),
             Self::Ref(name) => json!({ "$ref": format!("#/components/schemas/{name}") }),
             Self::List(item) => json!({ "type": "array", "items": item.schema() }),
             Self::Object(fields, rest) => {
@@ -240,30 +249,65 @@ impl Shape {
                 if !required.is_empty() {
                     schema["required"] = Value::Array(required);
                 }
-                if let Some(rest) = rest {
-                    schema["additionalProperties"] = rest.schema();
+                match rest.as_deref() {
+                    // Any other property, of any shape: `true` (not `{}`).
+                    Some(Self::Any) => {
+                        schema["additionalProperties"] = json!(true);
+                        if !fields.is_empty() {
+                            schema["description"] = json!(
+                                "Other properties than those listed may be present: the ones listed are those clients rely on."
+                            );
+                        }
+                    }
+                    Some(rest) => schema["additionalProperties"] = rest.schema(),
+                    None => {}
                 }
                 schema
             }
             Self::OneOf(alts) => {
-                if alts.iter().all(|a| matches!(a, Self::Lit(_))) {
-                    let values: Vec<Value> = alts
+                let nullable = alts.contains(&Self::Null);
+                let some: Vec<&Self> = alts.iter().filter(|a| **a != Self::Null).collect();
+                if some.iter().all(|a| matches!(a, Self::Lit(_))) {
+                    let mut values: Vec<Value> = some
                         .iter()
                         .filter_map(|a| match a {
                             Self::Lit(s) => Some(Value::String(s.clone())),
                             _ => None,
                         })
                         .collect();
-                    return json!({ "type": "string", "enum": values });
+                    if !nullable {
+                        return json!({ "type": "string", "enum": values });
+                    }
+                    values.push(Value::Null);
+                    return json!({ "type": ["string", "null"], "enum": values });
+                }
+                // One type or null: OpenAPI 3.1's `type: [T, "null"]`, which generators make
+                // an optional of. A `$ref` (no `type` of its own) stays an `anyOf`.
+                if let ([one], true) = (some.as_slice(), nullable) {
+                    let mut schema = one.schema();
+                    if let Some(Value::String(t)) = schema.get("type").cloned() {
+                        schema["type"] = json!([t, "null"]);
+                        return schema;
+                    }
                 }
                 // Objects are exclusive alternatives (a tagged or externally named enum):
                 // `oneOf`, which generators make a union of; anything else may overlap.
-                let key = if alts.iter().all(|a| matches!(a, Self::Object(..))) {
-                    "oneOf"
-                } else {
-                    "anyOf"
-                };
-                json!({ key: alts.iter().map(Self::schema).collect::<Vec<_>>() })
+                if alts.iter().all(|a| matches!(a, Self::Object(..))) {
+                    let mut schema =
+                        json!({ "oneOf": alts.iter().map(Self::schema).collect::<Vec<_>>() });
+                    // Each alternative names itself in a required `kind`: say so, or a
+                    // generator takes the first that fits and drops the others' fields.
+                    let tagged = alts.iter().all(|a| {
+                        a.fields().iter().any(|f| {
+                            f.name == "kind" && !f.optional && matches!(f.shape, Self::Lit(_))
+                        })
+                    });
+                    if tagged {
+                        schema["discriminator"] = json!({ "propertyName": "kind" });
+                    }
+                    return schema;
+                }
+                json!({ "anyOf": alts.iter().map(Self::schema).collect::<Vec<_>>() })
             }
         }
     }
@@ -300,6 +344,46 @@ impl Shape {
         }
     }
 
+    /// Whether `v` is a value of this shape; `refs` resolves `#Name`. An object is closed: a
+    /// property it does not name is refused unless it has `[string]: shape`.
+    pub(super) fn admits(&self, v: &Value, refs: &dyn Fn(&str) -> Shape) -> bool {
+        match self {
+            Self::String | Self::B64url => v.is_string(),
+            Self::Int => v.is_i64() || v.is_u64(),
+            Self::Uint => v.is_u64(),
+            Self::Number => v.is_number(),
+            Self::Bool => v.is_boolean(),
+            Self::Null => v.is_null(),
+            Self::Any => true,
+            Self::U64 => v.as_str().is_some_and(|s| {
+                s == "0"
+                    || (!s.is_empty()
+                        && !s.starts_with('0')
+                        && s.bytes().all(|b| b.is_ascii_digit()))
+            }),
+            Self::Lit(s) => v.as_str() == Some(s.as_str()),
+            Self::Ref(name) => refs(name).admits(v, refs),
+            Self::List(item) => v
+                .as_array()
+                .is_some_and(|a| a.iter().all(|x| item.admits(x, refs))),
+            Self::Object(fields, rest) => {
+                let Some(obj) = v.as_object() else {
+                    return false;
+                };
+                let named = fields.iter().all(|f| match obj.get(&f.name) {
+                    Some(x) => f.shape.admits(x, refs),
+                    None => f.optional,
+                });
+                named
+                    && obj.iter().all(|(k, x)| {
+                        fields.iter().any(|f| f.name == *k)
+                            || rest.as_ref().is_some_and(|r| r.admits(x, refs))
+                    })
+            }
+            Self::OneOf(alts) => alts.iter().any(|a| a.admits(v, refs)),
+        }
+    }
+
     /// The object's fields; empty for any other shape.
     pub(super) fn fields(&self) -> &[Field] {
         match self {
@@ -324,12 +408,17 @@ mod tests {
                 "type": "object",
                 "properties": {
                     "a": { "type": "string" },
-                    "b": { "anyOf": [Shape::U64.schema(), { "type": "null" }] },
+                    "b": {
+                        "type": ["string", "null"],
+                        "pattern": "^(0|[1-9][0-9]*)$",
+                        "description": "an unsigned 64-bit integer as a decimal string (D20)",
+                    },
                     "c": { "type": "array", "items": { "type": "string", "enum": ["x", "y"] } },
                     "d": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/T" } },
                 },
                 "required": ["a", "c", "d"],
-                "additionalProperties": {},
+                "additionalProperties": true,
+                "description": "Other properties than those listed may be present: the ones listed are those clients rely on.",
             })
         );
         let sample = s.sample(&|_| Shape::Bool);
@@ -337,13 +426,52 @@ mod tests {
             sample,
             json!({ "a": "x", "b": "1", "c": ["x"], "d": { "k": true } })
         );
+        // A shape admits its own sample, and refuses a missing field or an unnamed one
+        // (here only the map's `[string]: any` takes it).
+        let refs = |_: &str| Shape::Bool;
+        assert!(s.admits(&sample, &refs));
+        assert!(!s.admits(&json!({ "a": "x", "c": [] , "d": {} , "b": "01" }), &refs));
+        assert!(!s.admits(&json!({ "c": [], "d": {} }), &refs));
+        assert!(s.admits(
+            &json!({ "a": "x", "b": null, "c": ["y"], "d": { "q": false } }),
+            &refs
+        ));
+        assert!(!s.admits(&json!({ "a": "x", "c": ["z"], "d": {} }), &refs));
+        let closed = parse("{ a: string, b?: uint }");
+        assert!(closed.admits(&json!({ "a": "x" }), &refs));
+        assert!(!closed.admits(&json!({ "a": "x", "c": 1 }), &refs));
+        assert!(!closed.admits(&json!({ "a": "x", "b": -1 }), &refs));
         // Alternatives that are all objects are exclusive.
         assert_eq!(
             parse(r#"{ kind: "a" } | { kind: "b", n?: uint }"#).schema(),
             json!({ "oneOf": [
-                { "type": "object", "properties": { "kind": { "const": "a" } }, "required": ["kind"] },
-                { "type": "object", "properties": { "kind": { "const": "b" }, "n": { "type": "integer", "minimum": 0 } }, "required": ["kind"] },
-            ] })
+                { "type": "object", "properties": { "kind": { "type": "string", "enum": ["a"] } }, "required": ["kind"] },
+                { "type": "object", "properties": { "kind": { "type": "string", "enum": ["b"] }, "n": { "type": "integer", "format": "int64", "minimum": 0 } }, "required": ["kind"] },
+            ], "discriminator": { "propertyName": "kind" } })
+        );
+        // Untagged objects: no discriminator.
+        assert_eq!(
+            parse("{ a: string } | { b: string }")
+                .schema()
+                .get("discriminator"),
+            None
+        );
+        // Null with one type is `type: [T, "null"]`; with a `$ref`, an `anyOf`.
+        assert_eq!(
+            parse(r#""x" | "y" | null"#).schema(),
+            json!({ "type": ["string", "null"], "enum": ["x", "y", null] })
+        );
+        assert_eq!(
+            parse("string[] | null").schema(),
+            json!({ "type": ["array", "null"], "items": { "type": "string" } })
+        );
+        assert_eq!(
+            parse("#T | null").schema(),
+            json!({ "anyOf": [{ "$ref": "#/components/schemas/T" }, { "type": "null" }] })
+        );
+        assert_eq!(
+            parse("string | uint | null").schema(),
+            json!({ "anyOf": [{ "type": "string" }, { "type": "integer", "format": "int64", "minimum": 0 }, { "type": "null" }] })
         );
     }
 }

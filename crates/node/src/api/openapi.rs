@@ -14,13 +14,17 @@
 //! - the committed document is the one [`document`] builds now. `UPDATE_OPENAPI=1 cargo
 //!   test -p calimero-node --lib openapi` rewrites it.
 //!
-//! Response shapes are written here by hand from the handlers' `json!` answers, and are not
-//! checked against them.
+//! Response shapes are written here by hand from the handlers' answers. A component the node
+//! answers by serializing a Rust type names that type (`Component::ty`), and is held to it:
+//! the same field names, a sample of the shape read into the type writes back as a value of
+//! the shape, and a field is optional in the shape exactly when the type may leave it out.
+//! The rest, built with `json!`, are not checked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::de::{self, DeserializeOwned, Deserializer, Visitor};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 mod shape;
@@ -177,6 +181,8 @@ struct Op {
     reply: Reply,
     /// `412 CONFIRM_REQUIRED` first: a passkey assertion over the exact request.
     step_up: bool,
+    /// When the step-up applies, if not always (`x-calimero-step-up-when`).
+    step_up_when: &'static str,
     /// The WebAuthn `userVerification` the step-up's assertion is checked with.
     user_verification: &'static str,
     /// `428 OPERATOR_SIGNATURE_REQUIRED` first: the operator key's signature.
@@ -203,6 +209,7 @@ fn op(
         query: None,
         reply: Reply::Json("{}"),
         step_up: false,
+        step_up_when: "",
         user_verification: "required",
         operator: false,
         retry: Retry::Unsaid,
@@ -268,7 +275,7 @@ impl Op {
     /// An operator decision's raw body: nothing, or `{ operatorProof }`.
     fn proof_body(mut self) -> Self {
         self.body = Body::RawJson(Input {
-            shape: "{ operatorProof?: #OperatorProof }",
+            shape: "#ProofOnly",
             ty: Some(ty::<super::OpsProofBody>()),
         });
         self
@@ -314,6 +321,13 @@ impl Op {
 
     fn step_up(mut self) -> Self {
         self.step_up = true;
+        self
+    }
+
+    /// A step-up only `when` this holds; otherwise the request is answered at once.
+    fn step_up_when(mut self, when: &'static str) -> Self {
+        self.step_up = true;
+        self.step_up_when = when;
         self
     }
 
@@ -384,6 +398,10 @@ struct Component {
     name: &'static str,
     description: &'static str,
     shape: &'static str,
+    /// The Rust type the node serializes into this shape, for the checks.
+    ty: Option<OutTy>,
+    /// A request body whose type refuses a property the shape does not name.
+    closed_body: bool,
 }
 
 const fn component(
@@ -395,6 +413,44 @@ const fn component(
         name,
         description,
         shape,
+        ty: None,
+        closed_body: false,
+    }
+}
+
+impl Component {
+    /// A request body whose type refuses unknown properties (`additionalProperties: false`).
+    fn closed_body(mut self) -> Self {
+        self.closed_body = true;
+        self
+    }
+
+    /// The node answers this shape by serializing a `T`.
+    fn of<T: DeserializeOwned + Serialize>(mut self) -> Self {
+        self.ty = Some(out_ty::<T>());
+        self
+    }
+}
+
+/// What the response checks need of a Rust type the node answers with.
+#[derive(Clone, Copy)]
+struct OutTy {
+    name: &'static str,
+    /// Reads a JSON value into the type and writes it back: what the node would answer.
+    round_trip: fn(&Value) -> Result<Value, String>,
+    /// The field names its `Deserialize` reads, when it is a plain struct.
+    fields: fn() -> Option<&'static [&'static str]>,
+}
+
+fn out_ty<T: DeserializeOwned + Serialize>() -> OutTy {
+    fn round_trip<T: DeserializeOwned + Serialize>(v: &Value) -> Result<Value, String> {
+        let t: T = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+        serde_json::to_value(&t).map_err(|e| e.to_string())
+    }
+    OutTy {
+        name: std::any::type_name::<T>(),
+        round_trip: round_trip::<T>,
+        fields: fields_of::<T>,
     }
 }
 
@@ -466,7 +522,8 @@ below are what travels inside the channel.\n\n\
 **Errors** answer `{ status, error, message, details? }`: `error` is the code, `details` \
 says more (the challenge of a `412 CONFIRM_REQUIRED`, the statement of a `428 \
 OPERATOR_SIGNATURE_REQUIRED`, `leaderUrl` of a `421 NOT_LEADER`). Each operation lists \
-the codes it raises itself and those its credential implies; any operation may also answer \
+the codes it raises itself and those its credential implies, per status in \
+`x-calimero-codes` (every error answer is the one `Error` schema); any operation may also answer \
 `400 BAD_REQUEST`, `400 REJECTED`, `421 NOT_LEADER` and `503 UNAVAILABLE`. A route that \
 takes a session may answer `421 WRONG_NODE`: try another node.\n\n\
 **Retries.** `x-calimero-retry-safe` marks the operations a client may send again after a \
@@ -474,9 +531,11 @@ takes a session may answer `421 WRONG_NODE`: try another node.\n\n\
 an idempotency key). The sealed channel's own `503` (`{ error: { code: \"busy\", message } }`, \
 outside the envelope: too many sealed requests or sessions at once) carries `Retry-After: 1` \
 on any sealed route; the node's `503 UNAVAILABLE` answers carry none. \
-`x-calimero-step-up` (with `x-calimero-user-verification`) and `x-calimero-operator` mark \
+`x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` \
+where it applies only sometimes) and `x-calimero-operator` mark \
 the two-round operations below.\n\n\
-**Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings (D20).";
+**Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings (D20); every \
+other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.";
 
 /// The shared shapes.
 fn components() -> Vec<Component> {
@@ -540,22 +599,26 @@ fn components() -> Vec<Component> {
             "Access",
             "Who may reach an app at all.",
             r#"{ kind: "owner" } | { kind: "org" } | { kind: "public" } | { kind: "accounts", accounts: string[] } | { kind: "team", team: string }"#,
-        ),
+        )
+        .of::<crate::types::Access>(),
         component(
             "OrgRole",
             "A member's role in an organization.",
             r#""guest" | "member" | "admin" | "owner""#,
-        ),
+        )
+        .of::<crate::types::OrgRole>(),
         component(
             "TeamRole",
             "A member's standing in one team.",
             r#""lead" | "member" | "readOnly""#,
-        ),
+        )
+        .of::<crate::types::TeamRole>(),
         component(
             "TeamJoin",
             "Open (`everyone` who reaches the parent) or restricted (`invite`) membership.",
             r#""everyone" | "invite""#,
-        ),
+        )
+        .of::<crate::types::TeamJoin>(),
         component(
             "OutboundSelection",
             "`manifest` (every prefix the release declares) or these prefixes.",
@@ -565,7 +628,8 @@ fn components() -> Vec<Component> {
             "Deployer",
             "An account or an organization.",
             "{ account: string } | { org: string }",
-        ),
+        )
+        .of::<crate::system::Deployer>(),
         component(
             "SignUp",
             "The cluster's sign-up policy.",
@@ -590,18 +654,111 @@ fn components() -> Vec<Component> {
             "UpgradeRun",
             "An organization-wide upgrade run: the apps it targets, those done, and why each failed one failed.",
             "{ runId: string, package: string, version: string, team?: string, cascade: bool, by: string, startedAt: uint, apps: string[], done: string[], failed: { [string]: any }, finished: bool }",
-        ),
+        )
+        .of::<crate::types::UpgradeRun>(),
         component(
             "App",
-            "An app instance (a context) as the directory records it.",
-            "{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, metadata: any, lastUpgrade?: any, release?: any }",
+            "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.",
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } } }"#,
+        )
+        .of::<crate::types::AppRecord>(),
+        component(
+            "AppEntry",
+            "An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).",
+            "{ appId: string, name: string, owner: string, org: string | null, bundle: string, package: string | null, version: string | null, deployment?: string | null }",
         ),
+        component(
+            "PackageRef",
+            "One service of one package release: `service` is absent for a single-service bundle, `compute` (absent: false) marks the service's compute component.",
+            "{ package: string, version: string, service?: string, compute?: bool }",
+        )
+        .of::<crate::system::PackageRef>(),
+        component(
+            "Upgrade",
+            "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it.",
+            "{ from: string, to: string, at: uint, by: string, ok: bool, error?: any, run?: string, apiKey?: string, fromRelease?: #PackageRef, toRelease?: #PackageRef }",
+        )
+        .of::<crate::types::UpgradeRecord>(),
+        component(
+            "Package",
+            "A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.",
+            r#"{ package: string, signerId: string, owner: string, latest: string, versions: { version: string, mpk: string, size: uint, source: "registry" | "upload", services: { [string]: string }, metadata: any, outbound: string[], installedBy: string, installedAt: uint }[] }"#,
+        ),
+        component(
+            "ApiKey",
+            "An API key as the account's list shows it (never its secret): `apps` and `methods` are `null` for every one; `upgrades` makes it an upgrade key.",
+            "{ keyId: string, account: string, label: string, apps: string[] | null, methods: string[] | null, readOnly: bool, allowConfirm: bool, expiresAt: uint, upgrades?: { app: string, package: string, signer: string, proofKey: string } }",
+        )
+        .of::<crate::types::ApiKeyRecord>(),
+        component(
+            "Org",
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later.",
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: { prefixes: string[], reviewed: string[] } }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+        )
+        .of::<OrgAnswer>(),
+        component(
+            "Team",
+            "A team as its organization records it: `members` maps each direct row to whether it is a lead; `capabilities` are capability bits per row; `defaultCapabilities` is absent when unset.",
+            "{ teamId: string, name: string, parent: string | null, join: #TeamJoin, members: { [string]: bool }, readOnly: string[], capabilities: { [string]: uint }, metadata: any, removed: string[], defaultCapabilities?: uint }",
+        )
+        .of::<crate::types::Team>(),
+        component(
+            "TeamView",
+            "A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps, and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).",
+            "{ teamId: string, name: string, parent: string | null, join: #TeamJoin, metadata: any, package?: string | null, defaultCapabilities?: uint | null, members: { account: string, role: #TeamRole, capabilities: uint }[], children: string[], apps: { appId: string, name: string, contextId: string }[], myRole: #TeamRole | null, member: bool }",
+        ),
+        component(
+            "Deployment",
+            "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.",
+            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: { app: string, package: string, version: string, addedBy: string, addedAt: string }[], createdBy: string, createdAt: string }",
+        ),
+        component(
+            "DeadLetter",
+            "A cross-app call that was never delivered: its sequence number, the target app and method, why, and when (`atMs`, Unix milliseconds).",
+            "{ seq: uint, app: string, method: string, reason: string, atMs: uint }",
+        )
+        .of::<crate::component::xcall::DeadLetter>(),
         component(
             "ProofOnly",
             "What an operator decision that names nothing in its body may carry: none at first, the operator's proof after the `428`.",
             "{ operatorProof?: #OperatorProof }",
+        )
+        .closed_body(),
+        component(
+            "ConfirmOnly",
+            "The body of a step-up that names nothing else: none (or `{}`) at first, the passkey assertion after the `412`.",
+            "{ confirm?: #Confirm }",
         ),
     ]
+}
+
+/// `GET /orgs/{org}`'s answer, for the checks: the organization as the directory records it,
+/// and the fields `org_get` adds to it (`newWorkStopped` from a `system::Stall`, `after` as
+/// RFC 3339).
+#[derive(Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrgAnswer {
+    #[serde(flatten)]
+    org: crate::types::Org,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<crate::types::OrgMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release_approvers: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publishes: Option<Vec<String>>,
+    /// Absent from an older node; `null` when nothing stops new work.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    new_work_stopped: Option<Option<StallAnswer>>,
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct StallAnswer {
+    release: String,
+    after: String,
 }
 
 /// The registry: every public, auth and ops route of [`super::router`].
@@ -670,17 +827,17 @@ fn operations() -> Vec<Op> {
             .ok("{}"),
         delete("/auth/passkeys/{cred}", "passkey_remove", AccountHolder, "Remove a passkey")
             .about("Its sessions end. `412` first; the retry's JSON body is `{ confirm }`.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
         post("/auth/recovery", "recovery_create", AccountHolder, "Make a recovery code")
             .about("Shown once, replacing any; `412` first.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ code: string }")
             .step_up()
             .errors(&[(400, "WRONG_CHALLENGE")]),
         delete("/auth/recovery", "recovery_remove", AccountHolder, "Remove the recovery code")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
         post("/auth/recovery/begin", "account_recovery_begin", Anyone, "Start an account recovery")
@@ -695,7 +852,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "UNAUTHENTICATED"), (409, "RECOVERY_PENDING")]),
         post("/auth/recovery/cancel", "account_recovery_cancel", AccountHolder, "Cancel an account recovery")
             .about("With a passkey the account has; `412` first.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
         post("/auth/recovery/finish", "account_recovery_finish", Anyone, "Finish an account recovery")
@@ -734,7 +891,7 @@ fn operations() -> Vec<Op> {
             .step_up(),
         get("/auth/me", "me", SignedIn, "The caller's account")
             .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations, approvals and recovery state, and how the caller came (`via`).")
-            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt: uint | null, lastSignInAt: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole }[], via: "session" | "apiKey", passkeyId: string | null, app: string | null, origin: string | null, approvedReleases: any, outboundApprovals: any, recoveryCode: any, recoveryPending: any }"#)
+            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, approvedReleases: any, outboundApprovals: any, recoveryCode?: any, recoveryPending?: any }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
             .about("A statement signed with this node's receipt key that the caller's passkey session asked to bind `nonce` for `audience`.")
@@ -747,7 +904,7 @@ fn operations() -> Vec<Op> {
             .ok("{ scope: any, governance: any, approvedReleases: any, clusterReleases: any, apps: any[], next: string | null }"),
         get("/auth/usage", "usage", SignedIn, "The account's usage against its quotas")
             .about("Apps, bundle bytes, API keys and owned organizations; what today's runs of the apps the account develops used (decimal strings).")
-            .ok("{ bundleBytes: u64, developerFuelToday: u64, developerWritesToday: u64, [string]: any }"),
+            .ok("{ bundleBytes: u64, developerFuelToday?: u64, developerWritesToday?: u64, [string]: any }"),
         get("/auth/aliases", "alias_list", SignedIn, "The account's aliases").ok("{ aliases: { [string]: string } }"),
         get("/auth/aliases/{alias}", "alias_get", SignedIn, "Resolve an alias")
             .ok("{ alias: string, appId: string }")
@@ -763,9 +920,9 @@ fn operations() -> Vec<Op> {
             .ok("{ keyId: string, key: string }")
             .step_up()
             .errors(&[(400, "BAD_UPGRADE_KEY"), (400, "WRONG_CHALLENGE"), (429, "QUOTA_EXCEEDED")]),
-        get("/auth/apikeys", "apikey_list", AccountHolder, "The account's API keys").ok("{ keys: any[] }"),
+        get("/auth/apikeys", "apikey_list", AccountHolder, "The account's API keys").ok("{ keys: #ApiKey[] }"),
         delete("/auth/apikeys/{key}", "apikey_revoke", AccountHolder, "Revoke an API key")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
@@ -782,14 +939,14 @@ fn operations() -> Vec<Op> {
             .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
-            .ok("{ packages: any[] }"),
+            .ok("{ packages: #Package[] }"),
         post("/packages/install", "package_install", Installer, "Install a release from the registry")
             .json::<super::InstallBody>("{ package: string, version: string }")
             .ok("{ package: string, version: string, [string]: any }")
             .errors(&[(400, "BAD_PACKAGE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
-            .ok("{ [string]: any }")
+            .ok("#Package")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/packages/{package}", "package_uninstall", AccountHolder, "Uninstall a package")
             .about("Every version; refused while an app runs one.")
@@ -819,7 +976,7 @@ fn operations() -> Vec<Op> {
         get("/apps", "app_list", SignedIn, "Apps the caller reaches")
             .about("Anyone may list public apps.")
             .query::<super::AppListQuery>("{ package?: string, bundle?: string }")
-            .ok("{ apps: #App[] }"),
+            .ok("{ apps: #AppEntry[] }"),
         get("/apps/{app}", "app_get", SignedIn, "One app")
             .about("`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.")
             .ok("#App")
@@ -834,7 +991,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(413, "TOO_LARGE")]),
         get("/apps/{app}/storage", "app_storage", AppAccess, "What an app stores")
             .about("Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).")
-            .ok("{ keys: uint, bytes: uint, blobs: uint, blobBytes: uint, lastWriteAt: uint | null }"),
+            .ok("{ keys: uint, bytes: uint, blobs: uint, blobBytes: uint, lastWriteAt?: uint | null }"),
         get("/apps/{app}/usage", "app_usage", SignedIn, "An app's runs per day")
             .about("The owner or an organization admin: `today` and the 30 `days` before it, figures as decimal strings; `wallMs` is information only.")
             .ok("{ today: any, days: { date: string, runs: u64, fuel: u64, wallMs: u64, writes: u64, bytesWritten: u64, events: u64 }[] }")
@@ -857,8 +1014,8 @@ fn operations() -> Vec<Op> {
         get("/apps/{app}/presence", "presence_get", AppAccess, "Who is present")
             .ok("{ present: any[] }"),
         post("/apps/{app}/presence", "presence_publish", AppAccess, "Publish presence")
-            .about("The caller's presence state, in sequence; not logged.")
-            .json::<super::PresenceBody>("{ seq: uint, state?: string }")
+            .about("The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.")
+            .json::<super::PresenceBody>("{ seq: uint, state?: string | null }")
             .ok("{}")
             .errors(&[(400, "BAD_STATE"), (413, "TOO_LARGE")]),
         get("/apps/{app}/presence/stream", "presence_stream", AppAccess, "Presence as server-sent events")
@@ -868,6 +1025,7 @@ fn operations() -> Vec<Op> {
             .json::<super::IntentBody>("{ method: string, args?: any, idempotencyKey?: string, confirm?: #Confirm }")
             .ok("{ index: uint, result: any, events: { kind: string, data: any }[], receipt: #Receipt }")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")])
+            .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
             .about("Each replica's `/attestation?purpose=receipts` for `nonce`. It reads the query `/attestation` does, but only `nonce`: `app`, `appHash` and `purpose` are ignored here.")
@@ -884,6 +1042,7 @@ fn operations() -> Vec<Op> {
             .json::<super::MethodBody>(r#"{ args?: any, idempotencyKey?: string, confirm?: #Confirm, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, events?: { kind: string, data: any }[], receipt: #Receipt }")
             .errors(&[(400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "UNAVAILABLE")])
+            .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/events", "events", AppAccess, "An app's events as server-sent events")
             .about("Committed events from index `from`, then live ones, each to its audience.")
@@ -911,9 +1070,9 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/blobs", "blob_upload", AppAccess, "Upload a blob")
-            .about("A plain blob (`sealed=true` is refused: sealed files go through `/files`).")
+            .about("A plain blob, stored with the request's `Content-Type` (default `application/octet-stream`), which a component app's download answers with. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.")
             .query::<super::BlobUploadQuery>("{ sealed?: bool }")
-            .raw("application/octet-stream", "the blob")
+            .raw("*/*", "the blob, of any media type")
             .ok("{ blobId: string, id: string, size: uint, index: uint }")
             .errors(&[(400, "USE_FILES_API"), (413, "TOO_LARGE"), (429, "QUOTA_EXCEEDED")]),
         get("/apps/{app}/blobs", "blob_list", AppAccess, "List an app's blobs")
@@ -964,8 +1123,8 @@ fn operations() -> Vec<Op> {
             .ok("{ blobId: string, id: string, size: uint, sha256: string }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/xcalls", "app_xcalls", SignedIn, "An app's cross-app calls")
-            .about("The owner or an organization admin: calls waiting for delivery and dead letters.")
-            .ok("{ pending: any[], deadLetters: any[] }")
+            .about("The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a count), and its dead letters, oldest first (`atMs`: the entry time it was dead-lettered at, Unix milliseconds).")
+            .ok("{ pending: uint, deadLetters: #DeadLetter[] }")
             .errors(&[(403, "FORBIDDEN"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- organizations
         post("/orgs", "org_create", Session, "Create an organization")
@@ -974,12 +1133,12 @@ fn operations() -> Vec<Op> {
             .ok("{ orgId: string }")
             .errors(&[(429, "QUOTA_EXCEEDED")]),
         get("/orgs/{org}", "org_get", SignedIn, "One organization")
-            .about("Its members, teams (those the caller reaches or manages) and metadata.")
-            .ok("{ orgId: string, name: string, owner: string, members: any, teams: any, metadata: any, [string]: any }")
+            .about("As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).")
+            .ok("#Org")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}", "org_delete", AccountHolder, "Delete an organization")
             .about("With its teams, invites and apps; the owner.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("#Written")
             .step_up(),
         post("/orgs/{org}/metadata", "org_metadata", SignedIn, "Set an organization's metadata")
@@ -1010,7 +1169,7 @@ fn operations() -> Vec<Op> {
             .json::<super::MetadataBody>("{ metadata: any }")
             .ok("{}"),
         get("/orgs/{org}/members", "org_members", AccountHolder, "Members' lockout risk")
-            .about("`detail=security`, the owner or an admin: each member's passkeys (`1`, `2` or `\"3+\"`), recovery code, last active UTC day and sessions. `403` below admin, `404` outside the organization.")
+            .about("`detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the owner or an admin: each member's passkeys (`1`, `2` or `\"3+\"`), recovery code, last active UTC day and sessions. `403` below admin, `404` outside the organization.")
             .query::<super::MembersQuery>(r#"{ detail?: "security" }"#)
             .ok("{ orgId: string, members: { account: string, name: string, role: #OrgRole, teams: any, passkeys: any, recoveryCode: bool, lastActiveDay: string | null, sessions: uint }[] }")
             .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND")]),
@@ -1021,7 +1180,7 @@ fn operations() -> Vec<Op> {
             .step_up(),
         delete("/orgs/{org}/members/{account}", "org_remove_member", Session, "Remove a member, or leave")
             .about("`412` first; the retry's JSON body is `{ confirm }`.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
         post("/orgs/{org}/members/{account}/teams", "member_set_teams", Session, "Set a member's rows in several teams")
@@ -1041,15 +1200,15 @@ fn operations() -> Vec<Op> {
             .json::<super::TeamBody>("{ name: string, parent?: string, join: #TeamJoin }")
             .ok("{ teamId: string }"),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
-            .ok("{ [string]: any }")
+            .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
-            .about("Rename, open or restrict, move under another parent (`parent: null`: to the top), or set its metadata.")
+            .about("Rename, open or restrict, move under another parent, or set its metadata. `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.")
             .json::<super::TeamUpdateBody>("{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }")
             .ok("{}"),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
             .about("With the teams and apps below it.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ teams: string[], apps: string[] }")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
@@ -1090,7 +1249,7 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .step_up(),
         delete("/orgs/{org}/teams/{team}/members/{account}", "team_remove_member", Session, "Remove a team member, or leave")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
         post("/orgs/{org}/invites", "invite_create", Session, "Make an invite")
@@ -1116,13 +1275,13 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: any }")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}/invites/{key}", "invite_revoke", Session, "Revoke an invite")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/app-teams", "app_team_list", SignedIn, "The organization's app teams")
             .about("A member: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own).")
-            .ok("{ mode: any, appTeams: any[] }")
+            .ok(r#"{ mode: "legacy" | "standalone" | "shared", appTeams: any[] }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/app-teams", "app_teams_scope", Session, "Give apps app teams, or open or close one")
             .about("The owner or an admin; `keep` names who stays when a team closes. `412` first.")
@@ -1131,7 +1290,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "TOO_MANY_PACKAGES"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/recovery", "recovery_set", AccountHolder, "Set the organization's recovery key")
-            .about("Set, rotate or (`null`) remove it; the owner; cancels a recovery under way. `412` first.")
+            .about("Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.")
             .json::<super::RecoveryKeyBody>("{ publicKey?: string | null, confirm?: #Confirm }")
             .ok("{}")
             .step_up()
@@ -1143,13 +1302,13 @@ fn operations() -> Vec<Op> {
             .errors(&[(403, "WRONG_RECOVERY_KEY"), (409, "RECOVERY_PENDING")]),
         post("/orgs/{org}/recovery/cancel", "recovery_cancel", AccountHolder, "Cancel an organization recovery")
             .about("The owner; `412` first.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/recovery/finish", "recovery_finish", AccountHolder, "Finish an organization recovery")
             .about("The account that started it, once `readyAt` passed; `412` first.")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ org: string, previousOwners: any }")
             .step_up()
             .errors(&[(404, "NOT_FOUND"), (409, "RECOVERY_NOT_READY")]),
@@ -1163,7 +1322,8 @@ fn operations() -> Vec<Op> {
             .ok("{ requestId: string, url: string, code: string, expiresAt: uint }")
             .errors(&[(400, "BAD_REQUEST"), (413, "TOO_LARGE")]),
         get("/consent/{request}/result", "crate::consent_page::result", Session, "What became of a consent request")
-            .ok("{ [string]: any }")
+            .about("`decidedAt` (Unix seconds) is `null` while it is pending.")
+            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "outbound", status: "pending" | "approved" | "declined", decidedAt: uint | null }"#)
             .errors(&[(404, "NOT_FOUND"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- ops
         get("/ops/status", "ops_status", Ops, "The node and the cluster")
@@ -1202,9 +1362,9 @@ fn operations() -> Vec<Op> {
             .ok("{ node: uint, key: string, release: string, attestedAt: uint }")
             .errors(&[(404, "NOT_FOUND")]),
         post("/ops/apps/{app}/replicas", "ops_set_replicas", Ops, "Move an app's replicas")
-            .about("Signed over `<app> / __set_replicas / { replicas }` (sorted); at least `min(3, nodes)` registered nodes, each on a release the app's owner approved. The set it already has answers `unchanged: true`.")
+            .about("Signed over `<app> / __set_replicas / { replicas }` (sorted); at least `min(3, nodes)` registered nodes, each on a release the app's owner approved. The set it already has answers `unchanged: true`. `status` is the app group's Raft status when the move finished (as the leader saw it).")
             .json::<super::ReplicaBody>("{ replicas: uint[], operatorProof?: #OperatorProof }")
-            .ok("{ status: string, unchanged: bool }")
+            .ok("{ status: { group: uint, leader: uint | null, is_leader: bool, term: uint, last_log: uint | null, applied: uint, voters: uint[], learners: uint[] }, unchanged: bool }")
             .operator()
             .errors(&[(400, "DUPLICATE_REPLICA"), (400, "JOB_NODE"), (400, "TOO_FEW"), (400, "UNKNOWN_NODE"), (409, "MOVE_IN_PROGRESS"), (409, "RUNTIME_TOO_OLD"), (421, "NOT_LEADER")]),
         post("/ops/apps/{app}/restore", "restore::ops_restore", Ops, "Restore an app from its sealed backup")
@@ -1338,7 +1498,7 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: any }")
             .errors(&[(403, "FORBIDDEN")]),
         delete("/sign-up/invites/{key}", "sign_up_invite_revoke", AccountHolder, "Withdraw a cluster sign-up invite")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("#Written")
             .step_up(),
         post("/deployers", "deployer_grant", AccountHolder, "Grant a deployer")
@@ -1350,21 +1510,24 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: any }")
             .errors(&[(403, "FORBIDDEN")]),
         delete("/deployers/{key}", "deployer_revoke", AccountHolder, "Revoke a deployer")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ key: string }")
             .step_up(),
         post("/deployments", "deployment_create", AccountHolder, "Create a deployment")
             .about("A named set of releases an owner (an account or organization) offers for others to instantiate.")
             .json::<super::DeploymentBody>("{ name: string, owner: #Deployer, confirm?: #Confirm }")
-            .ok("{ [string]: any }")
+            .ok("{ host: string | null, [string]: any }")
             .step_up()
             .errors(&[(403, "FORBIDDEN")]),
-        get("/deployments", "deployment_list", SignedIn, "Deployments").ok("{ deployments: any[] }"),
+        get("/deployments", "deployment_list", SignedIn, "Deployments")
+            .about("The deployments the caller manages.")
+            .ok("{ deployments: #Deployment[] }"),
         get("/deployments/{id}", "deployment_get", SignedIn, "One deployment")
-            .ok("{ [string]: any }")
+            .about("As anyone may read it: its name, its owner's kind and name (`null` when unknown), and the releases it offers; never its managers or customers.")
+            .ok(r#"{ id: string, host: string | null, name: string, owner: { kind: "account" | "org", name: string | null }, apps: { app: string, package: string, version: string }[] }"#)
             .errors(&[(404, "NOT_FOUND")]),
         delete("/deployments/{id}", "deployment_delete", AccountHolder, "Delete a deployment")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ deployment: string }")
             .step_up(),
         post("/deployments/{id}/apps", "deployment_offer", AccountHolder, "Offer a release in a deployment")
@@ -1373,7 +1536,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         delete("/deployments/{id}/apps/{app}", "deployment_withdraw", AccountHolder, "Withdraw an offer")
-            .opt_json::<super::ConfirmOnlyBody>("{ confirm?: #Confirm }")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("#Written")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
@@ -1497,16 +1660,15 @@ fn closed(input: &Input, shapes: &BTreeMap<&'static str, Shape>, query: bool) ->
     (ty.parse)(&sample, query).is_err()
 }
 
+/// One status's error answer: the shared `Error`, the codes it may carry listed in
+/// `x-calimero-codes` (and described), not narrowed in a schema of its own, which every
+/// generator would turn into a type per operation.
 fn error_response(status: u16, codes: &BTreeSet<&'static str>) -> Value {
     let details = match status {
-        412 => Some("#/components/schemas/ConfirmRequired"),
-        428 => Some("#/components/schemas/OperatorSignatureRequired"),
+        412 => Some("ConfirmRequired"),
+        428 => Some("OperatorSignatureRequired"),
         _ => None,
     };
-    let mut narrowed = json!({ "properties": { "error": { "enum": codes } } });
-    if let Some(details) = details {
-        narrowed["properties"]["details"] = json!({ "$ref": details });
-    }
     let described: Vec<String> = codes
         .iter()
         .map(|code| {
@@ -1519,17 +1681,21 @@ fn error_response(status: u16, codes: &BTreeSet<&'static str>) -> Value {
                 )
         })
         .collect();
+    let mut description = described.join("; ");
+    if let Some(details) = details {
+        description.push_str(&format!(". `details` is a `{details}`."));
+    }
     json!({
-        "description": described.join("; "),
-        "content": { "application/json": { "schema": {
-            "allOf": [{ "$ref": "#/components/schemas/Error" }, narrowed],
-        } } },
+        "description": description,
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } },
+        "x-calimero-codes": codes,
     })
 }
 
 fn input_schema(input: &Input, shapes: &BTreeMap<&'static str, Shape>) -> Value {
     let mut schema = parse(input.shape).schema();
-    if closed(input, shapes, false) {
+    // A named body is closed, or not, where it is defined (`Component::closed_body`).
+    if schema.get("$ref").is_none() && closed(input, shapes, false) {
         match schema.get_mut("oneOf").and_then(Value::as_array_mut) {
             // Each alternative is closed, not the union.
             Some(alts) => {
@@ -1552,8 +1718,14 @@ fn operation(op: &Op, ops: &[Op], shapes: &BTreeMap<&'static str, Shape>) -> Val
     description.push_str(op.who.text());
     description.push('.');
     if op.step_up {
+        description.push_str(" **Step-up:** ");
+        if !op.step_up_when.is_empty() {
+            description.push_str("when ");
+            description.push_str(op.step_up_when);
+            description.push_str(", ");
+        }
         description.push_str(
-            " **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+            "answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         );
     }
     if op.operator {
@@ -1587,6 +1759,9 @@ fn operation(op: &Op, ops: &[Op], shapes: &BTreeMap<&'static str, Shape>) -> Val
     if op.step_up {
         out["x-calimero-step-up"] = json!(true);
         out["x-calimero-user-verification"] = json!(op.user_verification);
+        if !op.step_up_when.is_empty() {
+            out["x-calimero-step-up-when"] = json!(op.step_up_when);
+        }
     }
     if op.operator {
         out["x-calimero-operator"] = json!(true);
@@ -1616,7 +1791,11 @@ fn operation(op: &Op, ops: &[Op], shapes: &BTreeMap<&'static str, Shape>) -> Val
         Body::Raw(media, what) => Some((
             true,
             *media,
-            json!({ "type": "string", "format": "binary", "contentMediaType": media }),
+            if *media == "*/*" {
+                json!({ "type": "string", "format": "binary" })
+            } else {
+                json!({ "type": "string", "format": "binary", "contentMediaType": media })
+            },
             *what,
         )),
     };
@@ -1678,6 +1857,9 @@ pub(super) fn document() -> Value {
         .map(|c| {
             let mut schema = parse(c.shape).schema();
             schema["description"] = json!(c.description);
+            if c.closed_body {
+                schema["additionalProperties"] = json!(false);
+            }
             (c.name.to_owned(), schema)
         })
         .collect();
@@ -1687,7 +1869,7 @@ pub(super) fn document() -> Value {
             "title": "Calimero node API",
             "version": "1",
             "description": DESCRIPTION,
-            "license": { "name": "MIT OR Apache-2.0" },
+            "license": { "name": "MIT OR Apache-2.0", "identifier": "MIT OR Apache-2.0" },
         },
         "servers": [{
             "url": "https://{node}",
@@ -1972,6 +2154,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no component {name}"))
         };
         let mut wrong = Vec::new();
+        let comps = components();
         let ops = operations();
         let inputs = ops.iter().flat_map(|op: &Op| {
             let body = match &op.body {
@@ -1987,7 +2170,25 @@ mod tests {
         for (op, input, query) in inputs {
             let Some(ty) = input.ty else { continue };
             let at = format!("{} {} ({})", op.method, op.path, ty.name);
-            let shape = parse(input.shape);
+            // A named body: its component's shape, closed where its type is.
+            let shape = match parse(input.shape) {
+                Shape::Ref(name) => {
+                    let c = comps.iter().find(|c| c.name == name).expect("a component");
+                    if c.closed_body != super::closed(input, &shapes, query) {
+                        wrong.push(format!(
+                            "{at}: #{name} is {} but the type {}",
+                            if c.closed_body { "closed" } else { "open" },
+                            if c.closed_body {
+                                "takes unknown fields"
+                            } else {
+                                "refuses them"
+                            },
+                        ));
+                    }
+                    refs(&name)
+                }
+                other => other,
+            };
             let named: BTreeSet<&str> = shape.fields().iter().map(|f| f.name.as_str()).collect();
             if let Some(fields) = (ty.fields)() {
                 let actual: BTreeSet<&str> = fields.iter().copied().collect();
@@ -2033,6 +2234,99 @@ mod tests {
         assert!(
             wrong.is_empty(),
             "request shapes that differ from their types:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    /// Every component the node answers by serializing a Rust type: the shape's fields are
+    /// the type's, a sample of the shape read into the type writes back as a value of the
+    /// shape (each alternative of a union too), and a field is optional in the shape exactly
+    /// when the type leaves it out once it is absent.
+    #[test]
+    fn response_shapes_match_their_types() {
+        let shapes = shapes();
+        let refs = |name: &str| {
+            shapes
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| panic!("no component {name}"))
+        };
+        let mut wrong = Vec::new();
+        let mut checked = 0;
+        for c in components() {
+            let Some(ty) = c.ty else { continue };
+            checked += 1;
+            let at = format!("#{} ({})", c.name, ty.name);
+            let shape = parse(c.shape);
+            if let Some(fields) = (ty.fields)() {
+                let actual: BTreeSet<&str> = fields.iter().copied().collect();
+                let named: BTreeSet<&str> =
+                    shape.fields().iter().map(|f| f.name.as_str()).collect();
+                if actual != named {
+                    wrong.push(format!(
+                        "{at}: the type has {actual:?}, the shape names {named:?}"
+                    ));
+                    continue;
+                }
+            }
+            let alts = match &shape {
+                Shape::OneOf(alts) => alts.clone(),
+                other => vec![other.clone()],
+            };
+            for alt in alts.iter().filter(|a| **a != Shape::Null) {
+                let sample = alt.sample(&refs);
+                match (ty.round_trip)(&sample) {
+                    Ok(out) if shape.admits(&out, &refs) => {}
+                    Ok(out) => wrong.push(format!(
+                        "{at}: the type writes a value the shape does not admit:\n    {out}"
+                    )),
+                    Err(e) => wrong.push(format!(
+                        "{at}: a sample of the shape does not deserialize: {e}\n    {sample}"
+                    )),
+                }
+            }
+            let sample = shape.sample(&refs);
+            if let Ok(Value::Object(out)) = (ty.round_trip)(&sample) {
+                for f in shape.fields().iter().filter(|f| !out.contains_key(&f.name)) {
+                    wrong.push(format!(
+                        "{at}: `{}` is left out of the written sample: give it a sample the type writes",
+                        f.name
+                    ));
+                }
+            }
+            for f in shape.fields() {
+                let mut without = sample.clone();
+                let _gone = without.as_object_mut().and_then(|o| o.remove(&f.name));
+                let left_out = match (ty.round_trip)(&without) {
+                    Ok(out) => {
+                        if !shape.admits(&out, &refs) {
+                            wrong.push(format!(
+                                "{at}: without `{}`, the type writes a value the shape does not admit:\n    {out}",
+                                f.name
+                            ));
+                        }
+                        out.get(&f.name).is_none()
+                    }
+                    Err(_) => false,
+                };
+                if left_out != f.optional {
+                    wrong.push(format!(
+                        "{at}: `{}` is {} in the shape but {} by the type",
+                        f.name,
+                        if f.optional { "optional" } else { "required" },
+                        if left_out {
+                            "may be left out"
+                        } else {
+                            "always written"
+                        },
+                    ));
+                }
+            }
+        }
+        assert!(checked > 0, "no component names its type");
+        assert!(
+            wrong.is_empty(),
+            "response shapes that differ from their types:\n{}",
             wrong.join("\n")
         );
     }

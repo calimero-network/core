@@ -24,6 +24,11 @@ function show(s, depth = 0) {
   if (s.const !== undefined) return JSON.stringify(s.const);
   if (s.enum) return s.enum.map((v) => JSON.stringify(v)).join(' | ');
   if (s.anyOf) return s.anyOf.map((a) => show(a, depth)).join(' | ');
+  if (s.oneOf) return s.oneOf.map((a) => show(a, depth)).join(' | ');
+  // OpenAPI 3.1's nullable: `type: [T, "null"]`.
+  if (Array.isArray(s.type)) {
+    return s.type.map((t) => (t === 'null' ? 'null' : show({ ...s, type: t }, depth))).join(' | ');
+  }
   if (s.allOf) return s.allOf.map((a) => show(a, depth)).join(' & ');
   if (s.type === 'array') {
     const item = show(s.items, depth);

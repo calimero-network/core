@@ -42,11 +42,16 @@ to the code on every CI run:
   optional in the document exactly when `T` accepts the body without it;
 - `additionalProperties: false` marks a body whose type refuses unknown fields;
 - every error code a handler raises with a literal code is listed for it;
+- a response schema the node answers by serializing a Rust type (an app record,
+  an API key, a package release reference, an organization and its teams, an
+  upgrade, `Access`, `Deployer`) names that type, and is held to it the same
+  way: the same field names, a sample read into the type writes back as a value
+  of the schema, and a field is optional exactly when the type may leave it out;
 - the committed `openapi.json` is what the registry builds now.
 
-Response shapes are written in the registry from the handlers' answers and are
-not checked against them. To change the API, change the handler and its entry,
-then regenerate:
+The other response schemas, those a handler builds with `json!`, are written in
+the registry from the handlers' answers and are not checked against them. To
+change the API, change the handler and its entry, then regenerate:
 
 ```bash
 UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
