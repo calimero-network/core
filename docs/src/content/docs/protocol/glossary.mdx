@@ -127,8 +127,9 @@ direct rows of role `lead`, `member` or `read-only`. [Group, subgroup]
 **App team** — A top-level team whose `metadata.app.package` marks a package:
 the one team of that app in an organization, whose instances use `team` access
 on it. Open, everyone in the organization has the app; closed (restricted),
-only its rows do, and an admin closes or opens one app team alone. See
-[Organizations](/protocol/organizations/#app-teams).
+only its rows do, and an admin closes or opens one app team alone. A member
+an admin gives every app added later (`allApps`) gets a row on each app team
+made after. See [Organizations](/protocol/organizations/#app-teams).
 
 **Move** — Taking an app instance to another organization (`MoveApp`,
 `POST /apps/{app}/move`): its data stays on its replicas; its organization,
