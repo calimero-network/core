@@ -267,6 +267,7 @@ pub fn group(route: &str) -> &'static str {
         _ if route.starts_with("/orgs") || route.starts_with("/invites") => "orgs",
         _ if route.starts_with("/bundles")
             || route.starts_with("/packages")
+            || route.starts_with("/pipelines")
             || route.starts_with("/package-origins")
             || route.starts_with("/publishers")
             || route.starts_with("/deployers")
@@ -858,6 +859,7 @@ mod tests {
         assert_eq!(group("/sign-up/invites/{key}"), "sign_in");
         assert_eq!(group("/ops/sign-up"), "ops");
         assert_eq!(group("/publishers/{signer}"), "packages");
+        assert_eq!(group("/pipelines/validate"), "packages");
     }
 
     #[test]

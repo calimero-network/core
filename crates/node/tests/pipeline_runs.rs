@@ -1950,3 +1950,265 @@ async fn subscribers_are_bounded() {
     let _again = rig.alice.pipeline_run_events(&rig.app, &run).await.unwrap();
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
 }
+
+const GHOSTLY: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: ghostly
+steps:
+  a: { method: ghost }
+  b: { method: digest, module: com.nope@1.0.0 }
+  c: { method: digest, limits: { fuel: 99999999999999 } }
+";
+
+const STILL_OK: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: still-ok
+steps:
+  a: { method: digest }
+";
+
+fn system_applied(rig: &Rig) -> u64 {
+    rig.c.nodes[0].as_ref().unwrap().node.system.applied()
+}
+
+fn error_keys(answer: &Value) -> Vec<(String, String)> {
+    let mut keys: Vec<_> = answer["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["path"].as_str().unwrap().to_owned(),
+                e["code"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn validate_reports_every_error_with_its_path_and_writes_nothing() {
+    let rig = Rig::start(&[]).await;
+    let before = system_applied(&rig);
+    let against =
+        |source: &str| json!({ "source": source, "package": "com.test.job", "version": "1.0.0" });
+
+    let answer = rig.alice.validate_pipeline(against(GHOSTLY)).await.unwrap();
+    assert_eq!(answer["ok"], false, "{answer}");
+    let keys = error_keys(&answer);
+    assert_eq!(
+        keys,
+        [
+            ("steps.a.method", "UNKNOWN_METHOD"),
+            ("steps.b.module", "UNKNOWN_MODULE"),
+            ("steps.c.limits.fuel", "LIMIT_EXCEEDS_CAP"),
+        ]
+        .map(|(p, c)| (p.to_owned(), c.to_owned()))
+    );
+    assert!(answer["errors"][0]["message"].is_string());
+
+    // Installing the same source answers the same paths and codes.
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let refused = rig
+        .alice
+        .upload_package(mpk_with_pipelines(
+            "com.test.job",
+            "1.0.1",
+            None,
+            Some(&rig.compute),
+            &[("pipelines/ghostly.yaml", GHOSTLY)],
+            &key,
+        ))
+        .await
+        .unwrap_err();
+    let mut installed: Vec<_> = refused
+        .details()
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["path"].as_str().unwrap().to_owned(),
+                d["code"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    installed.sort();
+    assert_eq!(keys, installed);
+
+    // Without a release only the structure is judged, with the same shape of answer.
+    let structural = rig
+        .alice
+        .validate_pipeline(json!({ "source": GHOSTLY.replace("name: ghostly\n", "") }))
+        .await
+        .unwrap();
+    assert_eq!(structural["ok"], false, "{structural}");
+    assert!(!structural["errors"].as_array().unwrap().is_empty());
+    let plain = rig
+        .alice
+        .validate_pipeline(json!({ "source": GHOSTLY }))
+        .await
+        .unwrap();
+    assert_eq!(plain["ok"], true, "no release, no method check: {plain}");
+
+    assert_eq!(system_applied(&rig), before, "validating logged something");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn validate_against_a_release_uses_its_methods_and_caps() {
+    let rig = Rig::start(&[]).await;
+    let against =
+        |source: &str| json!({ "source": source, "package": "com.test.job", "version": "1.0.0" });
+    let missing = rig
+        .alice
+        .validate_pipeline(against(&STILL_OK.replace("digest", "ghost")))
+        .await
+        .unwrap();
+    assert_eq!(
+        error_keys(&missing),
+        [("steps.a.method".to_owned(), "UNKNOWN_METHOD".to_owned())]
+    );
+
+    let ok = rig
+        .alice
+        .validate_pipeline(against(STILL_OK))
+        .await
+        .unwrap();
+    assert_eq!(ok["ok"], true, "{ok}");
+    assert_eq!(ok["errors"], json!([]));
+    assert_eq!(ok["pipeline"]["name"], "still-ok");
+    assert!(ok["worstCaseFuel"].is_string(), "{ok}");
+    assert!(
+        ok.get("worstCaseCost").is_none(),
+        "no price table yet: {ok}"
+    );
+
+    set_prices(&rig).await;
+    let priced = rig
+        .alice
+        .validate_pipeline(against(STILL_OK))
+        .await
+        .unwrap();
+    assert!(
+        priced["worstCaseCost"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
+
+    let half = rig
+        .alice
+        .validate_pipeline(json!({ "source": STILL_OK, "package": "com.test.job" }))
+        .await
+        .unwrap_err();
+    assert_eq!(half.code(), Some("BAD_RELEASE"), "{half}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn validate_a_release_the_caller_cannot_see_is_404() {
+    let rig = Rig::start(&[]).await;
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let e = bob
+        .validate_pipeline(json!({
+            "source": STILL_OK, "package": "com.test.job", "version": "1.0.0"
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let ghost = rig
+        .alice
+        .validate_pipeline(json!({
+            "source": STILL_OK, "package": "com.test.job", "version": "9.9.9"
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(ghost.code(), Some("NOT_FOUND"), "{ghost}");
+    // Structure alone needs only a sign-in.
+    assert_eq!(
+        bob.validate_pipeline(json!({ "source": STILL_OK }))
+            .await
+            .unwrap()["ok"],
+        true
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn estimate_follows_the_input_count() {
+    let rig = Rig::start(&[]).await;
+    let ids: Vec<String> = (0..10u8).map(|i| format!("{i:02x}").repeat(32)).collect();
+    let estimate = |body: Value| rig.alice.estimate_pipeline(&rig.app, "batched", body);
+
+    let ten = estimate(json!({ "inputs": { "docs": ids } }))
+        .await
+        .unwrap();
+    assert_eq!(ten["steps"]["each"]["runs"], "3", "{ten}");
+    assert!(
+        ten.get("cost").is_none() && ten.get("priceVersion").is_none(),
+        "{ten}"
+    );
+    let counted = estimate(json!({ "counts": { "docs": 10 } })).await.unwrap();
+    assert_eq!(counted, ten);
+    let none = estimate(json!({})).await.unwrap();
+    assert_eq!(
+        none["steps"]["each"]["runs"], "5",
+        "maxItems 20 over batch 4: {none}"
+    );
+    let over = estimate(json!({ "counts": { "docs": 500 } }))
+        .await
+        .unwrap();
+    assert_eq!(over["steps"]["each"]["runs"], "5", "{over}");
+
+    set_prices(&rig).await;
+    let priced = estimate(json!({ "counts": { "docs": 10 } })).await.unwrap();
+    assert_eq!(priced["cost"], (3 * CHECK_RUN_COST).to_string(), "{priced}");
+    assert_eq!(priced["steps"]["each"]["cost"], priced["cost"]);
+    assert_eq!(priced["priceVersion"], 1);
+
+    for bad in [
+        json!({ "inputs": { "docs": ["ab"] }, "counts": { "docs": 1 } }),
+        json!({ "counts": { "nope": 1 } }),
+    ] {
+        let e = estimate(bad).await.unwrap_err();
+        assert_eq!(e.code(), Some("BAD_INPUTS"), "{e}");
+    }
+    let e = rig
+        .alice
+        .estimate_pipeline(&rig.app, "ghost", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_SUCH_PIPELINE"), "{e}");
+    let runs = rig.alice.pipeline_runs(&rig.app).await.unwrap();
+    assert_eq!(runs["runs"], json!([]), "an estimate started a run");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_cannot_estimate_on_a_public_app() {
+    let rig = Rig::start(&[]).await;
+    let public = rig
+        .alice
+        .create_app_from_package(
+            "open",
+            "com.test.job",
+            Some("1.0.0"),
+            None,
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let e = bob
+        .estimate_pipeline(&public, "batched", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let mine = rig
+        .alice
+        .estimate_pipeline(&public, "batched", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(mine["steps"]["each"]["runs"], "5");
+}

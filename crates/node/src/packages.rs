@@ -363,12 +363,7 @@ impl Node {
             let _prev = part_sizes.insert(hash.clone(), bytes.len() as u64);
             let _prev = wasm_by_hash.insert(hash, bytes);
         }
-        let pools = self.sys(|s| {
-            s.pools
-                .iter()
-                .map(|(name, p)| (name.clone(), p.max_memory_mib))
-                .collect()
-        });
+        let pools = self.pool_ceilings();
         let modules = self.resolve_modules(&service_pipelines, actor).await;
         let mut pipeline_refs = BTreeMap::new();
         for (compiled, record) in pipelines::register(&service_pipelines, &pools, &modules)? {

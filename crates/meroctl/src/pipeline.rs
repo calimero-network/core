@@ -19,6 +19,30 @@ const WAIT_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Subcommand)]
 pub enum PipelineCmd {
+    /// Check a pipeline file and print every problem with its path; exit 1 when it is not valid.
+    /// With `--package` and `--version`, check it as that release would install it.
+    Validate {
+        file: PathBuf,
+        #[arg(long, requires = "version")]
+        package: Option<String>,
+        #[arg(long, requires = "package")]
+        version: Option<String>,
+    },
+    /// What a run of the pipeline `name` would take: runs, fuel and cost per step. Starts nothing.
+    Estimate {
+        app: String,
+        name: String,
+        /// Count the files bound to an input: `NAME=ID[,ID...]`; once per input.
+        #[arg(
+            long = "input",
+            value_name = "NAME=ID[,ID...]",
+            conflicts_with = "counts"
+        )]
+        inputs: Vec<String>,
+        /// Give an input's file count directly: `NAME=N`; once per input.
+        #[arg(long = "count", value_name = "NAME=N")]
+        counts: Vec<String>,
+    },
     /// Start a run of the pipeline `name`; prints `{ run }`, or with `--wait` the ended run.
     Run {
         /// The context (alias or id).
@@ -249,8 +273,58 @@ fn start_body(inputs: &[String], params: &[String], max_cost: Option<&str>) -> e
     Ok(body)
 }
 
+/// `--count NAME=N` as `{ NAME: N }`.
+fn parse_counts(args: &[String]) -> eyre::Result<Value> {
+    let mut counts = serde_json::Map::new();
+    for arg in args {
+        let (name, n) = split(arg)?;
+        let n: u32 = n
+            .parse()
+            .map_err(|_| eyre!("`{n}` is not a whole number"))?;
+        if counts.insert(name.to_owned(), json!(n)).is_some() {
+            bail!("count `{name}` is given twice");
+        }
+    }
+    Ok(Value::Object(counts))
+}
+
 pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
     Ok(match cmd {
+        PipelineCmd::Validate {
+            file,
+            package,
+            version,
+        } => {
+            let source = tokio::fs::read_to_string(&file)
+                .await
+                .wrap_err_with(|| file.display().to_string())?;
+            let answer = env
+                .client
+                .validate_pipeline(
+                    json!({ "source": source, "package": package, "version": version }),
+                )
+                .await?;
+            if answer["ok"] != true {
+                println!("{}", serde_json::to_string_pretty(&answer)?);
+                bail!("the pipeline is not valid");
+            }
+            answer
+        }
+        PipelineCmd::Estimate {
+            app,
+            name,
+            inputs,
+            counts,
+        } => {
+            let body = if counts.is_empty() {
+                json!({ "inputs": parse_inputs(&inputs)? })
+            } else {
+                json!({ "counts": parse_counts(&counts)? })
+            };
+            env.client
+                .estimate_pipeline(&env.app(&app).await?, &name, body)
+                .await?
+        }
         PipelineCmd::Run {
             app,
             name,
@@ -316,6 +390,17 @@ mod tests {
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn counts_are_whole_numbers_given_once() {
+        assert_eq!(
+            parse_counts(&strings(&["docs=10", "imgs=0"])).unwrap(),
+            json!({ "docs": 10, "imgs": 0 })
+        );
+        assert!(parse_counts(&strings(&["docs=ten"])).is_err());
+        assert!(parse_counts(&strings(&["docs=1", "docs=2"])).is_err());
+        assert!(parse_counts(&strings(&["=3"])).is_err());
     }
 
     #[test]
