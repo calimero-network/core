@@ -1451,3 +1451,101 @@ async fn an_admin_lets_an_app_teams_members_make_channels() {
     assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
     let _private = s(&bob.post(&teams, channel).await.unwrap()["teamId"]);
 }
+
+/// Calimero Home's "give all apps": an admin gives one member rows in every
+/// app team at once, with one passkey approval (`POST
+/// /orgs/{org}/members/{account}/teams`), and takes them out of several the
+/// same way (`DELETE`, the private channels below included). Each team is
+/// judged as its own team-member change would be: a batch naming one team
+/// the caller may not change is refused whole, and nothing changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_gives_a_member_every_app_in_one_step() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    for p in [CHAT, BLOCKS, NOTES] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let apps = [
+        instance(&alice, &org, CHAT, Value::Null).await.unwrap(),
+        instance(&alice, &org, BLOCKS, Value::Null).await.unwrap(),
+        instance(&alice, &org, NOTES, Value::Null).await.unwrap(),
+    ];
+    // Three restricted app teams: Carol, who joins after, is in none.
+    let _done = scope(&alice, &mut a, &org, json!({ "shared": true }))
+        .await
+        .unwrap();
+    join(
+        &carol,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let carol_id = id(&carol).await;
+    let mut teams = Vec::new();
+    for p in [CHAT, BLOCKS, NOTES] {
+        teams.push(s(&app_team(&alice, &org, p).await["teamId"]));
+    }
+    assert!(reaches(&carol, &org).await.is_empty());
+    let rows = |teams: &[String]| json!({ "teams": teams.iter().map(|t| json!({ "team": t })).collect::<Vec<_>>() });
+    let path = format!("orgs/{org}/members/{carol_id}/teams");
+
+    // Bob leads none of them: refused, nothing set.
+    let err = bob
+        .post_confirmed(&path, rows(&teams), &mut b)
+        .await
+        .unwrap_err();
+    refused(&err, "not allowed to manage this team");
+    assert!(reaches(&carol, &org).await.is_empty());
+    // A batch naming one team twice, or none, is refused before a passkey.
+    for body in [rows(&[teams[0].clone(), teams[0].clone()]), rows(&[])] {
+        let err = alice.post(&path, body).await.unwrap_err();
+        assert_eq!(err.code(), Some("BAD_TEAMS"), "{err}");
+    }
+
+    // Bob leads Chat now: a batch of Chat and Blocks is still refused whole.
+    let bob_id = id(&bob).await;
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{}/members", teams[0]),
+            json!({ "account": bob_id, "role": "lead" }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let err = bob
+        .post_confirmed(&path, rows(&teams[..2]), &mut b)
+        .await
+        .unwrap_err();
+    refused(&err, "not allowed to manage this team");
+    assert!(reaches(&carol, &org).await.is_empty());
+
+    // Alice gives Carol all three with one approval.
+    let _ok = alice
+        .post_confirmed(&path, rows(&teams), &mut a)
+        .await
+        .unwrap();
+    let mut r = reaches(&carol, &org).await;
+    r.sort();
+    let mut want = apps.to_vec();
+    want.sort();
+    assert_eq!(r, want);
+    for app in &apps {
+        writes(&carol, app).await.unwrap();
+    }
+
+    // Out of Chat and Notes with one approval; Blocks stays.
+    let _ok = alice
+        .delete_confirmed_with(&path, json!({ "teams": [teams[0], teams[2]] }), &mut a)
+        .await
+        .unwrap();
+    assert_eq!(reaches(&carol, &org).await, vec![apps[1].clone()]);
+    let err = writes(&carol, &apps[0]).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}

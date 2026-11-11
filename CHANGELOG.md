@@ -15,6 +15,18 @@
   passkey covers every package named. `ScopeApp` carries `child_teams`
   (absent in entries an earlier release logged, which replay as they did).
 
+- **One account in several teams with one approval.** Calimero Home's "give
+  all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
+  step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
+  [{ team, role?, capabilities? }], confirm? }` sets the account's row in up
+  to 64 teams in one log entry (`SystemCmd::SetTeamMembers`, consent
+  `org:<org> / __set_team_members { account, teams }`), and `DELETE` on the
+  same path with `{ teams: [team] }` takes them out, or leaves them, the
+  teams below included (`SystemCmd::RemoveTeamMembers`, `__remove_team_members
+  { account, teams }`). Each team is judged as the single-team route judges
+  it, and the entry applies all or nothing. A node on an earlier release
+  answers the routes `404`.
+
 - **Rename an organization**: `POST /orgs/{org}/name { name, confirm? }`
   (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
   / { name }`), by its owner or an admin; `403` below admin, `404` outside.
@@ -64,6 +76,11 @@
   write as they did.
 
 ### Fixed
+
+- **`GET /ops/quotas` and `GET /ops/pools` read caught-up state**. Each read
+  the node's own system replica as it stood, so an operator who set a quota
+  through the leader and read it back through a follower could see the old
+  value. Both now catch up first (a read index), as other reads do.
 
 - **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
   `ScopeApps`). An instance's package was taken from its component's bundle
