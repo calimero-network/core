@@ -49,7 +49,7 @@ is its command line.
   with the RPC it never finished (regression:
   `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
-  (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
+  (`view`, `call`, `events`, `storage`, `last-write`, `xcalls`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
   refused while a hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs `rpc.sender()` = the
@@ -1333,8 +1333,17 @@ API and system group:
   (`xcall_retry`, in memory, `backoff_ms`) until `XCALL_WINDOW_MS` from the send; a
   missing target, another org's, a wasmer app, or the window passing dead-letters it
   (`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its
-  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin, a hosting node).
-  Test: `component_xcalls_are_delivered_in_order_or_dead_lettered`.
+  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin; a node without a
+  replica asks one, `internal/xcalls`, `Node::app_xcalls`).
+  Tests: `component_xcalls_are_delivered_in_order_or_dead_lettered`,
+  `dead_letters_move_with_the_app_and_any_node_lists_them`.
+- **Apply reads through the batch** (`component.rs`: `outgoing_in`, `action_in`,
+  `replay_in`): a host row an entry's apply reads comes from its `StateTx`, never the
+  group's committed state, since a replica catching up (a new replica of a moved app, a
+  restarted one) applies many entries in one batch and must end where its leader, which
+  applied them one at a time, did. `XcallDone` read the outbox row committed and lost the
+  dead letter on such a replica; `ActionEnd` and a node command's first answer under a key
+  had the same hole. Tests: `a_replica_catching_up_*` in `component.rs`.
 - **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
