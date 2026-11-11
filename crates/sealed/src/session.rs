@@ -35,12 +35,15 @@ pub(crate) const SESSION_ID_LEN: usize = 16;
 pub const SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60);
 /// How long an unused session's keys are kept.
 const SESSION_IDLE: Duration = Duration::from_secs(10 * 60);
-/// Sessions held at once. Opening one needs no credential, so beyond this a
-/// session is dropped rather than a new one refused, and its client simply opens
-/// another: first one that never carried a request, then the least recently
-/// used. A flood of handshakes therefore displaces its own sessions before any
-/// client's.
+/// Anonymous (NK) sessions held at once. Opening one needs no credential, so
+/// beyond this a session is dropped rather than a new one refused, and its
+/// client simply opens another: first one that never carried a request, then
+/// the least recently used. A flood of handshakes therefore displaces its own
+/// sessions before any client's.
 pub(crate) const MAX_SESSIONS: usize = 1 << 14;
+/// Identified (IK) sessions held at once, apart from the anonymous ones: an
+/// anonymous session never displaces a peer's, nor a peer's an anonymous one.
+pub(crate) const MAX_IDENTIFIED_SESSIONS: usize = 1 << 12;
 /// Request ids remembered per session. An id at or below the oldest one
 /// forgotten is refused too, so a request can be replayed neither inside nor
 /// below the window.
@@ -209,10 +212,11 @@ impl Session {
     }
 }
 
-/// Every open session.
+/// Every open session, anonymous and identified apart, each under its own cap.
 #[derive(Default)]
 pub(crate) struct Sessions {
-    map: HashMap<SessionId, Session>,
+    anonymous: HashMap<SessionId, Session>,
+    identified: HashMap<SessionId, Session>,
 }
 
 impl Sessions {
@@ -223,20 +227,24 @@ impl Sessions {
         peer: Option<[u8; 32]>,
         now: Instant,
     ) {
-        if self.map.len() >= MAX_SESSIONS {
-            self.map.retain(|_, session| session.is_live(now));
+        let (map, cap) = if peer.is_some() {
+            (&mut self.identified, MAX_IDENTIFIED_SESSIONS)
+        } else {
+            (&mut self.anonymous, MAX_SESSIONS)
+        };
+        if map.len() >= cap {
+            map.retain(|_, session| session.is_live(now));
         }
-        if self.map.len() >= MAX_SESSIONS {
-            let least_recent = self
-                .map
+        if map.len() >= cap {
+            let least_recent = map
                 .iter()
                 .min_by_key(|(_, session)| (session.used, session.idle_until))
                 .map(|(id, _)| *id);
             if let Some(id) = least_recent {
-                let _dropped = self.map.remove(&id);
+                let _dropped = map.remove(&id);
             }
         }
-        let _previous = self.map.insert(
+        let _previous = map.insert(
             id,
             Session {
                 keys,
@@ -252,11 +260,12 @@ impl Sessions {
     /// Drop every session past its lifetime or idle limit, and with it the
     /// only copy of its keys.
     pub fn expire(&mut self, now: Instant) {
-        self.map.retain(|_, session| session.is_live(now));
+        self.anonymous.retain(|_, session| session.is_live(now));
+        self.identified.retain(|_, session| session.is_live(now));
     }
 
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.anonymous.len() + self.identified.len()
     }
 
     /// A live session's keys, the instant they expire, and the static key its
@@ -286,14 +295,15 @@ impl Sessions {
     }
 
     fn live(&mut self, id: &SessionId, now: Instant) -> Result<&mut Session, Refusal> {
-        if self
-            .map
-            .get(id)
-            .is_some_and(|session| !session.is_live(now))
-        {
-            let _expired = self.map.remove(id);
+        let map = if self.identified.contains_key(id) {
+            &mut self.identified
+        } else {
+            &mut self.anonymous
+        };
+        if map.get(id).is_some_and(|session| !session.is_live(now)) {
+            let _expired = map.remove(id);
         }
-        self.map.get_mut(id).ok_or(Refusal {
+        map.get_mut(id).ok_or(Refusal {
             status: axum::http::StatusCode::CONFLICT,
             code: "unknown_session",
             message: "no such sealed session on this node (it expired, or the node restarted); \
@@ -322,5 +332,47 @@ impl ReplayWindow {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+    use std::time::Instant;
+
+    use zeroize::Zeroizing;
+
+    use super::{SessionId, SessionKeys, Sessions, MAX_SESSIONS};
+
+    fn keys() -> SessionKeys {
+        SessionKeys {
+            request: Zeroizing::new([0; 32]),
+            response: Zeroizing::new([0; 32]),
+        }
+    }
+
+    fn id(n: usize) -> SessionId {
+        let mut id = [0; 16];
+        id[..8].copy_from_slice(&(n as u64).to_be_bytes());
+        id
+    }
+
+    /// Anonymous sessions, used more recently than a peer's, fill the table:
+    /// the peer's session is still there.
+    #[test]
+    fn anonymous_sessions_never_displace_a_peers() {
+        let start = Instant::now();
+        let mut sessions = Sessions::default();
+        let peer = id(usize::MAX);
+        sessions.insert(peer, keys(), Some([1; 32]), start);
+        sessions.admit(&peer, 1, start).unwrap();
+
+        let later = start + Duration::from_secs(1);
+        for n in 0..=MAX_SESSIONS {
+            sessions.insert(id(n), keys(), None, later);
+            sessions.admit(&id(n), 1, later).unwrap();
+        }
+        assert!(sessions.keys(&peer, later).is_ok());
+        assert_eq!(sessions.len(), MAX_SESSIONS + 1);
     }
 }

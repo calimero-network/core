@@ -9,6 +9,7 @@
 //! - Ops (mdma, operator token): `/ops/*`.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
@@ -157,12 +158,34 @@ impl Pending {
             | Self::Confirm { expires, .. } => *expires,
         }
     }
+
+    /// The account whose holder the ceremony is for, when the caller proved
+    /// it (a session, an API key, a recovery code): such ceremonies draw on
+    /// that account's budget, the rest on the anonymous one.
+    fn account(&self) -> Option<&str> {
+        match self {
+            Self::AddPasskey { account, .. }
+            | Self::RecoverStart { account, .. }
+            | Self::Confirm { account, .. } => Some(account),
+            Self::Register { .. }
+            | Self::Login { .. }
+            | Self::SignUp { .. }
+            | Self::RecoverFinish { .. } => None,
+        }
+    }
 }
 
-/// The most passkey ceremonies a node holds open at once. Each lives at most
+/// The most ceremonies a node holds open for callers it does not know yet
+/// (sign-in, sign-up, a recovery's finish). Each lives at most
 /// `CHALLENGE_TTL`; past this the node answers 429 instead of growing without
-/// bound (Xil's review, issue 12).
+/// bound (Xil's review, issue 12). Ceremonies of known accounts do not count
+/// here, so a full anonymous pool never blocks an account's step-up.
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
+/// The most ceremonies a node holds open for known accounts, all together.
+pub const MAX_ACCOUNT_CHALLENGES: usize = 10_000;
+/// The most ceremonies a node holds open for one account, so no account
+/// fills the pool the others share.
+pub const MAX_CHALLENGES_PER_ACCOUNT: usize = 64;
 
 fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
     let id = format!("{}.{}", node.config.node_id, b64url(&random::<16>()));
@@ -170,17 +193,39 @@ fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
         .challenges
         .lock()
         .map_err(|_| ApiError::internal("challenge store poisoned"))?;
-    let now = now_secs();
+    admit_pending(&mut c, &pending, now_secs())?;
+    let _prev = c.insert(id.clone(), pending);
+    Ok(id)
+}
+
+/// Drop expired ceremonies, then refuse `pending` when its budget is full:
+/// the anonymous pool, or its account's share of the accounts' pool.
+fn admit_pending(
+    c: &mut HashMap<String, Pending>,
+    pending: &Pending,
+    now: u64,
+) -> Result<(), ApiError> {
     c.retain(|_, p| p.expires() > now);
-    if c.len() >= MAX_PENDING_CHALLENGES {
+    let full = match pending.account() {
+        None => c.values().filter(|p| p.account().is_none()).count() >= MAX_PENDING_CHALLENGES,
+        Some(account) => {
+            let (mine, all) = c
+                .values()
+                .filter_map(Pending::account)
+                .fold((0, 0), |(mine, all), a| {
+                    (mine + usize::from(a == account), all + 1)
+                });
+            mine >= MAX_CHALLENGES_PER_ACCOUNT || all >= MAX_ACCOUNT_CHALLENGES
+        }
+    };
+    if full {
         return Err(ApiError::new(
             429,
             "RATE_LIMITED",
-            "too many sign-ins in progress; try again shortly",
+            "too many passkey ceremonies in progress; try again shortly",
         ));
     }
-    let _prev = c.insert(id.clone(), pending);
-    Ok(id)
+    Ok(())
 }
 
 fn unknown_challenge() -> ApiError {
@@ -3599,7 +3644,7 @@ async fn app_delete(
     Path(app_id): Path<String>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let app = node.app(&app_id).await?;
     p.within(&node, &app)?;
@@ -3818,6 +3863,14 @@ async fn step_up(
         return Err(ApiError::forbidden(
             "this method needs the account holder's passkey",
         ));
+    }
+    // A package-bound session steps up over its package's apps only: never
+    // for the account, an organization, the cluster or another package.
+    if p.bound_app().is_some() {
+        match node.sys(|s| s.apps.get(app_id).cloned()) {
+            Some(app) => p.within(node, &app)?,
+            None => p.unbound()?,
+        }
     }
     let account = p.account()?;
     let args_bytes = serde_json::to_vec(args).unwrap_or_default();
@@ -5339,7 +5392,7 @@ async fn app_access(
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     p.within(&node, &node.app(&app_id).await?)?;
     let _ok = node
@@ -5371,7 +5424,7 @@ async fn org_create(
     headers: HeaderMap,
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     crate::system::org_name_fits(&body.name).map_err(malformed)?;
     let org_id = typed_id::<16>();
     let v = node
@@ -5621,7 +5674,7 @@ async fn org_rename(
     Path(org): Path<String>,
     Json(body): Json<RenameOrgBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
@@ -5673,7 +5726,7 @@ async fn org_all_apps(
     Path(org): Path<String>,
     Json(body): Json<AllAppsBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
@@ -5814,7 +5867,7 @@ async fn org_set_member(
     Path(org): Path<String>,
     Json(body): Json<MemberBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({ "account": body.account, "role": body.role });
     let consent = org_consent(&node, &p, &org, "__set_org_role", &args, body.confirm).await?;
@@ -5838,7 +5891,7 @@ async fn org_remove_member(
     Path((org, account)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({ "account": account });
     let confirm = body.and_then(|Json(b)| b.confirm);
@@ -5868,7 +5921,7 @@ async fn team_create(
     Path(org): Path<String>,
     Json(body): Json<TeamBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let actor = holder(&node, &headers).await?.account()?;
     let v = node
         .sys_write(&SystemCmd::CreateTeam {
             org,
@@ -5902,7 +5955,7 @@ async fn team_set_member(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamMemberBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({
         "team": team, "account": body.account, "lead": body.lead,
@@ -5956,7 +6009,7 @@ async fn member_set_teams(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<TeamRowsBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
     let args = crate::system::team_members_args(&account, &body.teams);
@@ -5986,7 +6039,7 @@ async fn member_remove_teams(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<TeamIdsBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     team_batch(body.teams.iter().map(String::as_str))?;
     let args = crate::system::remove_team_members_args(&account, &body.teams);
@@ -6099,7 +6152,7 @@ async fn team_update(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamUpdateBody>,
 ) -> ApiResult {
-    let actor = person(&node, &headers).await?.account()?;
+    let actor = holder(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
@@ -6125,7 +6178,7 @@ async fn team_delete(
     Path((org, team)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     // Only someone who may delete it learns which apps go (as `DeleteTeam`
     // judges it again where it applies).
@@ -6203,7 +6256,7 @@ async fn org_capabilities(
     Path(org): Path<String>,
     Json(body): Json<CapabilitiesBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let cmd = match body.account {
         Some(account) => {
@@ -6247,7 +6300,7 @@ async fn team_remove_member(
     Path((org, team, account)): Path<(String, String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let args = json!({ "team": team, "account": account });
     let confirm = body.and_then(|Json(b)| b.confirm);
@@ -6292,7 +6345,7 @@ async fn invite_create(
     Path(org): Path<String>,
     Json(body): Json<InviteBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
@@ -6367,7 +6420,7 @@ async fn invite_redeem(
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let now = now_secs();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
@@ -11279,7 +11332,64 @@ fn typed_id<const N: usize>() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::typed_id;
+    use std::collections::HashMap;
+
+    use super::{
+        admit_pending, typed_id, Pending, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
+    };
+
+    fn sign_up(expires: u64) -> Pending {
+        Pending::Register {
+            challenge: [0; 32],
+            name: String::new(),
+            expires,
+        }
+    }
+
+    fn step_up(account: &str, expires: u64) -> Pending {
+        Pending::Confirm {
+            challenge: [0; 32],
+            app: "app".to_owned(),
+            method: "m".to_owned(),
+            args: Vec::new(),
+            nonce: String::new(),
+            account: account.to_owned(),
+            expires,
+            carry: None,
+        }
+    }
+
+    fn put(c: &mut HashMap<String, Pending>, p: Pending, now: u64) -> Result<(), u16> {
+        admit_pending(c, &p, now).map_err(|e| e.status)?;
+        let _prev = c.insert(format!("1.{}", c.len()), p);
+        Ok(())
+    }
+
+    /// Anonymous ceremonies have their own pool: filling it refuses the next
+    /// sign-in, but an account's step-up and passkey add still begin.
+    #[test]
+    fn a_full_anonymous_pool_does_not_block_an_accounts_step_up() {
+        let mut c = HashMap::new();
+        for _ in 0..MAX_PENDING_CHALLENGES {
+            assert_eq!(put(&mut c, sign_up(100), 0), Ok(()));
+        }
+        assert_eq!(put(&mut c, sign_up(100), 0), Err(429));
+        assert_eq!(put(&mut c, step_up("alice", 100), 0), Ok(()));
+        // Expired ones free the pool.
+        assert_eq!(put(&mut c, sign_up(200), 100), Ok(()));
+    }
+
+    /// One account's step-ups are capped, and the cap is its own.
+    #[test]
+    fn one_account_cannot_fill_the_accounts_pool() {
+        let mut c = HashMap::new();
+        for _ in 0..MAX_CHALLENGES_PER_ACCOUNT {
+            assert_eq!(put(&mut c, step_up("mallory", 100), 0), Ok(()));
+        }
+        assert_eq!(put(&mut c, step_up("mallory", 100), 0), Err(429));
+        assert_eq!(put(&mut c, step_up("alice", 100), 0), Ok(()));
+        assert_eq!(put(&mut c, sign_up(100), 0), Ok(()));
+    }
 
     #[test]
     fn a_typed_id_never_starts_with_a_dash() {
