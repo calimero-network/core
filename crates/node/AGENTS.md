@@ -102,6 +102,11 @@ is its command line.
   `__remove_member { account }`, `__set_team_member { team, account, lead,
   role, capabilities }`, `__remove_team_member { team, account }` (it takes
   the rows below the team too, `RemoveTeamMember { subtree }`),
+  `__set_team_members { account, teams }` and `__remove_team_members
+  { account, teams }` (one account's rows in up to `MAX_TEAM_BATCH` teams,
+  each judged by the single command's rule, all or nothing:
+  `SetTeamMembers`, `RemoveTeamMembers`, `system::team_members_args`,
+  `system::remove_team_members_args`),
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
