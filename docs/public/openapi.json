@@ -776,7 +776,44 @@
                     },
                     "replicas": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "node": {
+                                "type": "integer",
+                                "format": "int64",
+                                "minimum": 0
+                              },
+                              "attestation": {
+                                "$ref": "#/components/schemas/AttestationDoc"
+                              }
+                            },
+                            "required": [
+                              "node",
+                              "attestation"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "node": {
+                                "type": "integer",
+                                "format": "int64",
+                                "minimum": 0
+                              },
+                              "error": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "node",
+                              "error"
+                            ]
+                          }
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -3174,7 +3211,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Move an app to another organization",
-        "description": "Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -3231,7 +3268,10 @@
                       "type": "string"
                     },
                     "from": {
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "org": {
                       "type": "string"
@@ -3242,8 +3282,17 @@
                     "created": {
                       "type": "boolean"
                     },
-                    "added": {},
-                    "revokedInvites": {}
+                    "added": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "revokedInvites": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
                   },
                   "required": [
                     "appId",
@@ -3458,7 +3507,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Who is present",
-        "description": "**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "One entry per present device (a session's passkey, or an API key): its account, device and state (hex).\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -3490,7 +3539,28 @@
                   "properties": {
                     "present": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "account": {
+                            "type": "string"
+                          },
+                          "device": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "account",
+                          "device",
+                          "state"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -5841,13 +5911,32 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "scope": {},
-                    "governance": {},
-                    "approvedReleases": {},
-                    "clusterReleases": {},
+                    "scope": {
+                      "$ref": "#/components/schemas/AppScope"
+                    },
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    },
+                    "approvedReleases": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "clusterReleases": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ClusterRelease"
+                      }
+                    },
                     "apps": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "$ref": "#/components/schemas/ReportApp"
+                      }
                     },
                     "next": {
                       "type": [
@@ -6158,10 +6247,51 @@
                         "null"
                       ]
                     },
-                    "approvedReleases": {},
-                    "outboundApprovals": {},
-                    "recoveryCode": {},
-                    "recoveryPending": {}
+                    "approvedReleases": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "outboundApprovals": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "$ref": "#/components/schemas/OutboundApproval"
+                      }
+                    },
+                    "recoveryCode": {
+                      "type": "boolean"
+                    },
+                    "recoveryPending": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "accountId": {
+                          "type": "string"
+                        },
+                        "credentialId": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "readyAt": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "accountId",
+                        "credentialId",
+                        "startedAt",
+                        "readyAt"
+                      ]
+                    }
                   },
                   "required": [
                     "accountId",
@@ -7990,7 +8120,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "The account's live sessions",
-        "description": "Latest active first, at most 256.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "description": "Latest active first, at most 256. `openedAt` (Unix seconds) is `null` for a session opened before the node kept it.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
         "security": [
           {
             "session": []
@@ -8033,7 +8163,10 @@
                             ]
                           },
                           "openedAt": {
-                            "type": "integer",
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "format": "int64",
                             "minimum": 0
                           },
@@ -8245,7 +8378,6 @@
                   "required": [
                     "bundleBytes"
                   ],
-                  "additionalProperties": true,
                   "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
                 }
               }
@@ -8891,7 +9023,9 @@
                     "deployer": {
                       "$ref": "#/components/schemas/Deployer"
                     },
-                    "grant": {}
+                    "grant": {
+                      "$ref": "#/components/schemas/DeployerGrant"
+                    }
                   },
                   "required": [
                     "key",
@@ -8977,7 +9111,7 @@
         ],
         "x-calimero-group": "deployments",
         "summary": "The deployers",
-        "description": "**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "description": "The operator, or the cluster's owner: the deployments and deployers governance, the owner (`null` until named), and every grant (`until` RFC 3339 and `untilSecs`, `null` for none; `grantedAt` RFC 3339; `deployer` `null` for a key it cannot read).\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
         "security": [
           {
             "session": []
@@ -8992,7 +9126,87 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "deployments": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "granted"
+                      ]
+                    },
+                    "deployers": {
+                      "type": "string",
+                      "enum": [
+                        "operator",
+                        "owner"
+                      ]
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/Deployer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "grants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "deployer": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/components/schemas/Deployer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "until": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "untilSecs": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "grantedAt": {
+                            "type": "string"
+                          },
+                          "grantedBy": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "deployer",
+                          "until",
+                          "untilSecs",
+                          "grantedAt",
+                          "grantedBy"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "deployments",
+                    "deployers",
+                    "owner",
+                    "grants"
+                  ]
                 }
               }
             }
@@ -9174,7 +9388,7 @@
         ],
         "x-calimero-group": "deployments",
         "summary": "Create a deployment",
-        "description": "A named set of releases an owner (an account or organization) offers for others to instantiate.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -9218,6 +9432,12 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "deployment": {
+                      "$ref": "#/components/schemas/DeploymentRecord"
+                    },
                     "host": {
                       "type": [
                         "string",
@@ -9226,10 +9446,10 @@
                     }
                   },
                   "required": [
+                    "id",
+                    "deployment",
                     "host"
-                  ],
-                  "additionalProperties": true,
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                  ]
                 }
               }
             }
@@ -9954,7 +10174,7 @@
         ],
         "x-calimero-group": "deployments",
         "summary": "The organizations a deployment serves",
-        "description": "**Who:** signed in (a session or an API key).",
+        "description": "For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization are only counted (`outsideOrgs`). Never who the members are.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -9982,7 +10202,83 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "deployment": {
+                      "type": "string"
+                    },
+                    "orgs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "memberCount": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "activeMembers30d": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "instances": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "apps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "app": {
+                                  "type": "string"
+                                },
+                                "version": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "app",
+                                "version"
+                              ]
+                            }
+                          },
+                          "firstCreatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "orgId",
+                          "name",
+                          "memberCount",
+                          "activeMembers30d",
+                          "instances",
+                          "apps",
+                          "firstCreatedAt"
+                        ]
+                      }
+                    },
+                    "outsideOrgs": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "orgs",
+                    "outsideOrgs"
+                  ]
                 }
               }
             }
@@ -10120,7 +10416,6 @@
                   "required": [
                     "org"
                   ],
-                  "additionalProperties": true,
                   "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
                 }
               }
@@ -10215,10 +10510,14 @@
                     "fresh": {
                       "type": "boolean"
                     },
-                    "governance": {},
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    },
                     "apps": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "$ref": "#/components/schemas/ReportApp"
+                      }
                     },
                     "next": {
                       "type": [
@@ -11143,7 +11442,9 @@
                     "deployer": {
                       "$ref": "#/components/schemas/Deployer"
                     },
-                    "grant": {}
+                    "grant": {
+                      "$ref": "#/components/schemas/DeployerGrant"
+                    }
                   },
                   "required": [
                     "key",
@@ -11970,7 +12271,9 @@
                     "fresh": {
                       "type": "boolean"
                     },
-                    "governance": {},
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    },
                     "orgs": {
                       "type": "array",
                       "items": {
@@ -11979,7 +12282,15 @@
                           "org": {
                             "type": "string"
                           },
-                          "approvedReleases": {}
+                          "approvedReleases": {
+                            "type": [
+                              "array",
+                              "null"
+                            ],
+                            "items": {
+                              "type": "string"
+                            }
+                          }
                         },
                         "required": [
                           "org",
@@ -12304,14 +12615,23 @@
                     },
                     "version": {
                       "type": "string"
+                    },
+                    "signerId": {
+                      "type": "string"
+                    },
+                    "services": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "package",
-                    "version"
-                  ],
-                  "additionalProperties": true,
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                    "version",
+                    "signerId",
+                    "services"
+                  ]
                 }
               }
             }
@@ -12383,7 +12703,9 @@
                   "properties": {
                     "packages": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "$ref": "#/components/schemas/Package"
+                      }
                     }
                   },
                   "required": [
@@ -12473,14 +12795,23 @@
                     },
                     "version": {
                       "type": "string"
+                    },
+                    "signerId": {
+                      "type": "string"
+                    },
+                    "services": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "package",
-                    "version"
-                  ],
-                  "additionalProperties": true,
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                    "version",
+                    "signerId",
+                    "services"
+                  ]
                 }
               }
             }
@@ -12799,7 +13130,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Compute pools",
-        "description": "The pools and the runs each takes.\n\n**Who:** the ops token.",
+        "description": "The pools by name (absent: none set, one legacy pool), and each pool's capacity: how many runs its job nodes take at once.\n\n**Who:** the ops token.",
         "security": [
           {
             "opsToken": []
@@ -12814,7 +13145,42 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "pools": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "runsPerNode": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "maxMemoryMib": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "runsPerNode",
+                          "maxMemoryMib"
+                        ]
+                      }
+                    },
+                    "capacity": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "required": [
+                    "pools",
+                    "capacity"
+                  ]
                 }
               }
             }
@@ -13054,7 +13420,6 @@
                     "maxFuelPerDeveloperPerDay",
                     "orgs"
                   ],
-                  "additionalProperties": true,
                   "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
                 }
               }
@@ -13118,7 +13483,6 @@
                     "$ref": "#/components/schemas/OperatorProof"
                   }
                 },
-                "additionalProperties": true,
                 "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
               }
             }
@@ -13498,7 +13862,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Custom domains to serve",
-        "description": "Every served origin a package's manager registered, by the package's label, never its name.\n\n**Who:** the ops token.",
+        "description": "Every served origin a package's manager registered, by the package's label, never its name; `addedAt` is RFC 3339.\n\n**Who:** the ops token.",
         "security": [
           {
             "opsToken": []
@@ -13532,9 +13896,7 @@
                             "type": "string"
                           },
                           "addedAt": {
-                            "type": "integer",
-                            "format": "int64",
-                            "minimum": 0
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -13733,8 +14095,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true
+                  "$ref": "#/components/schemas/SignUpInvite"
                 }
               }
             }
@@ -13816,7 +14177,49 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "signUp": {
+                      "type": "object",
+                      "properties": {
+                        "policy": {
+                          "$ref": "#/components/schemas/SignUp"
+                        },
+                        "orgInvites": {
+                          "type": "boolean"
+                        },
+                        "signUpInvites": {
+                          "type": "boolean"
+                        },
+                        "inviteRequired": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "policy",
+                        "orgInvites",
+                        "signUpInvites",
+                        "inviteRequired"
+                      ]
+                    },
+                    "runBy": {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "operator"
+                      ]
+                    },
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SignUpInvite"
+                      }
+                    }
+                  },
+                  "required": [
+                    "signUp",
+                    "runBy",
+                    "invites"
+                  ]
                 }
               }
             }
@@ -14060,7 +14463,9 @@
                   "properties": {
                     "node": {},
                     "system": {},
-                    "governance": {},
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    },
                     "groups": {},
                     "nodes": {},
                     "apps": {},
@@ -14627,7 +15032,52 @@
                     },
                     "appTeams": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "package": {
+                            "type": "string"
+                          },
+                          "teamId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "join": {
+                            "$ref": "#/components/schemas/TeamJoin"
+                          },
+                          "memberCount": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "defaultCapabilities": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "member": {
+                            "type": "boolean"
+                          },
+                          "manages": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "package",
+                          "teamId",
+                          "name",
+                          "join",
+                          "memberCount",
+                          "defaultCapabilities",
+                          "member",
+                          "manages"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -14764,7 +15214,72 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "legacy",
+                        "standalone",
+                        "shared"
+                      ]
+                    },
+                    "teams": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "package": {
+                            "type": "string"
+                          },
+                          "teamId": {
+                            "type": "string"
+                          },
+                          "created": {
+                            "type": "boolean"
+                          },
+                          "apps": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "added": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "join": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/components/schemas/TeamJoin"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "dropped": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "package",
+                          "teamId",
+                          "created",
+                          "apps",
+                          "added",
+                          "join",
+                          "dropped"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "mode",
+                    "teams"
+                  ]
                 }
               }
             }
@@ -14907,13 +15422,32 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "scope": {},
-                    "governance": {},
-                    "approvedReleases": {},
-                    "clusterReleases": {},
+                    "scope": {
+                      "$ref": "#/components/schemas/AppScope"
+                    },
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    },
+                    "approvedReleases": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "clusterReleases": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ClusterRelease"
+                      }
+                    },
                     "apps": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "$ref": "#/components/schemas/ReportApp"
+                      }
                     },
                     "next": {
                       "type": [
@@ -15289,7 +15823,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "The organization's invites",
-        "description": "Their keys and terms, never a token.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -15314,7 +15848,72 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "inviteKey": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "$ref": "#/components/schemas/OrgRole"
+                          },
+                          "teams": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "usesLeft": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "expiresAt": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "expired": {
+                            "type": "boolean"
+                          },
+                          "createdBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "allApps": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "inviteKey",
+                          "role",
+                          "teams",
+                          "usesLeft",
+                          "expiresAt",
+                          "expired",
+                          "createdBy",
+                          "createdAt",
+                          "allApps"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "invites"
+                  ]
                 }
               }
             }
@@ -15571,13 +16170,35 @@
                             "type": "string"
                           },
                           "name": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "role": {
                             "$ref": "#/components/schemas/OrgRole"
                           },
-                          "teams": {},
-                          "passkeys": {},
+                          "teams": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "passkeys": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "format": "int64",
+                                "minimum": 0
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "3+"
+                                ]
+                              }
+                            ]
+                          },
                           "recoveryCode": {
                             "type": "boolean"
                           },
@@ -19047,7 +19668,37 @@
                     },
                     "origins": {
                       "type": "array",
-                      "items": {}
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "package": {
+                            "type": "string"
+                          },
+                          "origin": {
+                            "type": "string"
+                          },
+                          "rpId": {
+                            "type": "string"
+                          },
+                          "addedBy": {
+                            "type": "string"
+                          },
+                          "addedAt": {
+                            "type": "string"
+                          },
+                          "served": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "package",
+                          "origin",
+                          "rpId",
+                          "addedBy",
+                          "addedAt",
+                          "served"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -19421,14 +20072,23 @@
                     },
                     "version": {
                       "type": "string"
+                    },
+                    "signerId": {
+                      "type": "string"
+                    },
+                    "services": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "package",
-                    "version"
-                  ],
-                  "additionalProperties": true,
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                    "version",
+                    "signerId",
+                    "services"
+                  ]
                 }
               }
             }
@@ -19626,14 +20286,23 @@
                     },
                     "version": {
                       "type": "string"
+                    },
+                    "signerId": {
+                      "type": "string"
+                    },
+                    "services": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "package",
-                    "version"
-                  ],
-                  "additionalProperties": true,
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                    "version",
+                    "signerId",
+                    "services"
+                  ]
                 }
               }
             }
@@ -19948,10 +20617,17 @@
           "Public"
         ],
         "x-calimero-group": "public",
-        "summary": "A signing key's organization",
-        "description": "The organization a package signing key (`did:key`) is bound to, if any.\n\n**Who:** anyone.",
-        "security": [],
-        "x-calimero-who": "anyone",
+        "summary": "Whether a signing key is bound",
+        "description": "Whether a package signing key (`did:key`) is bound to an organization on this cluster (`bound`, never which), and its binding generation (`0`: never bound).\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -19970,10 +20646,57 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "signerId": {
+                      "type": "string"
+                    },
+                    "cluster": {
+                      "type": "string"
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "bound": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "signerId",
+                    "cluster",
+                    "generation",
+                    "bound"
+                  ]
                 }
               }
             }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
           }
         }
       }
@@ -19986,7 +20709,7 @@
         ],
         "x-calimero-group": "public",
         "summary": "The cluster's releases",
-        "description": "The mero-tee releases the cluster's nodes run and the deadlines set on them.\n\n**Who:** anyone.",
+        "description": "The cluster's governance and the deadlines set on mero-tee releases, oldest release first: after `after` (RFC 3339; `afterSecs` Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -19997,7 +20720,39 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    },
+                    "deadlines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "version": {
+                            "type": "string"
+                          },
+                          "after": {
+                            "type": "string"
+                          },
+                          "afterSecs": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "version",
+                          "after",
+                          "afterSecs"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "governance",
+                    "deadlines"
+                  ]
                 }
               }
             }
@@ -20234,13 +20989,39 @@
                   "properties": {
                     "token": {
                       "type": "string"
+                    },
+                    "inviteKey": {
+                      "type": "string"
+                    },
+                    "uses": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    },
+                    "expiresAtSecs": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "createdBy": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "token"
-                  ],
-                  "additionalProperties": true,
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                    "token",
+                    "inviteKey",
+                    "uses",
+                    "expiresAt",
+                    "expiresAtSecs",
+                    "createdBy",
+                    "createdAt"
+                  ]
                 }
               }
             }
@@ -20337,7 +21118,49 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "signUp": {
+                      "type": "object",
+                      "properties": {
+                        "policy": {
+                          "$ref": "#/components/schemas/SignUp"
+                        },
+                        "orgInvites": {
+                          "type": "boolean"
+                        },
+                        "signUpInvites": {
+                          "type": "boolean"
+                        },
+                        "inviteRequired": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "policy",
+                        "orgInvites",
+                        "signUpInvites",
+                        "inviteRequired"
+                      ]
+                    },
+                    "runBy": {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "operator"
+                      ]
+                    },
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SignUpInvite"
+                      }
+                    }
+                  },
+                  "required": [
+                    "signUp",
+                    "runBy",
+                    "invites"
+                  ]
                 }
               }
             }
@@ -21493,25 +22316,7 @@
           "outboundApprovals": {
             "type": "object",
             "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "prefixes": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "reviewed": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "prefixes",
-                "reviewed"
-              ]
+              "$ref": "#/components/schemas/OutboundApproval"
             }
           },
           "metadata": {},
@@ -21903,6 +22708,556 @@
           "atMs"
         ],
         "description": "A cross-app call that was never delivered: its sequence number, the target app and method, why, and when (`atMs`, Unix milliseconds)."
+      },
+      "Governance": {
+        "type": "object",
+        "properties": {
+          "releases": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "operator"
+            ]
+          },
+          "appUpgrades": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "operator"
+            ]
+          },
+          "outbound": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "operator"
+            ]
+          },
+          "deployments": {
+            "type": "string",
+            "enum": [
+              "granted",
+              "open"
+            ]
+          },
+          "deployers": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "operator"
+            ]
+          },
+          "signUp": {
+            "type": "string",
+            "enum": [
+              "invite",
+              "closed",
+              "open"
+            ]
+          }
+        },
+        "required": [
+          "releases",
+          "appUpgrades",
+          "outbound"
+        ],
+        "description": "Who decides what on this cluster: release approvals, app upgrades and outbound approvals (`owner`: each app's owner; `operator`: the operator), and, left out at their defaults, `deployments` (`open`), `deployers` (`operator`) and `signUp` (`open`)."
+      },
+      "OutboundApproval": {
+        "type": "object",
+        "properties": {
+          "prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reviewed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "prefixes",
+          "reviewed"
+        ],
+        "description": "What an owner approved for one publisher's apps to call out to: the approved URL prefixes, and every prefix it was shown."
+      },
+      "AppScope": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "org"
+                ]
+              },
+              "org": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "org"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "account"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "description": "The scope whose approvals cover an app: its organization, or its owner's account (never named)."
+      },
+      "ClusterRelease": {
+        "type": "object",
+        "properties": {
+          "release": {
+            "type": "string"
+          },
+          "nodes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "approved": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "release",
+          "nodes",
+          "approved"
+        ],
+        "description": "A mero-tee release the cluster's nodes run: how many run it, and whether the scope approved it (`true` where nothing was ever recorded)."
+      },
+      "BundleRelease": {
+        "type": "object",
+        "properties": {
+          "bundle": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundle"
+        ],
+        "description": "A bundle by its digest, with the release it came from where the reader may see it."
+      },
+      "ReportUpgrade": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/BundleRelease"
+          },
+          "to": {
+            "$ref": "#/components/schemas/BundleRelease"
+          },
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "actorKind": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "member",
+              "operator"
+            ]
+          },
+          "actor": {
+            "type": "string"
+          },
+          "error": {},
+          "run": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "at",
+          "ok",
+          "actorKind"
+        ],
+        "description": "An app's last upgrade as a report shows it. `actor`, `error`, `run` and `apiKey` are shown to the app's people, never to the operator."
+      },
+      "ReportApp": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "group": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AppScope"
+          },
+          "bundle": {
+            "type": "string"
+          },
+          "package": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "package": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "service": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "package",
+              "version"
+            ]
+          },
+          "publisher": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "signer": {
+                "type": "string"
+              },
+              "org": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "signer",
+              "org"
+            ]
+          },
+          "upgradesHeldBy": {
+            "type": "string",
+            "enum": [
+              "operator",
+              "owner",
+              "publisher"
+            ]
+          },
+          "releasesApprovedBy": {
+            "type": "string",
+            "enum": [
+              "operator",
+              "publisher",
+              "owner"
+            ]
+          },
+          "lastUpgrade": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportUpgrade"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvedReleases": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "replicas": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "node": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "release": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "approved": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "node",
+                "release",
+                "approved"
+              ]
+            }
+          },
+          "lastWriteAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "team": {
+            "type": "string"
+          },
+          "availableVersions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "latestReachable": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latestBlocked": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "authority",
+                  "runtime"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "minRuntimeVersion": {
+                "type": "string"
+              },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "node": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "runtime": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "before": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "before"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "node",
+                    "runtime"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "version",
+              "reason",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "app",
+          "group",
+          "scope",
+          "bundle",
+          "package",
+          "publisher",
+          "upgradesHeldBy",
+          "releasesApprovedBy",
+          "lastUpgrade",
+          "approvedReleases",
+          "replicas",
+          "lastWriteAt"
+        ],
+        "description": "One app in a release report (`GET /auth/apps`, `GET /orgs/{org}/apps`, `GET /ops/apps`): its bundle and release (`package`, `null` where the reader may not see it), the publisher's key and bound organization, who holds its upgrades and release approvals, its last upgrade, the releases approved to hold it (`null`: unrestricted), each replica's release, and `lastWriteAt` (Unix seconds, `null` when unknown). `name`, `team`, `availableVersions` (newer releases, oldest first), `latestReachable` and `latestBlocked` (the newest release and why an upgrade would not take it) are for the app's people, never the operator."
+      },
+      "DeploymentRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/Deployer"
+          },
+          "apps": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "addedBy": {
+                  "type": "string"
+                },
+                "addedAt": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "addedBy",
+                "addedAt"
+              ]
+            }
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "owner",
+          "apps",
+          "createdBy",
+          "createdAt"
+        ],
+        "description": "A deployment as the directory records it: the release it offers by app name (`addedAt` Unix seconds), who created it and when (Unix seconds)."
+      },
+      "DeployerGrant": {
+        "type": "object",
+        "properties": {
+          "until": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "grantedAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "grantedBy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "grantedAt",
+          "grantedBy"
+        ],
+        "description": "A grant to install where deployments are granted: until when (Unix seconds; absent: it does not end), when and by whom it was granted."
+      },
+      "SignUpInvite": {
+        "type": "object",
+        "properties": {
+          "inviteKey": {
+            "type": "string"
+          },
+          "uses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "expiresAtSecs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "inviteKey",
+          "uses",
+          "expiresAt",
+          "expiresAtSecs",
+          "createdBy",
+          "createdAt"
+        ],
+        "description": "A cluster sign-up invite, never its token: uses left, when it expires (`expiresAt` RFC 3339, `expiresAtSecs` Unix seconds), who made it and when (RFC 3339)."
       },
       "ProofOnly": {
         "type": "object",

@@ -250,14 +250,16 @@ impl Shape {
                     schema["required"] = Value::Array(required);
                 }
                 match rest.as_deref() {
-                    // Any other property, of any shape: `true` (not `{}`).
-                    Some(Self::Any) => {
+                    // A free-form map: `additionalProperties: true` (not `{}`). An object that
+                    // also lists properties says nothing (JSON Schema admits the others
+                    // anyway), as generators refuse `properties` beside it.
+                    Some(Self::Any) if fields.is_empty() => {
                         schema["additionalProperties"] = json!(true);
-                        if !fields.is_empty() {
-                            schema["description"] = json!(
-                                "Other properties than those listed may be present: the ones listed are those clients rely on."
-                            );
-                        }
+                    }
+                    Some(Self::Any) => {
+                        schema["description"] = json!(
+                            "Other properties than those listed may be present: the ones listed are those clients rely on."
+                        );
                     }
                     Some(rest) => schema["additionalProperties"] = rest.schema(),
                     None => {}
@@ -417,7 +419,6 @@ mod tests {
                     "d": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/T" } },
                 },
                 "required": ["a", "c", "d"],
-                "additionalProperties": true,
                 "description": "Other properties than those listed may be present: the ones listed are those clients rely on.",
             })
         );

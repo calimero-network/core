@@ -693,7 +693,7 @@ fn components() -> Vec<Component> {
         component(
             "Org",
             "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later.",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: { prefixes: string[], reviewed: string[] } }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -718,6 +718,60 @@ fn components() -> Vec<Component> {
             "{ seq: uint, app: string, method: string, reason: string, atMs: uint }",
         )
         .of::<crate::component::xcall::DeadLetter>(),
+        component(
+            "Governance",
+            "Who decides what on this cluster: release approvals, app upgrades and outbound approvals (`owner`: each app's owner; `operator`: the operator), and, left out at their defaults, `deployments` (`open`), `deployers` (`operator`) and `signUp` (`open`).",
+            r#"{ releases: "owner" | "operator", appUpgrades: "owner" | "operator", outbound: "owner" | "operator", deployments?: "granted" | "open", deployers?: "owner" | "operator", signUp?: "invite" | "closed" | "open" }"#,
+        )
+        .of::<crate::system::Governance>(),
+        component(
+            "OutboundApproval",
+            "What an owner approved for one publisher's apps to call out to: the approved URL prefixes, and every prefix it was shown.",
+            "{ prefixes: string[], reviewed: string[] }",
+        )
+        .of::<crate::types::OutboundApproval>(),
+        component(
+            "AppScope",
+            "The scope whose approvals cover an app: its organization, or its owner's account (never named).",
+            r#"{ kind: "org", org: string } | { kind: "account" }"#,
+        ),
+        component(
+            "ClusterRelease",
+            "A mero-tee release the cluster's nodes run: how many run it, and whether the scope approved it (`true` where nothing was ever recorded).",
+            "{ release: string, nodes: uint, approved: bool }",
+        ),
+        component(
+            "BundleRelease",
+            "A bundle by its digest, with the release it came from where the reader may see it.",
+            "{ bundle: string, package?: string, version?: string }",
+        ),
+        component(
+            "ReportUpgrade",
+            "An app's last upgrade as a report shows it. `actor`, `error`, `run` and `apiKey` are shown to the app's people, never to the operator.",
+            r#"{ from: #BundleRelease, to: #BundleRelease, at: uint, ok: bool, actorKind: "owner" | "member" | "operator", actor?: string, error?: any, run?: string, apiKey?: string }"#,
+        ),
+        component(
+            "ReportApp",
+            "One app in a release report (`GET /auth/apps`, `GET /orgs/{org}/apps`, `GET /ops/apps`): its bundle and release (`package`, `null` where the reader may not see it), the publisher's key and bound organization, who holds its upgrades and release approvals, its last upgrade, the releases approved to hold it (`null`: unrestricted), each replica's release, and `lastWriteAt` (Unix seconds, `null` when unknown). `name`, `team`, `availableVersions` (newer releases, oldest first), `latestReachable` and `latestBlocked` (the newest release and why an upgrade would not take it) are for the app's people, never the operator.",
+            r#"{ app: string, group: uint, scope: #AppScope, bundle: string, package: { package: string, version: string, service?: string | null } | null, publisher: { signer: string, org: string | null } | null, upgradesHeldBy: "operator" | "owner" | "publisher", releasesApprovedBy: "operator" | "publisher" | "owner", lastUpgrade: #ReportUpgrade | null, approvedReleases: string[] | null, replicas: { node: uint, release: string | null, approved: bool }[], lastWriteAt: uint | null, name?: string, team?: string, availableVersions?: string[], latestReachable?: string | null, latestBlocked?: { version: string, reason: "authority" | "runtime", message: string, minRuntimeVersion?: string, nodes?: { node: uint, runtime: string | { before: string } | null }[] } }"#,
+        ),
+        component(
+            "DeploymentRecord",
+            "A deployment as the directory records it: the release it offers by app name (`addedAt` Unix seconds), who created it and when (Unix seconds).",
+            "{ id: string, name: string, owner: #Deployer, apps: { [string]: { package: string, version: string, addedBy: string, addedAt: uint } }, createdBy: string, createdAt: uint }",
+        )
+        .of::<crate::system::Deployment>(),
+        component(
+            "DeployerGrant",
+            "A grant to install where deployments are granted: until when (Unix seconds; absent: it does not end), when and by whom it was granted.",
+            "{ until?: uint, grantedAt: uint, grantedBy: string }",
+        )
+        .of::<crate::system::DeployerGrant>(),
+        component(
+            "SignUpInvite",
+            "A cluster sign-up invite, never its token: uses left, when it expires (`expiresAt` RFC 3339, `expiresAtSecs` Unix seconds), who made it and when (RFC 3339).",
+            "{ inviteKey: string, uses: uint, expiresAt: string, expiresAtSecs: uint, createdBy: string, createdAt: string }",
+        ),
         component(
             "ProofOnly",
             "What an operator decision that names nothing in its body may carry: none at first, the operator's proof after the `428`.",
@@ -784,11 +838,11 @@ fn operations() -> Vec<Op> {
             .ok("#AttestationDoc")
             .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (404, "NOT_FOUND")]),
         get("/releases", "releases_public", Anyone, "The cluster's releases")
-            .about("The mero-tee releases the cluster's nodes run and the deadlines set on them.")
-            .ok("{ [string]: any }"),
-        get("/publishers/{signer}", "publisher_binding", Anyone, "A signing key's organization")
-            .about("The organization a package signing key (`did:key`) is bound to, if any.")
-            .ok("{ [string]: any }"),
+            .about("The cluster's governance and the deadlines set on mero-tee releases, oldest release first: after `after` (RFC 3339; `afterSecs` Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.")
+            .ok("{ governance: #Governance, deadlines: { version: string, after: string, afterSecs: uint }[] }"),
+        get("/publishers/{signer}", "publisher_binding", SignedIn, "Whether a signing key is bound")
+            .about("Whether a package signing key (`did:key`) is bound to an organization on this cluster (`bound`, never which), and its binding generation (`0`: never bound).")
+            .ok("{ signerId: string, cluster: string, generation: uint, bound: bool }"),
         get("/sign-up", "sign_up_public", Anyone, "The sign-up policy")
             .about("Who may create an account here, the cluster's name and the tag a sign-in uses to pick the person's passkey for it.")
             .ok("{ policy: #SignUp, orgInvites: bool, signUpInvites: bool, inviteRequired: bool, cluster: string, passkeyTag: string }"),
@@ -870,8 +924,8 @@ fn operations() -> Vec<Op> {
         post("/auth/logout-all", "logout_all", AccountHolder, "End every session of the account")
             .ok("#Written"),
         get("/auth/sessions", "sessions_list", AccountHolder, "The account's live sessions")
-            .about("Latest active first, at most 256.")
-            .ok("{ sessions: { session: string, passkey: string | null, app: string | null, origin: string | null, openedAt: uint, lastActiveAt: uint, current: bool }[] }"),
+            .about("Latest active first, at most 256. `openedAt` (Unix seconds) is `null` for a session opened before the node kept it.")
+            .ok("{ sessions: { session: string, passkey: string | null, app: string | null, origin: string | null, openedAt: uint | null, lastActiveAt: uint, current: bool }[] }"),
         delete("/auth/sessions/{session}", "session_revoke", AccountHolder, "End one session")
             .about("`404` for a session the account does not hold live.")
             .ok("{}")
@@ -891,7 +945,7 @@ fn operations() -> Vec<Op> {
             .step_up(),
         get("/auth/me", "me", SignedIn, "The caller's account")
             .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations, approvals and recovery state, and how the caller came (`via`).")
-            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, approvedReleases: any, outboundApprovals: any, recoveryCode?: any, recoveryPending?: any }"#)
+            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, recoveryCode?: bool, recoveryPending?: { accountId: string, credentialId: string, startedAt: uint, readyAt: uint } | null }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
             .about("A statement signed with this node's receipt key that the caller's passkey session asked to bind `nonce` for `audience`.")
@@ -901,7 +955,7 @@ fn operations() -> Vec<Op> {
         get("/auth/apps", "account_apps", SignedIn, "The account's own apps")
             .about("Outside any organization (a package-bound session: its package's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.")
             .query::<super::PageQuery>(PAGE)
-            .ok("{ scope: any, governance: any, approvedReleases: any, clusterReleases: any, apps: any[], next: string | null }"),
+            .ok("{ scope: #AppScope, governance: #Governance, approvedReleases: string[] | null, clusterReleases: #ClusterRelease[], apps: #ReportApp[], next: string | null }"),
         get("/auth/usage", "usage", SignedIn, "The account's usage against its quotas")
             .about("Apps, bundle bytes, API keys and owned organizations; what today's runs of the apps the account develops used (decimal strings).")
             .ok("{ bundleBytes: u64, developerFuelToday?: u64, developerWritesToday?: u64, [string]: any }"),
@@ -935,14 +989,14 @@ fn operations() -> Vec<Op> {
         post("/packages", "package_upload", Installer, "Upload a signed release")
             .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.")
             .raw("application/octet-stream", "the `.mpk`")
-            .ok("{ package: string, version: string, [string]: any }")
+            .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
             .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("{ packages: #Package[] }"),
         post("/packages/install", "package_install", Installer, "Install a release from the registry")
             .json::<super::InstallBody>("{ package: string, version: string }")
-            .ok("{ package: string, version: string, [string]: any }")
+            .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
             .errors(&[(400, "BAD_PACKAGE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
@@ -955,7 +1009,7 @@ fn operations() -> Vec<Op> {
             .ok("#Written"),
         get("/package-origins/{package}", "origins::list", SignedIn, "A package's frontend origins")
             .about("The custom origins (and rp-ids) the package's manager registered for its frontend.")
-            .ok("{ package: string, origins: any[] }"),
+            .ok("{ package: string, origins: { package: string, origin: string, rpId: string, addedBy: string, addedAt: string, served: bool }[] }"),
         post("/package-origins/{package}", "origins::add", AccountHolder, "Register a frontend origin")
             .about("By whoever manages the package, with a passkey step-up over the change.")
             .json::<super::origins::AddOriginBody>("{ origin: string, rpId?: string, served?: bool, confirm?: #Confirm }")
@@ -1012,7 +1066,8 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: any }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/presence", "presence_get", AppAccess, "Who is present")
-            .ok("{ present: any[] }"),
+            .about("One entry per present device (a session's passkey, or an API key): its account, device and state (hex).")
+            .ok("{ present: { account: string, device: string, state: string | null }[] }"),
         post("/apps/{app}/presence", "presence_publish", AppAccess, "Publish presence")
             .about("The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.")
             .json::<super::PresenceBody>("{ seq: uint, state?: string | null }")
@@ -1030,7 +1085,7 @@ fn operations() -> Vec<Op> {
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
             .about("Each replica's `/attestation?purpose=receipts` for `nonce`. It reads the query `/attestation` does, but only `nonce`: `app`, `appHash` and `purpose` are ignored here.")
             .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" }"#)
-            .ok("{ appId: string, replicas: any[] }"),
+            .ok("{ appId: string, replicas: ({ node: uint, attestation: #AttestationDoc } | { node: uint, error: string })[] }"),
         post("/apps/{app}/views", "views", AppAccess, "Read with a view method")
             .about("Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`).")
             .json::<super::ViewBody>(r#"{ method: string, args?: any, consistency?: "strong" | "stale", minIndex?: uint }"#)
@@ -1064,9 +1119,9 @@ fn operations() -> Vec<Op> {
             .ok("#Written")
             .step_up(),
         post("/apps/{app}/move", "app_move", AccountHolder, "Move an app to another organization")
-            .about("Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`.")
+            .about("Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.")
             .json::<super::MoveBody>("{ toOrg: string, bringMembers?: bool, confirm?: #Confirm }")
-            .ok("{ appId: string, from: string, org: string, access: #Access, created: bool, added: any, revokedInvites: any }")
+            .ok("{ appId: string, from: string | null, org: string, access: #Access, created: bool, added: string[], revokedInvites: uint }")
             .step_up()
             .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/blobs", "blob_upload", AppAccess, "Upload a blob")
@@ -1171,7 +1226,7 @@ fn operations() -> Vec<Op> {
         get("/orgs/{org}/members", "org_members", AccountHolder, "Members' lockout risk")
             .about("`detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the owner or an admin: each member's passkeys (`1`, `2` or `\"3+\"`), recovery code, last active UTC day and sessions. `403` below admin, `404` outside the organization.")
             .query::<super::MembersQuery>(r#"{ detail?: "security" }"#)
-            .ok("{ orgId: string, members: { account: string, name: string, role: #OrgRole, teams: any, passkeys: any, recoveryCode: bool, lastActiveDay: string | null, sessions: uint }[] }")
+            .ok(r#"{ orgId: string, members: { account: string, name: string | null, role: #OrgRole, teams: string[], passkeys: uint | "3+", recoveryCode: bool, lastActiveDay: string | null, sessions: uint }[] }"#)
             .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/members", "org_set_member", Session, "Set a member's role")
             .about("`owner` moves ownership. `412` first.")
@@ -1237,7 +1292,7 @@ fn operations() -> Vec<Op> {
         get("/orgs/{org}/apps", "org_apps", SignedIn, "The organization's apps")
             .about("As `GET /auth/apps`, for the apps the caller reaches or manages; `404` to a non-member.")
             .query::<super::PageQuery>(PAGE)
-            .ok("{ scope: any, governance: any, approvedReleases: any, clusterReleases: any, apps: any[], next: string | null }")
+            .ok("{ scope: #AppScope, governance: #Governance, approvedReleases: string[] | null, clusterReleases: #ClusterRelease[], apps: #ReportApp[], next: string | null }")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/outbound", "org_outbound_approval", AccountHolder, "Approve outbound prefixes for the organization's apps")
             .about("The owner; `412` first.")
@@ -1271,8 +1326,8 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/orgs/{org}/invites", "invite_list", Session, "The organization's invites")
-            .about("Their keys and terms, never a token.")
-            .ok("{ [string]: any }")
+            .about("Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.")
+            .ok("{ invites: { inviteKey: string, role: #OrgRole, teams: string[], usesLeft: uint, expiresAt: uint, expired: bool, createdBy: string | null, createdAt: uint | null, allApps: bool }[] }")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}/invites/{key}", "invite_revoke", Session, "Revoke an invite")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1281,12 +1336,12 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/app-teams", "app_team_list", SignedIn, "The organization's app teams")
             .about("A member: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own).")
-            .ok(r#"{ mode: "legacy" | "standalone" | "shared", appTeams: any[] }"#)
+            .ok(r#"{ mode: "legacy" | "standalone" | "shared", appTeams: { package: string, teamId: string, name: string, join: #TeamJoin, memberCount: uint, defaultCapabilities: uint | null, member: bool, manages: bool }[] }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/app-teams", "app_teams_scope", Session, "Give apps app teams, or open or close one")
             .about("The owner or an admin; `keep` names who stays when a team closes. `412` first.")
             .json::<super::ScopeAppsBody>("{ apps?: { package: string, name?: string, instances?: string[], join?: #TeamJoin, keep?: string[] }[], shared?: bool, confirm?: #Confirm }")
-            .ok("{ [string]: any }")
+            .ok(r#"{ mode: "legacy" | "standalone" | "shared", teams: { package: string, teamId: string, created: bool, apps: string[], added: uint, join: #TeamJoin | null, dropped: uint }[] }"#)
             .step_up()
             .errors(&[(400, "TOO_MANY_PACKAGES"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/recovery", "recovery_set", AccountHolder, "Set the organization's recovery key")
@@ -1328,7 +1383,7 @@ fn operations() -> Vec<Op> {
         // ---------------------------------------------------------------- ops
         get("/ops/status", "ops_status", Ops, "The node and the cluster")
             .about("Counts, Raft status and governance; never app state, names or credentials.")
-            .ok("{ node: any, system: any, governance: any, groups: any, nodes: any, apps: any, accounts: any, rollback?: any }"),
+            .ok("{ node: any, system: any, governance: #Governance, groups: any, nodes: any, apps: any, accounts: any, rollback?: any }"),
         get("/ops/cluster", "ops_cluster", Ops, "The cluster's identity").ok("{ cluster: any, identity: any }"),
         get("/ops/metrics", "ops_metrics", Ops, "Prometheus metrics")
             .about("Including per-app usage for billing. `--metrics-listen ADDR` also serves it as plain `GET /metrics` there.")
@@ -1339,13 +1394,13 @@ fn operations() -> Vec<Op> {
         get("/ops/apps", "ops_apps", Ops, "What each app runs")
             .about("Each app's bundle, package, publisher, who holds its upgrades and release approvals, its last upgrade, approved releases, replicas' releases and `lastWriteAt`.")
             .query::<super::PageQuery>(PAGE)
-            .ok("{ fresh: bool, governance: any, apps: any[], next: string | null }"),
+            .ok("{ fresh: bool, governance: #Governance, apps: #ReportApp[], next: string | null }"),
         get("/ops/orgs", "ops_orgs", Ops, "Each organization's approved releases")
             .query::<super::PageQuery>(PAGE)
-            .ok("{ fresh: bool, governance: any, orgs: { org: string, approvedReleases: any }[], next: string | null }"),
+            .ok("{ fresh: bool, governance: #Governance, orgs: { org: string, approvedReleases: string[] | null }[], next: string | null }"),
         get("/ops/served-origins", "origins::ops_served", Ops, "Custom domains to serve")
-            .about("Every served origin a package's manager registered, by the package's label, never its name.")
-            .ok("{ fresh: bool, origins: { origin: string, host: string, label: string, addedAt: uint }[] }"),
+            .about("Every served origin a package's manager registered, by the package's label, never its name; `addedAt` is RFC 3339.")
+            .ok("{ fresh: bool, origins: { origin: string, host: string, label: string, addedAt: string }[] }"),
         post("/ops/nodes", "ops_register_node", Ops, "Register a node")
             .about("Signed with the operator key over `cluster / __register_node / { id, addr, zone }`. The system leader adds it as a learner and promotes caught-up learners while fewer than 3 voters are left; `role: job` registers a compute node (in `pool`).")
             .json::<super::NodeBody>(r#"{ id: uint, addr: string, zone?: string, operatorProof?: #OperatorProof, role?: "replica" | "job", pool?: string }"#)
@@ -1394,7 +1449,7 @@ fn operations() -> Vec<Op> {
         post("/ops/deployers", "ops_deployer_grant", Ops, "Grant a deployer")
             .about("An account or organization that may install where deployments are granted, `until` an RFC 3339 time.")
             .json::<super::DeployerBody>("{ deployer: #Deployer, until?: string, operatorProof?: #OperatorProof, confirm?: #Confirm }")
-            .ok("{ key: string, deployer: #Deployer, grant: any }")
+            .ok("{ key: string, deployer: #Deployer, grant: #DeployerGrant }")
             .operator(),
         delete("/ops/deployers/{key}", "ops_deployer_revoke", Ops, "Revoke a deployer")
             .proof_body()
@@ -1424,11 +1479,11 @@ fn operations() -> Vec<Op> {
             .operator(),
         post("/ops/sign-up/invites", "ops_sign_up_invite_create", Ops, "Issue a cluster sign-up invite")
             .json::<super::OpsSignUpInviteBody>("{ token: string, uses?: uint, expiresAt: string, operatorProof?: #OperatorProof }")
-            .ok("{ [string]: any }")
+            .ok("#SignUpInvite")
             .operator()
             .errors(&[(400, "BAD_REQUEST")]),
         get("/ops/sign-up/invites", "sign_up_invite_list", Ops, "Cluster sign-up invites")
-            .ok("{ [string]: any }")
+            .ok(r#"{ signUp: { policy: #SignUp, orgInvites: bool, signUpInvites: bool, inviteRequired: bool }, runBy: "owner" | "operator", invites: #SignUpInvite[] }"#)
             .errors(&[(403, "FORBIDDEN")]),
         delete("/ops/sign-up/invites/{key}", "ops_sign_up_invite_revoke", Ops, "Withdraw a cluster sign-up invite")
             .proof_body()
@@ -1457,12 +1512,12 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         post("/ops/packages", "ops_package_upload", Ops, "Install an uploaded release as the operator")
             .raw("application/octet-stream", "the `.mpk`")
-            .ok("{ package: string, version: string, [string]: any }")
+            .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
             .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE")]),
-        get("/ops/packages", "ops_package_list", Ops, "The releases the operator installed").ok("{ packages: any[] }"),
+        get("/ops/packages", "ops_package_list", Ops, "The releases the operator installed").ok("{ packages: #Package[] }"),
         post("/ops/packages/install", "ops_package_install", Ops, "Install a release from the registry as the operator")
             .json::<super::InstallBody>("{ package: string, version: string }")
-            .ok("{ package: string, version: string, [string]: any }"),
+            .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }"),
         delete("/ops/packages/{package}", "ops_package_uninstall", Ops, "Uninstall what the operator installed").ok("#Written"),
         delete("/ops/packages/{package}/{version}", "ops_package_version_uninstall", Ops, "Uninstall one operator-installed version").ok("#Written"),
         get("/ops/quotas", "ops_quotas_get", Ops, "The quotas")
@@ -1475,8 +1530,8 @@ fn operations() -> Vec<Op> {
             .operator()
             .errors(&[(400, "BAD_REQUEST"), (400, "UNKNOWN_QUOTA"), (409, "UPGRADE_PENDING")]),
         get("/ops/pools", "ops_pools_get", Ops, "Compute pools")
-            .about("The pools and the runs each takes.")
-            .ok("{ [string]: any }"),
+            .about("The pools by name (absent: none set, one legacy pool), and each pool's capacity: how many runs its job nodes take at once.")
+            .ok("{ pools: { [string]: { runsPerNode: uint, maxMemoryMib: uint } }, capacity: { [string]: uint } }"),
         post("/ops/pools", "ops_pools_set", Ops, "Set the compute pools")
             .about("Signed over `cluster / __set_pools / { pools }`; `POOL_IN_USE` when a pool to remove still has job nodes or runs.")
             .json::<super::PoolsBody>("{ pools: { [string]: { runsPerNode: uint, maxMemoryMib: uint } }, operatorProof?: #OperatorProof }")
@@ -1491,11 +1546,11 @@ fn operations() -> Vec<Op> {
             .step_up(),
         post("/sign-up/invites", "sign_up_invite_create", AccountHolder, "Issue a cluster sign-up invite")
             .json::<super::SignUpInviteBody>("{ uses?: uint, ttlSecs?: uint, confirm?: #Confirm }")
-            .ok("{ token: string, [string]: any }")
+            .ok("{ token: string, inviteKey: string, uses: uint, expiresAt: string, expiresAtSecs: uint, createdBy: string, createdAt: string }")
             .step_up()
             .errors(&[(400, "BAD_REQUEST"), (400, "WRONG_CHALLENGE")]),
         get("/sign-up/invites", "sign_up_invite_list", AccountHolder, "Cluster sign-up invites")
-            .ok("{ [string]: any }")
+            .ok(r#"{ signUp: { policy: #SignUp, orgInvites: bool, signUpInvites: bool, inviteRequired: bool }, runBy: "owner" | "operator", invites: #SignUpInvite[] }"#)
             .errors(&[(403, "FORBIDDEN")]),
         delete("/sign-up/invites/{key}", "sign_up_invite_revoke", AccountHolder, "Withdraw a cluster sign-up invite")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1504,19 +1559,20 @@ fn operations() -> Vec<Op> {
         post("/deployers", "deployer_grant", AccountHolder, "Grant a deployer")
             .about("The cluster's owner, with a passkey.")
             .json::<super::DeployerBody>("{ deployer: #Deployer, until?: string, operatorProof?: #OperatorProof, confirm?: #Confirm }")
-            .ok("{ key: string, deployer: #Deployer, grant: any }")
+            .ok("{ key: string, deployer: #Deployer, grant: #DeployerGrant }")
             .step_up(),
         get("/deployers", "deployer_list", AccountHolder, "The deployers")
-            .ok("{ [string]: any }")
+            .about("The operator, or the cluster's owner: the deployments and deployers governance, the owner (`null` until named), and every grant (`until` RFC 3339 and `untilSecs`, `null` for none; `grantedAt` RFC 3339; `deployer` `null` for a key it cannot read).")
+            .ok(r#"{ deployments: "open" | "granted", deployers: "operator" | "owner", owner: #Deployer | null, grants: { key: string, deployer: #Deployer | null, until: string | null, untilSecs: uint | null, grantedAt: string, grantedBy: string }[] }"#)
             .errors(&[(403, "FORBIDDEN")]),
         delete("/deployers/{key}", "deployer_revoke", AccountHolder, "Revoke a deployer")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ key: string }")
             .step_up(),
         post("/deployments", "deployment_create", AccountHolder, "Create a deployment")
-            .about("A named set of releases an owner (an account or organization) offers for others to instantiate.")
+            .about("A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).")
             .json::<super::DeploymentBody>("{ name: string, owner: #Deployer, confirm?: #Confirm }")
-            .ok("{ host: string | null, [string]: any }")
+            .ok("{ id: string, deployment: #DeploymentRecord, host: string | null }")
             .step_up()
             .errors(&[(403, "FORBIDDEN")]),
         get("/deployments", "deployment_list", SignedIn, "Deployments")
@@ -1541,7 +1597,8 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
-            .ok("{ [string]: any }"),
+            .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization are only counted (`outsideOrgs`). Never who the members are.")
+            .ok("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),
     ]
 }
 
