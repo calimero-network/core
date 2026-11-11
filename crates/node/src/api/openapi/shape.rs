@@ -256,7 +256,14 @@ impl Shape {
                         .collect();
                     return json!({ "type": "string", "enum": values });
                 }
-                json!({ "anyOf": alts.iter().map(Self::schema).collect::<Vec<_>>() })
+                // Objects are exclusive alternatives (a tagged or externally named enum):
+                // `oneOf`, which generators make a union of; anything else may overlap.
+                let key = if alts.iter().all(|a| matches!(a, Self::Object(..))) {
+                    "oneOf"
+                } else {
+                    "anyOf"
+                };
+                json!({ key: alts.iter().map(Self::schema).collect::<Vec<_>>() })
             }
         }
     }
@@ -329,6 +336,14 @@ mod tests {
         assert_eq!(
             sample,
             json!({ "a": "x", "b": "1", "c": ["x"], "d": { "k": true } })
+        );
+        // Alternatives that are all objects are exclusive.
+        assert_eq!(
+            parse(r#"{ kind: "a" } | { kind: "b", n?: uint }"#).schema(),
+            json!({ "oneOf": [
+                { "type": "object", "properties": { "kind": { "const": "a" } }, "required": ["kind"] },
+                { "type": "object", "properties": { "kind": { "const": "b" }, "n": { "type": "integer", "minimum": 0 } }, "required": ["kind"] },
+            ] })
         );
     }
 }
