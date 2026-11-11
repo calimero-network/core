@@ -32,6 +32,7 @@ cargo test -p calimero-pipeline
 
 - `when`, `runIf`, `uses` and loop or variable fields are refused with `NOT_IN_V1`; they are never ignored.
 - A step with no module and no pipeline module runs in `Env::default_module`; with none either, `check` answers `MISSING_MODULE`.
+- A module name is matched as written (`com.acme.pdf@0.1.0` and `com.acme.pdf` are two entries of `Env::modules`); the node resolves each reference and fills `Env::modules` with the releases it pins, so `check` needs no version logic.
 - A reference to a step adds it to `needs` in the compiled pipeline, so the canonical form always lists every arrow.
 - Every bound is a named constant at the top of `src/compile.rs`.
 - A fan-out run's inputs, as the engine builds them: the step's `inputs` references in the order written, with the run's item files where `item` stands, or first when `item` is not listed; a step with no `inputs` gets just the item files. `collect: <step>.outputs` puts all of that step's outputs in item order first, then the step's `inputs`.

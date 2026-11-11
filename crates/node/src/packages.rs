@@ -190,7 +190,9 @@ impl Node {
             .unwrap_or_default();
         self.refuse_stalled_install(actor, &pinned)?;
         let mpk = self.fetch_from_registry(package, version).await?;
-        let verified = self.verify_release(mpk, BundleSource::Registry, actor)?;
+        let verified = self
+            .verify_release(mpk, BundleSource::Registry, actor)
+            .await?;
         if verified.package != package || verified.release.version != version {
             return Err(ApiError::bad_request(
                 "BAD_PACKAGE",
@@ -234,13 +236,15 @@ impl Node {
     /// Install an uploaded `.mpk`.
     pub async fn install_upload(&self, mpk: Arc<[u8]>, actor: &str) -> Result<Value, ApiError> {
         self.refuse_undeployable(actor).await?;
-        let verified = self.verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)?;
+        let verified = self
+            .verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)
+            .await?;
         self.record_release(verified, Some(mpk)).await
     }
 
     /// Everything about a release that can be checked before the log records
     /// it, including the signer pin `apply` checks again.
-    fn verify_release(
+    async fn verify_release(
         &self,
         mpk: Arc<[u8]>,
         source: BundleSource,
@@ -365,8 +369,9 @@ impl Node {
                 .map(|(name, p)| (name.clone(), p.max_memory_mib))
                 .collect()
         });
+        let modules = self.resolve_modules(&service_pipelines, actor).await;
         let mut pipeline_refs = BTreeMap::new();
-        for (compiled, record) in pipelines::register(&service_pipelines, &pools)? {
+        for (compiled, record) in pipelines::register(&service_pipelines, &pools, &modules)? {
             let _prev = wasm_by_hash.insert(compiled.hash, compiled.canonical);
             let _prev = pipeline_refs.insert(compiled.name, record);
         }

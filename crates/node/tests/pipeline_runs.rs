@@ -625,6 +625,7 @@ async fn a_pipeline_whose_definition_is_gone_fails() {
         version: "1.0.0".into(),
         hash: "ab".repeat(32),
         compute_bundle: sha256_hex(&rig.compute),
+        modules: Default::default(),
         owner: "alice".into(),
         steps: vec!["a".into(), "b".into()],
         inputs: Default::default(),
@@ -1408,4 +1409,109 @@ async fn a_retry_keeps_the_original_release_after_an_upgrade() {
         done["steps"]["a"]["cached"], true,
         "nothing ran again: {done}"
     );
+}
+
+const VIA_MODULE: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: via-module
+inputs:
+  docs: { kind: files }
+steps:
+  a: { module: com.test.module@1.0.0, method: digest, inputs: [inputs.docs] }
+  b: { method: digest, inputs: [a.outputs] }
+";
+
+/// A step runs the code of another installed package, while the files, the payer and the usage
+/// stay the calling app's: the module only supplies the component.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let module = calimero_app_build::with_abi(&rig.compute, &{
+        let mut abi = calimero_app_build::abi_of(&rig.compute).unwrap().unwrap();
+        abi["build"] = json!(7);
+        abi
+    })
+    .unwrap();
+    let _module = rig
+        .alice
+        .upload_package(common::mpk_parts(
+            "com.test.module",
+            "1.0.0",
+            None,
+            Some(&module),
+            &key,
+        ))
+        .await
+        .unwrap();
+    let _user = rig
+        .alice
+        .upload_package(mpk_with_pipelines(
+            "com.test.job",
+            "2.0.0",
+            None,
+            Some(&rig.compute),
+            &[("pipelines/via-module.yaml", VIA_MODULE)],
+            &key,
+        ))
+        .await
+        .unwrap();
+    let _up = rig
+        .alice
+        .upgrade_app(&rig.app, json!({ "version": "2.0.0" }), &mut rig.pk)
+        .await
+        .unwrap();
+
+    let file = rig.upload(&vec![5u8; 4096]).await;
+    let run = rig
+        .start_run("via-module", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(
+        done["modules"],
+        json!({ "com.test.module@1.0.0": sha256_hex(&module) }),
+        "{done}"
+    );
+
+    let (own, theirs) = (sha256_hex(&rig.compute), sha256_hex(&module));
+    let a = rig.record(&step_run(&done, "a"));
+    let b = rig.record(&step_run(&done, "b"));
+    assert_eq!(a.compute_bundle.as_deref(), Some(theirs.as_str()));
+    assert_eq!(b.compute_bundle.as_deref(), Some(own.as_str()));
+    // Billed, owned and sealed as the app's: the module's package never appears in the record.
+    assert_eq!(
+        (a.bundle.as_str(), a.owner.as_str()),
+        (own.as_str(), b.owner.as_str())
+    );
+    assert_eq!(
+        done["payer"],
+        json!(format!("account:{}", a.owner)),
+        "the app's payer, never the module package's: {done}"
+    );
+
+    let outputs = done["steps"]["a"]["outputs"].as_array().unwrap();
+    assert!(!outputs.is_empty(), "{done}");
+    for output in outputs {
+        let id = output["id"].as_str().unwrap();
+        let held = rig
+            .leader()
+            .hosted(&rig.app)
+            .unwrap()
+            .read_local(|m, _| m.file_sha256(id));
+        assert!(
+            held.is_some(),
+            "the module's output {id} is a file of the app"
+        );
+    }
+
+    // A retry keeps the pinned module.
+    let retried = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &run, json!({}))
+        .await
+        .unwrap();
+    let again = rig.ended(retried["run"].as_str().unwrap()).await;
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert_eq!(again["modules"], done["modules"], "{again}");
 }

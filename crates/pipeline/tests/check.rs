@@ -178,3 +178,26 @@ fn a_step_without_any_module_is_missing_one_unless_the_env_has_a_default() {
     check(&p, &e).unwrap();
     assert_eq!(worst_case_fuel(&p, &e), 1_000);
 }
+
+#[test]
+fn a_module_reference_is_matched_as_written_including_its_version() {
+    let mut env = env(&[]);
+    let _prev = env.modules.insert(
+        "com.acme.pdf@0.1.0".to_string(),
+        BTreeMap::from([("extract".to_string(), CAPS)]),
+    );
+    let source = |module: &str| {
+        compile(&format!(
+            "apiVersion: compute.calimero.network/v1\nkind: Pipeline\nname: p\nsteps:\n  a: {{ module: {module}, method: extract }}\n"
+        ))
+        .unwrap()
+    };
+    assert!(check(&source("com.acme.pdf@0.1.0"), &env).is_ok());
+    for other in ["com.acme.pdf@0.1.1", "com.acme.pdf"] {
+        let errs = check(&source(other), &env).unwrap_err();
+        assert_eq!(
+            (errs[0].code, errs[0].path.as_str()),
+            ("UNKNOWN_MODULE", "steps.a.module")
+        );
+    }
+}

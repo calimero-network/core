@@ -814,3 +814,210 @@ async fn a_package_with_pipelines_waits_until_every_node_runs_this_release() {
     // A release without pipelines installs as before.
     owner.upload_package(with_app(&[])).await.unwrap();
 }
+
+const MODULE_PACKAGE: &str = "com.test.module";
+
+/// The fixture's compute component with its own build and a lower fuel cap on `digest` and
+/// `check`, so it is another release with other caps.
+fn module_component(build: u64) -> Vec<u8> {
+    let job = common::components("compute").compute.clone().unwrap();
+    patched(&job, |a| {
+        a["build"] = json!(build);
+        for method in ["digest", "check"] {
+            a["methods"][method]["compute"]["fuel"] = json!(1_000_000_000_u64);
+        }
+    })
+}
+
+async fn install_module(owner: &Client, version: &str, build: u64) -> Value {
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    owner
+        .upload_package(mpk_parts(
+            MODULE_PACKAGE,
+            version,
+            None,
+            Some(&module_component(build)),
+            &key,
+        ))
+        .await
+        .unwrap()
+}
+
+/// `PIPELINE` with its first step in `module`, and `extra` after the step's method.
+fn module_pipeline(module: &str, extra: &str) -> String {
+    PIPELINE.replace(
+        "first: { method: digest",
+        &format!("first: {{ module: {module}, {extra}method: digest"),
+    )
+}
+
+async fn install_user(
+    owner: &Client,
+    version: &str,
+    source: &str,
+) -> Result<Value, Box<calimero_client::Error>> {
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let job = common::components("compute").compute.clone().unwrap();
+    owner
+        .upload_package(mpk_with_pipelines(
+            "com.test.job",
+            version,
+            None,
+            Some(&job),
+            &[("pipelines/p1.yaml", source)],
+            &key,
+        ))
+        .await
+        .map_err(Box::new)
+}
+
+async fn pins(owner: &Client, version: &str) -> Value {
+    let listed = owner
+        .get(&format!("packages/com.test.job/{version}/pipelines"))
+        .await
+        .unwrap();
+    listed["p1"]["modules"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pipeline_step_names_a_module_from_another_installed_package() {
+    let (c, owner, _pk) = compute_cluster().await;
+    install_module(&owner, "1.0.0", 1).await;
+    let reference = format!("{MODULE_PACKAGE}@1.0.0");
+    install_user(&owner, "1.0.0", &module_pipeline(&reference, ""))
+        .await
+        .unwrap();
+
+    let hash = sha256_hex(&module_component(1));
+    assert_eq!(
+        pins(&owner, "1.0.0").await,
+        json!({ reference.clone(): { "package": MODULE_PACKAGE, "version": "1.0.0", "compute": hash } })
+    );
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    node.sys(|s| {
+        let p1 = &s.packages["com.test.job"].versions["1.0.0"].pipelines["p1"];
+        assert_eq!(p1.modules[&reference].compute, hash);
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_module_the_installer_cannot_see_is_unknown() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let unknown = |e: &calimero_client::Error| {
+        let details = bad_pipeline(e);
+        assert_eq!(details.len(), 1, "{details:?}");
+        assert_eq!(details[0]["path"], "steps.first.module");
+        assert_eq!(details[0]["code"], "UNKNOWN_MODULE");
+    };
+    let reference = format!("{MODULE_PACKAGE}@1.0.0");
+
+    // Not installed at all, or not at that version.
+    let e = install_user(&owner, "1.0.0", &module_pipeline(&reference, ""))
+        .await
+        .unwrap_err();
+    unknown(&e);
+    install_module(&owner, "1.0.0", 1).await;
+    let wrong = format!("{MODULE_PACKAGE}@9.9.9");
+    let e = install_user(&owner, "1.0.0", &module_pipeline(&wrong, ""))
+        .await
+        .unwrap_err();
+    unknown(&e);
+
+    // Installed by an account the other shares nothing with.
+    let (other, _pk2) = signed_up(&c, 1, "other").await;
+    let e = install_user(&other, "1.0.0", &module_pipeline(&reference, ""))
+        .await
+        .unwrap_err();
+    unknown(&e);
+
+    // A package with no compute component is no module.
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let app = common::components("compute");
+    let _installed = owner
+        .upload_package(mpk_with(
+            "com.test.noncompute",
+            "1.0.0",
+            &app.app,
+            None,
+            &key,
+        ))
+        .await
+        .unwrap();
+    let e = install_user(
+        &owner,
+        "1.0.0",
+        &module_pipeline("com.test.noncompute@1.0.0", ""),
+    )
+    .await
+    .unwrap_err();
+    unknown(&e);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_limit_above_the_modules_caps_is_refused() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    install_module(&owner, "1.0.0", 1).await;
+    let reference = format!("{MODULE_PACKAGE}@1.0.0");
+    // 2e9 is within the package's own cap for `digest` (2e10) and over the module's (1e9).
+    let over = module_pipeline(&reference, "limits: { fuel: 2000000000 }, ");
+    let e = install_user(&owner, "1.0.0", &over).await.unwrap_err();
+    let details = bad_pipeline(&e);
+    assert_eq!(details.len(), 1, "{details:?}");
+    assert_eq!(details[0]["path"], "steps.first.limits.fuel");
+    assert_eq!(details[0]["code"], "LIMIT_EXCEEDS_CAP");
+    let at = module_pipeline(&reference, "limits: { fuel: 1000000000 }, ");
+    install_user(&owner, "1.0.0", &at).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn uninstalling_a_pinned_module_is_refused_until_its_user_is_gone() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    install_module(&owner, "1.0.0", 1).await;
+    let reference = format!("{MODULE_PACKAGE}@1.0.0");
+    install_user(&owner, "1.0.0", &module_pipeline(&reference, ""))
+        .await
+        .unwrap();
+
+    let e = owner
+        .uninstall_package(MODULE_PACKAGE, Some("1.0.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("MODULE_IN_USE"), "{e}");
+    let e = owner
+        .uninstall_package(MODULE_PACKAGE, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("MODULE_IN_USE"), "{e}");
+
+    let _gone = owner.uninstall_package("com.test.job", None).await.unwrap();
+    let _gone = owner
+        .uninstall_package(MODULE_PACKAGE, Some("1.0.0"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_newer_module_release_does_not_move_an_installed_pipeline() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    install_module(&owner, "1.0.0", 1).await;
+    // No version: the newest release the installer sees.
+    let source = module_pipeline(MODULE_PACKAGE, "");
+    install_user(&owner, "1.0.0", &source).await.unwrap();
+    let v1 = sha256_hex(&module_component(1));
+    assert_eq!(pins(&owner, "1.0.0").await[MODULE_PACKAGE]["compute"], v1);
+
+    install_module(&owner, "2.0.0", 2).await;
+    assert_eq!(
+        pins(&owner, "1.0.0").await[MODULE_PACKAGE]["compute"],
+        v1,
+        "an installed pipeline keeps the module it was installed against"
+    );
+    // Releasing the pipeline's own package again takes the newer module.
+    install_user(&owner, "1.1.0", &source).await.unwrap();
+    let pinned = pins(&owner, "1.1.0").await;
+    assert_eq!(pinned[MODULE_PACKAGE]["version"], "2.0.0");
+    assert_eq!(
+        pinned[MODULE_PACKAGE]["compute"],
+        sha256_hex(&module_component(2))
+    );
+}

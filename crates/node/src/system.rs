@@ -197,6 +197,9 @@ pub const QUOTA_PREFIX: &str = "quota exceeded";
 const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never as an app";
 
 /// The refusal when an app names a compute component its bundle's release does not ship.
+/// The refusal of an uninstall of a release another release's pipelines pin as a module.
+pub const MODULE_IN_USE: &str =
+    "an installed release's pipelines use that release as a module; uninstall them first";
 const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
 
 /// The refusal when an app names a release that does not ship its bundle.
@@ -269,6 +272,20 @@ pub struct PipelineRef {
     pub hash: String,
     /// Decimal `u128`: JSON numbers do not hold one.
     pub worst_case_fuel: String,
+    /// The other packages' modules the pipeline names, by the reference as written (`self`
+    /// excluded), each pinned to the release it was installed against.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: BTreeMap<String, ModulePin>,
+}
+
+/// The release of another package a pipeline's module reference resolved to at install.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModulePin {
+    pub package: String,
+    pub version: String,
+    /// The release's compute component, as a bundle hash.
+    pub compute: String,
 }
 
 /// One release of a package, as its signed manifest describes it.
@@ -1278,6 +1295,33 @@ impl SystemState {
         p.versions
             .values()
             .filter(move |v| self.sees_release(v, who))
+    }
+
+    /// Whether a release other than `package`'s own pins `package@version` as a pipeline module.
+    #[must_use]
+    pub fn module_pinned(&self, package: &str, version: &str) -> bool {
+        self.packages
+            .iter()
+            .filter(|(name, _)| name.as_str() != package)
+            .flat_map(|(_, p)| p.versions.values())
+            .flat_map(|v| v.pipelines.values())
+            .flat_map(|r| r.modules.values())
+            .any(|m| m.package == package && m.version == version)
+    }
+
+    /// Whether every module `release` pins is an installed release with that compute component.
+    #[must_use]
+    pub fn modules_installed(&self, release: &PackageVersion) -> bool {
+        release
+            .pipelines
+            .values()
+            .flat_map(|r| r.modules.values())
+            .all(|m| {
+                self.packages
+                    .get(&m.package)
+                    .and_then(|p| p.versions.get(&m.version))
+                    .is_some_and(|v| v.compute.get("") == Some(&m.compute))
+            })
     }
 
     /// Whether `hash` is a release's compute component, which no app runs.
@@ -5336,6 +5380,9 @@ impl SystemMachine {
                 if !s.may_deploy(&actor, release.installed_at) {
                     return Err(NOT_A_DEPLOYER);
                 }
+                if !s.modules_installed(&release) {
+                    return Err("a module the pipelines use is no longer installed");
+                }
                 if let Some(p) = s.packages.get(&package) {
                     if p.signer_id != signer_id {
                         return Err("the package is published under another key");
@@ -5430,6 +5477,9 @@ impl SystemMachine {
                 // installed it first does not take it from them.
                 if gone.iter().any(|v| s.offered(&package, v)) {
                     return Err("a deployment offers that release; it is uninstalled once no deployment offers it");
+                }
+                if gone.iter().any(|v| s.module_pinned(&package, v)) {
+                    return Err(MODULE_IN_USE);
                 }
                 let hashes: BTreeSet<String> = gone
                     .iter()

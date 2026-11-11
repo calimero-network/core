@@ -37,7 +37,7 @@ pub enum AppCmd {
     /// An application's newest installed version.
     GetLatestVersion { package: String },
     /// The pipelines a version registers (default: the newest installed): name, hash,
-    /// worst-case fuel and the canonical pipeline.
+    /// worst-case fuel, the modules it pins and the canonical pipeline.
     Pipelines {
         package: String,
         #[arg(long)]

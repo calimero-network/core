@@ -252,6 +252,10 @@ pub struct PipelineRun {
     pub hash: String,
     /// The compute component of that release, fixed at start.
     pub compute_bundle: String,
+    /// The compute component of each other package's module the pipeline names, by the name as
+    /// written, fixed at start.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: BTreeMap<String, String>,
     pub owner: String,
     /// Input name to file ids.
     pub inputs: BTreeMap<String, Vec<String>>,
@@ -332,6 +336,8 @@ pub struct PipelineStartEntry {
     pub version: String,
     pub hash: String,
     pub compute_bundle: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: BTreeMap<String, String>,
     pub owner: String,
     pub steps: Vec<String>,
     pub inputs: BTreeMap<String, Vec<String>>,
@@ -359,6 +365,9 @@ pub struct StepRun {
     /// File ids of the app.
     pub inputs: Vec<String>,
     pub caps: RunCaps,
+    /// The module's compute component when the step runs another package's; none is the run's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_bundle: Option<String>,
     /// The step cache key the leader made for this run; none when the step has `cache: false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_key: Option<String>,
@@ -558,6 +567,7 @@ impl AppMachine {
             version: entry.version.clone(),
             hash: entry.hash.clone(),
             compute_bundle: entry.compute_bundle.clone(),
+            modules: entry.modules.clone(),
             owner: entry.owner.clone(),
             inputs: entry.inputs.clone(),
             params: entry.params.clone(),
@@ -844,6 +854,13 @@ impl AppMachine {
         if runs.len() > MAX_STEP_RUNS || !ids_ok {
             return Err(Refusal::Failed("BAD_START"));
         }
+        let pinned = |b: &String| pipeline.modules.values().any(|m| m == b);
+        if !runs
+            .iter()
+            .all(|(_, r)| r.compute_bundle.as_ref().is_none_or(pinned))
+        {
+            return Err(Refusal::Failed("UNKNOWN_MODULE"));
+        }
         let head = &self.state.component.head;
         if head.active_runs.len() + runs.len() > host::MAX_ACTIVE_RUNS {
             return Err(Refusal::NoRoom);
@@ -876,7 +893,11 @@ impl AppMachine {
                 caps: r.caps,
                 result_method: String::new(),
                 bundle: bundle.clone(),
-                compute_bundle: Some(pipeline.compute_bundle.clone()),
+                compute_bundle: Some(
+                    r.compute_bundle
+                        .clone()
+                        .unwrap_or_else(|| pipeline.compute_bundle.clone()),
+                ),
                 caller: pipeline.caller.clone(),
                 owner: pipeline.owner.clone(),
                 start_ts_ms: ts_ms,
@@ -1236,6 +1257,7 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
         && known.version == entry.version
         && known.hash == entry.hash
         && known.compute_bundle == entry.compute_bundle
+        && known.modules == entry.modules
         && known.inputs == entry.inputs
         && known.params == entry.params
         && known.caller == entry.caller

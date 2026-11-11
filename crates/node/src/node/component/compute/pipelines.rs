@@ -26,6 +26,7 @@ use crate::component::{
 use crate::error::ApiError;
 use crate::node::component::entry_bytes;
 use crate::node::{off_workers, Node, ViewAnswer, ViewRequest};
+use crate::packages::pipelines::SELF_MODULE;
 use crate::types::{AppRecord, Caller};
 
 const DEFAULT_PAGE: usize = 20; // pipeline runs a list answers when the caller names no limit
@@ -56,13 +57,16 @@ pub(super) struct CacheView<'a> {
     pub(super) hit: &'a dyn Fn(&str) -> bool,
 }
 
+/// The compute methods of each compute component a run uses, by bundle hash.
+pub(super) type BundleCaps = BTreeMap<String, Arc<BTreeMap<String, Caps>>>;
+
 /// What each step does now: a pending one starts once its needs succeeded or were skipped, fails
 /// upstream when one did not, and a cancelled run ends it; a running fan-out gets its next runs
 /// while it has items left. `room` is the runs the app can take.
 pub(super) fn plan(
     pipeline: &Pipeline,
     run: &PipelineRun,
-    caps: &BTreeMap<String, Caps>,
+    caps: &BundleCaps,
     mut room: usize,
     view: &CacheView<'_>,
 ) -> Vec<(String, StepVerdict)> {
@@ -256,7 +260,7 @@ fn next_wave(
     run: &PipelineRun,
     name: &str,
     step: &Step,
-    (caps, room): (&BTreeMap<String, Caps>, usize),
+    (caps, room): (&BundleCaps, usize),
     view: &CacheView<'_>,
     budget: &mut Budget,
 ) -> Option<(Vec<StepRun>, Vec<CachedRun>, bool)> {
@@ -278,6 +282,23 @@ fn next_wave(
             (!fresh.is_empty() || !hits.is_empty() || blocked).then_some((fresh, hits, blocked))
         }
         _ => None,
+    }
+}
+
+/// The compute component a step runs in: the run's own for `self`, else the one the run pinned
+/// for the module's name.
+fn bundle_of<'a>(
+    pipeline: &Pipeline,
+    run: &'a PipelineRun,
+    step: &Step,
+) -> Result<&'a str, &'static str> {
+    match step.module.as_deref().or(pipeline.module.as_deref()) {
+        None | Some(SELF_MODULE) => Ok(&run.compute_bundle),
+        Some(name) => run
+            .modules
+            .get(name)
+            .map(String::as_str)
+            .ok_or("UNKNOWN_MODULE"),
     }
 }
 
@@ -377,10 +398,14 @@ fn build_step(
     run: &PipelineRun,
     name: &str,
     step: &Step,
-    caps: &BTreeMap<String, Caps>,
+    caps: &BundleCaps,
     view: &CacheView<'_>,
 ) -> Result<Built, &'static str> {
-    let cap = caps.get(&step.method).ok_or("UNKNOWN_METHOD")?;
+    let bundle = bundle_of(pipeline, run, step)?;
+    let cap = caps
+        .get(bundle)
+        .and_then(|methods| methods.get(&step.method))
+        .ok_or("UNKNOWN_METHOD")?;
     let limits = step
         .limits
         .unwrap_or_default()
@@ -398,7 +423,7 @@ fn build_step(
         let args = resolve_args(pipeline, run, step, item)?;
         let key = step
             .cache
-            .then(|| step_key(run, step, &args, &inputs, view))
+            .then(|| step_key(bundle, step, &args, &inputs, view))
             .flatten();
         Ok::<_, &'static str>(StepRun {
             run: run_id(&run.id, name, index),
@@ -406,6 +431,7 @@ fn build_step(
             args: Bytes(args),
             inputs,
             caps,
+            compute_bundle: (bundle != run.compute_bundle).then(|| bundle.to_owned()),
             cache_key: key,
         })
     };
@@ -465,7 +491,7 @@ fn build_step(
 
 /// The step cache key of a run, none when an input's content is not known.
 fn step_key(
-    run: &PipelineRun,
+    bundle: &str,
     step: &Step,
     args: &[u8],
     inputs: &[String],
@@ -475,7 +501,7 @@ fn step_key(
         .iter()
         .map(|i| (view.sha)(i))
         .collect::<Option<_>>()?;
-    Some(cache_key(&run.compute_bundle, &step.method, args, &hashes))
+    Some(cache_key(bundle, &step.method, args, &hashes))
 }
 
 /// A batch's `item`: the value itself for a batch of one, else the list of them.
@@ -695,13 +721,18 @@ impl Node {
                 return;
             }
         };
-        let caps = match self.caps_of_component(&run.compute_bundle).await {
-            Ok(caps) => caps,
-            Err(e) => {
-                debug!(run = %run.id, error = %e.message, "compute component not loaded");
-                return;
+        let mut caps = BundleCaps::new();
+        for bundle in std::iter::once(&run.compute_bundle).chain(run.modules.values()) {
+            match self.caps_of_component(bundle).await {
+                Ok(c) => {
+                    let _prev = caps.insert(bundle.clone(), c);
+                }
+                Err(e) => {
+                    debug!(run = %run.id, error = %e.message, "compute component not loaded");
+                    return;
+                }
             }
-        };
+        }
         let decided = g.read_local(|m, _| {
             let room = host::MAX_ACTIVE_RUNS.saturating_sub(m.active_runs().len());
             let view = CacheView {
@@ -908,7 +939,8 @@ mod tests {
             sha: &|_| None,
             hit: &|_| false,
         };
-        super::plan(p, run, caps, room, &view)
+        let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps.clone()))]);
+        super::plan(p, run, &by_bundle, room, &view)
     }
 
     const SOURCE: &str = "apiVersion: compute.calimero.network/v1
@@ -941,6 +973,7 @@ steps:
             version: "1".into(),
             hash: String::new(),
             compute_bundle: "bundle".into(),
+            modules: BTreeMap::new(),
             owner: "o".into(),
             inputs: BTreeMap::from([("docs".to_owned(), vec!["f1".to_owned(), "f2".to_owned()])]),
             params: BTreeMap::new(),
@@ -1488,6 +1521,7 @@ steps:
                 memory_mib: 1,
                 wall_secs: 1,
             },
+            compute_bundle: None,
             cache_key: None,
         }];
         let mut cmd = ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
@@ -1534,7 +1568,8 @@ steps:
             sha: &|id| Some((*content.get(id).unwrap_or(&id)).to_owned()),
             hit: &|key| hits.contains(key),
         };
-        super::plan(p, run, caps, room, &view)
+        let by_bundle = BundleCaps::from([(run.compute_bundle.clone(), Arc::new(caps.clone()))]);
+        super::plan(p, run, &by_bundle, room, &view)
     }
 
     fn key_of(
@@ -1660,5 +1695,54 @@ steps:
             &HashSet::new(),
         );
         assert!(none.is_empty(), "no hit and no room decides nothing");
+    }
+
+    const MODULE_SOURCE: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: m
+steps:
+  a: { module: pdf@1, method: digest }
+  b: { method: digest, needs: [a] }
+";
+
+    #[test]
+    fn a_module_step_runs_in_the_pinned_component_with_its_caps() {
+        let p = calimero_pipeline::compile(MODULE_SOURCE).unwrap();
+        let mut run = run_of(&p);
+        run.modules = BTreeMap::from([("pdf@1".to_owned(), "module-v1".to_owned())]);
+        let small = Caps {
+            fuel: 7,
+            memory_mib: 8,
+            wall_secs: 9,
+        };
+        let mut by_bundle = BundleCaps::from([
+            (run.compute_bundle.clone(), Arc::new(caps())),
+            (
+                "module-v1".to_owned(),
+                Arc::new(BTreeMap::from([("digest".to_owned(), small)])),
+            ),
+        ]);
+        let view = CacheView {
+            sha: &|id| Some(id.to_owned()),
+            hit: &|_| false,
+        };
+        let decided = super::plan(&p, &run, &by_bundle, 10, &view);
+        let a = start_of(&decided, "a");
+        assert_eq!(a.compute_bundle.as_deref(), Some("module-v1"));
+        assert_eq!(a.caps.fuel, 7, "the module's caps, not the package's");
+
+        set(&mut run, "a", StepStatus::Succeeded);
+        let b = start_of(&super::plan(&p, &run, &by_bundle, 10, &view), "b");
+        assert_eq!(b.compute_bundle, None, "`self` is the run's own component");
+
+        // A run that pinned no such module fails the step; one whose component is unknown too.
+        run.modules.clear();
+        set(&mut run, "a", StepStatus::Pending);
+        let decided = super::plan(&p, &run, &by_bundle, 10, &view);
+        assert_eq!(failure(&decided, "a"), "UNKNOWN_MODULE");
+        run.modules = BTreeMap::from([("pdf@1".to_owned(), "module-v1".to_owned())]);
+        let _gone = by_bundle.remove("module-v1");
+        let decided = super::plan(&p, &run, &by_bundle, 10, &view);
+        assert_eq!(failure(&decided, "a"), "UNKNOWN_METHOD");
     }
 }

@@ -101,7 +101,7 @@ same command (`meroctl package origins list PACKAGE`).
 | `app get PACKAGE` | `GET /packages/{package}` | One installed application. |
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
-| `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel` and the canonical `pipeline`. |
+| `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel`, the `modules` it pins and the canonical `pipeline`. |
 | `pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
 | `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
 | `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
