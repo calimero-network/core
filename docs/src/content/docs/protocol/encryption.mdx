@@ -122,7 +122,10 @@ hidden this way. See [Storage schema](/protocol/storage/).
 
 Snapshots are files of sealed frames, each frame's associated data naming its
 group, snapshot, position and whether it is the last, so frames cannot be
-reordered or truncated unnoticed. Backups are copies of those files.
+reordered or truncated unnoticed. Backups are copies of those files, each with
+a manifest sealed under `HMAC-SHA256(K_c, "calimero.backup.manifest.v1")` and
+bound to its app and file name, so a backup opens and restores only where K_c
+is: on the cluster that wrote it, whatever release its nodes run.
 
 ## Keys derived from K_c
 
@@ -133,6 +136,7 @@ reordered or truncated unnoticed. Backups are copies of those files.
 | Member key | `HMAC-SHA256(K_c, "calimero.member.v1\|" ‖ app ‖ "\|" ‖ account)` | A member's sealed share, opened only in that member's own runs |
 | Hidden-key HMAC key | `HMAC-SHA256(K_c, "calimero.log.hidden-keys.v1")` | Hiding row keys in the store |
 | Snapshot key | `HMAC-SHA256(K_c, "calimero.log.snapshot.v1")` | Sealing snapshot frames (streamed to followers as they are) |
+| Backup manifest key | `HMAC-SHA256(K_c, "calimero.backup.manifest.v1")` | Sealing a backup's manifest, bound to its app and file name |
 | Component cache key | from K_c (`component_cache_key`) | The MAC on compiled components in `<data-dir>/components` |
 
 Every node, of every release, derives the same keys, and nothing outside the
