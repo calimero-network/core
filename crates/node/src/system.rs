@@ -13845,6 +13845,7 @@ mod tests {
                 release: None,
                 recovery_key: None,
                 at: 0,
+                name_fits: true,
             })
             .unwrap();
         assert_eq!(m.state.publisher_of_signer(&signer), None);
