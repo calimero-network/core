@@ -98,6 +98,9 @@ is its command line.
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
+  `__set_all_apps { account, allApps }` (`Org::all_apps`: each app team made
+  after gives them a row; `all_apps_rows` on `ScopeApps`, `MoveApp`,
+  `UpdateTeam`),
   `__set_default_capabilities { capabilities }` (a team's: `{ team,
   capabilities }`, `system::default_capabilities_args`), `__create_invite`,
   `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
