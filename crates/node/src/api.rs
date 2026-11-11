@@ -6854,9 +6854,10 @@ pub const MAX_CONCURRENT_KEY_RELEASES: usize = 4;
 
 /// `POST /internal/cluster-key`: a new node (often of another mero-tee
 /// release, so without the cluster secret) asks for K_c. It is delivered, not
-/// answered: to the address the cluster has for that node id (registered, or
-/// in this node's `--peers`), inside a sealed channel to the key the TD there
-/// attests (`cluster_key::deliver`). Refused for another cluster, an unknown
+/// answered: to the address the cluster has for that node id
+/// (`Node::key_recipient_addr`: registered or a system member; this node's
+/// `--peers` only before genesis), inside a sealed channel to the key the TD
+/// there attests (`cluster_key::deliver`). Refused for another cluster, an unknown
 /// or removed node id; at most `MAX_CONCURRENT_KEY_RELEASES` at once.
 async fn internal_cluster_key(
     State(node): State<Arc<Node>>,
@@ -6878,10 +6879,7 @@ async fn internal_cluster_key(
             "a job node never holds the cluster key",
         ));
     }
-    let addr = (!node.sys(|s| s.removed_nodes.contains(&id)))
-        .then(|| node.replica_addr(id))
-        .flatten();
-    let Some(addr) = addr else {
+    let Some(addr) = node.key_recipient_addr(id) else {
         return Err(ApiError::forbidden(
             "not a node of this cluster: register it (/ops/nodes) first",
         ));
