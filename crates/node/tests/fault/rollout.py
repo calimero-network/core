@@ -166,7 +166,27 @@ class Fleet(Cluster):
         self.jobs.add(i)
         self.procs.setdefault(i, None)
         self.start_node(i)
-        self.operate("add-node", str(i), self.url(i), "--role", "job")
+        deadline = time.time() + STEP_TIMEOUT_S
+        while not self._register_job(i):
+            if time.time() > deadline:
+                raise RolloutError(f"job node {i}: still CLUSTER_NOT_UPGRADED after {STEP_TIMEOUT_S}s")
+            time.sleep(0.5)
+
+    def _register_job(self, i):
+        """`add-node --role job`, which the node refuses (`409 CLUSTER_NOT_UPGRADED`)
+        while it cannot read some replica's release. Right after the old leader
+        leaves, that includes a new node it has not attested yet (the read is
+        bounded by `PLACEMENT_RELEASE_WAIT` and an election is under way), so
+        the refusal is retried, and only while every replica does run a release
+        at least the job node's: an older replica's refusal is real, and raised."""
+        try:
+            self.operate("add-node", str(i), self.url(i), "--role", "job")
+            return True
+        except rv2.CliError as e:
+            replicas = [j for j in self.members if j not in self.jobs]
+            if e.has("CLUSTER_NOT_UPGRADED") and all(self.release[j] == self.release[i] for j in replicas):
+                return False
+            raise
 
     def retire_job(self, i):
         self.operate("remove-node", str(i))
