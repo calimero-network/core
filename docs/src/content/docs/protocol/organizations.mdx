@@ -372,3 +372,25 @@ becomes the owner, every previous owner leaves the organization and its teams,
 and the apps they owned in it become the new owner's. One recovery runs at a
 time (`409 RECOVERY_PENDING`). Recovery never changes an account's passkeys:
 the previous owner's account and its other organizations are as they were.
+
+## Data policy
+
+An organization's **data policy** (`Org::data_policy`) says which modules may read its data (`readers`: `pkg:<package>` or `sha256:<compute hash>`), which `x25519:<hex>` keys outputs may be wrapped to (`recipients`), which connections feed it (`sources`), and where results may go (`sinks`, each with the `<pipeline>.<step>` allowed to publish there).
+This release stores and signs the policy; nothing enforces it yet.
+
+A policy is a chain of versions.
+Each is JSON (camelCase, unknown fields refused) with `version`, `prev` (the SHA-256 hex of the previous version's RFC 8785 canonical JSON, none for the first), `signers` and `threshold`.
+Its hash is the SHA-256 hex of its canonical JSON, at most 64 KiB, with at most 256 entries per list and 32 signers.
+`signers` are the admins or owners who must approve the next version, `threshold` of them (at least 1 and at most the signers).
+
+Every step is an admin's passkey consent, and nothing else: there is no operator path, so Calimero cannot set or override a policy.
+`POST /orgs/{org}/data-policy` (body: the policy; consent `org:<org> / __propose_data_policy / { hash }`) proposes the next version, which must be `version + 1` with `prev` the current hash, and replaces any pending proposal.
+The proposer must be an admin and, after the first version, one of the current signers; their consent is the first approval.
+`POST /orgs/{org}/data-policy/approve { hash }` (`__approve_data_policy { hash }`) adds an approval for the pending hash from a distinct required approver, and the proposal becomes current when it has enough: the first version needs two admins, a later one the current `threshold` of the current `signers`.
+`POST /orgs/{org}/data-policy/withdraw` (`__withdraw_data_policy {}`) clears the proposal, for its proposer or any required approver.
+`GET /orgs/{org}/data-policy` answers `{ current, currentHash, pending: { policy, hash, proposer, approvals } }` to any member.
+Each write is refused `409 UPGRADE_PENDING` while a node runs an older release, before any signature is asked for.
+
+An organization with fewer than two admins cannot reach two approvals: its first policy needs the organization's recovery key, which approves the pending hash alone (`POST /orgs/{org}/data-policy/recovery-approve { hash, signature }`).
+After the first version the recovery key adopts a pending policy only when the current policy's signers who are still admins can no longer reach its threshold (`409 DATA_POLICY_SIGNERS_CAN_APPROVE` otherwise), so it breaks a lockout but never outvotes the signers.
+The signature is the recovery key's over the organization recovery message with the account `data-policy:approve` and the hash as nonce, so a signature made for a recovery start or another hash is refused, and each is accepted once.

@@ -641,6 +641,10 @@ pub struct Org {
     /// set one, as every organization written before this field was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<OrgRecovery>,
+    /// The organization's data policy and any proposal to change it; absent
+    /// until one is proposed, as in every organization written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_policy: Option<crate::policy::OrgDataPolicy>,
 }
 
 /// An organization's recovery key: whoever holds its seed can hand the

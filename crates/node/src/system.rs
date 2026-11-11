@@ -3873,6 +3873,68 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             })?;
             Ok(Some(used))
         }
+        SystemCmd::ProposeDataPolicy {
+            org,
+            policy,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "hash": policy.hash()? });
+            states(&st, &format!("org:{org}"), "__propose_data_policy", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::ApproveDataPolicy {
+            org,
+            hash,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({ "hash": hash });
+            states(&st, &format!("org:{org}"), "__approve_data_policy", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::ApproveDataPolicyByRecovery {
+            org,
+            hash,
+            signature,
+        } => {
+            let key = s
+                .orgs
+                .get(org)
+                .ok_or("no such organization")?
+                .recovery
+                .as_ref()
+                .ok_or(NO_RECOVERY_KEY)?;
+            let used = crate::proof::verify_recovery(
+                &key.public_key,
+                org,
+                crate::policy::RECOVERY_SUBJECT,
+                hash,
+                signature,
+            )?;
+            if s.used_proofs.contains(&used) {
+                return Err("that recovery signature was used already");
+            }
+            Ok(Some(used))
+        }
+        SystemCmd::WithdrawDataPolicyProposal {
+            org,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let args = json!({});
+            states(&st, &format!("org:{org}"), "__withdraw_data_policy", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
         SystemCmd::SetSignUp {
             policy,
             actor,
@@ -5132,6 +5194,36 @@ pub enum SystemCmd {
     CancelRecovery {
         org: OrgId,
         account: AccountId,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Propose a data policy version: an admin's passkey consent over the
+    /// policy's hash (`org:<org> / __propose_data_policy / { hash }`). Counts
+    /// as the proposer's approval.
+    ProposeDataPolicy {
+        org: OrgId,
+        policy: crate::policy::DataPolicy,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Approve the pending data policy (`__approve_data_policy / { hash }`).
+    ApproveDataPolicy {
+        org: OrgId,
+        hash: String,
+        actor: AccountId,
+        consent: Value,
+    },
+    /// Adopt the pending data policy on the organization's recovery key
+    /// alone: `signature` is its signature over the hash
+    /// ([`crate::policy::RECOVERY_SUBJECT`]).
+    ApproveDataPolicyByRecovery {
+        org: OrgId,
+        hash: String,
+        signature: String,
+    },
+    /// Clear the pending data policy (`__withdraw_data_policy / {}`).
+    WithdrawDataPolicyProposal {
+        org: OrgId,
         actor: AccountId,
         consent: Value,
     },
@@ -6530,6 +6622,7 @@ impl SystemMachine {
                         member_metadata: BTreeMap::new(),
                         upgrade_runs: BTreeMap::new(),
                         recovery,
+                        data_policy: None,
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -7599,6 +7692,30 @@ impl SystemMachine {
                 o.recovery = recovery;
                 Ok(Value::Null)
             }
+            SystemCmd::ProposeDataPolicy {
+                org, policy, actor, ..
+            } => data_policy_step(org_mut(s, &org)?, |dp, view| {
+                let adopted = dp.propose(policy, &actor, view)?;
+                Ok(json!({ "adopted": adopted }))
+            }),
+            SystemCmd::ApproveDataPolicy {
+                org, hash, actor, ..
+            } => data_policy_step(org_mut(s, &org)?, |dp, view| {
+                let adopted = dp.approve(&hash, &actor, view)?;
+                Ok(json!({ "adopted": adopted }))
+            }),
+            SystemCmd::ApproveDataPolicyByRecovery { org, hash, .. } => {
+                data_policy_step(org_mut(s, &org)?, |dp, view| {
+                    dp.approve_by_recovery(&hash, view)?;
+                    Ok(json!({ "adopted": true }))
+                })
+            }
+            SystemCmd::WithdrawDataPolicyProposal { org, actor, .. } => {
+                data_policy_step(org_mut(s, &org)?, |dp, view| {
+                    dp.withdraw(&actor, view)?;
+                    Ok(Value::Null)
+                })
+            }
             SystemCmd::StartRecovery {
                 org, account, at, ..
             } => {
@@ -7680,6 +7797,41 @@ impl SystemMachine {
             }
         }
     }
+}
+
+/// Run `step` on a copy of `org`'s data policy and keep the copy only if it
+/// succeeds, so a refusal leaves the organization as it was.
+///
+/// # Errors
+/// Whatever `step` refuses.
+pub fn data_policy_step(
+    o: &mut crate::types::Org,
+    step: impl FnOnce(
+        &mut crate::policy::OrgDataPolicy,
+        &crate::policy::OrgView<'_>,
+    ) -> Result<Value, &'static str>,
+) -> Result<Value, &'static str> {
+    let admins = o
+        .members
+        .iter()
+        .filter(|(_, r)| **r >= OrgRole::Admin)
+        .map(|(a, _)| a.clone())
+        .collect();
+    let view = crate::policy::OrgView {
+        admins: &admins,
+        has_recovery: o.recovery.is_some(),
+    };
+    let mut dp = o.data_policy.clone().unwrap_or_default();
+    let out = step(&mut dp, &view)?;
+    o.data_policy = Some(dp);
+    Ok(out)
+}
+
+fn org_mut<'a>(
+    s: &'a mut SystemState,
+    org: &str,
+) -> Result<&'a mut crate::types::Org, &'static str> {
+    s.orgs.get_mut(org).ok_or("no such organization")
 }
 
 /// A refusal: no account recovery code is (still) known under that key.
@@ -13664,6 +13816,650 @@ mod tests {
         for key in ["compute", "nextRunSeq", "runGrants", "releasedRuns"] {
             assert!(before.get(key).is_none(), "{key} in {before}");
         }
+    }
+
+    // -------------------------------------------------------- data policy
+
+    use crate::policy::{DataPolicy, Sink};
+
+    fn dp_policy(
+        version: u64,
+        prev: Option<String>,
+        signers: &[&str],
+        threshold: u32,
+    ) -> DataPolicy {
+        DataPolicy {
+            version,
+            prev,
+            readers: vec!["pkg:com.report".into()],
+            recipients: vec![format!("x25519:{}", "ab".repeat(32))],
+            sources: vec!["warehouse".into()],
+            sinks: vec![Sink {
+                name: "bucket".into(),
+                from: vec!["nightly.render".into()],
+            }],
+            signers: signers.iter().map(|s| (*s).to_owned()).collect(),
+            threshold,
+        }
+    }
+
+    fn propose_cmd(p: &DataPolicy, actor: &str, consent: serde_json::Value) -> SystemCmd {
+        SystemCmd::ProposeDataPolicy {
+            org: "org".into(),
+            policy: p.clone(),
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    fn approve_cmd(hash: &str, actor: &str, consent: serde_json::Value) -> SystemCmd {
+        SystemCmd::ApproveDataPolicy {
+            org: "org".into(),
+            hash: hash.into(),
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    fn withdraw_cmd(actor: &str, consent: serde_json::Value) -> SystemCmd {
+        SystemCmd::WithdrawDataPolicyProposal {
+            org: "org".into(),
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    fn dp_propose(
+        m: &mut SystemMachine,
+        pk: &mut Soft,
+        actor: &str,
+        p: &DataPolicy,
+    ) -> Result<serde_json::Value, String> {
+        let c = consent(
+            pk,
+            "org:org",
+            "__propose_data_policy",
+            &json!({ "hash": p.hash().unwrap() }),
+        );
+        m.run(propose_cmd(p, actor, c))
+    }
+
+    fn dp_approve(
+        m: &mut SystemMachine,
+        pk: &mut Soft,
+        actor: &str,
+        hash: &str,
+    ) -> Result<serde_json::Value, String> {
+        let c = consent(
+            pk,
+            "org:org",
+            "__approve_data_policy",
+            &json!({ "hash": hash }),
+        );
+        m.run(approve_cmd(hash, actor, c))
+    }
+
+    /// alice owns `org`; bob and carol are admins; dave is a member.
+    fn policy_cluster() -> (SystemMachine, Soft, Soft, Soft, Soft) {
+        let (mut m, alice, bob, carol) = proven_cluster();
+        let mut dave = Soft::new("localhost", "http://localhost:3000");
+        let _ok = m.run(account_with("dave", &mut dave)).unwrap();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _p = o.members.insert("bob".into(), crate::types::OrgRole::Admin);
+        let _p = o
+            .members
+            .insert("carol".into(), crate::types::OrgRole::Admin);
+        let _p = o
+            .members
+            .insert("dave".into(), crate::types::OrgRole::Member);
+        (m, alice, bob, carol, dave)
+    }
+
+    fn dp_current(m: &SystemMachine) -> Option<u64> {
+        m.state.orgs["org"]
+            .data_policy
+            .as_ref()
+            .and_then(|d| d.current.as_ref().map(|c| c.version))
+    }
+
+    fn dp_pending(m: &SystemMachine) -> usize {
+        m.state.orgs["org"]
+            .data_policy
+            .as_ref()
+            .and_then(|d| d.pending.as_ref())
+            .map_or(0, |p| p.approvals.len())
+    }
+
+    #[test]
+    fn a_first_policy_needs_two_distinct_admins() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let hash = p.hash().unwrap();
+        let out = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        assert_eq!(out["adopted"], json!(false));
+        assert_eq!((dp_current(&m), dp_pending(&m)), (None, 1));
+        // The proposer approving again does not count twice.
+        assert_eq!(
+            dp_approve(&mut m, &mut alice, "alice", &hash).unwrap_err(),
+            crate::policy::ALREADY_APPROVED
+        );
+        assert_eq!((dp_current(&m), dp_pending(&m)), (None, 1));
+        let out = dp_approve(&mut m, &mut bob, "bob", &hash).unwrap();
+        assert_eq!(out["adopted"], json!(true));
+        let dp = m.state.orgs["org"].data_policy.clone().unwrap();
+        assert_eq!(dp.current, Some(p));
+        assert_eq!(dp.current_hash, Some(hash));
+        assert!(dp.pending.is_none());
+    }
+
+    #[test]
+    fn only_admins_propose_and_approve_and_after_v1_only_its_signers() {
+        let (mut m, mut alice, mut bob, mut carol, mut dave) = policy_cluster();
+        let p1 = dp_policy(1, None, &["alice", "bob"], 2);
+        // A member is no admin, and an admin signer list may not name one.
+        assert_eq!(
+            dp_propose(&mut m, &mut dave, "dave", &p1).unwrap_err(),
+            crate::policy::NOT_A_SIGNER
+        );
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p1).unwrap();
+        let h1 = p1.hash().unwrap();
+        assert_eq!(
+            dp_approve(&mut m, &mut dave, "dave", &h1).unwrap_err(),
+            crate::policy::NOT_A_SIGNER
+        );
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h1).unwrap();
+        // Carol is an admin but not one of v1's signers.
+        let p2 = dp_policy(2, Some(h1.clone()), &["alice", "bob"], 2);
+        assert_eq!(
+            dp_propose(&mut m, &mut carol, "carol", &p2).unwrap_err(),
+            crate::policy::NOT_A_SIGNER
+        );
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p2).unwrap();
+        let h2 = p2.hash().unwrap();
+        assert_eq!(
+            dp_approve(&mut m, &mut carol, "carol", &h2).unwrap_err(),
+            crate::policy::NOT_A_SIGNER
+        );
+        assert_eq!(dp_current(&m), Some(1));
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h2).unwrap();
+        assert_eq!(dp_current(&m), Some(2));
+    }
+
+    #[test]
+    fn a_later_policy_needs_the_threshold_its_predecessor_set() {
+        let (mut m, mut alice, mut bob, mut carol, _dave) = policy_cluster();
+        let p1 = dp_policy(1, None, &["alice", "bob", "carol"], 3);
+        let h1 = p1.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p1).unwrap();
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h1).unwrap();
+        assert_eq!(dp_current(&m), Some(1), "the first version needs two");
+        let p2 = dp_policy(2, Some(h1), &["alice", "bob", "carol"], 3);
+        let h2 = p2.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p2).unwrap();
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h2).unwrap();
+        assert_eq!(dp_current(&m), Some(1), "two of the three it sets");
+        let _ok = dp_approve(&mut m, &mut carol, "carol", &h2).unwrap();
+        assert_eq!(dp_current(&m), Some(2));
+    }
+
+    #[test]
+    fn a_policy_must_chain_to_the_current_one() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        let p1 = dp_policy(1, None, &["alice", "bob"], 2);
+        let h1 = p1.hash().unwrap();
+        // The first version names a number and no predecessor.
+        for bad in [
+            dp_policy(2, None, &["alice", "bob"], 2),
+            dp_policy(1, Some("00".repeat(32)), &["alice", "bob"], 2),
+        ] {
+            assert_eq!(
+                dp_propose(&mut m, &mut alice, "alice", &bad).unwrap_err(),
+                crate::policy::NOT_NEXT_VERSION
+            );
+        }
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p1).unwrap();
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h1).unwrap();
+        for bad in [
+            dp_policy(3, Some(h1.clone()), &["alice", "bob"], 2),
+            dp_policy(1, Some(h1.clone()), &["alice", "bob"], 2),
+            dp_policy(2, None, &["alice", "bob"], 2),
+            dp_policy(2, Some("00".repeat(32)), &["alice", "bob"], 2),
+        ] {
+            assert_eq!(
+                dp_propose(&mut m, &mut alice, "alice", &bad).unwrap_err(),
+                crate::policy::NOT_NEXT_VERSION,
+                "{bad:?}"
+            );
+        }
+        // A later version is held to the bounds too.
+        for threshold in [0, 3] {
+            let bad = dp_policy(2, Some(h1.clone()), &["alice", "bob"], threshold);
+            assert_eq!(
+                dp_propose(&mut m, &mut alice, "alice", &bad).unwrap_err(),
+                crate::policy::BAD_POLICY,
+                "threshold {threshold}"
+            );
+        }
+        let p2 = dp_policy(2, Some(h1), &["alice", "bob"], 2);
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p2).unwrap();
+    }
+
+    #[test]
+    fn an_approval_names_the_pending_policy_and_a_consent_is_spent_once() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let hash = p.hash().unwrap();
+        let other = dp_policy(1, None, &["alice", "bob", "carol"], 2)
+            .hash()
+            .unwrap();
+        assert_eq!(
+            dp_approve(&mut m, &mut bob, "bob", &hash).unwrap_err(),
+            crate::policy::NO_PENDING_POLICY
+        );
+        needs_consent(
+            &mut m,
+            &mut alice,
+            ("org:org", "__propose_data_policy"),
+            &json!({ "hash": hash }),
+            &json!({ "hash": other }),
+            |c| propose_cmd(&p, "alice", c),
+        );
+        assert_eq!(
+            dp_approve(&mut m, &mut bob, "bob", &other).unwrap_err(),
+            crate::policy::OTHER_POLICY
+        );
+        // A consent over the proposal's hash does not propose another policy.
+        let swapped = dp_policy(1, None, &["alice", "bob", "carol"], 2);
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__propose_data_policy",
+            &json!({ "hash": hash }),
+        );
+        assert!(m.run(propose_cmd(&swapped, "alice", c)).is_err());
+        needs_consent(
+            &mut m,
+            &mut bob,
+            ("org:org", "__approve_data_policy"),
+            &json!({ "hash": hash }),
+            &json!({ "hash": other }),
+            |c| approve_cmd(&hash, "bob", c),
+        );
+        assert_eq!(dp_current(&m), Some(1));
+    }
+
+    #[test]
+    fn a_consent_for_another_method_or_actor_is_no_approval() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let hash = p.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        let args = json!({ "hash": hash });
+        let as_withdraw = consent(&mut bob, "org:org", "__propose_data_policy", &args);
+        assert!(m.run(approve_cmd(&hash, "bob", as_withdraw)).is_err());
+        let elsewhere = consent(&mut bob, "org:other", "__approve_data_policy", &args);
+        assert!(m.run(approve_cmd(&hash, "bob", elsewhere)).is_err());
+        // Bob's passkey does not speak for alice.
+        let by_bob = consent(&mut bob, "org:org", "__approve_data_policy", &args);
+        assert!(m.run(approve_cmd(&hash, "alice", by_bob)).is_err());
+        assert_eq!(dp_current(&m), None);
+    }
+
+    #[test]
+    fn malformed_policies_are_refused() {
+        let (mut m, mut alice, _bob, _carol, _dave) = policy_cluster();
+        let base = dp_policy(1, None, &["alice", "bob"], 2);
+        let mut many = base.clone();
+        many.readers = (0..=crate::policy::MAX_POLICY_ENTRIES)
+            .map(|i| format!("pkg:p{i}"))
+            .collect();
+        let mut long = base.clone();
+        long.sources = vec!["x".repeat(crate::policy::MAX_ENTRY_CHARS + 1)];
+        let mut huge = base.clone();
+        huge.sinks = (0..crate::policy::MAX_POLICY_ENTRIES)
+            .map(|i| Sink {
+                name: format!("s{i}"),
+                from: (0..crate::policy::MAX_POLICY_ENTRIES)
+                    .map(|j| format!("{}.{i}{j}", "p".repeat(100)))
+                    .collect(),
+            })
+            .collect();
+        let mut many_signers = base.clone();
+        many_signers.signers = (0..=crate::policy::MAX_SIGNERS)
+            .map(|i| format!("a{i}"))
+            .collect();
+        let mut bad_reader = base.clone();
+        bad_reader.readers = vec!["package:x".into()];
+        let mut bad_hash = base.clone();
+        bad_hash.readers = vec!["sha256:abc".into()];
+        let mut bad_recipient = base.clone();
+        bad_recipient.recipients = vec!["x25519:zz".into()];
+        let mut bad_step = base.clone();
+        bad_step.sinks[0].from = vec!["nodot".into()];
+        let cases = [
+            ("threshold 0", dp_policy(1, None, &["alice", "bob"], 0)),
+            (
+                "threshold over signers",
+                dp_policy(1, None, &["alice", "bob"], 3),
+            ),
+            ("no signers", dp_policy(1, None, &[], 1)),
+            (
+                "a signer who is no admin",
+                dp_policy(1, None, &["alice", "dave"], 2),
+            ),
+            (
+                "a signer outside the org",
+                dp_policy(1, None, &["alice", "erin"], 2),
+            ),
+            ("a signer twice", dp_policy(1, None, &["alice", "alice"], 2)),
+            (
+                "a single approval for the first version",
+                dp_policy(1, None, &["alice", "bob"], 1),
+            ),
+            ("too many readers", many),
+            ("an overlong entry", long),
+            ("an oversize policy", huge),
+            ("too many signers", many_signers),
+            ("a reader that names nothing known", bad_reader),
+            ("a compute hash that is no hash", bad_hash),
+            ("a recipient that is no key", bad_recipient),
+            ("a sink origin without a step", bad_step),
+        ];
+        for (what, p) in cases {
+            assert!(
+                dp_propose(&mut m, &mut alice, "alice", &p).is_err(),
+                "{what}"
+            );
+        }
+        assert!(dp_propose(&mut m, &mut alice, "alice", &base).is_ok());
+    }
+
+    #[test]
+    fn unknown_policy_fields_are_refused() {
+        let ok = json!({ "version": 1, "signers": ["a"], "threshold": 1 });
+        assert!(serde_json::from_value::<DataPolicy>(ok.clone()).is_ok());
+        let mut extra = ok;
+        extra["admin"] = json!("operator");
+        assert!(serde_json::from_value::<DataPolicy>(extra).is_err());
+        let sink = json!({ "name": "s", "from": [], "to": "x" });
+        assert!(serde_json::from_value::<Sink>(sink).is_err());
+    }
+
+    #[test]
+    fn the_operator_cannot_set_or_approve_a_policy() {
+        let (mut m, mut alice, _bob, _carol, _dave) = policy_cluster();
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let args = json!({ "hash": p.hash().unwrap() });
+        // Neither a command carrying the operator's signature, nor the
+        // operator as actor, is accepted: there is no operator variant.
+        let proof = signed("org:org", "__propose_data_policy", &args);
+        assert!(m.run(propose_cmd(&p, "alice", proof.clone())).is_err());
+        assert!(m.run(propose_cmd(&p, super::OPERATOR, proof)).is_err());
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        let hash = p.hash().unwrap();
+        let proof = signed("org:org", "__approve_data_policy", &json!({ "hash": hash }));
+        assert!(m.run(approve_cmd(&hash, "bob", proof.clone())).is_err());
+        assert!(m.run(approve_cmd(&hash, super::OPERATOR, proof)).is_err());
+        let proof = signed("org:org", "__withdraw_data_policy", &json!({}));
+        assert!(m.run(withdraw_cmd(super::OPERATOR, proof)).is_err());
+        assert_eq!((dp_current(&m), dp_pending(&m)), (None, 1));
+    }
+
+    #[test]
+    fn a_proposal_is_withdrawn_by_its_proposer_or_a_required_approver_and_replaced_by_a_new_one() {
+        let (mut m, mut alice, mut bob, mut carol, mut dave) = policy_cluster();
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        let w = |pk: &mut Soft| consent(pk, "org:org", "__withdraw_data_policy", &json!({}));
+        let c = w(&mut dave);
+        assert_eq!(
+            m.run(withdraw_cmd("dave", c)).unwrap_err(),
+            crate::policy::NOT_A_SIGNER
+        );
+        let c = w(&mut alice);
+        let _ok = m.run(withdraw_cmd("alice", c)).unwrap();
+        assert_eq!(dp_pending(&m), 0);
+        let c = w(&mut alice);
+        assert_eq!(
+            m.run(withdraw_cmd("alice", c)).unwrap_err(),
+            crate::policy::NO_PENDING_POLICY
+        );
+        // A new proposal resets approvals: bob's approval of the first
+        // does not carry to the second.
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        let q = dp_policy(1, None, &["alice", "carol"], 2);
+        let _ok = dp_propose(&mut m, &mut bob, "bob", &q).unwrap();
+        assert_eq!(dp_pending(&m), 1);
+        assert_eq!(
+            dp_approve(&mut m, &mut carol, "carol", &p.hash().unwrap()).unwrap_err(),
+            crate::policy::OTHER_POLICY
+        );
+        // Any admin withdraws a first proposal.
+        let c = w(&mut carol);
+        let _ok = m.run(withdraw_cmd("carol", c)).unwrap();
+    }
+
+    #[test]
+    fn an_approver_who_lost_admin_before_the_last_approval_does_not_count() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let hash = p.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        let _p = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("alice".into(), crate::types::OrgRole::Member);
+        // Bob's approval is one valid approval of the one still qualifying.
+        let out = dp_approve(&mut m, &mut bob, "bob", &hash).unwrap();
+        assert_eq!(out["adopted"], json!(false));
+        assert_eq!(dp_current(&m), None);
+    }
+
+    /// An org whose only admin is its owner, with a recovery key.
+    fn lone_owner_cluster() -> (SystemMachine, Soft) {
+        let (mut m, alice, _bob, _carol) = proven_cluster();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        o.members.remove("bob");
+        o.recovery = Some(crate::types::OrgRecovery {
+            public_key: public(&SEED),
+            set_at: 1,
+            pending: None,
+        });
+        (m, alice)
+    }
+
+    fn dp_by_recovery(seed: &[u8; 32], org: &str, subject: &str, hash: &str) -> SystemCmd {
+        SystemCmd::ApproveDataPolicyByRecovery {
+            org: "org".into(),
+            hash: hash.into(),
+            signature: calimero_identity::recovery::sign_recovery(seed, org, subject, hash),
+        }
+    }
+
+    #[test]
+    fn an_org_with_one_admin_adopts_its_first_policy_only_through_its_recovery_key() {
+        let (mut m, mut alice) = lone_owner_cluster();
+        let p = dp_policy(1, None, &["alice"], 1);
+        let hash = p.hash().unwrap();
+        // Without a recovery key the proposal is refused.
+        let keyless = m.state.orgs.get_mut("org").unwrap().recovery.take();
+        assert_eq!(
+            dp_propose(&mut m, &mut alice, "alice", &p).unwrap_err(),
+            crate::policy::NO_POLICY_RECOVERY
+        );
+        m.state.orgs.get_mut("org").unwrap().recovery = keyless;
+        // Nothing pending: a recovery signature adopts nothing.
+        let good = |h: &str| dp_by_recovery(&SEED, "org", crate::policy::RECOVERY_SUBJECT, h);
+        assert_eq!(
+            m.run(good(&hash)).unwrap_err(),
+            crate::policy::NO_PENDING_POLICY
+        );
+        let out = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        assert_eq!(out["adopted"], json!(false), "one admin is not two");
+        // A signature over another hash, for another purpose, another
+        // org's, or another key's, adopts nothing.
+        let other = "11".repeat(32);
+        assert!(m.run(good(&other)).is_err());
+        assert!(m.run(dp_by_recovery(&SEED, "org", "alice", &hash)).is_err());
+        assert!(m
+            .run(dp_by_recovery(
+                &SEED,
+                "elsewhere",
+                crate::policy::RECOVERY_SUBJECT,
+                &hash
+            ))
+            .is_err());
+        assert!(m
+            .run(dp_by_recovery(
+                &[1; 32],
+                "org",
+                crate::policy::RECOVERY_SUBJECT,
+                &hash
+            ))
+            .is_err());
+        assert_eq!(dp_current(&m), None);
+        let _ok = m.run(good(&hash)).unwrap();
+        assert_eq!(dp_current(&m), Some(1));
+        // Spent: a replay is refused.
+        assert_eq!(
+            m.run(good(&hash)).unwrap_err(),
+            "that recovery signature was used already"
+        );
+    }
+
+    #[test]
+    fn a_recovery_signature_for_a_policy_starts_no_recovery_and_needs_a_recovery_key() {
+        let (mut m, _alice) = lone_owner_cluster();
+        let hash = "22".repeat(32);
+        // The data-policy signature is not an organization recovery start.
+        assert!(m
+            .run(start_signed_for(
+                &SEED,
+                "carol",
+                crate::policy::RECOVERY_SUBJECT,
+                &hash,
+                1
+            ))
+            .is_err());
+        // And an organization without a key accepts no recovery approval.
+        m.state.orgs.get_mut("org").unwrap().recovery = None;
+        assert_eq!(
+            m.run(dp_by_recovery(
+                &SEED,
+                "org",
+                crate::policy::RECOVERY_SUBJECT,
+                &hash
+            ))
+            .unwrap_err(),
+            NO_RECOVERY_KEY
+        );
+    }
+
+    /// After the first version, the recovery key adopts a policy only when the
+    /// current signers who are still admins can no longer reach its threshold.
+    #[test]
+    fn the_recovery_key_replaces_a_later_policy_only_when_its_signers_cannot() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        m.state.orgs.get_mut("org").unwrap().recovery = Some(crate::types::OrgRecovery {
+            public_key: public(&SEED),
+            set_at: 1,
+            pending: None,
+        });
+        let v1 = dp_policy(1, None, &["alice", "bob"], 2);
+        let h1 = v1.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &v1).unwrap();
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &h1).unwrap();
+        assert_eq!(dp_current(&m), Some(1));
+
+        let v2 = dp_policy(2, Some(h1), &["alice", "bob"], 2);
+        let h2 = v2.hash().unwrap();
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &v2).unwrap();
+        let by_key = |h: &str| dp_by_recovery(&SEED, "org", crate::policy::RECOVERY_SUBJECT, h);
+        assert_eq!(
+            m.run(by_key(&h2)).unwrap_err(),
+            crate::policy::SIGNERS_CAN_APPROVE
+        );
+        assert_eq!(dp_current(&m), Some(1));
+
+        // Bob is no longer an admin: alice alone cannot reach 2, so the key may.
+        let _p = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), crate::types::OrgRole::Member);
+        let _ok = m.run(by_key(&h2)).unwrap();
+        assert_eq!(dp_current(&m), Some(2));
+    }
+
+    #[test]
+    fn policies_round_trip_a_snapshot_and_an_org_without_one_reads_none() {
+        let (mut m, mut alice, mut bob, _carol, _dave) = policy_cluster();
+        let before = serde_json::to_value(&m.state).unwrap();
+        assert!(
+            before["orgs"]["org"].get("dataPolicy").is_none(),
+            "{before}"
+        );
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert!(restored.orgs["org"].data_policy.is_none());
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+        // A refused step leaves no trace in the state.
+        let bad = dp_policy(1, None, &["alice", "bob"], 0);
+        assert!(dp_propose(&mut m, &mut alice, "alice", &bad).is_err());
+        assert_eq!(serde_json::to_value(&m.state).unwrap(), before);
+
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p).unwrap();
+        let hash = p.hash().unwrap();
+        let _ok = dp_approve(&mut m, &mut bob, "bob", &hash).unwrap();
+        let p2 = dp_policy(2, Some(hash), &["alice", "bob"], 2);
+        let _ok = dp_propose(&mut m, &mut alice, "alice", &p2).unwrap();
+        let snap = serde_json::to_value(&m.state).unwrap();
+        let back: SystemState = serde_json::from_value(snap.clone()).unwrap();
+        assert_eq!(
+            back.orgs["org"].data_policy,
+            m.state.orgs["org"].data_policy
+        );
+        assert_eq!(serde_json::to_value(&back).unwrap(), snap);
+        assert_eq!(
+            snap["orgs"]["org"]["dataPolicy"]["current"]["version"],
+            json!(1)
+        );
+        assert_eq!(
+            snap["orgs"]["org"]["dataPolicy"]["pending"]["policy"]["version"],
+            json!(2)
+        );
+    }
+
+    #[test]
+    fn a_policys_hash_is_over_its_rfc_8785_form() {
+        let p = dp_policy(1, None, &["alice", "bob"], 2);
+        let canonical = String::from_utf8(p.canonical().unwrap()).unwrap();
+        assert!(canonical.starts_with("{\"readers\":"), "{canonical}");
+        assert!(!canonical.contains("prev"), "{canonical}");
+        assert_eq!(
+            p.hash().unwrap(),
+            hex::encode(calimero_identity::sha256(canonical.as_bytes()))
+        );
+        let reordered: DataPolicy = serde_json::from_str(
+            &serde_json::to_string(
+                &serde_json::to_value(&p)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<serde_json::Map<_, _>>(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reordered.hash().unwrap(), p.hash().unwrap());
     }
 
     // ------------------------------------------------------------ recovery

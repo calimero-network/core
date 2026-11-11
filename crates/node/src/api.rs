@@ -6434,6 +6434,251 @@ async fn recovery_start(
     Ok(Json(v))
 }
 
+// ------------------------------------------------------------- data policy
+
+/// The refusal a policy step answers: who may, what is missing, what clashes.
+fn policy_error(e: &'static str) -> ApiError {
+    use crate::policy as p;
+    match e {
+        p::NOT_A_SIGNER => ApiError::forbidden(e),
+        p::NO_PENDING_POLICY => ApiError::not_found(e),
+        p::OTHER_POLICY | p::NOT_NEXT_VERSION | p::ALREADY_APPROVED => {
+            ApiError::new(409, "DATA_POLICY_CONFLICT", e)
+        }
+        p::NO_POLICY_RECOVERY => ApiError::bad_request("DATA_POLICY_NEEDS_RECOVERY", e),
+        p::SIGNERS_CAN_APPROVE => ApiError::new(409, "DATA_POLICY_SIGNERS_CAN_APPROVE", e),
+        _ => ApiError::bad_request("BAD_DATA_POLICY", e),
+    }
+}
+
+/// Judge `step` against a copy of the organization as the caller sees it, so
+/// a doomed request is refused before any passkey is asked for.
+async fn policy_dry_run(
+    node: &Node,
+    org: &str,
+    step: impl FnOnce(
+        &mut crate::policy::OrgDataPolicy,
+        &crate::policy::OrgView<'_>,
+    ) -> Result<Value, &'static str>,
+) -> Result<(), ApiError> {
+    node.sys_fresh().await;
+    let mut o = node
+        .sys(|s| s.orgs.get(org).cloned())
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    crate::system::data_policy_step(&mut o, step)
+        .map(|_| ())
+        .map_err(policy_error)
+}
+
+/// The organization's data policy: the adopted version, its hash and any
+/// proposal. Any member reads it.
+async fn data_policy_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let o = node
+        .sys(|s| s.orgs.get(&org).cloned())
+        .filter(|o| o.role(&account).is_some())
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    let dp = o.data_policy.unwrap_or_default();
+    Ok(Json(json!({
+        "current": dp.current,
+        "currentHash": dp.current_hash,
+        "pending": dp.pending,
+    })))
+}
+
+/// Split a request body into its `confirm` and the rest.
+fn split_confirm(mut body: Value) -> Result<(Value, Option<ConfirmBody>), ApiError> {
+    let confirm = body
+        .as_object_mut()
+        .and_then(|b| b.remove("confirm"))
+        .filter(|c| !c.is_null())
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("BAD_CONFIRM", "a malformed confirmation"))?;
+    Ok((body, confirm))
+}
+
+/// Propose the next policy version: an admin's passkey consent over its hash
+/// (412 first). The body is the policy.
+async fn data_policy_propose(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    node.require_current_release("a data policy").await?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    let (body, confirm) = split_confirm(body)?;
+    let policy: crate::policy::DataPolicy = serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("BAD_DATA_POLICY", &e.to_string()))?;
+    let hash = policy.hash().map_err(policy_error)?;
+    policy_dry_run(&node, &org, |dp, view| {
+        dp.propose(policy.clone(), &actor, view)
+            .map(|_| Value::Null)
+    })
+    .await?;
+    let consent = org_consent(
+        &node,
+        &p,
+        &org,
+        "__propose_data_policy",
+        &json!({ "hash": hash }),
+        confirm,
+    )
+    .await?;
+    let v = node
+        .sys_write(&SystemCmd::ProposeDataPolicy {
+            org,
+            policy,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DataPolicyHashBody {
+    hash: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Approve the pending policy version: a required approver's passkey consent
+/// over its hash (412 first).
+async fn data_policy_approve(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<DataPolicyHashBody>,
+) -> ApiResult {
+    node.require_current_release("a data policy").await?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    policy_dry_run(&node, &org, |dp, view| {
+        dp.approve(&body.hash, &actor, view).map(|_| Value::Null)
+    })
+    .await?;
+    let consent = org_consent(
+        &node,
+        &p,
+        &org,
+        "__approve_data_policy",
+        &json!({ "hash": body.hash }),
+        body.confirm,
+    )
+    .await?;
+    let v = node
+        .sys_write(&SystemCmd::ApproveDataPolicy {
+            org,
+            hash: body.hash,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// Clear the pending policy version: its proposer's or a required approver's
+/// passkey consent (412 first).
+async fn data_policy_withdraw(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    node.require_current_release("a data policy").await?;
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    policy_dry_run(&node, &org, |dp, view| {
+        dp.withdraw(&actor, view).map(|()| Value::Null)
+    })
+    .await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = org_consent(
+        &node,
+        &p,
+        &org,
+        "__withdraw_data_policy",
+        &json!({}),
+        confirm,
+    )
+    .await?;
+    let _ok = node
+        .sys_write(&SystemCmd::WithdrawDataPolicyProposal {
+            org,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DataPolicyRecoveryBody {
+    hash: String,
+    signature: String,
+}
+
+/// Adopt the pending policy version with the organization's recovery key: its
+/// signature over the hash, made where the seed is. A missing organization,
+/// key or a wrong signature answer the same `403`.
+async fn data_policy_recovery_approve(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<DataPolicyRecoveryBody>,
+) -> ApiResult {
+    node.require_current_release("a data policy").await?;
+    let _who = holder(&node, &headers).await?.account()?;
+    node.sys_fresh().await;
+    let key = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .and_then(|o| o.recovery.as_ref())
+            .map(|r| r.public_key.clone())
+    });
+    let signed = key.is_some_and(|k| {
+        crate::proof::verify_recovery(
+            &k,
+            &org,
+            crate::policy::RECOVERY_SUBJECT,
+            &body.hash,
+            &body.signature,
+        )
+        .is_ok()
+    });
+    if !signed {
+        return Err(ApiError::new(
+            403,
+            "WRONG_RECOVERY_KEY",
+            "the approval is not signed with this organization's recovery key",
+        ));
+    }
+    policy_dry_run(&node, &org, |dp, view| {
+        dp.approve_by_recovery(&body.hash, view)
+            .map(|()| Value::Null)
+    })
+    .await?;
+    let v = node
+        .sys_write(&SystemCmd::ApproveDataPolicyByRecovery {
+            org,
+            hash: body.hash,
+            signature: body.signature,
+        })
+        .await?;
+    Ok(Json(v))
+}
+
 /// Cancel the recovery under way: the owner's, with a passkey assertion.
 async fn recovery_cancel(
     State(node): State<Arc<Node>>,
@@ -10834,6 +11079,16 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/recovery/start", post(recovery_start))
         .route("/orgs/{org}/recovery/cancel", post(recovery_cancel))
         .route("/orgs/{org}/recovery/finish", post(recovery_finish))
+        .route(
+            "/orgs/{org}/data-policy",
+            get(data_policy_get).post(data_policy_propose),
+        )
+        .route("/orgs/{org}/data-policy/approve", post(data_policy_approve))
+        .route("/orgs/{org}/data-policy/withdraw", post(data_policy_withdraw))
+        .route(
+            "/orgs/{org}/data-policy/recovery-approve",
+            post(data_policy_recovery_approve),
+        )
         .route("/invites/{token}/redeem", post(invite_redeem))
         .route("/consent/requests", post(crate::consent_page::create))
         .route("/consent/{request}/result", get(crate::consent_page::result))
