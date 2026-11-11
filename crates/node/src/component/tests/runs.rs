@@ -5,7 +5,9 @@ use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 
 use super::*;
-use crate::job_wire::{sign_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage};
+use crate::job_wire::{
+    sign_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage, MAX_RUN_LOG_BYTES,
+};
 
 pub(super) const DIGEST: [u8; 32] = [9; 32];
 /// The sealed file every started run names, held from the start of a `World`.
@@ -79,6 +81,7 @@ impl World {
             signature: Some(sign_report(signer, &DIGEST, &report).unwrap()),
             report: Some(report),
             outputs,
+            log: None,
             usage: usage(),
             result: Outcome {
                 diff: vec![w("result", run)],
@@ -187,6 +190,7 @@ pub(super) fn report(
                 segments: o.segments.clone(),
             })
             .collect(),
+        log: None,
         usage: usage(),
     }
 }
@@ -2130,4 +2134,207 @@ fn an_entry_publishing_more_than_the_cap_is_refused_even_if_every_mark_is_valid(
     let a = w.push(&publish_call(&w, marks, vec![]));
     assert_eq!(why(&a), "NOT_A_RUN_OUTPUT");
     assert!(plain_record(&w, 1).is_none());
+}
+
+const LOG: u8 = 0x77;
+
+/// The `OutputRef` a job reports for `mark`.
+fn reported_as(mark: &FileMark) -> OutputRef {
+    OutputRef {
+        id: mark.id.clone(),
+        size: mark.size,
+        sha256: hex::encode(&mark.sha256.0),
+        segments: mark.segments.clone(),
+    }
+}
+
+/// A done final of `run` whose signed report names `log`, which the entry stores.
+fn logged_final(w: &World, run: &str, k: &SigningKey, log: &FileMark) -> FinalEntry {
+    let mut entry = w.done(run, k);
+    let mut report = entry.report.take().unwrap();
+    report.log = Some(reported_as(log));
+    entry.signature = Some(sign_report(k, &DIGEST, &report).unwrap());
+    entry.report = Some(report);
+    entry.log = Some(log.clone());
+    entry
+}
+
+fn log_blob(w: &World) -> Option<crate::component::blobs::BlobRecord> {
+    let blobs = &w.r.machine.state.component.blobs.records;
+    blobs.get(&FileMark::fixture_id(LOG)).cloned()
+}
+
+#[test]
+fn a_final_stores_its_log_as_a_sealed_file_that_is_not_an_output_or_an_input() {
+    let k = job_key(1);
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &k);
+    let log = FileMark::fixture(LOG, 20);
+    assert!(!w.finish(logged_final(&w, "r1", &k, &log)).conflict);
+    let rec = w.record("r1");
+    assert_eq!(rec.state, RunState::Done);
+    let held = &rec.logs[&1];
+    assert_eq!((held.id.as_str(), held.size), (log.id.as_str(), 20));
+    let seal = log_blob(&w).unwrap().file.unwrap();
+    assert!(seal.log && !seal.output);
+    let blobs = &w.r.machine.state.component.blobs;
+    assert!(!blobs.is_output_of(&FileMark::fixture_id(LOG), &[LOG + 1; 32], 20));
+
+    let mut input = started("r2");
+    input.inputs[0].id = log.id.clone();
+    let before = w.active();
+    let _a = w.call(vec![input], &[]);
+    assert_eq!(w.active(), before, "a log is not an input of a run");
+}
+
+#[test]
+fn a_failed_final_keeps_the_log_and_a_final_may_leave_out_the_log_its_report_names() {
+    let k = job_key(1);
+    let log = FileMark::fixture(LOG, 20);
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &k);
+    let mut failed = logged_final(&w, "r1", &k, &log);
+    let mut rep = report("r1", 1, ReportStatus::Failed, Some(FailReason::Trap), &[]);
+    rep.log = Some(reported_as(&log));
+    failed.signature = Some(sign_report(&k, &DIGEST, &rep).unwrap());
+    failed.report = Some(rep);
+    failed.outputs.clear();
+    failed.outcome = FinalOutcome::Failed {
+        reason: FailedReason::Trap,
+    };
+    assert!(!w.finish(failed).conflict);
+    assert_eq!(w.record("r1").state, RunState::Failed);
+    assert!(w.record("r1").logs.contains_key(&1));
+    assert!(log_blob(&w).is_some());
+
+    let mut w = World::new();
+    w.start("r1");
+    let _a = w.assign("r1", &k);
+    let mut entry = logged_final(&w, "r1", &k, &log);
+    entry.log = None;
+    assert!(!w.finish(entry).conflict);
+    assert!(w.record("r1").logs.is_empty());
+    assert!(log_blob(&w).is_none());
+}
+
+#[test]
+fn a_log_must_be_the_reports_and_a_file_the_app_does_not_hold() {
+    let k = job_key(1);
+    let log = FileMark::fixture(LOG, 20);
+    let edits: [Refusal; 6] = [
+        (
+            "not in the report",
+            "the log differs from the report",
+            |e| {
+                e.log = Some(FileMark::fixture(0x66, 20));
+            },
+        ),
+        ("size", "the log differs from the report", |e| {
+            e.log.as_mut().unwrap().size += 1
+        }),
+        ("a held file", "output is already a file", |e| {
+            let held = FileMark::fixture(INPUT, 20);
+            let mut rep = e.report.take().unwrap();
+            rep.log = Some(reported_as(&held));
+            e.signature = Some(sign_report(&job_key(1), &DIGEST, &rep).unwrap());
+            e.report = Some(rep);
+            e.log = Some(held);
+        }),
+        (
+            "an output of the same run",
+            "output is already a file",
+            |e| {
+                let same = e.outputs[0].clone();
+                let mut rep = e.report.take().unwrap();
+                rep.log = Some(reported_as(&same));
+                e.signature = Some(sign_report(&job_key(1), &DIGEST, &rep).unwrap());
+                e.report = Some(rep);
+                e.log = Some(same);
+            },
+        ),
+        (
+            "over the cap",
+            "the log is not a file of a job report within the cap",
+            |e| {
+                let big = FileMark::fixture(LOG, MAX_RUN_LOG_BYTES as u64 + 1);
+                let mut rep = e.report.take().unwrap();
+                rep.log = Some(reported_as(&big));
+                e.signature = Some(sign_report(&job_key(1), &DIGEST, &rep).unwrap());
+                e.report = Some(rep);
+                e.log = Some(big);
+            },
+        ),
+        (
+            "not a blob id",
+            "the log is not a file of a job report within the cap",
+            |e| {
+                e.log.as_mut().unwrap().id = "zz".into();
+            },
+        ),
+    ];
+    for (name, reason, edit) in edits {
+        let mut w = World::new();
+        w.start("r1");
+        let _a = w.assign("r1", &k);
+        let mut entry = logged_final(&w, "r1", &k, &log);
+        edit(&mut entry);
+        assert_eq!(why(&w.finish(entry)), reason, "{name}");
+        assert_eq!(w.state("r1"), RunState::Running, "{name}");
+        assert!(log_blob(&w).is_none(), "{name}");
+    }
+    let mut w = World::new();
+    w.start("r1");
+    let mut leader_final = leader(
+        &w,
+        "r1",
+        FinalOutcome::Failed {
+            reason: FailedReason::Refused,
+        },
+    );
+    leader_final.attempt = 0;
+    leader_final.log = Some(log);
+    assert_eq!(
+        why(&w.finish(leader_final)),
+        "a leader outcome has no outputs"
+    );
+}
+
+#[test]
+fn a_runs_log_is_collected_with_its_run_record_and_not_before() {
+    let k = job_key(1);
+    let mut w = World::new();
+    w.start("r000");
+    let _a = w.assign("r000", &k);
+    let log = FileMark::fixture(LOG, 20);
+    assert!(!w.finish(logged_final(&w, "r000", &k, &log)).conflict);
+    let refs = |w: &World| log_blob(w).map(|b| b.refs);
+    assert_eq!(refs(&w), Some(1), "the record holds it");
+
+    // Long past the idle time, with the record still kept.
+    assert!(!touch(&mut w, 3 * BLOB_IDLE_MS, store_ref("a", INPUT)).conflict);
+    assert!(
+        held(&w.r).contains(&log.id),
+        "forgotten while its record is kept"
+    );
+
+    feed_more(&mut w, 1, FINISHED_RUNS_KEPT);
+    assert!(w.r.machine.run_record("r000").is_some());
+    feed_more(&mut w, FINISHED_RUNS_KEPT, FINISHED_RUNS_KEPT + 1);
+    assert_eq!(w.r.machine.run_record("r000"), None);
+    assert_eq!(refs(&w), Some(0), "released with its record");
+    assert!(held(&w.r).contains(&log.id), "kept the idle time after");
+    assert!(
+        !touch(
+            &mut w,
+            3 * BLOB_IDLE_MS + BLOB_IDLE_MS + 10,
+            store_ref("b", INPUT)
+        )
+        .conflict
+    );
+    assert!(
+        !held(&w.r).contains(&log.id),
+        "collected after the idle time"
+    );
 }

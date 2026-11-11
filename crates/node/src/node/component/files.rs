@@ -422,10 +422,11 @@ impl NodeFiles {
         Some((run, permit))
     }
 
-    /// The record of `id` and its seal, if it is one of the app's sealed files.
+    /// The record of `id` and its seal, if it is one of the app's sealed files; a run's log is
+    /// not one the app's code sees.
     fn sealed(&self, id: &str) -> Option<(&BlobRecord, &FileSeal)> {
         let record = self.blobs.get(&parse_blob_id(id)?)?;
-        Some((record, record.file.as_ref()?))
+        Some((record, record.file.as_ref().filter(|f| !f.log)?))
     }
 
     fn source(&self) -> SegmentSource {
@@ -1553,6 +1554,7 @@ mod tests {
             wrapped_key: mark.wrapped_key.clone(),
             segments: mark.segments.clone(),
             output: false,
+            log: false,
             uploader: None,
         };
         let held: HashMap<String, Vec<u8>> = mark.segments.iter().cloned().zip(segments).collect();

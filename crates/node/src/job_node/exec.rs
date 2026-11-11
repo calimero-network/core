@@ -20,13 +20,15 @@ use super::runs::{hash_hex, Finished, Keys, OutputFile, Phase, Run};
 use super::{locked, JobNode};
 use crate::files::{sealed_len, FileOpener, SegmentWriter, CHUNK_BYTES, SEGMENT_BYTES, TAG_BYTES};
 use crate::job_wire::{
-    sign_report, Assignment, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
-    MAX_REPORT_MESSAGE_BYTES,
+    sign_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
+    MAX_REPORT_MESSAGE_BYTES, MAX_RUN_LOG_BYTES,
 };
 use crate::usage::Run as Measured;
 
 const INPUT_PREFIX: &str = "in-"; // an input's ciphertext: in-{index}
 const OUTPUT_PREFIX: &str = "out-"; // a finished output: out-{index}
+const LOG_PREFIX: &str = "log-"; // the sealed module log: log-0
+const LOG_TRUNCATED: &str = "[log truncated]"; // the last line of a log cut at MAX_RUN_LOG_BYTES
 const PART_SUFFIX: &str = ".part"; // a file still being written
 const THREAD_NAME: &str = "compute-run"; // name of a run's OS thread
 const FINISHED: &str = "the file is finished"; // soft error of a write after finish
@@ -106,14 +108,12 @@ impl Files for JobFiles {
     fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
         let n = self.writers.fetch_add(1, Ordering::Relaxed);
         let part = self.dir.join(format!("w-{n}{PART_SUFFIX}"));
-        let file = File::create(&part).map_err(|_| FileError::Unavailable)?;
-        Ok(Box::new(OutputWriter {
-            sealer: Some(SegmentWriter::new()),
-            file: BufWriter::new(file),
+        Ok(Box::new(OutputWriter::open(
             part,
-            dir: self.dir.clone(),
-            produced: Arc::clone(&self.produced),
-        }))
+            &self.dir,
+            OUTPUT_PREFIX,
+            &self.produced,
+        )?))
     }
 }
 
@@ -164,10 +164,29 @@ struct OutputWriter {
     file: BufWriter<File>,
     part: PathBuf,
     dir: PathBuf,
+    /// The finished file is `{prefix}{n}` in `dir`, `n` its place in `produced`.
+    prefix: &'static str,
     produced: Arc<Mutex<Vec<SealedFile>>>,
 }
 
 impl OutputWriter {
+    fn open(
+        part: PathBuf,
+        dir: &Path,
+        prefix: &'static str,
+        produced: &Arc<Mutex<Vec<SealedFile>>>,
+    ) -> Result<Self, FileError> {
+        let file = File::create(&part).map_err(|_| FileError::Unavailable)?;
+        Ok(Self {
+            sealer: Some(SegmentWriter::new()),
+            file: BufWriter::new(file),
+            part,
+            dir: dir.to_owned(),
+            prefix,
+            produced: Arc::clone(produced),
+        })
+    }
+
     fn put(&mut self, ciphertext: &[u8]) -> Result<(), FileError> {
         self.file.write_all(ciphertext).map_err(failed)
     }
@@ -195,7 +214,7 @@ impl FileWrite for OutputWriter {
         self.put(&sealed.last.bytes)?;
         self.file.flush().map_err(failed)?;
         let mut produced = locked(&self.produced);
-        let path = self.dir.join(format!("{OUTPUT_PREFIX}{}", produced.len()));
+        let path = self.dir.join(format!("{}{}", self.prefix, produced.len()));
         std::fs::rename(&self.part, &path).map_err(failed)?;
         let id = hex::encode(sealed.id);
         let segments: Vec<String> = sealed.segments.iter().map(hex::encode).collect();
@@ -289,8 +308,11 @@ fn thread_main(job: &JobNode, run: &Arc<Run>) {
         warn!(error = %e, "a compute run could not be served");
         Phase::Lost
     });
-    let keep_outputs = matches!(&phase, Phase::Done(f) if f.report.status == ReportStatus::Done);
-    remove_files(&run.dir, keep_outputs);
+    let (keep_outputs, keep_log) = match &phase {
+        Phase::Done(f) => (f.report.status == ReportStatus::Done, f.log.is_some()),
+        _ => (false, false),
+    };
+    remove_files(&run.dir, keep_outputs, keep_log);
     run.end(phase);
 }
 
@@ -356,18 +378,18 @@ fn execute(job: &JobNode, run: &Arc<Run>) -> eyre::Result<Phase> {
         Arc::clone(&run.cancel),
     )?;
     let produced = std::mem::take(&mut *locked(&produced));
-    ending(job, &run.digest(), a, outcome, measured, produced)
+    ending(job, run, outcome, measured, produced)
 }
 
 /// The signed ending of a run, or nothing to sign when the node could not serve it.
 fn ending(
     job: &JobNode,
-    assignment: &[u8; 32],
-    a: &Assignment,
+    run: &Run,
     outcome: Outcome,
     measured: Measured,
     produced: Vec<SealedFile>,
 ) -> eyre::Result<Phase> {
+    let a = &run.assignment;
     let (status, reason) = match classify(&outcome.status) {
         Verdict::Lost => return Ok(Phase::Lost),
         Verdict::Done => (ReportStatus::Done, None),
@@ -377,6 +399,10 @@ fn ending(
         ReportStatus::Done => (outcome.result, produced),
         ReportStatus::Failed => (Vec::new(), Vec::new()),
     };
+    let log = run
+        .wants_log
+        .then(|| sealed_log(&run.dir, &outcome.logs))
+        .flatten();
     let report = Report {
         app: a.app.clone(),
         run: a.run.clone(),
@@ -385,15 +411,8 @@ fn ending(
         reason,
         message: failure_message(&outcome.status, reason),
         result,
-        outputs: kept
-            .iter()
-            .map(|p| OutputRef {
-                id: p.id.clone(),
-                size: p.size,
-                sha256: hex::encode(p.sha256),
-                segments: p.segments.clone(),
-            })
-            .collect(),
+        outputs: kept.iter().map(output_ref).collect(),
+        log: log.as_ref().map(output_ref),
         usage: ReportUsage::measured(
             measured.cpu,
             outcome.usage.peak_memory,
@@ -401,21 +420,61 @@ fn ending(
             outcome.usage.fuel,
         ),
     };
-    let signature = sign_report(&job.job_key, assignment, &report)?;
-    let bytes = kept.iter().map(|p| sealed_len(p.size)).sum();
-    let outputs = kept
-        .into_iter()
-        .map(|p| OutputFile {
-            path: p.path,
-            key: p.key,
-        })
-        .collect();
+    let signature = sign_report(&job.job_key, &run.digest(), &report)?;
+    let bytes = kept.iter().chain(&log).map(|p| sealed_len(p.size)).sum();
+    let file = |p: SealedFile| OutputFile {
+        path: p.path,
+        key: p.key,
+    };
+    let outputs = kept.into_iter().map(file).collect();
     Ok(Phase::Done(Box::new(Finished {
         report,
         signature,
         outputs,
+        log: log.map(file),
         bytes,
     })))
+}
+
+fn output_ref(p: &SealedFile) -> OutputRef {
+    OutputRef {
+        id: p.id.clone(),
+        size: p.size,
+        sha256: hex::encode(p.sha256),
+        segments: p.segments.clone(),
+    }
+}
+
+/// The module's log lines joined, cut to [`MAX_RUN_LOG_BYTES`] with a last line saying so;
+/// none when the module logged nothing.
+fn capped_log(logs: &[String]) -> Option<String> {
+    let text = logs.join("\n");
+    if text.len() <= MAX_RUN_LOG_BYTES {
+        return Some(text).filter(|t| !t.is_empty());
+    }
+    let keep = MAX_RUN_LOG_BYTES - LOG_TRUNCATED.len() - 1;
+    Some(format!(
+        "{}\n{LOG_TRUNCATED}",
+        &text[..text.floor_char_boundary(keep)]
+    ))
+}
+
+/// The module's log sealed to disk like an output, under a key of its own. A log that cannot
+/// be sealed is left out: it never ends or loses the run.
+fn sealed_log(dir: &Path, logs: &[String]) -> Option<SealedFile> {
+    let text = capped_log(logs)?;
+    let produced = Arc::default();
+    let part = dir.join(format!("{LOG_PREFIX}w{PART_SUFFIX}"));
+    let sealed = OutputWriter::open(part, dir, LOG_PREFIX, &produced).and_then(|mut writer| {
+        writer.write(text.as_bytes())?;
+        Box::new(writer).finish()
+    });
+    if let Err(e) = sealed {
+        warn!(error = ?e, "cannot seal a run's log");
+        return None;
+    }
+    let sealed = locked(&produced).pop();
+    sealed
 }
 
 /// The text a failed report carries: the method's app error, or what a trap says.
@@ -465,6 +524,7 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
         message: String::new(),
         result: Vec::new(),
         outputs: Vec::new(),
+        log: None,
         usage: ReportUsage::default(),
     };
     let phase = match sign_report(&job.job_key, &run.digest(), &report) {
@@ -472,6 +532,7 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
             report,
             signature,
             outputs: Vec::new(),
+            log: None,
             bytes: 0,
         })),
         Err(e) => {
@@ -481,22 +542,21 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
     };
     if run.end_awaiting(phase) {
         *locked(&run.keys) = None;
-        remove_files(&run.dir, false);
+        remove_files(&run.dir, false, false);
     }
 }
 
-/// Deletes what a run leaves on disk: everything, or everything but its finished outputs.
-fn remove_files(dir: &Path, keep_outputs: bool) {
+/// Deletes what a run leaves on disk: everything, or everything but its finished outputs or log.
+fn remove_files(dir: &Path, keep_outputs: bool, keep_log: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        let keep = keep_outputs
-            && entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(OUTPUT_PREFIX)
-            && !entry.file_name().to_string_lossy().ends_with(PART_SUFFIX);
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let finished = !name.ends_with(PART_SUFFIX);
+        let keep = finished
+            && ((keep_outputs && name.starts_with(OUTPUT_PREFIX))
+                || (keep_log && name.starts_with(LOG_PREFIX)));
         if !keep {
             if let Err(e) = std::fs::remove_file(entry.path()) {
                 warn!(path = %entry.path().display(), error = %e, "cannot remove a run file");
@@ -820,14 +880,53 @@ mod tests {
         let finished = files.create().unwrap().finish().unwrap();
         assert_eq!(finished.size, 0);
 
-        remove_files(dir.path(), true);
+        remove_files(dir.path(), true, false);
         let mut left: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
         assert_eq!(left, ["out-0"]);
-        remove_files(dir.path(), false);
+        remove_files(dir.path(), false, false);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_log_is_its_lines_joined_and_none_when_the_module_logged_nothing() {
+        assert_eq!(capped_log(&[]), None);
+        assert_eq!(capped_log(&[String::new()]), None);
+        let lines = ["one".to_owned(), "two".to_owned()];
+        assert_eq!(capped_log(&lines).as_deref(), Some("one\ntwo"));
+    }
+
+    #[test]
+    fn a_log_over_the_cap_is_truncated_with_a_marker() {
+        let exact = "x".repeat(MAX_RUN_LOG_BYTES);
+        assert_eq!(
+            capped_log(std::slice::from_ref(&exact)),
+            Some(exact.clone())
+        );
+        // Two-byte characters, so the cut falls inside one unless it is moved back.
+        let long = "\u{e9}".repeat(MAX_RUN_LOG_BYTES);
+        let capped = capped_log(&[long]).unwrap();
+        assert!(capped.len() <= MAX_RUN_LOG_BYTES);
+        assert!(capped.ends_with(&format!("\n{LOG_TRUNCATED}")));
+    }
+
+    #[test]
+    fn a_sealed_log_opens_to_its_text_under_its_own_key_and_survives_the_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = sealed_log(dir.path(), &["a".to_owned(), "b".to_owned()]).unwrap();
+        assert_eq!(log.size, 3);
+        let mut opener = FileOpener::new(&log.key);
+        let mut plain = opener.push(&std::fs::read(&log.path).unwrap()).unwrap();
+        plain.extend(opener.finish_expecting(3, &log.sha256).unwrap());
+        assert_eq!(plain, b"a\nb");
+        assert!(sealed_log(dir.path(), &[]).is_none());
+
+        remove_files(dir.path(), false, true);
+        assert!(log.path.exists());
+        remove_files(dir.path(), true, false);
+        assert!(!log.path.exists());
     }
 }

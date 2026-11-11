@@ -96,6 +96,16 @@ pub enum PipelineCmd {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Print the module log of one compute run of a step (stdout, stderr and `log` lines) to stdout.
+    Logs {
+        app: String,
+        run: String,
+        #[arg(long)]
+        step: String,
+        /// The run's place among the step's runs, which is its item's place.
+        #[arg(long, default_value_t = 0)]
+        index: usize,
+    },
     /// Download the files every step of an ended run made, as `STEP-INDEX.bin` in `--out`.
     /// Each appears only after every check on it passed.
     Download {
@@ -104,6 +114,14 @@ pub enum PipelineCmd {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
+}
+
+/// The compute run that ran item `index` of `step` of pipeline run `run`.
+fn step_run(view: &Value, step: &str, index: usize) -> eyre::Result<String> {
+    view["steps"][step]["runs"][index]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| eyre!("step {step} has no run {index}"))
 }
 
 /// Exports every output of every step of `run` into `out`; prints what it wrote.
@@ -383,6 +401,17 @@ pub async fn run(cmd: PipelineCmd, env: &Env) -> eyre::Result<Value> {
             verify,
             out,
         } => receipt(env, &env.app(&app).await?, &run, verify, out.as_deref()).await?,
+        PipelineCmd::Logs {
+            app,
+            run,
+            step,
+            index,
+        } => {
+            let app = env.app(&app).await?;
+            let view = env.client.pipeline_run(&app, &run).await?;
+            crate::run::print_log(env, &app, &step_run(&view, &step, index)?, None).await?;
+            Value::Null
+        }
         PipelineCmd::Download { app, run, out } => {
             download_outputs(env, &env.app(&app).await?, &run, &out).await?
         }
@@ -395,6 +424,14 @@ mod tests {
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_step_names_the_compute_run_of_each_item() {
+        let view = json!({ "steps": { "a": { "runs": ["r0", "r1"] } } });
+        assert_eq!(step_run(&view, "a", 1).unwrap(), "r1");
+        assert!(step_run(&view, "a", 2).is_err());
+        assert!(step_run(&view, "b", 0).is_err());
     }
 
     #[test]

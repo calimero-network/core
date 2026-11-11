@@ -670,7 +670,7 @@ impl AppMachine {
         ids.into_iter()
             .map(|id| {
                 let record = blobs.get(&parse_hex32(id)?)?;
-                let seal = record.file.as_ref()?;
+                let seal = record.file.as_ref().filter(|f| !f.log)?;
                 Some(RunInputRef {
                     id: id.clone(),
                     size: record.size,
@@ -1085,6 +1085,7 @@ impl AppMachine {
                 }),
                 cache_key: r.cache_key.clone(),
                 pool: r.pool.clone(),
+                logs: BTreeMap::new(),
             };
             put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self.state.component.head.active_runs.insert(r.run.clone());

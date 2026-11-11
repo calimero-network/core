@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use super::blobs::{BlobRecord, Blobs};
 use super::{get_json, host_answer, parse_hex32, put_json, Applied, FileMark, Outcome};
 use crate::app::{rows, AppMachine};
-use crate::job_wire::{hash_bytes, verify_report, FailReason, Report, ReportStatus, ReportUsage};
+use crate::job_wire::{
+    hash_bytes, verify_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage,
+    MAX_RUN_LOG_BYTES,
+};
 use crate::types::Caller;
 
 /// Attempts a run gets: the first and the restarts after a lost job node.
@@ -42,6 +45,8 @@ const FOREIGN_REPORT: &str = "report is for another run";
 const BAD_SIGNATURE: &str = "report not signed by the assigned job node";
 const OUTCOME_MISMATCH: &str = "report does not match the outcome";
 const OUTPUTS_MISMATCH: &str = "outputs differ from the report";
+const LOG_MISMATCH: &str = "the log differs from the report";
+const BAD_LOG: &str = "the log is not a file of a job report within the cap";
 const USAGE_MISMATCH: &str = "usage differs from the report";
 const OUTPUT_TAKEN: &str = "output is already a file";
 const BAD_OUTPUT_ID: &str = "output id is not a blob id";
@@ -201,6 +206,9 @@ pub struct RunRecord {
     /// The pool a pipeline step named; its runs go there instead of by memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// The sealed module log of each attempt that kept one, by attempt; held while the record is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub logs: BTreeMap<u32, RunInputRef>,
 }
 
 /// The step of a pipeline run that a compute run was started for.
@@ -351,6 +359,9 @@ pub struct FinalEntry {
     pub signature: Option<String>,
     #[serde(default)]
     pub outputs: Vec<FileMark>,
+    /// The attempt's module log, stored as a sealed file; only the report's log, if it fetched it.
+    #[serde(default)]
+    pub log: Option<FileMark>,
     pub usage: ReportUsage,
     #[serde(default)]
     pub result: Outcome,
@@ -358,6 +369,14 @@ pub struct FinalEntry {
     pub ts_ms: u64,
     pub id_term: u64,
     pub id_seq: u64,
+}
+
+/// Whether the job's `OutputRef` names exactly the file `mark` stores.
+fn names(r: &OutputRef, mark: &FileMark) -> bool {
+    r.id == mark.id
+        && r.size == mark.size
+        && r.sha256 == hex::encode(&mark.sha256.0)
+        && r.segments == mark.segments
 }
 
 /// The app's active runs as the host core asks for them, read from the group's rows when asked.
@@ -518,6 +537,7 @@ impl AppMachine {
                 pipeline: None,
                 cache_key: None,
                 pool: None,
+                logs: BTreeMap::new(),
             };
             put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self
@@ -595,6 +615,14 @@ impl AppMachine {
             return Applied::conflict(index, STALE_BASE);
         }
         record.state = entry.outcome.state();
+        let log_ref = entry.log.as_ref().map(|log| RunInputRef {
+            id: log.id.clone(),
+            size: log.size,
+            sha256: hex::encode(&log.sha256.0),
+        });
+        if let Some(log) = &log_ref {
+            let _prev = record.logs.insert(entry.attempt, log.clone());
+        }
         record.final_ = Some(Final {
             attempt: entry.attempt,
             outcome: entry.outcome,
@@ -610,7 +638,7 @@ impl AppMachine {
                 .unwrap_or_default(),
         });
         put_json(tx, rows::CRUN, &record.run, &record);
-        self.finish_run(tx, &entry.run);
+        self.finish_run(tx, &entry.run, entry.ts_ms);
         self.pin_inputs(tx, &record.inputs, -1, entry.ts_ms);
         // Registered before the result method's diff, so a `BlobRef` it stores is counted.
         // Only a signed done report carries outputs (`check_final`), so these are a done run's.
@@ -619,6 +647,10 @@ impl AppMachine {
                 .component
                 .blobs
                 .add_output(tx, output, entry.ts_ms);
+        }
+        if let (Some(log), Some(held)) = (&entry.log, log_ref) {
+            self.state.component.blobs.add_log(tx, log, entry.ts_ms);
+            self.pin_inputs(tx, &[held], 1, entry.ts_ms);
         }
         let result = entry.report.as_ref().map_or(&[][..], |r| &r.result[..]);
         Self::write_step_proof(tx, &record, entry);
@@ -648,7 +680,7 @@ impl AppMachine {
         inputs.iter().all(|i| {
             parse_hex32(&i.id)
                 .and_then(|id| blobs.get(&id))
-                .is_some_and(|r| r.file.is_some())
+                .is_some_and(|r| r.file.as_ref().is_some_and(|f| !f.log))
         })
     }
 
@@ -668,14 +700,22 @@ impl AppMachine {
     }
 
     /// Takes `run` out of the active set and keeps its record among the last finished ones.
-    fn finish_run(&mut self, tx: &mut StateTx<'_>, run: &str) {
+    fn finish_run(&mut self, tx: &mut StateTx<'_>, run: &str, ts_ms: u64) {
         let head = &mut self.state.component.head;
         let _was = head.active_runs.remove(run);
         head.finished_runs.push_back(run.to_owned());
+        let mut dropped = Vec::new();
         while head.finished_runs.len() > FINISHED_RUNS_KEPT {
             if let Some(old) = head.finished_runs.pop_front() {
-                tx.delete_hidden(rows::CRUN, old.as_bytes());
+                dropped.push(old);
             }
+        }
+        for old in dropped {
+            if let Some(record) = get_json::<RunRecord>(tx, rows::CRUN, &old) {
+                let logs: Vec<RunInputRef> = record.logs.into_values().collect();
+                self.pin_inputs(tx, &logs, -1, ts_ms);
+            }
+            tx.delete_hidden(rows::CRUN, old.as_bytes());
         }
     }
 
@@ -696,6 +736,16 @@ impl AppMachine {
                 return Err(BAD_OUTPUT_ID);
             };
             if blobs.contains_key(&id) || !seen.insert(id) {
+                return Err(OUTPUT_TAKEN);
+            }
+        }
+        if let Some(log) = &entry.log {
+            let id = parse_hex32(&log.id).filter(|_| log.segment_hashes().is_some());
+            let id = id.filter(|_| log.size <= MAX_RUN_LOG_BYTES as u64);
+            let Some(id) = id else {
+                return Err(BAD_LOG);
+            };
+            if blobs.contains_key(&id) || seen.contains(&id) {
                 return Err(OUTPUT_TAKEN);
             }
         }
@@ -776,14 +826,19 @@ impl AppMachine {
             return Err(OUTCOME_MISMATCH);
         }
         let same_outputs = report.outputs.len() == entry.outputs.len()
-            && report.outputs.iter().zip(&entry.outputs).all(|(r, o)| {
-                r.id == o.id
-                    && r.size == o.size
-                    && r.sha256 == hex::encode(&o.sha256.0)
-                    && r.segments == o.segments
-            });
+            && report
+                .outputs
+                .iter()
+                .zip(&entry.outputs)
+                .all(|(r, o)| names(r, o));
         if !same_outputs {
             return Err(OUTPUTS_MISMATCH);
+        }
+        // The leader may leave a log it could not fetch out, never put one in.
+        if let Some(log) = &entry.log {
+            if !report.log.as_ref().is_some_and(|r| names(r, log)) {
+                return Err(LOG_MISMATCH);
+            }
         }
         if report.usage != entry.usage {
             return Err(USAGE_MISMATCH);
@@ -799,7 +854,7 @@ impl AppMachine {
         if entry.report.is_some() || entry.signature.is_some() {
             return Err(HAS_REPORT);
         }
-        if !entry.outputs.is_empty() {
+        if !entry.outputs.is_empty() || entry.log.is_some() {
             return Err(LEADER_OUTPUTS);
         }
         match entry.outcome {

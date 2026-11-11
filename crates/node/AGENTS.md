@@ -606,6 +606,19 @@ is its command line.
   An output the result method does not store is forgotten `BLOB_IDLE_MS` later, and the org's file quota is released when the leader collects it.
   `AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave, so `storage_put` accepts those references.
   A final marks each output `FileSeal.output`, the flag that makes it publishable (only a signed done report carries outputs).
+  **Run logs.**
+  After an attempt where the module ran (done, app-error, trap, fuel, memory; not an integrity refusal or a lost attempt) a job node joins `Outcome::logs` (stdout, stderr, `log`) with `\n`.
+  A non-empty log is cut to `MAX_RUN_LOG_BYTES` (1 MiB, on a char boundary, ending with the line `[log truncated]`) and sealed like an output under a key of its own (`exec::sealed_log`), kept as `log-0` in the run's directory.
+  `Report::log` (`Option<OutputRef>`, absent when none) names it, and a failed report may carry one (it still carries no result or outputs).
+  `report_message` signs exactly the bytes it did before when `log` is none, so an older job node's signature verifies; a log appends `calimero.compute.report.log.v1\0` and the ref's fields as an output's (`a_report_without_a_log_signs_the_same_bytes_as_before` pins the old bytes).
+  The job node serves it at `GET /job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key`, behind the run token and the sealed channel like an output, and answers `404 NO_LOG` for a run without one.
+  It puts a log in a report only when the assignment came with the `x-run-log` header (`LOG_HEADER`), which the leader sends: a newer job node reached by an older leader (the registration gate checks the replicas against the node that registers, not the job node's release) keeps its reports readable by it, whose `Report` refuses an unknown field.
+  After the report holds up the leader fetches the log and its key as an output (`Held::Log`, `finish::stage_log`, charged to the payer, wrapped under the app file key, kept in `Watch::staged` after the outputs) and the final entry carries it as `FinalEntry::log` (a `FileMark`).
+  A log that is over the cap, cannot be charged, attested or fetched, or does not match its signed ref is left out with a warn log: the run still commits.
+  `check_final` takes a log only when the signed report names exactly it, never from a leader outcome, and as a file the app does not hold.
+  `apply_compute_final` registers it as a sealed file marked `FileSeal.log` (not `output`: `runs.publish` refuses it, and it is neither a pipeline output nor a run input), records it in `RunRecord::logs` (attempt to `RunInputRef`) and holds it with one reference (`pin_inputs`) until the record is dropped from the last `FINISHED_RUNS_KEPT`, when `finish_run` releases it; it is forgotten `BLOB_IDLE_MS` later.
+  The app's code does not see it (`NodeFiles::sealed`), and the file list leaves it out.
+  `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }` behind `files_gate`, so a stranger gets `403` even on a public app; the bytes are read with the files export.
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
   The cluster tests' fixture (`apps/v2-fixtures/compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
@@ -1761,6 +1774,7 @@ API and system group:
   Every node deletes segments itself: `Node::sweep_segments` (every `SWEEP_EVERY`, 10 min, over the `meta` index; `node/segments.rs`) deletes a stored segment no hosted app lists (`BlobTable::holds_segment`, a map from segment hash to file rebuilt on `load`) and nothing pins, if this node saw it listed at an earlier sweep (its file was forgotten) or it has been unlisted for `SEGMENT_GRACE` (24 h) since first seen so; first-seen times are in memory, so a restart restarts the grace, and there is no caught-up check, so segments handed to a joining node before it applies survive the grace.
   `BlobTable::upload` and `forget_blob` refuse a file id, so a blob upload or an owner delete cannot take one.
   **Publishing** (`runs.publish`): `NodeFiles::publish` answers only a sealed file whose `FileSeal.output` is set, which `apply_compute_final` sets on a done run's outputs and nothing else sets.
+  A run attempt's log is a sealed file marked `FileSeal.log` instead (see **Compute runs**), so it is never published.
   It opens and proves the whole file, holds the plaintext against the pending budget (`plaintext`), and answers a `PublishedFile` (a file over `MAX_BLOB_BYTES`, the plain blob it becomes, is a soft `file too large`).
   The outcome and entry carry `Outcome::published` (`PublishedMark { source, id, size }`, never bytes; a serde default).
   `run_with` adds the plaintext of each published blob the app does not hold to the run's blobs, so `logged_entry` charges it (`new_file_bytes`, once per id) and `persist_files` pushes it to a majority before the entry is proposed.

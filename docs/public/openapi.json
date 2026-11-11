@@ -5686,6 +5686,131 @@
         }
       }
     },
+    "/apps/{app}/runs/{run}/logs": {
+      "get": {
+        "operationId": "app_run_logs",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "A compute run's attempt logs",
+        "description": "Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "logs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "attempt": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "sha256": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "attempt",
+                          "id",
+                          "size",
+                          "sha256"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "logs"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/apps/{app}/storage": {
       "get": {
         "operationId": "app_storage",

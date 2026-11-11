@@ -3015,6 +3015,7 @@ mod tests {
             report: None,
             signature: None,
             outputs: vec![file(10), file(20)],
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome {
                 files: vec![file(4)],
@@ -3051,6 +3052,7 @@ mod tests {
             report: None,
             signature: None,
             outputs: (0..outputs).map(file).collect(),
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome {
                 diff: vec![crate::app::Write {

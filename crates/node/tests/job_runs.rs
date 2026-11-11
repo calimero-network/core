@@ -13,7 +13,7 @@ use calimero_node::files::{
     file_id, noise_seed, run_token, unwrap_key, wrap_for_job, FileOpener, JobWrap, WrapKind,
     SEGMENT_BYTES,
 };
-use calimero_node::job_node::{MAX_PIPELINE_RUN_INPUTS, TOKEN_HEADER};
+use calimero_node::job_node::{LOG_HEADER, MAX_PIPELINE_RUN_INPUTS, TOKEN_HEADER};
 use calimero_node::job_wire::{
     assignment_digest, sign_assignment, sign_bundle, verify_report, Assignment, FailReason, Report,
     ReportStatus, RunBudget, RunInput, BUNDLE_SIGNATURE_HEADER,
@@ -132,6 +132,18 @@ impl JobClient {
             )
             .await;
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    /// The assignment as a leader that takes the report's log sends it.
+    async fn post_for_logging(&self, a: &Assignment) -> (u16, Value) {
+        let body = serde_json::to_vec(a).unwrap();
+        let (status, answer) = self
+            .request_with(Method::POST, "job/runs", &[(LOG_HEADER, Some("1"))], body)
+            .await;
+        (
+            status,
+            serde_json::from_slice(&answer).unwrap_or(Value::Null),
+        )
     }
 
     async fn post(&self, a: &Assignment) -> (u16, Value) {
@@ -1461,4 +1473,66 @@ async fn an_input_that_is_not_its_record_declares_ends_the_run_at_once_as_integr
     assert_eq!(job.load().await["running"], 0);
     let (status, e) = job.put_input(&a, 1, &token, &third.ciphertext).await;
     assert_eq!((status, e["error"].as_str()), (409, Some("NOT_AWAITING")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_keeps_the_log_for_a_leader_that_takes_it_and_none_for_one_that_does_not() {
+    let rig = Rig::start().await;
+    let (_a, job) = rig.job(JOB_A).await;
+    let (status, answer) = rig.push(&job).await;
+    assert_eq!(status, 200, "{answer}");
+
+    let old = rig.assignment(&job, "no-header", 1, "chatter", DIGEST, &[]);
+    assert_eq!(job.post(&old).await.0, 200);
+    let token = rig.token(&old);
+    let answer = job.finish(&old, &token).await;
+    assert!(report(&answer, &job, &old).log.is_none(), "{answer}");
+    assert!(answer["report"].get("log").is_none(), "{answer}");
+    let path = format!("job/runs/{}/log/key", run_path(&old));
+    let (status, body) = job.json(Method::GET, &path, Some(&token), Vec::new()).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("NO_LOG")),
+        "{body}"
+    );
+
+    let new = rig.assignment(&job, "header", 1, "chatter", DIGEST, &[]);
+    assert_eq!(job.post_for_logging(&new).await.0, 200);
+    let token = rig.token(&new);
+    let log = report(&job.finish(&new, &token).await, &job, &new)
+        .log
+        .expect("a leader that asked gets the log");
+    let base = format!("job/runs/{}/log", run_path(&new));
+    let (status, key) = job
+        .json(
+            Method::GET,
+            &format!("{base}/key"),
+            Some(&token),
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(status, 200, "{key}");
+    let key: [u8; 32] = hex::decode(key["key"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(log.segments.len(), 1);
+    let (status, segment) = job
+        .request(Method::GET, &format!("{base}/0"), Some(&token), Vec::new())
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(sha256_hex(&segment), log.segments[0]);
+    let sha256: [u8; 32] = hex::decode(&log.sha256).unwrap().try_into().unwrap();
+    assert_eq!(
+        open(&segment, &key, log.size, &sha256),
+        b"first line\nsecond line"
+    );
+    let (status, _) = job
+        .request(Method::GET, &format!("{base}/1"), Some(&token), Vec::new())
+        .await;
+    assert_eq!(status, 404);
+    let (status, _) = job
+        .request(Method::GET, &format!("{base}/0"), None, Vec::new())
+        .await;
+    assert_eq!(status, 404, "a wrong token answers as an unknown run");
 }

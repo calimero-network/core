@@ -220,6 +220,12 @@ Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are k
 A bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
 The sizes and hashes follow the same rule as the single run.
 
+Each attempt where the module ran keeps its log (stdout, stderr and `log` lines, at most 1 MiB, cut with a last line `[log truncated]`) as a sealed file of the app.
+It is not an output: it cannot be published, and it is neither a pipeline output nor an input.
+`GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }` to the app's owner and its organization's members only, and the bytes are read with the files export.
+The logs go with the run's record, and a log the leader cannot fetch as the job node signed it is left out without failing the run.
+`meroctl run logs APP RUN [--attempt N]` prints one, and `meroctl pipeline logs APP RUN --step STEP [--index I]` the log of a step's run.
+
 ## Restarts, cancel and caps
 
 - **A lost attempt.** No answer from the job node for `JOB_LOST_AFTER` (20 s) marks the attempt lost, as does a `lost` state from the job node or a report that does not hold up.

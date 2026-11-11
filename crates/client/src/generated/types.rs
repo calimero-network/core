@@ -2845,6 +2845,25 @@ pub struct AppRunsResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppRunLogsResponseLogsItem {
+    pub attempt: u64,
+    pub id: String,
+    pub size: u64,
+    pub sha256: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppRunLogsResponse {
+    pub logs: Vec<AppRunLogsResponseLogsItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppStorageResponse {
     pub keys: u64,
     pub bytes: u64,

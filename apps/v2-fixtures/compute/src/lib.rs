@@ -118,6 +118,27 @@ impl Compute {
         Ok(vec![7u8; 70_000])
     }
 
+    /// Logs two lines and returns.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn chatter() -> app::Result<u64> {
+        calimero_sdk::env::log("first line");
+        calimero_sdk::env::log("second line");
+        Ok(2)
+    }
+
+    /// Logs a line, then fails with an app error.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn fail_loudly() -> app::Result<u64> {
+        calimero_sdk::env::log("about to fail");
+        app::bail!(Error::Failed)
+    }
+
+    /// Returns without logging.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
+    pub fn quiet() -> app::Result<u64> {
+        Ok(0)
+    }
+
     /// Opens the file `id`, which a test names outside the run's inputs.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 64, wall_secs = 30, result = "on_done")]
     pub fn peek(id: BlobRef) -> app::Result<u64> {

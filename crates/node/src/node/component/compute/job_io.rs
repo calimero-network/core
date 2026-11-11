@@ -16,7 +16,7 @@ use crate::component::{Attempt, RunRecord};
 use crate::files::{
     noise_seed, run_token, unwrap_key, wrap_for_job_derived, JobWrap, WrapKind, SEGMENT_BYTES,
 };
-use crate::job_node::{NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN};
+use crate::job_node::{LOG_HEADER, NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN};
 use crate::job_wire::{
     assignment_digest, hash_bytes, verify_report, Assignment, Report, RunBudget, RunInput,
     BUNDLE_SIGNATURE_HEADER,
@@ -30,6 +30,31 @@ use crate::types::AppRecord;
 #[derive(Deserialize)]
 struct OutputKey {
     key: String,
+}
+
+/// A sealed file of an attempt a job node hands over: one of its outputs, or its log.
+#[derive(Clone, Copy)]
+pub(super) enum Held {
+    Output(usize),
+    Log,
+}
+
+impl Held {
+    /// The file's path under the attempt's.
+    fn path(self) -> String {
+        match self {
+            Self::Output(i) => format!("outputs/{i}"),
+            Self::Log => "log".to_owned(),
+        }
+    }
+
+    /// Where `Watch::fetched` counts the segments stored of the file.
+    pub(super) fn slot(self) -> usize {
+        match self {
+            Self::Output(i) => i,
+            Self::Log => usize::MAX,
+        }
+    }
 }
 
 /// What a job node says about an attempt.
@@ -302,7 +327,7 @@ impl Drive<'_> {
                 peer,
                 Method::POST,
                 "job/runs",
-                &[],
+                &[(LOG_HEADER, "1")],
                 body.to_vec(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -435,15 +460,15 @@ impl Drive<'_> {
             .is_some_and(|a| a.node == peer.id && self.report_is_valid(a, report, signature))
     }
 
-    /// Output `i`'s data key, fetched from the job node.
-    pub(super) async fn fetch_output_key(
+    /// The data key of `held`, fetched from the job node.
+    pub(super) async fn fetch_key(
         &self,
         peer: &JobPeer,
         attempt: u32,
-        i: usize,
+        held: Held,
     ) -> eyre::Result<Zeroizing<[u8; 32]>> {
         let token = self.token(attempt);
-        let path = format!("{}/outputs/{i}/key", self.path(attempt));
+        let path = format!("{}/{}/key", self.path(attempt), held.path());
         let key = self
             .node
             .job_call(
@@ -463,16 +488,16 @@ impl Drive<'_> {
         Ok(Zeroizing::new(key))
     }
 
-    /// Segment `k` of output `i`, at most one segment, fetched from the job node.
-    pub(super) async fn fetch_output_segment(
+    /// Segment `k` of `held`, at most one segment, fetched from the job node.
+    pub(super) async fn fetch_segment(
         &self,
         peer: &JobPeer,
         attempt: u32,
-        i: usize,
+        held: Held,
         k: usize,
     ) -> eyre::Result<Vec<u8>> {
         let token = self.token(attempt);
-        let path = format!("{}/outputs/{i}/{k}", self.path(attempt));
+        let path = format!("{}/{}/{k}", self.path(attempt), held.path());
         let answer = self
             .node
             .job_transfer(
@@ -486,8 +511,9 @@ impl Drive<'_> {
             .await?;
         if answer.status != 200 {
             eyre::bail!(
-                "the job node answered {} for segment {k} of output {i}",
-                answer.status
+                "the job node answered {} for segment {k} of {}",
+                answer.status,
+                held.path()
             );
         }
         Ok(answer.body)

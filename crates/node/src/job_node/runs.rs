@@ -37,6 +37,7 @@ const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for
 pub const MAX_ASSIGNMENT_BYTES: usize = 8 * 1024 * 1024; // the most a request to assign a run may weigh; a full collect is about 4 MiB
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
 pub const UNKNOWN_RUN: &str = "UNKNOWN_RUN"; // the code of an answer about a run this node does not hold
+pub const LOG_HEADER: &str = "x-run-log"; // sent by a leader that takes a report's log, so an older one never sees the field
 pub const NEED_BUNDLE: &str = "NEED_BUNDLE"; // the code of an assignment whose component this node does not hold
 
 /// A run's secrets, unwrapped at admission and taken by the thread that runs it.
@@ -55,7 +56,9 @@ pub(super) struct Finished {
     pub report: Report,
     pub signature: String,
     pub outputs: Vec<OutputFile>,
-    /// Bytes the outputs hold on disk.
+    /// The sealed module log, if the run kept one.
+    pub log: Option<OutputFile>,
+    /// Bytes the outputs and the log hold on disk.
     pub bytes: u64,
 }
 
@@ -84,6 +87,8 @@ pub(super) struct Run {
     pub keys: Mutex<Option<Keys>>,
     pub dir: PathBuf,
     pub cancel: Arc<AtomicBool>,
+    /// Whether the leader that assigned the run takes a log in its report.
+    pub wants_log: bool,
     created: Instant,
     received: tokio::sync::Mutex<BTreeSet<(usize, usize)>>,
     pub state: Mutex<RunState>,
@@ -108,6 +113,7 @@ impl Run {
             keys: Mutex::new(Some(keys)),
             dir,
             cancel: Arc::default(),
+            wants_log: false,
             created: Instant::now(),
             received: tokio::sync::Mutex::default(),
             state: Mutex::new(RunState {
@@ -415,6 +421,7 @@ fn unwrap_keys(job: &JobNode, a: &Assignment) -> Result<Keys, ApiError> {
 /// `POST /job/runs`: take an assignment, or answer what became of it.
 pub(super) async fn assign(
     State(job): State<Arc<JobNode>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let a: Assignment = serde_json::from_slice(&body)
@@ -422,7 +429,8 @@ pub(super) async fn assign(
     check_shape(&a)?;
     admit_assignment(&job.config, &a)?;
     let message = assignment_message(&a).map_err(|e| ApiError::internal(&e.to_string()))?;
-    let (run, is_new) = admit_run(&job, a, message)?;
+    let wants_log = headers.contains_key(LOG_HEADER);
+    let (run, is_new) = admit_run(&job, a, message, wants_log)?;
     if is_new {
         tokio::fs::create_dir_all(&run.dir).await.map_err(|e| {
             job.runs.remove(&run);
@@ -441,6 +449,7 @@ fn admit_run(
     job: &Arc<JobNode>,
     a: Assignment,
     message: Vec<u8>,
+    wants_log: bool,
 ) -> Result<(Arc<Run>, bool), ApiError> {
     let mut map = locked(&job.runs.map);
     if let Some(held) = map.get(&key_of(&a)) {
@@ -495,7 +504,9 @@ fn admit_run(
     let dir = job.scratch.join(job.next_dir().to_string());
     let token = hash_hex(&a.token).unwrap_or_default();
     let key = key_of(&a);
-    let run = Arc::new(Run::new(a, message, token, prepared, keys, dir));
+    let mut run = Run::new(a, message, token, prepared, keys, dir);
+    run.wants_log = wants_log;
+    let run = Arc::new(run);
     let _none = map.insert(key, Arc::clone(&run));
     Ok((run, true))
 }
@@ -652,6 +663,18 @@ fn output_of<T>(run: &Run, i: usize, read: impl FnOnce(&OutputFile) -> T) -> Res
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_OUTPUT", "the run wrote no such output"))
 }
 
+/// `read` of a finished run's sealed log.
+fn log_of<T>(run: &Run, read: impl FnOnce(&OutputFile) -> T) -> Result<T, ApiError> {
+    let state = locked(&run.state);
+    let Phase::Done(done) = &state.phase else {
+        return Err(ApiError::new(409, "NOT_DONE", "the run has not ended"));
+    };
+    done.log
+        .as_ref()
+        .map(read)
+        .ok_or_else(|| ApiError::new(404, "NO_LOG", "the run kept no log"))
+}
+
 /// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}/{k}`: segment `k` of the output's ciphertext,
 /// read by range from the scratch file.
 pub(super) async fn output_segment(
@@ -660,8 +683,32 @@ pub(super) async fn output_segment(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
+    serve_segment(&job, &run, Some(i), k).await
+}
+
+/// `GET /job/runs/{app}/{run}/{attempt}/log/{k}`: segment `k` of the sealed module log.
+pub(super) async fn log_segment(
+    State(job): State<Arc<JobNode>>,
+    Path((app, run, attempt, k)): Path<(String, String, u32, usize)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let run = find(&job, &app, &run, attempt, &headers)?;
+    serve_segment(&job, &run, None, k).await
+}
+
+/// Segment `k` of output `i`, or of the log when there is no `i`.
+#[cfg_attr(
+    not(feature = "testing"),
+    allow(unused_variables, reason = "only the test hooks read the node")
+)]
+async fn serve_segment(
+    job: &JobNode,
+    run: &Run,
+    i: Option<usize>,
+    k: usize,
+) -> Result<Response, ApiError> {
     #[cfg(feature = "testing")]
-    if job.outputs_fail.load(Ordering::Relaxed) || output_cut(&job) {
+    if job.outputs_fail.load(Ordering::Relaxed) || output_cut(job) {
         return Err(ApiError::internal("outputs are failing"));
     }
     #[cfg(feature = "testing")]
@@ -679,13 +726,19 @@ pub(super) async fn output_segment(
         tokio::time::sleep(Duration::from_millis(ms)).await;
         return Err(ApiError::internal("outputs are failing slowly"));
     }
-    let path = output_of(&run, i, |o| o.path.clone())?;
-    let bytes = read_segment(&path, k).await?;
+    let path = match i {
+        Some(i) => output_of(run, i, |o| o.path.clone())?,
+        None => log_of(run, |o| o.path.clone())?,
+    };
+    #[allow(unused_mut, reason = "a test may corrupt the log")]
+    let mut bytes = read_segment(&path, k).await?;
     #[cfg(feature = "testing")]
-    {
+    if let Some(i) = i {
         let mut log = locked(&job.output_log);
         log.0.push((i, k));
         log.1 = log.1.max(bytes.len());
+    } else if job.log_corrupt.load(Ordering::Relaxed) {
+        bytes[0] ^= 1;
     }
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
 }
@@ -738,6 +791,17 @@ pub(super) async fn output_key(
 ) -> Result<Json<Value>, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
     let key = output_of(&run, i, |o| hex::encode(*o.key))?;
+    Ok(Json(json!({ "key": key })))
+}
+
+/// `GET /job/runs/{app}/{run}/{attempt}/log/key`: the log's data key, hex, only inside the sealed channel.
+pub(super) async fn log_key(
+    State(job): State<Arc<JobNode>>,
+    Path((app, run, attempt)): Path<(String, String, u32)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let run = find(&job, &app, &run, attempt, &headers)?;
+    let key = log_of(&run, |o| hex::encode(*o.key))?;
     Ok(Json(json!({ "key": key })))
 }
 
@@ -874,12 +938,14 @@ mod tests {
             message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
+            log: None,
             usage: crate::job_wire::ReportUsage::default(),
         };
         Phase::Done(Box::new(Finished {
             report,
             signature: String::new(),
             outputs: Vec::new(),
+            log: None,
             bytes,
         }))
     }

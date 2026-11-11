@@ -15,6 +15,8 @@ const REPORT_LABEL: &[u8] = b"calimero.compute.report.v1\0"; // prefix of the si
 pub(crate) const SHA256_LEN: usize = 32; // bytes of a SHA-256
 pub const BUNDLE_SIGNATURE_HEADER: &str = "x-bundle-signature"; // the header carrying the cluster identity's signature over a component's hash
 pub const MAX_REPORT_MESSAGE_BYTES: usize = 512; // the failure text a signed report carries
+pub const MAX_RUN_LOG_BYTES: usize = 1 << 20; // the module log a run attempt keeps, truncated past it
+const LOG_LABEL: &[u8] = b"calimero.compute.report.log.v1\0"; // tags the log a report carries, after everything else it signs
 const MICROS_PER_SECOND: u128 = 1_000_000; // to turn GiB-microseconds into GiB-seconds
 const BYTES_PER_GIB: u128 = 1 << 30; // a GiB, the unit of memory billed
 
@@ -355,6 +357,9 @@ pub struct Report {
     #[serde(with = "b64")]
     pub result: Vec<u8>,
     pub outputs: Vec<OutputRef>,
+    /// The module's log as a sealed file; any status but an integrity refusal may carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<OutputRef>,
     pub usage: ReportUsage,
 }
 
@@ -392,15 +397,23 @@ pub fn report_message(report: &Report, assignment: &[u8; 32]) -> EyreResult<Vec<
     let count = u32::try_from(report.outputs.len()).map_err(|_| eyre!("too many outputs"))?;
     m.extend_from_slice(&count.to_be_bytes());
     for output in &report.outputs {
-        m.extend_from_slice(&hash_bytes(&output.id)?);
-        m.extend_from_slice(&output.size.to_be_bytes());
-        m.extend_from_slice(&hash_bytes(&output.sha256)?);
-        push_segments(&mut m, &output.segments)?;
+        push_output(&mut m, output)?;
     }
     m.extend_from_slice(&report.usage.cpu_micros.to_be_bytes());
     m.extend_from_slice(&report.usage.gib_micros.to_be_bytes());
     m.extend_from_slice(&report.usage.fuel.to_be_bytes());
+    if let Some(log) = &report.log {
+        m.extend_from_slice(LOG_LABEL);
+        push_output(&mut m, log)?;
+    }
     Ok(m)
+}
+
+fn push_output(m: &mut Vec<u8>, output: &OutputRef) -> EyreResult<()> {
+    m.extend_from_slice(&hash_bytes(&output.id)?);
+    m.extend_from_slice(&output.size.to_be_bytes());
+    m.extend_from_slice(&hash_bytes(&output.sha256)?);
+    push_segments(m, &output.segments)
 }
 
 /// The signature (hex) of `report` under a job node's key.
@@ -483,6 +496,7 @@ mod tests {
                 sha256: "bb".repeat(32),
                 segments: vec!["cc".repeat(32)],
             }],
+            log: None,
             usage: ReportUsage {
                 cpu_micros: 11,
                 gib_micros: 12,
@@ -766,6 +780,7 @@ mod tests {
             message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
+            log: None,
             usage: ReportUsage {
                 cpu_micros: 1,
                 gib_micros: 2,
@@ -796,6 +811,105 @@ mod tests {
         assert_eq!(&tail[40..72], [7; 32]);
         assert_eq!(&tail[72..76], 1u32.to_be_bytes());
         assert_eq!(&tail[76..108], [0xcc; 32]);
+    }
+
+    #[test]
+    fn a_report_without_a_log_signs_the_same_bytes_as_before() {
+        let golden =
+            |r: &Report| hex::encode(calimero_identity::sha256(&report_message(r, &FOR).unwrap()));
+        assert_eq!(
+            golden(&report()),
+            "bf0ef747fb0067e585c160109bb9c0df2beec529fa3b994dd868450a9a0e0d39"
+        );
+        let failed = Report {
+            message: "Denied: no".into(),
+            ..failed_report(FailReason::AppError)
+        };
+        assert_eq!(
+            golden(&failed),
+            "8ed1a82d8e19b9ec49072a5986f80bbeb82fc59083ef5e5d2c702c8d9458e5dd"
+        );
+    }
+
+    fn logged() -> Report {
+        Report {
+            log: Some(OutputRef {
+                id: "dd".repeat(32),
+                size: 4,
+                sha256: "ee".repeat(32),
+                segments: vec!["ff".repeat(32)],
+            }),
+            ..report()
+        }
+    }
+
+    #[test]
+    fn a_report_with_a_log_signs_the_log_after_everything_else() {
+        let plain = report_message(&report(), &FOR).unwrap();
+        let with = report_message(&logged(), &FOR).unwrap();
+        assert_eq!(with[..plain.len()], plain);
+        let mut tail = LOG_LABEL.to_vec();
+        tail.extend([0xdd; 32]);
+        tail.extend(4u64.to_be_bytes());
+        tail.extend([0xee; 32]);
+        tail.extend(1u32.to_be_bytes());
+        tail.extend([0xff; 32]);
+        assert_eq!(with[plain.len()..], tail);
+    }
+
+    #[test]
+    fn a_report_with_a_log_verifies_and_changing_any_log_field_breaks_the_signature() {
+        let signature = sign_report(&key(3), &FOR, &logged()).unwrap();
+        assert!(verify_report(&public(3), &FOR, &logged(), &signature));
+        let edits: Vec<Edit<Report>> = vec![
+            (
+                "log id",
+                Box::new(|r| r.log.as_mut().unwrap().id = "00".repeat(32)),
+            ),
+            ("log size", Box::new(|r| r.log.as_mut().unwrap().size += 1)),
+            (
+                "log sha256",
+                Box::new(|r| r.log.as_mut().unwrap().sha256 = "00".repeat(32)),
+            ),
+            (
+                "log segment",
+                Box::new(|r| r.log.as_mut().unwrap().segments[0] = "00".repeat(32)),
+            ),
+            ("no log", Box::new(|r| r.log = None)),
+        ];
+        for (name, edit) in edits {
+            let mut r = logged();
+            edit(&mut r);
+            assert!(!verify_report(&public(3), &FOR, &r, &signature), "{name}");
+        }
+        let mut added = report();
+        added.log = logged().log;
+        let unlogged = sign_report(&key(3), &FOR, &report()).unwrap();
+        assert!(!verify_report(&public(3), &FOR, &added, &unlogged));
+    }
+
+    #[test]
+    fn a_failed_report_may_carry_a_log_but_never_outputs() {
+        let failed = Report {
+            log: logged().log,
+            ..failed_report(FailReason::Trap)
+        };
+        let signature = sign_report(&key(3), &FOR, &failed).unwrap();
+        assert!(verify_report(&public(3), &FOR, &failed, &signature));
+        let with_outputs = Report {
+            outputs: report().outputs,
+            ..failed
+        };
+        assert!(report_message(&with_outputs, &FOR).is_err());
+    }
+
+    #[test]
+    fn a_report_wire_without_a_log_has_no_log_field_and_reads_back() {
+        let wire = serde_json::to_value(report()).unwrap();
+        assert!(wire.get("log").is_none());
+        assert_eq!(serde_json::from_value::<Report>(wire).unwrap(), report());
+        let wire = serde_json::to_value(logged()).unwrap();
+        assert_eq!(serde_json::from_value::<Report>(wire).unwrap(), logged());
     }
 
     #[test]

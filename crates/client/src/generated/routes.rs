@@ -574,6 +574,21 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// A compute run's attempt logs.
+    ///
+    /// `GET /apps/{app}/runs/{run}/logs` (`app_run_logs`). Who: signed in (a session or an API key).
+    pub async fn run_logs(self, app: &str, run: &str) -> Result<AppRunLogsResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/runs/{}/logs",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// An app's compute runs.
     ///
     /// `GET /apps/{app}/runs` (`app_runs`). Who: whoever the app's access admits (a public app: anyone).
