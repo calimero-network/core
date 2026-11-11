@@ -1090,7 +1090,26 @@ is its command line.
   app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
   (`rows::CIDEM`), events a ring of `EVENT_RING` (`rows::EVENT`). The system group
   stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the group's
-  sealed snapshot file; `backup::latest` opens one with K_c.
+  sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
+  group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
+  bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
+  `backup::find` checks one, `backup::latest` opens one with K_c.
+- **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
+  operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
+  signature (`backup::find`, `Found::check_release`, the bundle the backup's head
+  names still installed, `require_current_release`). `SystemCmd::RestoreApp` moves
+  the app to a new group with the receiving node first (`AppRecord.restore`, so
+  `ensure_app_group` forms it with that seed alone and `reconcile` never inits it);
+  the seed `Group::replace_state`s the backup into it (rows opened and sealed again
+  for the new group, hidden keys re-hidden), appends `componentRestored` (sets
+  `ComponentHead::id_term_base` past every restored id term: the new group's terms
+  restart at 1, D52), `snapshot_through` + `purge_log_through` that entry so the
+  others can only catch up from that snapshot, adds them as learners, makes them
+  voters and logs `FinishRestore`. Calls and views answer `409 APP_RESTORING`
+  meanwhile (`restore::refuse_while_restoring`). The old group's files are kept
+  (`reconcile` drops a stopped group's files only for a deleted app). Tests:
+  `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
+  (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -1523,8 +1542,7 @@ API and system group:
 ## Not done yet
 
 keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
-rollback epoch in the attested KMS evidence, snapshot restore into a
-running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
+rollback epoch in the attested KMS evidence, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 

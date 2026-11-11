@@ -26,6 +26,7 @@ use crate::usage::{Meter, Usage};
 pub(crate) mod blob_guards;
 mod component;
 mod job;
+pub(crate) mod restore;
 mod runtime;
 mod segments;
 
@@ -1813,8 +1814,15 @@ impl Node {
             .map_err(|e| eyre::eyre!("{e}"))?
             .insert(app.group, Arc::clone(&g));
         if app.replicas.first() == Some(&self.config.node_id) {
+            // A restore's seed forms the new group alone: it seeds the state,
+            // then adds the others (`restore`).
+            let members = if app.restore.is_some() {
+                &app.replicas[..1]
+            } else {
+                &app.replicas[..]
+            };
             let voters: BTreeMap<NodeId, String> = self.sys(|s| {
-                app.replicas
+                members
                     .iter()
                     .filter_map(|id| s.nodes.get(id).map(|n| (*id, n.addr.clone())))
                     .collect()
@@ -2058,7 +2066,9 @@ impl Node {
             // An SDK 0.12 app runs nothing here, its init included. A component app
             // may be given a bundle by an upgrade before its init applied (its init
             // timed out), and still needs its init then, on that bundle.
+            // A group being restored is seeded from its backup, never initialized.
             let needs_init = app.executor == Kind::Component
+                && app.restore.is_none()
                 && g.read_local(|m, _| {
                     !m.state.initialized
                         && (m.state.bundle.is_none()
@@ -2093,9 +2103,13 @@ impl Node {
                     self.component_search.drop_app(&app);
                 }
                 let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
-                if let Some(g) =
-                    stopped.filter(|_| self.sys(|s| s.apps.values().all(|a| a.group != group)))
-                {
+                // A deleted app's files go with it; an app restored into a new
+                // group keeps them, as the restored state names them.
+                let app_id = stopped
+                    .as_ref()
+                    .map(|g| g.read_local(|m, _| m.app_id.clone()));
+                let deleted = app_id.is_some_and(|id| self.sys(|s| !s.apps.contains_key(&id)));
+                if let Some(g) = stopped.filter(|_| deleted) {
                     self.drop_deleted_files(&g);
                 }
                 let _r = self.engine.remove_group(group).await;
@@ -3097,6 +3111,7 @@ impl Node {
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
+        self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {
             return Err(ApiError::unsupported_engine());
         }
@@ -3237,14 +3252,22 @@ impl Node {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
-            let Some((index, id, file)) = snap else {
+            let Some((index, snapshot_id, file)) = snap else {
                 continue;
             };
-            let path = dir.join(&app_id);
-            std::fs::create_dir_all(&path)?;
-            let out = path.join(crate::backup::file_name(index, g.id(), &id));
-            if !out.exists() {
-                let _bytes = std::fs::copy(&file, &out)?;
+            let manifest = crate::backup::Manifest {
+                format: crate::backup::FORMAT,
+                merod: env!("CARGO_PKG_VERSION").to_owned(),
+                release: self.own_release(),
+                app: app_id,
+                group: g.id(),
+                index,
+                snapshot_id,
+                sha256: String::new(),
+                written_at: crate::types::now_secs(),
+                node: self.config.node_id,
+            };
+            if crate::backup::write(&dir, &self.cluster_key, &file, &manifest)? {
                 written += 1;
             }
         }
