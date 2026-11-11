@@ -31,6 +31,13 @@ is its command line.
   wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
   `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
   `a_wasmer_entry_never_applies_to_a_component_app`.
+- **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
+  starts `{"v":N,` is format `N`; no marker (every entry so far) is format 1. One newer than
+  this release reads applies as a no-op naming its format (`Trap`/`Fault`, `conflict`), so a
+  replica never applies part of it; a release that raises it writes the new format only once
+  every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
+  (`STORE_FORMAT`, `SNAPSHOT_FORMAT`; docs: protocol/storage "Format versions"). Test:
+  `an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.

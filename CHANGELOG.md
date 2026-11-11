@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Stored formats say their version** (#4926). The store
+  keeps its format in a sealed node row (`format`, `calimero_log::STORE_FORMAT` = 1):
+  a store a later release wrote is refused at start ("the store is in format N,
+  which a later release wrote"), an older one is brought forward through registered
+  steps, the marker written after each. A store without the row (every release up
+  to 1.0.0-rc.15) is format 0, whose rows are format 1's: it opens as before and is
+  marked. A snapshot or backup file of a later format is refused by its first line
+  (`CALIMERO-SNAPSHOT-<n>`, `SNAPSHOT_FORMAT` = 1), not by its frames; a component
+  app's log entry may start `{"v":N,` (`ENTRY_FORMAT` = 1; no entry so far carries
+  it), and one of a later format applies as a no-op that names it. Nothing written
+  so far changes: the snapshot and entry bytes are those of rc.15.
+
 - **Compatibility, written down and checked** (#4927). The policy and
   matrix of what each release keeps for the releases, apps, clients and data before
   it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
