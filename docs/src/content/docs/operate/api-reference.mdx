@@ -43,6 +43,12 @@ to the code on every CI run:
   optional in the document exactly when `T` accepts the body without it;
 - `additionalProperties: false` marks a body whose type refuses unknown fields;
 - every error code a handler raises with a literal code is listed for it;
+- each error code that carries `details` names that value's schema, on every
+  error response that lists the code (`x-calimero-details`) and at the
+  document's root (`x-calimero-error-details`), and the schema is held to the
+  constructor that builds the error: each value it builds is one of the schema,
+  and each property is built, always when it is required and not always when it
+  is optional;
 - a response schema the node answers by serializing a Rust type (an app record,
   an API key, a package release reference, an organization and its teams, an
   upgrade, `Access`, `Deployer`) names that type, and is held to it the same
@@ -57,6 +63,12 @@ change the API, change the handler and its entry, then regenerate:
 ```bash
 UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
 ```
+
+Every error answers the one `Error` schema, so a client decodes any error,
+including a code a route does not list, the same way; it reads `details` by the
+`error` code with the schema the code names. The sealed channel's own refusal
+(`busy`, outside the envelope) is not an `Error`: its schema is the one
+`x-calimero-sealed-refusal` names at the root.
 
 The SDKs (mero-js, calimero-client-py, swift-sdk and kotlin-sdk, the `openapi`
 repositories in `.github/fleet.json`) each vendor this document and generate

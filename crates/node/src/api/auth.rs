@@ -254,17 +254,13 @@ async fn register_finish(
             origin,
         },
     )?;
-    Err(ApiError::new(
-        412,
-        "CONFIRM_REQUIRED",
+    Err(confirm_required(
         "sign in with the new passkey to create the account",
-    )
-    .with_details(json!({
-        "challengeId": id,
-        "challenge": b64url(&signed),
-        "rpId": rp_id,
-        "allowCredentials": [cred.id],
-    })))
+        &id,
+        &signed,
+        &rp_id,
+        std::slice::from_ref(&cred.id),
+    ))
 }
 
 /// The sign-up's retry: the new passkey's assertion over the account, then

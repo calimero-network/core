@@ -43,6 +43,9 @@ pub use component::{
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+// The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
+#[cfg(test)]
+pub(crate) use component::{files_unavailable, upload_refusal};
 
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
@@ -707,6 +710,22 @@ pub fn stalled(stall: &crate::system::Stall) -> ApiError {
         "after": crate::system::rfc3339(stall.after),
         "afterSecs": stall.after,
     }))
+}
+
+/// `409 UPGRADE_PENDING`: `what` needs every node on `release`, and the nodes `behind` run
+/// an older one (`None`: a release this node could not attest).
+#[must_use]
+pub fn upgrade_pending(what: &str, release: &str, behind: &[(NodeId, Option<String>)]) -> ApiError {
+    let nodes: Vec<Value> = behind
+        .iter()
+        .map(|(id, release)| json!({ "node": id, "release": release }))
+        .collect();
+    ApiError::new(
+        409,
+        crate::api::UPGRADE_PENDING,
+        &format!("{what} needs every node on this node's release or newer"),
+    )
+    .with_details(json!({ "release": release, "nodes": nodes }))
 }
 
 /// The code of an install refused where deployments are granted and the
@@ -1408,16 +1427,7 @@ impl Node {
         if behind.is_empty() {
             return Ok(());
         }
-        let nodes: Vec<Value> = behind
-            .iter()
-            .map(|(id, release)| json!({ "node": id, "release": release }))
-            .collect();
-        Err(ApiError::new(
-            409,
-            crate::api::UPGRADE_PENDING,
-            &format!("{what} needs every node on this node's release or newer"),
-        )
-        .with_details(json!({ "release": self.own_release(), "nodes": nodes })))
+        Err(upgrade_pending(what, &self.own_release(), &behind))
     }
 
     /// The release node `id` runs, as its verified attestation names it (this

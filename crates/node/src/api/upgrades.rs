@@ -250,6 +250,13 @@ struct Target {
 /// Run an upgrade on the app's group and, once it succeeded, record the new
 /// bundle and release in the directory (where `UpgradeApp` judges who may). A
 /// failure is recorded too: the app's last upgrade says why.
+/// `422 UPGRADE_FAILED`: the app log's `__upgrade` entry at `index` ended `status`, with the
+/// app log's `error`.
+pub(super) fn upgrade_failed(why: &str, index: u64, status: &Status, error: &Value) -> ApiError {
+    ApiError::new(422, "UPGRADE_FAILED", why)
+        .with_details(json!({ "index": index, "status": status, "error": error }))
+}
+
 async fn run_upgrade(
     node: &Node,
     app_id: String,
@@ -339,8 +346,11 @@ async fn run_upgrade(
             || "the upgrade did not run".to_owned(),
             |e| format!("the upgrade did not run: {e}"),
         );
-        return Err(ApiError::new(422, "UPGRADE_FAILED", &why).with_details(
-            json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
+        return Err(upgrade_failed(
+            &why,
+            applied.index,
+            &applied.status,
+            &applied.error,
         ));
     }
     // The app now runs the new bundle: the directory says so too.

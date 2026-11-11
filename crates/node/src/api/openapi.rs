@@ -454,6 +454,46 @@ fn out_ty<T: DeserializeOwned + Serialize>() -> OutTy {
     }
 }
 
+/// The shape of `details` by error code: each code's `details`, where it carries one, is a
+/// value of this component. `error_details_match_their_constructors` holds each to the
+/// constructor that builds it.
+const ERROR_DETAILS: &[(&str, &str)] = &[
+    ("APP_ERROR", "AppError"),
+    ("BAD_BUNDLE", "ServiceRefused"),
+    ("COMPUTE_ABI_MISMATCH", "ServiceRefused"),
+    ("CONFIRM_REQUIRED", "ConfirmRequired"),
+    ("FEATURE_NOT_ACTIVE", "FeatureNotActive"),
+    ("FILES_UNAVAILABLE", "RetryAfter"),
+    ("INIT_FAILED", "InitFailed"),
+    ("NOT_LEADER", "NotLeader"),
+    ("OPERATOR_SIGNATURE_REQUIRED", "OperatorSignatureRequired"),
+    ("PART_CONFLICT", "UploadPosition"),
+    ("PART_OUT_OF_ORDER", "UploadPosition"),
+    ("RECOVERY_NOT_READY", "RecoveryNotReady"),
+    ("RELEASE_DEADLINE", "ReleaseDeadline"),
+    ("RUNTIME_TOO_OLD", "RuntimeTooOld"),
+    ("TIMEOUT", "RetryAfter"),
+    ("TRAP", "Trap"),
+    ("UNSUPPORTED_BUNDLE", "ServiceRefused"),
+    ("UPGRADE_FAILED", "Applied"),
+    ("UPGRADE_PENDING", "UpgradePending"),
+    ("UPLOAD_INCOMPLETE", "UploadPosition"),
+];
+
+/// `x-calimero-details` of these codes: each code's `details` schema, by reference.
+fn details_of<'a>(codes: impl IntoIterator<Item = &'a str>) -> Map<String, Value> {
+    codes
+        .into_iter()
+        .filter_map(|code| {
+            let (_, name) = ERROR_DETAILS.iter().find(|(c, _)| *c == code)?;
+            Some((
+                code.to_owned(),
+                json!({ "$ref": format!("#/components/schemas/{name}") }),
+            ))
+        })
+        .collect()
+}
+
 /// Codes answered on many routes, and what they mean (the Errors table of `admin-api.mdx`).
 const COMMON_CODES: &[(u16, &str, &str)] = &[
     (400, "BAD_REQUEST", "the request is malformed"),
@@ -525,12 +565,16 @@ OPERATOR_SIGNATURE_REQUIRED`, `leaderUrl` of a `421 NOT_LEADER`). Each operation
 the codes it raises itself and those its credential implies, per status in \
 `x-calimero-codes` (every error answer is the one `Error` schema); any operation may also answer \
 `400 BAD_REQUEST`, `400 REJECTED`, `421 NOT_LEADER` and `503 UNAVAILABLE`. A route that \
-takes a session may answer `421 WRONG_NODE`: try another node.\n\n\
+takes a session may answer `421 WRONG_NODE` (no `details`): try another node. \
+`x-calimero-details` on an error response maps each of its codes that carries `details` to \
+that value's schema, and `x-calimero-error-details` at the root maps every such code: one \
+code, one schema, so a client reads `details` by `error`.\n\n\
 **Retries.** `x-calimero-retry-safe` marks the operations a client may send again after a \
 `503` or a lost answer (`x-calimero-retry-requires` names the body field that makes it so, \
 an idempotency key). The sealed channel's own `503` (`{ error: { code: \"busy\", message } }`, \
-outside the envelope: too many sealed requests or sessions at once) carries `Retry-After: 1` \
-on any sealed route; the node's `503 UNAVAILABLE` answers carry none. \
+outside the envelope: too many sealed requests or sessions at once; the schema \
+`x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route; the node's \
+`503 UNAVAILABLE` answers carry none. \
 `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` \
 where it applies only sometimes) and `x-calimero-operator` mark \
 the two-round operations below.\n\n\
@@ -542,7 +586,7 @@ fn components() -> Vec<Component> {
     vec![
         component(
             "Error",
-            "An error answer.",
+            "An error answer: `error` is the code. `details`, absent for most codes, has the schema `x-calimero-details` names for the code on the operation's response (every code's: `x-calimero-error-details` at the document's root); a code it names no schema for carries none, or a value clients need not read.",
             "{ status: uint, error: string, message: string, details?: any }",
         ),
         component(
@@ -552,8 +596,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "ConfirmRequired",
-            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign with a passkey of the account.",
-            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[] }",
+            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.",
+            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[] }",
         ),
         component(
             "OperatorProof",
@@ -562,8 +606,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "OperatorSignatureRequired",
-            "`details` of a `428 OPERATOR_SIGNATURE_REQUIRED`: the statement to sign and the exact bytes (`message`, base64).",
-            "{ subject: string, method: string, args: any, nonce: string, cluster: string, message: string }",
+            "`details` of a `428 OPERATOR_SIGNATURE_REQUIRED`: the statement to sign (`args` is the JSON text of its arguments, as signed) and the exact bytes to sign (`message`, standard base64).",
+            "{ subject: string, method: string, args: string, nonce: string, cluster: string, message: string }",
         ),
         component(
             "Assertion",
@@ -587,8 +631,73 @@ fn components() -> Vec<Component> {
         ),
         component(
             "Applied",
-            "An entry an app's log applied: its index, how it ended and the app's error, if any.",
-            "{ index: uint, status: string, error: any }",
+            "An entry an app's log applied: its index, how it ended and the app's error (`null` when it ended `ok`; the app's own error value otherwise, free-form). `details` of a `422 UPGRADE_FAILED`.",
+            r#"{ index: uint, status: "ok" | "appError" | "trap", error: any }"#,
+        ),
+        component(
+            "NotLeader",
+            "`details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.",
+            "{ leaderUrl: string, leader?: uint }",
+        ),
+        component(
+            "FeatureNotActive",
+            "`details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say).",
+            "{ feature: string, needs: string, active: string | null }",
+        ),
+        component(
+            "RuntimeTooOld",
+            "`details` of a `409 RUNTIME_TOO_OLD`: the runtime the release needs and the replicas known to fall short of it, each with what it runs (a version, or `{ before }`: a release older than that one).",
+            "{ minRuntimeVersion: string, nodes: { node: uint, runtime: string | { before: string } }[] }",
+        ),
+        component(
+            "ReleaseDeadline",
+            "`details` of a `409 RELEASE_DEADLINE`: the mero-tee release whose deadline passed, and the deadline (`after` RFC 3339, `afterSecs` Unix seconds). Approving that release (or a newer one) lifts it.",
+            "{ release: string, after: string, afterSecs: uint }",
+        ),
+        component(
+            "UpgradePending",
+            "`details` of a `409 UPGRADE_PENDING`: the release every node must run first, and the nodes that run an older one (`release` `null`: one this node could not attest).",
+            "{ release: string, nodes: { node: uint, release: string | null }[] }",
+        ),
+        component(
+            "AppError",
+            "`details` of a `422 APP_ERROR`: the app's error code, its fields (the app's own value, free-form: the object its ABI declares for the error, or the app's message as a string when that is not JSON), and the log index of the call (absent when the node refused it before it ran: `UnknownMethod`, `WrongKind`, `Forbidden`, `ConfirmNotAView`, `NotAView`, `ConfirmRequired`).",
+            "{ index?: uint, code: string, fields: any }",
+        ),
+        component(
+            "Trap",
+            "`details` of a `422 TRAP`: the log index of the run, how it trapped, and the engine's account of it.",
+            r#"{ index: uint, kind: "OutOfFuel" | "Timeout" | "Cancelled" | "Unavailable" | "OutOfMemory" | "StackOverflow" | "Fault" | "HostDenied", detail: string }"#,
+        ),
+        component(
+            "InitFailed",
+            "`details` of a `422 INIT_FAILED`: the app made, and the error its `init` ended with (the app log's, free-form).",
+            "{ appId: string, error: any }",
+        ),
+        component(
+            "RecoveryNotReady",
+            "`details` of a `409 RECOVERY_NOT_READY`: when the recovery may finish (Unix seconds).",
+            "{ readyAt: uint }",
+        ),
+        component(
+            "UploadPosition",
+            "`details` of a `409 PART_CONFLICT`, `409 PART_OUT_OF_ORDER` or `409 UPLOAD_INCOMPLETE`: the part the upload expects next.",
+            "{ next: uint }",
+        ),
+        component(
+            "RetryAfter",
+            "`details` of a `503 TIMEOUT` or `503 FILES_UNAVAILABLE`: the seconds to wait before sending the same request (with the same idempotency key) again.",
+            "{ retryAfter: uint }",
+        ),
+        component(
+            "ServiceRefused",
+            "`details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE` or `400 COMPUTE_ABI_MISMATCH` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.",
+            "{ service: string, compute?: bool }",
+        ),
+        component(
+            "SealedRefusal",
+            "The sealed channel's own refusal, outside the envelope and in the clear: not an `Error`. `busy` (`503`, with `Retry-After: 1`): too many sealed requests or sessions at once, send it again; the other codes (`400`, `malformed` and the like) say the envelope could not be opened.",
+            "{ error: { code: string, message: string } }",
         ),
         component(
             "Receipt",
@@ -783,6 +892,12 @@ fn components() -> Vec<Component> {
             "The body of a step-up that names nothing else: none (or `{}`) at first, the passkey assertion after the `412`.",
             "{ confirm?: #Confirm }",
         ),
+        component(
+            "QuotaChanges",
+            "The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.",
+            "{ org?: string, operatorProof?: #OperatorProof, orgs?: any, maxAppsPerAccount?: uint, maxBundleBytesPerAccount?: uint, maxApiKeysPerAccount?: uint, maxOrgsPerAccount?: uint, maxAccounts?: uint, maxFileBytesPerOrg?: uint, maxConcurrentRunsPerOrg?: uint, computeFuelPerOrg?: uint, maxFuelPerDeveloperPerDay?: u64, maxConcurrentRuns?: uint | null, computeFuel?: u64 | null, maxFileBytes?: uint | null }",
+        )
+        .closed_body(),
     ]
 }
 
@@ -990,14 +1105,14 @@ fn operations() -> Vec<Op> {
             .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("{ packages: #Package[] }"),
         post("/packages/install", "package_install", Installer, "Install a release from the registry")
             .json::<super::InstallBody>("{ package: string, version: string }")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
             .ok("#Package")
@@ -1079,24 +1194,24 @@ fn operations() -> Vec<Op> {
             .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`.")
             .json::<super::IntentBody>("{ method: string, args?: any, idempotencyKey?: string, confirm?: #Confirm }")
             .ok("{ index: uint, result: any, events: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")])
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
-            .about("Each replica's `/attestation?purpose=receipts` for `nonce`. It reads the query `/attestation` does, but only `nonce`: `app`, `appHash` and `purpose` are ignored here.")
-            .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" }"#)
+            .about("Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`). Any other query parameter is ignored.")
+            .query::<super::AppAttestQuery>("{ nonce: string }")
             .ok("{ appId: string, replicas: ({ node: uint, attestation: #AttestationDoc } | { node: uint, error: string })[] }"),
         post("/apps/{app}/views", "views", AppAccess, "Read with a view method")
             .about("Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`).")
             .json::<super::ViewBody>(r#"{ method: string, args?: any, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, receipt: #Receipt }")
-            .errors(&[(422, "APP_ERROR"), (422, "TRAP"), (503, "NOT_CAUGHT_UP")])
+            .errors(&[(422, "APP_ERROR"), (422, "TRAP"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT")])
             .retry_safe(),
         post("/apps/{app}/methods/{method}", "app_method", AppAccess, "Call a method by its path")
             .about("The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`.")
             .json::<super::MethodBody>(r#"{ args?: any, idempotencyKey?: string, confirm?: #Confirm, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, events?: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/events", "events", AppAccess, "An app's events as server-sent events")
@@ -1166,13 +1281,14 @@ fn operations() -> Vec<Op> {
         delete("/apps/{app}/files/uploads/{upload}", "upload_abort", SignedIn, "Abort an upload")
             .ok("{ [string]: any }"),
         put("/apps/{app}/files/uploads/{upload}/parts/{k}", "upload_part", SignedIn, "Send one part")
-            .about("Part `k` (from 0), raw bytes; a part out of order answers the next one expected in `details.next`.")
+            .about("Part `k` (from 0), raw bytes; a part out of order (`409 PART_OUT_OF_ORDER`), or one that differs from the part sent before as `k` (`409 PART_CONFLICT`), answers the next one expected in `details.next`.")
             .raw("application/octet-stream", "the part")
             .ok("{ next: uint }")
-            .errors(&[(400, "BAD_REQUEST"), (400, "BAD_PART")]),
+            .errors(&[(400, "BAD_REQUEST"), (400, "BAD_PART"), (409, "PART_CONFLICT"), (409, "PART_OUT_OF_ORDER"), (503, "FILES_UNAVAILABLE")]),
         post("/apps/{app}/files/uploads/{upload}/complete", "upload_complete", SignedIn, "Commit an upload")
-            .about("Charges and commits the file; a retry answers the same file.")
-            .ok("{ blobId: string, id: string, size: uint, sha256: string, index: uint }"),
+            .about("Charges and commits the file; a retry answers the same file. `409 UPLOAD_INCOMPLETE` names the part still missing.")
+            .ok("{ blobId: string, id: string, size: uint, sha256: string, index: uint }")
+            .errors(&[(409, "UPLOAD_INCOMPLETE")]),
         get("/apps/{app}/files/{id}", "file_info", SignedIn, "One sealed file")
             .about("Its plaintext size and SHA-256, never its key.")
             .ok("{ blobId: string, id: string, size: uint, sha256: string }")
@@ -1513,19 +1629,20 @@ fn operations() -> Vec<Op> {
         post("/ops/packages", "ops_package_upload", Ops, "Install an uploaded release as the operator")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE")]),
         get("/ops/packages", "ops_package_list", Ops, "The releases the operator installed").ok("{ packages: #Package[] }"),
         post("/ops/packages/install", "ops_package_install", Ops, "Install a release from the registry as the operator")
             .json::<super::InstallBody>("{ package: string, version: string }")
-            .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }"),
+            .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
+            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE")]),
         delete("/ops/packages/{package}", "ops_package_uninstall", Ops, "Uninstall what the operator installed").ok("#Written"),
         delete("/ops/packages/{package}/{version}", "ops_package_version_uninstall", Ops, "Uninstall one operator-installed version").ok("#Written"),
         get("/ops/quotas", "ops_quotas_get", Ops, "The quotas")
             .about("The per-account quotas, and the per-payer overrides under `orgs`.")
             .ok("{ maxAppsPerAccount: uint, maxBundleBytesPerAccount: uint, maxApiKeysPerAccount: uint, maxOrgsPerAccount: uint, maxAccounts: uint, maxFileBytesPerOrg: uint, maxConcurrentRunsPerOrg: uint, computeFuelPerOrg: uint, maxFuelPerDeveloperPerDay: u64, orgs: any, [string]: any }"),
         post("/ops/quotas", "ops_quotas_set", Ops, "Change quotas")
-            .about("Changes the limits the body names, the others keep their value; signed over `cluster / __set_quotas / { quotas }` with every limit after the change. With `org`: one payer's `maxConcurrentRuns`, `computeFuel` (decimal string) and `maxFileBytes` (`null` clears one). A name that is no quota is refused.")
-            .value("{ org?: string, operatorProof?: #OperatorProof, [string]: any }")
+            .about("Changes the limits the body names, the others keep their value; signed over `cluster / __set_quotas / { quotas }` with every limit after the change. Without `org`, the cluster's limits (`GET /ops/quotas` names them); `orgs`, which that answer carries, is ignored, so its answer may be sent back changed. With `org`: one payer's `maxConcurrentRuns`, `computeFuel` (decimal string) and `maxFileBytes` (`null` clears one, back to the cluster's), and no other limit. A property that is no limit (of the cluster's, or with `org` of a payer's) is refused `400 UNKNOWN_QUOTA`.")
+            .value("#QuotaChanges")
             .ok("{}")
             .operator()
             .errors(&[(400, "BAD_REQUEST"), (400, "UNKNOWN_QUOTA"), (409, "UPGRADE_PENDING")]),
@@ -1719,13 +1836,10 @@ fn closed(input: &Input, shapes: &BTreeMap<&'static str, Shape>, query: bool) ->
 
 /// One status's error answer: the shared `Error`, the codes it may carry listed in
 /// `x-calimero-codes` (and described), not narrowed in a schema of its own, which every
-/// generator would turn into a type per operation.
+/// generator would turn into a type per operation; `x-calimero-details` names the schema of
+/// `details` for each of those codes that carries one.
 fn error_response(status: u16, codes: &BTreeSet<&'static str>) -> Value {
-    let details = match status {
-        412 => Some("ConfirmRequired"),
-        428 => Some("OperatorSignatureRequired"),
-        _ => None,
-    };
+    let details = details_of(codes.iter().copied());
     let described: Vec<String> = codes
         .iter()
         .map(|code| {
@@ -1739,14 +1853,25 @@ fn error_response(status: u16, codes: &BTreeSet<&'static str>) -> Value {
         })
         .collect();
     let mut description = described.join("; ");
-    if let Some(details) = details {
-        description.push_str(&format!(". `details` is a `{details}`."));
+    let named: Vec<String> = details
+        .iter()
+        .filter_map(|(code, schema)| {
+            let name = schema["$ref"].as_str()?.rsplit('/').next()?;
+            Some(format!("`{code}`: a `{name}`"))
+        })
+        .collect();
+    if !named.is_empty() {
+        description.push_str(&format!(". `details` of {}.", named.join(", ")));
     }
-    json!({
+    let mut out = json!({
         "description": description,
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } },
         "x-calimero-codes": codes,
-    })
+    });
+    if !details.is_empty() {
+        out["x-calimero-details"] = Value::Object(details);
+    }
+    out
 }
 
 fn input_schema(input: &Input, shapes: &BTreeMap<&'static str, Shape>) -> Value {
@@ -1934,6 +2059,8 @@ pub(super) fn document() -> Value {
             "variables": { "node": { "default": "localhost:2428" } },
         }],
         "tags": TAGS.iter().map(|(name, description)| json!({ "name": name, "description": description })).collect::<Vec<_>>(),
+        "x-calimero-error-details": details_of(ERROR_DETAILS.iter().map(|(code, _)| *code)),
+        "x-calimero-sealed-refusal": { "$ref": "#/components/schemas/SealedRefusal" },
         "paths": paths,
         "components": {
             "schemas": schemas,
@@ -2002,13 +2129,16 @@ fn fields_of<T: DeserializeOwned>() -> Option<&'static [&'static str]> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
     use serde_json::{json, Value};
 
     use super::shape::{parse, Shape};
-    use super::{components, document, operations, shapes, Body, Input, Op};
+    use super::{
+        components, document, fields_of, operations, shapes, Body, Input, Op, ERROR_DETAILS,
+    };
+    use crate::error::ApiError;
 
     /// The area modules `router` merges, each with its own route table and the
     /// handlers it names without a prefix.
@@ -2488,6 +2618,174 @@ mod tests {
             "codes handlers raise that their entries do not list:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// Values the node built of component `name`: each is a value of its schema, and over
+    /// them a property is built at all, always when required, and not always when optional.
+    fn value_mismatches(
+        name: &str,
+        values: &[&Value],
+        shapes: &BTreeMap<&'static str, Shape>,
+    ) -> Vec<String> {
+        let refs = |n: &str| shapes[n].clone();
+        let shape = &shapes[name];
+        let mut wrong: Vec<String> = values
+            .iter()
+            .filter(|v| !shape.admits(v, &refs))
+            .map(|v| format!("#{name} does not admit a value the node builds:\n    {v}"))
+            .collect();
+        for f in shape.fields() {
+            let present = values.iter().filter(|v| v.get(&f.name).is_some()).count();
+            let why = if present == 0 {
+                "never built"
+            } else if !f.optional && present < values.len() {
+                "required, but left out of one"
+            } else if f.optional && present == values.len() {
+                "optional, but always built"
+            } else {
+                continue;
+            };
+            wrong.push(format!("#{name}: `{}` is {why}", f.name));
+        }
+        wrong
+    }
+
+    /// An error of every code `ERROR_DETAILS` names, as the node's own constructors build
+    /// it, each optional property present in one and absent from another.
+    fn built_errors() -> Vec<ApiError> {
+        use crate::app::Status;
+        use crate::runtime::NodeRuntime;
+        use crate::system::cluster_version::{check, FEATURES};
+
+        let confirm =
+            || super::super::confirm_required("m", "1.id", &[7; 32], "rp", &["cred".to_owned()]);
+        let min = semver::Version::new(1, 2, 0);
+        let runtimes = [
+            (1, NodeRuntime::Known(semver::Version::new(1, 1, 0))),
+            (2, NodeRuntime::Before(semver::Version::new(1, 0, 0))),
+            (3, NodeRuntime::Unknown),
+        ]
+        .into_iter()
+        .collect();
+        let short = crate::runtime::short_of(&[1, 2, 3], &runtimes, &min);
+        let not_active = |active| {
+            let refused = check(active, &FEATURES[..1]).expect_err("not active");
+            ApiError::new(409, "FEATURE_NOT_ACTIVE", "m").with_details(refused.details())
+        };
+        let app_error = json!({ "code": "Nope", "fields": { "why": "x" } });
+        let trap = crate::component::Outcome::trap(calimero_app_host::TrapKind::OutOfFuel, "d");
+        let failure = |status: &Status, error: &Value, timeout: bool| {
+            super::super::calls::component_failure(4, status, error, timeout).expect("a failure")
+        };
+        let bundle = |code: &str| ApiError::bad_request(code, "m");
+        vec![
+            confirm(),
+            super::super::orgs::with_detail(confirm(), "apps", json!(["app"])),
+            super::super::operator_signature_required(
+                &crate::proof::Statement::new("cluster", "__set_quotas", &json!({ "a": 1 })),
+                "c1",
+            ),
+            super::super::not_leader("m", Some(2), "https://n2"),
+            super::super::not_leader("m", None, "https://n2"),
+            not_active(None),
+            not_active(Some("0.0.1")),
+            crate::runtime::refusal("x", &min, short),
+            crate::node::stalled(&crate::system::Stall {
+                release: "1.0.0".to_owned(),
+                after: 5,
+            }),
+            crate::node::upgrade_pending("x", "1.1.0", &[(1, Some("1.0.0".to_owned())), (2, None)]),
+            super::super::upgrades::upgrade_failed("x", 3, &Status::AppError, &app_error),
+            failure(&Status::AppError, &app_error, false),
+            crate::node::app_refusal("UnknownMethod"),
+            failure(&Status::Trap, &trap.error, false),
+            failure(&Status::Ok, &Value::Null, true),
+            super::super::apps::init_failed("app", &app_error),
+            super::super::recovery::recovery_not_ready(9),
+            crate::node::upload_refusal(409, "PART_CONFLICT", "m", 1),
+            crate::node::upload_refusal(409, "PART_OUT_OF_ORDER", "m", 1),
+            crate::node::upload_refusal(409, "UPLOAD_INCOMPLETE", "m", 1),
+            crate::node::files_unavailable(),
+            crate::packages::of_service(ApiError::unsupported_bundle(), "svc", false),
+            crate::packages::of_service(bundle(crate::node::BAD_BUNDLE), "svc", true),
+            crate::packages::of_service(
+                bundle(crate::packages::COMPUTE_ABI_MISMATCH),
+                "svc",
+                false,
+            ),
+        ]
+    }
+
+    /// Each code's `details` is a value of the schema `ERROR_DETAILS` names for it, as the
+    /// constructor that raises the code builds it; and over the values of one schema, a
+    /// property is built at all, always when required, and not always when optional.
+    #[test]
+    fn error_details_match_their_constructors() {
+        let shapes = shapes();
+        let built = built_errors();
+        let mut wrong = Vec::new();
+        for e in &built {
+            if !ERROR_DETAILS.iter().any(|(c, _)| *c == e.code) {
+                wrong.push(format!("{}: no schema in ERROR_DETAILS", e.code));
+            }
+        }
+        let names: BTreeSet<&str> = ERROR_DETAILS.iter().map(|(_, n)| *n).collect();
+        for name in names {
+            let codes: Vec<&str> = ERROR_DETAILS
+                .iter()
+                .filter(|(_, n)| *n == name)
+                .map(|(c, _)| *c)
+                .collect();
+            for code in &codes {
+                if !built.iter().any(|e| e.code == *code) {
+                    wrong.push(format!("{code}: no constructor in built_errors"));
+                }
+            }
+            let values: Vec<&Value> = built
+                .iter()
+                .filter(|e| codes.contains(&e.code.as_str()))
+                .map(|e| &*e.details)
+                .collect();
+            wrong.extend(value_mismatches(name, &values, &shapes));
+        }
+        assert!(
+            wrong.is_empty(),
+            "error details that differ from their constructors:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    /// `#QuotaChanges` names every limit `POST /ops/quotas` changes, the cluster's
+    /// (`system::Quotas`) and a payer's (`system::OrgQuotas`), and each reads into its type.
+    #[test]
+    fn quota_changes_name_every_quota() {
+        let shapes = shapes();
+        let refs = |name: &str| shapes[name].clone();
+        let shape = &shapes["QuotaChanges"];
+        let cluster = fields_of::<crate::system::Quotas>().expect("a struct");
+        let payer = fields_of::<crate::system::OrgQuotas>().expect("a struct");
+        let named: BTreeSet<&str> = shape.fields().iter().map(|f| f.name.as_str()).collect();
+        let limits: BTreeSet<&str> = cluster
+            .iter()
+            .chain(payer)
+            .copied()
+            .chain(["org", "operatorProof", "orgs"])
+            .collect();
+        assert_eq!(named, limits);
+        let sample = shape.sample(&refs);
+        let only = |names: &[&str]| -> Value {
+            sample
+                .as_object()
+                .expect("an object")
+                .iter()
+                .filter(|(k, _)| names.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
+        let _cluster: crate::system::Quotas =
+            serde_json::from_value(only(cluster)).expect("the cluster's limits");
+        let _payer: crate::system::OrgQuotas =
+            serde_json::from_value(only(payer)).expect("a payer's limits");
     }
 
     #[test]

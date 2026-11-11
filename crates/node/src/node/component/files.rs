@@ -277,7 +277,7 @@ fn block_on<T>(runtime: &Handle, fut: impl Future<Output = T>) -> Option<T> {
     (runtime.runtime_flavor() != RuntimeFlavor::CurrentThread).then(|| runtime.block_on(fut))
 }
 
-pub(super) fn files_unavailable() -> ApiError {
+pub(crate) fn files_unavailable() -> ApiError {
     ApiError::new(
         503,
         FILES_UNAVAILABLE,
