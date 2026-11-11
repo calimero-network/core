@@ -37,13 +37,6 @@ const CREATE_CHILD_TEAM: u32 = 1 << 11;
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
 fn release(package: &str) -> Vec<u8> {
-    use sha2::Digest;
-    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
-        path: path.to_owned(),
-        hash: hex::encode(sha2::Sha256::digest(bytes)),
-        size: bytes.len() as u64,
-    };
-    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let mut wasm = kv_wasm();
     let tag = package.as_bytes();
     wasm.extend([
@@ -52,6 +45,18 @@ fn release(package: &str) -> Vec<u8> {
         u8::try_from(tag.len()).unwrap(),
     ]);
     wasm.extend_from_slice(tag);
+    release_shipping(package, wasm)
+}
+
+/// A signed single-service `.mpk` of `package@1.0.0` shipping `wasm`.
+fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
+    use sha2::Digest;
+    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
+        path: path.to_owned(),
+        hash: hex::encode(sha2::Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
@@ -583,6 +588,40 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
         "only the organization's owner and admins",
     );
     let _notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+}
+
+/// Two packages may ship a byte-identical component: each instance belongs to the
+/// package its release names, so scoping gives each package's team its own instances
+/// (it used to judge by the component, whose record names the first package installed,
+/// and put both instances in that package's team).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apart() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    for p in [CHAT, NOTES] {
+        let _ok = alice
+            .upload_package(release_shipping(p, kv_wasm()))
+            .await
+            .unwrap();
+    }
+    // Naming both packages, and naming none (every package with an instance).
+    let both = json!({ "apps": [{ "package": CHAT }, { "package": NOTES }] });
+    for body in [both, json!({})] {
+        let org = new_org(&alice).await;
+        let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+        let notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+        let done = scope(&alice, &mut a, &org, body).await.unwrap();
+        assert_eq!(done["teams"].as_array().unwrap().len(), 2, "{done}");
+        for (app, package) in [(&chat, CHAT), (&notes, NOTES)] {
+            let team = s(&app_team(&alice, &org, package).await["teamId"]);
+            let record = alice.get(&format!("apps/{app}")).await.unwrap();
+            assert_eq!(
+                record["access"],
+                json!({ "kind": "team", "team": team }),
+                "{package}: {record}"
+            );
+        }
+    }
 }
 
 /// G6 and the guest role: in a standalone organization (one open app team)
@@ -1144,4 +1183,97 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
         .await
         .unwrap();
     assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
+}
+
+/// Closing an open app team with the plain team update (`POST
+/// /orgs/{org}/teams/{team} { join: invite }`) takes, from whoever loses it
+/// (in it by inheritance alone), their rows in the private channels below it,
+/// as a removal from the team does: they no longer reach a channel's apps,
+/// even one they made. Whoever keeps the team (a row of their own) keeps the
+/// channels.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (dave, mut d) = signed_up(&c, 2, "dave").await;
+    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let bob_id = id(&bob).await;
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    // Chat's team, open: Alice and Bob get rows.
+    let done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&done["teams"][0]["teamId"]);
+    // Dave joins after: in Chat by inheritance alone.
+    join(
+        &dave,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let dave_id = id(&dave).await;
+    // Dave makes a private channel below Chat, adds Bob, and puts an
+    // instance in it.
+    let channel = s(&dave
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "design", "join": "invite", "parent": chat_team }),
+        )
+        .await
+        .unwrap()["teamId"]);
+    let _ok = dave
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{channel}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+            &mut d,
+        )
+        .await
+        .unwrap();
+    let private = instance(
+        &dave,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": channel }),
+    )
+    .await
+    .unwrap();
+    for p in [&dave, &bob] {
+        let r = reaches(p, &org).await;
+        assert!(r.contains(&chat) && r.contains(&private), "{r:?}");
+    }
+
+    // Alice closes Chat with the plain team update: Dave, with no row in
+    // it, loses Chat and the channel below it; Bob keeps both.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{chat_team}"),
+            json!({ "join": "invite" }),
+        )
+        .await
+        .unwrap();
+    let r = reaches(&dave, &org).await;
+    assert!(!r.contains(&chat) && !r.contains(&private), "{r:?}");
+    let err = writes(&dave, &private).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    assert!(dave
+        .get(&format!("orgs/{org}/teams/{channel}"))
+        .await
+        .is_err());
+    let view = alice
+        .get(&format!("orgs/{org}/teams/{channel}"))
+        .await
+        .unwrap();
+    assert!(
+        !view.to_string().contains(&dave_id),
+        "a row is left below: {view}"
+    );
+    let r = reaches(&bob, &org).await;
+    assert!(r.contains(&chat) && r.contains(&private), "{r:?}");
+    writes(&bob, &private).await.unwrap();
 }
