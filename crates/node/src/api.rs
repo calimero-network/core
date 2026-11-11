@@ -9056,6 +9056,8 @@ async fn ops_pools_set(
 /// The pools and the runs each takes at once.
 async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
+    // An operator reads back what it just set, through any node.
+    let _caught_up = node.sys_fresh().await;
     Ok(Json(node.sys(|s| {
         let capacity: std::collections::BTreeMap<&String, usize> =
             s.pools.keys().map(|p| (p, s.pool_capacity(p))).collect();
@@ -9065,6 +9067,8 @@ async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
 
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
+    // An operator reads back what it just set, through any node.
+    let _caught_up = node.sys_fresh().await;
     let (quotas, orgs) = node.sys(|s| (s.quotas.clone(), s.org_quotas.clone()));
     let mut shown = serde_json::to_value(quotas).unwrap_or_default();
     shown["orgs"] = serde_json::to_value(orgs).unwrap_or_default();

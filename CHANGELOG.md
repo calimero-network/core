@@ -54,6 +54,11 @@
 
 ### Fixed
 
+- **`GET /ops/quotas` and `GET /ops/pools` read caught-up state**. Each read
+  the node's own system replica as it stood, so an operator who set a quota
+  through the leader and read it back through a follower could see the old
+  value. Both now catch up first (a read index), as other reads do.
+
 - **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
   `ScopeApps`). An instance's package was taken from its component's bundle
   record, which names the first package installed with that WASM, so two
