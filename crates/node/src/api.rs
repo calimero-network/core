@@ -67,6 +67,8 @@ type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod account_proof;
 mod deprecation;
+#[cfg(test)]
+mod openapi;
 mod origins;
 mod passkeys;
 mod restore;

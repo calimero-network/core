@@ -166,6 +166,7 @@ export default defineConfig({
                 'operate/meroctl',
                 'operate/config',
                 { label: 'Node API', slug: 'operate/admin-api' },
+                { label: 'Node API (OpenAPI)', slug: 'operate/api-reference' },
                 { label: 'Authentication', slug: 'operate/auth' },
                 'operate/compatibility',
               ],

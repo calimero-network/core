@@ -1,0 +1,60 @@
+---
+title: Node API Reference (OpenAPI)
+description: Every public, account, app, organization and ops route of a merod node with its request and response schemas and error codes, generated from the node's code as an OpenAPI 3.1 document.
+sidebar:
+  label: Node API (OpenAPI)
+  order: 7
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import OpenApiReference from '../../../components/OpenApiReference.astro';
+
+This page is the node API as a machine-readable
+[OpenAPI 3.1 document](https://spec.openapis.org/oas/v3.1.0), rendered: every
+route of `router` in `crates/node/src/api.rs` outside `/internal/`, with its
+credential, parameters, request body, answer and error codes.
+[Node API](/core/operate/admin-api/) is the same API as an operator's overview
+with the `meroctl` command for each route.
+
+<Aside type="caution" title="Requests are sealed">
+  Only `GET /health` and `GET /attestation` travel in the clear. Every other
+  request goes inside the sealed channel (`calimero-sealed`, Noise NK) to the
+  transport key the node's attestation binds, after the client checked the
+  quote, and a TDX node refuses plain requests. A generic HTTP tool or a client
+  generated from this document therefore needs a sealing transport underneath:
+  `meroctl`, `calimero-client` (Rust), mero-js `CalimeroClient` or
+  calimero-client-py `CloudClient` already are one. A node started with `--dev`
+  also accepts plain requests, which is enough to try a route by hand.
+</Aside>
+
+## Where it comes from
+
+The document is `docs/public/openapi.json`, served beside this page as
+[`openapi.json`](/core/openapi.json). It is generated from the registry next to
+the router, `crates/node/src/api/openapi.rs`, and that registry's tests hold it
+to the code on every CI run:
+
+- every route `router` serves (outside `/internal/`) has exactly one entry, and
+  no entry names a route the router lacks;
+- each entry's request body and query are the ones its handler extracts
+  (`Json<T>`, `Option<Json<T>>`, `Query<T>` or raw bytes), with the same field
+  names as `T`; a sample of the shape deserializes into `T`, and a field is
+  optional in the document exactly when `T` accepts the body without it;
+- `additionalProperties: false` marks a body whose type refuses unknown fields;
+- every error code a handler raises with a literal code is listed for it;
+- a response schema the node answers by serializing a Rust type (an app record,
+  an API key, a package release reference, an organization and its teams, an
+  upgrade, `Access`, `Deployer`) names that type, and is held to it the same
+  way: the same field names, a sample read into the type writes back as a value
+  of the schema, and a field is optional exactly when the type may leave it out;
+- the committed `openapi.json` is what the registry builds now.
+
+The other response schemas, those a handler builds with `json!`, are written in
+the registry from the handlers' answers and are not checked against them. To
+change the API, change the handler and its entry, then regenerate:
+
+```bash
+UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
+```
+
+<OpenApiReference />
