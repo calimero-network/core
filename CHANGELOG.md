@@ -126,7 +126,8 @@
   app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
   instance by its release (`ScopeApps.by_release`), and giving a member every app
   added later (`SetAllApps`, or an invite with `allApps`), and restoring an app
-  from its backup (`RestoreApp`, `FinishRestore`). Once a version is logged, no node below it joins the
+  from its backup (`RestoreApp`, `FinishRestore`), and renaming an organization
+  (`RenameOrg`). Once a version is logged, no node below it joins the
   system group. A skipped undecodable entry now logs an error and counts in
   `calimero_log_undecodable_entries_total{log}`. Stored format:
   `SystemState.clusterVersion` is left out when unset; a node on an earlier

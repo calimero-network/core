@@ -5571,6 +5571,8 @@ async fn org_rename(
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_RENAME));
     }
     crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::RenameOrg]).await?;
     let consent = consent(
         &node,
         &p,

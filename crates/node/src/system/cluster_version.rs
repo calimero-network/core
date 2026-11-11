@@ -58,10 +58,13 @@ pub enum Feature {
     /// `RestoreApp` and `FinishRestore` (#4928): an earlier release cannot
     /// read them, so its replicas keep the app where it was.
     RestoreApp,
+    /// `RenameOrg` (#4913): an earlier release cannot read it, so its
+    /// replicas keep the old name.
+    RenameOrg,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 10] = [
+pub const FEATURES: [Feature; 11] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -72,6 +75,7 @@ pub const FEATURES: [Feature; 10] = [
     Feature::ScopeByRelease,
     Feature::AllApps,
     Feature::RestoreApp,
+    Feature::RenameOrg,
 ];
 
 impl Feature {
@@ -89,6 +93,7 @@ impl Feature {
             Self::ScopeByRelease => "scopeByRelease",
             Self::AllApps => "allApps",
             Self::RestoreApp => "restoreApp",
+            Self::RenameOrg => "renameOrg",
         }
     }
 
@@ -105,7 +110,8 @@ impl Feature {
             | Self::MoveAccountsAppTeam
             | Self::ScopeByRelease
             | Self::AllApps
-            | Self::RestoreApp => "1.0.0-rc.16",
+            | Self::RestoreApp
+            | Self::RenameOrg => "1.0.0-rc.16",
         }
     }
 }
@@ -317,6 +323,7 @@ impl SystemCmd {
             } => vec![Feature::TeamCloseDropsBelow],
             Self::SetAllApps { .. } => vec![Feature::AllApps],
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
+            Self::RenameOrg { .. } => vec![Feature::RenameOrg],
             Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
@@ -499,6 +506,12 @@ mod tests {
                 member_child_teams: true,
                 by_release: true,
                 all_apps_rows: false,
+            },
+            Feature::RenameOrg => SystemCmd::RenameOrg {
+                org: "org".into(),
+                name: "Renamed".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
             },
             Feature::RestoreApp => SystemCmd::FinishRestore {
                 app_id: "app".into(),
@@ -718,6 +731,7 @@ mod tests {
             Feature::ScopeByRelease,
             Feature::AllApps,
             Feature::RestoreApp,
+            Feature::RenameOrg,
         ] {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(refused.feature, feature);
