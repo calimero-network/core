@@ -1010,6 +1010,12 @@ fn operations() -> Vec<Op> {
             .ok("{ token: string }")
             .step_up()
             .errors(&[(400, "WRONG_CHALLENGE")]),
+        post("/orgs/{org}/name", "org_rename", Session, "Rename an organization")
+            .about("The owner or an admin, to a name that fits as a new organization's would; `412` first.")
+            .json::<super::RenameOrgBody>("{ name: string, confirm?: #Confirm }")
+            .ok("{ orgId: string, name: string }")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/all-apps", "org_all_apps", Session, "Give a member every app added later")
             .about("Or stop it (`allApps: false`); apps already there are not touched. The owner or an admin; `412` first.")
             .json::<super::AllAppsBody>("{ account: string, allApps: bool, confirm?: #Confirm }")
@@ -1629,6 +1635,7 @@ mod tests {
         ("origins::", include_str!("origins.rs")),
         ("account_proof::", include_str!("account_proof.rs")),
         ("crate::consent_page::", include_str!("../consent_page.rs")),
+        ("restore::", include_str!("restore.rs")),
     ];
 
     /// `(method, path, handler)` of every `.route(..)` in `router`.
