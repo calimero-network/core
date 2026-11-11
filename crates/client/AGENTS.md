@@ -83,6 +83,21 @@ retried on `503` with backoff; any other refusal (`413`, `429`) aborts the sessi
 Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
 the connection.
 
+Runtime and routes (`transport.rs`): `Transport` is everything that is not a
+route: the attested, sealed channel (`SealedTransport::attested`), the
+credential and the `401` refresh above, error mapping (`answer`, `api_error`,
+`sealed_error`), the `412 CONFIRM_REQUIRED` step-up (`Transport::confirmed`) and
+SSE decoding (`Transport::events`). Its route-facing surface is
+`send(Request) -> reqwest::Response` (any status), `json(Request)`,
+`confirmed(Request, passkey)` and `events(Request)`, where `Request` is method,
+path, query, headers, `Body` (`Empty`, `Json`, `Bytes`) and `Credential`
+(`Held`, the transport's own and refreshed; `Authorization`, a caller's value
+passed as given; `Anonymous`). `Client`'s methods are the hand-written route
+layer over it (`Client::transport`); a generated route layer goes through the
+same calls. `meroctl proxy` forwards plain HTTP through `Transport::send`.
+mero-js (`src/runtime/`) and calimero-client-py (`calimero/transport.py`) have
+the same split.
+
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash

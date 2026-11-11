@@ -31,3 +31,24 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: git diff --name-only --no-renames HEAD^1 HEAD | python3 scripts/check-trust-boundary.py
+
+  # A PR that says `Door: one-way` names its reader or declares its hard cutover; one that
+  # moves a format version says its door (scripts/check-compat-door.py; docs: compatibility).
+  compat-door:
+    name: Compatibility door
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test the check
+        run: python3 scripts/tests/check-compat-door-test.py
+
+      # HEAD is the PR merge commit, so its first parent is the base it merges into.
+      - name: Check the door the body declares
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: git diff HEAD^1 HEAD | python3 scripts/check-compat-door.py

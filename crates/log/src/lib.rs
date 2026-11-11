@@ -567,6 +567,21 @@ impl<M: Machine> Group<M> {
         snapshot_id: &str,
         path: &Path,
     ) -> eyre::Result<u64> {
+        self.sole_leader()?;
+        machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+    }
+
+    /// [`Self::replace_state`] for an in-memory machine: its whole state is
+    /// `data` (what [`Machine::snapshot`] answers) from now on, until a
+    /// snapshot ([`Self::snapshot_through`]) checkpoints it; a restart before
+    /// that replays the log from the checkpoint before. Refused unless this
+    /// node is the group's only voter and leads it.
+    pub fn replace_machine_data(&self, data: &[u8]) -> eyre::Result<()> {
+        self.sole_leader()?;
+        machine::replace_machine_data(&self.shared, data)
+    }
+
+    fn sole_leader(&self) -> eyre::Result<()> {
         let status = self.status();
         if !status.is_leader || status.voters != [self.node] || !status.learners.is_empty() {
             eyre::bail!(
@@ -574,7 +589,7 @@ impl<M: Machine> Group<M> {
                 self.id
             );
         }
-        machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+        Ok(())
     }
 
     /// Build a snapshot and wait, up to `timeout`, until the one this node

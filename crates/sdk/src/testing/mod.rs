@@ -7,6 +7,8 @@
 //! and resolves event audiences against the org when events are read (R9).
 
 mod directory;
+#[cfg(feature = "releases")]
+mod release;
 mod scenario;
 
 use std::collections::BTreeMap;
@@ -27,7 +29,9 @@ pub use calimero_app_host::{HttpRequest, HttpResponse, TrapKind};
 use crate::blob::BlobRef;
 
 pub use directory::{Org, ORG_ID, OWNER};
-pub use scenario::run_scenario;
+#[cfg(feature = "releases")]
+pub use release::release_component;
+pub use scenario::{run_migration, run_scenario};
 
 use directory::HarnessDir;
 
@@ -432,6 +436,29 @@ impl TestApp {
     /// Seeds the randomness of every later logged invocation; the same seed repeats a run.
     pub fn seed(&mut self, n: u64) {
         self.seed = n;
+    }
+
+    /// Switches the app to `component`, as a node's upgrade does: code only. The state,
+    /// org, clock, events, blobs and files stay as they are and no method runs (there is no
+    /// `#[app::migrate]` in this version), so every later call is the new code reading what
+    /// the old code stored. Start the test on an earlier release's component (feature
+    /// `releases`: `release_component` reads it from the release's `.mpk`) to test an
+    /// upgrade against the state that release wrote; [`run_migration`] does both around a
+    /// scenario file.
+    ///
+    /// # Errors
+    ///
+    /// `Refused { 400, "BAD_BUNDLE" }` when `component` cannot be prepared (a node refuses
+    /// such a release before it installs it); the app keeps its component.
+    pub fn upgrade(&mut self, component: &[u8]) -> Result<(), Failure> {
+        self.prepared = self
+            .engine
+            .prepare("test-component", component)
+            .map_err(|_| Failure::Refused {
+                status: 400,
+                code: "BAD_BUNDLE".to_owned(),
+            })?;
+        Ok(())
     }
 
     /// Runs the timer `method` for the slot at the current time; `previous` is the slot of

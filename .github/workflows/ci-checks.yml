@@ -103,14 +103,14 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain, upgrade-path]
+    needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
     runs-on: ubuntu-latest
     steps:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust","upgrade-path":"upgrade_path"}'
         run: |
           jq -e --argjson gates "$GATES" '
             .scope.outputs as $scope
@@ -296,6 +296,69 @@ jobs:
       - name: Cargo test (mock-attestation)
         if: ${{ !cancelled() }}
         run: cargo test -p calimero-tee-attestation --features mock-attestation -- --nocapture
+
+  # What earlier releases' clients, peers and apps rely on (docs: operate/compatibility): no
+  # route or JSON field of the API removed without a deprecation or a declared cutover, and
+  # no WIT or ABI change without its version (scripts/check-api-compat.py, against the base:
+  # the checkout is the PR's merge commit, so HEAD^1 is what it merges into).
+  compat:
+    name: Compatibility
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test the compatibility checks
+        run: |
+          python3 scripts/tests/check-api-compat-test.py
+          python3 scripts/tests/check-compat-door-test.py
+
+      - name: No route, field, WIT or ABI version dropped
+        run: |
+          # In CI the checkout is the merge commit; locally, the merge base with origin/master.
+          if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
+          python3 scripts/check-api-compat.py ${base:+--base "$base"}
+
+  # An app built and signed by the last published release (its SDK, WIT and mero-sign:
+  # the release's kv-store-test-fixture.mpk) installs, runs and upgrades on this tree's
+  # node: crates/node/tests/previous-release/kv-store.json on the in-process cluster.
+  previous-release:
+    name: Apps of the previous release
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    runs-on: big-machine
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # wasm32-wasip2: this tree's kv, which the scenario upgrades the release's app to.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-wasip2
+          shared-key: ci-checks
+          save-if: false
+
+      - name: Fetch the previous release's kv bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/fetch-release-app.py --out target/previous-release
+
+      - name: Run it on this tree's node
+        run: |
+          export PREVIOUS_RELEASE_DIR="$PWD/target/previous-release"
+          SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
+            cargo test -p calimero-node --test scenarios -- --test-threads 1
 
   rust-supply-chain:
     name: Rust supply chain

@@ -16,6 +16,18 @@
   it), and one of a later format applies as a no-op that names it. Nothing written
   so far changes: the snapshot and entry bytes are those of rc.15.
 
+- **Compatibility, written down and checked** (#4927). The policy and
+  matrix of what each release keeps for the releases, apps, clients and data before
+  it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
+  ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
+  the API removed unless `crates/node/api-deprecations.toml` deprecated it 3
+  releases before or declares a cutover; no WIT change without its version; no ABI
+  version dropped) and `Apps of the previous release` (the last release's signed
+  kv bundle installed, run and upgraded on this tree's node). A route the file
+  deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
+  policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
+  checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
+
 - **An admin turns on private channels for an app team made before #4906.**
   #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
   nothing changes an existing team's capabilities on replay. `POST
@@ -71,6 +83,24 @@
   before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
   until every node runs this release. Runbook: operate/runbooks "Restore an
   app", with backup schedule and RPO/RTO guidance.
+- **Found a cluster again from its backups, and recover from a lost system
+  majority**: backups now cover the system group (its leader writes
+  `{backup-dir}/system/`: accounts, organizations, teams, packages, the app
+  directory, governance), the code it names (`code/{hash}`, sealed under K_c)
+  and the cluster key K_c wrapped under each release's K_r
+  (`cluster-key/{release}`). `merod run --bootstrap --restore-from DIR`, on an
+  empty data directory, founds the cluster again under its own K_c, taken from
+  the copy its own K_r opens (a refusal names the releases that kept one): it
+  forms the system group alone, seeds it with the newest system backup with
+  the fleet replaced by `--peers` (`system::refound`), and the other nodes
+  join as learners; every app then waits for its own backup (`409
+  APP_RESTORING`) until `ops restore`. It refuses while a node of the old
+  cluster still answers at an address the new fleet does not reuse, or when
+  the governance or operator key differ from the backup's. `POST
+  /ops/backup?all=true` (`meroctl ops backup --all`) backs up every group a
+  node holds, leader or not: what the survivors of a lost system majority
+  found the cluster again from. Runbooks: "Found a cluster again from its
+  backups", "Disaster recovery: the system group lost its majority".
 
 - **Every app added later, for a member**: an organization member may hold a
   standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
