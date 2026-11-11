@@ -378,8 +378,9 @@ async fn backups_are_encrypted_and_restorable() {
         .unwrap();
     let leader = c.app_leader(&app).unwrap();
     let node = &c.nodes[leader].as_ref().unwrap().node;
+    // The app's snapshot, and the system group's when this node leads it too.
     let written = node.backup().await.unwrap();
-    assert_eq!(written, 1);
+    assert!(written >= 1, "{written}");
     let dir = node.config.backup_dir.clone().unwrap();
     let file = std::fs::read_dir(dir.join(&app))
         .unwrap()

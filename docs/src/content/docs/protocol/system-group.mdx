@@ -152,6 +152,13 @@ state every receipt key attests.
 The same leader registers the configured `--peers` as nodes. Genesis also
 records the operator's verify key (`--operator-key`) when one is configured.
 
+A cluster founded again from its backups (`--restore-from`) writes no
+genesis: its founder forms the system group alone and seeds it with the
+newest system backup, refused unless the governance and operator key it is
+configured with are the backup's; the state then names `--peers` as the
+fleet and every app waits for its own restore
+([Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups)).
+
 ## Job nodes in the directory
 
 `POST /ops/nodes` takes an optional `role`: `replica` (the default) or `job`.

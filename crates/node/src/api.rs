@@ -10832,12 +10832,26 @@ async fn ops_upgrade(
     .await
 }
 
-async fn ops_backup(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BackupQuery {
+    /// Every group this node holds, leader or not (`Node::backup_everything`).
+    #[serde(default)]
+    all: bool,
+}
+
+async fn ops_backup(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<BackupQuery>,
+) -> ApiResult {
     operator(&node, &headers)?;
-    let n = node
-        .backup()
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let n = if q.all {
+        node.backup_everything().await
+    } else {
+        node.backup().await
+    }
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(json!({ "written": n })))
 }
 
