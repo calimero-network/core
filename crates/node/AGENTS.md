@@ -95,9 +95,17 @@ is its command line.
   `__remove_member { account }`, `__set_team_member { team, account, lead,
   role, capabilities }`, `__remove_team_member { team, account }` (it takes
   the rows below the team too, `RemoveTeamMember { subtree }`),
+  `__set_team_members { account, teams }` and `__remove_team_members
+  { account, teams }` (one account's rows in up to `MAX_TEAM_BATCH` teams,
+  each judged by the single command's rule, all or nothing:
+  `SetTeamMembers`, `RemoveTeamMembers`, `system::team_members_args`,
+  `system::remove_team_members_args`),
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
+  `__set_all_apps { account, allApps }` (`Org::all_apps`: each app team made
+  after gives them a row; `all_apps_rows` on `ScopeApps`, `MoveApp`,
+  `UpdateTeam`),
   `__set_default_capabilities { capabilities }` (a team's: `{ team,
   capabilities }`, `system::default_capabilities_args`), `__create_invite`,
   `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
@@ -159,6 +167,23 @@ is its command line.
   replayed on restart) applies as it did, so replicas never diverge on it
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
   `old_datadir.rs`).
+- **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
+  a new command or field ships with a feature gate. Each log entry shape an
+  older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
+  named in the exhaustive `SystemCmd::features`); `Node::sys_write` refuses one
+  above the active cluster version `409 FEATURE_NOT_ACTIVE`
+  (`Node::require_features`, judged on `SystemState::cluster_version`, or on
+  what every node's `/health` `clusterVersion` says now when that is newer).
+  The system leader raises the logged version (`SetClusterVersion { version,
+  nodes }`, only forward, naming every registered node; `reconcile` ->
+  `raise_cluster_version`, at most every 10 s) once every node supports it,
+  and admits no node below it to the system group (`joins_at_cluster_version`).
+  Apply never reads it, so a log replays unchanged. A skipped undecodable
+  entry logs an error and counts in `calimero_log_undecodable_entries_total`.
+  Regressions: `system::cluster_version::tests`
+  (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
+  `an_entry_an_older_node_cannot_decode_splits_the_state`),
+  `the_cluster_version_rises_to_what_every_node_supports`.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
@@ -735,7 +760,9 @@ is its command line.
   while a member for an org app, or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
   `Account::passkey_labels` (`POST /auth/passkeys/{cred} { label }`).
   `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
-  and takes the org's teams, invites and apps. Ownership moves with
+  and takes the org's teams, invites and apps. `POST /orgs/{org}/name`
+  renames it (`RenameOrg`: owner or admin, passkey `__rename_org { name }`,
+  `system::org_name_fits`, as `CreateOrg { name_fits }` checks a new one). Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
 - **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
   `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
@@ -1050,7 +1077,12 @@ is its command line.
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
-  default (standalone teams it makes default to `INVITE_MEMBERS`); bounded by
+  default (standalone teams it makes default to `INVITE_MEMBERS`); a package's
+  `childTeams` (`ScopeApp::child_teams`) adds `CREATE_CHILD_TEAM` to (or takes
+  it from) its app team's default and the rows that set their own
+  capabilities, the only way an app team made before that default gets it
+  (regressions: `an_admin_lets_an_app_teams_members_make_channels`,
+  `system::tests::an_older_app_team_gets_child_teams_when_an_admin_turns_them_on`); bounded by
   `MAX_SCOPE_PACKAGES`, `MAX_SCOPE_INSTANCES`, `MAX_APP_TEAM_NAME_CHARS`.
   `GET /orgs/{org}/app-teams` (any member; a guest only theirs). `GET
   /orgs/{org}` filters members, capabilities, member metadata and team rows by
@@ -1067,7 +1099,40 @@ is its command line.
   app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
   (`rows::CIDEM`), events a ring of `EVENT_RING` (`rows::EVENT`). The system group
   stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the group's
-  sealed snapshot file; `backup::latest` opens one with K_c.
+  sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
+  group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
+  bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
+  `backup::find` checks one, `backup::latest` opens one with K_c.
+- **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
+  operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
+  signature (`backup::find`, `Found::check_release`, the bundle the backup's head
+  names still installed, `require_current_release`). `SystemCmd::RestoreApp` moves
+  the app to a new group with the receiving node first (`AppRecord.restore`, so
+  `ensure_app_group` forms it with that seed alone and `reconcile` never inits it);
+  the seed `Group::replace_state`s the backup into it (rows opened and sealed again
+  for the new group, hidden keys re-hidden), appends `componentRestored` (sets
+  `ComponentHead::id_term_base` past every restored id term: the new group's terms
+  restart at 1, D52), `snapshot_through` + `purge_log_through` that entry so the
+  others can only catch up from that snapshot, adds them as learners, makes them
+  voters and logs `FinishRestore`. Calls and views answer `409 APP_RESTORING`
+  meanwhile (`restore::refuse_while_restoring`). The old group's files are kept
+  (`reconcile` drops a stopped group's files only for a deleted app). Tests:
+  `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
+  (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
+- **Founding again** (`--restore-from DIR` with `--bootstrap`, `Node::refound`): backups
+  also hold the system group (`backup::SYSTEM`, written by its leader, or by every node
+  with `ops/backup?all=true`), the code it names (`backup::keep_code`, sealed under
+  `HMAC(K_c, "calimero.backup.code.v1")`) and K_c wrapped under each release's K_r
+  (`backup::keep_cluster_key`). `cluster_key::resolve` takes K_c from the copy this
+  node's K_r opens (`backup::cluster_key_from`); `Node::start` forms the system group
+  with the founder alone; `reconcile` (empty state) calls `refound`: governance and
+  operator key must match the backup's, no old replica node may still answer at an
+  address `--peers` does not reuse, then `Group::replace_machine_data` with the state
+  `system::refound` made (fleet = `--peers`, every app `PendingRestore::AWAITING_BACKUP`,
+  hosted nowhere), `snapshot_through` + `purge_log_through`; the other peers join as
+  registered learners. Tests: `a_cluster_is_founded_again_from_its_backups`,
+  `a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor`,
+  `a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -1500,8 +1565,7 @@ API and system group:
 ## Not done yet
 
 keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
-rollback epoch in the attested KMS evidence, snapshot restore into a
-running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
+rollback epoch in the attested KMS evidence, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 

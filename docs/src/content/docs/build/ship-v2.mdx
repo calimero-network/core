@@ -1,0 +1,294 @@
+---
+title: Ship v2 of your app
+description: Change an app's state, test the new code against the state your last release wrote, publish the release, and upgrade one instance and then a whole organization - with what to do about each refusal.
+sidebar:
+  order: 3
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Your app is live and people have data in it. This tutorial ships its next
+release: a change to what it stores, tested against the state the shipped
+release wrote, published, and rolled out to one instance and then to an
+organization. It follows `apps/kv-store`, a string key-value store, which the
+running example extends with the time each key was last written.
+
+## What an upgrade does
+
+An upgrade switches an instance to another release's code and keeps its state.
+It is one entry in the app's own log: from that index on, the leader runs the
+new component against the keys the old one wrote, and nothing runs at the
+switch ([Upgrades & migrations](/core/protocol/upgrades/) covers who may
+upgrade and organization-wide runs).
+
+<Aside type="caution" title="No migrations in this version">
+  `calimero-sdk` has no `#[app::migrate]` and the node runs no migration
+  during an upgrade: an upgrade that names one (`migrate`) is refused
+  (`MigrationsNotSupported`, below). The new code reads what the old code
+  stored, so a release changes its state by adding to it, never by rewriting
+  it in place ([Upgrades & state](/core/build/migrations/)).
+</Aside>
+
+So the work of shipping v2 is in three places: the state change has to be one
+the new code can read alongside the old, a test has to prove it on real old
+state, and the rollout has to get past the cluster's checks.
+
+## 1. Keep the release you shipped
+
+The state your users have was written by the bundle you published, so that
+bundle is what the test runs. Commit it beside the crate the day you publish:
+
+```bash
+mkdir -p releases
+cp dist/com.example.kv-store-1.0.0.mpk releases/1.0.0.mpk
+```
+
+`apps/kv-store/releases/0.1.0.mpk` is core's copy for the example app. Keep a
+release's `.mpk` for as long as an instance may still run it.
+
+## 2. Change the state
+
+v1 keeps one map:
+
+```rust
+#[app::state(version = 1)]
+pub struct KvStore {
+    entries: UnorderedMap<String, String>,
+}
+```
+
+v2 records when each key was last written. The safe change is a new field:
+a new field is a new key range, empty until written, so v1's keys are where v2
+looks for them and v2's new keys are where v1 never looked.
+
+```rust
+#[app::state(version = 2)]
+pub struct KvStore {
+    entries: UnorderedMap<String, String>,
+    /// When each key was last written (ms); keys written by 1.0.0 have none.
+    updated_at: UnorderedMap<String, u64>,
+}
+
+pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+    let _old = self.updated_at.insert(&key, &env::time_now())?;
+    // .. as before
+}
+
+/// When `key` was last written, or `null` for a key 1.0.0 wrote and nothing since.
+#[app::view]
+pub fn updated_at(&self, key: String) -> app::Result<Option<u64>> {
+    Ok(self.updated_at.get(&key)?)
+}
+```
+
+Bump `version` whenever the state's shape changes: it is in the ABI, and the
+consent page shows the change to whoever approves the upgrade.
+
+What v2 must not do is rename `entries`, change its key or value type, or
+change a record's fields: the old rows would sit under the old name, or no
+longer decode, and every call that reads them would fail or see nothing. When
+a shape really has to change, **expand, then contract**: add the new field
+beside the old one, have every write go to the new one (removing the key from
+the old), have every read try the new one and then the old one, and remove the
+old field only in a release after every instance has rewritten its data.
+
+```rust
+pub fn get(&self, key: String) -> app::Result<Option<Entry>> {
+    if let Some(e) = self.records.get(&key)? {
+        return Ok(Some(e));
+    }
+    Ok(self.entries.get(&key)?.map(Entry::from_v1))
+}
+```
+
+## 3. Write the migration scenario
+
+A migration scenario is an ordinary [scenario](/core/build/testing/#scenarios)
+with one `{ "op": "upgrade" }` step: the steps before it run on the shipped
+release and write state, the steps after it run on the build under test and
+read it back. Saved variables (`"save"`) carry across the upgrade.
+
+`migrations/1.0.0.json`:
+
+```json
+[
+  { "as": "owner", "op": "call", "method": "set", "args": { "key": "a", "value": "1" } },
+  { "as": "bob", "op": "call", "method": "set", "args": { "key": "gone", "value": "x" } },
+  { "as": "owner", "op": "call", "method": "remove", "args": { "key": "gone" } },
+  { "op": "upgrade" },
+  { "as": "bob", "op": "view", "method": "entries", "args": {}, "expect": { "ok": { "a": "1" } } },
+  { "as": "bob", "op": "view", "method": "updatedAt", "args": { "key": "a" }, "expect": { "ok": null } },
+  { "as": "bob", "op": "call", "method": "set", "args": { "key": "a", "value": "2" } },
+  { "as": "bob", "op": "view", "method": "len", "args": {}, "expect": { "ok": "1" } }
+]
+```
+
+Test the paths users take: read what v1 wrote, overwrite it, delete it, and
+read what v1 deleted. `migrations/1.0.0.org.json` names the organization, as
+`scenarios/<name>.org.json` does.
+
+`tests/migrations.rs` runs every file in `migrations/` against the matching
+release (copy it from `apps/kv-store/tests/migrations.rs`):
+
+```rust
+use calimero_sdk::testing::{release_component, run_migration};
+
+#[test]
+fn every_release_upgrades_to_this_build() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for path in common::scenarios_in(&dir.join("migrations")) {
+        let version = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let mpk = std::fs::read(dir.join("releases").join(format!("{version}.mpk"))).unwrap();
+        let old = release_component(&mpk, None).unwrap();
+        run_migration(&old, common::component(), common::org_of(&path), common::T0, &path)
+            .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+    }
+}
+```
+
+with `calimero-sdk`'s `releases` feature on the dev-dependency
+(`features = ["testing", "releases"]`). `release_component` checks the
+bundle's signature and digest as a node does, so the test runs exactly the
+code your users run.
+
+## 4. Run it
+
+```bash
+cargo test --test migrations
+```
+
+A change v2 cannot read fails at the first step that reads it. Renaming
+`entries` in the example app, for instance:
+
+```text
+migrations/0.1.0.json: step 5: {"as":"bob","method":"entries","op":"view",..}:
+expected ok {"a":"1","b":"2"}, got Ok(Object {})
+```
+
+The data is still in the instance under the old name; v2 simply does not look
+there. Fix the code, not the scenario.
+
+<Aside type="tip">
+  The harness runs the real component on the real engine, as
+  [Testing apps](/core/build/testing/) describes. For node-level behaviour
+  around an upgrade (who may approve it, an organization-wide run), a cluster
+  scenario uses `deploy`, `install_package` and `upgrade_app`
+  ([Testing strategy](/core/contribute/testing/#cluster-scenarios)).
+</Aside>
+
+## 5. Publish v2
+
+Build, sign with **the same key** as v1 (another key makes another
+application, not an upgrade) and publish, as in
+[Packaging & signing](/core/build/packaging-signing/):
+
+```bash
+mero-app-build . --out kv-store.wasm
+python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.kv-store \
+  --app-version 2.0.0 --key my-signing-key.json --out dist/com.example.kv-store-2.0.0.mpk
+cp dist/com.example.kv-store-2.0.0.mpk releases/2.0.0.mpk   # the next release tests against it
+```
+
+Then publish it to the cluster's registry; a node installs it from there on
+the first upgrade that names it. On a development cluster,
+`meroctl app install --path dist/com.example.kv-store-2.0.0.mpk` uploads it.
+
+## 6. Upgrade one instance
+
+Upgrade one instance first, yours or a test organization's, and use it:
+
+<Steps>
+
+1. Upgrade it. Whoever the package's manifest names approves with a passkey:
+   the owner (or `MANAGE_APPLICATION` in its organization), or the publisher's
+   holders for a `publisher` package.
+
+   ```bash
+   meroctl context update <app-id> --version 2.0.0
+   ```
+
+   This is `POST /apps/{app}/upgrade { version }`; the node answers
+   `412 CONFIRM_REQUIRED` and `meroctl` signs the challenge, which covers the
+   target WASM's hash and the release's signed manifest. From CI, an
+   [upgrade key](/core/cloud/deploy-from-ci/) signs instead.
+
+2. Check what it runs now: `meroctl context get <app-id>` shows the release,
+   and `GET /auth/apps` (or `/orgs/{org}/apps`) the newer releases it may move
+   to.
+
+3. Call it. The reads your migration scenario made are the ones to try by
+   hand: old keys read back, `updatedAt` is `null` for them until written.
+
+</Steps>
+
+## 7. Upgrade the organization
+
+An organization-wide run upgrades every instance of the package in the
+organization (or in one team, with `--cascade` its subtree) under one passkey
+approval:
+
+```bash
+meroctl group upgrade trigger <org> --package com.example.kv-store --version 2.0.0
+meroctl group upgrade status <org> <run>
+meroctl group upgrade retry <org> <run>     # the failed instances, as a new run
+```
+
+The run (`POST /orgs/{org}/upgrade`, `GET /orgs/{org}/upgrades/{run}`) lists
+the apps it targets, those `done` and, under `failed`, each failed app's
+refusal. An app whose current component is the target's (a release that
+changes only the frontend) is recorded on the new release without running
+anything; a failure leaves that app on its release and the rest of the run
+goes on. The operator runs the same
+upgrade with `meroctl ops upgrade-namespace` where it holds app upgrades.
+
+## Troubleshooting
+
+[Upgrades & migrations](/core/protocol/upgrades/#planning-the-migration)
+describes a migration plan made from the two releases' ABIs. In this version
+the node makes no plan: every upgrade is code only, so each row of that table
+ends as follows.
+
+| Plan-table row | What happens now | What to do |
+| --- | --- | --- |
+| Same state version | Code-only switch | Nothing |
+| One version up | Code-only switch: no `#[app::migrate]` edge runs | Make the change additive (step 2) and prove it (step 3) |
+| Down | Not refused: the code switches back and reads the state the newer release left | See [Rolling back](#rolling-back) |
+| More than one version up | Not refused: a code-only switch | Test from every release still in use (one file per release in `migrations/`) |
+| One up, no edge from the current version | Not refused: a code-only switch | As one version up |
+| One side embeds an ABI and the other does not | Every component embeds its ABI | Nothing |
+| The request names `migrate` | Refused: `422 UPGRADE_FAILED`, `details.error.code` `MigrationsNotSupported` | Leave `migrate` (`--migrate`) out |
+
+The refusals an upgrade meets before it runs, and after:
+
+| Refusal | Why | What to do |
+| --- | --- | --- |
+| `412 CONFIRM_REQUIRED` | The step-up: not an error | Approve with a passkey (`meroctl` does), or use an upgrade key |
+| `403 FORBIDDEN` "upgrading this app needs whoever its package names" | The caller is not the owner, holds no `MANAGE_APPLICATION`, or is not the publisher's holder for a `publisher` package | Ask whoever the manifest's `upgrades` names |
+| `403 FORBIDDEN` "decided by its operator" | The cluster's governance gives app upgrades to the operator | The operator upgrades (`POST /ops/apps/{app}/upgrade`) |
+| `403 FORBIDDEN` "not moved to a release its publisher upgrades" | v1 is an `owner` release and v2 a `publisher` one | Keep `upgrades` as it was; a package moves only from `publisher` to `owner` |
+| `409 CONFLICT` "no organization has bound its key yet" | A `publisher` package whose signing key no organization bound | Bind it: `POST /orgs/{org}/publishers` |
+| `400 REJECTED` "unknown bundle" | A `bundle` hash the caller may not see, or not on the cluster | Name the release (`--version`), or install it first |
+| `400 VERSION_REQUIRED` | An upgrade key named no version | Pass `--version` |
+| `400 BAD_BUNDLE` | The release's component does not prepare on this node | Rebuild with the cluster's `calimero-sdk`; run `cargo test` first |
+| `409 RELEASE_DEADLINE` | The target release needs a mero-tee release the instance's approver has not approved past its deadline | Approve a current release (`account approve-release`, `namespace approve-release`) |
+| `422 UPGRADE_FAILED`, `RUN_NEEDS_RESULT_METHOD` | A compute run in progress will call a result method v2 no longer declares | Keep the method in v2, or wait for the run to end |
+| Calls fail or read nothing after the upgrade | v2 cannot read what v1 stored | Roll back, fix the state change, and add the case to `migrations/` |
+
+## Rolling back
+
+An upgrade back to the previous release is an upgrade like any other
+(`meroctl context update <app-id> --version 1.0.0`), approved the same way. It
+switches the code and keeps the state: whatever v2 wrote into its new fields
+stays there, unread by v1, and is read again if v2 comes back. A v2 that wrote
+into an old field in a shape v1 cannot decode is the one case a rollback does
+not undo, which is why a release only ever adds fields.
+
+## Several releases in use
+
+An instance can skip releases, so v3 must read what v1 wrote as well as what
+v2 wrote. Keep every release's `.mpk` and migration scenario while an instance
+may still run it: `releases/1.0.0.mpk`, `releases/2.0.0.mpk`,
+`migrations/1.0.0.json`, `migrations/2.0.0.json`, and the same test runs each
+against the build. `GET /ops/apps` and `GET /orgs/{org}/apps` show which
+release each instance runs, so you know when the last one moved and the old
+field can go.

@@ -11,7 +11,10 @@
 //!
 //! - The founding node (`--bootstrap`) takes its own K_r as K_c, and so does a
 //!   node whose store was written before K_c existed: its data is sealed under
-//!   K_r, which was then the cluster's one key, so nothing on disk changes.
+//!   K_r, which was then the cluster's one key, so nothing on disk changes. A
+//!   node founding a cluster again from its backups (`--restore-from`) takes
+//!   the cluster's own K_c from the copy kept there for its release
+//!   (`backup::cluster_key_from`).
 //! - Every node keeps K_c wrapped under its own K_r ([`FILE`] in the data
 //!   directory) and unwraps it at each start; a K_r that does not open it (the
 //!   same disk booted on another release's KMS) stops the node.
@@ -187,10 +190,21 @@ pub async fn resolve(
         return Ok((k, listener));
     }
     let existing = calimero_log::store::store_path(&config.data_dir).exists();
-    let (key, listener) = if config.bootstrap || existing {
-        (config.storage_key, listener)
-    } else {
-        receive(config, listener).await?
+    let (key, listener) = match &config.restore_from {
+        // Founding the cluster again: its own K_c, from a copy this node's K_r opens.
+        Some(dir) if config.bootstrap && !existing => (
+            crate::backup::cluster_key_from(dir, &config.storage_key)?,
+            listener,
+        ),
+        Some(_) if !config.bootstrap => {
+            bail!("--restore-from founds a cluster again: it needs --bootstrap")
+        }
+        Some(_) => bail!(
+            "--restore-from founds a cluster on an empty data directory; {} holds a store",
+            config.data_dir.display()
+        ),
+        None if config.bootstrap || existing => (config.storage_key, listener),
+        None => receive(config, listener).await?,
     };
     save(&config.data_dir, &config.storage_key, &key)?;
     Ok((key, listener))

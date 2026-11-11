@@ -36,6 +36,7 @@ use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
+use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
     deployment_id, deployment_name_fits, deployment_segment_fits, Deployer, Deployers, Deployment,
     Deployments, PackageRef, RefreshGrant, SignUp, SignUpInvite, SystemCmd, SystemState, OPERATOR,
@@ -64,8 +65,10 @@ const AMBIGUOUS_COMPUTE: &str = "AMBIGUOUS_COMPUTE";
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod account_proof;
+mod deprecation;
 mod origins;
 mod passkeys;
+mod restore;
 
 /// A ceremony a node started. Its id names that node (`{node}.{random}`): the
 /// ceremony may finish on any node, which takes the challenge from the one that
@@ -763,6 +766,9 @@ async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
         "node": node.config.node_id,
         "systemLeader": s.leader,
         "release": node.config.release,
+        // The newest cluster version this build supports: what the system
+        // leader raises the cluster version by (`system::cluster_version`).
+        "clusterVersion": crate::system::cluster_version::supported(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
         "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),
@@ -3445,6 +3451,7 @@ async fn app_create(
                 deployment: body.deployment,
                 compute_bundle,
                 release,
+                restore: None,
             }),
         })
         .await?;
@@ -5311,6 +5318,7 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = person(&node, &headers).await?.account()?;
+    crate::system::org_name_fits(&body.name).map_err(malformed)?;
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
@@ -5320,6 +5328,7 @@ async fn org_create(
             release: Some(node.own_release()),
             recovery_key: body.recovery_key,
             at: recovery_now(&node),
+            name_fits: true,
         })
         .await?;
     Ok(Json(v))
@@ -5357,6 +5366,9 @@ async fn org_get(
                 }
             }
         }
+    }
+    if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
+        m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
     }
     for field in ["members", "capabilities", "memberMetadata"] {
         if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
@@ -5483,6 +5495,9 @@ async fn app_move(
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::MoveApp, Feature::MoveAccountsAppTeam])
+        .await?;
     let args = crate::system::move_app_args(&body.to_org, body.bring_members);
     let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
     Ok(Json(
@@ -5493,6 +5508,7 @@ async fn app_move(
             consent,
             bring_members: body.bring_members,
             nonce: b64url(&random::<16>()),
+            all_apps_rows: true,
             accounts_in_app_team: true,
         })
         .await?,
@@ -5532,6 +5548,109 @@ async fn org_delete(
         })
         .await?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameOrgBody {
+    name: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Rename an organization: its owner's or an admin's, with a passkey
+/// assertion over the new name (a 412 asks for it), to a name that fits as a
+/// new organization's must. Judged on fresh state; `404` outside it.
+async fn org_rename(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<RenameOrgBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let Some(role) = role else {
+        return Err(ApiError::not_found("no such organization"));
+    };
+    if role < OrgRole::Admin {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_RENAME));
+    }
+    crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::RenameOrg]).await?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__rename_org",
+        &json!({ "name": body.name }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::RenameOrg {
+            org,
+            name: body.name,
+            actor,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AllAppsBody {
+    account: String,
+    all_apps: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Give a member every app added to the organization from now on, or stop
+/// it (`SystemCmd::SetAllApps`): the owner's or an admin's, with a passkey
+/// assertion over exactly that (a 412 asks for it). Judged on fresh state;
+/// `404` outside the organization.
+async fn org_all_apps(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<AllAppsBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let Some(role) = role else {
+        return Err(ApiError::not_found("no such organization"));
+    };
+    if role < OrgRole::Admin {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
+    }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AllApps]).await?;
+    let args = crate::system::all_apps_args(&body.account, body.all_apps);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__set_all_apps",
+        &args,
+        body.confirm,
+    )
+    .await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetAllApps {
+            org,
+            account: body.account,
+            all_apps: body.all_apps,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
 }
 
 async fn org_metadata(
@@ -5751,6 +5870,88 @@ async fn team_set_member(
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TeamRowsBody {
+    teams: Vec<crate::system::TeamRow>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TeamIdsBody {
+    teams: Vec<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// A batch of teams the API refuses before asking for a passkey (as
+/// `SetTeamMembers` and `RemoveTeamMembers` judge it again where they apply).
+fn team_batch<'a>(teams: impl ExactSizeIterator<Item = &'a str>) -> Result<(), ApiError> {
+    crate::system::check_team_batch(teams).map_err(|e| ApiError::bad_request("BAD_TEAMS", e))
+}
+
+/// `account`'s rows in several teams of `org` at once (`SystemCmd::SetTeamMembers`),
+/// with one passkey (412 first): each team judged as `POST
+/// /orgs/{org}/teams/{team}/members` would judge it, and none set unless
+/// every one may be.
+async fn member_set_teams(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, account)): Path<(String, String)>,
+    Json(body): Json<TeamRowsBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
+    let args = crate::system::team_members_args(&account, &body.teams);
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
+    let consent = org_consent(&node, &p, &org, "__set_team_members", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetTeamMembers {
+            org,
+            account,
+            teams: body.teams,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// Take `account` out of several teams of `org` at once, or leave them
+/// (`account` = oneself; `SystemCmd::RemoveTeamMembers`), with one passkey
+/// (412 first): each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`
+/// would judge it, the rows below included, and none taken unless every one
+/// may be.
+async fn member_remove_teams(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, account)): Path<(String, String)>,
+    Json(body): Json<TeamIdsBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    team_batch(body.teams.iter().map(String::as_str))?;
+    let args = crate::system::remove_team_members_args(&account, &body.teams);
+    let method = "__remove_team_members";
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::TeamMembersBatch]).await?;
+    let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::RemoveTeamMembers {
+            org,
+            account,
+            teams: body.teams,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
 /// A team as `account` may see it: its record, its members with their roles,
 /// the teams below it they see, and its apps. `None` when they may not see it
 /// (a restricted team they are not in looks like no team at all).
@@ -5854,6 +6055,7 @@ async fn team_update(
             parent: body.parent,
             metadata: body.metadata,
             actor,
+            all_apps_rows: true,
             close_drops_below: true,
         })
         .await?;
@@ -6019,6 +6221,9 @@ struct InviteBody {
     ttl_secs: Option<u64>,
     #[serde(default)]
     uses: Option<u32>,
+    /// Whoever redeems it also gets every app added later (an admin's).
+    #[serde(default)]
+    all_apps: bool,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
@@ -6035,6 +6240,13 @@ async fn invite_create(
 ) -> ApiResult {
     let p = person(&node, &headers).await?;
     let actor = p.account()?;
+    if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
+    }
+    if body.all_apps {
+        // Before the passkey step-up: an earlier release would drop the flag.
+        node.require_features(&[Feature::AllApps]).await?;
+    }
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),
@@ -6044,6 +6256,7 @@ async fn invite_create(
         uses_left: body.uses.unwrap_or(1).max(1),
         created_by: actor.clone(),
         created_at: now_secs(),
+        all_apps: body.all_apps,
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
@@ -6126,6 +6339,7 @@ fn invite_json(key: &str, inv: &Invite, now: u64) -> Value {
         "expired": inv.expires_at <= now,
         "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
         "createdAt": (inv.created_at != 0).then_some(inv.created_at),
+        "allApps": inv.all_apps,
     })
 }
 
@@ -6273,6 +6487,10 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
+    // The API always sets `by_release` (#4931).
+    let mut features = scope_app_features(body.apps.as_deref());
+    features.push(Feature::ScopeByRelease);
+    node.require_features(&features).await?;
     let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
     let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
     Ok(Json(
@@ -6286,6 +6504,7 @@ async fn app_teams_scope(
             owner_in_team: true,
             accounts_in_app_team: true,
             member_child_teams: true,
+            all_apps_rows: true,
             by_release: true,
         })
         .await?,
@@ -8313,8 +8532,11 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             json!({ "id": id, "zone": zone, "role": role, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
+    // The logged cluster version (`null` until the system leader logs one):
+    // a rollout is finished for the system log once it is the new release's.
+    let cluster_version = node.sys(|s| s.cluster_version.clone());
     Ok(Json(
-        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
+        json!({ "fresh": fresh, "apps": apps, "nodes": nodes, "clusterVersion": cluster_version }),
     ))
 }
 
@@ -8945,6 +9167,8 @@ async fn ops_pools_set(
 /// The pools and the runs each takes at once.
 async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
+    // An operator reads back what it just set, through any node.
+    let _caught_up = node.sys_fresh().await;
     Ok(Json(node.sys(|s| {
         let capacity: std::collections::BTreeMap<&String, usize> =
             s.pools.keys().map(|p| (p, s.pool_capacity(p))).collect();
@@ -8954,6 +9178,8 @@ async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
 
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
+    // An operator reads back what it just set, through any node.
+    let _caught_up = node.sys_fresh().await;
     let (quotas, orgs) = node.sys(|s| (s.quotas.clone(), s.org_quotas.clone()));
     let mut shown = serde_json::to_value(quotas).unwrap_or_default();
     shown["orgs"] = serde_json::to_value(orgs).unwrap_or_default();
@@ -9015,6 +9241,12 @@ async fn ops_org_quotas_set(
 /// (`Node::nodes_behind_release`). Today: a non-zero `maxFuelPerDeveloperPerDay`. One
 /// code for every such gate, so the version gate on new entry shapes can share it.
 pub const UPGRADE_PENDING: &str = "UPGRADE_PENDING";
+
+/// `409`: a command (or a field of one) that a node of the cluster does not
+/// support yet, refused before it is proposed, so no node skips an entry the
+/// others apply (`system::cluster_version`). The message names the feature and
+/// the version it needs; `details` is `{ feature, needs, active }`.
+pub const FEATURE_NOT_ACTIVE: &str = "FEATURE_NOT_ACTIVE";
 
 /// Change the limits the body names; the others stay as they are. A key that
 /// names no limit is refused (a typo would otherwise change nothing silently).
@@ -10607,12 +10839,26 @@ async fn ops_upgrade(
     .await
 }
 
-async fn ops_backup(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BackupQuery {
+    /// Every group this node holds, leader or not (`Node::backup_everything`).
+    #[serde(default)]
+    all: bool,
+}
+
+async fn ops_backup(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<BackupQuery>,
+) -> ApiResult {
     operator(&node, &headers)?;
-    let n = node
-        .backup()
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let n = if q.all {
+        node.backup_everything().await
+    } else {
+        node.backup().await
+    }
+    .map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(json!({ "written": n })))
 }
 
@@ -10698,6 +10944,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
+        .route("/orgs/{org}/name", post(org_rename))
         .route("/orgs/{org}/metadata", post(org_metadata))
         .route("/orgs/{org}/usage", get(org_usage))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
@@ -10706,9 +10953,14 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/members/{account}/metadata", post(member_metadata))
         .route("/orgs/{org}/members", get(org_members).post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
+        .route(
+            "/orgs/{org}/members/{account}/teams",
+            post(member_set_teams).delete(member_remove_teams),
+        )
         .route("/orgs/{org}/teams", post(team_create))
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
+        .route("/orgs/{org}/all-apps", post(org_all_apps))
         .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/publishers/{signer}", get(publisher_binding))
@@ -10789,6 +11041,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/nodes/{id}/receipt-key", get(account_proof::ops_receipt_key))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
+        .route("/ops/apps/{app}/restore", post(restore::ops_restore))
         .route("/ops/releases", post(ops_release))
         .route(
             "/ops/releases/{version}/deadline",
@@ -10832,6 +11085,8 @@ pub fn router(node: Arc<Node>) -> Router {
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.
         .route_layer(axum::middleware::from_fn(crate::metrics::track))
+        // `Deprecation` on the routes `api-deprecations.toml` deprecates (docs: compatibility).
+        .route_layer(axum::middleware::from_fn(deprecation::mark))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(
             calimero_sealed::server::MAX_SEALED_BYTES,

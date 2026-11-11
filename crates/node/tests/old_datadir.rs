@@ -49,6 +49,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         metrics_listen: None,
         replicas: 1,
         backup_dir: None,
+        restore_from: None,
         raft: calimero_log::Config {
             heartbeat_ms: 100,
             election_min_ms: 500,
@@ -201,6 +202,7 @@ async fn a_data_directory_from_before_components_opens_and_its_sdk_0_12_app_runs
             consent: Value::Null,
             bring_members: false,
             nonce: String::new(),
+            all_apps_rows: true,
             accounts_in_app_team: true,
         })
         .await

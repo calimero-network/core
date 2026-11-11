@@ -38,6 +38,7 @@ use calimero_app_host as host;
 use calimero_log::{Bytes, GroupState, StateTx};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::error;
 
 use crate::app::{rows, AppMachine, Status, Write};
 use crate::component::action::{ActionOut, ActionRecord, ActionsHead};
@@ -638,6 +639,14 @@ pub enum ComponentCmd {
         dead: Option<String>,
         ts_ms: u64,
     },
+    /// The app's state was just restored from a backup into this group (the
+    /// seed's first entry after it, `crate::node::restore`): ids continue past
+    /// every term the restored state carries ([`ComponentHead::id_term_base`]).
+    #[serde(rename = "componentRestored")]
+    Restored {
+        /// The old group's log index the backup was taken at.
+        from_index: u64,
+    },
     /// The leader collected the bytes of blobs the app forgot (idle past their time):
     /// they leave the queue.
     #[serde(rename = "componentBlobsCollected")]
@@ -774,6 +783,13 @@ pub struct ComponentHead {
     /// restart continues after it instead of reusing an id.
     #[serde(default)]
     pub last_id: (u64, u64),
+    /// What the leader adds to its Raft term to make a run's `id_term`: a
+    /// state restored from a backup into a new group (`componentRestored`)
+    /// carries ids made in the old group's terms, and the new group's terms
+    /// start again at 1, so its ids continue past the highest term restored.
+    /// Zero for a group never restored, and left out then.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub id_term_base: u64,
     /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
     #[serde(default)]
     pub install_ts_ms: u64,
@@ -1323,7 +1339,8 @@ impl AppMachine {
                 | ComponentCmd::BlobRevoke { .. }
                 | ComponentCmd::BlobsCollected { .. }
                 | ComponentCmd::ComputeAttempt(_)
-                | ComponentCmd::Barrier,
+                | ComponentCmd::Barrier
+                | ComponentCmd::Restored { .. },
             )
             | Err(_) => None,
         };
@@ -1473,6 +1490,11 @@ impl AppMachine {
                 a
             }
             Ok(ComponentCmd::Barrier) => host_answer(index, true, ""),
+            Ok(ComponentCmd::Restored { .. }) => {
+                let head = &mut self.state.component.head;
+                head.id_term_base = head.id_term_base.max(head.last_id.0);
+                host_answer(index, true, "")
+            }
             Ok(ComponentCmd::ComputeAttempt(attempt)) => {
                 self.apply_compute_attempt(tx, index, &attempt)
             }
@@ -1534,15 +1556,22 @@ impl AppMachine {
                     ..host_answer(index, true, "")
                 }
             }
-            Err(e) => Applied {
-                index,
-                status: Status::Trap,
-                result: Value::Null,
-                error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
-                events: Vec::new(),
-                conflict: true,
-                timeout: false,
-            },
+            Err(e) => {
+                // As in the system log (`system::cluster_version`): a feature gate keeps
+                // every entry within what each replica applies, so this is a bug.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
+                error!(index, error = %e, undecodable = n,
+                    "an app entry this node cannot decode was skipped: its state now differs from the replicas that applied it");
+                Applied {
+                    index,
+                    status: Status::Trap,
+                    result: Value::Null,
+                    error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
+                    events: Vec::new(),
+                    conflict: true,
+                    timeout: false,
+                }
+            }
         };
         self.expire_component(tx, entry_ts_ms);
         if let Some(now) =
@@ -2487,6 +2516,35 @@ mod tests {
             (5, 9),
             "a lower id does not lower it"
         );
+    }
+
+    /// A restore's first entry moves the base of the ids past every term the
+    /// restored state carries, so the new group's term 1 never reissues them;
+    /// it never lowers a base already there.
+    #[test]
+    fn a_restored_state_makes_ids_past_its_highest_term() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let mut cmd: ComponentCmd = serde_json::from_slice(&call(1, None, Vec::new())).unwrap();
+        if let ComponentCmd::Call(c) = &mut cmd {
+            c.id_term = 5;
+            c.id_seq = 9;
+        }
+        let _a = r.apply(2, &serde_json::to_vec(&cmd).unwrap());
+        assert_eq!(r.machine.state.component.head.id_term_base, 0);
+        let restored = serde_json::to_vec(&ComponentCmd::Restored { from_index: 2 }).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&restored).unwrap()["op"],
+            "componentRestored"
+        );
+        let a = r.apply(3, &restored);
+        assert_eq!(a.status, Status::Ok);
+        assert_eq!(r.machine.state.component.head.id_term_base, 5);
+        let head = serde_json::to_value(&r.machine.state.component.head).unwrap();
+        assert_eq!(head["idTermBase"], 5);
+        r.machine.state.component.head.id_term_base = 8;
+        let _a = r.apply(4, &restored);
+        assert_eq!(r.machine.state.component.head.id_term_base, 8);
     }
 
     #[test]
