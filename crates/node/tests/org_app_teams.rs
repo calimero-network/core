@@ -37,13 +37,6 @@ const CREATE_CHILD_TEAM: u32 = 1 << 11;
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
 fn release(package: &str) -> Vec<u8> {
-    use sha2::Digest;
-    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
-        path: path.to_owned(),
-        hash: hex::encode(sha2::Sha256::digest(bytes)),
-        size: bytes.len() as u64,
-    };
-    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let mut wasm = kv_wasm();
     let tag = package.as_bytes();
     wasm.extend([
@@ -52,6 +45,18 @@ fn release(package: &str) -> Vec<u8> {
         u8::try_from(tag.len()).unwrap(),
     ]);
     wasm.extend_from_slice(tag);
+    release_shipping(package, wasm)
+}
+
+/// A signed single-service `.mpk` of `package@1.0.0` shipping `wasm`.
+fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
+    use sha2::Digest;
+    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
+        path: path.to_owned(),
+        hash: hex::encode(sha2::Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
@@ -583,6 +588,40 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
         "only the organization's owner and admins",
     );
     let _notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+}
+
+/// Two packages may ship a byte-identical component: each instance belongs to the
+/// package its release names, so scoping gives each package's team its own instances
+/// (it used to judge by the component, whose record names the first package installed,
+/// and put both instances in that package's team).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apart() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    for p in [CHAT, NOTES] {
+        let _ok = alice
+            .upload_package(release_shipping(p, kv_wasm()))
+            .await
+            .unwrap();
+    }
+    // Naming both packages, and naming none (every package with an instance).
+    let both = json!({ "apps": [{ "package": CHAT }, { "package": NOTES }] });
+    for body in [both, json!({})] {
+        let org = new_org(&alice).await;
+        let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+        let notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+        let done = scope(&alice, &mut a, &org, body).await.unwrap();
+        assert_eq!(done["teams"].as_array().unwrap().len(), 2, "{done}");
+        for (app, package) in [(&chat, CHAT), (&notes, NOTES)] {
+            let team = s(&app_team(&alice, &org, package).await["teamId"]);
+            let record = alice.get(&format!("apps/{app}")).await.unwrap();
+            assert_eq!(
+                record["access"],
+                json!({ "kind": "team", "team": team }),
+                "{package}: {record}"
+            );
+        }
+    }
 }
 
 /// G6 and the guest role: in a standalone organization (one open app team)
@@ -1144,6 +1183,124 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
         .await
         .unwrap();
     assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
+}
+
+/// A standing "every app added later" grant (`allApps`): an admin's invite
+/// carries it, and an admin sets it on a member later, with a passkey. Each
+/// app team made from then on gives them a row, so in an organization that
+/// keeps its apps apart a new app's team holds them though nobody named
+/// them; an app team already there does not. A member below admin neither
+/// mints such an invite nor sets the grant, and removal from the
+/// organization ends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_all_apps_member_gets_every_app_added_later() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (dave, mut d) = signed_up(&c, 0, "dave").await;
+    for p in [CHAT, NOTES, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    for p in [&carol, &dave] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (carol_id, dave_id) = (id(&carol).await, id(&dave).await);
+    // Chat is kept apart before Bob joins: Alice alone in it.
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let closed =
+        |package: &str| json!({ "apps": [{ "package": package, "join": "invite", "keep": [] }] });
+    let _ok = scope(&alice, &mut a, &org, closed(CHAT)).await.unwrap();
+
+    // Dave may invite, but not for every app: that is an admin's.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": dave_id, "capabilities": INVITE_MEMBERS | 1 << 2 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let all_apps_invite = |role: &str| json!({ "role": role, "allApps": true });
+    let err = dave
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            all_apps_invite("member"),
+            &mut d,
+        )
+        .await
+        .unwrap_err();
+    refused(&err, "every app");
+    let token = alice
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            all_apps_invite("member"),
+            &mut a,
+        )
+        .await
+        .unwrap()["token"]
+        .clone();
+    let listed = invites_of(&alice, &org).await;
+    assert!(listed.iter().any(|i| i["allApps"] == true), "{listed:?}");
+    join(&bob, &s(&token)).await;
+    let bob_id = id(&bob).await;
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["allApps"], json!([bob_id]), "{o}");
+    // Chat was there before: Bob is not in it.
+    assert!(!reaches(&bob, &org).await.contains(&chat));
+
+    // Notes is added later and kept apart, naming nobody: Bob has it.
+    let notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+    let _ok = scope(&alice, &mut a, &org, closed(NOTES)).await.unwrap();
+    assert!(reaches(&bob, &org).await.contains(&notes));
+    for p in [&carol, &dave] {
+        assert!(!reaches(p, &org).await.contains(&notes));
+    }
+
+    // An admin sets it on Carol later; a member below admin cannot.
+    let path = format!("orgs/{org}/all-apps");
+    let err = dave
+        .post_confirmed(
+            &path,
+            json!({ "account": dave_id, "allApps": true }),
+            &mut d,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    let err = alice
+        .post(&path, json!({ "account": carol_id, "allApps": true }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("CONFIRM_REQUIRED"), "{err}");
+    let _ok = alice
+        .post_confirmed(
+            &path,
+            json!({ "account": carol_id, "allApps": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    let _ok = scope(&alice, &mut a, &org, closed(BLOCKS)).await.unwrap();
+    for p in [&bob, &carol] {
+        assert!(reaches(p, &org).await.contains(&blocks));
+    }
+    assert!(!reaches(&dave, &org).await.contains(&blocks));
+    assert!(!reaches(&carol, &org).await.contains(&notes));
+
+    // Removed from the organization, Bob's grant goes with him.
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
+        .await
+        .unwrap();
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["allApps"], json!([carol_id]), "{o}");
 }
 
 /// Closing an open app team with the plain team update (`POST
