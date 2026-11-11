@@ -4,6 +4,27 @@
 
 ### Added
 
+- **Restore an app from its sealed backup**: `POST /ops/apps/{app}/restore {
+  backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
+  signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a
+  node that holds the backup in its `--backup-dir`. The app moves to a new
+  group that node seeds from the backup (`SystemCmd::RestoreApp`), the other
+  replicas copy it from a snapshot, and `FinishRestore` ends it; meanwhile
+  the app's calls and views answer `409 APP_RESTORING`. What the app wrote
+  after the backup is gone, and it runs the bundle the backup's state ran.
+  Every backup now has a sealed manifest beside it (`….snap.manifest`: app,
+  group, index, SHA-256, backup format 1, the `merod` and mero-tee release
+  that wrote it), bound to the app and file name under a key derived from
+  K_c, so a backup restores only on its own cluster and app; a newer
+  backup format (`UNKNOWN_BACKUP_FORMAT`) or a newer `merod`
+  (`BACKUP_FROM_NEWER_RELEASE`) is refused, and a backup from before
+  manifests (format 0) restores into the group it was taken from. Stored
+  format: `AppRecord.restore` and the `componentRestored` entry and
+  `ComponentHead.idTermBase` are new and left out when unset, so state from
+  before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
+  until every node runs this release. Runbook: operate/runbooks "Restore an
+  app", with backup schedule and RPO/RTO guidance.
+
 - **Every app added later, for a member**: an organization member may hold a
   standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
   team made from then on (by `ScopeApps`, by a move into the organization,
@@ -92,7 +113,8 @@
   now takes the rows below it, see above) is gated to rc.16, as is a move that gives a DM's people
   app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
   instance by its release (`ScopeApps.by_release`), and giving a member every app
-  added later (`SetAllApps`, or an invite with `allApps`). Once a version is logged, no node below it joins the
+  added later (`SetAllApps`, or an invite with `allApps`), and restoring an app
+  from its backup (`RestoreApp`, `FinishRestore`). Once a version is logged, no node below it joins the
   system group. A skipped undecodable entry now logs an error and counts in
   `calimero_log_undecodable_entries_total{log}`. Stored format:
   `SystemState.clusterVersion` is left out when unset; a node on an earlier

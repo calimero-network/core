@@ -4016,6 +4016,17 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             }
             Err("the consent is for another change")
         }
+        SystemCmd::RestoreApp {
+            app_id,
+            source,
+            proof,
+            ..
+        } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            states(&st, app_id, "__restore_app", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -4409,6 +4420,28 @@ pub enum SystemCmd {
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,
+    },
+    /// The operator restores an app from its sealed backup
+    /// (`<app> / __restore_app / { backup, sha256 }`, `crate::backup`): the
+    /// app moves to a new group, which `replicas[0]` seeds from the backup
+    /// before it adds the others ([`crate::types::PendingRestore`]), and runs
+    /// the bundle the backup's state names.
+    RestoreApp {
+        app_id: AppId,
+        replicas: Vec<u64>,
+        bundle: String,
+        #[serde(default)]
+        compute_bundle: Option<String>,
+        source: crate::types::RestoreSource,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The seed of a restore holds the backup in `group` on every replica:
+    /// the app takes calls again.
+    FinishRestore {
+        app_id: AppId,
+        group: u64,
     },
     SetAccess {
         app_id: AppId,
@@ -5715,6 +5748,7 @@ impl SystemMachine {
                 }
                 s.next_group = s.next_group.max(1) + 1;
                 app.group = s.next_group;
+                app.restore = None;
                 let out =
                     json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
                 let _prev = s.apps.insert(app.app_id.clone(), app);
@@ -6075,6 +6109,54 @@ impl SystemMachine {
             } => {
                 let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 app.replicas = replicas;
+                Ok(Value::Null)
+            }
+            SystemCmd::RestoreApp {
+                app_id,
+                replicas,
+                bundle,
+                compute_bundle,
+                source,
+                ..
+            } => {
+                if !s.bundles.contains_key(&bundle) {
+                    return Err(RESTORE_BUNDLE_GONE);
+                }
+                if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
+                    return Err(COMPUTE_NOT_SHIPPED);
+                }
+                let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
+                let Some(&seed) = replicas.first() else {
+                    return Err("a restore names its replicas");
+                };
+                if distinct.len() != replicas.len()
+                    || replicas.iter().any(|id| s.replica_node(id).is_none())
+                {
+                    return Err("a restore's replicas are distinct registered nodes");
+                }
+                if !s.apps.contains_key(&app_id) {
+                    return Err("no such app");
+                }
+                let group = s.next_group.max(1) + 1;
+                s.next_group = group;
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                if app.bundle != bundle {
+                    // Inferred from the bundle again (`report::release_of_bundle`).
+                    app.release = None;
+                }
+                app.bundle = bundle;
+                app.compute_bundle = compute_bundle;
+                app.group = group;
+                app.replicas = replicas;
+                app.restore = Some(crate::types::PendingRestore { seed, source });
+                Ok(json!({ "group": group }))
+            }
+            SystemCmd::FinishRestore { app_id, group } => {
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                if app.group != group || app.restore.is_none() {
+                    return Err("no restore of that app into that group is under way");
+                }
+                app.restore = None;
                 Ok(Value::Null)
             }
             SystemCmd::SetAccess {
@@ -7849,6 +7931,9 @@ pub const NO_ACCOUNT_RECOVERY_PENDING: &str = "no recovery of this account is un
 pub const NO_RECOVERY_KEY: &str = "this organization has no recovery key";
 /// A refusal: a recovery is under way already.
 pub const RECOVERY_PENDING: &str = "a recovery of this organization is under way";
+/// A refusal: the bundle a backup's state runs is no longer installed.
+pub const RESTORE_BUNDLE_GONE: &str =
+    "the bundle the backup's state runs is no longer installed: install that release again first";
 /// A refusal: no recovery under way for that account.
 pub const NO_RECOVERY_PENDING: &str =
     "no recovery of this organization is under way for that account";
@@ -12354,6 +12439,97 @@ mod tests {
             "the final step replayed"
         );
         assert_eq!(m.state.apps["app"].replicas, [4, 3, 2]);
+    }
+
+    /// A restore is the operator's decision over one backup (`<app> /
+    /// __restore_app / { backup, sha256 }`), spent once. It moves the app to
+    /// a new group seeded by its first replica, on the bundle the backup's
+    /// state runs, and only the seed's `FinishRestore` for that group ends it.
+    #[test]
+    fn a_restore_is_signed_over_its_backup_and_ends_in_its_own_group() {
+        let (mut m, ..) = proven_cluster();
+        // The fixture puts the app in group 2 directly; `CreateApp` would have
+        // allocated that group and left `next_group` at it.
+        m.state.next_group = m.state.apps["app"].group;
+        let _prev = m.state.bundles.insert(
+            "b0".into(),
+            serde_json::from_value(json!({ "hash": "b0", "size": 1, "uploadedBy": "alice" }))
+                .unwrap(),
+        );
+        let source = |name: &str| crate::types::RestoreSource {
+            name: name.into(),
+            sha256: "ab".into(),
+            index: 7,
+        };
+        let restore =
+            |bundle: &str, replicas: &[u64], proof: &serde_json::Value| SystemCmd::RestoreApp {
+                app_id: "app".into(),
+                replicas: replicas.to_vec(),
+                bundle: bundle.into(),
+                compute_bundle: None,
+                source: source("7.2.x.snap"),
+                proof: proof.clone(),
+            };
+        let args = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
+        let proof = signed("app", "__restore_app", &args);
+        assert!(m
+            .run(restore("b0", &[2, 1, 3], &serde_json::Value::Null))
+            .is_err());
+        let other = signed(
+            "app",
+            "__restore_app",
+            &json!({ "backup": "8.2.x.snap", "sha256": "ab" }),
+        );
+        assert!(
+            m.run(restore("b0", &[2, 1, 3], &other)).is_err(),
+            "another backup"
+        );
+        let elsewhere = signed("other", "__restore_app", &args);
+        assert!(
+            m.run(restore("b0", &[2, 1, 3], &elsewhere)).is_err(),
+            "another app"
+        );
+        assert_eq!(
+            m.run(restore("gone", &[2, 1, 3], &proof)).unwrap_err(),
+            crate::system::RESTORE_BUNDLE_GONE
+        );
+        assert!(
+            m.run(restore("b0", &[2, 9], &proof)).is_err(),
+            "an unknown node"
+        );
+        assert!(
+            m.run(restore("b0", &[2, 2], &proof)).is_err(),
+            "a node twice"
+        );
+
+        let before = m.state.apps["app"].group;
+        let out = m.run(restore("b0", &[2, 1, 3], &proof)).unwrap();
+        let app = m.state.apps["app"].clone();
+        assert_eq!(out["group"], json!(app.group));
+        assert!(app.group > before && app.group == m.state.next_group);
+        assert_eq!(
+            (app.bundle.as_str(), app.replicas.as_slice()),
+            ("b0", &[2, 1, 3][..])
+        );
+        assert_eq!(
+            app.restore,
+            Some(crate::types::PendingRestore {
+                seed: 2,
+                source: source("7.2.x.snap")
+            })
+        );
+        assert_eq!(
+            m.run(restore("b0", &[2, 1, 3], &proof)).unwrap_err(),
+            "that consent was used already"
+        );
+        let finish = |group: u64| SystemCmd::FinishRestore {
+            app_id: "app".into(),
+            group,
+        };
+        assert!(m.run(finish(before)).is_err(), "the group before");
+        let _ok = m.run(finish(app.group)).unwrap();
+        assert_eq!(m.state.apps["app"].restore, None);
+        assert!(m.run(finish(app.group)).is_err(), "nothing under way");
     }
 
     /// An organization of `who` (account -> role), each holding `caps`

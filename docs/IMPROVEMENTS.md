@@ -73,7 +73,7 @@ polished product. Grouped by theme; check items off as they land.
 - [x] 55. Production deployment guide (TDX, mero-kms, forming the cluster, TLS front).
 - [x] 56. Networking guide (listener, peer URLs, CORS, app domains, egress); v1's NAT/relay/bootstrap guide retired.
 - [ ] 57. Metrics collection and dashboard guide for `/ops/metrics` (a sealing collector, Grafana examples).
-- [ ] 58. Restore runbook, once snapshot restore exists (backups are documented; restore is not implemented).
+- [x] 58. Restore runbook, once snapshot restore exists: `operate/runbooks` "Restore an app" (`POST /ops/apps/{app}/restore`).
 - [x] 59. Security guide (TDX vs --dev, quote policies, governance, ops token).
 - [ ] 60. Capacity & performance tuning guide.
 - [ ] 61. Multi-process cluster tutorial (separate `merod` processes; `merod local` covers one process).
@@ -162,7 +162,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
 - [ ] R23. Sample Grafana dashboard JSON (the metrics catalog is in `operate/observability`).
 - [ ] R24. Kubernetes/Helm deployment guide + manifests.
-- [ ] R25. Tested backup/restore with RPO/RTO guidance.
+- [x] R25. Tested backup/restore with RPO/RTO guidance (`crates/node/tests/restore.rs`; `operate/runbooks` "Schedule, RPO and RTO").
 - [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
 - [ ] R27. Cross-version upgrade runbook (node binary + app together).
 - [ ] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot).
