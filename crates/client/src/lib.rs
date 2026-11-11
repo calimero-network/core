@@ -762,6 +762,26 @@ impl Client {
         .await
     }
 
+    /// Every problem of a pipeline source, checked against a release when `body` names one
+    /// (`{ source, package?, version? }`); answers `{ ok, errors, pipeline?, worstCaseFuel?, worstCaseCost? }`.
+    pub async fn validate_pipeline(&self, body: Value) -> Result<Value> {
+        self.post("pipelines/validate", body).await
+    }
+
+    /// Runs, fuel and cost a run of pipeline `name` would take for `body`
+    /// (`{ inputs?: { name: [id] } | counts?: { name: n }, params? }`); starts nothing.
+    pub async fn estimate_pipeline(&self, app: &str, name: &str, body: Value) -> Result<Value> {
+        self.post(
+            &format!(
+                "apps/{}/pipelines/{}/estimate",
+                path_segment(app),
+                path_segment(name)
+            ),
+            body,
+        )
+        .await
+    }
+
     /// Starts a run of the pipeline `name` of the release `app` runs: `inputs` binds each declared
     /// input to file ids, `params` gives its params. Answers `{ run }`.
     pub async fn start_pipeline_run(

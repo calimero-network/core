@@ -315,6 +315,15 @@ Apply judges the same sum again from the record alone and refuses a decision tha
 Cached runs cost nothing.
 The view shows `cost` (`maxCost`, `priceVersion`, `table`, `worstCase`), `costSoFar` and each step's `cost`.
 
+### Validate and estimate
+
+Both are reads: nothing is logged and nothing is stored.
+`POST /pipelines/validate { source, package?, version? }` lists every problem of a pipeline source, each with its `path` and stable `code`.
+Alone it judges the structure; with a release the caller sees (`404` otherwise) it also checks against what installing that release would build: its compute methods as `self`, its module pins resolved as install resolves them, and the cluster's pools.
+A valid answer carries the canonical pipeline, `worstCaseFuel` and, with a price table, `worstCaseCost`.
+`POST /apps/{app}/pipelines/{name}/estimate` answers the runs, fuel and cost per step for the file counts given (ids are only counted, never checked for being held).
+A `forEach` over `inputs.x` makes `ceil(min(count, maxItems) / batch)` runs, and one over a step's outputs keeps `maxItems`; with no counts it is the worst case.
+
 ## Usage and billing
 
 The job node measures CPU seconds, peak memory times wall time (GiB-seconds) and fuel used, and signs them in its report.

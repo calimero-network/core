@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::model::{Caps, Env, Pipeline, PriceTable, SpecError, Step};
 
 fn module_of<'a>(p: &'a Pipeline, s: &'a Step, env: &'a Env) -> Option<&'a str> {
@@ -109,28 +111,78 @@ pub fn check(p: &Pipeline, env: &Env) -> Result<(), Vec<SpecError>> {
     }
 }
 
-/// Runs a step makes at most: one, or the items of its `forEach` over its batch size.
-fn max_runs(s: &Step) -> u128 {
-    match s.for_each {
-        None => 1,
-        Some(_) => {
-            let items = u128::from(s.max_items.unwrap_or(0));
-            items.div_ceil(u128::from(s.batch.unwrap_or(1).max(1)))
-        }
+/// Runs a step makes at most: one, or its `forEach` items over its batch size. A `forEach` over
+/// `inputs.x` with a known file count in `counts` uses that count, capped at `maxItems`.
+fn max_runs(s: &Step, counts: &BTreeMap<String, u32>) -> u128 {
+    let Some(source) = &s.for_each else { return 1 };
+    let max = s.max_items.unwrap_or(0);
+    let items = source
+        .strip_prefix("inputs.")
+        .and_then(|name| counts.get(name))
+        .map_or(max, |&n| n.min(max));
+    u128::from(items).div_ceil(u128::from(s.batch.unwrap_or(1).max(1)))
+}
+
+/// What one step is expected to make: its runs, their fuel caps summed and their priced cost.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StepEstimate {
+    pub runs: u128,
+    pub fuel: u128,
+    pub cost: Option<u128>,
+}
+
+/// A pipeline's fuel and cost at its caps, for known input file counts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Estimate {
+    pub steps: BTreeMap<String, StepEstimate>,
+    pub fuel: u128,
+    pub cost: Option<u128>,
+}
+
+/// Fuel and cost of a run with `counts` files per `forEach` input (a missing count takes
+/// `maxItems`); cost is `None` without a table. A step whose module or method is unknown adds
+/// nothing; `check` rejects it.
+pub fn estimate(
+    p: &Pipeline,
+    env: &Env,
+    counts: &BTreeMap<String, u32>,
+    table: Option<&PriceTable>,
+) -> Estimate {
+    let mut out = Estimate {
+        steps: BTreeMap::new(),
+        fuel: 0,
+        cost: table.map(|_| 0),
+    };
+    for (name, s) in &p.steps {
+        let Some(cap) = caps_of(p, s, env) else {
+            continue;
+        };
+        let runs = max_runs(s, counts);
+        let l = s.limits.unwrap_or_default();
+        let fuel_cap = l.fuel.unwrap_or(cap.fuel);
+        let fuel = u128::from(fuel_cap).saturating_mul(runs);
+        let cost = table.map(|t| {
+            run_cost(
+                fuel_cap,
+                l.memory_mib.unwrap_or(cap.memory_mib),
+                l.wall_secs.unwrap_or(cap.wall_secs),
+                t,
+            )
+            .saturating_mul(runs)
+        });
+        out.fuel = out.fuel.saturating_add(fuel);
+        out.cost = out.cost.zip(cost).map(|(a, b)| a.saturating_add(b));
+        let _prev = out
+            .steps
+            .insert(name.clone(), StepEstimate { runs, fuel, cost });
     }
+    out
 }
 
 /// Most fuel the pipeline can burn: each step's fuel cap times its maximum runs.
 /// A step whose module or method is unknown adds nothing; `check` rejects it.
 pub fn worst_case_fuel(p: &Pipeline, env: &Env) -> u128 {
-    p.steps
-        .values()
-        .filter_map(|s| {
-            let cap = caps_of(p, s, env)?;
-            let fuel = s.limits.and_then(|l| l.fuel).unwrap_or(cap.fuel);
-            Some(u128::from(fuel) * max_runs(s))
-        })
-        .sum()
+    estimate(p, env, &BTreeMap::new(), None).fuel
 }
 
 /// Upper bound for one run: vCPU-seconds from its fuel cap plus GiB-seconds of its memory and
@@ -161,18 +213,7 @@ pub fn priced_cost(
 /// Most the pipeline can cost: each step's run cost at its limits (or the method's caps) times
 /// its maximum runs. A step whose module or method is unknown adds nothing.
 pub fn worst_case_cost(p: &Pipeline, env: &Env, t: &PriceTable) -> u128 {
-    p.steps
-        .values()
-        .filter_map(|s| {
-            let cap = caps_of(p, s, env)?;
-            let l = s.limits.unwrap_or_default();
-            let run = run_cost(
-                l.fuel.unwrap_or(cap.fuel),
-                l.memory_mib.unwrap_or(cap.memory_mib),
-                l.wall_secs.unwrap_or(cap.wall_secs),
-                t,
-            );
-            Some(run.saturating_mul(max_runs(s)))
-        })
-        .fold(0, u128::saturating_add)
+    estimate(p, env, &BTreeMap::new(), Some(t))
+        .cost
+        .unwrap_or(0)
 }

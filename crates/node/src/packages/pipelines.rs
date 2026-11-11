@@ -4,12 +4,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_app_host::{Abi, MethodKind};
-use calimero_pipeline::{canonical_json, check, compile, worst_case_fuel, Caps, Env, SpecError};
+use calimero_pipeline::{
+    canonical_json, check, compile, worst_case_cost, worst_case_fuel, Caps, Env, SpecError,
+};
 use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::{compare_versions, ModulePin, PipelineRef};
+use crate::system::{compare_versions, ModulePin, PackageVersion, PipelineRef};
 
 use super::verify;
 
@@ -92,6 +94,26 @@ fn module_refs(p: &calimero_pipeline::Pipeline) -> BTreeSet<&str> {
         .collect()
 }
 
+/// What a package's pipelines are checked against: its compute methods as `self`, the modules
+/// its references resolved to, and the cluster's pools.
+fn env_for(
+    methods: &BTreeMap<String, Caps>,
+    pools: &BTreeMap<String, u32>,
+    available: &BTreeMap<String, Module>,
+) -> Env {
+    let mut env = Env {
+        default_module: Some(SELF_MODULE.to_owned()),
+        modules: BTreeMap::from([(SELF_MODULE.to_owned(), methods.clone())]),
+        pools: pools.clone(),
+    };
+    env.modules.extend(
+        available
+            .iter()
+            .map(|(name, m)| (name.clone(), m.methods.clone())),
+    );
+    env
+}
+
 /// One service's pipeline files (path, source) and the compute methods they may name;
 /// `None` when the service ships no compute component.
 pub type ServicePipelines = (Vec<(String, Vec<u8>)>, Option<BTreeMap<String, Caps>>);
@@ -118,16 +140,7 @@ pub fn register(
             ));
             continue;
         };
-        let mut env = Env {
-            default_module: Some(SELF_MODULE.to_owned()),
-            modules: BTreeMap::from([(SELF_MODULE.to_owned(), methods.clone())]),
-            pools: pools.clone(),
-        };
-        env.modules.extend(
-            available
-                .iter()
-                .map(|(name, m)| (name.clone(), m.methods.clone())),
-        );
+        let env = env_for(methods, pools, available);
         for (file, source) in files {
             let from = |errs: Vec<SpecError>| {
                 errs.into_iter()
@@ -176,7 +189,76 @@ pub fn register(
     }
 }
 
+fn spec_json(e: &SpecError) -> Value {
+    json!({ "path": e.path, "code": e.code, "message": e.message })
+}
+
 impl Node {
+    /// The cluster's pools: name to maximum memory in MiB.
+    pub fn pool_ceilings(&self) -> BTreeMap<String, u32> {
+        self.sys(|s| {
+            s.pools
+                .iter()
+                .map(|(name, p)| (name.clone(), p.max_memory_mib))
+                .collect()
+        })
+    }
+
+    /// Compiles `source` and, given a release, checks it against what installing it into that
+    /// release would build (its compute methods as `self`, modules resolved for `actor`, the
+    /// pools) and prices it. Writes nothing; every problem is listed with its path and code.
+    pub async fn validate_pipeline(
+        &self,
+        source: &[u8],
+        release: Option<&PackageVersion>,
+        actor: &str,
+    ) -> Result<Value, ApiError> {
+        let failed = |errs: &[SpecError]| json!({ "ok": false, "errors": errs.iter().map(spec_json).collect::<Vec<_>>() });
+        let (pipeline, compiled) = match Compiled::of(source) {
+            Ok(ok) => ok,
+            Err(errs) => return Ok(failed(&errs)),
+        };
+        let canonical: Value = serde_json::from_slice(&compiled.canonical)
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        let mut answer = json!({ "ok": true, "errors": [], "pipeline": canonical });
+        let Some(release) = release else {
+            return Ok(answer);
+        };
+        let own = |code: &'static str, message: &str| {
+            failed(&[SpecError {
+                path: String::new(),
+                code,
+                message: message.to_owned(),
+            }])
+        };
+        let hash = match (release.compute.len(), release.compute.get("")) {
+            (1, Some(hash)) => hash,
+            (0, _) => return Ok(own("NO_COMPUTE", "the release ships no compute component")),
+            _ => {
+                return Ok(own(
+                    "PIPELINES_NEED_ONE_SERVICE",
+                    "pipelines run on a package with one service",
+                ))
+            }
+        };
+        let methods = self.caps_of_component(hash).await?;
+        let services = [(
+            vec![(String::new(), source.to_vec())],
+            Some((*methods).clone()),
+        )];
+        let available = self.resolve_modules(&services, actor).await;
+        let env = env_for(&methods, &self.pool_ceilings(), &available);
+        if let Err(errs) = check(&pipeline, &env) {
+            return Ok(failed(&errs));
+        }
+        answer["worstCaseFuel"] = json!(worst_case_fuel(&pipeline, &env).to_string());
+        let _caught_up = self.sys_fresh().await;
+        if let Some(table) = self.sys(|s| s.price_table) {
+            answer["worstCaseCost"] = json!(worst_case_cost(&pipeline, &env, &table).to_string());
+        }
+        Ok(answer)
+    }
+
     /// The modules the files name that `actor` can use: a package release it sees, as written
     /// (`package` for the newest, `package@version` for one), shipping one compute component.
     /// A reference that resolves to none is left out, so `check` answers `UNKNOWN_MODULE`.

@@ -10,12 +10,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use calimero_pipeline::{
-    worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
+    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{gate, may_handle_files, read_only_in, typed_id, ApiResult};
+use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult};
 use crate::app::Status;
 use crate::component::{CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS};
 use crate::error::ApiError;
@@ -220,6 +220,155 @@ pub(super) async fn component_app(
         return Err(ApiError::not_found("no such pipeline run"));
     }
     Ok(app)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ValidateBody {
+    source: String,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+}
+
+/// `POST /pipelines/validate`: every problem of `source`, structural, or with a release the
+/// caller sees also against that release's compute methods, modules and the cluster's pools.
+pub(super) async fn validate(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<ValidateBody>,
+) -> ApiResult {
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
+    let release = match (&body.package, &body.version) {
+        (None, None) => None,
+        (Some(package), Some(version)) => {
+            node.sys_fresh_from(principal.sys_index).await;
+            let found = node.sys(|s| {
+                let v = s.packages.get(package)?.versions.get(version)?;
+                s.sees_release(v, &account).then(|| v.clone())
+            });
+            Some(found.ok_or_else(|| ApiError::not_found("no such package version"))?)
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "BAD_RELEASE",
+                "give both package and version, or neither",
+            ))
+        }
+    };
+    let answer = node
+        .validate_pipeline(body.source.as_bytes(), release.as_ref(), &account)
+        .await?;
+    Ok(Json(answer))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct EstimateBody {
+    /// File ids per input; only counted, never checked for being held.
+    #[serde(default)]
+    inputs: Option<BTreeMap<String, Vec<String>>>,
+    /// File counts per input, instead of ids.
+    #[serde(default)]
+    counts: Option<BTreeMap<String, u32>>,
+    #[serde(default)]
+    params: BTreeMap<String, Value>,
+}
+
+/// File counts per input from either form of the body; an input not given counts as `maxItems`.
+fn input_counts(
+    pipeline: &Pipeline,
+    body: &EstimateBody,
+) -> Result<BTreeMap<String, u32>, ApiError> {
+    let bad = |message: String| ApiError::bad_request(BAD_INPUTS, &message);
+    let counts: BTreeMap<String, u32> = match (&body.inputs, &body.counts) {
+        (Some(_), Some(_)) => return Err(bad("give inputs or counts, not both".into())),
+        (Some(given), None) => {
+            if given.values().map(Vec::len).sum::<usize>() > MAX_INPUT_FILES {
+                return Err(bad(format!("a run takes at most {MAX_INPUT_FILES} files")));
+            }
+            given
+                .iter()
+                .map(|(n, ids)| (n.clone(), u32::try_from(ids.len()).unwrap_or(u32::MAX)))
+                .collect()
+        }
+        (None, Some(counts)) => counts.clone(),
+        (None, None) => BTreeMap::new(),
+    };
+    match counts.keys().find(|n| !pipeline.inputs.contains_key(*n)) {
+        Some(name) => Err(bad(format!("`{name}` is not an input of the pipeline"))),
+        None => Ok(counts),
+    }
+}
+
+/// `POST /apps/{app}/pipelines/{name}/estimate`: runs, fuel and cost of a run of the pinned
+/// pipeline for the given input counts. Reads only; a start's gate applies.
+pub(super) async fn estimate_run(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(body): Json<EstimateBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = component_app(&node, &app_id).await?;
+    let p = gate(&node, &headers, &app, "*", true).await?;
+    let Some(account) = p.caller.account() else {
+        return Err(ApiError::unauthenticated(
+            "sign in to estimate a pipeline run",
+        ));
+    };
+    may_run(&node, &app, account, p.sys_index).await?;
+    let no_pipeline = || {
+        ApiError::new(
+            404,
+            NO_SUCH_PIPELINE,
+            "the app's release has no such pipeline",
+        )
+    };
+    let release = node.release_of_app(&app).ok_or_else(no_pipeline)?;
+    let registered = release
+        .version
+        .pipelines
+        .get(&name)
+        .ok_or_else(no_pipeline)?;
+    let Some(compute_bundle) = release.version.compute.get("").cloned() else {
+        return Err(no_pipeline());
+    };
+    let modules = registered
+        .modules
+        .iter()
+        .map(|(name, pin)| (name.clone(), pin.compute.clone()))
+        .collect();
+    let pipeline = node.pipeline_by_hash(&registered.hash).await?;
+    let _params = check_params(&pipeline, &body.params)?;
+    let counts = input_counts(&pipeline, &body)?;
+    let env = Env {
+        default_module: Some(SELF_MODULE.to_owned()),
+        modules: module_methods(&node, &compute_bundle, &modules).await?,
+        pools: BTreeMap::new(),
+    };
+    let _caught_up = node.sys_fresh().await;
+    let table = node.sys(|s| s.price_table);
+    let e = estimate(&pipeline, &env, &counts, table.as_ref());
+    let steps: BTreeMap<_, _> = e
+        .steps
+        .iter()
+        .map(|(step, s)| {
+            let mut v = json!({ "runs": s.runs.to_string(), "fuel": s.fuel.to_string() });
+            if let Some(cost) = s.cost {
+                v["cost"] = json!(cost.to_string());
+            }
+            (step, v)
+        })
+        .collect();
+    let mut answer = json!({ "steps": steps, "fuel": e.fuel.to_string() });
+    if let (Some(cost), Some(t)) = (e.cost, table) {
+        answer["cost"] = json!(cost.to_string());
+        answer["priceVersion"] = json!(t.version);
+    }
+    Ok(Json(answer))
 }
 
 /// Starts a run of the named pipeline of the release the app runs.

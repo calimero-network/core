@@ -10750,7 +10750,12 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
+        .route("/pipelines/validate", post(pipelines::validate))
         .route("/apps/{app}/pipelines/{name}/runs", post(pipelines::start))
+        .route(
+            "/apps/{app}/pipelines/{name}/estimate",
+            post(pipelines::estimate_run),
+        )
         .route("/apps/{app}/pipeline-runs", get(pipelines::list))
         .route("/apps/{app}/pipeline-runs/{run}", get(pipelines::get))
         .route("/apps/{app}/pipeline-runs/{run}/cancel", post(pipelines::cancel))
