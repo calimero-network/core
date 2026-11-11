@@ -5863,6 +5863,84 @@ async fn team_set_member(
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TeamRowsBody {
+    teams: Vec<crate::system::TeamRow>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TeamIdsBody {
+    teams: Vec<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// A batch of teams the API refuses before asking for a passkey (as
+/// `SetTeamMembers` and `RemoveTeamMembers` judge it again where they apply).
+fn team_batch<'a>(teams: impl ExactSizeIterator<Item = &'a str>) -> Result<(), ApiError> {
+    crate::system::check_team_batch(teams).map_err(|e| ApiError::bad_request("BAD_TEAMS", e))
+}
+
+/// `account`'s rows in several teams of `org` at once (`SystemCmd::SetTeamMembers`),
+/// with one passkey (412 first): each team judged as `POST
+/// /orgs/{org}/teams/{team}/members` would judge it, and none set unless
+/// every one may be.
+async fn member_set_teams(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, account)): Path<(String, String)>,
+    Json(body): Json<TeamRowsBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
+    let args = crate::system::team_members_args(&account, &body.teams);
+    let consent = org_consent(&node, &p, &org, "__set_team_members", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetTeamMembers {
+            org,
+            account,
+            teams: body.teams,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// Take `account` out of several teams of `org` at once, or leave them
+/// (`account` = oneself; `SystemCmd::RemoveTeamMembers`), with one passkey
+/// (412 first): each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`
+/// would judge it, the rows below included, and none taken unless every one
+/// may be.
+async fn member_remove_teams(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, account)): Path<(String, String)>,
+    Json(body): Json<TeamIdsBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    team_batch(body.teams.iter().map(String::as_str))?;
+    let args = crate::system::remove_team_members_args(&account, &body.teams);
+    let method = "__remove_team_members";
+    let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::RemoveTeamMembers {
+            org,
+            account,
+            teams: body.teams,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
 /// A team as `account` may see it: its record, its members with their roles,
 /// the teams below it they see, and its apps. `None` when they may not see it
 /// (a restricted team they are not in looks like no team at all).
@@ -10850,6 +10928,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/members/{account}/metadata", post(member_metadata))
         .route("/orgs/{org}/members", get(org_members).post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
+        .route(
+            "/orgs/{org}/members/{account}/teams",
+            post(member_set_teams).delete(member_remove_teams),
+        )
         .route("/orgs/{org}/teams", post(team_create))
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
