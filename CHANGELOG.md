@@ -168,7 +168,8 @@
   added later (`SetAllApps`, or an invite with `allApps`), restoring an app
   from its backup (`RestoreApp`, `FinishRestore`), renaming an organization
   (`RenameOrg`), and a member's rows in several teams at once (`SetTeamMembers`,
-  `RemoveTeamMembers`). Once a version is logged, no node below it joins the
+  `RemoveTeamMembers`) and turning on an app team's child teams
+  (`ScopeApp.childTeams`). Once a version is logged, no node below it joins the
   system group. A skipped undecodable entry now logs an error and counts in
   `calimero_log_undecodable_entries_total{log}`. Stored format:
   `SystemState.clusterVersion` is left out when unset; a node on an earlier
