@@ -89,6 +89,12 @@ pub const SNAPSHOT_CHUNK_BYTES: u64 = 1024 * 1024;
 /// applied its own log ([`Group::propose_led`]).
 pub const CATCH_UP: Duration = Duration::from_secs(2);
 
+/// How long a strong read on a voter waits for the voters to elect a leader when it knows none
+/// of them leads ([`Group::read_strong`]): past the default election timeout
+/// ([`Config::election_max_ms`]) and a vote round, and under the 5 s a node gives a peer to
+/// answer a request it forwards, so the asking node still has time to ask the winner.
+pub const ELECTION_WAIT: Duration = Duration::from_secs(4);
+
 /// What the leadership check that admitted a proposal found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Leadership {
@@ -146,6 +152,13 @@ pub struct Group<M: Machine> {
     /// The term this node last caught up in ([`Group::propose_led`]): it applied
     /// its whole log once after taking the lead in that term. 0: never.
     caught_up: std::sync::atomic::AtomicU64,
+}
+
+/// Whether `node` is one of the voters `m` names and knows no voter that leads them.
+fn electing(node: NodeId, m: &openraft::RaftMetrics<NodeId, BasicNode>) -> bool {
+    let membership = m.membership_config.membership();
+    let voter = |id: NodeId| membership.voter_ids().any(|v| v == id);
+    voter(node) && !m.current_leader.is_some_and(voter)
 }
 
 fn forward<E>(leader_id: Option<NodeId>, leader_node: Option<BasicNode>) -> Result<E, WriteError> {
@@ -383,10 +396,26 @@ impl<M: Machine> Group<M> {
         }
     }
 
-    /// A linearizable read, served by the confirmed leader.
+    /// A linearizable read, served by the confirmed leader. A voter that knows no leader among
+    /// the voters (a move took the leader off, and they are electing one) waits up to
+    /// [`ELECTION_WAIT`] for one first: then it answers if it won, or names the winner.
     pub async fn read_strong<R>(&self, f: impl FnOnce(&M, u64) -> R) -> Result<R, WriteError> {
-        let _read = self.confirm_leader().await?;
+        let _read = match self.confirm_leader().await {
+            Err(WriteError::NotLeader { .. }) if self.electing() => {
+                let node = self.node;
+                let _led = (self.raft.wait(Some(ELECTION_WAIT)))
+                    .metrics(move |m| !electing(node, m), "a voter leads")
+                    .await;
+                self.confirm_leader().await?
+            }
+            read => read?,
+        };
         Ok(self.read_local(f))
+    }
+
+    /// Whether this node is a voter and knows no voter that leads.
+    fn electing(&self) -> bool {
+        electing(self.node, &self.raft.metrics().borrow())
     }
 
     /// Read this node's applied state.
@@ -520,6 +549,74 @@ impl<M: Machine> Group<M> {
     #[must_use]
     pub const fn node_id(&self) -> NodeId {
         self.node
+    }
+
+    /// Replace this group's state with a backup: the snapshot file `path`
+    /// this cluster wrote for group `from` as snapshot `snapshot_id`
+    /// ([`machine::replace_state`]). Refused unless this node is the group's
+    /// only voter and leads it, since every other replica would keep the state
+    /// before: the caller then appends an entry, builds a snapshot
+    /// ([`Self::snapshot_through`]) and purges the log up to it
+    /// ([`Self::purge_log_through`]), so a replica added afterwards can only
+    /// catch up from that snapshot. Answers how many rows it wrote.
+    pub fn replace_state(
+        &self,
+        from: GroupId,
+        snapshot_id: &str,
+        path: &Path,
+    ) -> eyre::Result<u64> {
+        let status = self.status();
+        if !status.is_leader || status.voters != [self.node] || !status.learners.is_empty() {
+            eyre::bail!(
+                "group {}: a state is replaced only by its sole member, as its leader",
+                self.id
+            );
+        }
+        machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+    }
+
+    /// Build a snapshot and wait, up to `timeout`, until the one this node
+    /// serves covers `index`.
+    pub async fn snapshot_through(&self, index: u64, timeout: Duration) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let served = machine::current_snapshot_file(&self.state.db, self.id)?;
+            if served.is_some_and(|(at, _, _)| at >= index) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                eyre::bail!(
+                    "group {}: no snapshot through {index} within {timeout:?}",
+                    self.id
+                );
+            }
+            self.snapshot_now().await?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Purge this node's log through `index` (which a snapshot must cover)
+    /// and wait, up to `timeout`, until it is gone.
+    pub async fn purge_log_through(&self, index: u64, timeout: Duration) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let purged = self.raft.metrics().borrow().purged.map_or(0, |l| l.index);
+            if purged >= index {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                eyre::bail!(
+                    "group {}: the log was not purged through {index} within {timeout:?}",
+                    self.id
+                );
+            }
+            self.raft
+                .trigger()
+                .purge_log(index)
+                .await
+                .map_err(|e| eyre::eyre!("{e}"))?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 

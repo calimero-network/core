@@ -49,7 +49,7 @@ is its command line.
   with the RPC it never finished (regression:
   `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
-  (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
+  (`view`, `call`, `events`, `storage`, `last-write`, `xcalls`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
   refused while a hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs `rpc.sender()` = the
@@ -98,6 +98,9 @@ is its command line.
   `__delete_team { team, apps }` (only when the team's subtree holds apps,
   `system::team_apps`; `DeleteTeam { apps_need_consent }`),
   `__set_capabilities { team, account, capabilities }`,
+  `__set_all_apps { account, allApps }` (`Org::all_apps`: each app team made
+  after gives them a row; `all_apps_rows` on `ScopeApps`, `MoveApp`,
+  `UpdateTeam`),
   `__set_default_capabilities { capabilities }` (a team's: `{ team,
   capabilities }`, `system::default_capabilities_args`), `__create_invite`,
   `system::invite_args`, `__revoke_invite { inviteKey }`, `__scope_apps
@@ -1044,7 +1047,9 @@ is its command line.
   creating the first instance of a package with no app team in an org that has
   app teams are admin-only (`ONLY_ADMINS_INSTALL`). `ScopeApps` (`POST
   /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team
-  (id from the entry's `nonce`, `app_team_id`), gives a row to every member who
+  (id from the entry's `nonce`, `app_team_id`; an instance's package is the one
+  its release names, `SystemState::instance_package`, since two packages may
+  ship one component, unless the entry predates `by_release`), gives a row to every member who
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
@@ -1065,7 +1070,26 @@ is its command line.
   app's keys are hidden rows of its group (`rows::CKV`), idempotency records too
   (`rows::CIDEM`), events a ring of `EVENT_RING` (`rows::EVENT`). The system group
   stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the group's
-  sealed snapshot file; `backup::latest` opens one with K_c.
+  sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
+  group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
+  bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
+  `backup::find` checks one, `backup::latest` opens one with K_c.
+- **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
+  operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
+  signature (`backup::find`, `Found::check_release`, the bundle the backup's head
+  names still installed, `require_current_release`). `SystemCmd::RestoreApp` moves
+  the app to a new group with the receiving node first (`AppRecord.restore`, so
+  `ensure_app_group` forms it with that seed alone and `reconcile` never inits it);
+  the seed `Group::replace_state`s the backup into it (rows opened and sealed again
+  for the new group, hidden keys re-hidden), appends `componentRestored` (sets
+  `ComponentHead::id_term_base` past every restored id term: the new group's terms
+  restart at 1, D52), `snapshot_through` + `purge_log_through` that entry so the
+  others can only catch up from that snapshot, adds them as learners, makes them
+  voters and logs `FinishRestore`. Calls and views answer `409 APP_RESTORING`
+  meanwhile (`restore::refuse_while_restoring`). The old group's files are kept
+  (`reconcile` drops a stopped group's files only for a deleted app). Tests:
+  `tests/restore.rs`, `a_backup_seeds_another_group_that_replicas_then_join`
+  (calimero-log), `a_restore_is_signed_over_its_backup_and_ends_in_its_own_group`.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -1333,8 +1357,17 @@ API and system group:
   (`xcall_retry`, in memory, `backoff_ms`) until `XCALL_WINDOW_MS` from the send; a
   missing target, another org's, a wasmer app, or the window passing dead-letters it
   (`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its
-  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin, a hosting node).
-  Test: `component_xcalls_are_delivered_in_order_or_dead_lettered`.
+  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin; a node without a
+  replica asks one, `internal/xcalls`, `Node::app_xcalls`).
+  Tests: `component_xcalls_are_delivered_in_order_or_dead_lettered`,
+  `dead_letters_move_with_the_app_and_any_node_lists_them`.
+- **Apply reads through the batch** (`component.rs`: `outgoing_in`, `action_in`,
+  `replay_in`): a host row an entry's apply reads comes from its `StateTx`, never the
+  group's committed state, since a replica catching up (a new replica of a moved app, a
+  restarted one) applies many entries in one batch and must end where its leader, which
+  applied them one at a time, did. `XcallDone` read the outbox row committed and lost the
+  dead letter on such a replica; `ActionEnd` and a node command's first answer under a key
+  had the same hole. Tests: `a_replica_catching_up_*` in `component.rs`.
 - **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
@@ -1489,8 +1522,7 @@ API and system group:
 ## Not done yet
 
 keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
-rollback epoch in the attested KMS evidence, snapshot restore into a
-running cluster, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
+rollback epoch in the attested KMS evidence, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 

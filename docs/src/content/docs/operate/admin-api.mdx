@@ -88,6 +88,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
 | 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
 | 409 | `CONFLICT`, `UPGRADE_PENDING` | The state does not allow it now; a fuel cap waits for every node to run this release. |
+| 409 | `APP_RESTORING` | The app is being restored from a backup; retry once the restore answers. |
 | 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
 | 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
 | 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
@@ -208,7 +209,8 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
 | `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
-| `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, confirm? }` → a token. `412` first | `namespace invite` |
+| `POST /orgs/{org}/all-apps` | session | `{ account, allApps, confirm? }`: give a member every app added to the organization from now on, or stop it (owner or admin; `412` first). `403` below admin, `404` outside the organization ([Every app added later](/protocol/organizations/#every-app-added-later)) | - |
+| `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `namespace invite` |
 | `POST /invites/{token}/redeem` | session | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |
 | `POST /orgs/{org}/recovery` | account holder | `{ publicKey, confirm? }`: set, rotate or (`null`) remove the recovery key (owner; `412` first); cancels a recovery under way | - |
 | `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
@@ -248,7 +250,8 @@ there.
 | `POST /ops/nodes` | `{ id, addr, zone?, operatorProof? }`: register a node, signed with the operator key (`428 OPERATOR_SIGNATURE_REQUIRED` first, over `cluster / __register_node / { id, addr, zone }`); the nodes in the first leader's `--peers` are registered at genesis; the system leader adds it as a learner, and promotes caught-up learners while fewer than 3 voters are left (straight to 3, never 2) | `ops add-node` |
 | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`), signed (`428` first, `__remove_node / { id }`; the retry's JSON body is `{ operatorProof }`) | `ops remove-node` |
 | `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …], operatorProof? }`: move an app, signed (`428` first, `<app> / __set_replicas / { replicas }`, the target sorted; asked before the leader redirect, so the signed body goes to the leader as it is) (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |
-| `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
+| `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir`, each with its sealed manifest → `{ written }` | `ops backup` |
+| `POST /ops/apps/{app}/restore` | `{ backup?, operatorProof? }`: restore the app from a backup in this node's `--backup-dir` (`{app}/{backup}`, the newest when left out), signed (`428` first, `<app> / __restore_app / { backup, sha256 }`); this node seeds the app's new group and becomes its first replica → `{ app, group, rows, backup: { name, index, format, merod, release }, status }` once every replica holds it. Refused before the signature: `404 BACKUP_NOT_FOUND`, `400 BAD_BACKUP` (another cluster's, another app's, a swapped file), `409 UNKNOWN_BACKUP_FORMAT`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 UPGRADE_PENDING`; `409 MOVE_IN_PROGRESS` while a move or restore of the app runs. The app's calls and views answer `409 APP_RESTORING` until it is done ([Restore an app](/operate/runbooks/#restore-an-app)) | `ops restore` |
 | `POST /ops/sign-up`, `POST\|GET /ops/sign-up/invites`, `DELETE /ops/sign-up/invites/{key}` | Set the [sign-up policy](/operate/auth/#sign-up-policy) (`{ policy }`) and issue, list and withdraw cluster sign-up invites (`{ token, uses?, expiresAt }`); each change signed (`428` first), refused once the cluster's owner runs sign-up | |
 | `GET /ops/quotas`, `POST /ops/quotas` | Read or change the per-account quotas; a change is signed (`428` first, `cluster / __set_quotas / { quotas }` with every limit after the change; `operatorProof` sits beside the limits) | `ops quotas`, `ops set-quotas` |
 | `POST /ops/quotas` with `org` | Override one payer's `maxConcurrentRuns`, `computeFuel` (decimal string) and `maxFileBytes` (`null` clears a field; none left removes the override); signed (`cluster / __set_org_quotas / { payer, quotas }`), refused `409 UPGRADE_PENDING` while a node runs an older release. `GET /ops/quotas` lists them under `orgs` | |
@@ -279,7 +282,7 @@ its value):
 
 `/internal/raft`, `/internal/system`, `/internal/system/index`,
 `/internal/call`, `/internal/challenge/take`, `/internal/view`, `/internal/blob`, `/internal/blob/get`,
-`/internal/blob/held`, `/internal/blob/delete`, `/internal/storage`, `/internal/last-write`,
+`/internal/blob/held`, `/internal/blob/delete`, `/internal/storage`, `/internal/last-write`, `/internal/xcalls`,
 `/internal/presence`, `/internal/app-ready` and `/internal/events` are for the
 cluster's own nodes: they need the cluster secret (an HMAC of the cluster key
 and the cluster name) inside a sealed channel whose key was attested like any

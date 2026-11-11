@@ -2,8 +2,70 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Restore an app from its sealed backup**: `POST /ops/apps/{app}/restore {
+  backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
+  signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a
+  node that holds the backup in its `--backup-dir`. The app moves to a new
+  group that node seeds from the backup (`SystemCmd::RestoreApp`), the other
+  replicas copy it from a snapshot, and `FinishRestore` ends it; meanwhile
+  the app's calls and views answer `409 APP_RESTORING`. What the app wrote
+  after the backup is gone, and it runs the bundle the backup's state ran.
+  Every backup now has a sealed manifest beside it (`….snap.manifest`: app,
+  group, index, SHA-256, backup format 1, the `merod` and mero-tee release
+  that wrote it), bound to the app and file name under a key derived from
+  K_c, so a backup restores only on its own cluster and app; a newer
+  backup format (`UNKNOWN_BACKUP_FORMAT`) or a newer `merod`
+  (`BACKUP_FROM_NEWER_RELEASE`) is refused, and a backup from before
+  manifests (format 0) restores into the group it was taken from. Stored
+  format: `AppRecord.restore` and the `componentRestored` entry and
+  `ComponentHead.idTermBase` are new and left out when unset, so state from
+  before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
+  until every node runs this release. Runbook: operate/runbooks "Restore an
+  app", with backup schedule and RPO/RTO guidance.
+
+- **Every app added later, for a member**: an organization member may hold a
+  standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
+  team made from then on (by `ScopeApps`, by a move into the organization,
+  or a team marked as one) gives them a plain row, so in an organization
+  that keeps its apps apart a new app reaches them though nobody named them.
+  Before, a new app's team held only those named. The owner or an admin gives
+  it on an invite (`POST /orgs/{org}/invites { allApps: true }`, named in the
+  consent) or later (`POST /orgs/{org}/all-apps { account, allApps }`,
+  `SystemCmd::SetAllApps`, a passkey step-up over `__set_all_apps`); it ends
+  with the membership. Apps already there are untouched. `ScopeApps`,
+  `MoveApp` and `UpdateTeam` carry `all_apps_rows`, which the API always
+  sets, so entries an earlier release logged replay as they did; the new
+  fields are left out when empty, so state and invites from before read and
+  write as they did.
+
 ### Fixed
 
+- **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
+  `ScopeApps`). An instance's package was taken from its component's bundle
+  record, which names the first package installed with that WASM, so two
+  packages shipping a byte-identical component put both packages' instances
+  in the first one's app team and left the second's empty. `ScopeApps` now
+  takes the package the instance's release names (`AppRecord::release`; the
+  bundle's for a record without one). It carries `by_release` (serde default
+  false), so entries an earlier release logged replay as they did.
+
+- **Dead letters survive an app's move to new replicas.** A replica catching up
+  from the log applies many entries in one batch, and `componentXcallDone` read
+  the outbox row from the group's committed state, not the batch's, so a new
+  replica that applied an xcall's send and its dead-lettering together wrote no
+  dead letter: after `POST /ops/apps/{app}/replicas` the new replicas listed
+  `deadLetters: []`. `componentActionEnd` (an action started and ended in one
+  batch stayed pending, its retries uncounted, its `ActionFailed` event never
+  sent) and the first answer remembered under a node command's key had the same
+  hole. Apply now reads those rows through the batch. No stored format changes;
+  replaying a log now gives what its leader applied. A replica that applied such
+  a batch before keeps what it wrote: replace it (move the app's replicas, as a
+  rollout does) to rebuild it from the log.
+- **`GET /apps/{app}/xcalls` from a node without a replica** answered `503 "ask
+  a node that hosts the app"`; it now asks a replica (`internal/xcalls`), as
+  the other app routes do.
 - **A DM moved with its people into a closed app team keeps them.** Since
   #4905, an `accounts` instance (a DM, a private channel) of a
   package with an app team in its organization is reached only by those in

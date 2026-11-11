@@ -638,6 +638,14 @@ pub enum ComponentCmd {
         dead: Option<String>,
         ts_ms: u64,
     },
+    /// The app's state was just restored from a backup into this group (the
+    /// seed's first entry after it, `crate::node::restore`): ids continue past
+    /// every term the restored state carries ([`ComponentHead::id_term_base`]).
+    #[serde(rename = "componentRestored")]
+    Restored {
+        /// The old group's log index the backup was taken at.
+        from_index: u64,
+    },
     /// The leader collected the bytes of blobs the app forgot (idle past their time):
     /// they leave the queue.
     #[serde(rename = "componentBlobsCollected")]
@@ -774,6 +782,13 @@ pub struct ComponentHead {
     /// restart continues after it instead of reusing an id.
     #[serde(default)]
     pub last_id: (u64, u64),
+    /// What the leader adds to its Raft term to make a run's `id_term`: a
+    /// state restored from a backup into a new group (`componentRestored`)
+    /// carries ids made in the old group's terms, and the new group's terms
+    /// start again at 1, so its ids continue past the highest term restored.
+    /// Zero for a group never restored, and left out then.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub id_term_base: u64,
     /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
     #[serde(default)]
     pub install_ts_ms: u64,
@@ -1048,6 +1063,16 @@ impl AppMachine {
             .collect()
     }
 
+    /// The app's xcalls as `GET /apps/{app}/xcalls` answers them: the messages
+    /// waiting in its outbox and its dead letters, oldest first.
+    #[must_use]
+    pub fn xcalls_report(&self) -> Value {
+        json!({
+            "pending": self.state.component.head.xcall.pending(),
+            "deadLetters": self.dead_letters(),
+        })
+    }
+
     /// Whether `slot` of `timer` was already applied.
     #[must_use]
     pub fn tick_applied(&self, timer: &str, slot: u64) -> bool {
@@ -1281,7 +1306,7 @@ impl AppMachine {
         key: Option<&str>,
         applied: &Applied,
     ) {
-        let known = key.is_some_and(|k| self.component_replay(&Caller::System, k).is_some());
+        let known = key.is_some_and(|k| replay_in(tx, &Caller::System, k).is_some());
         if let (Some(key), false) = (key, known) {
             self.remember_component(tx, ts_ms, &Caller::System, key, applied);
         }
@@ -1313,7 +1338,8 @@ impl AppMachine {
                 | ComponentCmd::BlobRevoke { .. }
                 | ComponentCmd::BlobsCollected { .. }
                 | ComponentCmd::ComputeAttempt(_)
-                | ComponentCmd::Barrier,
+                | ComponentCmd::Barrier
+                | ComponentCmd::Restored { .. },
             )
             | Err(_) => None,
         };
@@ -1463,6 +1489,11 @@ impl AppMachine {
                 a
             }
             Ok(ComponentCmd::Barrier) => host_answer(index, true, ""),
+            Ok(ComponentCmd::Restored { .. }) => {
+                let head = &mut self.state.component.head;
+                head.id_term_base = head.id_term_base.max(head.last_id.0);
+                host_answer(index, true, "")
+            }
             Ok(ComponentCmd::ComputeAttempt(attempt)) => {
                 self.apply_compute_attempt(tx, index, &attempt)
             }
@@ -1490,7 +1521,7 @@ impl AppMachine {
             }) => {
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
-                match self.action_record(&id) {
+                match action_in(tx, &id) {
                     None => host_answer(index, false, "no such pending action"),
                     Some(record) if retry => {
                         self.state.component.head.actions.retried(tx, record);
@@ -1506,7 +1537,7 @@ impl AppMachine {
                 }
             }
             Ok(ComponentCmd::XcallDone { seq, dead, ts_ms }) => {
-                let head = self.outgoing(seq);
+                let head = outgoing_in(tx, seq);
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
                 let done = c.head.xcall.done(tx, head, seq, dead.as_deref(), ts_ms);
@@ -1542,6 +1573,33 @@ impl AppMachine {
         }
         serde_json::to_vec(&applied).unwrap_or_default()
     }
+}
+
+// Apply reads host rows through the batch's `StateTx`, never the group's committed
+// state: a replica catching up (a new replica of a moved app, a restarted one) applies
+// many entries in one batch, and an entry must see the rows the entries before it in
+// the batch wrote, as its leader, which applied them one at a time, did. The readers on
+// `AppMachine` (`outgoing`, `action_record`, `component_replay`) are for the node's
+// routes and its leader's polls, between batches.
+
+/// The outbox's message `seq` as `tx` leaves it.
+fn outgoing_in(tx: &StateTx<'_>, seq: u64) -> Option<xcall::Outgoing> {
+    let raw = tx.get_hidden(rows::COUT, &xcall::outbox_key(seq))?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// Pending action `id` as `tx` leaves it.
+fn action_in(tx: &StateTx<'_>, id: &str) -> Option<ActionRecord> {
+    let raw = tx.get_hidden(rows::CACT, &action::action_key(id))?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// The answer remembered for `caller`'s key `key` as `tx` leaves it.
+fn replay_in(tx: &StateTx<'_>, caller: &Caller, key: &str) -> Option<Applied> {
+    let raw = tx.get_hidden(rows::CIDEM, idem_key(caller, key).as_bytes())?;
+    serde_json::from_slice::<IdemRecord>(&raw)
+        .ok()
+        .map(|r| r.applied)
 }
 
 /// A blob id as the host commands carry it (hex).
@@ -1857,6 +1915,23 @@ mod tests {
             let out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
             tx.commit().unwrap();
             serde_json::from_slice(&out).unwrap()
+        }
+
+        /// Applies `cmds`, the first at index `first`, as one batch, the way a replica
+        /// catching up from the log does: one `StateTx`, committed after the last entry.
+        fn apply_batch(&mut self, first: u64, cmds: &[Vec<u8>]) -> Vec<Applied> {
+            let state = self.engine.group_state(5);
+            let mut tx = StateTx::new(&state);
+            let out = cmds
+                .iter()
+                .zip(first..)
+                .map(|(cmd, index)| {
+                    let out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
+                    serde_json::from_slice(&out).unwrap()
+                })
+                .collect();
+            tx.commit().unwrap();
+            out
         }
     }
 
@@ -2435,6 +2510,35 @@ mod tests {
         );
     }
 
+    /// A restore's first entry moves the base of the ids past every term the
+    /// restored state carries, so the new group's term 1 never reissues them;
+    /// it never lowers a base already there.
+    #[test]
+    fn a_restored_state_makes_ids_past_its_highest_term() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let mut cmd: ComponentCmd = serde_json::from_slice(&call(1, None, Vec::new())).unwrap();
+        if let ComponentCmd::Call(c) = &mut cmd {
+            c.id_term = 5;
+            c.id_seq = 9;
+        }
+        let _a = r.apply(2, &serde_json::to_vec(&cmd).unwrap());
+        assert_eq!(r.machine.state.component.head.id_term_base, 0);
+        let restored = serde_json::to_vec(&ComponentCmd::Restored { from_index: 2 }).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&restored).unwrap()["op"],
+            "componentRestored"
+        );
+        let a = r.apply(3, &restored);
+        assert_eq!(a.status, Status::Ok);
+        assert_eq!(r.machine.state.component.head.id_term_base, 5);
+        let head = serde_json::to_value(&r.machine.state.component.head).unwrap();
+        assert_eq!(head["idTermBase"], 5);
+        r.machine.state.component.head.id_term_base = 8;
+        let _a = r.apply(4, &restored);
+        assert_eq!(r.machine.state.component.head.id_term_base, 8);
+    }
+
     #[test]
     fn a_view_keeps_its_version_while_apply_moves_on() {
         let mut r = Rig::new();
@@ -2971,5 +3075,137 @@ mod tests {
         }))
         .unwrap();
         assert!(!ComponentCmd::is_init(&v1));
+    }
+
+    /// A call by `a` at `base` whose run sent `xcalls` and started `actions`.
+    fn sending(base: u64, xcalls: Vec<XcallOut>, actions: Vec<ActionOut>) -> Vec<u8> {
+        let mut cmd: ComponentCmd = serde_json::from_slice(&call(base, None, vec![])).unwrap();
+        if let ComponentCmd::Call(c) = &mut cmd {
+            c.outcome.xcalls = xcalls;
+            c.outcome.actions = actions;
+        }
+        serde_json::to_vec(&cmd).unwrap()
+    }
+
+    fn host_cmd(cmd: &ComponentCmd) -> Vec<u8> {
+        serde_json::to_vec(cmd).unwrap()
+    }
+
+    /// What a replica holds after `cmds` (`init` first, at index 1): its answers, host
+    /// records, dead letters, pending actions, events, and the answer remembered under
+    /// the system's key `k`.
+    fn replica_after(cmds: &[Vec<u8>], batched: bool) -> Value {
+        let mut r = Rig::new();
+        let answers: Vec<Applied> = if batched {
+            r.apply_batch(1, cmds)
+        } else {
+            cmds.iter()
+                .zip(1..)
+                .map(|(cmd, index)| r.apply(index, cmd))
+                .collect()
+        };
+        let m = &r.machine;
+        json!({
+            "answers": answers,
+            "head": m.state.component.head,
+            "deadLetters": m.dead_letters(),
+            "pendingActions": m.pending_actions(),
+            "events": m.events_from(0),
+            "remembered": m.component_replay(&Caller::System, "k"),
+        })
+    }
+
+    /// A replica catching up applies many entries in one batch (a new replica of a moved
+    /// app, a restarted one): each entry must read the host rows the entries before it in
+    /// the batch wrote, or it ends somewhere its leader, which applied them one by one,
+    /// did not.
+    fn applies_alike_in_one_batch(cmds: &[Vec<u8>]) -> Value {
+        let one_by_one = replica_after(cmds, false);
+        let batched = replica_after(cmds, true);
+        assert_eq!(
+            batched, one_by_one,
+            "a batch diverged from one-by-one apply"
+        );
+        one_by_one
+    }
+
+    /// The upgrade suite's case: an xcall to an app that does not exist, sent and
+    /// dead-lettered, then the app moved to new replicas, which apply both entries in
+    /// one batch. The dead letter was lost there (`XcallDone` read the outbox row from
+    /// the committed state, where the batch had not put it yet).
+    #[test]
+    fn a_replica_catching_up_keeps_the_dead_letter_its_leader_wrote() {
+        let x = XcallOut {
+            app: "no-such-app".into(),
+            method: "setFromApp".into(),
+            args: json!({}),
+        };
+        let done = ComponentCmd::XcallDone {
+            seq: 0,
+            dead: Some("the target app does not exist".into()),
+            ts_ms: 2,
+        };
+        let r =
+            applies_alike_in_one_batch(&[init(0), sending(1, vec![x], vec![]), host_cmd(&done)]);
+        assert_eq!(r["head"]["xcall"]["first"], json!(1), "{r}");
+        let dead = r["deadLetters"].as_array().unwrap();
+        assert_eq!(dead.len(), 1, "{r}");
+        assert_eq!(dead[0]["app"], json!("no-such-app"));
+        assert_eq!(dead[0]["method"], json!("setFromApp"));
+        assert_eq!(dead[0]["reason"], json!("the target app does not exist"));
+    }
+
+    /// An action started, retried twice and failed within one batch ends as it did on
+    /// its leader: two attempts counted, no longer pending, its starter told.
+    #[test]
+    fn a_replica_catching_up_ends_an_action_its_leader_ended() {
+        let start = ActionOut {
+            id: "a1".into(),
+            method: "work".into(),
+            args: json!({}),
+        };
+        let end = |failed: Option<&str>, retry: bool| {
+            host_cmd(&ComponentCmd::ActionEnd {
+                id: "a1".into(),
+                failed: failed.map(str::to_owned),
+                retry,
+                ts_ms: 2,
+            })
+        };
+        let retried = applies_alike_in_one_batch(&[
+            init(0),
+            sending(1, vec![], vec![start.clone()]),
+            end(None, true),
+            end(None, true),
+        ]);
+        assert_eq!(
+            retried["pendingActions"][0]["attempts"],
+            json!(2),
+            "{retried}"
+        );
+        let failed = applies_alike_in_one_batch(&[
+            init(0),
+            sending(1, vec![], vec![start]),
+            end(None, true),
+            end(Some("boom"), false),
+        ]);
+        assert_eq!(failed["pendingActions"], json!([]), "{failed}");
+        let events = failed["events"].as_array().unwrap();
+        assert!(
+            events.iter().any(|e| e["kind"] == json!("ActionFailed")),
+            "{failed}"
+        );
+    }
+
+    /// The first answer under a node command's key stays when a retry under the same key
+    /// lands in the same batch as the first.
+    #[test]
+    fn a_replica_catching_up_keeps_the_first_answer_under_a_key() {
+        let r = applies_alike_in_one_batch(&[
+            init(0),
+            file_cmd(1, 2, Some("k")),
+            file_cmd(1, 3, Some("k")),
+        ]);
+        assert_eq!(r["remembered"]["status"], json!("ok"), "{r}");
     }
 }

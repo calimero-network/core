@@ -85,6 +85,9 @@ WORKFLOWS = {
             "scripts/install-mero-compute.sh",
             # calimero-node's openapi test compares it with what the registry builds.
             "docs/public/openapi.json",
+            "scripts/fetch-release.sh",
+            "scripts/build-release-fixtures.sh",
+            "scripts/upgrade-path.sh",
         ),
     ),
     "release": (
@@ -108,9 +111,27 @@ WORKFLOWS = {
 
 
 # ci-checks.yml job -> (package dirs it builds, whether their dev-dependencies count, extra
-# globs). Every job ci-checks.yml runs today is the whole workflow's (`rust`); a job that
-# builds only part of the workspace goes here, scoped by what it compiles.
-JOBS: dict = {}
+# globs). A job that builds only part of the workspace goes here, scoped by what it compiles.
+JOBS: dict = {
+    # The upgrade path: a cluster on the pinned release rolled onto this tree's merod.
+    # merod's closure is every crate a node runs (node, storage, the log, the runtime,
+    # sealed, attestation); the test and the scripts it runs are the rest. The old
+    # release's fixtures come from its tag, so this tree's copies of them do not count.
+    "upgrade_path": (
+        # apps/v2-fixtures/kv: this tree's kv, the release the app upgrades to.
+        lambda: ["crates/merod", "crates/meroctl", "tools/mero-sign", "crates/app-build", "apps/v2-fixtures/kv"],
+        False,
+        (
+            ".github/upgrade-from",
+            "crates/node/tests/fault/*",
+            "scripts/fetch-release.sh",
+            "scripts/build-release-fixtures.sh",
+            "scripts/upgrade-path.sh",
+            "scripts/pack-component.py",
+            "scripts/install-mero-app-build.sh",
+        ),
+    ),
+}
 
 
 def tracked(pattern):
