@@ -1782,6 +1782,18 @@ impl SystemState {
             .map(|r| r.package.as_str())
     }
 
+    /// The package `app` is an instance of, as a [`SystemCmd::ScopeApps`]
+    /// judges it: with `by_release`, the release the instance records
+    /// (`AppRecord::release`), since two packages may ship one component and
+    /// its bundle's record names only the first; else, and for a record that
+    /// names no release, [`Self::package_of`].
+    fn instance_package<'a>(&'a self, app: &'a AppRecord, by_release: bool) -> Option<&'a str> {
+        match &app.release {
+            Some(r) if by_release => Some(r.package.as_str()),
+            _ => self.package_of(app),
+        }
+    }
+
     /// Whether `actor`, not `app`'s owner, may change its access to `to`
     /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
@@ -1895,6 +1907,9 @@ struct ScopeAsLogged {
     accounts_in_app_team: bool,
     /// A new app team's default holds `CREATE_CHILD_TEAM`.
     member_child_teams: bool,
+    /// An instance's package is the one its release names
+    /// ([`SystemState::instance_package`]).
+    by_release: bool,
 }
 
 impl SystemState {
@@ -1924,7 +1939,7 @@ impl SystemState {
                 .values()
                 .filter(in_org)
                 .filter(|a| a.access == Access::Org)
-                .filter_map(|a| self.package_of(a))
+                .filter_map(|a| self.instance_package(a, logged.by_release))
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .map(|package| ScopeApp {
@@ -1994,7 +2009,9 @@ impl SystemState {
                     Some(list.into_iter().collect::<BTreeSet<_>>())
                 }
             };
-            let of_package = |a: &AppRecord| self.package_of(a) == Some(spec.package.as_str());
+            let of_package = |a: &AppRecord| {
+                self.instance_package(a, logged.by_release) == Some(spec.package.as_str())
+            };
             let instances: Vec<AppId> = match spec.instances {
                 Some(ids) => {
                     if ids.len() > MAX_SCOPE_INSTANCES {
@@ -5094,6 +5111,13 @@ pub enum SystemCmd {
         /// logged, which replays making the default it made then.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         member_child_teams: bool,
+        /// An instance belongs to the package its release names
+        /// (`AppRecord::release`), not the one its component's bundle record
+        /// names: two packages may ship a byte-identical component. The API
+        /// always sets it; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging by the bundle, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_release: bool,
     },
     /// Set, rotate (`Some`) or remove (`None`) an organization's recovery
     /// key: the owner's, with their passkey consent (`org:<org> /
@@ -7557,6 +7581,7 @@ impl SystemMachine {
                 owner_in_team,
                 accounts_in_app_team,
                 member_child_teams,
+                by_release,
                 ..
             } => s.scope_apps(
                 &org,
@@ -7568,6 +7593,7 @@ impl SystemMachine {
                     owner_in_team,
                     accounts_in_app_team,
                     member_child_teams,
+                    by_release,
                 },
             ),
             SystemCmd::SetRecoveryKey {
@@ -10198,6 +10224,7 @@ mod tests {
             owner_in_team: true,
             accounts_in_app_team: flag,
             member_child_teams: true,
+            by_release: true,
         };
         let rows = |m: &SystemMachine| -> Vec<String> {
             m.state.orgs["org"].teams["chat"]
@@ -10214,6 +10241,92 @@ mod tests {
             let _ok = m.run_authorized(scope(flag)).unwrap();
             assert_eq!(rows(&m), want, "{flag}");
         }
+    }
+
+    /// Two packages ship one component (`bc`): a `ScopeApps` puts each
+    /// instance in the app team of the package its release names. One an
+    /// earlier release logged (no `by_release`) replays as that release
+    /// judged it, by the bundle's record (Chat's): both instances on Chat's
+    /// team, Notes' made empty.
+    #[test]
+    fn scoping_judges_an_instance_by_its_release_and_old_entries_by_the_bundle() {
+        let instance = |id: &str, package: &str| -> AppRecord {
+            serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 7, "bundle": "bc", "owner": "alice",
+                "org": "org", "access": { "kind": "org" }, "replicas": [1, 2, 3],
+                "createdAt": 0, "release": { "package": package, "version": "1.0.0" }
+            }))
+            .unwrap()
+        };
+        let fresh = || {
+            let (mut m, _alice, _bob, _carol) = proven_cluster();
+            chat_org(&mut m);
+            let mut notes = m.state.packages["com.chat"].clone();
+            "com.notes".clone_into(&mut notes.name);
+            let _prev = m.state.packages.insert("com.notes".into(), notes);
+            for (id, package) in [("c1", "com.chat"), ("n1", "com.notes")] {
+                let _prev = m.state.apps.insert(id.into(), instance(id, package));
+            }
+            m
+        };
+        let scope = |flag: bool| SystemCmd::ScopeApps {
+            org: "org".into(),
+            apps: Some(
+                ["com.chat", "com.notes"]
+                    .map(|package| super::ScopeApp {
+                        package: package.into(),
+                        name: None,
+                        instances: None,
+                        join: None,
+                        keep: None,
+                        child_teams: None,
+                    })
+                    .to_vec(),
+            ),
+            shared: None,
+            nonce: "n".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            owner_in_team: true,
+            accounts_in_app_team: true,
+            member_child_teams: true,
+            by_release: flag,
+        };
+        // The team each instance is on after the step.
+        let teams = |m: &SystemMachine| -> Vec<Option<String>> {
+            ["c1", "n1"]
+                .map(|id| {
+                    let team = match &m.state.apps[id].access {
+                        crate::types::Access::Team { team } => team,
+                        _ => return None,
+                    };
+                    m.state.orgs["org"].teams[team]
+                        .app_package()
+                        .map(str::to_owned)
+                })
+                .to_vec()
+        };
+        let mut m = fresh();
+        let _ok = m.run_authorized(scope(true)).unwrap();
+        assert_eq!(
+            teams(&m),
+            [Some("com.chat".to_owned()), Some("com.notes".to_owned())]
+        );
+        let mut m = fresh();
+        let _ok = m.run_authorized(scope(false)).unwrap();
+        assert_eq!(
+            teams(&m),
+            [Some("com.chat".to_owned()), Some("com.chat".to_owned())]
+        );
+        // Such an entry reads without the flag and writes as it was logged.
+        let old = serde_json::to_value(scope(false)).unwrap();
+        assert!(old.get("by_release").is_none(), "{old}");
+        let read: SystemCmd = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&read).unwrap(), old);
+        assert_eq!(
+            serde_json::to_value(scope(true)).unwrap()["by_release"],
+            json!(true)
+        );
     }
 
     /// An app team made before its default held `CREATE_CHILD_TEAM` gets it
@@ -10264,6 +10377,7 @@ mod tests {
             owner_in_team: true,
             accounts_in_app_team: true,
             member_child_teams: true,
+            by_release: true,
         };
         let channel = |id: &str, who: &str| SystemCmd::CreateTeam {
             org: "org".into(),
