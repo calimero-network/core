@@ -41,7 +41,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools`, `ops set-prices` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -102,7 +102,7 @@ same command (`meroctl package origins list PACKAGE`).
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel` and the canonical `pipeline`. |
-| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. |
+| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
 | `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
 | `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
 | `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
@@ -311,6 +311,8 @@ node answers `403` for the others.
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
 | `ops set-pools JSON` | `POST /ops/pools` | Set the pools, `{ name: { runsPerNode, maxMemoryMib } }`; a job node joins one with `add-node --pool`. |
+| `ops prices` | `GET /ops/prices` | The price table, `{}` until one is set. |
+| `ops set-prices JSON` | `POST /ops/prices` | Set it, `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond, connectorGib, storageGibMonth, egressGib }` in micro-units; the version must be the current one plus one. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
 | `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |

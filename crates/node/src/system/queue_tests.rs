@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use calimero_log::Machine;
+use calimero_pipeline::PriceTable;
 use serde_json::json;
 
 use super::{
@@ -878,4 +879,80 @@ fn org_quotas_are_decimal_strings_and_the_file_override_is_read() {
         m.state.payer_quotas("y").2,
         Quotas::default().max_file_bytes_per_org
     );
+}
+
+fn price_table(version: u64) -> PriceTable {
+    PriceTable {
+        version,
+        fuel_per_vcpu_second: 1_000_000_000,
+        vcpu_second: 100,
+        gib_second: 10,
+        connector_gib: 1,
+        storage_gib_month: 2,
+        egress_gib: 3,
+    }
+}
+
+fn set_prices(m: &mut SystemMachine, table: PriceTable) -> Result<serde_json::Value, String> {
+    m.run_authorized(SystemCmd::SetPriceTable {
+        table,
+        proof: serde_json::Value::Null,
+    })
+    .map_err(str::to_owned)
+}
+
+#[test]
+fn a_price_table_version_must_rise_by_exactly_one() {
+    let mut m = machine();
+    assert!(m.state.price_table.is_none());
+    for wrong in [0, 2] {
+        let err = set_prices(&mut m, price_table(wrong)).unwrap_err();
+        assert!(err.starts_with("PRICE_VERSION"), "{err}");
+    }
+    assert!(m.state.price_table.is_none());
+    set_prices(&mut m, price_table(1)).unwrap();
+    for wrong in [1, 3, 0] {
+        let err = set_prices(&mut m, price_table(wrong)).unwrap_err();
+        assert!(err.starts_with("PRICE_VERSION"), "{err}");
+    }
+    set_prices(&mut m, price_table(2)).unwrap();
+    assert_eq!(m.state.price_table, Some(price_table(2)));
+}
+
+#[test]
+fn a_zero_price_rate_is_refused_and_leaves_the_table_alone() {
+    let mut m = machine();
+    let zero = PriceTable {
+        fuel_per_vcpu_second: 0,
+        ..price_table(1)
+    };
+    let err = set_prices(&mut m, zero).unwrap_err();
+    assert!(err.starts_with("BAD_PRICES"), "{err}");
+    assert!(m.state.price_table.is_none());
+    set_prices(&mut m, price_table(1)).unwrap();
+    let err = set_prices(
+        &mut m,
+        PriceTable {
+            fuel_per_vcpu_second: 0,
+            ..price_table(2)
+        },
+    )
+    .unwrap_err();
+    assert!(err.starts_with("BAD_PRICES"), "{err}");
+    assert_eq!(m.state.price_table, Some(price_table(1)));
+}
+
+#[test]
+fn a_stored_price_table_survives_a_snapshot_and_an_old_snapshot_reads_none() {
+    let mut m = machine();
+    let without = m.snapshot();
+    assert!(!String::from_utf8(without.clone())
+        .unwrap()
+        .contains("priceTable"));
+    set_prices(&mut m, price_table(1)).unwrap();
+    let mut restored = SystemMachine::default();
+    restored.restore(&m.snapshot()).unwrap();
+    assert_eq!(restored.state.price_table, Some(price_table(1)));
+    restored.restore(&without).unwrap();
+    assert!(restored.state.price_table.is_none());
 }

@@ -19,9 +19,9 @@ use tracing::debug;
 use super::{locked, Driving};
 use crate::app::{AppMachine, Status};
 use crate::component::{
-    cache_key, run_id, CachedRun, ComponentCmd, FanOut, PipelineCancelEntry, PipelineRun,
+    cache_key, run_id, CachedRun, ComponentCmd, CostCap, FanOut, PipelineCancelEntry, PipelineRun,
     PipelineStartEntry, PipelineState, RunCaps, StepDecisionEntry, StepRun, StepStatus,
-    StepVerdict, MAX_CACHED_PER_DECISION, MAX_STEP_RUNS,
+    StepVerdict, COST_CAP, MAX_CACHED_PER_DECISION, MAX_STEP_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::component::entry_bytes;
@@ -73,16 +73,23 @@ pub(super) fn plan(
         .collect();
     let mut decided = Vec::new();
     let mut waved: HashSet<&str> = HashSet::new();
+    let mut budget = Budget::of(run);
     loop {
         let before = decided.len();
         for (name, step) in &pipeline.steps {
             if run.steps.get(name).map(|s| s.status) == Some(StepStatus::Running)
                 && waved.insert(name.as_str())
             {
-                if let Some((runs, cached)) = next_wave(pipeline, run, name, step, caps, room, view)
-                {
+                let wave = next_wave(pipeline, run, name, step, (caps, room), view, &mut budget);
+                if let Some((runs, cached, blocked)) = wave {
                     room -= runs.len();
-                    decided.push((name.clone(), StepVerdict::More { runs, cached }));
+                    if !runs.is_empty() || !cached.is_empty() {
+                        decided.push((name.clone(), StepVerdict::More { runs, cached }));
+                    }
+                    if blocked {
+                        decided.push((name.clone(), cost_capped()));
+                        let _prev = status.insert(name.as_str(), StepStatus::Failed);
+                    }
                 }
                 continue;
             }
@@ -101,6 +108,7 @@ pub(super) fn plan(
                 )
             });
             let ready = needs.len() == step.needs.len() && needs.iter().all(|s| s.is_ok());
+            let mut capped = false;
             let verdict = if run.cancel_requested || run.stopping {
                 Some(StepVerdict::Cancelled)
             } else if broken {
@@ -113,12 +121,15 @@ pub(super) fn plan(
                     Ok(Built::Skip) => Some(StepVerdict::Skipped),
                     Ok(Built::Runs { runs, fan }) => {
                         let wave = wave_size(step, 0, runs.len(), room);
-                        let (runs, cached) = take_wave(&runs, 0, wave, view);
-                        if runs.is_empty() && cached.is_empty() {
-                            None
-                        } else {
-                            room -= runs.len();
-                            Some(StepVerdict::Start { runs, fan, cached })
+                        let (runs, cached, blocked) = admit(&runs, 0, wave, view, &mut budget);
+                        capped = blocked;
+                        match (runs.is_empty() && cached.is_empty(), blocked) {
+                            (true, true) => Some(cost_capped()),
+                            (true, false) => None,
+                            (false, _) => {
+                                room -= runs.len();
+                                Some(StepVerdict::Start { runs, fan, cached })
+                            }
                         }
                     }
                 }
@@ -135,11 +146,74 @@ pub(super) fn plan(
             };
             let _prev = status.insert(name.as_str(), after);
             decided.push((name.clone(), verdict));
+            if capped && after == StepStatus::Running {
+                decided.push((name.clone(), cost_capped()));
+                let _prev = status.insert(name.as_str(), StepStatus::Failed);
+            }
         }
         if decided.len() == before {
             return decided;
         }
     }
+}
+
+/// The step is stopped because starting its next run would pass the run's cost cap.
+fn cost_capped() -> StepVerdict {
+    StepVerdict::Failed {
+        reason: COST_CAP.to_owned(),
+    }
+}
+
+/// What a run may still start under its cost cap: the committed cost, counting what this round
+/// already decided.
+struct Budget {
+    cap: Option<CostCap>,
+    committed: u128,
+}
+
+impl Budget {
+    fn of(run: &PipelineRun) -> Self {
+        Self {
+            cap: run.cost,
+            committed: run.committed_cost(),
+        }
+    }
+
+    /// How many runs with `caps` still fit.
+    fn afford(&self, caps: RunCaps) -> usize {
+        let Some(cap) = &self.cap else {
+            return usize::MAX;
+        };
+        let unit = u128::from(cap.unit(caps));
+        let left = u128::from(cap.max_cost).saturating_sub(self.committed);
+        left.checked_div(unit)
+            .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX))
+    }
+
+    fn spend(&mut self, caps: RunCaps, runs: usize) {
+        if let Some(cap) = &self.cap {
+            self.committed += u128::from(cap.unit(caps)) * runs as u128;
+        }
+    }
+}
+
+/// [`take_wave`] held to what the budget affords; the last value says the cap kept runs out that
+/// the wave would otherwise have carried, so the step stops here.
+fn admit(
+    runs: &[StepRun],
+    from: usize,
+    wave: usize,
+    view: &CacheView<'_>,
+    budget: &mut Budget,
+) -> (Vec<StepRun>, Vec<CachedRun>, bool) {
+    let Some(caps) = runs.first().map(|r| r.caps) else {
+        return (Vec::new(), Vec::new(), false);
+    };
+    let fits = budget.afford(caps);
+    let (fresh, hits) = take_wave(runs, from, wave.min(fits), view);
+    let blocked = fits < wave && take_wave(runs, from, wave, view).0.len() > fresh.len();
+    budget.spend(caps, fresh.len());
+    (fresh, hits, blocked)
 }
 
 /// Runs of a step to start now: `maxParallel` less those active, the app's room and the most a
@@ -182,14 +256,17 @@ fn next_wave(
     run: &PipelineRun,
     name: &str,
     step: &Step,
-    caps: &BTreeMap<String, Caps>,
-    room: usize,
+    (caps, room): (&BTreeMap<String, Caps>, usize),
     view: &CacheView<'_>,
-) -> Option<(Vec<StepRun>, Vec<CachedRun>)> {
+    budget: &mut Budget,
+) -> Option<(Vec<StepRun>, Vec<CachedRun>, bool)> {
     let state = run.steps.get(name)?;
     let started = state.runs.len();
     let total = state.fan.total as usize;
-    let stopped = run.cancel_requested || run.stopping || state.failed_items > state.fan.allowed;
+    let stopped = run.cancel_requested
+        || run.stopping
+        || state.capped
+        || state.failed_items > state.fan.allowed;
     if stopped || started >= total || step.for_each.is_none() {
         return None;
     }
@@ -197,8 +274,8 @@ fn next_wave(
     let wave = wave_size(step, active, total - started, room);
     match build_step(pipeline, run, name, step, caps, view) {
         Ok(Built::Runs { runs, .. }) => {
-            let (fresh, hits) = take_wave(&runs, started, wave, view);
-            (!fresh.is_empty() || !hits.is_empty()).then_some((fresh, hits))
+            let (fresh, hits, blocked) = admit(&runs, started, wave, view, budget);
+            (!fresh.is_empty() || !hits.is_empty() || blocked).then_some((fresh, hits, blocked))
         }
         _ => None,
     }
@@ -485,12 +562,20 @@ fn resolve(
 /// the app's files, a result as JSON when it is.
 fn run_json(run: &PipelineRun, files: bool) -> Value {
     let mut v = serde_json::to_value(run).unwrap_or(Value::Null);
+    if let Some(cap) = &run.cost {
+        v["cost"]["maxCost"] = json!(cap.max_cost.to_string());
+        v["cost"]["worstCase"] = json!(cap.worst_case.to_string());
+        v["costSoFar"] = json!(run.cost_so_far.to_string());
+    }
     for (name, step) in &run.steps {
         let Some(shown) = v["steps"][name].as_object_mut() else {
             continue;
         };
         let _gone = (shown.remove("runOutputs"), shown.remove("runResults"));
-        let _gone = shown.remove("cachedRuns");
+        let _gone = (shown.remove("cachedRuns"), shown.remove("runCost"));
+        if run.cost.is_some() {
+            let _prev = shown.insert("cost".to_owned(), json!(step.cost.to_string()));
+        }
         let outputs: Vec<Value> = step
             .outputs()
             .map(|o| {
@@ -874,6 +959,8 @@ steps:
                 .map(|k| (k.clone(), StepState::pending()))
                 .collect(),
             end_ts_ms: None,
+            cost: None,
+            cost_so_far: 0,
         }
     }
 
@@ -1205,6 +1292,107 @@ steps:
             panic!("{decided:?}")
         };
         assert_eq!(runs.len(), 3, "up to maxParallel again");
+    }
+
+    /// A table that prices a run of `caps()` at 20 at worst.
+    fn capped(run: &mut PipelineRun, max_cost: u64) {
+        let table = calimero_pipeline::PriceTable {
+            version: 1,
+            fuel_per_vcpu_second: 100,
+            vcpu_second: 10,
+            gib_second: 5,
+            connector_gib: 0,
+            storage_gib_month: 0,
+            egress_gib: 0,
+        };
+        run.cost = Some(CostCap {
+            max_cost,
+            price_version: 1,
+            table,
+            worst_case: 0,
+        });
+    }
+
+    fn is_cost_cap(v: &StepVerdict) -> bool {
+        matches!(v, StepVerdict::Failed { reason } if reason == COST_CAP)
+    }
+
+    #[test]
+    fn a_first_wave_is_cut_to_what_the_cost_cap_affords_and_the_step_stops() {
+        let p = fan_pipeline("  each: { method: digest, forEach: inputs.docs, maxItems: 20 }\n");
+        let mut run = fan_run(&p, 10);
+        capped(&mut run, 65);
+        let decided = plan(&p, &run, &caps(), 10);
+        assert_eq!(decided.len(), 2, "{decided:?}");
+        assert_eq!(
+            started(&decided, "each").0.len(),
+            3,
+            "three worst cases fit"
+        );
+        assert!(is_cost_cap(&decided[1].1), "{decided:?}");
+        capped(&mut run, 1_000);
+        let decided = plan(&p, &run, &caps(), 10);
+        assert_eq!(decided.len(), 1, "a cap that covers the step stops nothing");
+        assert_eq!(started(&decided, "each").0.len(), 10);
+    }
+
+    #[test]
+    fn a_wave_the_parallelism_cuts_anyway_is_not_stopped_by_the_cap() {
+        let p = fan_pipeline(
+            "  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 2 }\n",
+        );
+        let mut run = fan_run(&p, 10);
+        capped(&mut run, 65);
+        let decided = plan(&p, &run, &caps(), 10);
+        assert_eq!(decided.len(), 1, "{decided:?}");
+        assert_eq!(started(&decided, "each").0.len(), 2);
+    }
+
+    #[test]
+    fn a_next_run_that_does_not_fit_fails_the_step_instead_of_starting() {
+        let p = fan_pipeline(
+            "  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 5 }\n",
+        );
+        let mut run = fan_run(&p, 10);
+        capped(&mut run, 65);
+        let (_, fan) = started(&plan(&p, &run, &caps(), 10), "each");
+        let step = run.steps.get_mut("each").unwrap();
+        step.status = StepStatus::Running;
+        step.fan = fan;
+        step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.run_cost = 20;
+        let decided = plan(&p, &run, &caps(), 10);
+        assert_eq!(decided.len(), 1, "no wave, only the stop: {decided:?}");
+        assert!(is_cost_cap(&decided[0].1));
+        let step = run.steps.get_mut("each").unwrap();
+        step.capped = true;
+        assert!(
+            plan(&p, &run, &caps(), 10).is_empty(),
+            "a capped step is left alone"
+        );
+    }
+
+    #[test]
+    fn finished_runs_free_the_cap_by_what_they_used() {
+        let p = fan_pipeline(
+            "  each: { method: digest, forEach: inputs.docs, maxItems: 20, maxParallel: 5 }\n",
+        );
+        let mut run = fan_run(&p, 10);
+        capped(&mut run, 65);
+        let (_, fan) = started(&plan(&p, &run, &caps(), 10), "each");
+        let step = run.steps.get_mut("each").unwrap();
+        step.status = StepStatus::Running;
+        step.fan = fan;
+        step.runs = (0..3).map(|i| format!("r.each.{i}")).collect();
+        step.run_cost = 20;
+        step.finished = 3;
+        step.cost = 6;
+        let decided = plan(&p, &run, &caps(), 10);
+        let StepVerdict::More { runs, .. } = &decided[0].1 else {
+            panic!("{decided:?}")
+        };
+        assert_eq!(runs.len(), 2, "6 used leaves room for two of 20 under 65");
+        assert!(is_cost_cap(&decided[1].1), "{decided:?}");
     }
 
     #[test]

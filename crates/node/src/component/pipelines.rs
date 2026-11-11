@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_app_host as host;
 use calimero_log::{Bytes, StateTx};
+use calimero_pipeline::{priced_cost, run_cost, Caps, PriceTable};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -43,6 +44,7 @@ const MAX_NAME_BYTES: usize = 128;
 pub const TOO_MANY_PIPELINE_RUNS: &str = "TOO_MANY_PIPELINE_RUNS";
 pub const TOO_MANY_FAILURES: &str = "TOO_MANY_FAILURES";
 pub const NO_ROOM: &str = "NO_ROOM";
+pub const COST_CAP: &str = "COST_CAP";
 pub(super) const KNOWN: &str = "the pipeline run exists";
 pub(super) const BAD_START: &str = "the pipeline run is not well formed";
 pub const INPUT_NOT_HELD: &str = "an input is not a file the app holds";
@@ -117,6 +119,19 @@ pub struct StepState {
     /// Indices of the runs answered from the step cache, which started no compute run.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub cached_runs: BTreeSet<u32>,
+    /// What the step's finished runs used, priced by the run's table; zero without a cost cap.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cost: u64,
+    /// The worst case of one run of the step, which each of its active runs holds back.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub run_cost: u64,
+    /// Set when the cost cap stopped the step from starting more runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub capped: bool,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl StepState {
@@ -134,6 +149,9 @@ impl StepState {
             finished: 0,
             failed_items: 0,
             cached_runs: BTreeSet::new(),
+            cost: 0,
+            run_cost: 0,
+            capped: false,
         }
     }
 
@@ -201,6 +219,27 @@ impl FanOut {
     }
 }
 
+/// The cost cap of a run: what the caller allows, and the price table the run was admitted under,
+/// copied so apply never reads system state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostCap {
+    pub max_cost: u64,
+    pub price_version: u64,
+    pub table: PriceTable,
+    /// The most the pipeline can cost under `table`, saturated; the cap does not refuse a run over it.
+    pub worst_case: u64,
+}
+
+impl CostCap {
+    /// The worst case of one run with `caps`, saturated.
+    #[must_use]
+    pub fn unit(&self, caps: RunCaps) -> u64 {
+        let cost = run_cost(caps.fuel, caps.memory_mib, caps.wall_secs, &self.table);
+        u64::try_from(cost).unwrap_or(u64::MAX)
+    }
+}
+
 /// The record of one pipeline run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -230,6 +269,52 @@ pub struct PipelineRun {
     pub stopping: bool,
     pub steps: BTreeMap<String, StepState>,
     pub end_ts_ms: Option<u64>,
+    /// The cost cap the run started with, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostCap>,
+    /// What the finished runs of all steps used, priced.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cost_so_far: u64,
+}
+
+impl PipelineRun {
+    /// What the run may already owe: its finished runs' usage plus the worst case of every active
+    /// run of a running step.
+    #[must_use]
+    pub fn committed_cost(&self) -> u128 {
+        self.steps
+            .values()
+            .map(|s| {
+                let active = if s.status == StepStatus::Running {
+                    u128::from(
+                        u32::try_from(s.runs.len())
+                            .unwrap_or(u32::MAX)
+                            .saturating_sub(s.finished),
+                    )
+                } else {
+                    0
+                };
+                u128::from(s.cost) + active * u128::from(s.run_cost)
+            })
+            .sum()
+    }
+
+    /// Whether starting `runs` would take the committed cost past the cap.
+    #[must_use]
+    pub fn over_cap(&self, runs: &[StepRun]) -> bool {
+        let Some(cap) = &self.cost else { return false };
+        let new: u128 = runs.iter().map(|r| u128::from(cap.unit(r.caps))).sum();
+        self.committed_cost() + new > u128::from(cap.max_cost)
+    }
+
+    /// Holds back the worst case of `step`'s runs, once started.
+    fn reserve(&mut self, step: &str, runs: &[StepRun]) {
+        let Some(cap) = self.cost else { return };
+        let unit = runs.iter().map(|r| cap.unit(r.caps)).max().unwrap_or(0);
+        if let Some(state) = self.steps.get_mut(step) {
+            state.run_cost = state.run_cost.max(unit);
+        }
+    }
 }
 
 /// `pipelineStart`: a pipeline run begins. `steps` names every step, which start pending.
@@ -249,6 +334,8 @@ pub struct PipelineStartEntry {
     pub payer: String,
     #[serde(default)]
     pub fail_fast: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostCap>,
     pub ts_ms: u64,
 }
 
@@ -475,6 +562,8 @@ impl AppMachine {
                 .map(|s| (s.clone(), StepState::pending()))
                 .collect(),
             end_ts_ms: None,
+            cost: entry.cost,
+            cost_so_far: 0,
         };
         Self::write_pipeline(tx, &record);
         let _new = self
@@ -509,6 +598,7 @@ impl AppMachine {
             return no_op(NO_SUCH_STEP);
         };
         let between_waves = step.runs.len() < step.fan.total as usize;
+        let running = step.status == StepStatus::Running;
         match (&entry.decision, step.status) {
             (StepVerdict::More { .. }, StepStatus::Running) => {}
             (StepVerdict::More { .. }, _) => return no_op(NOT_FAN_OUT),
@@ -520,10 +610,14 @@ impl AppMachine {
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         let mut hit_any = false;
+        let mut capped = false;
         let (status, reason) = match &entry.decision {
             StepVerdict::Start { runs, fan, cached } => {
                 if pipeline.cancel_requested || pipeline.stopping {
                     return no_op(CANCELLING);
+                }
+                if pipeline.over_cap(runs) {
+                    return no_op(COST_CAP);
                 }
                 let started =
                     if fan.well_formed() && runs.len() + cached.len() <= fan.total as usize {
@@ -546,6 +640,7 @@ impl AppMachine {
                             step.fan = *fan;
                         }
                         hit_any = !wave.hits.is_empty();
+                        pipeline.reserve(&entry.step, runs);
                         self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
@@ -558,12 +653,16 @@ impl AppMachine {
                 if pipeline.cancel_requested || pipeline.stopping {
                     return no_op(STEP_STOPPING);
                 }
+                if pipeline.over_cap(runs) {
+                    return no_op(COST_CAP);
+                }
                 match self.start_more_runs(tx, &pipeline, &entry.step, (runs, cached), ts_ms) {
                     Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
                             step.runs.extend(wave.ids);
                         }
                         hit_any = !wave.hits.is_empty();
+                        pipeline.reserve(&entry.step, runs);
                         self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
@@ -582,6 +681,11 @@ impl AppMachine {
             StepVerdict::Skipped => (StepStatus::Skipped, None),
             StepVerdict::UpstreamFailed => (StepStatus::UpstreamFailed, None),
             StepVerdict::Cancelled => (StepStatus::Cancelled, None),
+            StepVerdict::Failed { reason } if running && reason == COST_CAP => {
+                // The runs already going finish and are paid for; only new ones are refused.
+                capped = true;
+                (StepStatus::Running, Some(COST_CAP.to_owned()))
+            }
             StepVerdict::Failed { reason } => {
                 self.stop_step_runs(tx, &pipeline, &entry.step);
                 (
@@ -596,7 +700,12 @@ impl AppMachine {
                 step.reason = reason;
             }
         }
-        if hit_any {
+        if capped {
+            if let Some(step) = pipeline.steps.get_mut(&entry.step) {
+                step.capped = true;
+            }
+        }
+        if hit_any || capped {
             self.settle_step(tx, &mut pipeline, &entry.step);
         }
         self.settle_after_change(tx, &mut pipeline, ts_ms);
@@ -617,7 +726,7 @@ impl AppMachine {
         let Some(state) = pipeline.steps.get(step) else {
             return Err(Refusal::Failed(NOT_NEXT));
         };
-        if state.failed_items > state.fan.allowed {
+        if state.failed_items > state.fan.allowed || state.capped {
             return Err(Refusal::Failed(STEP_STOPPING));
         }
         let first = state.runs.len();
@@ -860,10 +969,31 @@ impl AppMachine {
         let Some(mut pipeline) = Self::read_pipeline(tx, &link.run) else {
             return;
         };
+        let spent = pipeline.cost.map_or(0, |cap| {
+            let usage = record.final_.as_ref().map(|f| f.usage).unwrap_or_default();
+            let caps = Caps {
+                fuel: record.caps.fuel,
+                memory_mib: record.caps.memory_mib,
+                wall_secs: record.caps.wall_secs,
+            };
+            let cost = priced_cost(
+                usage.fuel,
+                usage.gib_micros,
+                usage.cpu_micros,
+                caps,
+                &cap.table,
+            );
+            u64::try_from(cost).unwrap_or(u64::MAX)
+        });
+        pipeline.cost_so_far = pipeline.cost_so_far.saturating_add(spent);
         let Some(step) = pipeline.steps.get_mut(&link.step) else {
             return;
         };
+        step.cost = step.cost.saturating_add(spent);
         if step.status != StepStatus::Running {
+            if pipeline.cost.is_some() {
+                Self::write_pipeline(tx, &pipeline);
+            }
             return;
         }
         step.finished += 1;
@@ -906,7 +1036,7 @@ impl AppMachine {
         }
         let allowed = Self::allowance(pipeline, step);
         let over = step.failed_items > allowed;
-        let stopped = over || pipeline.cancel_requested || pipeline.stopping;
+        let stopped = over || step.capped || pipeline.cancel_requested || pipeline.stopping;
         if over {
             self.flag_cancel(tx, &step.runs);
         }
@@ -1096,6 +1226,7 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
         && known.params == entry.params
         && known.caller == entry.caller
         && known.fail_fast == entry.fail_fast
+        && known.cost == entry.cost
         && known
             .steps
             .keys()

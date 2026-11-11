@@ -8967,6 +8967,46 @@ async fn ops_pools_set(
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+struct PricesBody {
+    table: calimero_pipeline::PriceTable,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// Set the price table: the operator's decision, signed (`cluster / __set_price_table / { table }`).
+async fn ops_prices_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(b): Json<PricesBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    node.require_current_release("a price table").await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__set_price_table",
+        &json!({ "table": b.table }),
+        b.operator_proof,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetPriceTable {
+            table: b.table,
+            proof,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// The price table, or `{}` until one is set.
+async fn ops_prices_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.sys(|s| s.price_table)
+            .map_or_else(|| json!({}), |t| json!(t)),
+    ))
+}
+
 /// The pools and the runs each takes at once.
 async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
@@ -10858,6 +10898,7 @@ pub fn router(node: Arc<Node>) -> Router {
         )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         .route("/ops/pools", get(ops_pools_get).post(ops_pools_set))
+        .route("/ops/prices", get(ops_prices_get).post(ops_prices_set))
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.
         .route_layer(axum::middleware::from_fn(crate::metrics::track))

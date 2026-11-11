@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use calimero_bundle::UpgradeAuthority;
 use calimero_identity::Credential;
 use calimero_log::Machine;
+use calimero_pipeline::PriceTable;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -153,6 +154,10 @@ pub const MAX_POOLS: usize = 32; // pools one cluster defines
 pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node's record
 /// The apply error for a pool set past `MAX_POOLS` or with an empty or too long name.
 pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 64 bytes";
+/// The apply error for a price table whose version is not the current one plus one.
+pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
+/// The apply error for a price table with a zero fuel rate.
+pub const BAD_PRICES: &str = "BAD_PRICES: the fuel rate per vCPU-second must be above zero";
 /// Released run ids kept per app, so a late `AcquireRun` for one is refused.
 pub const RELEASED_RUNS_KEPT: usize = 256;
 
@@ -409,6 +414,9 @@ pub struct SystemState {
     /// Job node pools by name; left out when empty (one legacy pool).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pools: BTreeMap<String, PoolConfig>,
+    /// The operator's prices; left out until set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_table: Option<PriceTable>,
     pub nodes: BTreeMap<u64, NodeRecord>,
     /// Nodes the operator removed (`RemoveNode`): registered again only by
     /// the operator (`/ops/nodes`).
@@ -3891,6 +3899,12 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
             states(&st, "cluster", "__set_pools", &|a| *a == args)?;
             Ok(Some(used))
         }
+        SystemCmd::SetPriceTable { table, proof } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let args = json!({ "table": table });
+            states(&st, "cluster", "__set_price_table", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         SystemCmd::SetReplicas {
             app_id,
             replicas,
@@ -4494,6 +4508,13 @@ pub enum SystemCmd {
     /// The operator sets the compute pools (`cluster / __set_pools / { pools }`).
     SetPools {
         pools: BTreeMap<String, PoolConfig>,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The operator sets the price table (`cluster / __set_price_table / { table }`).
+    SetPriceTable {
+        table: PriceTable,
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,
@@ -6393,6 +6414,16 @@ impl SystemMachine {
                 }
                 s.pools = pools;
                 s.grant_runs();
+                Ok(Value::Null)
+            }
+            SystemCmd::SetPriceTable { table, .. } => {
+                if table.validate().is_err() {
+                    return Err(BAD_PRICES);
+                }
+                if table.version != s.price_table.map_or(0, |t| t.version) + 1 {
+                    return Err(PRICE_VERSION);
+                }
+                s.price_table = Some(table);
                 Ok(Value::Null)
             }
             SystemCmd::CreateOrg {

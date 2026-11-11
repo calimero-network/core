@@ -769,13 +769,28 @@ impl Client {
         inputs: Value,
         params: Value,
     ) -> Result<Value> {
+        self.start_pipeline_run_with(
+            app,
+            name,
+            serde_json::json!({ "inputs": inputs, "params": params }),
+        )
+        .await
+    }
+
+    /// [`Client::start_pipeline_run`] with the whole request body, `maxCost` included.
+    pub async fn start_pipeline_run_with(
+        &self,
+        app: &str,
+        name: &str,
+        body: Value,
+    ) -> Result<Value> {
         self.post(
             &format!(
                 "apps/{}/pipelines/{}/runs",
                 path_segment(app),
                 path_segment(name)
             ),
-            serde_json::json!({ "inputs": inputs, "params": params }),
+            body,
         )
         .await
     }

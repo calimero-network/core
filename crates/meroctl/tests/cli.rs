@@ -802,6 +802,18 @@ fn scenario(root: &Path, url: &str) {
     assert!(refused.contains("no operator key"), "{refused}");
     // Pools: none set yet, and only a job node is registered in one.
     assert_eq!(ops(&["pools"])["pools"], serde_json::json!({}));
+    // No price table yet, and a set one is signed: refused here without the operator key.
+    assert_eq!(ops(&["prices"]), serde_json::json!({}));
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "set-prices",
+            r#"{"version":1,"fuelPerVcpuSecond":1000000000,"vcpuSecond":1,"gibSecond":1,"connectorGib":0,"storageGibMonth":0,"egressGib":0}"#,
+        ])
+        .unwrap_err();
+    assert!(refused.contains("no operator key"), "{refused}");
     let refused = alice
         .try_run(&[
             "--ops-token",

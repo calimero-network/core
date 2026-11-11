@@ -2,7 +2,7 @@ mod check;
 mod compile;
 mod model;
 
-pub use check::{check, worst_case_fuel};
+pub use check::{check, priced_cost, run_cost, worst_case_cost, worst_case_fuel};
 pub use compile::*;
 pub use model::*;
 

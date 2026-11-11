@@ -130,6 +130,15 @@ steps:
   a: { method: digest, inputs: [inputs.docs], cache: false }
 ";
 
+const COSTED: &str = "apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: costed
+inputs:
+  docs: { kind: files }
+steps:
+  each: { method: check, forEach: inputs.docs, maxItems: 20 }
+";
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(bytes))
@@ -171,6 +180,7 @@ impl Rig {
             ("pipelines/resume.yaml", RESUME),
             ("pipelines/partial.yaml", PARTIAL),
             ("pipelines/fresh.yaml", FRESH),
+            ("pipelines/costed.yaml", COSTED),
         ];
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
@@ -579,6 +589,7 @@ async fn a_pipeline_whose_definition_is_gone_fails() {
         caller: Caller::System,
         payer: "account:alice".into(),
         fail_fast: false,
+        cost: None,
         ts_ms: 0,
     };
     let req = CallRequest::host(
@@ -937,4 +948,89 @@ async fn starting_with_an_expired_output_answers_output_expired() {
         .await
         .unwrap_err();
     assert_eq!(refused.code(), Some("OUTPUT_EXPIRED"), "{refused}");
+}
+
+/// The operator's prices, signed as mdma does: `check` then costs 2020 per run at worst.
+async fn set_prices(rig: &Rig) {
+    let ops = rig.c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let table = json!({ "table": {
+        "version": 1, "fuelPerVcpuSecond": 1_000_000_000, "vcpuSecond": 100, "gibSecond": 10,
+        "connectorGib": 0, "storageGibMonth": 0, "egressGib": 0,
+    } });
+    common::ops_signed(&ops, "ops/prices", table).await.unwrap();
+}
+
+const CHECK_RUN_COST: u64 = 2020; // 20 vCPU-seconds at 100 and 2 GiB-seconds at 10
+
+async fn start_capped(rig: &Rig, files: &[String], max_cost: u64) -> Value {
+    let body = json!({ "inputs": { "docs": files }, "maxCost": max_cost.to_string() });
+    rig.alice
+        .start_pipeline_run_with(&rig.app, "costed", body)
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn max_cost_without_a_price_table_is_refused() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"one").await;
+    let body = json!({ "inputs": { "docs": [file] }, "maxCost": "1000" });
+    let err = rig
+        .alice
+        .start_pipeline_run_with(&rig.app, "costed", body)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("NO_PRICE_TABLE"), "{err}");
+    assert!(matches!(
+        err,
+        calimero_client::Error::Api { status: 409, .. }
+    ));
+    assert!(rig.alice.pipeline_runs(&rig.app).await.unwrap()["runs"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let body = json!({ "inputs": { "docs": [file] }, "maxCost": "many" });
+    set_prices(&rig).await;
+    let err = rig
+        .alice
+        .start_pipeline_run_with(&rig.app, "costed", body)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("BAD_MAX_COST"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_stops_admitting_before_it_crosses_its_cost_cap() {
+    let rig = Rig::start(&[JOB_A]).await;
+    set_prices(&rig).await;
+    let mut files = Vec::new();
+    for i in 0..6 {
+        files.push(rig.upload(format!("document {i}").as_bytes()).await);
+    }
+    // Below one run's worst case the step starts nothing and fails with the cap.
+    let probe = start_capped(&rig, &files, 1).await;
+    assert_eq!(probe["worstCase"], json!((20 * CHECK_RUN_COST).to_string()));
+    let none = rig.ended(probe["run"].as_str().unwrap()).await;
+    assert_eq!(none["state"], "failed", "{none}");
+    assert_eq!(none["steps"]["each"]["reason"], "COST_CAP", "{none}");
+    assert_eq!(none["steps"]["each"]["runs"], json!([]), "{none}");
+    assert_eq!(none["costSoFar"], "0", "{none}");
+
+    // Three worst cases fit, six items need more: exactly three runs are created.
+    let max_cost = 3 * CHECK_RUN_COST;
+    let started = start_capped(&rig, &files, max_cost).await;
+    let run = started["run"].as_str().unwrap();
+    let done = rig.ended(run).await;
+    assert_eq!(done["state"], "failed", "{done}");
+    assert_eq!(done["steps"]["each"]["status"], "failed", "{done}");
+    assert_eq!(done["steps"]["each"]["reason"], "COST_CAP", "{done}");
+    assert_eq!(done["steps"]["each"]["runs"].as_array().unwrap().len(), 3);
+    let linked = |r: &RunRecord| r.pipeline.as_ref().is_some_and(|l| l.run == run);
+    assert_eq!(rig.all_records().iter().filter(|r| linked(r)).count(), 3);
+    let so_far: u64 = done["costSoFar"].as_str().unwrap().parse().unwrap();
+    assert!(so_far > 0 && so_far <= max_cost, "{done}");
+    assert_eq!(done["cost"]["maxCost"], json!(max_cost.to_string()));
+    assert_eq!(done["cost"]["priceVersion"], 1);
+    assert_eq!(done["steps"]["each"]["cost"], done["costSoFar"], "{done}");
 }
