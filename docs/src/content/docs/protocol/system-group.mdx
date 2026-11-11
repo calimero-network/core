@@ -131,7 +131,7 @@ tightens.
 Commands also carry flags that name an earlier release's rule when they are
 left `false` (`owner_in_org`, `owner_in_team`, `apps_need_consent`,
 `teams_seen`, `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
-`member_child_teams`, `revoke_api_keys`), so a log that release wrote
+`member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`), so a log that release wrote
 replays as it applied it. The first system leader on a release that requires
 the current rules writes `RequireCurrentRules`; from that entry on, every such
 flag is read as set whatever the entry says, and an organization's upgrade run

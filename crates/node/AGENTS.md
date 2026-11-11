@@ -49,7 +49,7 @@ is its command line.
   with the RPC it never finished (regression:
   `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`). `api::peer` replaces the bare cluster-secret check
   and refuses an anonymous session. Routes: app data
-  (`view`, `call`, `events`, `storage`, `last-write`, `blob/held`, `app-ready`, `presence`)
+  (`view`, `call`, `events`, `storage`, `last-write`, `xcalls`, `blob/held`, `app-ready`, `presence`)
   need a release approved for the app (`caller_may_hold`); `blob/get` code to any
   node, other blobs only for an approved hosted app that marks them; `blob/delete`
   refused while a hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs `rpc.sender()` = the
@@ -161,7 +161,7 @@ is its command line.
   `old_datadir.rs`). The flags that name an earlier release's rule
   (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
   `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
-  `member_child_teams`, `revoke_api_keys`) work the same way: from
+  `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`) work the same way: from
   `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
   system leader on this release writes, `reconcile`), `SystemMachine::run`
   reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
@@ -1044,7 +1044,7 @@ is its command line.
   runs only its views, any other call refused before it runs (`403`,
   `node::READ_ONLY`), so no run burns the developer's fuel uncounted (regression:
   `a_read_only_members_call_is_refused_before_it_runs`). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
-  whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Reads are filtered: a
+  whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Losing a team takes one's direct rows in the teams below it (`Org::drop_rows_below`), whether by removal or leaving (`RemoveTeamMember { subtree }`), a `ScopeApps` close, or a plain close (`UpdateTeam { join: invite }`, for those in it by inheritance alone; `close_drops_below`, which the API always sets, absent in an entry an earlier release logged, which replays keeping the rows; regressions: `closing_an_app_team_takes_the_channels_of_whoever_loses_it`, `system::tests::closing_a_team_takes_the_rows_below_of_whoever_loses_it`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
@@ -1063,7 +1063,9 @@ is its command line.
   creating the first instance of a package with no app team in an org that has
   app teams are admin-only (`ONLY_ADMINS_INSTALL`). `ScopeApps` (`POST
   /orgs/{org}/app-teams`, admin, passkey) finds or makes each package's team
-  (id from the entry's `nonce`, `app_team_id`), gives a row to every member who
+  (id from the entry's `nonce`, `app_team_id`; an instance's package is the one
+  its release names, `SystemState::instance_package`, since two packages may
+  ship one component, unless the entry predates `by_release`), gives a row to every member who
   `may_reach` the instances first, moves them to `Access::Team`, and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
@@ -1352,8 +1354,17 @@ API and system group:
   (`xcall_retry`, in memory, `backoff_ms`) until `XCALL_WINDOW_MS` from the send; a
   missing target, another org's, a wasmer app, or the window passing dead-letters it
   (`rows::CDEAD`, newest `MAX_DEAD_LETTERS`) and runs the source's `onXcallFailed` if its
-  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin, a hosting node).
-  Test: `component_xcalls_are_delivered_in_order_or_dead_lettered`.
+  ABI allows the system. `GET /apps/{app}/xcalls` (owner or org admin; a node without a
+  replica asks one, `internal/xcalls`, `Node::app_xcalls`).
+  Tests: `component_xcalls_are_delivered_in_order_or_dead_lettered`,
+  `dead_letters_move_with_the_app_and_any_node_lists_them`.
+- **Apply reads through the batch** (`component.rs`: `outgoing_in`, `action_in`,
+  `replay_in`): a host row an entry's apply reads comes from its `StateTx`, never the
+  group's committed state, since a replica catching up (a new replica of a moved app, a
+  restarted one) applies many entries in one batch and must end where its leader, which
+  applied them one at a time, did. `XcallDone` read the outbox row committed and lost the
+  dead letter on such a replica; `ActionEnd` and a node command's first answer under a key
+  had the same hole. Tests: `a_replica_catching_up_*` in `component.rs`.
 - **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,

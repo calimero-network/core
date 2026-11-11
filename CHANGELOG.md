@@ -8,7 +8,8 @@
   flags an earlier release left `false` to name its older rule
   (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
   `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
-  `member_child_teams`, `revoke_api_keys`), so a log it wrote replays as it
+  `member_child_teams`, `revoke_api_keys`, `by_release`,
+  `close_drops_below`), so a log it wrote replays as it
   did, and a new entry was judged by whichever rule it named. The first system
   leader on this release now writes `RequireCurrentRules`
   (`SystemState::current_rules_from`), and from that entry on every such flag
@@ -26,6 +27,53 @@
   the same before anything runs on the app's group and notes a refusal as
   failed (`NOT_IN_RUN`). **Behaviour change**: a run no longer moves an app
   from a newer release of the package back to the run's version.
+- **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
+  `ScopeApps`). An instance's package was taken from its component's bundle
+  record, which names the first package installed with that WASM, so two
+  packages shipping a byte-identical component put both packages' instances
+  in the first one's app team and left the second's empty. `ScopeApps` now
+  takes the package the instance's release names (`AppRecord::release`; the
+  bundle's for a record without one). It carries `by_release` (serde default
+  false), so entries an earlier release logged replay as they did.
+
+- **Dead letters survive an app's move to new replicas.** A replica catching up
+  from the log applies many entries in one batch, and `componentXcallDone` read
+  the outbox row from the group's committed state, not the batch's, so a new
+  replica that applied an xcall's send and its dead-lettering together wrote no
+  dead letter: after `POST /ops/apps/{app}/replicas` the new replicas listed
+  `deadLetters: []`. `componentActionEnd` (an action started and ended in one
+  batch stayed pending, its retries uncounted, its `ActionFailed` event never
+  sent) and the first answer remembered under a node command's key had the same
+  hole. Apply now reads those rows through the batch. No stored format changes;
+  replaying a log now gives what its leader applied. A replica that applied such
+  a batch before keeps what it wrote: replace it (move the app's replicas, as a
+  rollout does) to rebuild it from the log.
+- **`GET /apps/{app}/xcalls` from a node without a replica** answered `503 "ask
+  a node that hosts the app"`; it now asks a replica (`internal/xcalls`), as
+  the other app routes do.
+- **A DM moved with its people into a closed app team keeps them.** Since
+  #4905, an `accounts` instance (a DM, a private channel) of a
+  package with an app team in its organization is reached only by those in
+  that team. `MoveApp` with `bringMembers` added the source's people to the
+  target but gave them no row on the target's app team of the package, so
+  where that team is closed they lost the DM they were brought for. Such a
+  move now gives the people it brings, and the instance's owner, a plain row
+  on that team (never more than member; an open team needs none, and the
+  owner must still be a member of the target). `MoveApp` carries
+  `accounts_in_app_team`, which the API always sets; an entry an earlier
+  release logged replays giving no such rows.
+
+### Security
+
+- **Closing a team takes the channel rows of whoever loses it.** An open
+  team closed with the plain team update (`POST /orgs/{org}/teams/{team}
+  { join: invite }`) dropped everyone in it by inheritance alone but left
+  their rows in the restricted teams below it, so they kept reaching the
+  private channels' apps under an app team they no longer had. Those rows now
+  go, as a removal from the team and `ScopeApps`' close take them; nobody is
+  barred, so opening the team again lets them back into it (not into the
+  channels). `UpdateTeam` carries `close_drops_below`, which the API always
+  sets; an entry an earlier release logged replays keeping the rows.
 
 ## [1.0.0-rc.15] - 2026-11-10
 
