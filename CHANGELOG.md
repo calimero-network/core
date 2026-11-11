@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
+  `ScopeApps`). An instance's package was taken from its component's bundle
+  record, which names the first package installed with that WASM, so two
+  packages shipping a byte-identical component put both packages' instances
+  in the first one's app team and left the second's empty. `ScopeApps` now
+  takes the package the instance's release names (`AppRecord::release`; the
+  bundle's for a record without one). It carries `by_release` (serde default
+  false), so entries an earlier release logged replay as they did.
+
 - **Dead letters survive an app's move to new replicas.** A replica catching up
   from the log applies many entries in one batch, and `componentXcallDone` read
   the outbox row from the group's committed state, not the batch's, so a new

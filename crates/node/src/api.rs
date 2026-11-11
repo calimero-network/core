@@ -6280,6 +6280,7 @@ async fn app_teams_scope(
             owner_in_team: true,
             accounts_in_app_team: true,
             member_child_teams: true,
+            by_release: true,
         })
         .await?,
     ))
