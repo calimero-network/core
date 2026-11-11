@@ -106,6 +106,14 @@ So nothing the nodes share is keyed by K_r itself (`calimero_node::cluster_key`)
   attesting the instance). At most `MAX_CONCURRENT_KEY_RELEASES` (4) requests
   are handled at once.
 
+- **Kept with backups, per release.** A node with `--backup-dir` writes K_c
+  there wrapped under its own K_r (`cluster-key/{release}`, the same wrapping
+  as `<data-dir>/cluster-key`), once per release. A cluster founded again from
+  its backups (`--restore-from`) takes K_c from the copy its founder's K_r
+  opens, so it is the same cluster; no other key opens any copy, and a copy
+  dies with its release's mero-kms
+  ([Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups)).
+
 The route takes no cluster secret, since the new node has none yet. Release
 approvals still decide which apps' data reaches the new node
 (`Node::may_send`): K_c opens what a node holds, not what it may receive.
@@ -122,7 +130,10 @@ hidden this way. See [Storage schema](/protocol/storage/).
 
 Snapshots are files of sealed frames, each frame's associated data naming its
 group, snapshot, position and whether it is the last, so frames cannot be
-reordered or truncated unnoticed. Backups are copies of those files.
+reordered or truncated unnoticed. Backups are copies of those files, each with
+a manifest sealed under `HMAC-SHA256(K_c, "calimero.backup.manifest.v1")` and
+bound to its app and file name, so a backup opens and restores only where K_c
+is: on the cluster that wrote it, whatever release its nodes run.
 
 ## Keys derived from K_c
 
@@ -133,6 +144,7 @@ reordered or truncated unnoticed. Backups are copies of those files.
 | Member key | `HMAC-SHA256(K_c, "calimero.member.v1\|" ‖ app ‖ "\|" ‖ account)` | A member's sealed share, opened only in that member's own runs |
 | Hidden-key HMAC key | `HMAC-SHA256(K_c, "calimero.log.hidden-keys.v1")` | Hiding row keys in the store |
 | Snapshot key | `HMAC-SHA256(K_c, "calimero.log.snapshot.v1")` | Sealing snapshot frames (streamed to followers as they are) |
+| Backup manifest key | `HMAC-SHA256(K_c, "calimero.backup.manifest.v1")` | Sealing a backup's manifest, bound to its app and file name |
 | Component cache key | from K_c (`component_cache_key`) | The MAC on compiled components in `<data-dir>/components` |
 
 Every node, of every release, derives the same keys, and nothing outside the

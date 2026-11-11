@@ -2971,6 +2971,92 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
     assert!(joined.hosted(&app).is_none(), "no empty group was started");
 }
 
+/// Every node advertises the newest cluster version it supports
+/// (`/health`), the system leader logs it once all of them do (`/ops/placement`,
+/// and every replica's system state), and a node that joins later on the same
+/// build is admitted at it (`system::cluster_version`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_cluster_version_rises_to_what_every_node_supports() {
+    let mut c = Cluster::start(3).await;
+    let supported = calimero_node::system::cluster_version::supported();
+    for url in &c.urls {
+        let health: Value = reqwest::get(format!("{url}health"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(health["clusterVersion"], supported, "{health}");
+    }
+    let ops = ops_at(&c, 0).await;
+    let logged_everywhere = |c: &Cluster| {
+        c.nodes.iter().flatten().all(|n| {
+            n.node
+                .sys(|s| s.cluster_version.as_deref() == Some(supported))
+        })
+    };
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    let mut placement = Value::Null;
+    while tokio::time::Instant::now() < deadline {
+        placement = ops.get("ops/placement").await.unwrap();
+        if placement["clusterVersion"] == supported && logged_everywhere(&c) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    if placement["clusterVersion"] != supported || !logged_everywhere(&c) {
+        // What the system leader would judge by, to tell a node that never
+        // answered from an entry that was refused.
+        let mut seen = Vec::new();
+        for (i, n) in c.nodes.iter().enumerate() {
+            if let Some(n) = n {
+                let logged = n.node.sys(|s| s.cluster_version.clone());
+                let advertised = n.node.advertised_versions().await;
+                // One raise from here, to say where it stops.
+                let raised = n.node.raise_cluster_version_once().await;
+                seen.push(format!(
+                    "node {i}: logged {logged:?}, advertised {advertised:?}, a raise from it: {raised:?}"
+                ));
+            }
+        }
+        panic!(
+            "the cluster version was not raised: {placement}\n{}",
+            seen.join("\n")
+        );
+    }
+
+    // At it, the leader writes the release-attribution mark
+    // (`attributeByRelease`) once the cluster holds anything, and every
+    // replica applies it.
+    let _alice = signed_up(&c, 0, "alice").await;
+    let marked = |c: &Cluster| {
+        c.nodes
+            .iter()
+            .flatten()
+            .all(|n| n.node.sys(|s| s.attributes_by_release))
+    };
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while tokio::time::Instant::now() < deadline && !marked(&c) {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(marked(&c), "the release-attribution mark was not written");
+
+    // A node on this build supports it, so it joins and learns it.
+    let new = c.join().await;
+    let joined = &c.nodes[new].as_ref().unwrap().node;
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while tokio::time::Instant::now() < deadline
+        && joined.sys(|s| s.cluster_version.as_deref() != Some(supported))
+    {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        joined.sys(|s| s.cluster_version.clone()).as_deref(),
+        Some(supported),
+        "the new node never joined the system group"
+    );
+}
+
 /// `DELETE /ops/nodes/{id}`: refused while an app keeps a replica on the node;
 /// once the operator moved them, the node leaves the directory and the system
 /// group (a registered learner takes its vote), and is not registered again

@@ -68,8 +68,9 @@ owner. A WASM belongs to one signer: a release of another signer's package that
 ships it is refused at install. One signer may ship it in several of its
 packages, and each instance is judged by the release it runs. A cluster begun before this rule replays what it
 logged then as it applied it: the first system leader on a release that judges
-by the release writes `AttributeByRelease`, and the rule holds from that entry
-on.
+by the release writes `AttributeByRelease` (the `attributeByRelease` feature,
+so only once the [cluster version](#the-cluster-version) brings it), and the
+rule holds from that entry on.
 
 **What the passkey signs.** The challenge's arguments are
 `{ bundle, migrate, manifest }`: the target WASM's hash and the target
@@ -181,3 +182,75 @@ only once that app's approver has approved the release
 ([Release approvals](/protocol/governance/#release-approvals)). App frontends
 follow the package: `{label}.{apps-domain}/` serves the newest installed
 release.
+
+## The cluster version
+
+During a rollout, nodes on the old and the new release replicate one system
+log together, for as long as an app's approver keeps old nodes in use. A node
+applies an entry it cannot decode as `malformed command` and skips it, so an
+entry only the new release understands (a new command, or a new field that
+changes what an old one does) would change the state of the new nodes alone:
+the old ones would keep answering reads and judging access from the state
+before it, and if the system leader were old, the caller would be refused an
+entry the new nodes applied.
+
+So each such shape is a **feature** with the first core release that applies
+it (`system::cluster_version::FEATURES`), and the cluster has an **active
+cluster version**: the newest version every node supports.
+
+- **What a node supports.** `GET /health` answers `clusterVersion`: the newest
+  of the node's core release and the features it knows (a build between two
+  releases supports the coming one). A node from before this release answers
+  only its core `release`, which counts in its place. A peer asks over the
+  node's sealed channel, so the answer comes from the attested image.
+- **Raising it.** The system leader asks every registered node (and every
+  member of the system group) at most every 10 seconds while the logged
+  version is below its own, and logs `SetClusterVersion { version, nodes }`
+  once every one of them answers and the oldest is newer than the logged
+  version. Apply checks that `nodes` names every registered node and only
+  those, that none is below `version`, and that `version` is newer than the
+  logged one: it only moves forward. It is raised automatically, never by
+  hand: raising it is safe only once every node supports it, which is what
+  the leader checks, so an operator finishes a rollout (removes the old nodes,
+  `DELETE /ops/nodes/{id}`) to raise it. A registered node that does not
+  answer holds it where it is. `GET /ops/placement` shows the logged version
+  (`clusterVersion`, `null` until the first).
+- **The gate.** Every proposal goes through `Node::sys_write`, which refuses a
+  command using a feature above the active version with `409
+  FEATURE_NOT_ACTIVE`, naming the feature and the version it needs (`details:
+  { feature, needs, active }`), before anything is logged. Until the logged
+  version reaches it, the proposing node judges by what every node supports
+  now, so a cluster rolling between two releases keeps every feature both
+  have. Routes that ask for a passkey step-up check before asking.
+- **Older nodes stay out.** Once a version is logged, the leader admits no
+  node below it to the system group: a rollback means a new cluster, not an
+  older node in this one.
+- **Apply never reads it.** An entry applies as it did, so replaying a log is
+  unchanged; the gate only decides what is proposed.
+
+A node that still meets an entry it cannot decode logs an error and counts it
+in `calimero_log_undecodable_entries_total{log}` (system or app log): with
+every feature gated it stays at zero.
+
+| Feature | Command or field | Since |
+| --- | --- | --- |
+| `moveApp` | `MoveApp` | 1.0.0-rc.15 |
+| `appTeamJoin` | `ScopeApps` naming one app team's `join` or `keep` | 1.0.0-rc.15 |
+| `orgQuotas` | `SetOrgQuotas` (also `409 UPGRADE_PENDING` first) | 1.0.0-rc.15 |
+| `computePools` | `SetPools` (also `409 UPGRADE_PENDING` first) | 1.0.0-rc.15 |
+| `teamCloseDropsBelow` | `UpdateTeam` closing a team (`join: invite`), which takes the rows below it of whoever loses it; an earlier release keeps them | 1.0.0-rc.16 |
+| `moveAccountsAppTeam` | `MoveApp` giving a moved DM's people a row on its closed app team (`accounts_in_app_team`); an earlier release gives none | 1.0.0-rc.16 |
+| `scopeByRelease` | `ScopeApps` judging an instance's package by its release (`by_release`); an earlier release judges by the bundle | 1.0.0-rc.16 |
+| `allApps` | `SetAllApps`, and an invite that gives every app added later (`allApps`); an earlier release cannot read the command and drops the invite's flag | 1.0.0-rc.16 |
+| `restoreApp` | `RestoreApp` and `FinishRestore`, an operator's restore of an app from its sealed backup; an earlier release cannot read them | 1.0.0-rc.16 |
+| `renameOrg` | `RenameOrg`, renaming an organization; an earlier release cannot read it | 1.0.0-rc.16 |
+| `teamMembersBatch` | `SetTeamMembers` and `RemoveTeamMembers`, a member's rows in several teams at once; an earlier release cannot read them | 1.0.0-rc.16 |
+| `appTeamChildTeams` | `ScopeApps` naming one app team's `childTeams`; an earlier `ScopeApp` refuses unknown fields | 1.0.0-rc.16 |
+| `attributeByRelease` | `AttributeByRelease`, the system leader's one-time mark after which an app's upgrades, publisher and release approvals follow the release it runs; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.16 |
+| `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
+
+The rc.15 features were added before the gate: on a cluster whose every node
+runs rc.15 or newer they work as before, and they are refused only while a
+node on rc.14 or older replicates the log. App groups have no gated entry
+yet; a new app log entry gets a feature the same way, and the cluster version
+bounds every replica, since no node below it joins.

@@ -4,6 +4,92 @@
 
 ### Added
 
+- **Compatibility, written down and checked** (#4927). The policy and
+  matrix of what each release keeps for the releases, apps, clients and data before
+  it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
+  ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
+  the API removed unless `crates/node/api-deprecations.toml` deprecated it 3
+  releases before or declares a cutover; no WIT change without its version; no ABI
+  version dropped) and `Apps of the previous release` (the last release's signed
+  kv bundle installed, run and upgraded on this tree's node). A route the file
+  deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
+  policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
+  checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
+
+- **An admin turns on private channels for an app team made before #4906.**
+  #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
+  nothing changes an existing team's capabilities on replay. `POST
+  /orgs/{org}/app-teams` now takes, per package, `childTeams`: `true` adds
+  `CREATE_CHILD_TEAM` to the app team's default and to every row there that
+  sets its own capabilities, `false` takes it out of both. Like `join`, naming
+  it leaves an absent `shared` meaning "no other team", so `{ apps: [{
+  package, instances: [], childTeams: true }] }` changes nothing else; one
+  passkey covers every package named. `ScopeApp` carries `child_teams`
+  (absent in entries an earlier release logged, which replay as they did).
+
+- **One account in several teams with one approval.** Calimero Home's "give
+  all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
+  step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
+  [{ team, role?, capabilities? }], confirm? }` sets the account's row in up
+  to 64 teams in one log entry (`SystemCmd::SetTeamMembers`, consent
+  `org:<org> / __set_team_members { account, teams }`), and `DELETE` on the
+  same path with `{ teams: [team] }` takes them out, or leaves them, the
+  teams below included (`SystemCmd::RemoveTeamMembers`, `__remove_team_members
+  { account, teams }`). Each team is judged as the single-team route judges
+  it, and the entry applies all or nothing. A node on an earlier release
+  answers the routes `404`.
+
+- **Rename an organization**: `POST /orgs/{org}/name { name, confirm? }`
+  (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
+  / { name }`), by its owner or an admin; `403` below admin, `404` outside.
+  Before, an organization kept the name it was created with, and Calimero
+  Home could only show a `displayName` from its metadata. Every reader of the
+  name (`GET /orgs/{org}`, `/auth/me`'s `orgs`, an invite redeemed after)
+  answers the new one. An organization's name is now one line of 1 to 64
+  characters without surrounding spaces, at creation (`POST /orgs` answers
+  `400` otherwise) and on a rename; `CreateOrg` carries `name_fits`, which
+  the API always sets, so an entry an earlier release logged replays taking
+  any name, and names already given stay until renamed.
+
+- **Restore an app from its sealed backup**: `POST /ops/apps/{app}/restore {
+  backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
+  signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a
+  node that holds the backup in its `--backup-dir`. The app moves to a new
+  group that node seeds from the backup (`SystemCmd::RestoreApp`), the other
+  replicas copy it from a snapshot, and `FinishRestore` ends it; meanwhile
+  the app's calls and views answer `409 APP_RESTORING`. What the app wrote
+  after the backup is gone, and it runs the bundle the backup's state ran.
+  Every backup now has a sealed manifest beside it (`….snap.manifest`: app,
+  group, index, SHA-256, backup format 1, the `merod` and mero-tee release
+  that wrote it), bound to the app and file name under a key derived from
+  K_c, so a backup restores only on its own cluster and app; a newer
+  backup format (`UNKNOWN_BACKUP_FORMAT`) or a newer `merod`
+  (`BACKUP_FROM_NEWER_RELEASE`) is refused, and a backup from before
+  manifests (format 0) restores into the group it was taken from. Stored
+  format: `AppRecord.restore` and the `componentRestored` entry and
+  `ComponentHead.idTermBase` are new and left out when unset, so state from
+  before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
+  until every node runs this release. Runbook: operate/runbooks "Restore an
+  app", with backup schedule and RPO/RTO guidance.
+- **Found a cluster again from its backups, and recover from a lost system
+  majority**: backups now cover the system group (its leader writes
+  `{backup-dir}/system/`: accounts, organizations, teams, packages, the app
+  directory, governance), the code it names (`code/{hash}`, sealed under K_c)
+  and the cluster key K_c wrapped under each release's K_r
+  (`cluster-key/{release}`). `merod run --bootstrap --restore-from DIR`, on an
+  empty data directory, founds the cluster again under its own K_c, taken from
+  the copy its own K_r opens (a refusal names the releases that kept one): it
+  forms the system group alone, seeds it with the newest system backup with
+  the fleet replaced by `--peers` (`system::refound`), and the other nodes
+  join as learners; every app then waits for its own backup (`409
+  APP_RESTORING`) until `ops restore`. It refuses while a node of the old
+  cluster still answers at an address the new fleet does not reuse, or when
+  the governance or operator key differ from the backup's. `POST
+  /ops/backup?all=true` (`meroctl ops backup --all`) backs up every group a
+  node holds, leader or not: what the survivors of a lost system majority
+  found the cluster again from. Runbooks: "Found a cluster again from its
+  backups", "Disaster recovery: the system group lost its majority".
+
 - **Every app added later, for a member**: an organization member may hold a
   standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
   team made from then on (by `ScopeApps`, by a move into the organization,
@@ -20,6 +106,11 @@
   write as they did.
 
 ### Fixed
+
+- **`GET /ops/quotas` and `GET /ops/pools` read caught-up state**. Each read
+  the node's own system replica as it stood, so an operator who set a quota
+  through the leader and read it back through a follower could see the old
+  value. Both now catch up first (a read index), as other reads do.
 
 - **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
   `ScopeApps`). An instance's package was taken from its component's bundle
@@ -68,6 +159,42 @@
   barred, so opening the team again lets them back into it (not into the
   channels). `UpdateTeam` carries `close_drops_below`, which the API always
   sets; an entry an earlier release logged replays keeping the rows.
+
+### Added
+
+- **A cluster version gates new log entries during a rollout**. Old and new
+  nodes replicate one system log through a rolling upgrade, and a node skips
+  an entry it cannot decode, so a command (or field) only the new release
+  knows changed the new nodes' state alone: the old nodes kept serving reads
+  and judging access from the state before it, and with an old system leader
+  the caller was refused an entry the new nodes applied. Each such shape is
+  now a feature with the release it ships in
+  (`system::cluster_version::FEATURES`); the system leader logs the active
+  cluster version (`SetClusterVersion`, only forward) once every registered
+  node supports it, and every proposal above it is refused `409
+  FEATURE_NOT_ACTIVE`, naming the feature and the version it needs (`details:
+  { feature, needs, active }`). `GET /health` answers `clusterVersion`, the
+  newest this node supports (a node of an earlier release is judged by its
+  `release`); `GET /ops/placement` answers the logged `clusterVersion`.
+  Retrofitted to rc.15's commands an rc.14 node cannot decode: `MoveApp`,
+  `ScopeApps` naming one app team's `join`/`keep`, `SetOrgQuotas` and
+  `SetPools` (rc.15); on a cluster whose nodes all run rc.15 or newer they
+  work as before. Closing a team (`UpdateTeam` with `join: invite`, which
+  now takes the rows below it, see above) is gated to rc.16, as is a move that gives a DM's people
+  app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
+  instance by its release (`ScopeApps.by_release`), and giving a member every app
+  added later (`SetAllApps`, or an invite with `allApps`), restoring an app
+  from its backup (`RestoreApp`, `FinishRestore`), renaming an organization
+  (`RenameOrg`), and a member's rows in several teams at once (`SetTeamMembers`,
+  `RemoveTeamMembers`) and turning on an app team's child teams
+  (`ScopeApp.childTeams`). Once a version is logged, no node below it joins the
+  system group. A skipped undecodable entry now logs an error and counts in
+  `calimero_log_undecodable_entries_total{log}`. Stored format:
+  `SystemState.clusterVersion` is left out when unset; a node on an earlier
+  release skips `SetClusterVersion`, which is logged only once every node
+  supports it. **Rollout**: remove the old nodes (`DELETE /ops/nodes/{id}`)
+  to finish one; a registered node that does not answer holds the version
+  back.
 
 ## [1.0.0-rc.15] - 2026-11-10
 
