@@ -28,6 +28,18 @@
   several releases behind reaches the newest in one upgrade; `upgrades.mdx`
   no longer describes the migration planner removed with SDK 0.12.
 
+- **Compatibility, written down and checked** (#4927). The policy and
+  matrix of what each release keeps for the releases, apps, clients and data before
+  it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
+  ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
+  the API removed unless `crates/node/api-deprecations.toml` deprecated it 3
+  releases before or declares a cutover; no WIT change without its version; no ABI
+  version dropped) and `Apps of the previous release` (the last release's signed
+  kv bundle installed, run and upgraded on this tree's node). A route the file
+  deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
+  policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
+  checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
+
 - **An admin turns on private channels for an app team made before #4906.**
   #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
   nothing changes an existing team's capabilities on replay. `POST

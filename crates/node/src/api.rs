@@ -65,6 +65,7 @@ const AMBIGUOUS_COMPUTE: &str = "AMBIGUOUS_COMPUTE";
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod account_proof;
+mod deprecation;
 mod origins;
 mod passkeys;
 mod restore;
@@ -11159,6 +11160,8 @@ pub fn router(node: Arc<Node>) -> Router {
         // Counted, timed and sized per route template (`metrics::track`);
         // inside the sealed envelope, so it sees what each handler answered.
         .route_layer(axum::middleware::from_fn(crate::metrics::track))
+        // `Deprecation` on the routes `api-deprecations.toml` deprecates (docs: compatibility).
+        .route_layer(axum::middleware::from_fn(deprecation::mark))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(
             calimero_sealed::server::MAX_SEALED_BYTES,

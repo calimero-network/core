@@ -1,0 +1,22 @@
+# What the node's HTTP API deprecates, and what it removes at once (a hard cutover).
+# The policy: docs/src/content/docs/operate/compatibility.mdx.
+#
+# `scripts/check-api-compat.py` (ci-checks' `Compatibility` job) compares the routes and JSON
+# field names of a change with the base it merges into, and fails one that removes either
+# unless an entry here allows it. Entries are read from both sides, so the change that removes
+# a route may drop its entry.
+#
+# [[deprecated]]: a route or field still served, with the RFC 9745 `Deprecation` header on a
+# route's answers (`build.rs` reads the routes for `api::deprecation`).
+#   route        = "POST /auth/example"   # or field = "exampleField"; exactly one
+#   since        = "1.0.0-rc.16"          # the first release that deprecates it
+#   date         = 2026-11-12             # the day the deprecation merged (the header's date)
+#   remove_after = "1.0.0-rc.19"          # the first release that may ship without it,
+#                                         # at least 3 releases after `since`
+#   replacement  = "POST /auth/new"       # what to use instead, or "nothing"
+#
+# [[cutover]]: removed at once, which breaks earlier clients, apps or nodes; also marked
+# "Hard cutover" in CHANGELOG.md and in mdma's release_compat CUTOVERS.
+#   route = "...", field = "...", wit = "0.6.0" or abi = 2   # what it removes
+#   pr    = 4999                                              # the PR that removes it
+#   why   = "..."                                             # what breaks, and for whom
