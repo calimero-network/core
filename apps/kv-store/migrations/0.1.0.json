@@ -1,0 +1,15 @@
+[
+ { "as": "owner", "op": "call", "method": "set", "args": { "key": "a", "value": "1" } },
+ { "as": "bob", "op": "call", "method": "set", "args": { "key": "b", "value": "2" } },
+ { "as": "bob", "op": "call", "method": "set", "args": { "key": "gone", "value": "x" } },
+ { "as": "owner", "op": "call", "method": "remove", "args": { "key": "gone" }, "expect": { "ok": "x" } },
+ { "op": "upgrade" },
+ { "as": "bob", "op": "view", "method": "entries", "args": {}, "expect": { "ok": { "a": "1", "b": "2" } } },
+ { "as": "bob", "op": "view", "method": "len", "args": {}, "expect": { "ok": "2" } },
+ { "as": "owner", "op": "view", "method": "getResult", "args": { "key": "gone" },
+   "expect": { "error": "NotFound", "fields": { "key": "gone" } } },
+ { "as": "bob", "op": "call", "method": "updateIfExists", "args": { "key": "a", "value": "10" }, "expect": { "ok": true } },
+ { "as": "owner", "op": "call", "method": "set", "args": { "key": "c", "value": "3" } },
+ { "as": "owner", "op": "view", "method": "len", "args": {}, "expect": { "ok": "3" },
+   "events": { "bob": ["Inserted", "Inserted", "Inserted", "Removed", "Updated", "Inserted"] } }
+]

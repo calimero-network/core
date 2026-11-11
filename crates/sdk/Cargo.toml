@@ -18,6 +18,9 @@ testing = [
     "dep:eyre",
     "dep:tempfile",
 ]
+# `testing::release_component`: a shipped release's component from its signed `.mpk`,
+# for upgrade tests. Its own feature, so apps without such tests keep their lockfiles.
+releases = ["testing", "dep:calimero-bundle", "dep:semver"]
 
 [dependencies]
 base64.workspace = true
@@ -32,9 +35,11 @@ thiserror.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 hex.workspace = true
 rand.workspace = true
+semver = { workspace = true, optional = true }
 sha2.workspace = true
 calimero-app-host = { workspace = true, optional = true }
 calimero-app-engine-wasmtime = { workspace = true, optional = true }
+calimero-bundle = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 

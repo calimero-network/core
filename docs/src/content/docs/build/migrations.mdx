@@ -45,3 +45,13 @@ the state's shape changes.
 (and in the methods, errors and events), and
 `mero-sign sign --previous <last release>` refuses to sign a release that removes a state field or changes its
 kind without bumping the version ([App interface](/core/build/app-abi/#check-a-new-version-against-the-last)).
+
+## Test it against the shipped release
+
+Keep each release's signed `.mpk` beside the crate and run a migration
+scenario from it to the build under test: the steps before its
+`{ "op": "upgrade" }` write state with the shipped code, the steps after read
+it with the new code ([Testing apps](/core/build/testing/#upgrades-test-against-a-shipped-releases-state)).
+[Ship v2 of your app](/core/build/ship-v2/) walks through a release end to end:
+the state change, the test, publishing, and upgrading one instance and then an
+organization, with what to do about each refusal.
