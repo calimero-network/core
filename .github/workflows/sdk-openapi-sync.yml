@@ -463,6 +463,9 @@ jobs:
             echo
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+          # In the log too, where a run's summary is not kept as text.
+          echo "::group::Commit message"; cat "$out/commit-message.txt"; echo "::endgroup::"
+          echo "::group::Pull request body"; cat "$out/pr-body.md"; echo "::endgroup::"
           echo "::notice::core@$SHORT: $class ($counts) -> $title"
 
       - name: Name this repository
