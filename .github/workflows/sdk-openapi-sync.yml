@@ -405,7 +405,7 @@ jobs:
             echo "Vendors core's node API document from [calimero-network/core@$SHORT](https://github.com/calimero-network/core/commit/$COMMIT) (\`docs/public/openapi.json\`) into \`$VENDOR\` and regenerates the client:"
             echo
             echo '```sh'
-            printf '%s\n' "$GENERATE"
+            printf '%s\n' "${GENERATE%$'\n'}"
             echo '```'
             echo
             case "$class" in
