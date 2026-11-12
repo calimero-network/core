@@ -2464,6 +2464,48 @@ fn remove_team_row(
     Ok(())
 }
 
+/// Whether `actor` may set `account`'s `rows` in `o`, judged as
+/// [`SystemCmd::SetTeamMembers`] applies them, on a copy: the consent page
+/// asks it before it shows a page the log would refuse.
+///
+/// # Errors
+///
+/// The refusal `SetTeamMembers` would answer.
+pub(crate) fn judge_team_rows(
+    o: &Org,
+    account: &str,
+    rows: &[TeamRow],
+    actor: &str,
+) -> Result<(), &'static str> {
+    check_team_batch(rows.iter().map(|r| r.team.as_str()))?;
+    let mut next = o.clone();
+    for row in rows {
+        let role = row.role.unwrap_or(TeamRole::Member);
+        set_team_row(&mut next, &row.team, account, role, row.capabilities, actor)?;
+    }
+    Ok(())
+}
+
+/// Whether `actor` may take `account` out of `teams` of `o`, judged as
+/// [`SystemCmd::RemoveTeamMembers`] applies it, on a copy.
+///
+/// # Errors
+///
+/// The refusal `RemoveTeamMembers` would answer.
+pub(crate) fn judge_remove_team_rows(
+    o: &Org,
+    account: &str,
+    teams: &[String],
+    actor: &str,
+) -> Result<(), &'static str> {
+    check_team_batch(teams.iter().map(String::as_str))?;
+    let mut next = o.clone();
+    for team in teams {
+        remove_team_row(&mut next, team, account, actor, true)?;
+    }
+    Ok(())
+}
+
 /// A batch of team rows names 1 to [`MAX_TEAM_BATCH`] teams, each once.
 ///
 /// # Errors

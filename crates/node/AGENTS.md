@@ -1137,7 +1137,7 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite,
+  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
   scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
@@ -1183,6 +1183,26 @@ is its command line.
   `InviteToken` is) and answered as `/result`'s `outcome`, never in the
   page's clear answer. Regression:
   `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
+  Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`,
+  `removeMember { org, account }`, `setMemberRole { org, account, role }`,
+  `setMemberTeams { org, account, teams: [TeamRow] }`, `removeMemberTeams
+  { org, account, teams }`, `revokeInvite { org, inviteKey }`, `renameOrg
+  { org, name }`, `deleteOrg { org }`, `setCapabilities { org, account?,
+  team?, capabilities }` (both shapes) and `setAllApps { org, account,
+  allApps }`. Each is judged at request time with the log's predicates
+  (role, a team's lead or `MANAGE_MEMBERS`, `sees_invite`;
+  `system::judge_team_rows` and `judge_remove_team_rows` run the batch
+  rules on a copy of the org) and the routes' feature gates, and `act`
+  runs the route's `pub(crate)` function (`api::remove_member`,
+  `set_member_role`, `set_member_teams`, `remove_member_teams`,
+  `revoke_invite`, `rename_org`, `delete_org`, `set_capabilities`,
+  `set_all_apps`), so consent and log entry are the API's. `still_current`
+  refuses a page whose role, name, deletion counts, capabilities or
+  all-apps grant changed (`409 CONSENT_STALE`). People are named as the
+  approver sees them (`Org::member_metadata` name, else the account's).
+  The route's non-empty answer is the `outcome` (`renameOrg`, `deleteOrg`).
+  Regressions: `an_apps_frontend_moderates_its_server_on_the_page`,
+  `an_apps_frontend_changes_and_deletes_its_server_on_the_page`.
   With `Config::attestation_verifier_url` (`merod --attestation-verifier-url`,
   checked by `consent_page::verifier_base`) `model()` adds `verifier { url,
   host, release, mock }` for every kind (`null` without it): mdma's link

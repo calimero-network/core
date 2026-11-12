@@ -109,6 +109,13 @@ use crate::system::{PackageRef, PackageVersion, ReleaseScope};
 use crate::types::{now_secs, Caller, OrgRole};
 
 mod diff;
+mod orgs;
+
+pub use orgs::{
+    MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject, RevokeInviteSubject,
+    SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject, SetMemberTeamsSubject,
+    MAX_SUBJECT_ID_BYTES,
+};
 
 pub use diff::{capability_sheet, Side};
 
@@ -209,6 +216,81 @@ pub enum CreateBody {
         subject: AcceptInviteSubject,
         return_to: String,
     },
+    /// Leave an organization.
+    LeaveOrg {
+        subject: OrgSubject,
+        return_to: String,
+    },
+    /// Remove a member from an organization.
+    RemoveMember {
+        subject: MemberSubject,
+        return_to: String,
+    },
+    /// Change a member's role.
+    SetMemberRole {
+        subject: SetMemberRoleSubject,
+        return_to: String,
+    },
+    /// Set a member's rows in several teams.
+    SetMemberTeams {
+        subject: SetMemberTeamsSubject,
+        return_to: String,
+    },
+    /// Take a member out of several teams.
+    RemoveMemberTeams {
+        subject: RemoveMemberTeamsSubject,
+        return_to: String,
+    },
+    /// Withdraw an organization invite.
+    RevokeInvite {
+        subject: RevokeInviteSubject,
+        return_to: String,
+    },
+    /// Rename an organization.
+    RenameOrg {
+        subject: RenameOrgSubject,
+        return_to: String,
+    },
+    /// Delete an organization, with its teams, invites and apps.
+    DeleteOrg {
+        subject: OrgSubject,
+        return_to: String,
+    },
+    /// A member's capabilities, or a default.
+    SetCapabilities {
+        subject: SetCapabilitiesSubject,
+        return_to: String,
+    },
+    /// Give a member every app added later, or stop it.
+    SetAllApps {
+        subject: SetAllAppsSubject,
+        return_to: String,
+    },
+}
+
+impl CreateBody {
+    /// The organization request this is, with its `returnTo`; the body itself
+    /// for every other kind.
+    fn into_org_ask(self) -> Result<(orgs::OrgAsk, String), Self> {
+        use orgs::OrgAsk as A;
+        Ok(match self {
+            Self::LeaveOrg { subject, return_to } => (A::Leave(subject), return_to),
+            Self::RemoveMember { subject, return_to } => (A::RemoveMember(subject), return_to),
+            Self::SetMemberRole { subject, return_to } => (A::SetMemberRole(subject), return_to),
+            Self::SetMemberTeams { subject, return_to } => (A::SetMemberTeams(subject), return_to),
+            Self::RemoveMemberTeams { subject, return_to } => {
+                (A::RemoveMemberTeams(subject), return_to)
+            }
+            Self::RevokeInvite { subject, return_to } => (A::RevokeInvite(subject), return_to),
+            Self::RenameOrg { subject, return_to } => (A::Rename(subject), return_to),
+            Self::DeleteOrg { subject, return_to } => (A::Delete(subject), return_to),
+            Self::SetCapabilities { subject, return_to } => {
+                (A::SetCapabilities(subject), return_to)
+            }
+            Self::SetAllApps { subject, return_to } => (A::SetAllApps(subject), return_to),
+            other => return Err(other),
+        })
+    }
 }
 
 /// Whose approval: the account's own apps, or an organization's.
@@ -333,6 +415,8 @@ enum Action {
     AcceptInvite {
         token: InviteToken,
     },
+    /// A membership change or a setting of an organization (`orgs`).
+    Org(orgs::OrgAction),
 }
 
 /// What a release request changes.
@@ -784,6 +868,14 @@ pub async fn create(
     let package = p.bound_app().map(str::to_owned);
     // `person` made this request's round (`Node::sys_fresh_from`).
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let body = match body.into_org_ask() {
+        Ok((ask, return_to)) => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = orgs::request(&node, &account, ask).await?;
+            return hold(&node, account, package, Action::Org(action), model, to).await;
+        }
+        Err(body) => body,
+    };
     let (action, model, return_to) = match body {
         CreateBody::Release {
             scope,
@@ -824,11 +916,36 @@ pub async fn create(
             let (action, model) = accept_invite_request(&node, &account, subject)?;
             (action, model, to)
         }
+        // `into_org_ask` took these.
+        CreateBody::LeaveOrg { .. }
+        | CreateBody::RemoveMember { .. }
+        | CreateBody::SetMemberRole { .. }
+        | CreateBody::SetMemberTeams { .. }
+        | CreateBody::RemoveMemberTeams { .. }
+        | CreateBody::RevokeInvite { .. }
+        | CreateBody::RenameOrg { .. }
+        | CreateBody::DeleteOrg { .. }
+        | CreateBody::SetCapabilities { .. }
+        | CreateBody::SetAllApps { .. } => {
+            return Err(ApiError::internal("an organization request went astray"));
+        }
     };
+    hold(&node, account, package, action, model, return_to).await
+}
+
+/// Hold a request whose model is frozen, and answer where its page is.
+async fn hold(
+    node: &Node,
+    account: String,
+    package: Option<String>,
+    action: Action,
+    model: Value,
+    return_to: Url,
+) -> Result<Json<Value>, ApiError> {
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
-        Some(p) => package_names(&node, p).await,
+        Some(p) => package_names(node, p).await,
         None => (None, None),
     };
     let mut model = model;
@@ -2204,6 +2321,7 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
         | Action::CreateOrg { .. }
         | Action::CreateInvite { .. }
         | Action::AcceptInvite { .. } => Ok(()),
+        Action::Org(a) => orgs::still_current(node, a),
         Action::Upgrade {
             app,
             from_bundle,
@@ -2337,6 +2455,7 @@ async fn act(
     };
     let account_subject = format!("account:{}", req.account);
     let Json(v) = match &req.action {
+        Action::Org(a) => return orgs::act(node, &p, a, confirm).await,
         Action::CreateOrg { name } => {
             // `POST /orgs` takes no passkey; the page does, so the person
             // (not the app that sent them) creates it. Nothing is logged
