@@ -1083,9 +1083,22 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, organization, team, member
   and invite changes (redeeming included), and an app's delete and access, and
-  it creates instances of its own package only. Its step-ups come from its own
-  origin only, over one of its package's apps only (`step_up` refuses any other
-  subject). Regression: `a_frontend_session_manages_no_organization_and_no_app`.
+  it creates instances of its own package only. The exception is its own
+  package's teams (`Principal::within_team`, `OwnTeam`; `Org::package_of_team`:
+  the org's app team for the package or a team below it), so a chat app runs
+  its channels: `team_create` under one, `team_update` of a team below the app
+  team (never the app team: name, mark, openness; a move only within),
+  `team_set_member`/`team_remove_member` on any of them, `team_delete` below the
+  app team when every app in its subtree is the package's, and `app_access` of
+  its package's app from one such team to another. Authority is the person's,
+  judged at apply as for any session. Its step-ups come from its own origin
+  only, over one of its package's apps, or `org:{org}` for
+  `BOUND_TEAM_STEP_UPS` (`__set_team_member`, `__remove_team_member`,
+  `__delete_team`) over its own package's team (`step_up` judges
+  `within_team` again and refuses any other subject). Regressions:
+  `a_frontend_session_manages_no_organization_and_no_app`,
+  `a_frontend_session_manages_its_own_packages_channels`
+  (`tests/org_app_teams.rs`).
 - **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
   identities "Registered origins"): a package's manager
   (`SystemState::manages_package`: the bound publisher's org-wide

@@ -695,7 +695,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Set who may reach an app",
-        "description": "**Who:** a passkey session (an API key is refused).",
+        "description": "A package-bound session: only its own package's app, from one of its package's teams to another.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -21474,7 +21474,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Create a team",
-        "description": "An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only).\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -21674,7 +21674,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Update a team",
-        "description": "Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -21786,7 +21786,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Delete a team",
-        "description": "With the teams and apps below it.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -21949,7 +21949,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Add or change a team member",
-        "description": "**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A package-bound session: only its own package's teams (its app team and the teams below it).\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -22102,7 +22102,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Remove a team member, or leave",
-        "description": "**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A package-bound session: only its own package's teams (its app team and the teams below it).\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []

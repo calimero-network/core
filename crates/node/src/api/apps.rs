@@ -485,9 +485,19 @@ async fn app_access(
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
     let account = p.account()?;
-    p.within(&node, &node.app(&app_id).await?)?;
+    let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
+    // A package-bound session moves its package's app between its package's
+    // teams only (a channel made private, or back to the app team).
+    match (&app.org, &app.access, &body.access) {
+        (Some(org), Access::Team { team: from }, Access::Team { team: to }) => {
+            p.within_team(&node, org, from, OwnTeam::AppTeamOrBelow)?;
+            p.within_team(&node, org, to, OwnTeam::AppTeamOrBelow)?;
+        }
+        _ => p.unbound()?,
+    }
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
             app_id,

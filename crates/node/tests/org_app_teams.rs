@@ -14,7 +14,9 @@
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
 
-use calimero_client::types::{Access, AppCreateRequest, MemberSetTeamsRequestTeamsItem, TeamJoin};
+use calimero_client::types::{
+    Access, AppCreateRequest, MemberSetTeamsRequestTeamsItem, OrgRole, TeamJoin,
+};
 use calimero_client::{Client, Error};
 use calimero_identity::testing::SoftAuthenticator;
 use serde_json::{json, Value};
@@ -1637,4 +1639,252 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
     assert_eq!(reaches(&carol, &org).await, vec![apps[1].clone()]);
     let err = writes(&carol, &apps[0]).await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
+/// The chat app's channels: a session opened on a package's frontend manages
+/// the teams of its own package (its app team's channels) with the person's
+/// own authority there, no trip to the cluster's page: it creates a channel
+/// under its app team, renames it, adds and removes a member, makes one of
+/// its package's apps private to it, and deletes it with that app. It is
+/// refused (403) anything else: another package's teams, an org-wide team,
+/// the app team's mark and its deletion, a move out of its package, and the
+/// organization's roles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_session_manages_its_own_packages_channels() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let bob_id = id(&bob).await;
+    let chat_app = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let blocks_app = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    let _done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
+    let blocks_team = s(&app_team(&alice, &org, BLOCKS).await["teamId"]);
+    let blocks_channel = s(&alice
+        .orgs()
+        .team_create(&org, "blocks-ch", TeamJoin::Invite, Some(&blocks_team))
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
+    let org_wide = new_team(&alice, &org, "ops").await;
+    // A second chat instance, to be made private to a channel.
+    let room = instance(
+        &alice,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": chat_team }),
+    )
+    .await
+    .unwrap();
+
+    // Alice signed in on chat's frontend origin: a session bound to chat.
+    let label = calimero_node::app_host::label(CHAT);
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let origin = format!("http://{label}.localhost:{port}");
+    let site = c.client(0);
+    let mut site_key = SoftAuthenticator::with_key(&a, "localhost", &origin);
+    let _s = site.sign_in(&mut site_key).await.unwrap();
+
+    // Its own package's channels, directly.
+    let channel = s(&site
+        .orgs()
+        .team_create(&org, "general", TeamJoin::Invite, Some(&chat_team))
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
+    let _ok = site
+        .orgs()
+        .team_update(&org, &channel, Some("random"), None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
+    let _ok = site
+        .orgs()
+        .team_set_member(
+            &org,
+            &channel,
+            typed(json!({ "account": bob_id })),
+            Some(&mut site_key),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let t = alice
+        .orgs()
+        .team_get(&org, &channel)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(t["name"], "random", "{t}");
+    assert!(t.to_string().contains(&bob_id), "{t}");
+    let _ok = site
+        .orgs()
+        .team_remove_member(&org, &channel, &bob_id, Some(&mut site_key))
+        .await
+        .map(wire)
+        .unwrap();
+    let t = alice
+        .orgs()
+        .team_get(&org, &channel)
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(!t.to_string().contains(&bob_id), "{t}");
+    let _ok = site
+        .apps()
+        .access(&room, typed(json!({ "kind": "team", "team": channel })))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        alice.apps().get(&room).await.map(wire).unwrap()["access"]["team"],
+        json!(channel)
+    );
+
+    let forbidden = |what: &str, r: Result<Value, Error>| {
+        let e = r.expect_err(what);
+        assert!(matches!(e, Error::Api { status: 403, .. }), "{what}: {e}");
+    };
+    forbidden(
+        "create a channel under another package's app team",
+        site.orgs()
+            .team_create(&org, "x", TeamJoin::Invite, Some(&blocks_team))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "create an org-wide team",
+        site.orgs()
+            .team_create(&org, "x", TeamJoin::Invite, None)
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "create a team under an org-wide team",
+        site.orgs()
+            .team_create(&org, "x", TeamJoin::Invite, Some(&org_wide))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "rename another package's channel",
+        site.orgs()
+            .team_update(&org, &blocks_channel, Some("x"), None, None, None)
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "move a channel out of its package",
+        site.orgs()
+            .team_update(&org, &channel, None, None, Some(None), None)
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "change the app team's mark",
+        site.orgs()
+            .team_update(
+                &org,
+                &chat_team,
+                None,
+                None,
+                None,
+                Some(json!({ "app": { "package": BLOCKS } })),
+            )
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "delete the app team",
+        site.orgs()
+            .team_delete(&org, &chat_team, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "add a member to an org-wide team",
+        site.orgs()
+            .team_set_member(
+                &org,
+                &org_wide,
+                typed(json!({ "account": bob_id })),
+                Some(&mut site_key),
+            )
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "remove a member from another package's app team",
+        site.orgs()
+            .team_remove_member(&org, &blocks_team, &bob_id, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "delete another package's channel",
+        site.orgs()
+            .team_delete(&org, &blocks_channel, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "move its app to another package's team",
+        site.apps()
+            .access(&room, typed(json!({ "kind": "team", "team": blocks_team })))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "move its app to an org-wide team",
+        site.apps()
+            .access(&room, typed(json!({ "kind": "team", "team": org_wide })))
+            .await
+            .map(wire),
+    );
+    let _err = site
+        .apps()
+        .access(
+            &blocks_app,
+            typed(json!({ "kind": "team", "team": chat_team })),
+        )
+        .await
+        .map(wire)
+        .expect_err("another package's app");
+    forbidden(
+        "set an organization role",
+        site.orgs()
+            .set_member(&org, &bob_id, OrgRole::Admin, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "set capabilities on its own channel",
+        site.orgs()
+            .capabilities(&org, 0, None, Some(&channel), Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+
+    // Deleting its channel takes the app private to it, with its passkey.
+    let gone = site
+        .orgs()
+        .team_delete(&org, &channel, Some(&mut site_key))
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(gone.to_string().contains(&room), "{gone}");
+    assert!(alice.apps().get(&room).await.is_err());
+    assert!(alice.orgs().team_get(&org, &channel).await.is_err());
+    assert!(alice.apps().get(&chat_app).await.is_ok());
 }

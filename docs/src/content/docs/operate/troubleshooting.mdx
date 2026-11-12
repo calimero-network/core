@@ -51,6 +51,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `403` "this needs a passkey session, not an API key" | Managing credentials, approvals or upgrades with an API key | Use a passkey session. |
 | `403` "this API key is scoped; installing code …" | A scoped or read-only key installing or creating apps | Use an unscoped key or a session. |
 | `403` "a session opened on an app's frontend can use that app only" | An app-bound session doing account work | Do it on the cluster's own page (its `--origins`, the Cloud console on Calimero Cloud), or, for creating an organization, minting an invite or joining with one, have the app ask the [consent page](/protocol/consent-page/#organizations-and-invites) (`createOrg`, `createInvite`, `acceptInvite`). |
+| `403` "a session opened on an app's frontend changes only that app's own teams" | An app-bound session changing a team outside its package's app team, or the app team itself | Do it on the cluster's own page. |
 | `403` "the Ops API is disabled on this node" | No `--ops-token` / `--ops-token-sha256` | Configure one and restart. |
 | `403` "operator credential required" | Wrong ops token | Check the token against the configured hash. |
 | `412 CONFIRM_REQUIRED` | The action needs a passkey assertion | A browser or SDK client answers it; `meroctl` needs `--dev-passkey` on development clusters. |
